@@ -1,7 +1,7 @@
 # FILE: main.py
 """
 Orb Backend - FastAPI Application
-Version: 0.10.0
+Version: 0.11.0
 
 Security Features:
 - Password authentication with bcrypt
@@ -15,6 +15,7 @@ Features:
 - Image analysis via Gemini Vision
 - Streaming LLM responses
 - Web search grounding via Gemini
+- Semantic search (RAG) with embeddings
 """
 import os
 import json
@@ -50,11 +51,13 @@ from app.llm.schemas import Provider
 from app.llm.clients import check_provider_availability, call_openai
 from app.llm.stream_router import router as stream_router
 from app.llm.web_search_router import router as web_search_router
+from app.embeddings.router import router as embeddings_router, search_router as embeddings_search_router
+from app.embeddings import service as embeddings_service
 
 app = FastAPI(
     title="Orb Assistant",
-    version="0.10.0",
-    description="Personal AI assistant with multi-LLM orchestration",
+    version="0.11.0",
+    description="Personal AI assistant with multi-LLM orchestration and semantic search",
 )
 
 # ====== CORS ======
@@ -98,9 +101,9 @@ def on_startup():
         print("[startup] GOOGLE_API_KEY: ✗ NOT SET - image analysis and web search will fail")
     
     if os.getenv("OPENAI_API_KEY"):
-        print("[startup] OPENAI_API_KEY: ✓ set")
+        print("[startup] OPENAI_API_KEY: ✓ set (enables chat + embeddings)")
     else:
-        print("[startup] OPENAI_API_KEY: ✗ NOT SET")
+        print("[startup] OPENAI_API_KEY: ✗ NOT SET - chat and semantic search will fail")
     
     if os.getenv("ANTHROPIC_API_KEY"):
         print("[startup] ANTHROPIC_API_KEY: ✓ set")
@@ -122,6 +125,10 @@ app.include_router(stream_router)
 # Web search router - protected
 app.include_router(web_search_router)
 
+# Embeddings router - protected
+app.include_router(embeddings_router)
+app.include_router(embeddings_search_router)
+
 
 # ====== MODELS ======
 
@@ -130,6 +137,7 @@ class ChatRequest(BaseModel):
     message: str
     job_type: str = "casual_chat"
     force_provider: Optional[str] = None
+    use_semantic_search: bool = True  # NEW: Enable/disable semantic search
 
 
 class AttachmentSummary(BaseModel):
@@ -228,10 +236,46 @@ def build_context_block(db: Session, project_id: int) -> str:
     return "\n\n".join(sections) if sections else ""
 
 
+def build_semantic_context(db: Session, project_id: int, user_message: str, top_k: int = 5) -> str:
+    """
+    Build context using semantic search.
+    Retrieves the most relevant content based on the user's message.
+    """
+    results, total = embeddings_service.search_embeddings(
+        db,
+        project_id,
+        user_message,
+        top_k=top_k,
+    )
+    
+    if not results:
+        return ""
+    
+    context_parts = []
+    
+    for result in results:
+        source_label = {
+            "note": "NOTE",
+            "message": "PREVIOUS CONVERSATION",
+            "file": "DOCUMENT",
+        }.get(result.source_type, "CONTENT")
+        
+        # Truncate content if too long
+        content = result.content
+        if len(content) > 1500:
+            content = content[:1500] + "..."
+        
+        context_parts.append(
+            f"[{source_label} - similarity: {result.similarity:.2f}]\n{content}"
+        )
+    
+    return "\n\n---\n\n".join(context_parts)
+
+
 def build_document_context(db: Session, project_id: int, user_message: str) -> str:
     """
-    Build document context for RAG.
-    Includes relevant document content based on the user's message.
+    Build document context for RAG (fallback keyword-based method).
+    Used when semantic search is disabled or has no embeddings.
     """
     message_lower = user_message.lower()
     
@@ -303,7 +347,7 @@ def chat(
     db: Session = Depends(get_db),
     auth: AuthResult = Depends(require_auth),
 ) -> ChatResponse:
-    """Main chat endpoint with document retrieval (protected)."""
+    """Main chat endpoint with semantic search RAG (protected)."""
     project = memory_service.get_project(db, req.project_id)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project {req.project_id} not found")
@@ -311,15 +355,22 @@ def chat(
     # Build context from notes/tasks
     context_block = build_context_block(db, req.project_id)
     
-    # Build document context (RAG)
-    doc_context = build_document_context(db, req.project_id, req.message)
+    # Build document context
+    doc_context = ""
+    if req.use_semantic_search:
+        # Try semantic search first
+        doc_context = build_semantic_context(db, req.project_id, req.message, top_k=5)
+        
+    if not doc_context:
+        # Fallback to keyword-based if semantic search returns nothing
+        doc_context = build_document_context(db, req.project_id, req.message)
     
     # Combine contexts
     full_context = ""
     if context_block:
         full_context += context_block + "\n\n"
     if doc_context:
-        full_context += "=== UPLOADED DOCUMENTS ===\n" + doc_context
+        full_context += "=== RELEVANT CONTEXT ===\n" + doc_context
 
     # Load message history
     history = memory_service.list_messages(db, req.project_id, limit=50)
@@ -337,9 +388,9 @@ def chat(
     if doc_context:
         system_prompt += """
 
-IMPORTANT: The user has uploaded documents. When they ask about their documents, CV, files, etc., 
-use the UPLOADED DOCUMENTS section above to answer accurately. Quote specific details from the 
-documents when relevant. If you cannot find the information in the documents, say so."""
+IMPORTANT: Relevant context from notes, documents, and previous conversations has been provided above.
+Use this context to answer accurately. Quote specific details when relevant.
+If you cannot find the information in the context, say so."""
 
     task = LLMTask(
         job_type=job_type,
@@ -390,6 +441,7 @@ async def chat_with_attachments(
 
     attachments_summary: List[AttachmentSummary] = []
     attachment_context_parts: List[str] = []
+    indexed_file_ids: List[int] = []  # Track files to index
     
     data_root = Path("data")
     project_dir = data_root / "files" / str(project_id)
@@ -517,6 +569,8 @@ async def chat_with_attachments(
                     structured_data=structured_data,
                 )
             )
+            # Track for embedding indexing
+            indexed_file_ids.append(file_record.id)
         
         # Build summary
         stored_id = f"file_{file_record.id}"
@@ -533,6 +587,17 @@ async def chat_with_attachments(
         attachment_context_parts.append(
             f"[Uploaded: {original_name}] {analysis['summary']}"
         )
+
+    # Index newly uploaded files for semantic search
+    for file_id in indexed_file_ids:
+        try:
+            from app.memory.models import DocumentContent
+            doc = db.query(DocumentContent).filter(DocumentContent.file_id == file_id).first()
+            if doc:
+                embeddings_service.index_document(db, doc, force=True)
+                print(f"[chat_with_attachments] Indexed embeddings for file_id={file_id}")
+        except Exception as e:
+            print(f"[chat_with_attachments] Failed to index file_id={file_id}: {e}")
 
     # Build message with attachment context
     full_message = message.strip() if message else ""

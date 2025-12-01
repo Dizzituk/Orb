@@ -2,9 +2,12 @@
 """
 Streaming LLM responses using Server-Sent Events.
 All system prompts include current date/time context.
+
+v0.16.0: Added reasoning support and metadata emission.
 """
 
 import os
+import json
 from typing import AsyncGenerator, Optional, List, Dict
 from datetime import datetime
 
@@ -32,9 +35,32 @@ def enhance_system_prompt(prompt: str) -> str:
     return context
 
 
+# ============ REASONING INSTRUCTION ============
+
+REASONING_INSTRUCTION = """
+When you respond, structure your answer using these tags:
+
+<THINKING>
+Your internal reasoning, step-by-step analysis, and thought process goes here.
+</THINKING>
+<ANSWER>
+Your final response to the user goes here.
+</ANSWER>
+
+Always include both tags in every response.
+"""
+
+
+def enhance_system_prompt_with_reasoning(prompt: str, enable: bool = True) -> str:
+    """Add reasoning instruction to system prompt if enabled."""
+    enhanced = enhance_system_prompt(prompt)
+    if enable:
+        return f"{enhanced}\n\n{REASONING_INSTRUCTION}"
+    return enhanced
+
+
 # ============ PROVIDER CHECKS ============
 
-# Check which packages are installed
 HAS_OPENAI = False
 HAS_ANTHROPIC = False
 HAS_GEMINI = False
@@ -74,7 +100,6 @@ def get_available_streaming_providers() -> Dict[str, bool]:
     }
 
 
-# Alias for backwards compatibility
 def get_available_streaming_provider() -> Optional[str]:
     """Get the first available provider name."""
     providers = get_available_streaming_providers()
@@ -95,25 +120,28 @@ async def stream_openai(
     messages: List[Dict],
     system_prompt: str = "",
     model: str = "gpt-4o-mini",
+    enable_reasoning: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Stream from OpenAI using async client."""
     if not HAS_OPENAI:
-        yield "[Error: openai package not installed]"
+        yield json.dumps({"type": "error", "error": "openai package not installed"})
         return
 
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        yield "[Error: OPENAI_API_KEY not set]"
+        yield json.dumps({"type": "error", "error": "OPENAI_API_KEY not set"})
         return
 
-    # Use async client for proper streaming
     client = AsyncOpenAI(api_key=api_key)
 
-    # Enhance system prompt with datetime
-    enhanced_prompt = enhance_system_prompt(system_prompt)
+    # Enhance system prompt
+    enhanced_prompt = enhance_system_prompt_with_reasoning(system_prompt, enable_reasoning)
 
     full_messages = [{"role": "system", "content": enhanced_prompt}]
     full_messages.extend(messages)
+
+    # Emit metadata first
+    yield json.dumps({"type": "metadata", "provider": "openai", "model": model})
 
     try:
         stream = await client.chat.completions.create(
@@ -127,29 +155,32 @@ async def stream_openai(
                 yield chunk.choices[0].delta.content
 
     except Exception as e:
-        yield f"[Error: {str(e)}]"
+        yield json.dumps({"type": "error", "error": str(e)})
 
 
 async def stream_anthropic(
     messages: List[Dict],
     system_prompt: str = "",
     model: str = "claude-sonnet-4-20250514",
+    enable_reasoning: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Stream from Anthropic using async client."""
     if not HAS_ANTHROPIC:
-        yield "[Error: anthropic package not installed]"
+        yield json.dumps({"type": "error", "error": "anthropic package not installed"})
         return
 
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
-        yield "[Error: ANTHROPIC_API_KEY not set]"
+        yield json.dumps({"type": "error", "error": "ANTHROPIC_API_KEY not set"})
         return
 
-    # Use async client
     client = anthropic.AsyncAnthropic(api_key=api_key)
 
-    # Enhance system prompt with datetime
-    enhanced_prompt = enhance_system_prompt(system_prompt)
+    # Enhance system prompt
+    enhanced_prompt = enhance_system_prompt_with_reasoning(system_prompt, enable_reasoning)
+
+    # Emit metadata first
+    yield json.dumps({"type": "metadata", "provider": "anthropic", "model": model})
 
     try:
         async with client.messages.stream(
@@ -162,28 +193,32 @@ async def stream_anthropic(
                 yield text
 
     except Exception as e:
-        yield f"[Error: {str(e)}]"
+        yield json.dumps({"type": "error", "error": str(e)})
 
 
 async def stream_gemini(
     messages: List[Dict],
     system_prompt: str = "",
     model: str = "gemini-2.0-flash",
+    enable_reasoning: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Stream from Gemini."""
     if not HAS_GEMINI:
-        yield "[Error: google-generativeai package not installed]"
+        yield json.dumps({"type": "error", "error": "google-generativeai package not installed"})
         return
 
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
-        yield "[Error: GOOGLE_API_KEY not set]"
+        yield json.dumps({"type": "error", "error": "GOOGLE_API_KEY not set"})
         return
 
     genai.configure(api_key=api_key)
 
-    # Enhance system prompt with datetime
-    enhanced_prompt = enhance_system_prompt(system_prompt)
+    # Enhance system prompt
+    enhanced_prompt = enhance_system_prompt_with_reasoning(system_prompt, enable_reasoning)
+
+    # Emit metadata first
+    yield json.dumps({"type": "metadata", "provider": "gemini", "model": model})
 
     try:
         gemini_model = genai.GenerativeModel(
@@ -201,7 +236,6 @@ async def stream_gemini(
 
         last_msg = messages[-1]["content"] if messages else ""
         
-        # Gemini streaming is synchronous, wrap in async
         response = chat.send_message(last_msg, stream=True)
 
         for chunk in response:
@@ -209,7 +243,7 @@ async def stream_gemini(
                 yield chunk.text
 
     except Exception as e:
-        yield f"[Error: {str(e)}]"
+        yield json.dumps({"type": "error", "error": str(e)})
 
 
 # ============ MAIN STREAMING FUNCTION ============
@@ -219,6 +253,7 @@ async def stream_llm(
     system_prompt: str = "",
     provider: Optional[str] = None,
     model: Optional[str] = None,
+    enable_reasoning: bool = False,
 ) -> AsyncGenerator[str, None]:
     """
     Stream LLM response.
@@ -228,32 +263,34 @@ async def stream_llm(
         system_prompt: System prompt (datetime will be added automatically)
         provider: openai, anthropic, or gemini (auto-selects if None)
         model: Model name (uses default if None)
+        enable_reasoning: If True, instruct LLM to use THINKING/ANSWER tags
 
     Yields:
-        Tokens as they arrive
+        First yield: JSON metadata {"type": "metadata", "provider": "...", "model": "..."}
+        Subsequent yields: Raw tokens as strings
     """
     # Auto-select provider if not specified
     if not provider:
         provider = get_default_provider()
         if not provider:
-            yield "[Error: No LLM providers available]"
+            yield json.dumps({"type": "error", "error": "No LLM providers available"})
             return
 
     # Route to appropriate provider
     if provider == "openai":
         model = model or DEFAULT_MODELS["openai"]
-        async for token in stream_openai(messages, system_prompt, model):
+        async for token in stream_openai(messages, system_prompt, model, enable_reasoning):
             yield token
 
     elif provider == "anthropic":
         model = model or DEFAULT_MODELS["anthropic"]
-        async for token in stream_anthropic(messages, system_prompt, model):
+        async for token in stream_anthropic(messages, system_prompt, model, enable_reasoning):
             yield token
 
     elif provider == "gemini":
         model = model or DEFAULT_MODELS["gemini"]
-        async for token in stream_gemini(messages, system_prompt, model):
+        async for token in stream_gemini(messages, system_prompt, model, enable_reasoning):
             yield token
 
     else:
-        yield f"[Error: Unknown provider '{provider}']"
+        yield json.dumps({"type": "error", "error": f"Unknown provider '{provider}'"})

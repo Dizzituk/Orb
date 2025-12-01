@@ -1,6 +1,6 @@
 # FILE: app/memory/schemas.py
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Literal
 from pydantic import BaseModel, ConfigDict
 
 
@@ -128,6 +128,7 @@ class MessageCreate(BaseModel):
     project_id: int
     role: str
     content: str
+    provider: Optional[str] = None  # v0.16.0: Track which LLM provider generated the message
 
 
 class MessageOut(BaseModel):
@@ -138,6 +139,27 @@ class MessageOut(BaseModel):
     role: str
     content: str
     created_at: datetime
+
+
+# ============== MESSAGE HISTORY (NEW) ==============
+
+class MessageHistoryItem(BaseModel):
+    """Single message item for history response."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    project_id: int
+    role: Literal["user", "assistant", "system"]
+    content: str
+    provider: Optional[str] = None
+    created_at: datetime
+
+
+class MessageHistoryResponse(BaseModel):
+    """Response schema for message history endpoint."""
+    messages: List[MessageHistoryItem]
+    has_older: bool
+    oldest_id: Optional[int] = None
 
 
 # ============== DOCUMENT CONTENT ==============

@@ -50,6 +50,18 @@ def delete_project(db: Session, project_id: int) -> bool:
 
 # ============== NOTE ==============
 
+def _index_note_if_enabled(db: Session, note: models.Note, force: bool = False) -> None:
+    """Helper to index a note if auto-indexing is enabled."""
+    try:
+        from app.embeddings import auto_index_enabled, index_note
+        if auto_index_enabled():
+            count = index_note(db, note, force=force)
+            print(f"[memory.service] Auto-indexed note {note.id}: {count} embeddings")
+    except Exception as e:
+        # Don't fail the main operation if indexing fails
+        print(f"[memory.service] Failed to auto-index note {note.id}: {e}")
+
+
 def create_note(db: Session, data: schemas.NoteCreate) -> models.Note:
     note = models.Note(
         project_id=data.project_id,
@@ -61,6 +73,9 @@ def create_note(db: Session, data: schemas.NoteCreate) -> models.Note:
     db.add(note)
     db.commit()
     db.refresh(note)
+    
+    _index_note_if_enabled(db, note)
+    
     return note
 
 
@@ -77,6 +92,9 @@ def create_note_for_project(
     db.add(note)
     db.commit()
     db.refresh(note)
+    
+    _index_note_if_enabled(db, note)
+    
     return note
 
 
@@ -105,16 +123,27 @@ def update_note(db: Session, note_id: int, data: schemas.NoteUpdate) -> Optional
     note = get_note(db, note_id)
     if not note:
         return None
+    
+    content_changed = False
+    
     if data.title is not None:
         note.title = data.title
+        content_changed = True
     if data.content is not None:
         note.content = data.content
+        content_changed = True
     if data.tags is not None:
         note.tags = data.tags
     if data.source is not None:
         note.source = data.source
+    
     db.commit()
     db.refresh(note)
+    
+    # Re-index if title or content changed
+    if content_changed:
+        _index_note_if_enabled(db, note, force=True)
+    
     return note
 
 
@@ -122,6 +151,14 @@ def delete_note(db: Session, note_id: int) -> bool:
     note = get_note(db, note_id)
     if not note:
         return False
+    
+    # Delete associated embeddings
+    try:
+        from app.embeddings import delete_embeddings_for_source
+        delete_embeddings_for_source(db, note.project_id, "note", note.id)
+    except Exception as e:
+        print(f"[memory.service] Failed to delete embeddings for note {note_id}: {e}")
+    
     db.delete(note)
     db.commit()
     return True
@@ -239,7 +276,6 @@ def get_file(db: Session, file_id: int) -> Optional[models.File]:
 
 
 def get_file_by_name(db: Session, project_id: int, filename: str) -> Optional[models.File]:
-    """Find a file by original name (case-insensitive partial match)."""
     return (
         db.query(models.File)
         .filter(models.File.project_id == project_id)
@@ -262,12 +298,33 @@ def delete_file(db: Session, file_id: int) -> bool:
     file_record = get_file(db, file_id)
     if not file_record:
         return False
+    
+    # Delete associated embeddings
+    try:
+        from app.embeddings import delete_embeddings_for_source
+        delete_embeddings_for_source(db, file_record.project_id, "file", file_id)
+    except Exception as e:
+        print(f"[memory.service] Failed to delete embeddings for file {file_id}: {e}")
+    
     db.delete(file_record)
     db.commit()
     return True
 
 
 # ============== MESSAGE ==============
+
+def _index_message_if_enabled(db: Session, message: models.Message) -> None:
+    """Helper to index a message if auto-indexing is enabled."""
+    try:
+        from app.embeddings import auto_index_enabled, index_message
+        if auto_index_enabled():
+            count = index_message(db, message, force=False)
+            if count > 0:
+                print(f"[memory.service] Auto-indexed message {message.id}: {count} embeddings")
+    except Exception as e:
+        # Don't fail the main operation if indexing fails
+        print(f"[memory.service] Failed to auto-index message {message.id}: {e}")
+
 
 def create_message(db: Session, data: schemas.MessageCreate) -> models.Message:
     msg = models.Message(
@@ -278,6 +335,9 @@ def create_message(db: Session, data: schemas.MessageCreate) -> models.Message:
     db.add(msg)
     db.commit()
     db.refresh(msg)
+    
+    _index_message_if_enabled(db, msg)
+    
     return msg
 
 
@@ -292,9 +352,77 @@ def list_messages(db: Session, project_id: int, limit: int = 100) -> List[models
 
 
 def delete_messages_for_project(db: Session, project_id: int) -> int:
+    # Delete associated embeddings first
+    try:
+        from app.embeddings.models import Embedding
+        db.query(Embedding).filter(
+            Embedding.project_id == project_id,
+            Embedding.source_type == "message",
+        ).delete()
+    except Exception as e:
+        print(f"[memory.service] Failed to delete message embeddings for project {project_id}: {e}")
+    
     count = db.query(models.Message).filter(models.Message.project_id == project_id).delete()
     db.commit()
     return count
+
+
+# ============== MESSAGE HISTORY (NEW) ==============
+
+def get_message_history(
+    db: Session,
+    project_id: int,
+    limit: int = 50,
+    before_id: Optional[int] = None,
+) -> schemas.MessageHistoryResponse:
+    """
+    Get paginated message history for a project.
+    """
+    limit = max(1, min(limit, 200))
+    
+    query = db.query(models.Message).filter(models.Message.project_id == project_id)
+    
+    if before_id is not None:
+        query = query.filter(models.Message.id < before_id)
+    
+    messages_desc = (
+        query
+        .order_by(models.Message.id.desc())
+        .limit(limit)
+        .all()
+    )
+    
+    messages = list(reversed(messages_desc))
+    
+    oldest_id = messages[0].id if messages else None
+    
+    has_older = False
+    if oldest_id is not None:
+        older_exists = (
+            db.query(models.Message.id)
+            .filter(models.Message.project_id == project_id)
+            .filter(models.Message.id < oldest_id)
+            .first()
+        )
+        has_older = older_exists is not None
+    
+    message_items = [
+        schemas.MessageHistoryItem(
+            id=msg.id,
+            project_id=msg.project_id,
+            role=msg.role,
+            content=msg.content,
+            provider=None,
+            created_at=msg.created_at,
+        )
+        for msg in messages
+    ]
+    
+    return schemas.MessageHistoryResponse(
+        messages=message_items,
+        has_older=has_older,
+        oldest_id=oldest_id,
+    )
 
 
 # ============== DOCUMENT CONTENT ==============
@@ -302,7 +430,6 @@ def delete_messages_for_project(db: Session, project_id: int) -> int:
 def create_document_content(
     db: Session, data: schemas.DocumentContentCreate
 ) -> models.DocumentContent:
-    """Create a new document content record."""
     doc = models.DocumentContent(
         project_id=data.project_id,
         file_id=data.file_id,
@@ -321,7 +448,6 @@ def create_document_content(
 def get_document_content_by_file_id(
     db: Session, file_id: int
 ) -> Optional[models.DocumentContent]:
-    """Get document content by file ID."""
     return (
         db.query(models.DocumentContent)
         .filter(models.DocumentContent.file_id == file_id)
@@ -332,7 +458,6 @@ def get_document_content_by_file_id(
 def get_document_content_by_filename(
     db: Session, project_id: int, filename: str
 ) -> Optional[models.DocumentContent]:
-    """Find document content by filename (case-insensitive partial match)."""
     return (
         db.query(models.DocumentContent)
         .filter(models.DocumentContent.project_id == project_id)
@@ -345,7 +470,6 @@ def get_document_content_by_filename(
 def list_document_contents(
     db: Session, project_id: int, doc_type: Optional[str] = None
 ) -> List[models.DocumentContent]:
-    """List all document contents for a project."""
     query = db.query(models.DocumentContent).filter(
         models.DocumentContent.project_id == project_id
     )
@@ -357,7 +481,6 @@ def list_document_contents(
 def search_document_contents(
     db: Session, project_id: int, search_term: str
 ) -> List[models.DocumentContent]:
-    """Search document contents by raw text or summary."""
     pattern = f"%{search_term}%"
     return (
         db.query(models.DocumentContent)
@@ -375,7 +498,6 @@ def search_document_contents(
 def get_latest_document_content(
     db: Session, project_id: int
 ) -> Optional[models.DocumentContent]:
-    """Get the most recently uploaded document content."""
     return (
         db.query(models.DocumentContent)
         .filter(models.DocumentContent.project_id == project_id)
@@ -385,10 +507,17 @@ def get_latest_document_content(
 
 
 def delete_document_content(db: Session, doc_id: int) -> bool:
-    """Delete document content by ID."""
     doc = db.query(models.DocumentContent).filter(models.DocumentContent.id == doc_id).first()
     if not doc:
         return False
+    
+    # Delete associated embeddings
+    try:
+        from app.embeddings import delete_embeddings_for_source
+        delete_embeddings_for_source(db, doc.project_id, "file", doc.file_id)
+    except Exception as e:
+        print(f"[memory.service] Failed to delete embeddings for doc {doc_id}: {e}")
+    
     db.delete(doc)
     db.commit()
     return True

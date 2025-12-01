@@ -97,6 +97,9 @@ class Message(Base):
     # ENCRYPTED: Message content is sensitive (chat history)
     content = Column(EncryptedText, nullable=False)
     
+    # v0.16.0: Track which LLM provider generated the response
+    provider = Column(String(50), nullable=True)  # e.g., "anthropic", "openai", "google"
+    
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     project = relationship("Project", back_populates="messages")

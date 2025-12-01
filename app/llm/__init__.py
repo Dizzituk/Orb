@@ -1,7 +1,13 @@
 # FILE: app/llm/__init__.py
 """
 LLM module exports.
+
+PRESERVED: All original exports from gemini_vision and file_analyzer.
+ADDED: New policy-based routing exports (optional).
 """
+
+# ============== ORIGINAL EXPORTS (preserved) ==============
+
 from app.llm.router import call_llm, quick_chat, request_code, review_work
 from app.llm.schemas import LLMTask, LLMResult, JobType, Provider
 from app.llm.gemini_vision import analyze_image, is_image_mime_type
@@ -12,19 +18,81 @@ from app.llm.file_analyzer import (
     generate_document_summary,
 )
 
+# ============== NEW EXPORTS (policy-based routing) ==============
+
+from app.llm.router import (
+    analyze_with_vision,
+    web_search_query,
+    list_job_types,
+    get_routing_info,
+    is_policy_routing_enabled,
+    enable_policy_routing,
+)
+from app.llm.clients import (
+    check_provider_availability,
+    list_available_providers,
+    get_embeddings,
+)
+
+# Optional policy imports (may not be present)
+try:
+    from app.llm.policy import (
+        load_routing_policy,
+        get_policy_for_job,
+        make_routing_decision,
+        RoutingPolicy,
+        RoutingDecision,
+        JobPolicy,
+        PolicyError,
+        UnknownJobTypeError,
+        DataValidationError,
+        ProviderCapabilityError,
+    )
+    _policy_exports = [
+        "load_routing_policy",
+        "get_policy_for_job",
+        "make_routing_decision",
+        "RoutingPolicy",
+        "RoutingDecision",
+        "JobPolicy",
+        "PolicyError",
+        "UnknownJobTypeError",
+        "DataValidationError",
+        "ProviderCapabilityError",
+    ]
+except ImportError:
+    _policy_exports = []
+
+# ============== ALL EXPORTS ==============
+
 __all__ = [
+    # Original router exports
     "call_llm",
-    "quick_chat", 
+    "quick_chat",
     "request_code",
     "review_work",
+    # Original schema exports
     "LLMTask",
     "LLMResult",
     "JobType",
     "Provider",
+    # Original gemini_vision exports
     "analyze_image",
     "is_image_mime_type",
+    # Original file_analyzer exports
     "extract_text_content",
     "detect_document_type",
     "parse_cv_with_llm",
     "generate_document_summary",
-]
+    # New router exports
+    "analyze_with_vision",
+    "web_search_query",
+    "list_job_types",
+    "get_routing_info",
+    "is_policy_routing_enabled",
+    "enable_policy_routing",
+    # New client exports
+    "check_provider_availability",
+    "list_available_providers",
+    "get_embeddings",
+] + _policy_exports

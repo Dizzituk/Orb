@@ -31,4 +31,5 @@ def init_db():
     """Create all tables. Call once at startup."""
     # Import models so Base.metadata knows about them
     from app.memory import models  # noqa: F401
+    from app.embeddings import models as embedding_models  # noqa: F401
     Base.metadata.create_all(bind=engine)

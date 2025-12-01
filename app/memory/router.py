@@ -1,9 +1,9 @@
-# file: app/memory/router.py
+# FILE: app/memory/router.py
 from typing import List, Optional
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastAPIFile, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastAPIFile, Form, Query
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -108,7 +108,6 @@ def create_note_for_project(
     data: schemas.NoteCreateForProject,
     db: Session = Depends(get_db),
 ):
-    """Create a note for a specific project (project_id in URL, not body)."""
     project = service.get_project(db, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -122,7 +121,6 @@ def list_notes_for_project(
     search: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
-    """List all notes for a specific project."""
     project = service.get_project(db, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -180,7 +178,6 @@ def create_task_for_project(
     data: schemas.TaskCreateForProject,
     db: Session = Depends(get_db),
 ):
-    """Create a task for a specific project (project_id in URL, not body)."""
     project = service.get_project(db, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -193,7 +190,6 @@ def list_tasks_for_project(
     status: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
-    """List all tasks for a specific project."""
     project = service.get_project(db, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -214,13 +210,6 @@ async def upload_file_for_project(
     file_type: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
-    """
-    Upload a file for a specific project.
-
-    - Validates that the project exists.
-    - Saves the file under data/files/{project_id}/ with a unique filename.
-    - Creates a File row via the service layer.
-    """
     project = service.get_project(db, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -234,18 +223,15 @@ async def upload_file_for_project(
     unique_name = f"{uuid4().hex}{suffix}"
     file_path = project_dir / unique_name
 
-    # Read and write file contents
     contents = await file.read()
     file_path.write_bytes(contents)
 
-    # Relative path from data/ as required by schema
     relative_path = file_path.relative_to(data_root)
     normalized_relative_path = str(relative_path).replace("\\", "/")
 
-    # Infer file_type if not provided
     inferred_type: Optional[str] = file_type or file.content_type
     if not inferred_type and suffix:
-        inferred_type = suffix.lstrip(".")  # e.g. "md", "txt"
+        inferred_type = suffix.lstrip(".")
 
     file_create = schemas.FileCreate(
         project_id=project_id,
@@ -298,14 +284,27 @@ def create_message(data: schemas.MessageCreate, db: Session = Depends(get_db)):
     return service.create_message(db, data)
 
 
-@router.get("/messages", response_model=List[schemas.MessageOut])
-def list_messages(project_id: int, limit: int = 100, db: Session = Depends(get_db)):
-    return service.list_messages(db, project_id, limit=limit)
+@router.get("/messages", response_model=schemas.MessageHistoryResponse)
+def get_message_history(
+    project_id: int = Query(..., description="Project ID to get messages for"),
+    limit: int = Query(50, ge=1, le=200, description="Maximum messages to return"),
+    before_id: Optional[int] = Query(None, description="Return messages older than this ID"),
+    db: Session = Depends(get_db),
+):
+    """
+    Get paginated message history for a project.
+    Returns messages in chronological order (oldest first) for display.
+    Use before_id to paginate backwards through history.
+    """
+    project = service.get_project(db, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    return service.get_message_history(db, project_id, limit, before_id)
 
 
 @router.get("/projects/{project_id}/messages", response_model=List[schemas.MessageOut])
 def list_messages_for_project(project_id: int, limit: int = 100, db: Session = Depends(get_db)):
-    """List all messages for a specific project (nested endpoint)."""
     project = service.get_project(db, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -314,7 +313,6 @@ def list_messages_for_project(project_id: int, limit: int = 100, db: Session = D
 
 @router.delete("/projects/{project_id}/messages", status_code=200)
 def clear_messages_for_project(project_id: int, db: Session = Depends(get_db)):
-    """Delete all messages for a project (useful for clearing chat history)."""
     project = service.get_project(db, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")

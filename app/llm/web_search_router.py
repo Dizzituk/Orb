@@ -1,10 +1,15 @@
-# app/llm/web_search_router.py
+# app/llm/stream_router.py
 """
-Web search endpoints for real-time grounded responses.
+Streaming endpoints for real-time LLM responses.
+Uses Server-Sent Events (SSE).
+
+v0.16.0: Added enable_reasoning support.
 """
 
+import json
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -12,99 +17,171 @@ from app.db import get_db
 from app.auth import require_auth
 from app.auth.middleware import AuthResult
 from app.memory import service as memory_service, schemas as memory_schemas
-from .web_search import search_and_answer, is_web_search_available, format_sources_markdown
+from .streaming import stream_llm, get_available_streaming_provider, DEFAULT_MODELS
 
-router = APIRouter(prefix="/search", tags=["web_search"])
+router = APIRouter(prefix="/stream", tags=["streaming"])
 
 
-class WebSearchRequest(BaseModel):
+class StreamChatRequest(BaseModel):
     project_id: int
-    query: str
+    message: str
+    provider: Optional[str] = None
+    model: Optional[str] = None
     include_history: bool = True
-    history_limit: int = 10
+    history_limit: int = 20
+    enable_reasoning: bool = True  # v0.16.0: Enable by default
 
 
-class WebSearchResponse(BaseModel):
-    project_id: int
-    query: str
-    answer: str
-    sources: list
-    search_queries: list
-    provider: str
-    error: Optional[str] = None
+async def generate_sse_stream(
+    project_id: int,
+    message: str,
+    provider: Optional[str],
+    model: Optional[str],
+    system_prompt: str,
+    messages: List[dict],
+    db: Session,
+    enable_reasoning: bool = True,
+):
+    """Generate SSE stream with proper formatting."""
+    full_response = ""
+    metadata_sent = False
+    current_provider = provider or "unknown"
+    current_model = model or "unknown"
+    
+    async for chunk in stream_llm(
+        messages=messages,
+        provider=provider,
+        model=model,
+        system_prompt=system_prompt,
+        enable_reasoning=enable_reasoning,
+    ):
+        # First chunk is metadata JSON
+        if not metadata_sent and chunk.startswith("{"):
+            try:
+                metadata = json.loads(chunk.strip())
+                if metadata.get("type") == "metadata":
+                    current_provider = metadata.get("provider", "unknown")
+                    current_model = metadata.get("model", "unknown")
+                    yield f"data: {json.dumps(metadata)}\n\n"
+                    metadata_sent = True
+                    continue
+                elif metadata.get("type") == "error":
+                    yield f"data: {json.dumps(metadata)}\n\n"
+                    return
+            except json.JSONDecodeError:
+                pass
+        
+        # Stream token
+        full_response += chunk
+        yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
+    
+    # Save messages to database
+    memory_service.create_message(db, memory_schemas.MessageCreate(
+        project_id=project_id,
+        role="user",
+        content=message,
+    ))
+    memory_service.create_message(db, memory_schemas.MessageCreate(
+        project_id=project_id,
+        role="assistant",
+        content=full_response,
+        provider=current_provider,  # v0.16.0: Save provider
+    ))
+    
+    # Send completion event
+    yield f"data: {json.dumps({'type': 'done', 'provider': current_provider, 'model': current_model, 'total_length': len(full_response)})}\n\n"
 
 
-@router.get("/status")
-async def search_status(auth: AuthResult = Depends(require_auth)):
-    """Check if web search is available."""
-    return {
-        "available": is_web_search_available(),
-        "provider": "gemini" if is_web_search_available() else None,
-    }
-
-
-@router.post("/query", response_model=WebSearchResponse)
-async def web_search_query(
-    req: WebSearchRequest,
+@router.post("/chat")
+async def stream_chat(
+    req: StreamChatRequest,
     db: Session = Depends(get_db),
     auth: AuthResult = Depends(require_auth),
 ):
     """
-    Perform a web-grounded search query.
-    Returns answer with sources.
-    """
-    if not is_web_search_available():
-        raise HTTPException(
-            status_code=503,
-            detail="Web search not available. Check GOOGLE_API_KEY."
-        )
+    Stream chat response using Server-Sent Events.
     
-    # Verify project
+    Returns an SSE stream with:
+    - metadata: {type: "metadata", provider: "...", model: "..."}
+    - tokens: {type: "token", content: "..."}
+    - completion: {type: "done", provider: "...", model: "...", total_length: N}
+    - errors: {type: "error", error: "..."}
+    """
+    # Verify project exists
     project = memory_service.get_project(db, req.project_id)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project {req.project_id} not found")
     
-    # Build context
-    context = f"Project: {project.name}"
-    if project.description:
-        context += f". {project.description}"
+    # Check provider availability
+    if not req.provider and not get_available_streaming_provider():
+        raise HTTPException(status_code=503, detail="No LLM provider available")
     
-    # Get conversation history
-    history = None
+    # Build message history
+    messages = []
     if req.include_history:
-        messages = memory_service.list_messages(db, req.project_id, limit=req.history_limit)
-        history = [{"role": msg.role, "content": msg.content} for msg in messages]
+        history = memory_service.list_messages(db, req.project_id, limit=req.history_limit)
+        messages = [{"role": msg.role, "content": msg.content} for msg in history]
     
-    # Perform search
-    result = search_and_answer(
-        query=req.query,
-        context=context,
-        history=history,
+    # Add current message
+    messages.append({"role": "user", "content": req.message})
+    
+    # Build system prompt
+    system_prompt = f"Project: {project.name}."
+    if project.description:
+        system_prompt += f" {project.description}"
+    
+    return StreamingResponse(
+        generate_sse_stream(
+            project_id=req.project_id,
+            message=req.message,
+            provider=req.provider,
+            model=req.model,
+            system_prompt=system_prompt,
+            messages=messages,
+            db=db,
+            enable_reasoning=req.enable_reasoning,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
+
+
+@router.get("/providers")
+async def list_streaming_providers(
+    auth: AuthResult = Depends(require_auth),
+):
+    """List available providers for streaming."""
+    from .streaming import HAS_OPENAI, HAS_ANTHROPIC, HAS_GEMINI
+    import os
     
-    # Format answer with sources
-    answer_with_sources = result["answer"]
-    if result["sources"]:
-        answer_with_sources += format_sources_markdown(result["sources"])
+    providers = {}
     
-    # Save to message history
-    memory_service.create_message(db, memory_schemas.MessageCreate(
-        project_id=req.project_id,
-        role="user",
-        content=f"🔍 {req.query}",  # Mark as search query
-    ))
-    memory_service.create_message(db, memory_schemas.MessageCreate(
-        project_id=req.project_id,
-        role="assistant",
-        content=answer_with_sources,
-    ))
+    if HAS_OPENAI and os.getenv("OPENAI_API_KEY"):
+        providers["openai"] = {
+            "available": True,
+            "default_model": DEFAULT_MODELS["openai"],
+            "models": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
+        }
     
-    return WebSearchResponse(
-        project_id=req.project_id,
-        query=req.query,
-        answer=answer_with_sources,
-        sources=result["sources"],
-        search_queries=result["search_queries"],
-        provider=result["provider"],
-        error=result.get("error"),
-    )
+    if HAS_ANTHROPIC and os.getenv("ANTHROPIC_API_KEY"):
+        providers["anthropic"] = {
+            "available": True,
+            "default_model": DEFAULT_MODELS["anthropic"],
+            "models": ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-haiku-20240307"],
+        }
+    
+    if HAS_GEMINI and os.getenv("GOOGLE_API_KEY"):
+        providers["gemini"] = {
+            "available": True,
+            "default_model": DEFAULT_MODELS["gemini"],
+            "models": ["gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"],
+        }
+    
+    return {
+        "providers": providers,
+        "default": get_available_streaming_provider(),
+    }
