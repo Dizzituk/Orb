@@ -1,12 +1,12 @@
 # FILE: main.py
 """
 Orb Backend - FastAPI Application
-Version: 0.11.0
+Version: 0.12.0
 
 Security Features:
 - Password authentication with bcrypt
 - Session token management
-- Database encryption at rest
+- Database encryption at rest (master key via ORB_MASTER_KEY)
 
 Features:
 - File upload with text extraction and storage
@@ -56,7 +56,7 @@ from app.embeddings import service as embeddings_service
 
 app = FastAPI(
     title="Orb Assistant",
-    version="0.11.0",
+    version="0.12.0",
     description="Personal AI assistant with multi-LLM orchestration and semantic search",
 )
 
@@ -83,32 +83,41 @@ app.add_middleware(
 def on_startup():
     os.makedirs("data", exist_ok=True)
     os.makedirs("data/files", exist_ok=True)
+    
+    # Security Level 4: Initialize master key encryption FIRST
+    print("[startup] Initializing encryption...")
+    from app.crypto import require_master_key_or_exit, is_master_key_initialized
+    require_master_key_or_exit()  # Exits if ORB_MASTER_KEY not set or invalid
+    
+    if is_master_key_initialized():
+        print("[startup] Database encryption: [OK] master key active")
+    
     init_db()
     
     # Check auth status
     print("[startup] Checking authentication...")
     if is_auth_configured():
-        print("[startup] Password authentication: ✓ configured")
+        print("[startup] Password authentication: [OK] configured")
     else:
-        print("[startup] Password authentication: ✗ NOT CONFIGURED")
+        print("[startup] Password authentication: [X] NOT CONFIGURED")
         print("[startup] Call POST /auth/setup to set a password")
     
     # Verify critical env vars
     print("[startup] Checking environment variables...")
     if os.getenv("GOOGLE_API_KEY"):
-        print("[startup] GOOGLE_API_KEY: ✓ set (enables image analysis + web search)")
+        print("[startup] GOOGLE_API_KEY: [OK] set (enables image analysis + web search)")
     else:
-        print("[startup] GOOGLE_API_KEY: ✗ NOT SET - image analysis and web search will fail")
+        print("[startup] GOOGLE_API_KEY: [X] NOT SET - image analysis and web search will fail")
     
     if os.getenv("OPENAI_API_KEY"):
-        print("[startup] OPENAI_API_KEY: ✓ set (enables chat + embeddings)")
+        print("[startup] OPENAI_API_KEY: [OK] set (enables chat + embeddings)")
     else:
-        print("[startup] OPENAI_API_KEY: ✗ NOT SET - chat and semantic search will fail")
+        print("[startup] OPENAI_API_KEY: [X] NOT SET - chat and semantic search will fail")
     
     if os.getenv("ANTHROPIC_API_KEY"):
-        print("[startup] ANTHROPIC_API_KEY: ✓ set")
+        print("[startup] ANTHROPIC_API_KEY: [OK] set")
     else:
-        print("[startup] ANTHROPIC_API_KEY: ✗ NOT SET")
+        print("[startup] ANTHROPIC_API_KEY: [X] NOT SET")
 
 
 # ====== ROUTERS ======

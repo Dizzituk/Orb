@@ -2,7 +2,9 @@
 """
 Authentication configuration and password management.
 Supports password-based authentication with bcrypt hashing.
-Integrates with crypto module for database encryption.
+
+Security Level 4: Password is used ONLY for authentication.
+Database encryption is handled separately via master key (ORB_MASTER_KEY).
 """
 
 import secrets
@@ -19,14 +21,6 @@ try:
 except ImportError:
     HAS_BCRYPT = False
     print("[auth] bcrypt not installed, using SHA256 (less secure). Install with: pip install bcrypt")
-
-# Import encryption module
-try:
-    from app.crypto import set_encryption_key, clear_encryption_key
-    HAS_CRYPTO = True
-except ImportError:
-    HAS_CRYPTO = False
-    print("[auth] crypto module not available, database encryption disabled")
 
 AUTH_CONFIG_PATH = Path("data/auth.json")
 
@@ -88,24 +82,6 @@ def _generate_session_token() -> str:
     return f"orb_session_{secrets.token_hex(32)}"
 
 
-def _init_encryption(password: str):
-    """Initialize database encryption with password-derived key."""
-    if HAS_CRYPTO:
-        try:
-            set_encryption_key(password)
-        except Exception as e:
-            print(f"[auth] Failed to initialize encryption: {e}")
-
-
-def _clear_encryption():
-    """Clear database encryption key."""
-    if HAS_CRYPTO:
-        try:
-            clear_encryption_key()
-        except Exception as e:
-            print(f"[auth] Failed to clear encryption: {e}")
-
-
 # ============ PUBLIC API ============
 
 def is_auth_configured() -> bool:
@@ -121,7 +97,12 @@ def is_legacy_api_key_auth() -> bool:
 
 
 def is_encryption_enabled() -> bool:
-    """Check if database encryption is enabled."""
+    """
+    Check if database encryption is enabled.
+    
+    Security Level 4: Encryption is always enabled when master key is set.
+    This function checks the config flag for backwards compatibility.
+    """
     config = _load_config()
     return config.get("encryption_enabled", False)
 
@@ -129,7 +110,10 @@ def is_encryption_enabled() -> bool:
 def setup_password(password: str, enable_encryption: bool = True) -> dict:
     """
     Set up password authentication.
-    Optionally enables database encryption.
+    
+    Security Level 4: The enable_encryption flag is stored for compatibility,
+    but actual encryption is controlled by the master key (ORB_MASTER_KEY).
+    
     Returns session info on success.
     """
     if len(password) < 4:
@@ -141,7 +125,7 @@ def setup_password(password: str, enable_encryption: bool = True) -> dict:
     config["password_hash"] = _hash_password(password)
     config["created_at"] = datetime.now().isoformat()
     config["auth_type"] = "password"
-    config["encryption_enabled"] = enable_encryption and HAS_CRYPTO
+    config["encryption_enabled"] = enable_encryption  # Flag only, master key controls actual encryption
     
     # Remove legacy API key fields if present
     config.pop("api_key_hash", None)
@@ -156,9 +140,8 @@ def setup_password(password: str, enable_encryption: bool = True) -> dict:
     
     _save_config(config)
     
-    # Initialize encryption if enabled
-    if config["encryption_enabled"]:
-        _init_encryption(password)
+    # Note: Encryption is NOT initialized here anymore.
+    # Master key encryption is initialized at backend startup via ORB_MASTER_KEY.
     
     return {
         "session_token": session_token,
@@ -171,6 +154,9 @@ def login(password: str) -> Optional[dict]:
     """
     Authenticate with password.
     Returns session info on success, None on failure.
+    
+    Security Level 4: Password is used ONLY for authentication.
+    Encryption is already initialized via master key at backend startup.
     """
     config = _load_config()
     stored_hash = config.get("password_hash")
@@ -191,9 +177,8 @@ def login(password: str) -> Optional[dict]:
     
     _save_config(config)
     
-    # Initialize encryption if enabled
-    if config.get("encryption_enabled", False):
-        _init_encryption(password)
+    # Note: Encryption is NOT initialized here anymore.
+    # Master key encryption is initialized at backend startup via ORB_MASTER_KEY.
     
     return {
         "session_token": session_token,
@@ -218,19 +203,29 @@ def validate_session(token: str) -> bool:
 
 
 def logout() -> bool:
-    """Invalidate the current session and clear encryption key."""
+    """
+    Invalidate the current session.
+    
+    Security Level 4: Encryption key is NOT cleared on logout.
+    The master key remains active for the lifetime of the backend process.
+    """
     config = _load_config()
     config.pop("current_session", None)
     _save_config(config)
     
-    # Clear encryption key from memory
-    _clear_encryption()
+    # Note: We do NOT clear encryption key anymore.
+    # Master key encryption remains active until backend exits.
     
     return True
 
 
 def change_password(current_password: str, new_password: str) -> bool:
-    """Change the password. Requires current password for verification."""
+    """
+    Change the password. Requires current password for verification.
+    
+    Security Level 4: Changing password does NOT affect encryption.
+    Data remains encrypted with the master key.
+    """
     config = _load_config()
     stored_hash = config.get("password_hash")
     
@@ -251,20 +246,21 @@ def change_password(current_password: str, new_password: str) -> bool:
     
     _save_config(config)
     
-    # Clear old encryption key - will re-init on next login
-    _clear_encryption()
-    
-    # Note: Changing password means existing encrypted data needs re-encryption
-    # This is handled by a separate migration process
+    # Note: Encryption is NOT affected by password change.
+    # Master key encryption remains active.
     
     return True
 
 
 def reset_auth() -> bool:
-    """Reset all authentication (for recovery). Deletes auth.json."""
+    """
+    Reset all authentication (for recovery). Deletes auth.json.
+    
+    Warning: This only resets authentication, not encryption.
+    Data remains encrypted with the master key.
+    """
     if AUTH_CONFIG_PATH.exists():
         AUTH_CONFIG_PATH.unlink()
-    _clear_encryption()
     return True
 
 
