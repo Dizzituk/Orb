@@ -4,6 +4,11 @@ LLM routing schemas: job types, task definitions, and result models.
 
 Backward compatible with original enum-based routing.
 Also supports new string-based policy routing.
+
+PHASE 4 FIXES:
+- Added provider, model, routing fields to LLMTask for backward compat
+- Added RoutingOptions model (was missing - RoutingConfig only had static attrs)
+- Fixed LLMResult to include all fields used by router.py
 """
 from enum import Enum
 from typing import Optional, Any
@@ -96,6 +101,28 @@ class Provider(str, Enum):
     GOOGLE = "google"
 
 
+class RoutingOptions(BaseModel):
+    """
+    Per-task routing options (budget, limits, etc).
+    
+    This is an INSTANCE model for LLMTask.routing field.
+    Not to be confused with RoutingConfig which holds static routing rules.
+    """
+    max_calls: int = 3
+    max_tokens: int = 8000
+    max_cost_usd: float = 1.0
+    timeout_seconds: int = 60
+    
+    # Optional overrides
+    force_provider: Optional[Provider] = None
+    force_model: Optional[str] = None
+    allow_fallback: bool = True
+    
+    class Config:
+        # Allow extra fields for forward compatibility
+        extra = "ignore"
+
+
 class LLMTask(BaseModel):
     """
     A structured task to be routed to the appropriate LLM.
@@ -115,37 +142,94 @@ class LLMTask(BaseModel):
     
     # NEW: Attachments for vision tasks
     attachments: Optional[list[dict]] = None
+    
+    # =========== RESTORED FIELDS (for backward compat with router.py) ===========
+    
+    # Provider hint (used by router to select provider)
+    provider: Optional[Provider] = None
+    
+    # Model hint (used by router to select specific model)
+    model: Optional[str] = None
+    
+    # Routing options (budget, limits, etc)
+    routing: Optional[RoutingOptions] = None
+    
+    class Config:
+        # Allow extra fields for forward compatibility
+        extra = "ignore"
 
 
 class LLMResult(BaseModel):
     """
     Result from an LLM call, potentially including critic review.
+    
+    This model supports BOTH:
+    - Legacy fields (provider as enum, job_type, was_reviewed, critic_*)
+    - New fields (provider as str, model, finish_reason, token counts, etc)
+    
+    The router.py constructs results with the new fields.
+    Other code may still use legacy fields.
     """
-    # Primary response
-    provider: Provider
+    # =========== PRIMARY RESPONSE ===========
+    
+    # Content is always present (may be empty on error)
     content: str
     
+    # Provider can be either enum or string for compatibility
+    # Router passes string, legacy code may pass enum
+    provider: str  # Changed from Provider enum to str for flexibility
+    
+    # =========== NEW FIELDS (used by router.py) ===========
+    
+    # Model that was used
+    model: Optional[str] = None
+    
+    # How the response finished
+    finish_reason: Optional[str] = None  # "stop", "error", "validation_error", etc
+    
+    # Error details (if any)
+    error_message: Optional[str] = None
+    
+    # Token usage (flat fields for router.py compatibility)
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd: float = 0.0
+    
+    # Raw response from provider (for debugging)
+    raw_response: Optional[Any] = None
+    
+    # =========== LEGACY FIELDS (for backward compat) ===========
+    
     # For two-step flows (high-stakes): critic review
-    critic_provider: Optional[Provider] = None
+    critic_provider: Optional[str] = None
     critic_review: Optional[str] = None
     
     # Metadata
-    job_type: JobType
+    job_type: Optional[JobType] = None  # Made optional for router.py compat
     was_reviewed: bool = False
     
-    # Token usage (if available)
+    # Token usage (dict form for legacy code)
     usage: Optional[dict[str, int]] = None
     
-    # NEW: Additional metadata from policy routing
+    # Additional metadata from policy routing
     resolved_job_type: Optional[str] = None
     routing_decision: Optional[dict] = None
     critic_usage: Optional[dict] = None
-    error: Optional[str] = None
+    error: Optional[str] = None  # Alias for error_message in legacy code
     critic_error: Optional[str] = None
+    
+    class Config:
+        # Allow extra fields for forward compatibility
+        extra = "ignore"
     
     def has_error(self) -> bool:
         """Check if there was an error."""
-        return self.error is not None
+        return self.error_message is not None or self.error is not None
+    
+    def is_success(self) -> bool:
+        """Check if the call succeeded."""
+        return not self.has_error() and self.finish_reason in (None, "stop")
     
     def get_full_response(self, include_review: bool = True) -> str:
         """Get full response, optionally including critic review."""
@@ -154,7 +238,7 @@ class LLMResult(BaseModel):
         return f"{self.content}\n\n---\n\n## Critic Review\n\n{self.critic_review}"
 
 
-# ============== ROUTING CONFIGURATION ==============
+# ============== ROUTING CONFIGURATION (Static Rules) ==============
 
 class RoutingConfig:
     """
@@ -163,6 +247,9 @@ class RoutingConfig:
     
     NOTE: When policy.py is available, policy-based routing takes precedence.
     These sets are kept for backward compatibility.
+    
+    NOTE: This is a static configuration class, NOT a Pydantic model.
+    For per-task routing options, use RoutingOptions instead.
     """
     
     # Jobs that go to GPT only

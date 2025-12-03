@@ -1,7 +1,7 @@
 # FILE: main.py
 """
 Orb Backend - FastAPI Application
-Version: 0.12.0
+Version: 0.12.1
 
 Security Features:
 - Password authentication with bcrypt
@@ -16,6 +16,12 @@ Features:
 - Streaming LLM responses
 - Web search grounding via Gemini
 - Semantic search (RAG) with embeddings
+- Phase 4: Job system with unified provider routing (optional)
+
+v0.12.1 Changes:
+- Fixed /chat to return model in response
+- Fixed /chat to save provider/model to message database
+- Added model field to ChatResponse schema
 """
 import os
 import json
@@ -56,7 +62,7 @@ from app.embeddings import service as embeddings_service
 
 app = FastAPI(
     title="Orb Assistant",
-    version="0.12.0",
+    version="0.12.1",
     description="Personal AI assistant with multi-LLM orchestration and semantic search",
 )
 
@@ -118,6 +124,20 @@ def on_startup():
         print("[startup] ANTHROPIC_API_KEY: [OK] set")
     else:
         print("[startup] ANTHROPIC_API_KEY: [X] NOT SET")
+    
+    # Check Phase 4 feature flag
+    print("[startup] Checking Phase 4 status...")
+    phase4_enabled = os.getenv("ORB_ENABLE_PHASE4", "false").lower() == "true"
+    if phase4_enabled:
+        print("[startup] Phase 4 Job System: [OK] ENABLED")
+        print("[startup]   - POST /jobs/create")
+        print("[startup]   - GET /jobs/{job_id}")
+        print("[startup]   - GET /jobs/list")
+        print("[startup]   - GET /artefacts/{artefact_id}")
+        print("[startup]   - GET /artefacts/list")
+    else:
+        print("[startup] Phase 4 Job System: [X] DISABLED")
+        print("[startup]   Set ORB_ENABLE_PHASE4=true to enable")
 
 
 # ====== ROUTERS ======
@@ -137,6 +157,30 @@ app.include_router(web_search_router)
 # Embeddings router - protected
 app.include_router(embeddings_router)
 app.include_router(embeddings_search_router)
+
+# Phase 4 routers - protected (optional based on feature flag)
+if os.getenv("ORB_ENABLE_PHASE4", "false").lower() == "true":
+    try:
+        from app.jobs.router import router as jobs_router
+        from app.artefacts.router import router as artefacts_router
+        
+        app.include_router(
+            jobs_router,
+            prefix="/jobs",
+            tags=["Phase 4 Jobs"],
+            dependencies=[Depends(require_auth)]
+        )
+        
+        app.include_router(
+            artefacts_router,
+            prefix="/artefacts",
+            tags=["Phase 4 Artefacts"],
+            dependencies=[Depends(require_auth)]
+        )
+        
+        print("[startup] Phase 4 routers registered successfully")
+    except ImportError as e:
+        print(f"[startup] WARNING: Phase 4 enabled but failed to import routers: {e}")
 
 
 # ====== MODELS ======
@@ -160,6 +204,7 @@ class AttachmentSummary(BaseModel):
 class ChatResponse(BaseModel):
     project_id: int
     provider: str
+    model: Optional[str] = None  # ADDED: Model that generated the response
     reply: str
     was_reviewed: bool = False
     critic_review: Optional[str] = None
@@ -233,271 +278,250 @@ def build_context_block(db: Session, project_id: int) -> str:
         )
         sections.append(f"PROJECT NOTES:\n{notes_text}")
 
-    tasks = memory_service.list_tasks(db, project_id)
-    open_tasks = [t for t in tasks if t.status in ("todo", "in_progress")]
-    if open_tasks:
-        tasks_text = "\n".join(
-            f"- [{t.id}] [{t.status.upper()}] {t.title}"
-            for t in open_tasks
-        )
-        sections.append(f"OPEN TASKS:\n{tasks_text}")
+    tasks = memory_service.list_tasks(db, project_id, status_filter="pending")[:10]
+    if tasks:
+        tasks_text = "\n".join(f"- {t.title}" for t in tasks)
+        sections.append(f"PENDING TASKS:\n{tasks_text}")
 
     return "\n\n".join(sections) if sections else ""
 
 
-def build_semantic_context(db: Session, project_id: int, user_message: str, top_k: int = 5) -> str:
-    """
-    Build context using semantic search.
-    Retrieves the most relevant content based on the user's message.
-    """
-    results, total = embeddings_service.search_embeddings(
-        db,
-        project_id,
-        user_message,
-        top_k=top_k,
-    )
-    
-    if not results:
-        return ""
-    
-    context_parts = []
-    
-    for result in results:
-        source_label = {
-            "note": "NOTE",
-            "message": "PREVIOUS CONVERSATION",
-            "file": "DOCUMENT",
-        }.get(result.source_type, "CONTENT")
-        
-        # Truncate content if too long
-        content = result.content
-        if len(content) > 1500:
-            content = content[:1500] + "..."
-        
-        context_parts.append(
-            f"[{source_label} - similarity: {result.similarity:.2f}]\n{content}"
-        )
-    
-    return "\n\n---\n\n".join(context_parts)
-
-
 def build_document_context(db: Session, project_id: int, user_message: str) -> str:
-    """
-    Build document context for RAG (fallback keyword-based method).
-    Used when semantic search is disabled or has no embeddings.
-    """
-    message_lower = user_message.lower()
-    
-    # Check if user is asking about a specific file or CV
-    cv_keywords = ["cv", "resume", "curriculum", "my cv", "your cv"]
-    is_cv_query = any(kw in message_lower for kw in cv_keywords)
-    
-    # Check for specific filename mentions
-    doc_contents = memory_service.list_document_contents(db, project_id)
-    
-    if not doc_contents:
+    """Build context from uploaded documents with semantic search."""
+    try:
+        # Search documents that might be relevant
+        from app.memory.models import DocumentContent
+        
+        # Get recent documents
+        recent_docs = (db.query(DocumentContent)
+                      .filter(DocumentContent.project_id == project_id)
+                      .order_by(DocumentContent.created_at.desc())
+                      .limit(5)
+                      .all())
+        
+        if not recent_docs:
+            return ""
+        
+        # Build context from recent documents
+        context_parts = []
+        for doc in recent_docs:
+            summary = doc.summary[:300] if doc.summary else "(no summary)"
+            context_parts.append(f"[{doc.filename}]: {summary}")
+        
+        return "\n".join(context_parts)
+    except Exception as e:
+        print(f"[build_document_context] Error: {e}")
         return ""
-    
-    relevant_docs = []
-    
-    for doc in doc_contents:
-        # Check if this document is mentioned by name
-        if doc.filename.lower() in message_lower:
-            relevant_docs.append(doc)
-            continue
-        
-        # Check if it's a CV query and this is a CV
-        if is_cv_query and doc.doc_type == "cv":
-            relevant_docs.append(doc)
-            continue
-        
-        # Check if the content might be relevant (simple keyword match)
-        if doc.raw_text:
-            # Look for key terms from user message in document
-            words = re.findall(r'\b\w{4,}\b', message_lower)
-            for word in words:
-                if word in doc.raw_text.lower():
-                    relevant_docs.append(doc)
-                    break
-    
-    if not relevant_docs:
-        # If no specific match, include the most recent document
-        relevant_docs = [doc_contents[0]]
-    
-    # Build context string
-    context_parts = []
-    for doc in relevant_docs[:3]:  # Limit to 3 documents
-        context = f"\n=== DOCUMENT: {doc.filename} (type: {doc.doc_type}) ===\n"
-        
-        if doc.structured_data:
-            try:
-                data = json.loads(doc.structured_data)
-                context += f"STRUCTURED DATA:\n{json.dumps(data, indent=2)}\n"
-            except json.JSONDecodeError:
-                pass
-        
-        if doc.summary:
-            context += f"SUMMARY: {doc.summary}\n"
-        
-        # Include relevant portion of raw text
-        if doc.raw_text:
-            context += f"CONTENT:\n{doc.raw_text[:4000]}\n"
-        
-        context_parts.append(context)
-    
-    return "\n".join(context_parts)
 
 
-# ====== CHAT ENDPOINT (PROTECTED) ======
+def _extract_provider_value(result: LLMResult) -> str:
+    """
+    Extract provider string from LLMResult.
+    Handles both enum (result.provider.value) and string (result.provider) cases.
+    """
+    if result.provider is None:
+        return "unknown"
+    if hasattr(result.provider, 'value'):
+        return result.provider.value
+    return str(result.provider)
+
+
+def _extract_model_value(result: LLMResult) -> Optional[str]:
+    """
+    Extract model string from LLMResult.
+    """
+    return result.model if hasattr(result, 'model') else None
+
+
+# ====== CHAT ENDPOINTS (PROTECTED) ======
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(
     req: ChatRequest,
-    db: Session = Depends(get_db),
     auth: AuthResult = Depends(require_auth),
+    db: Session = Depends(get_db),
 ) -> ChatResponse:
-    """Main chat endpoint with semantic search RAG (protected)."""
+    """
+    Send chat message with context (protected).
+    
+    Features:
+    - Project context injection (notes, tasks, docs)
+    - Semantic search for document retrieval (if enabled)
+    - Message history management
+    - Multi-provider routing
+    - Returns provider and model info for UI display
+    """
     project = memory_service.get_project(db, req.project_id)
     if not project:
-        raise HTTPException(status_code=404, detail=f"Project {req.project_id} not found")
+        raise HTTPException(status_code=404, detail=f"Project not found: {req.project_id}")
 
-    # Build context from notes/tasks
+    # Build context
     context_block = build_context_block(db, req.project_id)
     
-    # Build document context
-    doc_context = ""
+    # Semantic search context (if enabled)
+    semantic_context = ""
     if req.use_semantic_search:
-        # Try semantic search first
-        doc_context = build_semantic_context(db, req.project_id, req.message, top_k=5)
-        
-    if not doc_context:
-        # Fallback to keyword-based if semantic search returns nothing
-        doc_context = build_document_context(db, req.project_id, req.message)
+        try:
+            semantic_results = embeddings_service.search(
+                db=db,
+                project_id=req.project_id,
+                query=req.message,
+                top_k=5,
+            )
+            if semantic_results:
+                semantic_context = "=== RELEVANT DOCUMENTS (semantic search) ===\n"
+                for result in semantic_results:
+                    semantic_context += f"\n[Score: {result.similarity_score:.3f}] {result.content_preview}\n"
+        except Exception as e:
+            print(f"[chat] Semantic search failed: {e}")
     
-    # Combine contexts
+    # Document context (recent docs)
+    doc_context = build_document_context(db, req.project_id, req.message)
+    
+    # Combine all context
     full_context = ""
     if context_block:
         full_context += context_block + "\n\n"
+    if semantic_context:
+        full_context += semantic_context + "\n\n"
     if doc_context:
-        full_context += "=== RELEVANT CONTEXT ===\n" + doc_context
+        full_context += "=== RECENT UPLOADS ===\n" + doc_context
 
-    # Load message history
+    # Get conversation history
     history = memory_service.list_messages(db, req.project_id, limit=50)
     history_dicts = [{"role": msg.role, "content": msg.content} for msg in history]
     messages = history_dicts + [{"role": "user", "content": req.message}]
 
     # Parse job type
     try:
-        job_type = JobType(req.job_type)
+        jt = JobType(req.job_type)
     except ValueError:
-        job_type = JobType.CASUAL_CHAT
+        jt = JobType.CASUAL_CHAT
 
-    # Build system prompt with document awareness
+    # Build task
     system_prompt = f"Project: {project.name}. {project.description or ''}"
-    if doc_context:
-        system_prompt += """
-
-IMPORTANT: Relevant context from notes, documents, and previous conversations has been provided above.
-Use this context to answer accurately. Quote specific details when relevant.
-If you cannot find the information in the context, say so."""
-
+    
     task = LLMTask(
-        job_type=job_type,
+        job_type=jt,
         messages=messages,
         project_context=full_context if full_context else None,
         system_prompt=system_prompt,
+        force_provider=Provider(req.force_provider) if req.force_provider else None,
     )
 
+    # Call LLM
     try:
         result: LLMResult = call_llm(task)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
-    # Log messages
+    # Extract provider and model for storage and response
+    provider_str = _extract_provider_value(result)
+    model_str = _extract_model_value(result)
+
+    # Store messages with provider/model info
+    # User message: mark provider as "local" (typed by user)
     memory_service.create_message(db, memory_schemas.MessageCreate(
-        project_id=req.project_id, role="user", content=req.message,
+        project_id=req.project_id,
+        role="user",
+        content=req.message,
+        provider="local",
     ))
+    # Assistant message: record which provider/model generated the response
     memory_service.create_message(db, memory_schemas.MessageCreate(
-        project_id=req.project_id, role="assistant", content=result.content,
+        project_id=req.project_id,
+        role="assistant",
+        content=result.content,
+        provider=provider_str,
+        model=model_str,
     ))
 
     return ChatResponse(
         project_id=req.project_id,
-        provider=result.provider.value,
+        provider=provider_str,
+        model=model_str,
         reply=result.content,
         was_reviewed=result.was_reviewed,
         critic_review=result.critic_review,
     )
 
 
-# ====== CHAT WITH ATTACHMENTS (PROTECTED) ======
-
 @app.post("/chat_with_attachments", response_model=ChatResponse)
 async def chat_with_attachments(
     project_id: int = Form(...),
-    message: str = Form(""),
+    message: Optional[str] = Form(None),
     job_type: str = Form("casual_chat"),
-    files: List[UploadFile] = FastAPIFile(default=[]),
-    db: Session = Depends(get_db),
+    files: List[UploadFile] = FastAPIFile(...),
     auth: AuthResult = Depends(require_auth),
+    db: Session = Depends(get_db),
 ) -> ChatResponse:
-    """Chat with file attachments - extracts, parses, and stores document content (protected)."""
-    print(f"[chat_with_attachments] project_id={project_id}, message='{message}', files={len(files)}")
+    """
+    Chat with file uploads (protected).
     
+    Supports:
+    - PDF, DOCX, TXT file extraction
+    - Image analysis via Gemini Vision
+    - CV parsing with structured extraction
+    - Semantic search indexing
+    """
     project = memory_service.get_project(db, project_id)
     if not project:
-        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
-
+        raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+    
+    # Ensure project files directory exists
+    project_files_dir = Path("data/files") / str(project_id)
+    project_files_dir.mkdir(parents=True, exist_ok=True)
+    
     attachments_summary: List[AttachmentSummary] = []
     attachment_context_parts: List[str] = []
-    indexed_file_ids: List[int] = []  # Track files to index
+    indexed_file_ids: List[int] = []
     
-    data_root = Path("data")
-    project_dir = data_root / "files" / str(project_id)
-    project_dir.mkdir(parents=True, exist_ok=True)
-
     for upload_file in files:
-        print(f"[chat_with_attachments] Processing: {upload_file.filename}, type: {upload_file.content_type}")
+        original_name = upload_file.filename or "unnamed_file"
+        suffix = Path(original_name).suffix.lower()
+        mime_type = upload_file.content_type
         
-        file_bytes = await upload_file.read()
-        original_name = upload_file.filename or "uploaded_file"
-        suffix = Path(original_name).suffix
-        unique_name = f"{uuid4().hex}{suffix}"
-        file_path = project_dir / unique_name
+        # Generate unique filename
+        unique_id = str(uuid4())[:8]
+        safe_name = re.sub(r'[^\w\-_.]', '_', original_name)
+        stored_name = f"{unique_id}_{safe_name}"
+        file_path = project_files_dir / stored_name
+        relative_path = f"{project_id}/{stored_name}"
         
         # Save file
-        file_path.write_bytes(file_bytes)
+        contents = await upload_file.read()
+        with open(file_path, "wb") as f:
+            f.write(contents)
+        
         print(f"[chat_with_attachments] Saved: {file_path}")
         
-        relative_path = str(file_path.relative_to(data_root)).replace("\\", "/")
-        mime_type = upload_file.content_type or ""
-        
-        # Initialize variables
-        raw_text = None
-        doc_type = "document"
+        # Analyze file
+        raw_text = ""
         structured_data = None
-        analysis = None
+        analysis = {}
+        doc_type = "document"
         
-        # Analyze based on type
-        if is_image_mime_type(mime_type):
-            print(f"[chat_with_attachments] Analyzing image with Gemini...")
+        # Check if it's an image
+        if is_image_mime_type(mime_type) or suffix in [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]:
+            print(f"[chat_with_attachments] Analyzing image: {original_name}")
             try:
-                analysis = analyze_image(file_bytes, mime_type, message if message else None)
-                
-                # Check if there was an error in analysis
-                if "error" in analysis:
-                    print(f"[chat_with_attachments] Image analysis error: {analysis['error']}")
-                else:
-                    print(f"[chat_with_attachments] Image analysis success: {analysis['summary'][:100]}...")
-                
-                doc_type = analysis.get("type", "image")
-                raw_text = f"[Image: {original_name}] {analysis['summary']}"
-                
-            except Exception as e:
-                print(f"[chat_with_attachments] Image analysis exception: {type(e).__name__}: {e}")
+                # Use Gemini Vision
+                image_analysis = analyze_image(
+                    str(file_path),
+                    "Describe this image in detail. What do you see?"
+                )
+                raw_text = image_analysis.get("description", "")
                 analysis = {
-                    "summary": f"Image uploaded: {original_name} (analysis unavailable: {str(e)})",
-                    "tags": ["image"],
+                    "summary": raw_text[:200] + "..." if len(raw_text) > 200 else raw_text,
+                    "tags": image_analysis.get("tags", ["image"]),
+                    "type": "image",
+                }
+                doc_type = "image"
+            except Exception as e:
+                print(f"[chat_with_attachments] Image analysis failed: {e}")
+                analysis = {
+                    "summary": f"Image uploaded: {original_name}",
+                    "tags": ["image", suffix.lstrip(".")] if suffix else ["image"],
                     "type": "image",
                 }
                 doc_type = "image"
@@ -622,6 +646,7 @@ async def chat_with_attachments(
         return ChatResponse(
             project_id=project_id,
             provider="none",
+            model=None,
             reply="No message or attachments received.",
             attachments_summary=[],
         )
@@ -664,23 +689,35 @@ If it's an image, describe what you see based on the image analysis provided."""
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
-    # Log messages
+    # Extract provider and model
+    provider_str = _extract_provider_value(result)
+    model_str = _extract_model_value(result)
+
+    # Log messages with provider/model info
     user_content = message if message else "[Attachment only]"
     if attachments_summary:
         user_content += f" [Uploaded: {', '.join(a.client_filename for a in attachments_summary)}]"
     
     memory_service.create_message(db, memory_schemas.MessageCreate(
-        project_id=project_id, role="user", content=user_content,
+        project_id=project_id,
+        role="user",
+        content=user_content,
+        provider="local",
     ))
     memory_service.create_message(db, memory_schemas.MessageCreate(
-        project_id=project_id, role="assistant", content=result.content,
+        project_id=project_id,
+        role="assistant",
+        content=result.content,
+        provider=provider_str,
+        model=model_str,
     ))
 
     print(f"[chat_with_attachments] Done. Returning {len(attachments_summary)} summaries")
 
     return ChatResponse(
         project_id=project_id,
-        provider=result.provider.value,
+        provider=provider_str,
+        model=model_str,
         reply=result.content,
         was_reviewed=result.was_reviewed,
         critic_review=result.critic_review,
@@ -698,6 +735,7 @@ class DirectLLMRequest(BaseModel):
 
 class DirectLLMResponse(BaseModel):
     provider: str
+    model: Optional[str] = None  # ADDED: Model that generated the response
     content: str
     was_reviewed: bool = False
     critic_review: Optional[str] = None
@@ -724,8 +762,12 @@ def direct_llm(
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
+    provider_str = _extract_provider_value(result)
+    model_str = _extract_model_value(result)
+
     return DirectLLMResponse(
-        provider=result.provider.value,
+        provider=provider_str,
+        model=model_str,
         content=result.content,
         was_reviewed=result.was_reviewed,
         critic_review=result.critic_review,

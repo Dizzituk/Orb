@@ -1,19 +1,20 @@
-# FILE: app/memory/models.py
+# app/memory/models.py
+"""
+SQLAlchemy ORM models for Orb memory system.
+
+Security Level 4: Sensitive fields use EncryptedText/EncryptedJSON types.
+These require the master key to be initialized before any data operations.
+"""
+
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
 from app.db import Base
 
-# Import encrypted column types
-try:
-    from app.crypto import EncryptedText, EncryptedJSON
-    HAS_ENCRYPTION = True
-    print("[models] Encryption available")
-except ImportError:
-    HAS_ENCRYPTION = False
-    EncryptedText = Text
-    EncryptedJSON = Text
-    print("[models] Encryption not available, using plaintext columns")
+# Import encrypted column types - REQUIRED for Security Level 4
+from app.crypto import EncryptedText, EncryptedJSON
+
+print("[models] Encryption types loaded successfully")
 
 
 class Project(Base):

@@ -1,516 +1,466 @@
 # FILE: app/llm/router.py
 """
-LLM Router: The single entry point for all LLM calls in Orb.
+LLM Router (REFACTORED FOR PHASE 4)
 
-All other parts of Orb MUST call through this router.
-Never call the raw provider clients directly.
+This router uses the provider registry as the single LLM call path.
 
-Routing rules:
-- Low-stakes text jobs → GPT only
-- Medium dev work → GPT or Claude (configurable via SMART_PROVIDER)
-- Heavy dev / architecture → Claude (primary)
-- High-stakes / critical work → Claude (primary) + Gemini (critic review)
-- Vision/analysis → Gemini
-- Unknown → GPT for text-like, Claude for dev-like
+For existing /chat and /stream/chat endpoints:
+- Synthesizes a minimal JobEnvelope
+- Routes through provider registry
+- Maintains backward-compatible behavior
 
-NEW: Policy-based routing available via use_policy=True or by setting
-     ORB_USE_POLICY_ROUTING=true environment variable.
+For new /jobs endpoints:
+- Uses real JobEnvelope from job engine
+- Same provider registry path
+
+NOTE: Streaming is NOT yet unified. Streaming endpoints continue using
+the legacy clients/path. Streaming unification will be done in a
+separate branch.
+
+PHASE 4 FIXES:
+- Fixed JobBudget field names (max_tokens, max_cost_estimate, max_wall_time_seconds)
+- Fixed modalities → modalities_in
+- Fixed needs_tools type (bool → list[str])
+- Use RoutingOptions model instead of RoutingConfig class
+
+This file exposes:
+
+Async-first API (for FastAPI and internal usage):
+- call_llm_async()
+- quick_chat_async()
+- request_code_async()
+- review_work_async()
+
+Sync wrappers (for CLI/testing only, NOT for FastAPI):
+- call_llm()
+- quick_chat()
+- request_code()
+- review_work()
+
+Helpers:
+- synthesize_envelope_from_task()
+
+Compatibility helpers (for older Orb code):
+- analyze_with_vision()
+- web_search_query()
+- list_job_types()
+- get_routing_info()
+- is_policy_routing_enabled()
+- enable_policy_routing()
+- disable_policy_routing()
+- reload_routing_policy()
 """
+
 import os
 import logging
-from typing import Optional
+from typing import Optional, List, Dict, Any
+from uuid import uuid4
 
 from app.llm.schemas import (
     LLMTask,
     LLMResult,
-    JobType,
+    JobType as LegacyJobType,  # Old enum for backward compat
     Provider,
     RoutingConfig,
+    RoutingOptions,  # NEW: for per-task routing options
 )
-from app.llm.clients import (
-    call_openai,
-    call_anthropic,
-    call_google,
+
+# Phase 4 imports
+from app.jobs.schemas import (
+    JobEnvelope,
+    JobType,
+    Importance,
+    DataSensitivity,
+    Modality,
+    JobBudget,
+    OutputContract,
+    validate_job_envelope,
+    ValidationError,
 )
+from app.providers.registry import llm_call as registry_llm_call
 
 logger = logging.getLogger(__name__)
 
-# Check if policy-based routing is enabled
+# =============================================================================
+# POLICY ROUTING CONFIG
+# =============================================================================
+
 _USE_POLICY_ROUTING = os.getenv("ORB_USE_POLICY_ROUTING", "false").lower() == "true"
 
-# Try to import policy module (optional)
-_policy_available = False
 try:
     from app.llm.policy import (
         load_routing_policy,
         make_routing_decision,
         resolve_job_type,
         Provider as PolicyProvider,
-        AttachmentMode,
-        RoutingDecision,
-        RoutingPolicy,
-        PolicyError,
     )
     _policy_available = True
 except ImportError:
-    pass
+    logger.warning("[router] Policy module not available")
+    _policy_available = False
 
 
-# ============== SYSTEM PROMPT BUILDERS ==============
+# =============================================================================
+# JOB TYPE MAPPING (Legacy → Phase 4)
+# =============================================================================
 
-def _build_gpt_system_prompt(task: LLMTask) -> str:
-    """Build system prompt for GPT (conversational/lightweight tasks)."""
-    base = """You are Orb, a fast and helpful assistant.
+_LEGACY_TO_PHASE4_JOB_TYPE: Dict[str, JobType] = {
+    # Simple chat / explanation / summary
+    LegacyJobType.CASUAL_CHAT.value: JobType.CHAT_SIMPLE,
+    LegacyJobType.QUICK_QUESTION.value: JobType.CHAT_RESEARCH,
+    LegacyJobType.PROMPT_SHAPING.value: JobType.CHAT_SIMPLE,
+    LegacyJobType.SUMMARY.value: JobType.CHAT_SIMPLE,
+    LegacyJobType.EXPLANATION.value: JobType.CHAT_SIMPLE,
 
-Your role: Handle conversational tasks, summaries, explanations, and lightweight text work.
+    # Code
+    LegacyJobType.SIMPLE_CODE_CHANGE.value: JobType.CODE_SMALL,
+    LegacyJobType.SMALL_BUGFIX.value: JobType.CODE_SMALL,
+    LegacyJobType.COMPLEX_CODE_CHANGE.value: JobType.CODE_REPO,
+    LegacyJobType.CODEGEN_FULL_FILE.value: JobType.CODE_REPO,
 
-Be concise, clear, and direct. Get to the point quickly."""
-
-    if task.project_context:
-        base += f"\n\nPROJECT CONTEXT:\n{task.project_context}"
-    
-    if task.system_prompt:
-        base += f"\n\nADDITIONAL INSTRUCTIONS:\n{task.system_prompt}"
-    
-    return base
-
-
-def _build_claude_system_prompt(task: LLMTask) -> str:
-    """Build system prompt for Claude (engineering/architecture tasks)."""
-    base = """You are Orb's engineering brain — a senior backend architect and implementer.
-
-Your role: Handle complex code, architecture design, full-file generation, and technical planning.
-
-CRITICAL RULES:
-1. When modifying existing files: ALWAYS ask for the full current file content first, then return the COMPLETE updated file.
-2. NEVER return partial files, diffs, or snippets. Always return complete, runnable code.
-3. Include all imports, all functions, all boilerplate — the user should be able to copy-paste directly.
-4. Write clear comments explaining non-obvious decisions.
-5. Think through edge cases before writing code.
-
-Be precise, technical, and thorough."""
-
-    if task.project_context:
-        base += f"\n\nPROJECT CONTEXT:\n{task.project_context}"
-    
-    if task.system_prompt:
-        base += f"\n\nADDITIONAL INSTRUCTIONS:\n{task.system_prompt}"
-    
-    return base
+    # Architecture / critique
+    LegacyJobType.ARCHITECTURE_DESIGN.value: JobType.APP_ARCHITECTURE,
+    LegacyJobType.CODE_REVIEW.value: JobType.CRITIQUE_REVIEW,
+    LegacyJobType.SPEC_REVIEW.value: JobType.CRITIQUE_REVIEW,
+    LegacyJobType.HIGH_STAKES_INFRA.value: JobType.APP_ARCHITECTURE,
+}
 
 
-def _build_gemini_system_prompt(task: LLMTask, is_critic: bool = False) -> str:
-    """Build system prompt for Gemini (review/analysis tasks)."""
-    if is_critic:
-        base = """You are Orb's critic — a code reviewer and quality analyst.
-
-Your role: Review the provided work from Claude (Orb's engineer) and identify:
-1. Logical inconsistencies or bugs
-2. Security concerns
-3. Edge cases not handled
-4. Over-complication or unnecessary complexity
-5. Missing error handling
-6. Potential performance issues
-
-Be constructive but thorough. Prioritize issues by severity (CRITICAL / HIGH / MEDIUM / LOW).
-
-Format your review as:
-## Summary
-(1-2 sentence overall assessment)
-
-## Issues Found
-### [SEVERITY] Issue Title
-Description and suggested fix.
-
-## Recommendations
-(Optional improvements that aren't bugs)"""
-    else:
-        base = """You are Orb's analyst — a reviewer and vision specialist.
-
-Your role: Analyze content, review work, identify patterns, and provide structured feedback.
-
-Be analytical, precise, and actionable."""
-
-    if task.project_context:
-        base += f"\n\nPROJECT CONTEXT:\n{task.project_context}"
-    
-    if task.system_prompt:
-        base += f"\n\nADDITIONAL INSTRUCTIONS:\n{task.system_prompt}"
-    
-    return base
-
-
-# ============== ORIGINAL ROUTING LOGIC ==============
-
-def _determine_provider(task: LLMTask) -> tuple[Provider, bool]:
+def _map_legacy_job_type(legacy_job_type: LegacyJobType) -> JobType:
     """
-    Determine which provider(s) to use for a task.
-    
-    Returns:
-        Tuple of (primary_provider, needs_critic_review)
+    Map legacy LLMTask job_type to Phase 4 JobType.
     """
-    job_type = task.job_type
-    
-    # Check for forced provider
-    if task.force_provider:
-        return task.force_provider, False
-    
-    # GPT-only jobs
-    if job_type in RoutingConfig.GPT_ONLY_JOBS:
-        return Provider.OPENAI, False
-    
-    # Medium dev jobs → use configured "smart" provider
-    if job_type in RoutingConfig.MEDIUM_DEV_JOBS:
-        return RoutingConfig.SMART_PROVIDER, False
-    
-    # Claude primary jobs (heavy dev)
-    if job_type in RoutingConfig.CLAUDE_PRIMARY_JOBS:
-        return Provider.ANTHROPIC, False
-    
-    # High-stakes jobs → Claude + Gemini critic
-    if job_type in RoutingConfig.HIGH_STAKES_JOBS:
-        return Provider.ANTHROPIC, True
-    
-    # Gemini jobs (vision/analysis)
-    if job_type in RoutingConfig.GEMINI_JOBS:
-        return Provider.GOOGLE, False
-    
-    # Unknown job type → guess based on content
-    return _guess_provider_for_unknown(task)
-
-
-def _guess_provider_for_unknown(task: LLMTask) -> tuple[Provider, bool]:
-    """
-    For unknown job types, guess the best provider based on content.
-    
-    Heuristic:
-    - If messages contain code-related keywords → Claude
-    - Otherwise → GPT (safe default for text)
-    """
-    code_keywords = [
-        "code", "function", "class", "def ", "import ", "return ",
-        "bug", "fix", "refactor", "implement", "architecture",
-        "api", "endpoint", "database", "schema", "model",
-        ".py", ".js", ".ts", ".html", ".css", ".sql",
-    ]
-    
-    # Check last message content
-    if task.messages:
-        last_content = task.messages[-1].get("content", "").lower()
-        for keyword in code_keywords:
-            if keyword in last_content:
-                return Provider.ANTHROPIC, False
-    
-    # Default to GPT for general text
-    return Provider.OPENAI, False
-
-
-def _call_provider(
-    provider: Provider,
-    system_prompt: str,
-    messages: list[dict],
-    temperature: float = 0.7,
-    attachments: Optional[list[dict]] = None,
-    enable_web_search: bool = False,
-) -> tuple[str, Optional[dict]]:
-    """
-    Call the specified provider.
-    
-    Returns:
-        Tuple of (content, usage_dict)
-    """
-    if provider == Provider.OPENAI:
-        return call_openai(system_prompt, messages, temperature=temperature)
-    elif provider == Provider.ANTHROPIC:
-        return call_anthropic(system_prompt, messages, temperature=temperature)
-    elif provider == Provider.GOOGLE:
-        return call_google(
-            system_prompt, 
-            messages, 
-            temperature=temperature,
-            attachments=attachments,
-            enable_web_search=enable_web_search,
-        )
-    else:
-        raise ValueError(f"Unknown provider: {provider}")
-
-
-# ============== MAIN ROUTER FUNCTION ==============
-
-def call_llm(
-    task: LLMTask,
-    semantic_context: Optional[str] = None,
-    use_policy: Optional[bool] = None,
-) -> LLMResult:
-    """
-    Route an LLM task to the appropriate provider(s).
-    
-    This is the ONLY function that should be called from other parts of Orb.
-    
-    Args:
-        task: LLMTask containing job_type, messages, and optional context
-        semantic_context: Optional RAG context to inject (NEW)
-        use_policy: Force policy-based routing on/off (NEW)
-    
-    Returns:
-        LLMResult with response content and optional critic review
-    
-    Example:
-        from app.llm import call_llm, LLMTask, JobType
-        
-        result = call_llm(LLMTask(
-            job_type=JobType.CASUAL_CHAT,
-            messages=[{"role": "user", "content": "Hello!"}],
-        ))
-        print(result.content)
-    """
-    # Determine if we should use policy-based routing
-    should_use_policy = use_policy if use_policy is not None else _USE_POLICY_ROUTING
-    
-    if should_use_policy and _policy_available:
-        return _call_llm_with_policy(task, semantic_context)
-    else:
-        return _call_llm_original(task, semantic_context)
-
-
-def _call_llm_original(
-    task: LLMTask,
-    semantic_context: Optional[str] = None,
-) -> LLMResult:
-    """Original routing implementation."""
-    # Determine routing
-    primary_provider, needs_critic = _determine_provider(task)
-    
-    # Inject semantic context if provided
-    messages = list(task.messages)
-    if semantic_context:
-        for i, msg in enumerate(messages):
-            if msg.get("role") == "user":
-                original = msg.get("content", "")
-                messages[i] = {
-                    "role": "user",
-                    "content": f"RELEVANT CONTEXT:\n{semantic_context}\n\n---\n\nUSER REQUEST:\n{original}"
-                }
-                break
-    
-    # Build system prompt for primary provider
-    if primary_provider == Provider.OPENAI:
-        system_prompt = _build_gpt_system_prompt(task)
-    elif primary_provider == Provider.ANTHROPIC:
-        system_prompt = _build_claude_system_prompt(task)
-    else:
-        system_prompt = _build_gemini_system_prompt(task, is_critic=False)
-    
-    # Get attachments if present
-    attachments = getattr(task, 'attachments', None)
-    
-    # Call primary provider
-    primary_content, primary_usage = _call_provider(
-        primary_provider,
-        system_prompt,
-        messages,
-        attachments=attachments,
-    )
-    
-    # Initialize result
-    result = LLMResult(
-        provider=primary_provider,
-        content=primary_content,
-        job_type=task.job_type,
-        was_reviewed=False,
-        usage=primary_usage,
-    )
-    
-    # If high-stakes, get Gemini critic review
-    if needs_critic:
-        critic_system_prompt = _build_gemini_system_prompt(task, is_critic=True)
-        
-        # Build critic messages: show the original request + Claude's response
-        original_request = task.messages[-1].get("content", "") if task.messages else ""
-        critic_messages = [
-            {
-                "role": "user",
-                "content": f"""Review the following work from Claude (Orb's engineer).
-
-ORIGINAL REQUEST:
-{original_request}
-
-CLAUDE'S RESPONSE:
-{primary_content}
-
-Please review this work for issues, bugs, security concerns, and areas for improvement."""
-            }
-        ]
-        
-        critic_content, critic_usage = _call_provider(
-            Provider.GOOGLE,
-            critic_system_prompt,
-            critic_messages,
-        )
-        
-        result.critic_provider = Provider.GOOGLE
-        result.critic_review = critic_content
-        result.was_reviewed = True
-    
-    return result
-
-
-def _call_llm_with_policy(
-    task: LLMTask,
-    semantic_context: Optional[str] = None,
-) -> LLMResult:
-    """Policy-based routing implementation."""
-    policy = load_routing_policy()
-    
-    # Get job type as string
-    job_type_str = task.job_type.value if isinstance(task.job_type, JobType) else str(task.job_type)
-    
-    # Check for forced provider
-    if task.force_provider:
-        primary_provider = task.force_provider
-        needs_critic = False
-        temperature = 0.7
-        logger.info(f"Force override: {job_type_str} → {primary_provider.value}")
-    else:
-        # Get policy-based routing decision
-        try:
-            content = task.messages[-1].get("content", "") if task.messages else ""
-            attachments = getattr(task, 'attachments', None)
-            
-            decision = make_routing_decision(
-                job_type=job_type_str,
-                content=content,
-                attachments=attachments,
-                policy=policy,
-            )
-            
-            # Map policy provider to our Provider enum
-            provider_map = {
-                "openai": Provider.OPENAI,
-                "anthropic": Provider.ANTHROPIC,
-                "gemini": Provider.GOOGLE,
-            }
-            primary_provider = provider_map.get(decision.primary_provider.value, Provider.OPENAI)
-            needs_critic = decision.is_high_stakes and decision.review_provider is not None
-            temperature = decision.temperature
-            
-            logger.info(
-                f"Policy routing: {job_type_str} → {primary_provider.value} "
-                f"(review: {needs_critic})"
-            )
-        except PolicyError as e:
-            logger.warning(f"Policy error, falling back to original routing: {e}")
-            return _call_llm_original(task, semantic_context)
-    
-    # Inject semantic context if provided
-    messages = list(task.messages)
-    if semantic_context:
-        for i, msg in enumerate(messages):
-            if msg.get("role") == "user":
-                original = msg.get("content", "")
-                messages[i] = {
-                    "role": "user",
-                    "content": f"RELEVANT CONTEXT:\n{semantic_context}\n\n---\n\nUSER REQUEST:\n{original}"
-                }
-                break
-    
-    # Build system prompt
-    if primary_provider == Provider.OPENAI:
-        system_prompt = _build_gpt_system_prompt(task)
-    elif primary_provider == Provider.ANTHROPIC:
-        system_prompt = _build_claude_system_prompt(task)
-    else:
-        system_prompt = _build_gemini_system_prompt(task, is_critic=False)
-    
-    # Get attachments
-    attachments = getattr(task, 'attachments', None)
-    
-    # Call primary provider
     try:
-        primary_content, primary_usage = _call_provider(
-            primary_provider,
-            system_prompt,
-            messages,
-            temperature=temperature,
-            attachments=attachments,
+        return _LEGACY_TO_PHASE4_JOB_TYPE[legacy_job_type.value]
+    except KeyError:
+        # Default to CHAT_SIMPLE for unknown legacy types
+        logger.warning(
+            "[router] Unknown legacy job_type '%s', defaulting to CHAT_SIMPLE",
+            legacy_job_type.value,
         )
-    except Exception as e:
-        logger.error(f"Primary provider failed: {e}")
-        return LLMResult(
-            provider=primary_provider,
-            content=f"Error: {e}",
-            job_type=task.job_type,
-            was_reviewed=False,
-            error=str(e),
-        )
-    
-    # Initialize result
-    result = LLMResult(
-        provider=primary_provider,
-        content=primary_content,
-        job_type=task.job_type,
-        was_reviewed=False,
-        usage=primary_usage,
+        return JobType.CHAT_SIMPLE
+
+
+def _default_importance_for_job_type(job_type: JobType) -> Importance:
+    """
+    Determine default Importance based on JobType.
+    """
+    if job_type in {
+        JobType.APP_ARCHITECTURE,
+        JobType.CODE_REPO,
+        JobType.CODE_SMALL,
+    }:
+        return Importance.HIGH
+    if job_type in {
+        JobType.DEEP_RESEARCH_TASK,
+        JobType.MODEL_CAPABILITY_SYNC,
+    }:
+        return Importance.MEDIUM
+    return Importance.LOW
+
+
+def _default_modalities_for_job_type(job_type: JobType) -> List[Modality]:
+    """
+    Determine default modalities based on JobType.
+    """
+    if job_type in {
+        JobType.VISION_SIMPLE,
+        JobType.VISION_COMPLEX,
+    }:
+        return [Modality.TEXT, Modality.IMAGE]
+    if job_type in {
+        JobType.AUDIO_TRANSCRIPTION,
+        JobType.AUDIO_MEETING,
+    }:
+        return [Modality.TEXT, Modality.AUDIO]
+    if job_type in {
+        JobType.VIDEO_SIMPLE,
+        JobType.VIDEO_ADVANCED,
+    }:
+        return [Modality.TEXT, Modality.VIDEO]
+
+    # Default: text-only
+    return [Modality.TEXT]
+
+
+# =============================================================================
+# ENVELOPE SYNTHESIS (Legacy LLMTask → JobEnvelope)
+# =============================================================================
+
+def synthesize_envelope_from_task(
+    task: LLMTask,
+    session_id: Optional[str] = None,
+    project_id: int = 1,
+) -> JobEnvelope:
+    """
+    Synthesize a JobEnvelope from legacy LLMTask.
+
+    This allows existing /chat and /stream/chat endpoints to use
+    the unified provider registry path without breaking changes.
+    """
+    legacy_job_type = task.job_type
+    phase4_job_type = _map_legacy_job_type(legacy_job_type)
+
+    importance = _default_importance_for_job_type(phase4_job_type)
+    modalities = _default_modalities_for_job_type(phase4_job_type)
+
+    # Extract routing options (handle None and use defaults)
+    routing = task.routing
+    max_tokens = routing.max_tokens if routing else 8000
+    max_cost = routing.max_cost_usd if routing else 1.0
+    timeout = routing.timeout_seconds if routing else 60
+
+    # FIXED: Use correct JobBudget field names
+    budget = JobBudget(
+        max_tokens=max_tokens,
+        max_cost_estimate=float(max_cost),
+        max_wall_time_seconds=timeout,
     )
-    
-    # If high-stakes, get critic review
-    if needs_critic:
-        critic_system_prompt = _build_gemini_system_prompt(task, is_critic=True)
-        
-        original_request = task.messages[-1].get("content", "") if task.messages else ""
-        critic_messages = [
-            {
-                "role": "user",
-                "content": f"""Review the following work from Claude (Orb's engineer).
 
-ORIGINAL REQUEST:
-{original_request}
+    envelope = JobEnvelope(
+        job_id=str(uuid4()),
+        session_id=session_id or f"legacy-{uuid4()}",
+        project_id=project_id,
+        job_type=phase4_job_type,
+        importance=importance,
+        data_sensitivity=DataSensitivity.INTERNAL,
+        modalities_in=modalities,  # FIXED: was 'modalities'
+        budget=budget,
+        output_contract=OutputContract.TEXT_RESPONSE,
+        messages=task.messages,
+        metadata={
+            "legacy_provider_hint": task.provider.value if task.provider else None,
+            "legacy_routing": routing.model_dump() if routing else None,
+            "legacy_context": task.project_context,
+        },
+        allow_multi_model_review=False,
+        needs_tools=[],  # FIXED: was False (bool), must be list[str]
+    )
 
-CLAUDE'S RESPONSE:
-{primary_content}
+    # Validate envelope (Phase 4 rules)
+    try:
+        validate_job_envelope(envelope)
+    except ValidationError as ve:
+        logger.warning(
+            "[router] Synthesized JobEnvelope failed validation: %s", ve
+        )
+        raise
 
-Please review this work for issues, bugs, security concerns, and areas for improvement."""
-            }
-        ]
-        
-        try:
-            critic_content, critic_usage = _call_provider(
-                Provider.GOOGLE,
-                critic_system_prompt,
-                critic_messages,
-                temperature=0.5,
-            )
-            
-            result.critic_provider = Provider.GOOGLE
-            result.critic_review = critic_content
-            result.was_reviewed = True
-            result.critic_usage = critic_usage
-        except Exception as e:
-            logger.error(f"Critic review failed: {e}")
-            result.critic_error = str(e)
-    
-    return result
+    return envelope
 
 
-# ============== CONVENIENCE FUNCTIONS ==============
+# =============================================================================
+# CORE CALL FUNCTION (Async)
+# =============================================================================
 
-def quick_chat(message: str, context: Optional[str] = None) -> str:
+async def call_llm_async(task: LLMTask) -> LLMResult:
     """
-    Quick helper for casual chat. Always routes to GPT.
-    
-    Args:
-        message: User message
-        context: Optional project context
-    
-    Returns:
-        Response string
+    Primary async LLM call entry point.
+
+    This replaces direct calls to app.llm.clients.* and routes through
+    the unified provider registry using a synthesized JobEnvelope.
     """
-    result = call_llm(LLMTask(
-        job_type=JobType.CASUAL_CHAT,
-        messages=[{"role": "user", "content": message}],
+    # Determine session_id if present in task (optional)
+    session_id = getattr(task, "session_id", None)
+    project_id = getattr(task, "project_id", 1) or 1
+
+    # Synthesize envelope
+    try:
+        envelope = synthesize_envelope_from_task(
+            task=task,
+            session_id=session_id,
+            project_id=project_id,
+        )
+    except ValidationError as ve:
+        # Convert to clean error for callers
+        return LLMResult(
+            content="",
+            provider=task.provider.value if task.provider else Provider.OPENAI.value,
+            model=task.model or "",
+            finish_reason="validation_error",
+            error_message=f"JobEnvelope validation failed: {ve}",
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            cost_usd=0.0,
+            raw_response=None,
+        )
+    except Exception as exc:
+        # Catch Pydantic ValidationError and other exceptions
+        logger.warning("[router] Envelope synthesis failed: %s", exc)
+        return LLMResult(
+            content="",
+            provider=task.provider.value if task.provider else Provider.OPENAI.value,
+            model=task.model or "",
+            finish_reason="validation_error",
+            error_message=f"JobEnvelope synthesis failed: {exc}",
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            cost_usd=0.0,
+            raw_response=None,
+        )
+
+    # Determine provider/model
+    provider_id = task.provider.value if task.provider else Provider.OPENAI.value
+    model_id = task.model or ""
+
+    try:
+        result = await registry_llm_call(
+            provider_id=provider_id,
+            model_id=model_id,
+            messages=envelope.messages,
+            job_envelope=envelope,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[router] llm_call failed: %s", exc)
+        return LLMResult(
+            content="",
+            provider=provider_id,
+            model=model_id,
+            finish_reason="error",
+            error_message=str(exc),
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            cost_usd=0.0,
+            raw_response=None,
+        )
+
+    # Map provider result to LLMResult
+    if not result.is_success():
+        return LLMResult(
+            content=result.error_message or "",
+            provider=provider_id,
+            model=model_id,
+            finish_reason="error",
+            error_message=result.error_message,
+            prompt_tokens=result.usage.prompt_tokens,
+            completion_tokens=result.usage.completion_tokens,
+            total_tokens=result.usage.total_tokens,
+            cost_usd=result.usage.cost_estimate,
+            raw_response=result.raw_response,
+        )
+
+    return LLMResult(
+        content=result.content,
+        provider=provider_id,
+        model=model_id,
+        finish_reason="stop",
+        error_message=None,
+        prompt_tokens=result.usage.prompt_tokens,
+        completion_tokens=result.usage.completion_tokens,
+        total_tokens=result.usage.total_tokens,
+        cost_usd=result.usage.cost_estimate,
+        raw_response=result.raw_response,
+    )
+
+
+# =============================================================================
+# HIGH-LEVEL HELPERS (Async)
+# =============================================================================
+
+async def quick_chat_async(
+    message: str,
+    context: Optional[str] = None,
+) -> LLMResult:
+    """
+    Simple async chat helper.
+    """
+    messages: List[Dict[str, str]] = []
+    if context:
+        messages.append({"role": "system", "content": context})
+    messages.append({"role": "user", "content": message})
+
+    task = LLMTask(
+        job_type=LegacyJobType.CASUAL_CHAT,
+        provider=Provider.OPENAI,
+        model=os.getenv("OPENAI_DEFAULT_MODEL", "gpt-4.1-mini"),
+        messages=messages,
+        routing=RoutingOptions(),  # FIXED: was RoutingConfig() which has no instance fields
         project_context=context,
-    ))
-    return result.content
+    )
+    return await call_llm_async(task)
+
+
+async def request_code_async(
+    message: str,
+    context: Optional[str] = None,
+    high_stakes: bool = False,
+) -> LLMResult:
+    """
+    Async helper for code-related tasks.
+    """
+    messages: List[Dict[str, str]] = []
+    if context:
+        messages.append({"role": "system", "content": context})
+    messages.append({"role": "user", "content": message})
+
+    legacy_job_type = (
+        LegacyJobType.HIGH_STAKES_INFRA
+        if high_stakes
+        else LegacyJobType.CODEGEN_FULL_FILE
+    )
+
+    task = LLMTask(
+        job_type=legacy_job_type,
+        provider=Provider.ANTHROPIC,
+        model=os.getenv("ANTHROPIC_DEFAULT_MODEL", "claude-3-5-sonnet-latest"),
+        messages=messages,
+        routing=RoutingOptions(),  # FIXED: was RoutingConfig()
+        project_context=context,
+    )
+    return await call_llm_async(task)
+
+
+async def review_work_async(
+    message: str,
+    context: Optional[str] = None,
+) -> LLMResult:
+    """
+    Async helper for review/critique work (code/spec/etc).
+    """
+    messages: List[Dict[str, str]] = []
+    if context:
+        messages.append({"role": "system", "content": context})
+    messages.append({"role": "user", "content": message})
+
+    task = LLMTask(
+        job_type=LegacyJobType.CODE_REVIEW,
+        provider=Provider.ANTHROPIC,
+        model=os.getenv("ANTHROPIC_DEFAULT_MODEL", "claude-3-5-sonnet-latest"),
+        messages=messages,
+        routing=RoutingOptions(),  # FIXED: was RoutingConfig()
+        project_context=context,
+    )
+    return await call_llm_async(task)
+
+
+# =============================================================================
+# SYNC WRAPPERS (CLI / TESTING ONLY)
+# =============================================================================
+
+def call_llm(task: LLMTask) -> LLMResult:
+    """
+    Sync wrapper for call_llm_async.
+
+    WARNING: Uses asyncio.run; intended ONLY for CLI/testing.
+    """
+    import asyncio
+    return asyncio.run(call_llm_async(task))
+
+
+def quick_chat(
+    message: str,
+    context: Optional[str] = None,
+) -> LLMResult:
+    """
+    Sync wrapper for quick_chat_async.
+
+    WARNING: Uses asyncio.run; intended ONLY for CLI/testing.
+    """
+    import asyncio
+    return asyncio.run(quick_chat_async(message=message, context=context))
 
 
 def request_code(
@@ -519,121 +469,185 @@ def request_code(
     high_stakes: bool = False,
 ) -> LLMResult:
     """
-    Request code generation or modification. Routes to Claude.
-    
-    Args:
-        message: Code request
-        context: Optional project context
-        high_stakes: If True, also gets Gemini review
-    
-    Returns:
-        LLMResult (check .critic_review if high_stakes=True)
+    Sync wrapper for request_code_async.
+
+    WARNING: Uses asyncio.run; intended ONLY for CLI/testing.
     """
-    job_type = JobType.HIGH_STAKES_INFRA if high_stakes else JobType.CODEGEN_FULL_FILE
-    
-    return call_llm(LLMTask(
-        job_type=job_type,
-        messages=[{"role": "user", "content": message}],
-        project_context=context,
-    ))
+    import asyncio
+    return asyncio.run(
+        request_code_async(
+            message=message,
+            context=context,
+            high_stakes=high_stakes,
+        )
+    )
 
 
-def review_work(content: str, context: Optional[str] = None) -> str:
+def review_work(
+    message: str,
+    context: Optional[str] = None,
+) -> LLMResult:
     """
-    Get Gemini to review/critique provided content.
-    
-    Args:
-        content: Content to review
-        context: Optional project context
-    
-    Returns:
-        Review/critique string
+    Sync wrapper for review_work_async.
+
+    WARNING: Uses asyncio.run; intended ONLY for CLI/testing.
     """
-    result = call_llm(LLMTask(
-        job_type=JobType.CODE_REVIEW,
-        messages=[{"role": "user", "content": f"Review this:\n\n{content}"}],
-        project_context=context,
-        force_provider=Provider.GOOGLE,  # Force Gemini for pure review
-    ))
-    return result.content
+    import asyncio
+    return asyncio.run(review_work_async(message=message, context=context))
 
 
-# ============== NEW CONVENIENCE FUNCTIONS ==============
+# =============================================================================
+# COMPATIBILITY HELPERS
+# =============================================================================
 
 def analyze_with_vision(
     prompt: str,
-    attachments: list[dict],
+    image_description: Optional[str] = None,
     context: Optional[str] = None,
-) -> str:
+) -> LLMResult:
     """
-    Analyze images/documents using Gemini vision.
-    
-    Args:
-        prompt: Analysis prompt
-        attachments: List of {mime_type, data} dicts
-        context: Optional project context
-    
-    Returns:
-        Analysis string
+    Compatibility wrapper for legacy vision calls.
+
+    NOTE: This does **not** currently send real image data to a vision model.
+    It simply augments the prompt with an optional image description and
+    optional extra context, then routes through the normal quick_chat path.
     """
-    task = LLMTask(
-        job_type=JobType.VISION,
-        messages=[{"role": "user", "content": prompt}],
-        project_context=context,
-        attachments=attachments,
-    )
-    result = call_llm(task)
-    return result.content
+    parts: List[str] = [prompt]
+    if image_description:
+        parts.append("\n\n[Image description]\n" + image_description)
+    if context:
+        parts.append("\n\n[Context]\n" + context)
+    combined_prompt = "".join(parts)
+    return quick_chat(message=combined_prompt, context=None)
 
 
-def web_search_query(query: str, context: Optional[str] = None) -> str:
+def web_search_query(
+    query: str,
+    context: Optional[str] = None,
+) -> LLMResult:
     """
-    Perform web search with Gemini grounding.
-    
-    Args:
-        query: Search query
-        context: Optional project context
-    
-    Returns:
-        Search results with sources
+    Compatibility wrapper for legacy web search helper.
+
+    NOTE: This does **not** currently perform real multi-source web search.
+    It simply formats the query in a "web search style" prompt and routes
+    through quick_chat. Proper tool-based web search will come later.
     """
-    result = call_llm(LLMTask(
-        job_type=JobType.WEB_SEARCH,
-        messages=[{"role": "user", "content": query}],
-        project_context=context,
-    ))
-    return result.content
+    parts: List[str] = [f"[WEB SEARCH STYLE QUERY]\n{query}"]
+    if context:
+        parts.append("\n\n[ADDITIONAL CONTEXT]\n" + context)
+    combined_prompt = "".join(parts)
+    return quick_chat(message=combined_prompt, context=None)
 
 
-# ============== INTROSPECTION ==============
+def list_job_types() -> List[str]:
+    """
+    Compatibility helper returning legacy job type values as strings.
+    """
+    return [jt.value for jt in LegacyJobType]
 
-def list_job_types() -> list[str]:
-    """List all available job types."""
-    return [jt.value for jt in JobType]
 
+def get_routing_info() -> Dict[str, Any]:
+    """
+    Compatibility helper for legacy routing-info calls.
 
-def get_routing_info(job_type: JobType) -> dict:
-    """Get routing info for a job type."""
-    if job_type in RoutingConfig.GPT_ONLY_JOBS:
-        return {"provider": "openai", "needs_review": False}
-    elif job_type in RoutingConfig.MEDIUM_DEV_JOBS:
-        return {"provider": RoutingConfig.SMART_PROVIDER.value, "needs_review": False}
-    elif job_type in RoutingConfig.CLAUDE_PRIMARY_JOBS:
-        return {"provider": "anthropic", "needs_review": False}
-    elif job_type in RoutingConfig.HIGH_STAKES_JOBS:
-        return {"provider": "anthropic", "needs_review": True, "reviewer": "google"}
-    elif job_type in RoutingConfig.GEMINI_JOBS:
-        return {"provider": "google", "needs_review": False}
-    else:
-        return {"provider": "unknown", "needs_review": False}
+    Returns a simple dict with basic routing information so existing
+    UIs and diagnostics continue to work.
+    """
+    return {
+        "policy_routing_enabled": bool(_USE_POLICY_ROUTING and _policy_available),
+        "policy_module_available": bool(_policy_available),
+        "available_job_types": [jt.value for jt in LegacyJobType],
+        "default_provider": Provider.OPENAI.value,
+        "default_anthropic_model": os.getenv(
+            "ANTHROPIC_DEFAULT_MODEL", "claude-3-5-sonnet-latest"
+        ),
+        "default_openai_model": os.getenv(
+            "OPENAI_DEFAULT_MODEL", "gpt-4.1-mini"
+        ),
+    }
 
 
 def is_policy_routing_enabled() -> bool:
-    """Check if policy-based routing is enabled."""
-    return _USE_POLICY_ROUTING and _policy_available
+    """
+    Compatibility helper reporting if policy routing is active.
+    """
+    return bool(_USE_POLICY_ROUTING and _policy_available)
 
 
-def enable_policy_routing(enabled: bool = True) -> None:
-    """Enable or disable policy-based routing at runtime."""
-    global _USE_POLICY_ROUTING
-    _USE_POLICY_ROUTING = enabled and _policy_available
+def enable_policy_routing() -> None:
+    """
+    Compatibility helper to enable policy routing at runtime.
+
+    NOTE: This only toggles the in-process flag. You still need a
+    valid policy module for it to actually be used.
+    """
+    global _USE_POLICY_ROUTING  # noqa: PLW0603
+    if not _policy_available:
+        logger.warning(
+            "[router] enable_policy_routing called but policy module is not available"
+        )
+        _USE_POLICY_ROUTING = False
+        return
+
+    _USE_POLICY_ROUTING = True
+    logger.info("[router] Policy routing ENABLED via enable_policy_routing()")
+
+
+def disable_policy_routing() -> None:
+    """
+    Compatibility helper to disable policy routing at runtime.
+    """
+    global _USE_POLICY_ROUTING  # noqa: PLW0603
+    _USE_POLICY_ROUTING = False
+    logger.info("[router] Policy routing DISABLED via disable_policy_routing()")
+
+
+def reload_routing_policy() -> None:
+    """
+    Compatibility helper to reload the routing policy if available.
+    """
+    if not _policy_available:
+        logger.warning(
+            "[router] reload_routing_policy called but policy module is not available"
+        )
+        return
+
+    try:
+        load_routing_policy(force=True)  # type: ignore[arg-type]
+        logger.info("[router] Routing policy reloaded via reload_routing_policy()")
+    except TypeError:
+        # If load_routing_policy doesn't accept force, call without args
+        load_routing_policy()  # type: ignore[call-arg]
+        logger.info("[router] Routing policy reloaded via reload_routing_policy()")
+
+
+# =============================================================================
+# EXPORTS
+# =============================================================================
+
+__all__ = [
+    # Primary async functions (use in FastAPI)
+    "call_llm_async",
+    "quick_chat_async",
+    "request_code_async",
+    "review_work_async",
+
+    # Sync wrappers (CLI/testing only)
+    "call_llm",
+    "quick_chat",
+    "request_code",
+    "review_work",
+
+    # Compatibility helpers
+    "analyze_with_vision",
+    "web_search_query",
+    "list_job_types",
+    "get_routing_info",
+    "is_policy_routing_enabled",
+    "enable_policy_routing",
+    "disable_policy_routing",
+    "reload_routing_policy",
+
+    # Helpers
+    "synthesize_envelope_from_task",
+]
