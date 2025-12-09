@@ -1,4 +1,9 @@
 # FILE: app/memory/schemas.py
+"""
+Memory module Pydantic schemas.
+
+v0.12.4: Added model and reasoning fields to MessageCreate and MessageHistoryItem.
+"""
 from datetime import datetime
 from typing import Optional, List, Literal
 from pydantic import BaseModel, ConfigDict
@@ -125,10 +130,19 @@ class FileOut(BaseModel):
 # ============== MESSAGE ==============
 
 class MessageCreate(BaseModel):
+    """
+    Schema for creating a new message.
+    
+    v0.12.4: Added model and reasoning fields.
+    - model: Which specific model generated the response (e.g., "gpt-4.1-mini")
+    - reasoning: Chain-of-thought reasoning from <THINKING> tags (hidden from UI)
+    """
     project_id: int
     role: str
     content: str
     provider: Optional[str] = None  # v0.16.0: Track which LLM provider generated the message
+    model: Optional[str] = None  # v0.12.4: Track which model generated the response
+    reasoning: Optional[str] = None  # v0.12.4: Store reasoning separately from content
 
 
 class MessageOut(BaseModel):
@@ -141,10 +155,14 @@ class MessageOut(BaseModel):
     created_at: datetime
 
 
-# ============== MESSAGE HISTORY (NEW) ==============
+# ============== MESSAGE HISTORY (v0.12.4 Updated) ==============
 
 class MessageHistoryItem(BaseModel):
-    """Single message item for history response."""
+    """
+    Single message item for history response.
+    
+    v0.12.4: Added model and reasoning fields for frontend display.
+    """
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -152,6 +170,8 @@ class MessageHistoryItem(BaseModel):
     role: Literal["user", "assistant", "system"]
     content: str
     provider: Optional[str] = None
+    model: Optional[str] = None  # v0.12.4: Model that generated the response
+    reasoning: Optional[str] = None  # v0.12.4: Chain-of-thought reasoning (hidden from UI)
     created_at: datetime
 
 

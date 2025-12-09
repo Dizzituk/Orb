@@ -16,6 +16,10 @@ PHASE 4 FIXES:
 - Implemented retry logic with exponential backoff
 - Added configurable retry settings per provider
 
+v0.13.5:
+- Fixed Anthropic adapter to extract system messages from messages array
+- System content now passed via top-level system parameter (Anthropic API requirement)
+
 NOTE: Streaming is NOT yet unified through this registry. Streaming endpoints
 continue using their existing path until streaming is properly implemented.
 """
@@ -635,6 +639,9 @@ class ProviderRegistry:
         """
         Call Anthropic API.
         
+        v0.13.5: Extracts system messages from messages array and passes via top-level system parameter.
+        Anthropic's Messages API doesn't accept {"role": "system"} in messages - only user/assistant.
+        
         TODO: max_tokens and timeout should come from JobEnvelope.budget
         when available (envelope.budget.max_tokens, envelope.budget.max_wall_time_seconds).
         """
@@ -642,10 +649,31 @@ class ProviderRegistry:
         
         client = anthropic.AsyncAnthropic(api_key=api_key, timeout=timeout)
         
+        # ==========================================================================
+        # v0.13.5: EXTRACT SYSTEM MESSAGES AND BUILD TOP-LEVEL SYSTEM PARAMETER
+        # ==========================================================================
+        # Anthropic's Messages API requires:
+        # - system: top-level string parameter (not in messages array)
+        # - messages: only user/assistant/tool roles (NO system role)
+        
+        # Extract all system messages from messages array
+        system_messages = [msg for msg in messages if msg.get("role") == "system"]
+        user_assistant_messages = [msg for msg in messages if msg.get("role") in ("user", "assistant")]
+        
+        # Combine system_prompt parameter with extracted system messages
+        system_parts = []
+        if system_prompt:
+            system_parts.append(system_prompt)
+        for sys_msg in system_messages:
+            system_parts.append(sys_msg.get("content", ""))
+        
+        # Build final system string
+        final_system = "\n\n".join(system_parts) if system_parts else ""
+        
         response = await client.messages.create(
             model=model_id,
-            system=system_prompt or "",
-            messages=messages,
+            system=final_system,  # v0.13.5: Combined system content
+            messages=user_assistant_messages,  # v0.13.5: Filtered messages (no system role)
             temperature=temperature,
             max_tokens=min(max_tokens, 8192),  # Anthropic default limit
         )

@@ -1,4 +1,10 @@
 # FILE: app/memory/service.py
+"""
+Memory service layer for Orb.
+
+v0.12.4: Fixed create_message() to properly save provider, model, and reasoning fields.
+         Fixed get_message_history() to return actual provider/model/reasoning values.
+"""
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from app.memory import models, schemas
@@ -327,10 +333,18 @@ def _index_message_if_enabled(db: Session, message: models.Message) -> None:
 
 
 def create_message(db: Session, data: schemas.MessageCreate) -> models.Message:
+    """
+    Create a new message in the database.
+    
+    v0.12.4: Now properly saves provider, model, and reasoning fields.
+    """
     msg = models.Message(
         project_id=data.project_id,
         role=data.role,
         content=data.content,
+        provider=data.provider,  # v0.12.4: Was missing
+        model=data.model,  # v0.12.4: Was missing
+        reasoning=data.reasoning,  # v0.12.4: New field
     )
     db.add(msg)
     db.commit()
@@ -377,6 +391,8 @@ def get_message_history(
 ) -> schemas.MessageHistoryResponse:
     """
     Get paginated message history for a project.
+    
+    v0.12.4: Now returns actual provider, model, and reasoning values.
     """
     limit = max(1, min(limit, 200))
     
@@ -406,13 +422,16 @@ def get_message_history(
         )
         has_older = older_exists is not None
     
+    # v0.12.4: Include actual provider, model, and reasoning values
     message_items = [
         schemas.MessageHistoryItem(
             id=msg.id,
             project_id=msg.project_id,
             role=msg.role,
             content=msg.content,
-            provider=None,
+            provider=msg.provider,  # v0.12.4: Was hardcoded to None
+            model=msg.model,  # v0.12.4: New field
+            reasoning=msg.reasoning,  # v0.12.4: New field
             created_at=msg.created_at,
         )
         for msg in messages

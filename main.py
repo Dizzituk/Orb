@@ -1,27 +1,38 @@
 # FILE: main.py
 """
 Orb Backend - FastAPI Application
-Version: 0.12.1
+Version: 0.13.10
 
-Security Features:
-- Password authentication with bcrypt
-- Session token management
-- Database encryption at rest (master key via ORB_MASTER_KEY)
+v0.13.10 Changes (chat_with_attachments routing fix):
+- CRITICAL FIX: Multi-image/video routing now uses job_classifier
+- 2+ images → Gemini 2.5 Pro (was Flash)
+- 2+ videos → Gemini 3.0 Pro (was Flash)  
+- Mixed images + video → Gemini 3.0 Pro (was Flash)
+- Added _map_model_to_vision_tier() helper for model→tier mapping
+- Vision routing now consistent with /chat and /stream/chat
 
-Features:
-- File upload with text extraction and storage
-- CV parsing and structured data extraction
-- Document content retrieval for Q&A
-- Image analysis via Gemini Vision
-- Streaming LLM responses
-- Web search grounding via Gemini
-- Semantic search (RAG) with embeddings
-- Phase 4: Job system with unified provider routing (optional)
+v0.13.5 Changes:
+- CRITICAL FIX: Document content now injected into LLM context for chat_with_attachments
+- Extracted text from uploaded docs now available to the LLM (was being extracted but not used)
+- Added document_content_parts to build actual file content sections
+- Files <50KB: Full text included; Files >50KB: First 40KB + last 10KB (truncated)
+- Added debug logging showing total context size sent to LLM
 
-v0.12.1 Changes:
-- Fixed /chat to return model in response
-- Fixed /chat to save provider/model to message database
-- Added model field to ChatResponse schema
+v0.12.17 Changes:
+- CRITICAL FIX: Don't inject filenames into message text for classifier
+- Classifier receives clean user message, attachment metadata passed separately
+- File info goes to context (for LLM) not message (for classifier)
+- Fixed missing attachment_metadata list initialization
+
+v0.12.8 Changes:
+- Images/videos now route to Gemini Vision even without user message
+- Default prompt "Describe this image/video in detail." used when no message
+
+v0.12.7 Changes:
+- Video files now route to Gemini Vision (same as images)
+- Integrated new job_classifier for automatic routing
+- Fixed file_analyzer to skip binary files from text extraction
+- Added video_attachments tracking alongside image_attachments
 """
 import os
 import json
@@ -38,7 +49,6 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 
-# Load .env FIRST before any other imports that might need env vars
 load_dotenv()
 
 from app.db import init_db, get_db
@@ -53,16 +63,23 @@ from app.llm import (
     extract_text_content, detect_document_type,
     parse_cv_with_llm, generate_document_summary,
 )
-from app.llm.schemas import Provider
+from app.llm.schemas import Provider, AttachmentInfo
 from app.llm.clients import check_provider_availability, call_openai
 from app.llm.stream_router import router as stream_router
 from app.llm.web_search_router import router as web_search_router
 from app.embeddings.router import router as embeddings_router, search_router as embeddings_search_router
 from app.embeddings import service as embeddings_service
 
+# v0.12.7: Import video detection and vision functions
+from app.llm.file_analyzer import is_video_mime_type
+from app.llm.gemini_vision import ask_about_image, check_vision_available, analyze_video
+
+# v0.13.10: Import job_classifier for proper media routing
+from app.llm.job_classifier import classify_job
+
 app = FastAPI(
     title="Orb Assistant",
-    version="0.12.1",
+    version="0.13.10",
     description="Personal AI assistant with multi-LLM orchestration and semantic search",
 )
 
@@ -75,7 +92,7 @@ app.add_middleware(
         "http://localhost:8000",
         "http://127.0.0.1:5173",
         "http://127.0.0.1:8000",
-        "file://",  # For Electron file:// protocol
+        "file://",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -90,17 +107,15 @@ def on_startup():
     os.makedirs("data", exist_ok=True)
     os.makedirs("data/files", exist_ok=True)
     
-    # Security Level 4: Initialize master key encryption FIRST
     print("[startup] Initializing encryption...")
     from app.crypto import require_master_key_or_exit, is_master_key_initialized
-    require_master_key_or_exit()  # Exits if ORB_MASTER_KEY not set or invalid
+    require_master_key_or_exit()
     
     if is_master_key_initialized():
         print("[startup] Database encryption: [OK] master key active")
     
     init_db()
     
-    # Check auth status
     print("[startup] Checking authentication...")
     if is_auth_configured():
         print("[startup] Password authentication: [OK] configured")
@@ -108,12 +123,11 @@ def on_startup():
         print("[startup] Password authentication: [X] NOT CONFIGURED")
         print("[startup] Call POST /auth/setup to set a password")
     
-    # Verify critical env vars
     print("[startup] Checking environment variables...")
     if os.getenv("GOOGLE_API_KEY"):
-        print("[startup] GOOGLE_API_KEY: [OK] set (enables image analysis + web search)")
+        print("[startup] GOOGLE_API_KEY: [OK] set (enables vision + web search)")
     else:
-        print("[startup] GOOGLE_API_KEY: [X] NOT SET - image analysis and web search will fail")
+        print("[startup] GOOGLE_API_KEY: [X] NOT SET - vision and web search will fail")
     
     if os.getenv("OPENAI_API_KEY"):
         print("[startup] OPENAI_API_KEY: [OK] set (enables chat + embeddings)")
@@ -125,40 +139,23 @@ def on_startup():
     else:
         print("[startup] ANTHROPIC_API_KEY: [X] NOT SET")
     
-    # Check Phase 4 feature flag
     print("[startup] Checking Phase 4 status...")
     phase4_enabled = os.getenv("ORB_ENABLE_PHASE4", "false").lower() == "true"
     if phase4_enabled:
         print("[startup] Phase 4 Job System: [OK] ENABLED")
-        print("[startup]   - POST /jobs/create")
-        print("[startup]   - GET /jobs/{job_id}")
-        print("[startup]   - GET /jobs/list")
-        print("[startup]   - GET /artefacts/{artefact_id}")
-        print("[startup]   - GET /artefacts/list")
     else:
         print("[startup] Phase 4 Job System: [X] DISABLED")
-        print("[startup]   Set ORB_ENABLE_PHASE4=true to enable")
 
 
 # ====== ROUTERS ======
 
-# Auth router - public endpoints for setup/validation
 app.include_router(auth_router)
-
-# Memory router - protected
 app.include_router(memory_router)
-
-# Streaming router - protected
 app.include_router(stream_router)
-
-# Web search router - protected
 app.include_router(web_search_router)
-
-# Embeddings router - protected
 app.include_router(embeddings_router)
 app.include_router(embeddings_search_router)
 
-# Phase 4 routers - protected (optional based on feature flag)
 if os.getenv("ORB_ENABLE_PHASE4", "false").lower() == "true":
     try:
         from app.jobs.router import router as jobs_router
@@ -170,17 +167,15 @@ if os.getenv("ORB_ENABLE_PHASE4", "false").lower() == "true":
             tags=["Phase 4 Jobs"],
             dependencies=[Depends(require_auth)]
         )
-        
         app.include_router(
             artefacts_router,
             prefix="/artefacts",
             tags=["Phase 4 Artefacts"],
             dependencies=[Depends(require_auth)]
         )
-        
         print("[startup] Phase 4 routers registered successfully")
     except ImportError as e:
-        print(f"[startup] WARNING: Phase 4 enabled but failed to import routers: {e}")
+        print(f"[startup] WARNING: Phase 4 import failed: {e}")
 
 
 # ====== MODELS ======
@@ -190,7 +185,7 @@ class ChatRequest(BaseModel):
     message: str
     job_type: str = "casual_chat"
     force_provider: Optional[str] = None
-    use_semantic_search: bool = True  # NEW: Enable/disable semantic search
+    use_semantic_search: bool = True
 
 
 class AttachmentSummary(BaseModel):
@@ -204,7 +199,7 @@ class AttachmentSummary(BaseModel):
 class ChatResponse(BaseModel):
     project_id: int
     provider: str
-    model: Optional[str] = None  # ADDED: Model that generated the response
+    model: Optional[str] = None
     reply: str
     was_reviewed: bool = False
     critic_review: Optional[str] = None
@@ -220,13 +215,11 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/")
 def read_index():
-    """Serve static UI (public)."""
     return FileResponse("static/index.html")
 
 
 @app.get("/ping")
 def ping():
-    """Health check (public)."""
     return {"status": "ok", "auth_configured": is_auth_configured()}
 
 
@@ -234,13 +227,11 @@ def ping():
 
 @app.get("/providers")
 def list_providers(auth: AuthResult = Depends(require_auth)):
-    """List available LLM providers (protected)."""
     return check_provider_availability()
 
 
 @app.get("/job-types")
 def list_job_types(auth: AuthResult = Depends(require_auth)):
-    """List available job types (protected)."""
     from app.llm.schemas import RoutingConfig
     return {
         "gpt_only": [jt.value for jt in RoutingConfig.GPT_ONLY_JOBS],
@@ -278,7 +269,7 @@ def build_context_block(db: Session, project_id: int) -> str:
         )
         sections.append(f"PROJECT NOTES:\n{notes_text}")
 
-    tasks = memory_service.list_tasks(db, project_id, status_filter="pending")[:10]
+    tasks = memory_service.list_tasks(db, project_id, status="pending")[:10]
     if tasks:
         tasks_text = "\n".join(f"- {t.title}" for t in tasks)
         sections.append(f"PENDING TASKS:\n{tasks_text}")
@@ -287,12 +278,10 @@ def build_context_block(db: Session, project_id: int) -> str:
 
 
 def build_document_context(db: Session, project_id: int, user_message: str) -> str:
-    """Build context from uploaded documents with semantic search."""
+    """Build context from uploaded documents."""
     try:
-        # Search documents that might be relevant
         from app.memory.models import DocumentContent
         
-        # Get recent documents
         recent_docs = (db.query(DocumentContent)
                       .filter(DocumentContent.project_id == project_id)
                       .order_by(DocumentContent.created_at.desc())
@@ -302,7 +291,6 @@ def build_document_context(db: Session, project_id: int, user_message: str) -> s
         if not recent_docs:
             return ""
         
-        # Build context from recent documents
         context_parts = []
         for doc in recent_docs:
             summary = doc.summary[:300] if doc.summary else "(no summary)"
@@ -315,10 +303,6 @@ def build_document_context(db: Session, project_id: int, user_message: str) -> s
 
 
 def _extract_provider_value(result: LLMResult) -> str:
-    """
-    Extract provider string from LLMResult.
-    Handles both enum (result.provider.value) and string (result.provider) cases.
-    """
     if result.provider is None:
         return "unknown"
     if hasattr(result.provider, 'value'):
@@ -327,13 +311,62 @@ def _extract_provider_value(result: LLMResult) -> str:
 
 
 def _extract_model_value(result: LLMResult) -> Optional[str]:
-    """
-    Extract model string from LLMResult.
-    """
     return result.model if hasattr(result, 'model') else None
 
 
-# ====== CHAT ENDPOINTS (PROTECTED) ======
+def _classify_job_type(message: str, requested_type: str) -> JobType:
+    """
+    Simple job type passthrough - lets router.py handle all classification.
+    
+    The router's classify_and_route() does the real classification using job_classifier.
+    This just validates the requested type or defaults to CHAT_LIGHT.
+    """
+    # If user explicitly requested a type, validate and use it
+    if requested_type and requested_type != "casual_chat":
+        try:
+            return JobType(requested_type)
+        except ValueError:
+            print(f"[classify] Invalid job_type '{requested_type}', defaulting to CHAT_LIGHT")
+            return JobType.CHAT_LIGHT
+    
+    # Default to chat_light (matches job_classifier.py)
+    print(f"[classify] Defaulting to CHAT_LIGHT")
+    return JobType.CHAT_LIGHT
+
+
+def _map_model_to_vision_tier(model: str) -> str:
+    """
+    Map job_classifier's model selection to gemini_vision tier.
+    
+    v0.13.10: Maps classifier's chosen model to vision tier parameter.
+    
+    Tier mapping:
+    - gemini-2.0-flash → "fast"
+    - gemini-2.5-pro → "complex" (for IMAGE_COMPLEX)
+    - gemini-2.5-pro → "video_heavy" (for VIDEO_HEAVY - when .env has wrong model)
+    - gemini-3.0-pro-preview or gemini-3-pro → "video_heavy"
+    - default → "fast"
+    """
+    if not model:
+        return "fast"
+    
+    model_lower = model.lower()
+    
+    # Check for specific model patterns
+    if "flash" in model_lower or "2.0" in model_lower:
+        return "fast"
+    elif "3.0" in model_lower or "3-pro" in model_lower or "3.0-pro" in model_lower:
+        # gemini-3.0-pro-preview, gemini-3-pro, etc.
+        return "video_heavy"
+    elif "2.5-pro" in model_lower:
+        # gemini-2.5-pro can be used for both complex images and video_heavy
+        # Default to complex, but video_heavy tier also supports 2.5-pro
+        return "complex"
+    else:
+        return "fast"  # Default to fast tier
+
+
+# ====== CHAT ENDPOINTS ======
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(
@@ -341,24 +374,13 @@ def chat(
     auth: AuthResult = Depends(require_auth),
     db: Session = Depends(get_db),
 ) -> ChatResponse:
-    """
-    Send chat message with context (protected).
-    
-    Features:
-    - Project context injection (notes, tasks, docs)
-    - Semantic search for document retrieval (if enabled)
-    - Message history management
-    - Multi-provider routing
-    - Returns provider and model info for UI display
-    """
+    """Send chat message with context."""
     project = memory_service.get_project(db, req.project_id)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project not found: {req.project_id}")
 
-    # Build context
     context_block = build_context_block(db, req.project_id)
     
-    # Semantic search context (if enabled)
     semantic_context = ""
     if req.use_semantic_search:
         try:
@@ -369,16 +391,14 @@ def chat(
                 top_k=5,
             )
             if semantic_results:
-                semantic_context = "=== RELEVANT DOCUMENTS (semantic search) ===\n"
+                semantic_context = "=== RELEVANT DOCUMENTS ===\n"
                 for result in semantic_results:
                     semantic_context += f"\n[Score: {result.similarity_score:.3f}] {result.content_preview}\n"
         except Exception as e:
             print(f"[chat] Semantic search failed: {e}")
     
-    # Document context (recent docs)
     doc_context = build_document_context(db, req.project_id, req.message)
     
-    # Combine all context
     full_context = ""
     if context_block:
         full_context += context_block + "\n\n"
@@ -387,18 +407,13 @@ def chat(
     if doc_context:
         full_context += "=== RECENT UPLOADS ===\n" + doc_context
 
-    # Get conversation history
     history = memory_service.list_messages(db, req.project_id, limit=50)
     history_dicts = [{"role": msg.role, "content": msg.content} for msg in history]
     messages = history_dicts + [{"role": "user", "content": req.message}]
 
-    # Parse job type
-    try:
-        jt = JobType(req.job_type)
-    except ValueError:
-        jt = JobType.CASUAL_CHAT
+    jt = _classify_job_type(req.message, req.job_type)
+    print(f"[chat] Job type: {jt.value}")
 
-    # Build task
     system_prompt = f"Project: {project.name}. {project.description or ''}"
     
     task = LLMTask(
@@ -409,25 +424,22 @@ def chat(
         force_provider=Provider(req.force_provider) if req.force_provider else None,
     )
 
-    # Call LLM
     try:
         result: LLMResult = call_llm(task)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
-    # Extract provider and model for storage and response
     provider_str = _extract_provider_value(result)
     model_str = _extract_model_value(result)
+    
+    print(f"[chat] Response from: {provider_str} / {model_str}")
 
-    # Store messages with provider/model info
-    # User message: mark provider as "local" (typed by user)
     memory_service.create_message(db, memory_schemas.MessageCreate(
         project_id=req.project_id,
         role="user",
         content=req.message,
         provider="local",
     ))
-    # Assistant message: record which provider/model generated the response
     memory_service.create_message(db, memory_schemas.MessageCreate(
         project_id=req.project_id,
         role="assistant",
@@ -447,7 +459,7 @@ def chat(
 
 
 @app.post("/chat_with_attachments", response_model=ChatResponse)
-async def chat_with_attachments(
+def chat_with_attachments(
     project_id: int = Form(...),
     message: Optional[str] = Form(None),
     job_type: str = Form("casual_chat"),
@@ -456,100 +468,127 @@ async def chat_with_attachments(
     db: Session = Depends(get_db),
 ) -> ChatResponse:
     """
-    Chat with file uploads (protected).
+    Chat with file attachments.
     
-    Supports:
-    - PDF, DOCX, TXT file extraction
-    - Image analysis via Gemini Vision
-    - CV parsing with structured extraction
-    - Semantic search indexing
+    v0.13.10: Multi-image/video routing now uses job_classifier (2+ images → 2.5 Pro, mixed → 3.0 Pro)
+    v0.13.5: Document content now injected into LLM context (was extracted but not used)
+    v0.12.17: Fixed classifier receiving filenames in message text
+    v0.12.7: Video files now route to Gemini Vision alongside images.
     """
     project = memory_service.get_project(db, project_id)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
-    
-    # Ensure project files directory exists
-    project_files_dir = Path("data/files") / str(project_id)
-    project_files_dir.mkdir(parents=True, exist_ok=True)
-    
+
     attachments_summary: List[AttachmentSummary] = []
     attachment_context_parts: List[str] = []
+    document_content_parts: List[str] = []  # v0.13.5: Store actual document text
+    attachment_metadata: List[dict] = []  # v0.12.17: For router's job_classifier
     indexed_file_ids: List[int] = []
     
+    # Track media for Gemini Vision routing
+    image_attachments: List[dict] = []
+    video_attachments: List[dict] = []
+    
+    project_dir = Path(f"data/files/{project_id}")
+    project_dir.mkdir(parents=True, exist_ok=True)
+
     for upload_file in files:
-        original_name = upload_file.filename or "unnamed_file"
+        original_name = upload_file.filename or "unknown"
         suffix = Path(original_name).suffix.lower()
-        mime_type = upload_file.content_type
+        unique_name = f"{uuid4().hex}{suffix}"
+        file_path = project_dir / unique_name
+        relative_path = f"{project_id}/{unique_name}"
         
-        # Generate unique filename
-        unique_id = str(uuid4())[:8]
-        safe_name = re.sub(r'[^\w\-_.]', '_', original_name)
-        stored_name = f"{unique_id}_{safe_name}"
-        file_path = project_files_dir / stored_name
-        relative_path = f"{project_id}/{stored_name}"
+        content = upload_file.file.read()
         
-        # Save file
-        contents = await upload_file.read()
         with open(file_path, "wb") as f:
-            f.write(contents)
+            f.write(content)
         
-        print(f"[chat_with_attachments] Saved: {file_path}")
+        print(f"[chat_with_attachments] Saved: {original_name} -> {file_path}")
         
-        # Analyze file
-        raw_text = ""
-        structured_data = None
-        analysis = {}
-        doc_type = "document"
+        mime_type = upload_file.content_type or ""
         
-        # Check if it's an image
-        if is_image_mime_type(mime_type) or suffix in [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]:
-            print(f"[chat_with_attachments] Analyzing image: {original_name}")
+        analysis: dict = {}
+        raw_text: Optional[str] = None
+        structured_data: Optional[str] = None
+        doc_type: str = "document"
+        
+        # ==========================================================================
+        # v0.12.7: DETECT IMAGES AND VIDEO FOR GEMINI VISION
+        # ==========================================================================
+        
+        if is_image_mime_type(mime_type):
+            print(f"[chat_with_attachments] Detected IMAGE: {original_name}")
+            
+            image_attachments.append({
+                "bytes": content,
+                "mime_type": mime_type,
+                "filename": original_name,
+                "path": str(file_path),
+                "size": len(content),
+            })
+            
             try:
-                # Use Gemini Vision
-                image_analysis = analyze_image(
-                    str(file_path),
-                    "Describe this image in detail. What do you see?"
+                analysis_result = analyze_image(
+                    image_source=content,
+                    mime_type=mime_type,
+                    user_prompt=None,
                 )
-                raw_text = image_analysis.get("description", "")
                 analysis = {
-                    "summary": raw_text[:200] + "..." if len(raw_text) > 200 else raw_text,
-                    "tags": image_analysis.get("tags", ["image"]),
+                    "summary": analysis_result.get("summary", f"Image: {original_name}"),
+                    "tags": analysis_result.get("tags", ["image", suffix.lstrip(".")]),
                     "type": "image",
                 }
+                raw_text = analysis["summary"]
                 doc_type = "image"
             except Exception as e:
                 print(f"[chat_with_attachments] Image analysis failed: {e}")
                 analysis = {
-                    "summary": f"Image uploaded: {original_name}",
-                    "tags": ["image", suffix.lstrip(".")] if suffix else ["image"],
+                    "summary": f"Image: {original_name}",
+                    "tags": ["image", suffix.lstrip(".")],
                     "type": "image",
                 }
                 doc_type = "image"
-                raw_text = f"[Image: {original_name}] (not analyzed)"
+        
+        elif is_video_mime_type(mime_type):
+            print(f"[chat_with_attachments] Detected VIDEO: {original_name} ({len(content)} bytes)")
+            
+            video_attachments.append({
+                "bytes": content,
+                "mime_type": mime_type,
+                "filename": original_name,
+                "path": str(file_path),
+                "size": len(content),
+            })
+            
+            # For videos, we don't extract text - they go to Gemini Vision
+            analysis = {
+                "summary": f"Video: {original_name} ({len(content) // 1024}KB)",
+                "tags": ["video", suffix.lstrip(".")],
+                "type": "video",
+            }
+            doc_type = "video"
+            raw_text = None  # No text extraction for video
+        
         else:
-            # Extract text from document
-            print(f"[chat_with_attachments] Extracting text from: {original_name}")
-            raw_text = extract_text_content(str(file_path))
+            # Text-based document extraction
+            print(f"[chat_with_attachments] Extracting text: {original_name}")
+            raw_text = extract_text_content(str(file_path), mime_type)
             
             if raw_text:
-                print(f"[chat_with_attachments] Extracted {len(raw_text)} characters")
+                doc_type = detect_document_type(raw_text, original_name)
+                print(f"[chat_with_attachments] Detected doc_type: {doc_type}")
                 
-                # Detect document type
-                doc_type = detect_document_type(original_name, raw_text)
-                print(f"[chat_with_attachments] Document type: {doc_type}")
-                
-                # Parse CV if detected
                 if doc_type == "cv":
-                    print(f"[chat_with_attachments] Parsing CV with LLM...")
+                    print(f"[chat_with_attachments] Parsing CV...")
                     parsed_data = parse_cv_with_llm(raw_text, original_name, simple_llm_call)
                     structured_data = json.dumps(parsed_data)
                     
-                    # Generate summary
                     role_count = len(parsed_data.get("roles", []))
                     name = parsed_data.get("name", "Unknown")
                     summary_text = f"CV for {name} with {role_count} work experiences"
                     if parsed_data.get("skills"):
-                        summary_text += f", skills include: {', '.join(parsed_data['skills'][:5])}"
+                        summary_text += f", skills: {', '.join(parsed_data['skills'][:5])}"
                     
                     analysis = {
                         "summary": summary_text,
@@ -557,23 +596,63 @@ async def chat_with_attachments(
                         "type": "cv",
                     }
                 else:
-                    # Generate general summary
                     print(f"[chat_with_attachments] Generating summary...")
                     summary_text = generate_document_summary(raw_text, original_name, doc_type, simple_llm_call)
-                    
                     analysis = {
                         "summary": summary_text,
                         "tags": [doc_type, suffix.lstrip(".")] if suffix else [doc_type],
                         "type": doc_type,
                     }
+                
+                # ==========================================================================
+                # v0.13.5: BUILD DOCUMENT CONTENT FOR LLM CONTEXT
+                # ==========================================================================
+                # Now we capture the actual document text to pass to the LLM
+                
+                file_size_kb = len(raw_text) // 1024
+                
+                # For small files (<50KB), include full text
+                # For large files, truncate to first 40KB + last 10KB
+                if len(raw_text) <= 50 * 1024:
+                    # Small file - include full text
+                    document_section = f"""
+=== FILE: {original_name} ===
+Type: {doc_type}
+Size: {file_size_kb}KB
+Summary: {analysis.get('summary', 'N/A')}
+
+--- FULL CONTENT ---
+{raw_text}
+"""
+                else:
+                    # Large file - truncate intelligently
+                    first_chunk = raw_text[:40 * 1024]
+                    last_chunk = raw_text[-10 * 1024:]
+                    document_section = f"""
+=== FILE: {original_name} ===
+Type: {doc_type}
+Size: {file_size_kb}KB (TRUNCATED - showing first 40KB + last 10KB)
+Summary: {analysis.get('summary', 'N/A')}
+
+--- BEGINNING OF CONTENT ---
+{first_chunk}
+
+... [CONTENT TRUNCATED] ...
+
+--- END OF CONTENT ---
+{last_chunk}
+"""
+                
+                document_content_parts.append(document_section)
+                print(f"[chat_with_attachments] Added document content: {original_name} ({file_size_kb}KB)")
+            
             else:
-                print(f"[chat_with_attachments] Could not extract text from: {original_name}")
+                print(f"[chat_with_attachments] No text extracted: {original_name}")
                 analysis = {
                     "summary": f"File uploaded: {original_name}",
                     "tags": [suffix.lstrip(".") if suffix else "file"],
                     "type": "document",
                 }
-                doc_type = "document"
         
         # Create file record
         file_record = memory_service.create_file_for_project(
@@ -583,13 +662,12 @@ async def chat_with_attachments(
                 path=relative_path,
                 original_name=original_name,
                 file_type=mime_type or suffix.lstrip("."),
-                description=analysis["summary"],
+                description=analysis.get("summary", ""),
             )
         )
         
-        # Store document content for retrieval (for both text docs and image descriptions)
+        # Store document content (for text docs and image descriptions, NOT video)
         if raw_text:
-            print(f"[chat_with_attachments] Storing document content for file_id={file_record.id}")
             memory_service.create_document_content(
                 db,
                 memory_schemas.DocumentContentCreate(
@@ -598,49 +676,324 @@ async def chat_with_attachments(
                     filename=original_name,
                     doc_type=doc_type,
                     raw_text=raw_text,
-                    summary=analysis["summary"],
+                    summary=analysis.get("summary", ""),
                     structured_data=structured_data,
                 )
             )
-            # Track for embedding indexing
             indexed_file_ids.append(file_record.id)
         
-        # Build summary
         stored_id = f"file_{file_record.id}"
         summary = AttachmentSummary(
             client_filename=original_name,
             stored_id=stored_id,
-            type=analysis["type"],
-            summary=analysis["summary"],
-            tags=analysis["tags"],
+            type=analysis.get("type", "document"),
+            summary=analysis.get("summary", ""),
+            tags=analysis.get("tags", []),
         )
         attachments_summary.append(summary)
+        attachment_context_parts.append(f"[Uploaded: {original_name}] {analysis.get('summary', '')}")
         
-        # Context for LLM
-        attachment_context_parts.append(
-            f"[Uploaded: {original_name}] {analysis['summary']}"
-        )
+        # v0.12.17: Collect metadata for router's job_classifier
+        # v0.13.10: Use AttachmentInfo objects instead of dicts
+        attachment_metadata.append(AttachmentInfo(
+            filename=original_name,
+            mime_type=mime_type,
+            size_bytes=len(content),
+            file_id=file_record.id,
+        ))
 
-    # Index newly uploaded files for semantic search
+    # Index for semantic search
     for file_id in indexed_file_ids:
         try:
             from app.memory.models import DocumentContent
             doc = db.query(DocumentContent).filter(DocumentContent.file_id == file_id).first()
             if doc:
                 embeddings_service.index_document(db, doc, force=True)
-                print(f"[chat_with_attachments] Indexed embeddings for file_id={file_id}")
+                print(f"[chat_with_attachments] Indexed file_id={file_id}")
         except Exception as e:
-            print(f"[chat_with_attachments] Failed to index file_id={file_id}: {e}")
+            print(f"[chat_with_attachments] Index failed for file_id={file_id}: {e}")
 
-    # Build message with attachment context
-    full_message = message.strip() if message else ""
+    # ==========================================================================
+    # v0.13.10: USE JOB_CLASSIFIER FOR MEDIA ROUTING
+    # ==========================================================================
     
-    if attachment_context_parts:
-        attachment_info = "\n".join(attachment_context_parts)
-        if full_message:
-            full_message = f"{full_message}\n\n[User uploaded:]\n{attachment_info}"
+    user_message = message.strip() if message else ""
+    
+    # Check if we have media - route to Gemini Vision with proper tier
+    has_media = image_attachments or video_attachments
+    
+    if has_media:
+        # Provide default prompt if no user message
+        vision_prompt = user_message if user_message else "Describe this image/video in detail."
+        
+        image_count = len(image_attachments)
+        video_count = len(video_attachments)
+        
+        print(f"[chat_with_attachments] Routing to Gemini Vision: {image_count} image(s), {video_count} video(s)")
+        
+        # v0.13.10: Use job_classifier to determine correct tier
+        # This makes multi-image and mixed-media routing consistent with job_classifier.py v0.12.17
+        try:
+            classification = classify_job(
+                message=vision_prompt,
+                attachments=attachment_metadata,
+            )
+            
+            # Map classifier's model choice to vision tier
+            selected_model = classification.model
+            tier = _map_model_to_vision_tier(selected_model)
+            
+            if os.getenv("ORB_ROUTER_DEBUG") == "1":
+                print(f"[chat_with_attachments] Classifier selected: {classification.provider.value} / {selected_model}")
+                print(f"[chat_with_attachments] Mapped to vision tier: {tier}")
+        
+        except Exception as e:
+            print(f"[chat_with_attachments] Classifier failed, using default tier: {e}")
+            tier = "fast"  # Fallback to fast tier
+        
+        vision_status = check_vision_available()
+        if not vision_status.get("available"):
+            error_msg = vision_status.get("error", "Vision not available")
+            print(f"[chat_with_attachments] Vision unavailable: {error_msg}")
+            attachment_context_parts.insert(0, f"[Warning: {error_msg}]")
         else:
-            full_message = f"[User uploaded:]\n{attachment_info}\n\nPlease acknowledge these files."
+            vision_context = f"Project: {project.name}."
+            if project.description:
+                vision_context += f" {project.description}"
+            
+            # Prefer video if present (more complex), otherwise use image(s)
+            if len(video_attachments) > 1:
+                # v0.13.10: Multiple videos - upload all to Gemini
+                media_type = "videos"
+                print(f"[chat_with_attachments] Analyzing {len(video_attachments)} videos with Gemini...")
+                
+                try:
+                    import google.generativeai as genai
+                    from app.llm.gemini_vision import _get_google_api_key, _get_model_name
+                    import time
+                    
+                    api_key = _get_google_api_key()
+                    if not api_key:
+                        vision_result = {
+                            "answer": "GOOGLE_API_KEY not set",
+                            "provider": "google",
+                            "model": _get_model_name(tier) if tier else "gemini-2.5-pro",
+                            "error": "No API key"
+                        }
+                    else:
+                        genai.configure(api_key=api_key)
+                        
+                        # Get the model for this tier
+                        model_name = _get_model_name(tier)
+                        model = genai.GenerativeModel(model_name)
+                        
+                        # Upload all videos
+                        video_files = []
+                        for i, video_att in enumerate(video_attachments):
+                            print(f"[chat_with_attachments] Uploading video {i+1}/{len(video_attachments)}: {video_att['filename']}...")
+                            video_file = genai.upload_file(path=str(video_att["path"]))
+                            
+                            # Wait for processing
+                            while video_file.state.name == "PROCESSING":
+                                time.sleep(2)
+                                video_file = genai.get_file(video_file.name)
+                            
+                            if video_file.state.name == "FAILED":
+                                print(f"[chat_with_attachments] Video {i+1} processing failed")
+                                continue
+                            
+                            video_files.append(video_file)
+                            print(f"[chat_with_attachments] Video {i+1} ready")
+                        
+                        if not video_files:
+                            vision_result = {
+                                "answer": "All video processing failed",
+                                "provider": "google",
+                                "model": model_name,
+                                "error": "Processing failed"
+                            }
+                        else:
+                            # Build prompt with context
+                            prompt_parts = []
+                            if vision_context:
+                                prompt_parts.append(f"Context: {vision_context}\n\n")
+                            prompt_parts.append(f"User's question about these {len(video_files)} videos: {vision_prompt}")
+                            full_prompt = "".join(prompt_parts)
+                            
+                            # Generate response with all videos
+                            content_parts = video_files + [full_prompt]
+                            response = model.generate_content(content_parts)
+                            
+                            vision_result = {
+                                "answer": response.text,
+                                "provider": "google",
+                                "model": model_name,
+                            }
+                        
+                        # Clean up uploaded videos
+                        for video_file in video_files:
+                            try:
+                                genai.delete_file(video_file.name)
+                            except Exception as cleanup_error:
+                                print(f"[chat_with_attachments] Warning: Could not delete video: {cleanup_error}")
+                        
+                        print(f"[chat_with_attachments] Cleaned up {len(video_files)} video file(s)")
+                
+                except Exception as e:
+                    print(f"[chat_with_attachments] Multi-video analysis failed: {e}")
+                    vision_result = {
+                        "answer": f"Multi-video analysis failed: {str(e)}",
+                        "provider": "google",
+                        "model": _get_model_name(tier) if tier else "gemini-2.5-pro",
+                        "error": str(e)
+                    }
+            
+            elif video_attachments:
+                # Single video
+                primary_media = video_attachments[0]
+                media_type = "video"
+                
+                # v0.13.10: Pass tier to analyze_video
+                try:
+                    vision_result = analyze_video(
+                        video_path=primary_media["path"],
+                        user_question=vision_prompt,
+                        context=vision_context,
+                        tier=tier,  # NEW: Pass classifier's tier decision
+                    )
+                except TypeError:
+                    # Fallback if analyze_video doesn't support tier yet
+                    print("[chat_with_attachments] analyze_video doesn't support tier parameter, using default")
+                    vision_result = analyze_video(
+                        video_path=primary_media["path"],
+                        user_question=vision_prompt,
+                        context=vision_context,
+                    )
+            elif len(image_attachments) > 1:
+                # v0.13.10: Multiple images - pass all to Gemini at once
+                media_type = "images"
+                print(f"[chat_with_attachments] Analyzing {len(image_attachments)} images with Gemini...")
+                
+                try:
+                    import google.generativeai as genai
+                    from app.llm.gemini_vision import _get_google_api_key, _get_model_name
+                    
+                    api_key = _get_google_api_key()
+                    if not api_key:
+                        vision_result = {
+                            "answer": "GOOGLE_API_KEY not set",
+                            "provider": "google",
+                            "model": "gemini-2.5-pro",
+                            "error": "No API key"
+                        }
+                    else:
+                        genai.configure(api_key=api_key)
+                        
+                        # Get the model for this tier
+                        model_name = _get_model_name(tier)
+                        model = genai.GenerativeModel(model_name)
+                        
+                        # Build prompt with context
+                        prompt_parts = []
+                        if vision_context:
+                            prompt_parts.append(f"Context: {vision_context}\n\n")
+                        prompt_parts.append(f"User's question: {vision_prompt}")
+                        full_prompt = "".join(prompt_parts)
+                        
+                        # Load all images
+                        import PIL.Image
+                        import io
+                        images = []
+                        for img_att in image_attachments:
+                            image = PIL.Image.open(io.BytesIO(img_att["bytes"]))
+                            images.append(image)
+                        
+                        # Build content with prompt and all images
+                        content_parts = [full_prompt] + images
+                        
+                        # Call Gemini with all images
+                        response = model.generate_content(content_parts)
+                        
+                        vision_result = {
+                            "answer": response.text,
+                            "provider": "google",
+                            "model": model_name,
+                        }
+                        
+                except Exception as e:
+                    print(f"[chat_with_attachments] Multi-image analysis failed: {e}")
+                    vision_result = {
+                        "answer": f"Multi-image analysis failed: {str(e)}",
+                        "provider": "google",
+                        "model": _get_model_name(tier) if tier else "gemini-2.5-pro",
+                        "error": str(e)
+                    }
+            else:
+                # Single image
+                primary_media = image_attachments[0]
+                media_type = "image"
+                
+                # v0.13.10: Pass tier to ask_about_image
+                vision_result = ask_about_image(
+                    image_source=primary_media["bytes"],
+                    user_question=vision_prompt,
+                    mime_type=primary_media["mime_type"],
+                    context=vision_context,
+                    tier=tier,  # NEW: Pass classifier's tier decision
+                )
+            
+            provider_str = vision_result.get("provider", "google")
+            model_str = vision_result.get("model", "gemini-2.0-flash")
+            reply_text = vision_result.get("answer", f"I couldn't analyze the {media_type}.")
+            
+            if vision_result.get("error"):
+                print(f"[chat_with_attachments] Vision error: {vision_result['error']}")
+            
+            print(f"[chat_with_attachments] Vision response from: {provider_str} / {model_str}")
+            
+            # Log messages
+            user_content = user_message if user_message else "[Attachment only]"
+            if attachments_summary:
+                user_content += f" [Uploaded: {', '.join(a.client_filename for a in attachments_summary)}]"
+            
+            memory_service.create_message(db, memory_schemas.MessageCreate(
+                project_id=project_id,
+                role="user",
+                content=user_content,
+                provider="local",
+            ))
+            memory_service.create_message(db, memory_schemas.MessageCreate(
+                project_id=project_id,
+                role="assistant",
+                content=reply_text,
+                provider=provider_str,
+                model=model_str,
+            ))
+            
+            return ChatResponse(
+                project_id=project_id,
+                provider=provider_str,
+                model=model_str,
+                reply=reply_text,
+                was_reviewed=False,
+                critic_review=None,
+                attachments_summary=attachments_summary,
+            )
+    
+    # ==========================================================================
+    # FALLBACK: Text-only path
+    # ==========================================================================
+
+    # v0.12.17 FIX: Don't inject file upload metadata into user message
+    # The classifier already receives attachment metadata separately via task.attachments
+    # Injecting filenames into the message causes false positives (e.g., "architect" in filename)
+    
+    full_message = user_message if user_message else ""
+    
+    # For logging/storage, note that files were uploaded, but don't include filenames
+    # (filenames are already in attachment_metadata and will be passed to classifier)
+    if attachments_summary and not full_message:
+        full_message = "[User uploaded files without a message]"
 
     if not full_message and not attachments_summary:
         return ChatResponse(
@@ -651,7 +1004,6 @@ async def chat_with_attachments(
             attachments_summary=[],
         )
 
-    # Build context
     context_block = build_context_block(db, project_id)
     doc_context = build_document_context(db, project_id, full_message)
     
@@ -660,26 +1012,60 @@ async def chat_with_attachments(
         full_context += context_block + "\n\n"
     if doc_context:
         full_context += "=== UPLOADED DOCUMENTS ===\n" + doc_context
+    
+    # v0.12.17: Add attachment summaries to context, not to user message
+    if attachment_context_parts:
+        attachment_info = "\n".join(attachment_context_parts)
+        full_context += f"\n\n=== USER UPLOADED FILES (METADATA) ===\n{attachment_info}"
+    
+    # ==========================================================================
+    # v0.13.5: ADD ACTUAL DOCUMENT CONTENT TO CONTEXT
+    # ==========================================================================
+    # This is the critical fix: now the LLM can actually see the document text
+    
+    if document_content_parts:
+        document_content_block = "\n".join(document_content_parts)
+        full_context += f"\n\n=== DOCUMENT CONTENT ===\n{document_content_block}"
+        
+        # Debug logging to show context was built
+        total_docs = len(document_content_parts)
+        doc_types = {}
+        for att in attachment_metadata:
+            # v0.13.10: Handle both dict and Pydantic AttachmentInfo objects
+            if isinstance(att, dict):
+                dt = att.get("doc_type", "unknown")
+            else:
+                dt = getattr(att, "doc_type", "unknown")
+            doc_types[dt] = doc_types.get(dt, 0) + 1
+        
+        type_summary = ", ".join([f"{dt}={count}" for dt, count in doc_types.items()])
+        print(f"[chat_with_attachments] Built context for LLM: {len(full_context)} chars "
+              f"({total_docs} documents with content: {type_summary})")
 
     history = memory_service.list_messages(db, project_id, limit=50)
     history_dicts = [{"role": msg.role, "content": msg.content} for msg in history]
     messages = history_dicts + [{"role": "user", "content": full_message}]
 
-    try:
-        jt = JobType(job_type)
-    except ValueError:
-        jt = JobType.CASUAL_CHAT
+    # Classification logic:
+    # - If attachments present: Use UNKNOWN, let router's job_classifier decide
+    # - If no attachments: Use UNKNOWN, router will default to CHAT_LIGHT
+    if attachment_metadata:
+        jt = JobType.UNKNOWN  # Let router's job_classifier handle it with attachment data
+        print(f"[chat_with_attachments] {len(attachment_metadata)} attachment(s) - router will classify")
+    else:
+        jt = JobType.UNKNOWN  # No attachments, router will use default
+        print(f"[chat_with_attachments] No attachments - router will use default")
 
     system_prompt = f"Project: {project.name}. {project.description or ''}"
-    system_prompt += """
-
-The user just uploaded files. Acknowledge receipt and briefly describe what you found in them.
-If it's a CV, mention key details like name, number of roles, and notable positions.
-If it's an image, describe what you see based on the image analysis provided."""
+    
+    # v0.12.17: Only add upload instruction if files were actually uploaded
+    if attachments_summary:
+        system_prompt += "\n\nThe user uploaded files. Review the file information in the context and respond appropriately."
 
     task = LLMTask(
         job_type=jt,
         messages=messages,
+        attachments=attachment_metadata if attachment_metadata else None,
         project_context=full_context if full_context else None,
         system_prompt=system_prompt,
     )
@@ -689,11 +1075,11 @@ If it's an image, describe what you see based on the image analysis provided."""
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
-    # Extract provider and model
     provider_str = _extract_provider_value(result)
     model_str = _extract_model_value(result)
+    
+    print(f"[chat_with_attachments] Response from: {provider_str} / {model_str}")
 
-    # Log messages with provider/model info
     user_content = message if message else "[Attachment only]"
     if attachments_summary:
         user_content += f" [Uploaded: {', '.join(a.client_filename for a in attachments_summary)}]"
@@ -712,8 +1098,6 @@ If it's an image, describe what you see based on the image analysis provided."""
         model=model_str,
     ))
 
-    print(f"[chat_with_attachments] Done. Returning {len(attachments_summary)} summaries")
-
     return ChatResponse(
         project_id=project_id,
         provider=provider_str,
@@ -725,7 +1109,7 @@ If it's an image, describe what you see based on the image analysis provided."""
     )
 
 
-# ====== DIRECT LLM (PROTECTED) ======
+# ====== DIRECT LLM ======
 
 class DirectLLMRequest(BaseModel):
     job_type: str
@@ -735,7 +1119,7 @@ class DirectLLMRequest(BaseModel):
 
 class DirectLLMResponse(BaseModel):
     provider: str
-    model: Optional[str] = None  # ADDED: Model that generated the response
+    model: Optional[str] = None
     content: str
     was_reviewed: bool = False
     critic_review: Optional[str] = None
@@ -746,15 +1130,14 @@ def direct_llm(
     req: DirectLLMRequest,
     auth: AuthResult = Depends(require_auth),
 ) -> DirectLLMResponse:
-    """Direct LLM call without project context (protected)."""
-    try:
-        job_type = JobType(req.job_type)
-    except ValueError:
-        job_type = JobType.UNKNOWN
+    """Direct LLM call without project context."""
+    jt = _classify_job_type(req.message, req.job_type)
+    print(f"[llm] Job type: {jt.value}")
 
     task = LLMTask(
-        job_type=job_type,
+        job_type=jt,
         messages=[{"role": "user", "content": req.message}],
+        force_provider=Provider(req.force_provider) if req.force_provider else None,
     )
 
     try:
@@ -764,6 +1147,8 @@ def direct_llm(
 
     provider_str = _extract_provider_value(result)
     model_str = _extract_model_value(result)
+    
+    print(f"[llm] Response from: {provider_str} / {model_str}")
 
     return DirectLLMResponse(
         provider=provider_str,

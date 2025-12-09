@@ -398,3 +398,22 @@ def reindex_project(
 ) -> Dict[str, int]:
     """Re-index all content for a project (deletes and recreates embeddings)."""
     return index_project(db, project_id, source_types, force=True)
+
+# ============ COMPATIBILITY ALIAS ============
+
+def search(
+    db: Session,
+    project_id: int,
+    query: str,
+    top_k: int = 5,
+    source_types: Optional[List[str]] = None,
+) -> List[SearchResult]:
+    """
+    Compatibility alias for search_embeddings.
+    Returns only the results list (not the tuple).
+    
+    This function exists for backward compatibility with code that calls
+    embeddings_service.search() instead of embeddings_service.search_embeddings().
+    """
+    results, _ = search_embeddings(db, project_id, query, top_k, source_types)
+    return results

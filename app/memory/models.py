@@ -4,6 +4,12 @@ SQLAlchemy ORM models for Orb memory system.
 
 Security Level 4: Sensitive fields use EncryptedText/EncryptedJSON types.
 These require the master key to be initialized before any data operations.
+
+v0.12.4: Added `reasoning` column to Message table to store chain-of-thought
+from <THINKING> tags separately from the visible response content.
+
+v0.12.1 FIX: Added `model` column to Message table to track which LLM model
+generated each response. This was missing, causing model info to be lost.
 """
 
 from datetime import datetime
@@ -89,6 +95,17 @@ class File(Base):
 
 
 class Message(Base):
+    """
+    Chat message storage.
+    
+    v0.12.4: Added `reasoning` column to store chain-of-thought from <THINKING>
+    tags separately from the visible response content. This allows the UI to
+    optionally display reasoning in a collapsible panel without polluting the
+    main message content.
+    
+    v0.12.1: Added `model` column to track which specific LLM model
+    generated each assistant response (e.g., "gpt-4o-mini", "claude-sonnet-4-20250514").
+    """
     __tablename__ = "messages"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -99,7 +116,20 @@ class Message(Base):
     content = Column(EncryptedText, nullable=False)
     
     # v0.16.0: Track which LLM provider generated the response
-    provider = Column(String(50), nullable=True)  # e.g., "anthropic", "openai", "google"
+    # For user messages: "local"
+    # For assistant messages: "openai", "anthropic", "google"
+    provider = Column(String(50), nullable=True)
+    
+    # v0.12.1 FIX: Track which specific model generated the response
+    # For user messages: None
+    # For assistant messages: "gpt-4o-mini", "claude-sonnet-4-20250514", "gemini-2.0-flash", etc.
+    model = Column(String(100), nullable=True)
+    
+    # v0.12.4: Store chain-of-thought reasoning from <THINKING> tags
+    # ENCRYPTED: Reasoning content is sensitive (internal model reasoning)
+    # For user messages: None
+    # For assistant messages: Content from <THINKING>...</THINKING> block (if present)
+    reasoning = Column(EncryptedText, nullable=True)
     
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 

@@ -2,24 +2,13 @@
 """
 LLM module exports.
 
-PRESERVED: All original exports from gemini_vision and file_analyzer.
-ADDED: New policy-based routing exports (optional).
+v0.12.7: Added video analysis and is_video_mime_type exports.
+v0.12.4: Added new vision functions for direct image Q&A.
 """
 
-# ============== ORIGINAL EXPORTS (preserved) ==============
+# ============== ROUTER EXPORTS ==============
 
 from app.llm.router import call_llm, quick_chat, request_code, review_work
-from app.llm.schemas import LLMTask, LLMResult, JobType, Provider
-from app.llm.gemini_vision import analyze_image, is_image_mime_type
-from app.llm.file_analyzer import (
-    extract_text_content,
-    detect_document_type,
-    parse_cv_with_llm,
-    generate_document_summary,
-)
-
-# ============== NEW EXPORTS (policy-based routing) ==============
-
 from app.llm.router import (
     analyze_with_vision,
     web_search_query,
@@ -28,13 +17,43 @@ from app.llm.router import (
     is_policy_routing_enabled,
     enable_policy_routing,
 )
+
+# ============== SCHEMA EXPORTS ==============
+
+from app.llm.schemas import LLMTask, LLMResult, JobType, Provider
+
+# ============== VISION EXPORTS ==============
+
+from app.llm.gemini_vision import (
+    analyze_image,
+    is_image_mime_type,
+    ask_about_image,
+    check_vision_available,
+    get_vision_model_for_complexity,
+    analyze_video,
+)
+
+# ============== FILE ANALYZER EXPORTS ==============
+
+from app.llm.file_analyzer import (
+    extract_text_content,
+    detect_document_type,
+    parse_cv_with_llm,
+    generate_document_summary,
+    is_video_mime_type,
+    is_audio_mime_type,
+)
+
+# ============== CLIENT EXPORTS ==============
+
 from app.llm.clients import (
     check_provider_availability,
     list_available_providers,
     get_embeddings,
 )
 
-# Optional policy imports (may not be present)
+# ============== OPTIONAL POLICY EXPORTS ==============
+
 try:
     from app.llm.policy import (
         load_routing_policy,
@@ -66,32 +85,37 @@ except ImportError:
 # ============== ALL EXPORTS ==============
 
 __all__ = [
-    # Original router exports
+    # Router
     "call_llm",
     "quick_chat",
     "request_code",
     "review_work",
-    # Original schema exports
-    "LLMTask",
-    "LLMResult",
-    "JobType",
-    "Provider",
-    # Original gemini_vision exports
-    "analyze_image",
-    "is_image_mime_type",
-    # Original file_analyzer exports
-    "extract_text_content",
-    "detect_document_type",
-    "parse_cv_with_llm",
-    "generate_document_summary",
-    # New router exports
     "analyze_with_vision",
     "web_search_query",
     "list_job_types",
     "get_routing_info",
     "is_policy_routing_enabled",
     "enable_policy_routing",
-    # New client exports
+    # Schemas
+    "LLMTask",
+    "LLMResult",
+    "JobType",
+    "Provider",
+    # Vision
+    "analyze_image",
+    "is_image_mime_type",
+    "ask_about_image",
+    "check_vision_available",
+    "get_vision_model_for_complexity",
+    "analyze_video",
+    # File analyzer
+    "extract_text_content",
+    "detect_document_type",
+    "parse_cv_with_llm",
+    "generate_document_summary",
+    "is_video_mime_type",
+    "is_audio_mime_type",
+    # Clients
     "check_provider_availability",
     "list_available_providers",
     "get_embeddings",
