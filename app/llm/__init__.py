@@ -2,6 +2,7 @@
 """
 LLM module exports.
 
+v0.15.0: Added Critical Pipeline Spec module exports.
 v0.12.7: Added video analysis and is_video_mime_type exports.
 v0.12.4: Added new vision functions for direct image Q&A.
 """
@@ -51,6 +52,183 @@ from app.llm.clients import (
     list_available_providers,
     get_embeddings,
 )
+
+# ============== v0.15.0: CRITICAL PIPELINE SPEC MODULES ==============
+
+# File Classifier (Spec §1 & §2)
+try:
+    from app.llm.file_classifier import (
+        classify_attachments,
+        classify_from_attachment_info,
+        build_file_map,
+        FileType,
+        ClassifiedFile,
+        ClassificationResult,
+        has_vision_content,
+        has_any_media,
+        get_file_by_id,
+        get_files_by_type,
+    )
+    _file_classifier_exports = [
+        "classify_attachments",
+        "classify_from_attachment_info",
+        "build_file_map",
+        "FileType",
+        "ClassifiedFile",
+        "ClassificationResult",
+        "has_vision_content",
+        "has_any_media",
+        "get_file_by_id",
+        "get_files_by_type",
+    ]
+except ImportError:
+    _file_classifier_exports = []
+
+# Audit Logger (Spec §12)
+try:
+    from app.llm.audit_logger import (
+        get_audit_logger,
+        RoutingTrace,
+        AuditEventType,
+        TaskAuditLog,
+        ModalityFlags,
+        RelationshipFlags,
+    )
+    _audit_logger_exports = [
+        "get_audit_logger",
+        "RoutingTrace",
+        "AuditEventType",
+        "TaskAuditLog",
+        "ModalityFlags",
+        "RelationshipFlags",
+    ]
+except ImportError:
+    _audit_logger_exports = []
+
+# Relationship Detector (Spec §3)
+try:
+    from app.llm.relationship_detector import (
+        detect_relationships,
+        detect_relationships_heuristic,
+        RelationshipType,
+        RelationshipResult,
+    )
+    _relationship_detector_exports = [
+        "detect_relationships",
+        "detect_relationships_heuristic",
+        "RelationshipType",
+        "RelationshipResult",
+    ]
+except ImportError:
+    _relationship_detector_exports = []
+
+# Preprocessor (Spec §5 & §6)
+try:
+    from app.llm.preprocessor import (
+        preprocess_task,
+        build_task_context,
+        build_critical_context,
+        VideoPreprocessResult,
+        ImagePreprocessResult,
+        CodePreprocessResult,
+        TextPreprocessResult,
+        TaskPreprocessResult,
+    )
+    _preprocessor_exports = [
+        "preprocess_task",
+        "build_task_context",
+        "build_critical_context",
+        "VideoPreprocessResult",
+        "ImagePreprocessResult",
+        "CodePreprocessResult",
+        "TextPreprocessResult",
+        "TaskPreprocessResult",
+    ]
+except ImportError:
+    _preprocessor_exports = []
+
+# Token Budgeting (Spec §7)
+try:
+    from app.llm.token_budgeting import (
+        allocate_budget,
+        apply_truncation,
+        create_budget_for_model,
+        select_profile,
+        TokenBudget,
+        PROFILE_DEFAULT,
+        PROFILE_CRITICAL,
+        PROFILE_VIDEO_HEAVY,
+        PROFILE_CODE_ONLY,
+        PROFILE_TEXT_ONLY,
+    )
+    _token_budgeting_exports = [
+        "allocate_budget",
+        "apply_truncation",
+        "create_budget_for_model",
+        "select_profile",
+        "TokenBudget",
+        "PROFILE_DEFAULT",
+        "PROFILE_CRITICAL",
+        "PROFILE_VIDEO_HEAVY",
+        "PROFILE_CODE_ONLY",
+        "PROFILE_TEXT_ONLY",
+    ]
+except ImportError:
+    _token_budgeting_exports = []
+
+# Task Extractor (Spec §4)
+try:
+    from app.llm.task_extractor import (
+        extract_tasks,
+        extract_tasks_heuristic,
+        detect_multi_task_heuristic,
+        Task,
+        TaskExtractionResult,
+        Modality as TaskModality,
+    )
+    _task_extractor_exports = [
+        "extract_tasks",
+        "extract_tasks_heuristic",
+        "detect_multi_task_heuristic",
+        "Task",
+        "TaskExtractionResult",
+        "TaskModality",
+    ]
+except ImportError:
+    _task_extractor_exports = []
+
+# Fallbacks (Spec §11)
+try:
+    from app.llm.fallbacks import (
+        FallbackHandler,
+        handle_video_failure,
+        handle_vision_failure,
+        handle_overwatcher_failure,
+        handle_critique_failure,
+        get_fallback_chain,
+        get_next_fallback,
+        FailureType,
+        FallbackAction,
+        FallbackEvent,
+        FallbackResult,
+        FALLBACK_CHAINS,
+    )
+    _fallbacks_exports = [
+        "FallbackHandler",
+        "handle_video_failure",
+        "handle_vision_failure",
+        "handle_overwatcher_failure",
+        "handle_critique_failure",
+        "get_fallback_chain",
+        "get_next_fallback",
+        "FailureType",
+        "FallbackAction",
+        "FallbackEvent",
+        "FallbackResult",
+        "FALLBACK_CHAINS",
+    ]
+except ImportError:
+    _fallbacks_exports = []
 
 # ============== OPTIONAL POLICY EXPORTS ==============
 
@@ -119,4 +297,13 @@ __all__ = [
     "check_provider_availability",
     "list_available_providers",
     "get_embeddings",
-] + _policy_exports
+] + (
+    _file_classifier_exports +
+    _audit_logger_exports +
+    _relationship_detector_exports +
+    _preprocessor_exports +
+    _token_budgeting_exports +
+    _task_extractor_exports +
+    _fallbacks_exports +
+    _policy_exports
+)

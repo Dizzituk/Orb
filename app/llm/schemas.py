@@ -2,16 +2,16 @@
 """
 LLM routing schemas: job types, task definitions, and result models.
 
-Version: 0.13.0 - Phase 4 Routing Fix
+Version: 0.14.2 - Flash Removal from Auto-Routing
 
 8-ROUTE CLASSIFICATION SYSTEM:
 - CHAT_LIGHT: OpenAI (gpt-4.1-mini) - casual chat
 - TEXT_HEAVY: OpenAI (gpt-4.1) - heavy text work, text-only PDFs
 - CODE_MEDIUM: Anthropic Sonnet - 1-3 files, scoped patches
 - ORCHESTRATOR: Anthropic Opus - multi-file, architecture
-- IMAGE_SIMPLE: Gemini Flash - simple screenshots
-- IMAGE_COMPLEX: Gemini 2.5 Pro - PDFs with images, complex vision
-- VIDEO_HEAVY: Gemini 3.0 Pro - video >10MB
+- IMAGE_SIMPLE: Gemini Flash - LEGACY ONLY (never auto-selected)
+- IMAGE_COMPLEX: Gemini 2.5 Pro - ALL images, PDFs with images, screenshots, OCR
+- VIDEO_HEAVY: Gemini 3.0 Pro - ALL videos
 - OPUS_CRITIC: Gemini 3.0 Pro - explicit Opus review only
 
 HARD RULES:
@@ -21,6 +21,11 @@ HARD RULES:
 4. PDFs with images → Gemini image.complex
 5. If ambiguous between CODE_MEDIUM and ORCHESTRATOR → choose ORCHESTRATOR
 6. opus.critic is explicit/opt-in only (no fuzzy matching)
+7. Gemini Flash (IMAGE_SIMPLE) is NEVER auto-selected (v0.14.2)
+
+v0.14.2:
+- CHANGED: SIMPLE_VISION, SCREENSHOT_ANALYSIS, OCR now map to IMAGE_COMPLEX
+- All legacy vision types route to Gemini 2.5 Pro, not Flash
 """
 from enum import Enum
 from typing import Optional, Any, Set, Dict, List
@@ -111,6 +116,9 @@ class JobType(str, Enum):
     CV_PARSING = "cv_parsing"
     UNKNOWN = "unknown"
     EMBEDDINGS = "embeddings"
+    
+    # =========== PIPELINE-SPECIFIC ROUTES (v0.14.1) ===========
+    VIDEO_CODE_DEBUG = "video.code.debug"  # 2-step: Gemini3 transcribe → Sonnet code
 
 
 class Provider(str, Enum):
@@ -210,47 +218,44 @@ class RoutingConfig:
         
         # Google routes
         JobType.IMAGE_SIMPLE: (Provider.GOOGLE, "GEMINI_VISION_MODEL_FAST", "gemini-2.0-flash"),
-        JobType.IMAGE_COMPLEX: (Provider.GOOGLE, "GEMINI_VISION_MODEL_COMPLEX", "gemini-2.5-pro"),
-        JobType.VIDEO_HEAVY: (Provider.GOOGLE, "GEMINI_VIDEO_HEAVY_MODEL", "gemini-3.0-pro-preview"),
-        JobType.OPUS_CRITIC: (Provider.GOOGLE, "GEMINI_OPUS_CRITIC_MODEL", "gemini-3.0-pro-preview"),
+        JobType.IMAGE_COMPLEX: (Provider.GOOGLE, "GEMINI_VISION_MODEL_PRO", "gemini-2.5-pro"),
+        JobType.VIDEO_HEAVY: (Provider.GOOGLE, "GEMINI_VIDEO_MODEL", "gemini-3-pro-preview"),
+        JobType.OPUS_CRITIC: (Provider.GOOGLE, "GEMINI_OPUS_CRITIC_MODEL", "gemini-3-pro-preview"),
         
-        # Document-specific
+        # Document routes
         JobType.DOCUMENT_PDF_TEXT: (Provider.OPENAI, "OPENAI_MODEL_HEAVY_TEXT", "gpt-4.1"),
-        JobType.DOCUMENT_PDF_VISION: (Provider.GOOGLE, "GEMINI_VISION_MODEL_COMPLEX", "gemini-2.5-pro"),
+        JobType.DOCUMENT_PDF_VISION: (Provider.GOOGLE, "GEMINI_VISION_MODEL_PRO", "gemini-2.5-pro"),
+        
+        # Video+Code debug route
+        JobType.VIDEO_CODE_DEBUG: (Provider.GOOGLE, "GEMINI_VIDEO_MODEL", "gemini-3-pro-preview"),
     }
     
-    # === LEGACY JOB TYPE → PRIMARY TYPE MAPPING ===
+    # === LEGACY → PRIMARY ROUTING MAP ===
     LEGACY_TO_PRIMARY: Dict[JobType, JobType] = {
-        # CHAT_LIGHT aliases
-        JobType.TEXT_ADMIN: JobType.CHAT_LIGHT,
+        # Text/chat → GPT routes
         JobType.CASUAL_CHAT: JobType.CHAT_LIGHT,
-        JobType.QUICK_QUESTION: JobType.CHAT_LIGHT,
         JobType.NOTE_CLEANUP: JobType.CHAT_LIGHT,
-        JobType.COPYWRITING: JobType.CHAT_LIGHT,
-        JobType.PROMPT_SHAPING: JobType.CHAT_LIGHT,
-        JobType.VOICE_INPUT: JobType.CHAT_LIGHT,
-        JobType.EMBEDDINGS: JobType.CHAT_LIGHT,
-        JobType.WEB_SEARCH: JobType.CHAT_LIGHT,
-        
-        # TEXT_HEAVY aliases
+        JobType.QUICK_QUESTION: JobType.CHAT_LIGHT,
+        JobType.COPYWRITING: JobType.TEXT_HEAVY,
+        JobType.PROMPT_SHAPING: JobType.TEXT_HEAVY,
         JobType.SUMMARY: JobType.TEXT_HEAVY,
         JobType.EXPLANATION: JobType.TEXT_HEAVY,
+        JobType.VOICE_INPUT: JobType.TEXT_HEAVY,
+        JobType.TEXT_ADMIN: JobType.TEXT_HEAVY,
         JobType.THOUGHT_ORGANIZATION: JobType.TEXT_HEAVY,
         JobType.SUMMARIZATION: JobType.TEXT_HEAVY,
         JobType.REWRITING: JobType.TEXT_HEAVY,
         JobType.DOCUMENTATION: JobType.TEXT_HEAVY,
         JobType.RESEARCH: JobType.TEXT_HEAVY,
         JobType.LINGUISTICS: JobType.TEXT_HEAVY,
-        JobType.CRITIQUE: JobType.TEXT_HEAVY,
-        JobType.ANALYSIS: JobType.TEXT_HEAVY,
         
-        # CODE_MEDIUM aliases
+        # Medium dev → Sonnet
         JobType.SMALL_CODE: JobType.CODE_MEDIUM,
         JobType.SIMPLE_CODE_CHANGE: JobType.CODE_MEDIUM,
         JobType.SMALL_BUGFIX: JobType.CODE_MEDIUM,
         JobType.BUG_FIX: JobType.CODE_MEDIUM,
         
-        # ORCHESTRATOR aliases
+        # Complex dev → Opus
         JobType.BIG_ARCHITECTURE: JobType.ORCHESTRATOR,
         JobType.COMPLEX_CODE_CHANGE: JobType.ORCHESTRATOR,
         JobType.CODEGEN_FULL_FILE: JobType.ORCHESTRATOR,
@@ -271,42 +276,33 @@ class RoutingConfig:
         JobType.MIGRATION: JobType.ORCHESTRATOR,
         JobType.BUG_ANALYSIS: JobType.ORCHESTRATOR,
         
-        # IMAGE_SIMPLE aliases
-        JobType.SIMPLE_VISION: JobType.IMAGE_SIMPLE,
-        JobType.IMAGE_ANALYSIS: JobType.IMAGE_SIMPLE,
-        JobType.SCREENSHOT_ANALYSIS: JobType.IMAGE_SIMPLE,
-        JobType.OCR: JobType.IMAGE_SIMPLE,
-        JobType.VISION: JobType.IMAGE_SIMPLE,
-        JobType.UI_ANALYSIS: JobType.IMAGE_SIMPLE,
-        
-        # IMAGE_COMPLEX aliases
-        JobType.HEAVY_MULTIMODAL_CRITIQUE: JobType.IMAGE_COMPLEX,
+        # Vision/media → Gemini (v0.14.2: ALL images → IMAGE_COMPLEX, no Flash)
+        JobType.SIMPLE_VISION: JobType.IMAGE_COMPLEX,      # v0.14.2: was IMAGE_SIMPLE
+        JobType.IMAGE_ANALYSIS: JobType.IMAGE_COMPLEX,
+        JobType.SCREENSHOT_ANALYSIS: JobType.IMAGE_COMPLEX,  # v0.14.2: was IMAGE_SIMPLE
+        JobType.OCR: JobType.IMAGE_COMPLEX,                  # v0.14.2: was IMAGE_SIMPLE
+        JobType.VISION: JobType.IMAGE_COMPLEX,
+        JobType.UI_ANALYSIS: JobType.IMAGE_COMPLEX,
         JobType.DOCUMENT_ANALYSIS: JobType.IMAGE_COMPLEX,
         JobType.CV_PARSING: JobType.IMAGE_COMPLEX,
-        
-        # VIDEO_HEAVY aliases
+        JobType.HEAVY_MULTIMODAL_CRITIQUE: JobType.IMAGE_COMPLEX,
         JobType.VIDEO_ANALYSIS: JobType.VIDEO_HEAVY,
         
-        # Primary types map to themselves
-        JobType.CHAT_LIGHT: JobType.CHAT_LIGHT,
-        JobType.TEXT_HEAVY: JobType.TEXT_HEAVY,
-        JobType.CODE_MEDIUM: JobType.CODE_MEDIUM,
-        JobType.ORCHESTRATOR: JobType.ORCHESTRATOR,
-        JobType.IMAGE_SIMPLE: JobType.IMAGE_SIMPLE,
-        JobType.IMAGE_COMPLEX: JobType.IMAGE_COMPLEX,
-        JobType.VIDEO_HEAVY: JobType.VIDEO_HEAVY,
-        JobType.OPUS_CRITIC: JobType.OPUS_CRITIC,
-        JobType.DOCUMENT_PDF_TEXT: JobType.DOCUMENT_PDF_TEXT,
-        JobType.DOCUMENT_PDF_VISION: JobType.DOCUMENT_PDF_VISION,
+        # Special routes
+        JobType.WEB_SEARCH: JobType.TEXT_HEAVY,
+        JobType.CRITIQUE: JobType.ORCHESTRATOR,
+        JobType.ANALYSIS: JobType.TEXT_HEAVY,
         JobType.UNKNOWN: JobType.CHAT_LIGHT,
+        JobType.EMBEDDINGS: JobType.CHAT_LIGHT,
     }
     
-    # === KEYWORD LISTS FOR CLASSIFICATION ===
+    # === KEYWORD SETS FOR CLASSIFICATION ===
     
     CHAT_LIGHT_KEYWORDS: Set[str] = {
-        "hello", "hi", "hey", "thanks", "thank you",
-        "what's up", "how are you", "good morning",
-        "quick question", "simple question",
+        "hi", "hello", "hey", "thanks", "thank you", "ok", "okay",
+        "yes", "no", "sure", "cool", "got it", "understood",
+        "what", "when", "where", "who", "why", "how",
+        "quick question", "just asking", "wondering",
         "can you help", "just wondering",
     }
     
@@ -413,7 +409,7 @@ class RoutingConfig:
     @classmethod
     def normalize_job_type(cls, job_type: JobType) -> JobType:
         """Map any job type to one of the 8 primary types."""
-        return cls.LEGACY_TO_PRIMARY.get(job_type, JobType.CHAT_LIGHT)
+        return cls.LEGACY_TO_PRIMARY.get(job_type, job_type)  # v0.14.2: Return job_type itself if already primary
     
     @classmethod
     def get_routing(cls, job_type: JobType) -> tuple:
@@ -439,7 +435,7 @@ class LLMTask(BaseModel):
     project_context: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
     force_provider: Optional[Provider] = None
-    attachments: Optional[list[dict]] = None
+    attachments: Optional[List[AttachmentInfo]] = None
     provider: Optional[Provider] = None
     model: Optional[str] = None
     routing: Optional[RoutingOptions] = None

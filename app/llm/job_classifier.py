@@ -2,61 +2,74 @@
 """
 Job classification for LLM routing.
 
-Version: 0.12.17 - Multi-File & Mixed-Media Video/Image Routing
+Version: 0.15.0 - Critical Pipeline Spec Integration
+
+CHANGES FROM v0.14.2:
+- Integrated file_classifier.py for MIXED_FILE detection
+- Stable [FILE_X] naming via build_file_map()
+- Enhanced modality flags with HAS_MIXED
+- PDF routing now uses file_classifier's MIXED_FILE detection
+- Backward compatible: compute_modality_flags() returns same structure + new fields
 
 8-ROUTE CLASSIFICATION:
 1. CHAT_LIGHT → OpenAI gpt-4.1-mini (casual chat)
 2. TEXT_HEAVY → OpenAI gpt-4.1 (heavy text work, text-only PDFs)
 3. CODE_MEDIUM → Anthropic Sonnet (scoped code, 1-3 files)
 4. ORCHESTRATOR → Anthropic Opus (architecture, multi-file)
-5. IMAGE_SIMPLE → Gemini Flash (single screenshot, simple request)
-6. IMAGE_COMPLEX → Gemini 2.5 Pro (multi-image 2+, complex vision)
-7. VIDEO_HEAVY → Gemini 3.0 Pro (video >10MB, multi-video 2+, mixed media, deep analysis)
+5. IMAGE_SIMPLE → Gemini Flash (LEGACY ONLY - never auto-selected)
+6. IMAGE_COMPLEX → Gemini 2.5 Pro (ALL images, MIXED_FILE with images)
+7. VIDEO_HEAVY → Gemini 3.0 Pro (ALL videos)
 8. OPUS_CRITIC → Gemini 3.0 Pro (explicit Opus review only)
+9. VIDEO_CODE_DEBUG → 2-step pipeline: Gemini3 transcribe → Sonnet code
 
-VIDEO/IMAGE ROUTING RULES (v0.12.17):
-- Single small video + simple prompt → IMAGE_SIMPLE (Flash)
-- Single large video (>10MB) → VIDEO_HEAVY (3.0 Pro)
-- Multiple videos (2+) → VIDEO_HEAVY (3.0 Pro) [NEW]
-- Video + image(s) mixed → VIDEO_HEAVY (3.0 Pro) [NEW]
-- Small video + deep analysis keywords → VIDEO_HEAVY (3.0 Pro)
-- Single image + simple prompt → IMAGE_SIMPLE (Flash)
-- Multiple images (2+) → IMAGE_COMPLEX (2.5 Pro) [ADJUSTED THRESHOLD]
-- Single image + complex keywords → IMAGE_COMPLEX (2.5 Pro)
+MIXED_FILE ROUTING (v0.15.0):
+- PDFs with embedded images → MIXED_FILE → IMAGE_COMPLEX
+- DOCX with embedded images → MIXED_FILE → IMAGE_COMPLEX
+- PPTX (always has slides) → MIXED_FILE → IMAGE_COMPLEX
+- Text-only PDFs → TEXT_FILE → TEXT_HEAVY
 
 HARD RULES:
 - Images/video NEVER go to Claude (enforced here)
 - PDFs NEVER go to Claude (enforced here)
-- PDFs with image_count == 0 → TEXT_HEAVY (GPT)
-- PDFs with image_count > 0 → IMAGE_COMPLEX (Gemini)
+- MIXED_FILE (docs with images) → Gemini (vision required)
 - opus.critic is EXPLICIT ONLY (no fuzzy matching)
-
-v0.12.17:
-- Added multi-video (2+) → VIDEO_HEAVY routing
-- Added mixed media (video + image) → VIDEO_HEAVY routing
-- Adjusted image threshold: 2+ images → IMAGE_COMPLEX (was >2)
-- Enhanced debug logging for video/image counts and decisions
-
-v0.13.1:
-- Added deep semantic video analysis override for small videos
-- Keywords: "find best shots", "extract narrative", "segment scenes", etc.
-- Added is_claude_allowed() for attachment safety rule
+- Gemini Flash is NEVER auto-selected
 """
 
 import os
 import logging
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, Union
 
 from .schemas import (
     JobType, Provider, RoutingDecision, RoutingConfig, AttachmentInfo
 )
+
+# v0.15.0: Import file_classifier for MIXED_FILE detection
+try:
+    from .file_classifier import (
+        classify_attachments,
+        classify_from_attachment_info,
+        build_file_map,
+        FileType,
+        ClassificationResult,
+        has_vision_content,
+    )
+    FILE_CLASSIFIER_AVAILABLE = True
+except ImportError:
+    FILE_CLASSIFIER_AVAILABLE = False
+    # Stub for backward compatibility
+    class FileType:
+        TEXT_FILE = "TEXT_FILE"
+        CODE_FILE = "CODE_FILE"
+        IMAGE_FILE = "IMAGE_FILE"
+        VIDEO_FILE = "VIDEO_FILE"
+        MIXED_FILE = "MIXED_FILE"
 
 logger = logging.getLogger(__name__)
 
 # ============================================================================
 # ROUTER DEBUG MODE
 # ============================================================================
-# Set ORB_ROUTER_DEBUG=1 in .env to enable detailed routing diagnostics
 ROUTER_DEBUG = os.getenv("ORB_ROUTER_DEBUG", "0") == "1"
 
 def _debug_log(msg: str):
@@ -67,27 +80,122 @@ def _debug_log(msg: str):
 # Size threshold for video escalation (10MB)
 VIDEO_SIZE_THRESHOLD = 10 * 1024 * 1024
 
-# Deep semantic video analysis keywords (triggers VIDEO_HEAVY even for small videos)
+# Deep semantic video analysis keywords
 VIDEO_DEEP_ANALYSIS_KEYWORDS: set = {
-    "find best shots",
-    "extract narrative",
-    "segment scenes",
-    "identify key scenes",
-    "select highlight moments",
-    "analyse storyline",
-    "analyze storyline",
-    "structure this video into chapters",
-    "chapter this video",
-    "find key moments",
-    "extract highlights",
-    "scene detection",
-    "narrative structure",
-    "story arc",
-    "identify chapters",
-    "semantic analysis",
-    "deep video analysis",
-    "detailed video analysis",
+    "find best shots", "extract narrative", "segment scenes",
+    "identify key scenes", "select highlight moments",
+    "analyse storyline", "analyze storyline",
+    "structure this video into chapters", "chapter this video",
+    "find key moments", "extract highlights", "scene detection",
+    "narrative structure", "story arc", "identify chapters",
+    "semantic analysis", "deep video analysis", "detailed video analysis",
 }
+
+
+# =============================================================================
+# MODALITY FLAG HELPER (v0.15.0 - Enhanced with file_classifier)
+# =============================================================================
+
+def compute_modality_flags(
+    attachments: List[AttachmentInfo],
+    base_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Compute modality flags from attachments.
+    
+    v0.15.0: Now uses file_classifier for MIXED_FILE detection.
+    Backward compatible - returns same structure plus new fields.
+    
+    Args:
+        attachments: List of AttachmentInfo objects
+        base_path: Optional base path for file access (for MIXED_FILE detection)
+    
+    Returns:
+        Dict with:
+            # Original fields (backward compat)
+            has_video: bool
+            has_image: bool
+            has_code: bool
+            has_text: bool
+            has_pdf: bool
+            video_count: int
+            image_count: int
+            code_count: int
+            text_count: int
+            video_attachments: List[AttachmentInfo]
+            image_attachments: List[AttachmentInfo]
+            code_attachments: List[AttachmentInfo]
+            
+            # New fields (v0.15.0)
+            has_mixed: bool  # Documents with embedded images
+            mixed_count: int
+            classification_result: Optional[ClassificationResult]
+            file_map: Optional[str]  # Stable [FILE_X] naming
+    """
+    # Basic categorization (backward compat)
+    video_attachments = [a for a in attachments if a.is_video]
+    image_attachments = [a for a in attachments if a.is_image]
+    code_attachments = [a for a in attachments if a.is_code]
+    text_attachments = [a for a in attachments if a.is_document and not a.is_pdf]
+    pdf_attachments = [a for a in attachments if a.is_pdf]
+    
+    # v0.15.0: Use file_classifier for enhanced detection
+    classification_result = None
+    file_map = None
+    has_mixed = False
+    mixed_count = 0
+    
+    if FILE_CLASSIFIER_AVAILABLE and attachments:
+        try:
+            classification_result = classify_from_attachment_info(attachments)
+            file_map = build_file_map(classification_result)
+            
+            # Extract MIXED_FILE info
+            has_mixed = classification_result.HAS_MIXED
+            mixed_count = len(classification_result.mixed_files)
+            
+            if ROUTER_DEBUG:
+                _debug_log(f"file_classifier results:")
+                _debug_log(f"  HAS_TEXT: {classification_result.HAS_TEXT}")
+                _debug_log(f"  HAS_CODE: {classification_result.HAS_CODE}")
+                _debug_log(f"  HAS_IMAGE: {classification_result.HAS_IMAGE}")
+                _debug_log(f"  HAS_VIDEO: {classification_result.HAS_VIDEO}")
+                _debug_log(f"  HAS_MIXED: {classification_result.HAS_MIXED}")
+                _debug_log(f"  mixed_files: {[f.file_id for f in classification_result.mixed_files]}")
+                
+        except Exception as e:
+            logger.warning(f"file_classifier failed, using fallback: {e}")
+            if ROUTER_DEBUG:
+                _debug_log(f"file_classifier error: {e}")
+    
+    # Fallback MIXED_FILE detection for PDFs (if file_classifier unavailable)
+    if not FILE_CLASSIFIER_AVAILABLE:
+        for pdf in pdf_attachments:
+            if pdf.pdf_image_count and pdf.pdf_image_count > 0:
+                has_mixed = True
+                mixed_count += 1
+    
+    return {
+        # Original fields (backward compat)
+        "has_video": len(video_attachments) > 0,
+        "has_image": len(image_attachments) > 0,
+        "has_code": len(code_attachments) > 0,
+        "has_text": len(text_attachments) > 0 or len(pdf_attachments) > 0,
+        "has_pdf": len(pdf_attachments) > 0,
+        "video_count": len(video_attachments),
+        "image_count": len(image_attachments),
+        "code_count": len(code_attachments),
+        "text_count": len(text_attachments) + len(pdf_attachments),
+        "video_attachments": video_attachments,
+        "image_attachments": image_attachments,
+        "code_attachments": code_attachments,
+        
+        # New fields (v0.15.0)
+        "has_mixed": has_mixed,
+        "mixed_count": mixed_count,
+        "classification_result": classification_result,
+        "file_map": file_map,
+    }
 
 
 def classify_job(
@@ -99,22 +207,26 @@ def classify_job(
     """
     Classify a job and return routing decision.
     
+    v0.15.0: Enhanced with MIXED_FILE detection via file_classifier.
+    
     Priority order:
     1. Explicit opus.critic (job_type or metadata)
     2. Explicit document.pdf_text / document.pdf_vision override
     3. User override detection ("force Opus", "use GPT")
-    4. Video attachments → VIDEO_HEAVY or IMAGE_SIMPLE
-    5. Image attachments → IMAGE_SIMPLE or IMAGE_COMPLEX
-    6. PDF attachments → TEXT_HEAVY or IMAGE_COMPLEX (based on image_count)
-    7. Code detection → ORCHESTRATOR or CODE_MEDIUM
-    8. Text complexity → TEXT_HEAVY or CHAT_LIGHT
-    9. Default → CHAT_LIGHT
+    4. Video+Code → VIDEO_CODE_DEBUG pipeline
+    5. Video attachments → VIDEO_HEAVY
+    6. Code attachments → CODE_MEDIUM/ORCHESTRATOR (code wins over images)
+    7. Image attachments → IMAGE_COMPLEX
+    8. MIXED_FILE (docs with images) → IMAGE_COMPLEX (v0.15.0)
+    9. PDF attachments → TEXT_HEAVY or IMAGE_COMPLEX
+    10. Text complexity → TEXT_HEAVY or CHAT_LIGHT
+    11. Default → CHAT_LIGHT
     
     Args:
         message: User message text
         attachments: List of AttachmentInfo objects
         requested_job_type: Explicitly requested job type string
-        metadata: Optional metadata dict (for opus.critic trigger)
+        metadata: Optional metadata dict
     
     Returns:
         RoutingDecision with job_type, provider, model, reason
@@ -124,7 +236,7 @@ def classify_job(
     message_lower = message.lower()
     
     # =========================================================================
-    # DEBUG LOGGING - Full visibility into classification inputs
+    # DEBUG LOGGING
     # =========================================================================
     if ROUTER_DEBUG:
         _debug_log("=" * 70)
@@ -146,9 +258,10 @@ def classify_job(
                 _debug_log(f"    is_image: {att.is_image}")
                 _debug_log(f"    is_video: {att.is_video}")
                 _debug_log(f"    is_pdf: {att.is_pdf}")
+                _debug_log(f"    pdf_image_count: {getattr(att, 'pdf_image_count', 'N/A')}")
     
     # =========================================================================
-    # 1. EXPLICIT OPUS.CRITIC CHECK (opt-in only, no fuzzy matching)
+    # 1. EXPLICIT OPUS.CRITIC CHECK
     # =========================================================================
     
     if requested_job_type == "opus.critic":
@@ -158,7 +271,6 @@ def classify_job(
             "Explicit opus.critic job type requested"
         )
     
-    # Metadata trigger: source_model == claude-opus + intent == critic
     if (metadata.get("source_model", "").startswith("claude-opus") and 
         metadata.get("intent") == "critic"):
         return _make_decision(
@@ -193,180 +305,72 @@ def classify_job(
         return override_result
     
     # =========================================================================
-    # 4. VIDEO ATTACHMENTS → GEMINI ONLY
+    # 3.5 COMPUTE MODALITY FLAGS (v0.15.0: with file_classifier)
     # =========================================================================
     
-    video_attachments = [a for a in attachments if a.is_video]
-    image_attachments = [a for a in attachments if a.is_image]
+    modality_flags = compute_modality_flags(attachments)
+    
+    if ROUTER_DEBUG:
+        _debug_log(f"Section 3.5: MODALITY FLAGS")
+        _debug_log(f"  has_video: {modality_flags['has_video']} ({modality_flags['video_count']})")
+        _debug_log(f"  has_image: {modality_flags['has_image']} ({modality_flags['image_count']})")
+        _debug_log(f"  has_code: {modality_flags['has_code']} ({modality_flags['code_count']})")
+        _debug_log(f"  has_text: {modality_flags['has_text']}")
+        _debug_log(f"  has_mixed: {modality_flags['has_mixed']} ({modality_flags['mixed_count']})")
+        if modality_flags.get('file_map'):
+            _debug_log(f"  file_map generated: {len(modality_flags['file_map'])} chars")
+    
+    # =========================================================================
+    # 4. VIDEO+CODE DEBUG PIPELINE (v0.14.1)
+    # =========================================================================
+    
+    if modality_flags["has_video"] and modality_flags["has_code"]:
+        if ROUTER_DEBUG:
+            _debug_log(f"  → VIDEO+CODE detected: {modality_flags['video_count']} video(s) + {modality_flags['code_count']} code file(s)")
+            _debug_log(f"  → Returning VIDEO_CODE_DEBUG (Gemini3 → Sonnet pipeline)")
+        
+        return _make_decision(
+            JobType.VIDEO_CODE_DEBUG,
+            f"Video+Code debug pipeline: {modality_flags['video_count']} video(s) + {modality_flags['code_count']} code file(s) → Gemini3 transcription → Sonnet coding",
+            file_map=modality_flags.get('file_map')
+        )
+    
+    # =========================================================================
+    # 5. VIDEO ATTACHMENTS → GEMINI 3 PRO
+    # =========================================================================
+    
+    video_attachments = modality_flags["video_attachments"]
+    image_attachments = modality_flags["image_attachments"]
     
     if video_attachments:
         video_count = len(video_attachments)
-        image_count = len(image_attachments)
         total_video_size = sum(a.size_bytes for a in video_attachments)
         
         if ROUTER_DEBUG:
-            _debug_log(f"Section 4: VIDEO DETECTION - {video_count} video(s), {image_count} image(s)")
+            _debug_log(f"Section 5: VIDEO DETECTION - {video_count} video(s)")
             _debug_log(f"  Total video size: {total_video_size / 1024 / 1024:.1f}MB")
+            _debug_log(f"  → ALL VIDEO → VIDEO_HEAVY (Gemini 3.0 Pro)")
         
-        # Check for deep semantic analysis keywords (overrides size-based logic)
-        needs_deep_analysis = _has_video_deep_analysis_keywords(message_lower)
-        
-        # RULE: Mixed media (video + image) → Always VIDEO_HEAVY (Gemini 3.0 Pro)
-        if video_count > 0 and image_count > 0:
-            if ROUTER_DEBUG:
-                _debug_log(f"  → MIXED MEDIA: {video_count} video(s) + {image_count} image(s) → VIDEO_HEAVY")
-            return _make_decision(
-                JobType.VIDEO_HEAVY,
-                f"Mixed media: {video_count} video(s) + {image_count} image(s) → Gemini 3.0 Pro"
-            )
-        
-        # RULE: Multiple videos (2+) → Always VIDEO_HEAVY (Gemini 3.0 Pro)
-        if video_count >= 2:
-            if ROUTER_DEBUG:
-                _debug_log(f"  → MULTIPLE VIDEOS: {video_count} videos → VIDEO_HEAVY")
-            return _make_decision(
-                JobType.VIDEO_HEAVY,
-                f"Multiple videos ({video_count}) → Gemini 3.0 Pro"
-            )
-        
-        # RULE: Large video (>10MB) → VIDEO_HEAVY (Gemini 3.0 Pro)
-        if total_video_size > VIDEO_SIZE_THRESHOLD:
-            if ROUTER_DEBUG:
-                _debug_log(f"  → LARGE VIDEO: {total_video_size / 1024 / 1024:.1f}MB → VIDEO_HEAVY")
-            return _make_decision(
-                JobType.VIDEO_HEAVY,
-                f"Large video ({total_video_size / 1024 / 1024:.1f}MB) → Gemini 3.0 Pro"
-            )
-        
-        # RULE: Small video + deep analysis keywords → VIDEO_HEAVY (Gemini 3.0 Pro)
-        elif needs_deep_analysis:
-            if ROUTER_DEBUG:
-                _debug_log(f"  → DEEP ANALYSIS: Small video with semantic analysis → VIDEO_HEAVY")
-            return _make_decision(
-                JobType.VIDEO_HEAVY,
-                f"Small video ({total_video_size / 1024 / 1024:.1f}MB) with deep analysis → Gemini 3.0 Pro"
-            )
-        
-        # RULE: Single small video, simple request → IMAGE_SIMPLE (Gemini Flash)
-        else:
-            if ROUTER_DEBUG:
-                _debug_log(f"  → SIMPLE VIDEO: Single small video → IMAGE_SIMPLE (Flash)")
-            return _make_decision(
-                JobType.IMAGE_SIMPLE,
-                f"Small video ({total_video_size / 1024 / 1024:.1f}MB), simple request → Gemini Flash"
-            )
+        return _make_decision(
+            JobType.VIDEO_HEAVY,
+            f"Video analysis: {video_count} video(s), {total_video_size / 1024 / 1024:.1f}MB → Gemini 3.0 Pro",
+            file_map=modality_flags.get('file_map')
+        )
     
     # =========================================================================
-    # 5. IMAGE ATTACHMENTS → GEMINI ONLY (NEVER CLAUDE)
+    # 6. CODE ATTACHMENTS → ANTHROPIC (code wins over images)
     # =========================================================================
     
-    # Note: image_attachments already computed above for mixed media check
-    if image_attachments:
-        image_count = len(image_attachments)
-        total_image_size = sum(a.size_bytes for a in image_attachments)
-        
-        if ROUTER_DEBUG:
-            _debug_log(f"Section 5: IMAGE DETECTION - {image_count} image(s)")
-            _debug_log(f"  Total image size: {total_image_size / 1024 / 1024:.1f}MB")
-        
-        # RULE: Multiple images (2+) OR complex vision keywords → IMAGE_COMPLEX (Gemini 2.5 Pro)
-        if image_count >= 2 or _has_complex_vision_keywords(message_lower):
-            if ROUTER_DEBUG:
-                if image_count >= 2:
-                    _debug_log(f"  → MULTIPLE IMAGES: {image_count} images → IMAGE_COMPLEX")
-                else:
-                    _debug_log(f"  → COMPLEX VISION: Complex keywords detected → IMAGE_COMPLEX")
-            
-            return _make_decision(
-                JobType.IMAGE_COMPLEX,
-                f"{image_count} image(s), complex analysis → Gemini 2.5 Pro"
-            )
-        
-        # RULE: Single image, simple request → IMAGE_SIMPLE (Gemini Flash)
-        else:
-            if ROUTER_DEBUG:
-                _debug_log(f"  → SIMPLE IMAGE: Single image, simple request → IMAGE_SIMPLE")
-            return _make_decision(
-                JobType.IMAGE_SIMPLE,
-                f"Single image, simple analysis → Gemini Flash"
-            )
-    
-    # =========================================================================
-    # 6. DOCUMENT FILES (.md, .txt, .csv) → Smart routing based on intent
-    # =========================================================================
-    
-    doc_attachments = [a for a in attachments 
-                       if a.filename.lower().endswith(('.md', '.txt', '.csv', '.json', '.yaml', '.yml'))]
-    
-    if ROUTER_DEBUG:
-        _debug_log(f"Section 6: DOCUMENT FILES - Found {len(doc_attachments)} document(s)")
-    
-    if doc_attachments:
-        # Architecture/design keywords - these take PRIORITY
-        architecture_keywords = [
-            "architecture design", "high-level architecture", "system architecture",
-            "design a revised architecture", "architect", "architectural",
-            "design a system", "design a new system", "refactor the entire",
-            "comprehensive architectural analysis", "deep system dive",
-            "structural improvements", "system design", "component design"
-        ]
-        
-        # Simple doc processing keywords
-        simple_doc_keywords = [
-            "summari", "explain", "describe", "list", "outline",
-            "convert", "format", "show me", "what is", "what does",
-            "tell me about", "read this", "preview", "quick look"
-        ]
-        
-        # Check for architecture/design intent FIRST (higher priority)
-        has_architecture_request = any(kw in message_lower for kw in architecture_keywords)
-        if ROUTER_DEBUG:
-            matched_arch = [kw for kw in architecture_keywords if kw in message_lower]
-            _debug_log(f"  Architecture check: {has_architecture_request} (matched: {matched_arch})")
-        
-        if has_architecture_request:
-            _debug_log(f"  → Returning ORCHESTRATOR (architecture design)")
-            return _make_decision(
-                JobType.ORCHESTRATOR,
-                f"Document with architecture design request: {len(doc_attachments)} file(s)"
-            )
-        
-        # Then check for simple processing
-        has_simple_request = any(kw in message_lower for kw in simple_doc_keywords)
-        if ROUTER_DEBUG:
-            matched_simple = [kw for kw in simple_doc_keywords if kw in message_lower]
-            _debug_log(f"  Simple doc check: {has_simple_request} (matched: {matched_simple})")
-        
-        if has_simple_request:
-            _debug_log(f"  → Returning CHAT_LIGHT (simple doc processing)")
-            return _make_decision(
-                JobType.CHAT_LIGHT,
-                f"Document task: {len(doc_attachments)} file(s), simple processing"
-            )
-        
-        if ROUTER_DEBUG:
-            _debug_log(f"  No keywords matched, falling through to next section")
-        # Default for documents: let it fall through to other checks
-        # (will likely end up as CHAT_LIGHT in the default section)
-    
-    # =========================================================================
-    # 7. PDF ATTACHMENTS → DETERMINISTIC ROUTING (NEVER CLAUDE)
-    # =========================================================================
-    
-    pdf_attachments = [a for a in attachments if a.is_pdf]
-    if pdf_attachments:
-        return _classify_pdf(pdf_attachments, message_lower)
-    
-    # =========================================================================
-    # 8. CODE DETECTION → ANTHROPIC (Sonnet or Opus)
-    # =========================================================================
-    
-    code_attachments = [a for a in attachments if a.is_code]
-    if ROUTER_DEBUG:
-        _debug_log(f"Section 8: CODE DETECTION - Found {len(code_attachments)} code file(s)")
+    code_attachments = modality_flags["code_attachments"]
     
     if code_attachments or _has_code_keywords(message_lower):
-        # Bugfix keywords - prefer CODE_MEDIUM for these
+        if ROUTER_DEBUG:
+            _debug_log(f"Section 6: CODE DETECTION - Found {len(code_attachments)} code file(s)")
+            if modality_flags["has_image"]:
+                _debug_log(f"  Note: {modality_flags['image_count']} image(s) also present - code takes priority")
+            if modality_flags["has_mixed"]:
+                _debug_log(f"  Note: {modality_flags['mixed_count']} mixed file(s) also present - code takes priority")
+        
         bugfix_keywords = [
             "bug", "bugfix", "fix", "error", "issue", "traceback",
             "stack trace", "identify bug", "find the issue", "debug",
@@ -378,43 +382,130 @@ def classify_job(
         if ROUTER_DEBUG:
             matched_bugfix = [kw for kw in bugfix_keywords if kw in message_lower]
             _debug_log(f"  Bugfix check: {has_bugfix_request} (matched: {matched_bugfix})")
-            _debug_log(f"  Code files: {len(code_attachments)}")
         
-        # Single code file + bugfix keywords → CODE_MEDIUM (Sonnet)
         if len(code_attachments) == 1 and has_bugfix_request:
             _debug_log(f"  → Returning CODE_MEDIUM (single file + bugfix)")
             return _make_decision(
                 JobType.CODE_MEDIUM,
-                "Single code file with bugfix request"
+                "Single code file with bugfix request → Sonnet",
+                file_map=modality_flags.get('file_map')
             )
         
-        # Multi-file OR architecture keywords → ORCHESTRATOR (Opus)
         if len(code_attachments) > 3 or _has_architecture_keywords(message_lower):
             _debug_log(f"  → Returning ORCHESTRATOR (multi-file or architecture)")
             return _make_decision(
                 JobType.ORCHESTRATOR,
-                "Multi-file or architecture-level code task"
+                "Multi-file or architecture-level code task → Opus",
+                file_map=modality_flags.get('file_map')
             )
         
-        # Scoped code keywords → CODE_MEDIUM (Sonnet)
         elif _has_scoped_code_keywords(message_lower):
             _debug_log(f"  → Returning CODE_MEDIUM (scoped code task)")
             return _make_decision(
                 JobType.CODE_MEDIUM,
-                "Scoped code task (1-3 files)"
+                "Scoped code task (1-3 files) → Sonnet",
+                file_map=modality_flags.get('file_map')
             )
         
-        # Default for code: CODE_MEDIUM (Sonnet) instead of ORCHESTRATOR
-        # Only escalate to Opus when truly needed (multi-file, architecture)
         else:
             _debug_log(f"  → Returning CODE_MEDIUM (default for code)")
             return _make_decision(
                 JobType.CODE_MEDIUM,
-                "Code task (defaulting to Sonnet for safety)"
+                "Code task (defaulting to Sonnet)",
+                file_map=modality_flags.get('file_map')
             )
     
     # =========================================================================
-    # 9. TEXT COMPLEXITY DETECTION
+    # 7. IMAGE ATTACHMENTS → GEMINI 2.5 PRO
+    # =========================================================================
+    
+    if image_attachments:
+        image_count = len(image_attachments)
+        total_image_size = sum(a.size_bytes for a in image_attachments)
+        
+        if ROUTER_DEBUG:
+            _debug_log(f"Section 7: IMAGE DETECTION - {image_count} image(s)")
+            _debug_log(f"  Total image size: {total_image_size / 1024 / 1024:.1f}MB")
+            _debug_log(f"  → ALL IMAGES → IMAGE_COMPLEX (Gemini 2.5 Pro)")
+        
+        return _make_decision(
+            JobType.IMAGE_COMPLEX,
+            f"Image analysis: {image_count} image(s) → Gemini 2.5 Pro",
+            file_map=modality_flags.get('file_map')
+        )
+    
+    # =========================================================================
+    # 7.5. MIXED_FILE (Docs with images) → GEMINI 2.5 PRO (v0.15.0)
+    # =========================================================================
+    
+    if modality_flags["has_mixed"]:
+        mixed_count = modality_flags["mixed_count"]
+        
+        if ROUTER_DEBUG:
+            _debug_log(f"Section 7.5: MIXED_FILE DETECTION - {mixed_count} mixed file(s)")
+            _debug_log(f"  → MIXED_FILE → IMAGE_COMPLEX (Gemini 2.5 Pro for vision)")
+        
+        return _make_decision(
+            JobType.IMAGE_COMPLEX,
+            f"Documents with embedded images: {mixed_count} mixed file(s) → Gemini 2.5 Pro (vision required)",
+            file_map=modality_flags.get('file_map')
+        )
+    
+    # =========================================================================
+    # 8. DOCUMENT FILES (.md, .txt, .csv) → Smart routing
+    # =========================================================================
+    
+    doc_attachments = [a for a in attachments 
+                       if a.filename.lower().endswith(('.md', '.txt', '.csv', '.json', '.yaml', '.yml'))]
+    
+    if ROUTER_DEBUG:
+        _debug_log(f"Section 8: DOCUMENT FILES - Found {len(doc_attachments)} document(s)")
+    
+    if doc_attachments:
+        architecture_keywords = [
+            "architecture design", "high-level architecture", "system architecture",
+            "design a revised architecture", "architect", "architectural",
+            "design a system", "design a new system", "refactor the entire",
+            "comprehensive architectural analysis", "deep system dive",
+            "structural improvements", "system design", "component design"
+        ]
+        
+        simple_doc_keywords = [
+            "summari", "explain", "describe", "list", "outline",
+            "convert", "format", "show me", "what is", "what does",
+            "tell me about", "read this", "preview", "quick look"
+        ]
+        
+        has_architecture_request = any(kw in message_lower for kw in architecture_keywords)
+        
+        if has_architecture_request:
+            _debug_log(f"  → Returning ORCHESTRATOR (architecture design)")
+            return _make_decision(
+                JobType.ORCHESTRATOR,
+                f"Document with architecture design request: {len(doc_attachments)} file(s)",
+                file_map=modality_flags.get('file_map')
+            )
+        
+        has_simple_request = any(kw in message_lower for kw in simple_doc_keywords)
+        
+        if has_simple_request:
+            _debug_log(f"  → Returning CHAT_LIGHT (simple doc processing)")
+            return _make_decision(
+                JobType.CHAT_LIGHT,
+                f"Document task: {len(doc_attachments)} file(s), simple processing",
+                file_map=modality_flags.get('file_map')
+            )
+    
+    # =========================================================================
+    # 9. PDF ATTACHMENTS → DETERMINISTIC ROUTING
+    # =========================================================================
+    
+    pdf_attachments = [a for a in attachments if a.is_pdf]
+    if pdf_attachments:
+        return _classify_pdf(pdf_attachments, message_lower, modality_flags.get('file_map'))
+    
+    # =========================================================================
+    # 10. TEXT COMPLEXITY DETECTION
     # =========================================================================
     
     if _has_heavy_text_keywords(message_lower):
@@ -424,7 +515,7 @@ def classify_job(
         )
     
     # =========================================================================
-    # 10. LEGACY JOB TYPE NORMALIZATION
+    # 11. LEGACY JOB TYPE NORMALIZATION
     # =========================================================================
     
     if requested_job_type:
@@ -439,7 +530,7 @@ def classify_job(
             logger.warning(f"Unknown job type requested: {requested_job_type}")
     
     # =========================================================================
-    # 11. DEFAULT → CHAT_LIGHT
+    # 12. DEFAULT → CHAT_LIGHT
     # =========================================================================
     
     return _make_decision(
@@ -450,15 +541,17 @@ def classify_job(
 
 def _classify_pdf(
     pdf_attachments: List[AttachmentInfo],
-    message_lower: str
+    message_lower: str,
+    file_map: Optional[str] = None,
 ) -> RoutingDecision:
     """
     Deterministic PDF routing based on image count.
     
+    v0.15.0: Uses pdf_image_count for MIXED_FILE detection.
+    
     Rules:
     - image_count == 0 → TEXT_HEAVY (GPT)
-    - image_count > 0 → IMAGE_COMPLEX (Gemini)
-    - NEVER split a PDF across models
+    - image_count > 0 → IMAGE_COMPLEX (Gemini) [MIXED_FILE]
     - NEVER route to Claude
     """
     total_image_count = 0
@@ -470,30 +563,51 @@ def _classify_pdf(
         if pdf.pdf_text_chars is not None:
             total_text_chars += pdf.pdf_text_chars
     
-    # If we don't have image count data, assume it needs vision (safer)
+    if ROUTER_DEBUG:
+        _debug_log(f"Section 9: PDF ROUTING")
+        _debug_log(f"  Total PDFs: {len(pdf_attachments)}")
+        _debug_log(f"  Total image count: {total_image_count}")
+        _debug_log(f"  Total text chars: {total_text_chars}")
+    
+    # If no image count data, check text as signal
     if all(pdf.pdf_image_count is None for pdf in pdf_attachments):
-        logger.warning("PDF image count not analyzed - defaulting to vision route")
-        return _make_decision(
-            JobType.IMAGE_COMPLEX,
-            "PDF not analyzed for images - using vision route (safe default)",
-            pdf_image_count=None,
-            pdf_text_chars=total_text_chars
-        )
+        if total_text_chars > 0:
+            _debug_log(f"  → TEXT_HEAVY (text-only, no image analysis)")
+            return _make_decision(
+                JobType.TEXT_HEAVY,
+                f"Text-based PDF ({total_text_chars} chars, image count not analyzed) → GPT",
+                pdf_image_count=None,
+                pdf_text_chars=total_text_chars,
+                file_map=file_map
+            )
+        else:
+            _debug_log(f"  → IMAGE_COMPLEX (safe default, no text)")
+            return _make_decision(
+                JobType.IMAGE_COMPLEX,
+                "PDF not analyzed (no text, no image count) - using vision route (safe default)",
+                pdf_image_count=None,
+                pdf_text_chars=total_text_chars,
+                file_map=file_map
+            )
     
     # Deterministic routing based on image count
     if total_image_count == 0:
+        _debug_log(f"  → TEXT_HEAVY (0 images)")
         return _make_decision(
             JobType.TEXT_HEAVY,
             f"Text-only PDF ({total_text_chars} chars, 0 images) → GPT",
             pdf_image_count=0,
-            pdf_text_chars=total_text_chars
+            pdf_text_chars=total_text_chars,
+            file_map=file_map
         )
     else:
+        _debug_log(f"  → IMAGE_COMPLEX (MIXED_FILE: {total_image_count} images)")
         return _make_decision(
             JobType.IMAGE_COMPLEX,
-            f"PDF with {total_image_count} image(s) → Gemini vision",
+            f"PDF with {total_image_count} image(s) [MIXED_FILE] → Gemini vision",
             pdf_image_count=total_image_count,
-            pdf_text_chars=total_text_chars
+            pdf_text_chars=total_text_chars,
+            file_map=file_map
         )
 
 
@@ -503,6 +617,7 @@ def _make_decision(
     user_override: bool = False,
     pdf_image_count: Optional[int] = None,
     pdf_text_chars: Optional[int] = None,
+    file_map: Optional[str] = None,
 ) -> RoutingDecision:
     """Create a RoutingDecision with provider/model lookup."""
     provider, model = RoutingConfig.get_routing(job_type)
@@ -520,9 +635,11 @@ def _make_decision(
             _debug_log(f"  PDF Image Count: {pdf_image_count}")
         if pdf_text_chars is not None:
             _debug_log(f"  PDF Text Chars: {pdf_text_chars}")
+        if file_map:
+            _debug_log(f"  File Map: {len(file_map)} chars")
         _debug_log("=" * 70)
     
-    return RoutingDecision(
+    decision = RoutingDecision(
         job_type=job_type,
         provider=provider,
         model=model,
@@ -531,6 +648,14 @@ def _make_decision(
         pdf_image_count=pdf_image_count,
         pdf_text_chars=pdf_text_chars,
     )
+    
+    # v0.15.0: Attach file_map to decision metadata (for prompt injection)
+    if file_map:
+        if not hasattr(decision, 'metadata'):
+            # Store in reason as workaround if RoutingDecision doesn't have metadata field
+            decision.reason = f"{reason}\n\n{file_map}"
+    
+    return decision
 
 
 def _detect_user_override(message_lower: str) -> Optional[RoutingDecision]:
@@ -559,8 +684,8 @@ def _detect_user_override(message_lower: str) -> Optional[RoutingDecision]:
     
     if any(p in message_lower for p in ["force gemini", "use gemini", "send to gemini"]):
         return _make_decision(
-            JobType.IMAGE_SIMPLE,
-            "User requested Gemini explicitly",
+            JobType.IMAGE_COMPLEX,
+            "User requested Gemini explicitly → Gemini 2.5 Pro",
             user_override=True
         )
     
@@ -602,11 +727,7 @@ def _has_complex_vision_keywords(message_lower: str) -> bool:
 
 
 def _has_video_deep_analysis_keywords(message_lower: str) -> bool:
-    """
-    Check for deep semantic video analysis keywords.
-    
-    These keywords trigger VIDEO_HEAVY even for small videos (<10MB).
-    """
+    """Check for deep semantic video analysis keywords."""
     return any(kw in message_lower for kw in VIDEO_DEEP_ANALYSIS_KEYWORDS)
 
 
@@ -615,7 +736,7 @@ def _has_video_deep_analysis_keywords(message_lower: str) -> bool:
 # =============================================================================
 
 def prepare_attachments(
-    raw_attachments: Optional[List[Dict[str, Any]]]
+    raw_attachments: Optional[Union[List[Dict[str, Any]], List[AttachmentInfo]]]
 ) -> List[AttachmentInfo]:
     """Convert raw attachment dicts to AttachmentInfo objects."""
     if not raw_attachments:
@@ -623,15 +744,18 @@ def prepare_attachments(
     
     result = []
     for att in raw_attachments:
-        info = AttachmentInfo(
-            filename=att.get("filename", att.get("original_name", "unknown")),
-            mime_type=att.get("mime_type", att.get("content_type")),
-            size_bytes=att.get("size_bytes", att.get("size", 0)),
-            pdf_image_count=att.get("pdf_image_count"),
-            pdf_text_chars=att.get("pdf_text_chars"),
-            pdf_page_count=att.get("pdf_page_count"),
-        )
-        result.append(info)
+        if isinstance(att, AttachmentInfo):
+            result.append(att)
+        else:
+            info = AttachmentInfo(
+                filename=att.get("filename", att.get("original_name", "unknown")),
+                mime_type=att.get("mime_type", att.get("content_type")),
+                size_bytes=att.get("size_bytes", att.get("size", 0)),
+                pdf_image_count=att.get("pdf_image_count"),
+                pdf_text_chars=att.get("pdf_text_chars"),
+                pdf_page_count=att.get("pdf_page_count"),
+            )
+            result.append(info)
     
     return result
 
@@ -642,7 +766,7 @@ def prepare_attachments(
 
 def classify_and_route(
     message: str,
-    attachments: Optional[List[Dict[str, Any]]] = None,
+    attachments: Optional[Union[List[Dict[str, Any]], List[AttachmentInfo]]] = None,
     job_type: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> RoutingDecision:
@@ -657,7 +781,7 @@ def get_provider_for_job(job_type: JobType) -> Tuple[Provider, str]:
 
 
 def get_routing_for_job_type(job_type_str: str) -> RoutingDecision:
-    """Get routing for a job type string (backward compat)."""
+    """Get routing for a job type string."""
     try:
         jt = JobType(job_type_str)
     except ValueError:
@@ -666,7 +790,7 @@ def get_routing_for_job_type(job_type_str: str) -> RoutingDecision:
 
 
 def get_model_config() -> Dict[str, str]:
-    """Get current model configuration (backward compat)."""
+    """Get current model configuration."""
     return {
         "openai": os.getenv("OPENAI_MODEL_LIGHT_CHAT", "gpt-4.1-mini"),
         "openai_heavy": os.getenv("OPENAI_MODEL_HEAVY_TEXT", "gpt-4.1"),
@@ -710,16 +834,10 @@ def is_claude_forbidden(job_type: JobType) -> bool:
 
 
 def is_claude_allowed(job_type: JobType) -> bool:
-    """
-    Check if this job type is explicitly allowed to go to Claude.
-    
-    Only CODE_MEDIUM and ORCHESTRATOR (and their legacy aliases) are allowed.
-    Used for attachment safety rule enforcement.
-    """
+    """Check if this job type is explicitly allowed to go to Claude."""
     allowed = {
         JobType.CODE_MEDIUM,
         JobType.ORCHESTRATOR,
-        # Legacy aliases that map to these
         JobType.SMALL_CODE,
         JobType.BIG_ARCHITECTURE,
         JobType.COMPLEX_CODE_CHANGE,
@@ -745,3 +863,25 @@ def is_claude_allowed(job_type: JobType) -> bool:
         JobType.BUG_FIX,
     }
     return job_type in allowed
+
+
+# =============================================================================
+# v0.15.0: FILE MAP HELPERS
+# =============================================================================
+
+def get_file_map_for_attachments(attachments: List[AttachmentInfo]) -> Optional[str]:
+    """
+    Generate stable file map for attachments.
+    
+    Returns:
+        File map string or None if file_classifier unavailable
+    """
+    if not FILE_CLASSIFIER_AVAILABLE or not attachments:
+        return None
+    
+    try:
+        result = classify_from_attachment_info(attachments)
+        return build_file_map(result)
+    except Exception as e:
+        logger.warning(f"Failed to generate file map: {e}")
+        return None

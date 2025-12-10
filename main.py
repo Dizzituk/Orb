@@ -1,7 +1,13 @@
 # FILE: main.py
 """
 Orb Backend - FastAPI Application
-Version: 0.13.10
+Version: 0.14.2
+
+v0.14.2 Changes (Flash removal + context logging):
+- Added debug logging to verify document content reaches vision models
+- When images/videos + text files uploaded, confirms text injection to vision context
+- ORB_ROUTER_DEBUG=1 shows first 500 chars of injected context
+- All vision routing now uses Gemini 2.5 Pro (images) or 3 Pro (videos)
 
 v0.13.10 Changes (chat_with_attachments routing fix):
 - CRITICAL FIX: Multi-image/video routing now uses job_classifier
@@ -79,7 +85,7 @@ from app.llm.job_classifier import classify_job
 
 app = FastAPI(
     title="Orb Assistant",
-    version="0.13.10",
+    version="0.14.2",
     description="Personal AI assistant with multi-LLM orchestration and semantic search",
 )
 
@@ -760,6 +766,22 @@ Summary: {analysis.get('summary', 'N/A')}
             vision_context = f"Project: {project.name}."
             if project.description:
                 vision_context += f" {project.description}"
+            
+            # v0.14.2: Include document text content in vision context
+            if document_content_parts:
+                vision_context += "\n\n=== DOCUMENT CONTENT ===\n"
+                vision_context += "\n".join(document_content_parts)
+                vision_context += "\n=== END DOCUMENTS ==="
+                
+                # v0.14.2: Debug logging to verify text content reaches vision model
+                doc_count = len(document_content_parts)
+                context_chars = len(vision_context)
+                print(f"[chat_with_attachments] ✓ DOCUMENT CONTEXT INJECTED: {doc_count} document(s), {context_chars} total chars in vision_context")
+                if os.getenv("ORB_ROUTER_DEBUG") == "1":
+                    print(f"[chat_with_attachments] Document content preview (first 500 chars):")
+                    print(f"  {vision_context[:500]}...")
+            else:
+                print(f"[chat_with_attachments] No document content to inject into vision context")
             
             # Prefer video if present (more complex), otherwise use image(s)
             if len(video_attachments) > 1:

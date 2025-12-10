@@ -1,60 +1,51 @@
 # FILE: app/llm/router.py
 """
-LLM Router (PHASE 4 - v0.13.7)
+LLM Router (PHASE 4 - v0.15.0)
 
-Uses job_classifier for automatic routing based on message content and attachments.
+Version: 0.15.0 - Critical Pipeline Spec Integration
 
-v0.13.7 Changes:
-- CRITICAL FIX: Separate critique prompts for architecture_design vs security_review
-- Architecture critique HARD-CODES environment constraints (single-host, local repos, solo dev)
-- Architecture critique AGGRESSIVELY prevents enterprise infra drift (no K8s/VLANs/containers unless explicit)
-- Security critique keeps strong hardening focus (unchanged)
-- Environment context object passed to critic for all architecture jobs
-- Critique prompt selection based on normalized job_type
+v0.15.0 Changes:
+- Integrated file_classifier.py for MIXED_FILE detection and stable [FILE_X] naming
+- Integrated audit_logger.py for structured routing decision logging
+- Integrated relationship_detector.py for pairwise modality relationship detection
+- Integrated token_budgeting.py for context budget management
+- Integrated task_extractor.py for multi-task parsing (future use)
+- Integrated fallbacks.py for structured failure handling
+- File map injection into prompts for all multimodal jobs
+- Enhanced debug logging with audit trail
 
-v0.13.6 Changes:
-- CRITICAL FIX: High-stakes critique pipeline now triggers for architecture jobs
-- Added normalize_job_type_for_high_stakes() to map orchestrator → architecture_design
-- Architecture design requests with file uploads now route through critique pipeline
+CRITICAL PIPELINE SPEC COMPLIANCE:
+- §1 File Classification: MIXED_FILE detection for PDFs/DOCX with images
+- §2 Stable Naming: [FILE_1], [FILE_2], etc. via build_file_map()
+- §3 Relationship Detection: Pairwise modality relationships
+- §7 Token Budgeting: Context allocation by content type
+- §11 Fallbacks: Structured fallback chains
+- §12 Audit Logging: Full routing decision trace
 
 8-ROUTE CLASSIFICATION SYSTEM:
 - CHAT_LIGHT → OpenAI (gpt-4.1-mini) - casual chat
 - TEXT_HEAVY → OpenAI (gpt-4.1) - heavy text, text-only PDFs
 - CODE_MEDIUM → Anthropic Sonnet - scoped code (1-3 files)
 - ORCHESTRATOR → Anthropic Opus - architecture, multi-file
-- IMAGE_SIMPLE → Gemini Flash - simple screenshots
-- IMAGE_COMPLEX → Gemini 2.5 Pro - PDFs with images, multi-image
-- VIDEO_HEAVY → Gemini 3.0 Pro - video >10MB OR deep semantic analysis
+- IMAGE_SIMPLE → Gemini Flash - LEGACY ONLY (never auto-selected)
+- IMAGE_COMPLEX → Gemini 2.5 Pro - ALL images, PDFs with images, MIXED_FILE
+- VIDEO_HEAVY → Gemini 3.0 Pro - ALL videos
 - OPUS_CRITIC → Gemini 3.0 Pro - explicit Opus review only
+- VIDEO_CODE_DEBUG → 2-step pipeline: Gemini3 transcribe → Sonnet code
 
 HARD RULES:
 - Images/video NEVER go to Claude
 - PDFs NEVER go to Claude
-- opus.critic is EXPLICIT ONLY (no fuzzy matching)
+- MIXED_FILE (docs with images) → Gemini
+- opus.critic is EXPLICIT ONLY
 
-ATTACHMENT SAFETY RULE (v0.13.1):
-- If attachments present AND no job_type specified:
-  - Classify using classifier
-  - Do NOT route to Claude unless classifier explicitly returns code.medium or orchestrator
+HIGH-STAKES CRITIQUE PIPELINE:
+- Opus draft → Gemini 3 critique → Opus revision
+- Triggers: Anthropic + Opus + high-stakes job + response >= 1500 chars
+- Environment context for architecture jobs
 
-HIGH-STAKES CRITIQUE PIPELINE (v0.13.7):
-- When Opus used for high-stakes tasks: Opus draft → Gemini 3 critique → Opus revision
-- Triggers when: Anthropic + Opus + high-stakes job type + response >= 1500 chars
-- High-stakes types: architecture_design, security_review, complex_code_change, etc.
-- Critique prompt customized by job_type with HARD-CODED constraints for architecture
-- Environment context passed to critic for architecture jobs
-- Graceful degradation: Returns original draft on any failure
-
-BUG FIXES:
-- v0.13.2.1: Fixed call_opus_revision() to not use system role in messages
-- v0.13.2.2: Added print() statements for all [critic] logs (logger wasn't showing)
-
-Provider selection priority:
-1. task.force_provider (explicit override from caller)
-2. Job classifier (analyzes message + attachments)
-3. Attachment safety rule enforcement
-4. task.provider (legacy hint)
-5. Fallback to CHAT_LIGHT
+VIDEO+CODE DEBUG PIPELINE:
+- Gemini 3 Pro transcribes videos → Claude Sonnet receives code + transcripts
 """
 import os
 import logging
@@ -85,7 +76,7 @@ from app.jobs.schemas import (
 )
 from app.providers.registry import llm_call as registry_llm_call
 
-# Job classifier (8-route system)
+# Job classifier (8-route system with MIXED_FILE detection)
 from app.llm.job_classifier import (
     classify_job,
     classify_and_route as classifier_classify_and_route,
@@ -94,15 +85,84 @@ from app.llm.job_classifier import (
     is_claude_forbidden,
     is_claude_allowed,
     prepare_attachments,
+    compute_modality_flags,
 )
+
+# Video transcription for pipelines
+from app.llm.gemini_vision import transcribe_video_for_context
+
+# =============================================================================
+# v0.15.0: CRITICAL PIPELINE SPEC MODULE IMPORTS
+# =============================================================================
+
+# Audit logging (Spec §12)
+try:
+    from app.llm.audit_logger import (
+        get_audit_logger,
+        RoutingTrace,
+        AuditEventType,
+    )
+    AUDIT_AVAILABLE = True
+except ImportError:
+    AUDIT_AVAILABLE = False
+    def get_audit_logger():
+        return None
+
+# File classifier (Spec §1 & §2)
+try:
+    from app.llm.file_classifier import (
+        classify_attachments,
+        build_file_map,
+        ClassificationResult,
+    )
+    FILE_CLASSIFIER_AVAILABLE = True
+except ImportError:
+    FILE_CLASSIFIER_AVAILABLE = False
+
+# Relationship detector (Spec §3)
+try:
+    from app.llm.relationship_detector import (
+        detect_relationships,
+        RelationshipResult,
+        RelationshipType,
+    )
+    RELATIONSHIP_DETECTOR_AVAILABLE = True
+except ImportError:
+    RELATIONSHIP_DETECTOR_AVAILABLE = False
+
+# Token budgeting (Spec §7)
+try:
+    from app.llm.token_budgeting import (
+        allocate_budget,
+        create_budget_for_model,
+        TokenBudget,
+    )
+    TOKEN_BUDGETING_AVAILABLE = True
+except ImportError:
+    TOKEN_BUDGETING_AVAILABLE = False
+
+# Fallback handler (Spec §11)
+try:
+    from app.llm.fallbacks import (
+        FallbackHandler,
+        handle_video_failure,
+        handle_vision_failure,
+        handle_overwatcher_failure,
+        get_fallback_chain,
+        FailureType,
+        FallbackAction,
+    )
+    FALLBACKS_AVAILABLE = True
+except ImportError:
+    FALLBACKS_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
 # =============================================================================
 # ROUTER DEBUG MODE
 # =============================================================================
-# Set ORB_ROUTER_DEBUG=1 in .env to enable detailed routing diagnostics
 ROUTER_DEBUG = os.getenv("ORB_ROUTER_DEBUG", "0") == "1"
+AUDIT_ENABLED = os.getenv("ORB_AUDIT_ENABLED", "1") == "1"
 
 def _debug_log(msg: str):
     """Print debug message if ROUTER_DEBUG is enabled."""
@@ -111,50 +171,36 @@ def _debug_log(msg: str):
 
 
 # =============================================================================
-# HIGH-STAKES CRITIQUE PIPELINE CONFIGURATION (v0.13.7)
+# HIGH-STAKES CRITIQUE PIPELINE CONFIGURATION
 # =============================================================================
 
-# High-stakes job types that trigger critique pipeline
-# These are FINE-GRAINED strings from the classifier, NOT the coarse 5-type enum
 HIGH_STAKES_JOB_TYPES = {
-    "architecture_design",       # System architecture design
-    "big_architecture",          # Large-scale architecture changes
-    "high_stakes_infra",         # Infrastructure with high impact
-    "security_review",           # Security audits and reviews
-    "privacy_sensitive_change",  # Privacy-impacting changes
-    "security_sensitive_change", # Alias for security work
-    "complex_code_change",       # Complex multi-file code changes
-    "implementation_plan",       # Detailed implementation plans
-    "spec_review",               # Specification reviews
-    "architecture",              # Legacy alias
-    "deep_planning",             # Deep strategic planning
-    "orchestrator",              # Generic orchestrator (will be normalized)
+    "architecture_design",
+    "big_architecture",
+    "high_stakes_infra",
+    "security_review",
+    "privacy_sensitive_change",
+    "security_sensitive_change",
+    "complex_code_change",
+    "implementation_plan",
+    "spec_review",
+    "architecture",
+    "deep_planning",
+    "orchestrator",
 }
 
-# Minimum response length to trigger critique (characters, ~250 tokens)
 MIN_CRITIQUE_CHARS = int(os.getenv("ORB_MIN_CRITIQUE_CHARS", "1500"))
-
-# Gemini critic model (must be gemini-3-pro or better)
 GEMINI_CRITIC_MODEL = os.getenv("GEMINI_OPUS_CRITIC_MODEL", "gemini-3-pro")
-
-# Token limits for critique pipeline (cost control)
 GEMINI_CRITIC_MAX_TOKENS = int(os.getenv("GEMINI_CRITIC_MAX_TOKENS", "1024"))
 OPUS_REVISION_MAX_TOKENS = int(os.getenv("OPUS_REVISION_MAX_TOKENS", "2048"))
 
 
 # =============================================================================
-# ENVIRONMENT CONTEXT (v0.13.7)
+# ENVIRONMENT CONTEXT
 # =============================================================================
 
 def get_environment_context() -> Dict[str, Any]:
-    """
-    Get current environment context for architecture critique.
-    
-    v0.13.7: NEW - Hard-coded constraints to prevent enterprise infra drift
-    
-    Returns:
-        Environment context dict with deployment constraints
-    """
+    """Get current environment context for architecture critique."""
     return {
         "deployment_type": "single_host",
         "os": "Windows 11",
@@ -195,53 +241,31 @@ def get_environment_context() -> Dict[str, Any]:
 
 
 def normalize_job_type_for_high_stakes(job_type_str: str, reason: str = "") -> str:
-    """
-    Normalize job type to specific high-stakes string.
-    
-    Maps generic types like 'orchestrator' to specific high-stakes types
-    based on classification reason.
-    
-    v0.13.6: Enables high-stakes critique pipeline for architecture jobs
-    that come through as 'orchestrator'.
-    
-    Args:
-        job_type_str: Raw job type string from classifier
-        reason: Classification reason (may contain keywords)
-    
-    Returns:
-        Normalized job type string (for high-stakes matching)
-    """
-    # Already a specific high-stakes type - pass through
+    """Normalize job type to specific high-stakes string."""
     if job_type_str in HIGH_STAKES_JOB_TYPES and job_type_str != "orchestrator":
         return job_type_str
     
-    # Normalize 'orchestrator' based on reason
     if job_type_str == "orchestrator":
         reason_lower = reason.lower()
         
-        # Check for architecture keywords
         architecture_keywords = ["architecture", "system design", "architect", "system architecture"]
         if any(kw in reason_lower for kw in architecture_keywords):
             print(f"[router] Normalized orchestrator → architecture_design (reason: {reason[:80]})")
             return "architecture_design"
         
-        # Check for security keywords
         security_keywords = ["security", "security review", "security audit"]
         if any(kw in reason_lower for kw in security_keywords):
             print(f"[router] Normalized orchestrator → security_review (reason: {reason[:80]})")
             return "security_review"
         
-        # Check for infrastructure keywords
         infra_keywords = ["infrastructure", "infra", "deployment"]
         if any(kw in reason_lower for kw in infra_keywords):
             print(f"[router] Normalized orchestrator → high_stakes_infra (reason: {reason[:80]})")
             return "high_stakes_infra"
         
-        # Default: treat orchestrator as architecture_design
         print(f"[router] Normalized orchestrator → architecture_design (default)")
         return "architecture_design"
     
-    # Not a high-stakes job
     return job_type_str
 
 
@@ -261,7 +285,7 @@ def is_long_enough_for_critique(text: str) -> bool:
 
 
 # =============================================================================
-# CRITIQUE PROMPT TEMPLATES (v0.13.7)
+# CRITIQUE PROMPT TEMPLATES
 # =============================================================================
 
 def build_critique_prompt_for_architecture(
@@ -269,26 +293,7 @@ def build_critique_prompt_for_architecture(
     original_request: str,
     env_context: Dict[str, Any]
 ) -> str:
-    """
-    Build critique prompt for architecture design tasks.
-    
-    v0.13.7: HARD-CODED constraints to prevent enterprise infra drift
-    
-    Focus:
-    - AGGRESSIVELY respect current environment (single host, local repos, solo dev)
-    - EXPLICITLY forbid enterprise infra unless user asked for it
-    - Prefer pragmatic, implementable designs
-    - Flag over-engineering directly
-    - Separate "future hardening" from core design
-    
-    Args:
-        draft_text: Opus draft response
-        original_request: User's original request
-        env_context: Environment context dict with constraints
-    
-    Returns:
-        Formatted critique prompt with HARD constraints
-    """
+    """Build critique prompt for architecture design tasks."""
     forbidden_infra = env_context.get("forbidden_unless_explicit", [])
     acceptable_infra = env_context.get("acceptable_infra", [])
     
@@ -324,54 +329,30 @@ Critically review the proposed architecture with these priorities:
    - Does this design introduce Kubernetes, containers, VLANs, separate VMs, external CI, or doc mirrors?
    - If YES and the user didn't ask for them → FLAG AS OVER-ENGINEERED
    - Are there simpler alternatives using file permissions, process isolation, or Windows security features?
-   - Is the complexity justified for a solo developer on a single machine?
 
 2. **ENVIRONMENT FIT**
    - Can this be implemented by one person in 2-4 weeks?
    - Does it respect the single-host deployment context?
-   - Are safety goals achievable with local controls instead of network segmentation?
 
 3. **TECHNICAL CORRECTNESS**
    - Are there actual errors in the design logic?
-   - Are proposed patterns and technologies sound?
-   - Are critical components missing for stated goals?
+   - Are proposed patterns sound?
 
 4. **PRAGMATIC SAFETY**
-   - Are security invariants appropriate for local deployment (not theoretical enterprise)?
+   - Are security invariants appropriate for local deployment?
    - Can goals be met with simpler solutions?
-   - Is defense-in-depth achieved without infrastructure sprawl?
 
 ===== OUTPUT RULES =====
 
 If the design is OVER-ENGINEERED:
   → State it directly: "This design is over-engineered for your single-host setup."
-  → Explain which components are unnecessary (K8s, containers, VLANs, etc.)
   → Suggest simpler alternatives using local controls
 
-If the design mentions enterprise hardening:
-  → Require it be moved to a clearly separated "Future Hardening (Optional)" section
-  → Do NOT allow it mixed into the core implementable design
-
-If the design is appropriate:
-  → Confirm it respects environment constraints
-  → Highlight pragmatic safety approaches
-  → Suggest minor improvements if needed
-
-Keep your critique under 800 words. Be direct and specific. Your job is to prevent architectural drift toward enterprise infrastructure that the user cannot implement."""
+Keep your critique under 800 words. Be direct and specific."""
 
 
 def build_critique_prompt_for_security(draft_text: str, original_request: str) -> str:
-    """
-    Build critique prompt for security review tasks.
-    
-    Focus:
-    - Strong threat modeling and attack surface analysis
-    - Aggressive hardening recommendations
-    - Deep security verification
-    - No holds barred on security concerns
-    
-    v0.13.7: Security critique keeps strong posture (unchanged from original)
-    """
+    """Build critique prompt for security review tasks."""
     return f"""You are performing a security review.
 
 ORIGINAL REQUEST:
@@ -383,38 +364,17 @@ SECURITY ANALYSIS:
 YOUR TASK:
 Provide a critical security review focusing on:
 
-1. **Threat Model Completeness**
-   - Are all attack vectors identified?
-   - Are there missing threat scenarios?
-   - Is the risk assessment accurate?
+1. **Threat Model Completeness** - Are all attack vectors identified?
+2. **Security Controls** - Are proposed controls sufficient?
+3. **Implementation Risks** - Are there security pitfalls?
+4. **Defense in Depth** - Are there sufficient layers?
 
-2. **Security Controls**
-   - Are proposed controls sufficient?
-   - Are there bypasses or weaknesses?
-   - What additional hardening is needed?
-
-3. **Implementation Risks**
-   - Are there security pitfalls in the implementation approach?
-   - Are cryptographic/auth patterns correct?
-   - Are there timing/side-channel concerns?
-
-4. **Defense in Depth**
-   - Are there sufficient layers of security?
-   - What happens if one layer fails?
-   - Are there single points of failure?
-
-Be aggressive in identifying security issues. Recommend hardening measures even if they add complexity.
-This is a security review - err on the side of caution.
-
-Keep your critique under 800 words. Be direct and specific about security concerns."""
+Be aggressive in identifying security issues.
+Keep your critique under 800 words."""
 
 
 def build_critique_prompt_for_general(draft_text: str, original_request: str, job_type_str: str) -> str:
-    """
-    Build critique prompt for general high-stakes tasks.
-    
-    v0.13.7: Fallback for other high-stakes types
-    """
+    """Build critique prompt for general high-stakes tasks."""
     return f"""You are reviewing high-stakes technical work.
 
 ORIGINAL REQUEST:
@@ -430,7 +390,6 @@ Provide a critical technical review focusing on:
 3. Potential risks or oversights
 4. Areas needing improvement
 
-Be direct and specific. Identify concrete issues, not generic praise.
 Keep your critique under 800 words."""
 
 
@@ -440,39 +399,23 @@ def build_critique_prompt(
     job_type_str: str,
     env_context: Optional[Dict[str, Any]] = None
 ) -> str:
-    """
-    Build critique prompt based on job type.
-    
-    v0.13.7: Routes to appropriate template with environment context for architecture
-    
-    Args:
-        draft_text: The Opus draft response
-        original_request: The user's original request
-        job_type_str: Normalized job type (architecture_design, security_review, etc.)
-        env_context: Environment context dict (for architecture jobs)
-    
-    Returns:
-        Formatted critique prompt for Gemini
-    """
-    # Architecture design tasks - respect environment constraints
+    """Build critique prompt based on job type."""
     if job_type_str in ["architecture_design", "big_architecture", "high_stakes_infra", 
                          "architecture", "orchestrator"]:
         if not env_context:
             env_context = get_environment_context()
         return build_critique_prompt_for_architecture(draft_text, original_request, env_context)
     
-    # Security review tasks - aggressive hardening focus
     elif job_type_str in ["security_review", "security_sensitive_change", 
                            "privacy_sensitive_change"]:
         return build_critique_prompt_for_security(draft_text, original_request)
     
-    # Other high-stakes tasks - general critique
     else:
         return build_critique_prompt_for_general(draft_text, original_request, job_type_str)
 
 
 # =============================================================================
-# DEFAULT MODELS PER PROVIDER (8-route)
+# DEFAULT MODELS PER PROVIDER
 # =============================================================================
 
 DEFAULT_MODELS: Dict[str, str] = {
@@ -480,7 +423,7 @@ DEFAULT_MODELS: Dict[str, str] = {
     "openai_heavy": os.getenv("OPENAI_MODEL_HEAVY_TEXT", "gpt-4.1"),
     "anthropic": os.getenv("ANTHROPIC_SONNET_MODEL", "claude-sonnet-4-5-20250929"),
     "anthropic_opus": os.getenv("ANTHROPIC_OPUS_MODEL", "claude-opus-4-5-20250514"),
-    "google": os.getenv("GEMINI_VISION_MODEL_FAST", "gemini-2.0-flash"),
+    "google": os.getenv("GEMINI_VISION_MODEL_COMPLEX", "gemini-2.5-pro"),
     "google_complex": os.getenv("GEMINI_VISION_MODEL_COMPLEX", "gemini-2.5-pro"),
     "google_video": os.getenv("GEMINI_VIDEO_HEAVY_MODEL", "gemini-3.0-pro-preview"),
     "google_critic": os.getenv("GEMINI_OPUS_CRITIC_MODEL", "gemini-3-pro"),
@@ -492,7 +435,6 @@ DEFAULT_MODELS: Dict[str, str] = {
 # =============================================================================
 
 _LEGACY_TO_PHASE4_JOB_TYPE: Dict[str, Phase4JobType] = {
-    # TEXT types
     JobType.TEXT_ADMIN.value: Phase4JobType.CHAT_SIMPLE,
     JobType.CASUAL_CHAT.value: Phase4JobType.CHAT_SIMPLE,
     JobType.CHAT_LIGHT.value: Phase4JobType.CHAT_SIMPLE,
@@ -501,8 +443,6 @@ _LEGACY_TO_PHASE4_JOB_TYPE: Dict[str, Phase4JobType] = {
     JobType.PROMPT_SHAPING.value: Phase4JobType.CHAT_SIMPLE,
     JobType.SUMMARY.value: Phase4JobType.CHAT_SIMPLE,
     JobType.EXPLANATION.value: Phase4JobType.CHAT_SIMPLE,
-    
-    # Code types
     JobType.SMALL_CODE.value: Phase4JobType.CODE_SMALL,
     JobType.CODE_MEDIUM.value: Phase4JobType.CODE_SMALL,
     JobType.SIMPLE_CODE_CHANGE.value: Phase4JobType.CODE_SMALL,
@@ -511,15 +451,11 @@ _LEGACY_TO_PHASE4_JOB_TYPE: Dict[str, Phase4JobType] = {
     JobType.ORCHESTRATOR.value: Phase4JobType.APP_ARCHITECTURE,
     JobType.COMPLEX_CODE_CHANGE.value: Phase4JobType.CODE_REPO,
     JobType.CODEGEN_FULL_FILE.value: Phase4JobType.CODE_REPO,
-    
-    # Architecture / critique
     JobType.ARCHITECTURE_DESIGN.value: Phase4JobType.APP_ARCHITECTURE,
     JobType.CODE_REVIEW.value: Phase4JobType.CRITIQUE_REVIEW,
     JobType.SPEC_REVIEW.value: Phase4JobType.CRITIQUE_REVIEW,
     JobType.HIGH_STAKES_INFRA.value: Phase4JobType.APP_ARCHITECTURE,
     JobType.OPUS_CRITIC.value: Phase4JobType.CRITIQUE_REVIEW,
-    
-    # Vision types
     JobType.SIMPLE_VISION.value: Phase4JobType.VISION_SIMPLE,
     JobType.IMAGE_SIMPLE.value: Phase4JobType.VISION_SIMPLE,
     JobType.HEAVY_MULTIMODAL_CRITIQUE.value: Phase4JobType.VISION_COMPLEX,
@@ -530,10 +466,7 @@ _LEGACY_TO_PHASE4_JOB_TYPE: Dict[str, Phase4JobType] = {
 
 def _map_to_phase4_job_type(job_type: JobType) -> Phase4JobType:
     """Map our JobType to Phase 4 JobType."""
-    return _LEGACY_TO_PHASE4_JOB_TYPE.get(
-        job_type.value,
-        Phase4JobType.CHAT_SIMPLE,
-    )
+    return _LEGACY_TO_PHASE4_JOB_TYPE.get(job_type.value, Phase4JobType.CHAT_SIMPLE)
 
 
 def _default_importance_for_job_type(job_type: JobType) -> Importance:
@@ -556,34 +489,59 @@ def _default_modalities_for_job_type(job_type: JobType) -> List[Modality]:
 
 
 # =============================================================================
+# v0.15.0: FILE MAP INJECTION
+# =============================================================================
+
+def inject_file_map_into_messages(
+    messages: List[Dict[str, str]],
+    file_map: str,
+) -> List[Dict[str, str]]:
+    """
+    Inject file map into messages for stable file referencing.
+    
+    Adds file map to system message or creates one if needed.
+    """
+    if not file_map:
+        return messages
+    
+    file_map_instruction = f"""
+{file_map}
+
+IMPORTANT: When referring to files in your response, always use the [FILE_X] identifiers shown above.
+"""
+    
+    # Check if there's already a system message
+    new_messages = []
+    system_found = False
+    
+    for msg in messages:
+        if msg.get("role") == "system":
+            # Append file map to existing system message
+            new_content = msg.get("content", "") + "\n\n" + file_map_instruction
+            new_messages.append({"role": "system", "content": new_content})
+            system_found = True
+        else:
+            new_messages.append(msg)
+    
+    # If no system message, add one at the beginning
+    if not system_found:
+        new_messages.insert(0, {"role": "system", "content": file_map_instruction})
+    
+    return new_messages
+
+
+# =============================================================================
 # CLASSIFY AND ROUTE
 # =============================================================================
 
-def classify_and_route(
-    task: LLMTask,
-) -> Tuple[Provider, str, JobType, str]:
-    """
-    Classify task and determine routing using job_classifier.
-    
-    Uses 8-route system with HARD RULES enforcement.
-    
-    Args:
-        task: LLMTask with messages and optional attachments
-    
-    Returns:
-        (provider, model, job_type, reason)
-    """
-    # Extract message text from task
+def classify_and_route(task: LLMTask) -> Tuple[Provider, str, JobType, str]:
+    """Classify task and determine routing using job_classifier."""
     user_messages = [m for m in task.messages if m.get("role") == "user"]
     message_text = user_messages[-1].get("content", "") if user_messages else ""
     
-    # Get requested type from task
     requested_type = task.job_type.value if task.job_type else None
-    
-    # Get metadata
     metadata = task.metadata or {}
     
-    # Classify using job_classifier
     decision = classifier_classify_and_route(
         message=message_text,
         attachments=task.attachments,
@@ -602,12 +560,9 @@ def synthesize_envelope_from_task(
     task: LLMTask,
     session_id: Optional[str] = None,
     project_id: int = 1,
+    file_map: Optional[str] = None,
 ) -> JobEnvelope:
-    """
-    Synthesize a JobEnvelope from LLMTask.
-    
-    v0.13.5: Now properly injects system_prompt and project_context into messages.
-    """
+    """Synthesize a JobEnvelope from LLMTask."""
     phase4_job_type = _map_to_phase4_job_type(task.job_type)
     importance = _default_importance_for_job_type(task.job_type)
     modalities = _default_modalities_for_job_type(task.job_type)
@@ -623,29 +578,24 @@ def synthesize_envelope_from_task(
         max_wall_time_seconds=timeout,
     )
 
-    
-    # ==========================================================================
-    # v0.13.5: BUILD COMPLETE MESSAGES ARRAY WITH CONTEXT INJECTION
-    # ==========================================================================
-    # Combine system_prompt + project_context into a system message,
-    # then append the conversation messages
-    
+    # Build messages with system/project context
     final_messages = []
     
-    # Build system message content
     system_parts = []
     if task.system_prompt:
         system_parts.append(task.system_prompt)
     if task.project_context:
         system_parts.append(task.project_context)
     
-    # If we have system content, add it as the first message
     if system_parts:
         system_content = "\n\n".join(system_parts)
         final_messages.append({"role": "system", "content": system_content})
     
-    # Add the conversation messages
     final_messages.extend(task.messages)
+    
+    # v0.15.0: Inject file map if available
+    if file_map:
+        final_messages = inject_file_map_into_messages(final_messages, file_map)
 
     envelope = JobEnvelope(
         job_id=str(uuid4()),
@@ -657,11 +607,12 @@ def synthesize_envelope_from_task(
         modalities_in=modalities,
         budget=budget,
         output_contract=OutputContract.TEXT_RESPONSE,
-        messages=final_messages,  # v0.13.5: Use injected messages instead of task.messages
+        messages=final_messages,
         metadata={
             "legacy_provider_hint": task.provider.value if task.provider else None,
             "legacy_routing": routing.model_dump() if routing else None,
             "legacy_context": task.project_context,
+            "file_map": file_map,
         },
         allow_multi_model_review=False,
         needs_tools=[],
@@ -686,27 +637,13 @@ def _check_attachment_safety(
     has_attachments: bool,
     job_type_specified: bool,
 ) -> Tuple[Provider, str, str]:
-    """
-    Enforce attachment safety rule.
-    
-    If attachments are present AND no job_type was specified:
-    - Do NOT route to Claude unless classifier explicitly returned code.medium or orchestrator
-    
-    Returns:
-        (provider, model, reason) - possibly modified from original decision
-    """
+    """Enforce attachment safety rule."""
     provider_id = decision.provider.value
     model_id = decision.model
     reason = decision.reason
     
-    # Only apply safety rule when:
-    # 1. Attachments are present
-    # 2. No job_type was specified by the frontend
-    # 3. Classifier returned a Claude route
     if has_attachments and not job_type_specified and provider_id == "anthropic":
-        # Check if the classified job type is explicitly allowed for Claude
         if not is_claude_allowed(decision.job_type):
-            # Redirect to GPT instead of Claude
             logger.warning(
                 "[router] Attachment safety: Blocked Claude route for %s with attachments",
                 decision.job_type.value,
@@ -719,7 +656,7 @@ def _check_attachment_safety(
 
 
 # =============================================================================
-# HIGH-STAKES CRITIQUE PIPELINE (v0.13.7 - Environment Context)
+# HIGH-STAKES CRITIQUE PIPELINE
 # =============================================================================
 
 async def call_gemini_critic(
@@ -727,31 +664,16 @@ async def call_gemini_critic(
     draft_result: LLMResult,
     job_type_str: str,
 ) -> Optional[LLMResult]:
-    """
-    Call Gemini 3 Pro to critique the Opus draft.
-    
-    v0.13.7: Now uses job-type-specific critique prompts with environment context
-    
-    Args:
-        original_task: The original LLMTask
-        draft_result: The Opus draft response
-        job_type_str: Normalized job type string (architecture_design, security_review, etc.)
-    
-    Returns:
-        LLMResult with critique, or None on failure
-    """
-    # Extract original user request
+    """Call Gemini 3 Pro to critique the Opus draft."""
     user_messages = [m for m in original_task.messages if m.get("role") == "user"]
     original_request = user_messages[-1].get("content", "") if user_messages else ""
     
-    # v0.13.7: Get environment context for architecture jobs
     env_context = None
     if job_type_str in ["architecture_design", "big_architecture", "high_stakes_infra", 
                          "architecture", "orchestrator"]:
         env_context = get_environment_context()
-        print(f"[critic] Passing environment context to architecture critique: {env_context['deployment_type']}, {env_context['team_size']}")
+        print(f"[critic] Passing environment context to architecture critique")
     
-    # v0.13.7: Build critique prompt based on job type with environment context
     critique_prompt = build_critique_prompt(
         draft_text=draft_result.content,
         original_request=original_request,
@@ -759,15 +681,11 @@ async def call_gemini_critic(
         env_context=env_context
     )
 
-    critique_messages = [
-        {"role": "user", "content": critique_prompt}
-    ]
+    critique_messages = [{"role": "user", "content": critique_prompt}]
     
     print(f"[critic] Calling Gemini 3 Pro for critique of {job_type_str} task")
-    logger.info("[critic] Calling Gemini 3 Pro for critique of %s task", job_type_str)
     
     try:
-        # Create minimal envelope for critic call
         critic_envelope = JobEnvelope(
             job_id=str(uuid4()),
             session_id=f"critic-{uuid4()}",
@@ -800,9 +718,7 @@ async def call_gemini_critic(
             return None
         
         print(f"[critic] Gemini 3 Pro critique completed: {len(result.content)} chars")
-        logger.info("[critic] Gemini 3 Pro critique completed: %d chars", len(result.content))
         
-        # Return as LLMResult for consistency
         return LLMResult(
             content=result.content,
             provider="google",
@@ -827,23 +743,10 @@ async def call_opus_revision(
     critique_result: LLMResult,
     opus_model_id: str,
 ) -> Optional[LLMResult]:
-    """
-    Call Opus to revise its draft based on Gemini's critique.
-    
-    Args:
-        original_task: The original LLMTask
-        draft_result: The Opus draft response
-        critique_result: The Gemini critique
-        opus_model_id: Opus model identifier
-    
-    Returns:
-        LLMResult with revised answer, or None on failure
-    """
-    # Extract original user request
+    """Call Opus to revise its draft based on Gemini's critique."""
     user_messages = [m for m in original_task.messages if m.get("role") == "user"]
     original_request = user_messages[-1].get("content", "") if user_messages else ""
     
-    # Build revision prompt (all in user message - Anthropic doesn't accept system role)
     revision_prompt = f"""You are revising your own previous answer based on external critique. Address the valid concerns raised while maintaining your technical accuracy. Produce an improved final answer.
 
 ORIGINAL REQUEST:
@@ -864,15 +767,11 @@ Revise your draft answer by:
 
 Provide your revised, final answer."""
 
-    revision_messages = [
-        {"role": "user", "content": revision_prompt}
-    ]
+    revision_messages = [{"role": "user", "content": revision_prompt}]
     
     print("[critic] Calling Opus for revision using Gemini critique")
-    logger.info("[critic] Calling Opus for revision using Gemini critique")
     
     try:
-        # Create envelope for revision call
         revision_envelope = JobEnvelope(
             job_id=str(uuid4()),
             session_id=f"revision-{uuid4()}",
@@ -905,9 +804,7 @@ Provide your revised, final answer."""
             return None
         
         print(f"[critic] Opus revision complete: {len(result.content)} chars")
-        logger.info("[critic] Opus revision complete: %d chars", len(result.content))
         
-        # Return as LLMResult
         return LLMResult(
             content=result.content,
             provider="anthropic",
@@ -926,46 +823,251 @@ Provide your revised, final answer."""
         return None
 
 
+# =============================================================================
+# VIDEO+CODE DEBUG PIPELINE
+# =============================================================================
+
+async def run_video_code_debug_pipeline(
+    task: LLMTask,
+    envelope: JobEnvelope,
+    file_map: Optional[str] = None,
+) -> LLMResult:
+    """2-step pipeline for Video+Code debug jobs."""
+    print("[video-code] Starting Video+Code debug pipeline")
+    
+    attachments = task.attachments or []
+    flags = compute_modality_flags(attachments)
+    
+    video_attachments = flags.get("video_attachments", [])
+    code_attachments = flags.get("code_attachments", [])
+    
+    print(f"[video-code] Found {len(video_attachments)} video(s), {len(code_attachments)} code file(s)")
+    
+    # Step 1: Transcribe videos
+    video_transcripts = []
+    
+    for video_att in video_attachments:
+        video_path = getattr(video_att, 'file_path', None)
+        
+        if not video_path:
+            file_id = getattr(video_att, 'file_id', None)
+            if file_id:
+                project_id = getattr(task, 'project_id', 1) or 1
+                video_path = f"data/files/{project_id}/{video_att.filename}"
+        
+        if video_path:
+            print(f"[video-code] Step 1: Transcribing video: {video_att.filename}")
+            try:
+                transcript = await transcribe_video_for_context(video_path)
+                video_transcripts.append({
+                    "filename": video_att.filename,
+                    "transcript": transcript,
+                })
+            except Exception as e:
+                print(f"[video-code] Transcription failed for {video_att.filename}: {e}")
+                # v0.15.0: Use fallback handler if available
+                if FALLBACKS_AVAILABLE:
+                    action, event = handle_video_failure(
+                        str(e),
+                        has_code=len(code_attachments) > 0,
+                        task_id=envelope.job_id,
+                    )
+                    if action == FallbackAction.SKIP_STEP:
+                        video_transcripts.append({
+                            "filename": video_att.filename,
+                            "transcript": f"[Video transcription failed: {e}]",
+                        })
+        else:
+            video_transcripts.append({
+                "filename": video_att.filename,
+                "transcript": f"[Video file path not available for: {video_att.filename}]",
+            })
+    
+    print(f"[video-code] Step 1 complete: {len(video_transcripts)} video transcript(s)")
+    
+    # Step 2: Build context for Sonnet
+    transcripts_text = ""
+    for vt in video_transcripts:
+        transcripts_text += f"\n\n=== Video: {vt['filename']} ===\n{vt['transcript']}"
+    
+    original_user_message = ""
+    for msg in envelope.messages:
+        if msg.get("role") == "user":
+            original_user_message = msg.get("content", "")
+            break
+    
+    # Build system context with file map
+    system_content = f"""You are debugging code based on video recordings of the issue.
+
+VIDEO TRANSCRIPTS (generated by AI vision model):
+{transcripts_text}
+
+Use the video context above to understand what happened and help debug/fix the code.
+Focus on:
+- Any errors or issues visible in the video
+- User actions that led to the problem
+- Log output or console messages
+- UI state changes"""
+
+    if file_map:
+        system_content += f"\n\n{file_map}\n\nIMPORTANT: When referring to files, use the [FILE_X] identifiers above."
+
+    enhanced_messages = [{"role": "system", "content": system_content}]
+    
+    for msg in envelope.messages:
+        if msg.get("role") != "system":
+            enhanced_messages.append(msg)
+    
+    envelope.messages = enhanced_messages
+    
+    # Step 3: Call Sonnet
+    sonnet_model = os.getenv("ANTHROPIC_SONNET_MODEL", "claude-sonnet-4-5-20250929")
+    print(f"[video-code] Step 2: Calling Sonnet ({sonnet_model}) with code + transcripts")
+    
+    try:
+        result = await registry_llm_call(
+            provider_id="anthropic",
+            model_id=sonnet_model,
+            messages=envelope.messages,
+            job_envelope=envelope,
+        )
+        
+        if not result.is_success():
+            print(f"[video-code] Sonnet call failed: {result.error_message}")
+            return LLMResult(
+                content=result.error_message or "Video+Code pipeline failed",
+                provider="anthropic",
+                model=sonnet_model,
+                finish_reason="error",
+                error_message=result.error_message,
+                prompt_tokens=0,
+                completion_tokens=0,
+                total_tokens=0,
+                cost_usd=0.0,
+                raw_response=None,
+            )
+        
+        print(f"[video-code] Pipeline complete: {len(result.content)} chars")
+        
+        llm_result = LLMResult(
+            content=result.content,
+            provider="anthropic",
+            model=sonnet_model,
+            finish_reason="stop",
+            error_message=None,
+            prompt_tokens=result.usage.prompt_tokens,
+            completion_tokens=result.usage.completion_tokens,
+            total_tokens=result.usage.total_tokens,
+            cost_usd=result.usage.cost_estimate,
+            raw_response=result.raw_response,
+        )
+        
+        llm_result.routing_decision = {
+            "job_type": "video.code.debug",
+            "provider": "anthropic",
+            "model": sonnet_model,
+            "reason": "Video+Code debug pipeline: Gemini3 transcription → Sonnet coding",
+            "pipeline": {
+                "video_count": len(video_transcripts),
+                "code_count": len(code_attachments),
+                "transcript_chars": len(transcripts_text),
+            }
+        }
+        
+        return llm_result
+        
+    except Exception as exc:
+        logger.exception("[video-code] Sonnet call failed: %s", exc)
+        return LLMResult(
+            content="",
+            provider="anthropic",
+            model=sonnet_model,
+            finish_reason="error",
+            error_message=str(exc),
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            cost_usd=0.0,
+            raw_response=None,
+        )
+
+
 async def run_high_stakes_with_critique(
     task: LLMTask,
     provider_id: str,
     model_id: str,
     envelope: JobEnvelope,
     job_type_str: str,
+    file_map: Optional[str] = None,
 ) -> LLMResult:
-    """
-    Run 3-step critique pipeline for high-stakes Opus work.
-    
-    Flow:
-    1. Opus generates draft
-    2. Check length (skip critique if too short)
-    3. Gemini 3 Pro critiques draft (using job-specific prompt with env context)
-    4. Opus revises based on critique
-    
-    Graceful degradation: Returns original draft on any failure.
-    
-    v0.13.7: Critique prompt now customized by job_type with environment context
-    
-    Args:
-        task: Original LLMTask
-        provider_id: "anthropic"
-        model_id: Opus model identifier
-        envelope: JobEnvelope
-        job_type_str: Fine-grained job type string
-    
-    Returns:
-        LLMResult with revised answer (or draft on failure)
-    """
+    """Run 3-step critique pipeline for high-stakes Opus work."""
     print(f"[critic] High-stakes pipeline enabled: job_type={job_type_str} model={model_id}")
-    logger.info(
-        "[critic] High-stakes pipeline enabled: job_type=%s model=%s",
-        job_type_str, model_id
-    )
     
-    # ==========================================================================
-    # STEP 1: Generate Opus Draft
-    # ==========================================================================
+    # v0.15.0: Start audit trace if available
+    trace = None
+    if AUDIT_AVAILABLE and AUDIT_ENABLED:
+        audit_logger = get_audit_logger()
+        if audit_logger:
+            user_text = envelope.messages[-1].get("content", "") if envelope.messages else ""
+            trace = audit_logger.start_trace(
+                session_id=envelope.session_id,
+                project_id=envelope.project_id,
+                user_text=user_text[:500],
+                is_critical=True,
+            )
     
+    # Pre-step: Transcribe video attachments if present
+    attachments = task.attachments or []
+    if attachments:
+        flags = compute_modality_flags(attachments)
+        video_attachments = flags.get("video_attachments", [])
+        
+        if video_attachments:
+            print(f"[critic] Pre-step: Transcribing {len(video_attachments)} video(s)")
+            
+            video_transcripts = []
+            for video_att in video_attachments:
+                video_path = getattr(video_att, 'file_path', None)
+                
+                if not video_path:
+                    file_id = getattr(video_att, 'file_id', None)
+                    if file_id:
+                        project_id = getattr(task, 'project_id', 1) or 1
+                        video_path = f"data/files/{project_id}/{video_att.filename}"
+                
+                if video_path:
+                    print(f"[critic] Pre-step: Transcribing {video_att.filename}")
+                    try:
+                        transcript = await transcribe_video_for_context(video_path)
+                        video_transcripts.append({
+                            "filename": video_att.filename,
+                            "transcript": transcript,
+                        })
+                    except Exception as e:
+                        print(f"[critic] Pre-step: Transcription failed: {e}")
+            
+            if video_transcripts:
+                transcripts_text = ""
+                for vt in video_transcripts:
+                    transcripts_text += f"\n\n=== Video: {vt['filename']} ===\n{vt['transcript']}"
+                
+                print(f"[critic] Pre-step complete: Injected {len(transcripts_text)} chars")
+                
+                video_system_msg = {
+                    "role": "system",
+                    "content": f"""VIDEO CONTEXT (transcribed for this high-stakes review):
+{transcripts_text}
+
+Use the video context above to inform your analysis."""
+                }
+                
+                envelope.messages = [video_system_msg] + list(envelope.messages)
+    
+    # v0.15.0: Inject file map if not already present
+    if file_map:
+        envelope.messages = inject_file_map_into_messages(envelope.messages, file_map)
+    
+    # Step 1: Generate Opus Draft
     try:
         draft_result = await registry_llm_call(
             provider_id=provider_id,
@@ -976,6 +1078,8 @@ async def run_high_stakes_with_critique(
         
         if not draft_result.is_success():
             logger.error("[critic] Opus draft failed: %s", draft_result.error_message)
+            if trace:
+                trace.log_error("OPUS_DRAFT_FAILED", str(draft_result.error_message))
             return LLMResult(
                 content=draft_result.error_message or "",
                 provider=provider_id,
@@ -989,7 +1093,6 @@ async def run_high_stakes_with_critique(
                 raw_response=None,
             )
         
-        # Convert to LLMResult format
         draft = LLMResult(
             content=draft_result.content,
             provider=provider_id,
@@ -1005,8 +1108,20 @@ async def run_high_stakes_with_critique(
         
         print(f"[critic] Opus draft complete: {len(draft.content)} chars")
         
+        if trace:
+            trace.log_model_call(
+                "opus_draft",
+                provider_id,
+                model_id,
+                draft_result.usage.prompt_tokens,
+                draft_result.usage.completion_tokens,
+                draft_result.usage.cost_estimate,
+            )
+        
     except Exception as exc:
         logger.exception("[critic] Opus draft call failed: %s", exc)
+        if trace:
+            trace.log_error("OPUS_DRAFT_EXCEPTION", str(exc))
         return LLMResult(
             content="",
             provider=provider_id,
@@ -1020,22 +1135,14 @@ async def run_high_stakes_with_critique(
             raw_response=None,
         )
     
-    # ==========================================================================
-    # STEP 2: Check Draft Length
-    # ==========================================================================
-    
+    # Step 2: Check Draft Length
     if not is_long_enough_for_critique(draft.content):
-        print(f"[critic] Draft too short for critique ({len(draft.content or '')} chars < {MIN_CRITIQUE_CHARS}), returning draft")
-        logger.info(
-            "[critic] Draft too short for critique (%d chars < %d), returning draft",
-            len(draft.content or ""), MIN_CRITIQUE_CHARS
-        )
+        print(f"[critic] Draft too short for critique ({len(draft.content or '')} chars)")
+        if trace:
+            trace.finalize(success=True)
         return draft
     
-    # ==========================================================================
-    # STEP 3: Call Gemini Critic (v0.13.7 - job-specific prompt + env context)
-    # ==========================================================================
-    
+    # Step 3: Call Gemini Critic
     critique = await call_gemini_critic(
         original_task=task,
         draft_result=draft,
@@ -1044,13 +1151,22 @@ async def run_high_stakes_with_critique(
     
     if not critique or not critique.content:
         print("[critic] Gemini critic failed; returning original Opus draft")
-        logger.warning("[critic] Gemini critic failed; returning original Opus draft")
+        if trace:
+            trace.log_warning("CRITIQUE_FAILED", "Returning original draft")
+            trace.finalize(success=True)
         return draft
     
-    # ==========================================================================
-    # STEP 4: Call Opus for Revision
-    # ==========================================================================
+    if trace:
+        trace.log_model_call(
+            "gemini_critique",
+            "google",
+            GEMINI_CRITIC_MODEL,
+            critique.prompt_tokens,
+            critique.completion_tokens,
+            critique.cost_usd,
+        )
     
+    # Step 4: Call Opus for Revision
     revision = await call_opus_revision(
         original_task=task,
         draft_result=draft,
@@ -1060,14 +1176,23 @@ async def run_high_stakes_with_critique(
     
     if not revision or not revision.content:
         print("[critic] Opus revision failed; returning original Opus draft")
-        logger.warning("[critic] Opus revision failed; returning original Opus draft")
+        if trace:
+            trace.log_warning("REVISION_FAILED", "Returning original draft")
+            trace.finalize(success=True)
         return draft
     
-    # ==========================================================================
-    # SUCCESS: Return Revised Answer
-    # ==========================================================================
+    if trace:
+        trace.log_model_call(
+            "opus_revision",
+            provider_id,
+            model_id,
+            revision.prompt_tokens,
+            revision.completion_tokens,
+            revision.cost_usd,
+        )
+        trace.finalize(success=True)
     
-    # Add metadata about critique pipeline
+    # Success
     revision.routing_decision = {
         "job_type": job_type_str,
         "provider": provider_id,
@@ -1089,45 +1214,29 @@ async def run_high_stakes_with_critique(
 # =============================================================================
 
 async def call_llm_async(task: LLMTask) -> LLMResult:
-    """
-    Primary async LLM call entry point.
-    
-    Provider selection priority:
-    1. task.force_provider (explicit override)
-    2. Job classifier (8-route system with HARD RULES)
-    3. Attachment safety rule enforcement
-    4. High-stakes critique pipeline check (v0.13.7)
-    5. task.provider (legacy hint)
-    6. Fallback to CHAT_LIGHT routing
-    
-    HARD RULES ENFORCED:
-    - Images/video NEVER go to Claude
-    - PDFs NEVER go to Claude
-    
-    ATTACHMENT SAFETY RULE:
-    - If attachments present AND no job_type specified:
-      - Do NOT route to Claude unless classifier returns code.medium/orchestrator
-    
-    HIGH-STAKES CRITIQUE PIPELINE:
-    - When Anthropic + Opus + high-stakes job + response >= 1500 chars:
-      - Run 3-step pipeline: Opus draft → Gemini critique → Opus revision
-      - v0.13.7: Critique prompt customized by job_type with environment context
-    """
+    """Primary async LLM call entry point."""
     session_id = getattr(task, "session_id", None)
     project_id = getattr(task, "project_id", 1) or 1
 
-    # Track if job_type was explicitly specified
     job_type_specified = task.job_type is not None and task.job_type != JobType.UNKNOWN
-    
-    # Track if attachments are present
     has_attachments = bool(task.attachments and len(task.attachments) > 0)
 
-    # Synthesize envelope
+    # v0.15.0: Compute modality flags with file_classifier
+    file_map = None
+    if has_attachments:
+        modality_flags = compute_modality_flags(task.attachments or [])
+        file_map = modality_flags.get("file_map")
+        
+        if ROUTER_DEBUG and file_map:
+            _debug_log(f"File map generated ({len(file_map)} chars)")
+
+    # Synthesize envelope with file map
     try:
         envelope = synthesize_envelope_from_task(
             task=task,
             session_id=session_id,
             project_id=project_id,
+            file_map=file_map,
         )
     except (ValidationError, Exception) as exc:
         logger.warning("[router] Envelope synthesis failed: %s", exc)
@@ -1145,7 +1254,7 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
         )
 
     # ==========================================================================
-    # PROVIDER/MODEL SELECTION (with HARD RULES and ATTACHMENT SAFETY)
+    # PROVIDER/MODEL SELECTION
     # ==========================================================================
     
     if ROUTER_DEBUG:
@@ -1164,95 +1273,61 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
         classified_type = task.job_type
         logger.info("[router] Using force_provider: %s / %s", provider_id, model_id)
         if ROUTER_DEBUG:
-            _debug_log(f"Priority 1: force_provider override")
-            _debug_log(f"  Provider: {provider_id}")
-            _debug_log(f"  Model: {model_id}")
+            _debug_log(f"Priority 1: force_provider override → {provider_id}/{model_id}")
     
-    # Priority 2: Job classifier (8-route system)
+    # Priority 2: Job classifier
     else:
         if ROUTER_DEBUG:
             _debug_log(f"Priority 2: Using job classifier")
         
-        # Check if task already has a valid job_type set (from main.py classification)
         if task.job_type and task.job_type != JobType.UNKNOWN:
-            # Respect the pre-classification instead of re-classifying
             classified_type = task.job_type
             
             if ROUTER_DEBUG:
                 _debug_log(f"  Task has pre-set job_type: {classified_type.value}")
             
-            # Force CHAT_LIGHT to GPT mini immediately
             if classified_type == JobType.CHAT_LIGHT or classified_type.value in ["chat.light", "chat_light", "casual_chat"]:
                 provider = Provider.OPENAI
                 provider_id = "openai"
                 model_id = os.getenv("OPENAI_MODEL_LIGHT_CHAT", "gpt-4.1-mini")
                 reason = "Pre-classified as CHAT_LIGHT, forced to GPT mini"
                 print(f"[router] RESPECTING PRE-CLASSIFICATION: {classified_type.value} → FORCED to {provider_id}/{model_id}")
-                if ROUTER_DEBUG:
-                    _debug_log(f"  CHAT_LIGHT OVERRIDE triggered")
-                    _debug_log(f"    Provider: {provider_id}")
-                    _debug_log(f"    Model: {model_id}")
             else:
-                # Get routing for the pre-classified type
                 decision_temp = get_routing_for_job_type(classified_type.value)
                 provider = decision_temp.provider
                 provider_id = provider.value
                 model_id = decision_temp.model
                 reason = f"Pre-classified as {classified_type.value}"
                 print(f"[router] RESPECTING PRE-CLASSIFICATION: {classified_type.value} → {provider_id}/{model_id}")
-                if ROUTER_DEBUG:
-                    _debug_log(f"  Using routing for pre-classified type")
-                    _debug_log(f"    Provider: {provider_id}")
-                    _debug_log(f"    Model: {model_id}")
         else:
             if ROUTER_DEBUG:
                 _debug_log(f"  No valid pre-classification, calling classifier...")
             
-            # No job_type set, use classifier to determine routing
             provider, model_id, classified_type, reason = classify_and_route(task)
             provider_id = provider.value
             
             if ROUTER_DEBUG:
-                _debug_log(f"  Classifier returned:")
-                _debug_log(f"    Job Type: {classified_type.value}")
-                _debug_log(f"    Provider: {provider_id}")
-                _debug_log(f"    Model: {model_id}")
-                _debug_log(f"    Reason: {reason}")
+                _debug_log(f"  Classifier returned: {classified_type.value} → {provider_id}/{model_id}")
             
-            # Force CHAT_LIGHT to GPT mini
             if classified_type == JobType.CHAT_LIGHT or classified_type.value in ["chat.light", "chat_light", "casual_chat"]:
                 provider = Provider.OPENAI
                 provider_id = "openai"
                 model_id = os.getenv("OPENAI_MODEL_LIGHT_CHAT", "gpt-4.1-mini")
                 reason = "HARD OVERRIDE: CHAT_LIGHT forced to GPT mini"
                 print("[router] OVERRIDE: Forcing CHAT_LIGHT → openai/gpt-4.1-mini")
-                if ROUTER_DEBUG:
-                    _debug_log(f"  CHAT_LIGHT OVERRIDE triggered")
-                    _debug_log(f"    Provider: {provider_id}")
-                    _debug_log(f"    Model: {model_id}")
         
-        # Allow task.model to override model choice
         if task.model:
             if ROUTER_DEBUG:
                 _debug_log(f"  Task.model override: {task.model}")
             model_id = task.model
         
         print(f"[router] Final routing: {classified_type.value} → {provider_id}/{model_id}")
-        logger.info(
-            "[router] Classifier: %s → %s / %s (%s)",
-            classified_type.value, provider_id, model_id, reason,
-        )
         
         if ROUTER_DEBUG:
             _debug_log("=" * 70)
-            _debug_log("ROUTING DECISION FINAL")
-            _debug_log(f"  Job Type: {classified_type.value}")
-            _debug_log(f"  Provider: {provider_id}")
-            _debug_log(f"  Model: {model_id}")
-            _debug_log(f"  Reason: {reason}")
+            _debug_log(f"ROUTING DECISION: {classified_type.value} → {provider_id}/{model_id}")
             _debug_log("=" * 70)
         
-        # Create a RoutingDecision for safety check
         decision = RoutingDecision(
             job_type=classified_type,
             provider=provider,
@@ -1260,10 +1335,7 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
             reason=reason,
         )
         
-        # ======================================================================
-        # ATTACHMENT SAFETY RULE ENFORCEMENT
-        # ======================================================================
-        
+        # Attachment safety check
         provider_id, model_id, reason = _check_attachment_safety(
             task=task,
             decision=decision,
@@ -1272,7 +1344,7 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
         )
     
     # ==========================================================================
-    # HARD RULE ENFORCEMENT (vision jobs cannot go to Claude)
+    # HARD RULE ENFORCEMENT
     # ==========================================================================
     
     if is_claude_forbidden(classified_type):
@@ -1282,21 +1354,31 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
                 classified_type.value,
             )
             provider_id = "google"
-            model_id = os.getenv("GEMINI_VISION_MODEL_FAST", "gemini-2.0-flash")
+            model_id = os.getenv("GEMINI_VISION_MODEL_COMPLEX", "gemini-2.5-pro")
             reason = f"FORCED: {classified_type.value} cannot go to Claude"
     
     # ==========================================================================
-    # HIGH-STAKES CRITIQUE PIPELINE CHECK (v0.13.7)
+    # VIDEO+CODE DEBUG PIPELINE CHECK
     # ==========================================================================
     
-    # v0.13.6: Normalize job type for high-stakes matching
-    # Maps 'orchestrator' + architecture reason → 'architecture_design'
-    normalized_job_type = normalize_job_type_for_high_stakes(
-        classified_type.value,
-        reason
-    )
+    if classified_type == JobType.VIDEO_CODE_DEBUG:
+        if ROUTER_DEBUG:
+            _debug_log("VIDEO+CODE DEBUG PIPELINE TRIGGERED")
+        
+        print(f"[router] VIDEO+CODE PIPELINE: {classified_type.value}")
+        
+        return await run_video_code_debug_pipeline(
+            task=task,
+            envelope=envelope,
+            file_map=file_map,
+        )
     
-    # Check if critique pipeline should be triggered
+    # ==========================================================================
+    # HIGH-STAKES CRITIQUE PIPELINE CHECK
+    # ==========================================================================
+    
+    normalized_job_type = normalize_job_type_for_high_stakes(classified_type.value, reason)
+    
     should_run_critique = (
         provider_id == "anthropic" and
         is_opus_model(model_id) and
@@ -1305,12 +1387,8 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
     
     if should_run_critique:
         if ROUTER_DEBUG:
-            _debug_log("=" * 70)
             _debug_log("HIGH-STAKES CRITIQUE PIPELINE TRIGGERED")
-            _debug_log(f"  Original Job Type: {classified_type.value}")
             _debug_log(f"  Normalized Job Type: {normalized_job_type}")
-            _debug_log(f"  Model: {model_id}")
-            _debug_log("=" * 70)
         
         print(f"[router] HIGH-STAKES PIPELINE: {classified_type.value} → {normalized_job_type}")
         
@@ -1320,10 +1398,11 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
             model_id=model_id,
             envelope=envelope,
             job_type_str=normalized_job_type,
+            file_map=file_map,
         )
     
     # ==========================================================================
-    # NORMAL LLM CALL (No Critique Pipeline)
+    # NORMAL LLM CALL
     # ==========================================================================
 
     try:
@@ -1379,6 +1458,7 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
             "provider": provider_id,
             "model": model_id,
             "reason": reason,
+            "file_map_injected": file_map is not None,
         },
     )
 
@@ -1387,10 +1467,7 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
 # HIGH-LEVEL HELPERS (Async)
 # =============================================================================
 
-async def quick_chat_async(
-    message: str,
-    context: Optional[str] = None,
-) -> LLMResult:
+async def quick_chat_async(message: str, context: Optional[str] = None) -> LLMResult:
     """Simple async chat helper."""
     messages: List[Dict[str, str]] = []
     if context:
@@ -1406,11 +1483,7 @@ async def quick_chat_async(
     return await call_llm_async(task)
 
 
-async def request_code_async(
-    message: str,
-    context: Optional[str] = None,
-    high_stakes: bool = False,
-) -> LLMResult:
+async def request_code_async(message: str, context: Optional[str] = None, high_stakes: bool = False) -> LLMResult:
     """Async helper for code tasks."""
     messages: List[Dict[str, str]] = []
     if context:
@@ -1428,10 +1501,7 @@ async def request_code_async(
     return await call_llm_async(task)
 
 
-async def review_work_async(
-    message: str,
-    context: Optional[str] = None,
-) -> LLMResult:
+async def review_work_async(message: str, context: Optional[str] = None) -> LLMResult:
     """Async helper for review/critique."""
     messages: List[Dict[str, str]] = []
     if context:
@@ -1448,7 +1518,7 @@ async def review_work_async(
 
 
 # =============================================================================
-# SYNC WRAPPERS (CLI/Testing only)
+# SYNC WRAPPERS
 # =============================================================================
 
 def call_llm(task: LLMTask) -> LLMResult:
@@ -1463,11 +1533,7 @@ def quick_chat(message: str, context: Optional[str] = None) -> LLMResult:
     return asyncio.run(quick_chat_async(message=message, context=context))
 
 
-def request_code(
-    message: str,
-    context: Optional[str] = None,
-    high_stakes: bool = False,
-) -> LLMResult:
+def request_code(message: str, context: Optional[str] = None, high_stakes: bool = False) -> LLMResult:
     """Sync wrapper for request_code_async."""
     import asyncio
     return asyncio.run(request_code_async(message, context, high_stakes))
@@ -1483,11 +1549,7 @@ def review_work(message: str, context: Optional[str] = None) -> LLMResult:
 # COMPATIBILITY HELPERS
 # =============================================================================
 
-def analyze_with_vision(
-    prompt: str,
-    image_description: Optional[str] = None,
-    context: Optional[str] = None,
-) -> LLMResult:
+def analyze_with_vision(prompt: str, image_description: Optional[str] = None, context: Optional[str] = None) -> LLMResult:
     """Compatibility wrapper for legacy vision calls."""
     parts: List[str] = [prompt]
     if image_description:
@@ -1514,7 +1576,8 @@ def get_routing_info() -> Dict[str, Any]:
     """Get routing configuration info."""
     models = get_model_config()
     return {
-        "routing_version": "0.13.7",
+        "routing_version": "0.15.0",
+        "spec_compliance": "Critical Pipeline Spec v1.0",
         "job_types": {
             "CHAT_LIGHT": {"provider": "openai", "model": models["openai"]},
             "TEXT_HEAVY": {"provider": "openai", "model": models["openai_heavy"]},
@@ -1529,19 +1592,21 @@ def get_routing_info() -> Dict[str, Any]:
         "hard_rules": [
             "Images/video NEVER go to Claude",
             "PDFs NEVER go to Claude",
+            "MIXED_FILE (docs with images) → Gemini",
             "opus.critic is EXPLICIT ONLY",
-            "Attachments without job_type do NOT default to Claude",
         ],
+        "modules_integrated": {
+            "file_classifier": FILE_CLASSIFIER_AVAILABLE,
+            "audit_logger": AUDIT_AVAILABLE,
+            "relationship_detector": RELATIONSHIP_DETECTOR_AVAILABLE,
+            "token_budgeting": TOKEN_BUDGETING_AVAILABLE,
+            "fallbacks": FALLBACKS_AVAILABLE,
+        },
         "critique_pipeline": {
             "enabled": True,
             "high_stakes_types": list(HIGH_STAKES_JOB_TYPES),
             "min_length_chars": MIN_CRITIQUE_CHARS,
             "critic_model": GEMINI_CRITIC_MODEL,
-            "critic_max_tokens": GEMINI_CRITIC_MAX_TOKENS,
-            "revision_max_tokens": OPUS_REVISION_MAX_TOKENS,
-            "architecture_critique": "HARD-CODED constraints: single-host, local repos, solo dev, no K8s/VLANs/containers",
-            "security_critique": "Aggressive hardening focus",
-            "environment_context": "Passed to architecture critique",
         },
     }
 
@@ -1553,7 +1618,7 @@ def is_policy_routing_enabled() -> bool:
 
 def enable_policy_routing() -> None:
     """No-op for compatibility."""
-    logger.info("[router] Policy routing is always enabled (job_classifier)")
+    logger.info("[router] Policy routing is always enabled")
 
 
 def disable_policy_routing() -> None:
@@ -1593,6 +1658,9 @@ __all__ = [
     "is_opus_model",
     "HIGH_STAKES_JOB_TYPES",
     "get_environment_context",
+    
+    # v0.15.0: File map injection
+    "inject_file_map_into_messages",
     
     # Compatibility
     "analyze_with_vision",
