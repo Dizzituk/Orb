@@ -2,14 +2,15 @@
 """
 Job classification for LLM routing.
 
-Version: 0.15.0 - Critical Pipeline Spec Integration
+Version: 0.15.1 - Simplified OVERRIDE → Frontier Model Routing
 
-CHANGES FROM v0.14.2:
-- Integrated file_classifier.py for MIXED_FILE detection
-- Stable [FILE_X] naming via build_file_map()
-- Enhanced modality flags with HAS_MIXED
-- PDF routing now uses file_classifier's MIXED_FILE detection
-- Backward compatible: compute_modality_flags() returns same structure + new fields
+CHANGES FROM v0.15.0:
+- NEW: Simplified OVERRIDE mechanism for frontier model routing
+- OVERRIDE (default) → Gemini 3 Pro Preview
+- OVERRIDE CLAUDE/OPUS → Anthropic frontier (Opus)
+- OVERRIDE CHATGPT/GPT/OPENAI → OpenAI frontier
+- OVERRIDE line stripped from prompt before sending to LLM
+- Frontier models configurable via env vars
 
 8-ROUTE CLASSIFICATION:
 1. CHAT_LIGHT → OpenAI gpt-4.1-mini (casual chat)
@@ -37,6 +38,7 @@ HARD RULES:
 """
 
 import os
+import re
 import logging
 from typing import Optional, List, Dict, Any, Tuple, Union
 
@@ -76,6 +78,117 @@ def _debug_log(msg: str):
     """Print debug message if ROUTER_DEBUG is enabled."""
     if ROUTER_DEBUG:
         print(f"[router-debug] {msg}")
+
+
+# ============================================================================
+# v0.15.1: FRONTIER MODEL CONFIGURATION
+# ============================================================================
+
+# These env vars define which model is the "frontier" for each provider.
+# Update these when new frontier models are released (Gemini 4, Opus 5, GPT-5.2, etc.)
+GEMINI_FRONTIER_MODEL_ID = os.getenv("GEMINI_FRONTIER_MODEL_ID", "gemini-3-pro-preview")
+ANTHROPIC_FRONTIER_MODEL_ID = os.getenv("ANTHROPIC_FRONTIER_MODEL_ID", "claude-opus-4-5-20250514")
+OPENAI_FRONTIER_MODEL_ID = os.getenv("OPENAI_FRONTIER_MODEL_ID", "gpt-4.1")
+
+
+# ============================================================================
+# v0.15.1: SIMPLIFIED OVERRIDE DETECTION
+# ============================================================================
+
+def detect_frontier_override(message: str) -> Optional[Tuple[str, str, str]]:
+    """
+    Detect OVERRIDE command at start of a line and return frontier model routing.
+    
+    OVERRIDE semantics:
+    - OVERRIDE (with or without extra words) → Gemini 3 Pro Preview (default)
+    - OVERRIDE CLAUDE / OVERRIDE OPUS / OVERRIDE ANTHROPIC → Anthropic frontier
+    - OVERRIDE CHATGPT / OVERRIDE GPT / OVERRIDE OPENAI → OpenAI frontier
+    
+    Args:
+        message: The user message text
+        
+    Returns:
+        Tuple of (provider, model_id, cleaned_message) if OVERRIDE found
+        None if no OVERRIDE detected
+        
+    The cleaned_message has the OVERRIDE line stripped out.
+    """
+    if not message:
+        return None
+    
+    # Split into lines to find OVERRIDE at start of a line
+    lines = message.split('\n')
+    override_line_idx = None
+    override_payload = ""
+    
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        # Check if line starts with OVERRIDE (case-insensitive)
+        if stripped.upper().startswith("OVERRIDE"):
+            override_line_idx = idx
+            # Extract payload: everything after "OVERRIDE" on this line
+            # Handle both "OVERRIDE" and "OVERRIDE something"
+            if len(stripped) > 8:  # len("OVERRIDE") == 8
+                override_payload = stripped[8:].strip()
+            else:
+                override_payload = ""
+            break
+    
+    if override_line_idx is None:
+        return None
+    
+    # We found an OVERRIDE line
+    payload_lower = override_payload.lower()
+    
+    if ROUTER_DEBUG:
+        _debug_log(f"OVERRIDE DETECTED at line {override_line_idx}")
+        _debug_log(f"  Payload: '{override_payload}'")
+    
+    # Determine provider based on payload keywords
+    # Priority: Check specific provider keywords
+    
+    if any(kw in payload_lower for kw in ["claude", "anthropic", "opus"]):
+        force_provider = "anthropic"
+        force_model_id = ANTHROPIC_FRONTIER_MODEL_ID
+        if ROUTER_DEBUG:
+            _debug_log(f"  → Anthropic frontier: {force_model_id}")
+    
+    elif any(kw in payload_lower for kw in ["chatgpt", "openai", "gpt"]):
+        force_provider = "openai"
+        force_model_id = OPENAI_FRONTIER_MODEL_ID
+        if ROUTER_DEBUG:
+            _debug_log(f"  → OpenAI frontier: {force_model_id}")
+    
+    elif any(kw in payload_lower for kw in ["gemini", "google"]):
+        # Explicit Gemini request
+        force_provider = "google"
+        force_model_id = GEMINI_FRONTIER_MODEL_ID
+        if ROUTER_DEBUG:
+            _debug_log(f"  → Gemini frontier (explicit): {force_model_id}")
+    
+    else:
+        # Default: Gemini 3 Pro Preview (when no provider specified)
+        force_provider = "google"
+        force_model_id = GEMINI_FRONTIER_MODEL_ID
+        if ROUTER_DEBUG:
+            _debug_log(f"  → Gemini frontier (default): {force_model_id}")
+    
+    # Build cleaned message with OVERRIDE line removed
+    cleaned_lines = lines[:override_line_idx] + lines[override_line_idx + 1:]
+    cleaned_message = '\n'.join(cleaned_lines).strip()
+    
+    # v0.15.1 FIX: If cleaned message is empty, provide a default prompt
+    # This prevents "non-empty content" errors from LLM APIs
+    if not cleaned_message:
+        cleaned_message = "Analyze and describe the content in detail."
+        if ROUTER_DEBUG:
+            _debug_log("  → Empty message after OVERRIDE removal, using default prompt")
+    
+    if ROUTER_DEBUG:
+        _debug_log(f"  Cleaned message length: {len(cleaned_message)} chars")
+    
+    return (force_provider, force_model_id, cleaned_message)
+
 
 # Size threshold for video escalation (10MB)
 VIDEO_SIZE_THRESHOLD = 10 * 1024 * 1024
@@ -207,6 +320,7 @@ def classify_job(
     """
     Classify a job and return routing decision.
     
+    v0.15.1: Now checks for OVERRIDE before classification.
     v0.15.0: Enhanced with MIXED_FILE detection via file_classifier.
     
     Priority order:
@@ -297,8 +411,9 @@ def classify_job(
         )
     
     # =========================================================================
-    # 3. USER OVERRIDE DETECTION
+    # 3. USER OVERRIDE DETECTION (Legacy)
     # =========================================================================
+    # Note: Frontier OVERRIDE is handled separately in router.py
     
     override_result = _detect_user_override(message_lower)
     if override_result:
@@ -659,7 +774,12 @@ def _make_decision(
 
 
 def _detect_user_override(message_lower: str) -> Optional[RoutingDecision]:
-    """Detect explicit user overrides in message."""
+    """
+    Detect explicit user overrides in message (legacy style).
+    
+    Note: This is for legacy "force opus", "use gpt" style commands.
+    The new OVERRIDE mechanism is handled separately via detect_frontier_override().
+    """
     
     if any(p in message_lower for p in ["force opus", "use opus", "send to opus"]):
         return _make_decision(
@@ -800,6 +920,10 @@ def get_model_config() -> Dict[str, str]:
         "gemini_complex": os.getenv("GEMINI_VISION_MODEL_COMPLEX", "gemini-2.5-pro"),
         "gemini_video": os.getenv("GEMINI_VIDEO_HEAVY_MODEL", "gemini-3.0-pro-preview"),
         "gemini_critic": os.getenv("GEMINI_OPUS_CRITIC_MODEL", "gemini-3.0-pro-preview"),
+        # v0.15.1: Frontier models
+        "gemini_frontier": GEMINI_FRONTIER_MODEL_ID,
+        "anthropic_frontier": ANTHROPIC_FRONTIER_MODEL_ID,
+        "openai_frontier": OPENAI_FRONTIER_MODEL_ID,
     }
 
 

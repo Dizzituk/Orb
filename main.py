@@ -1,7 +1,13 @@
 # FILE: main.py
 """
 Orb Backend - FastAPI Application
-Version: 0.14.2
+Version: 0.15.1
+
+v0.15.1 Changes (OVERRIDE command support):
+- Added OVERRIDE detection before vision routing in chat_with_attachments
+- OVERRIDE keyword bypasses vision path, routes through router.py
+- Image data included as multimodal content when OVERRIDE + images
+- Supports OVERRIDE Gemini/Claude/GPT for explicit frontier model selection
 
 v0.14.2 Changes (Flash removal + context logging):
 - Added debug logging to verify document content reaches vision models
@@ -81,11 +87,12 @@ from app.llm.file_analyzer import is_video_mime_type
 from app.llm.gemini_vision import ask_about_image, check_vision_available, analyze_video
 
 # v0.13.10: Import job_classifier for proper media routing
-from app.llm.job_classifier import classify_job
+# v0.15.1: Import detect_frontier_override for OVERRIDE command support
+from app.llm.job_classifier import classify_job, detect_frontier_override
 
 app = FastAPI(
     title="Orb Assistant",
-    version="0.14.2",
+    version="0.15.1",
     description="Personal AI assistant with multi-LLM orchestration and semantic search",
 )
 
@@ -720,15 +727,49 @@ Summary: {analysis.get('summary', 'N/A')}
             print(f"[chat_with_attachments] Index failed for file_id={file_id}: {e}")
 
     # ==========================================================================
-    # v0.13.10: USE JOB_CLASSIFIER FOR MEDIA ROUTING
+    # v0.15.1: CHECK FOR OVERRIDE COMMAND BEFORE VISION ROUTING
     # ==========================================================================
+    # OVERRIDE is a HARD RULE - bypasses ALL routing logic including vision routing
+    # If user says "OVERRIDE Claude" with an image, it goes to Claude, period.
+    # We detect OVERRIDE here to skip vision routing, but DON'T strip the line -
+    # router.py will handle full OVERRIDE logic including model selection and line stripping.
     
     user_message = message.strip() if message else ""
     
+    override_result = detect_frontier_override(user_message)
+    frontier_override_active = override_result is not None
+    
+    # Store image data for OVERRIDE path (will be included in multimodal message)
+    override_image_data = None
+    
+    if frontier_override_active:
+        override_provider, override_model_id, _ = override_result  # Don't use cleaned_message
+        print(f"[chat_with_attachments] OVERRIDE detected → {override_provider} / {override_model_id}")
+        print(f"[chat_with_attachments] HARD OVERRIDE: Bypassing vision routing, sending to router.py")
+        # NOTE: We do NOT strip the OVERRIDE line here - router.py will handle it
+        # This ensures router.py knows exactly which model to use
+        
+        # Capture image data for inclusion in LLMTask (multimodal message)
+        if image_attachments:
+            import base64
+            override_image_data = []
+            for img in image_attachments:
+                override_image_data.append({
+                    "bytes_b64": base64.b64encode(img["bytes"]).decode("utf-8"),
+                    "mime_type": img["mime_type"],
+                    "filename": img["filename"],
+                })
+            print(f"[chat_with_attachments] Captured {len(override_image_data)} image(s) for OVERRIDE path")
+    
+    # ==========================================================================
+    # v0.13.10: USE JOB_CLASSIFIER FOR MEDIA ROUTING
+    # ==========================================================================
+    
     # Check if we have media - route to Gemini Vision with proper tier
+    # v0.15.1: SKIP vision routing entirely if OVERRIDE is active
     has_media = image_attachments or video_attachments
     
-    if has_media:
+    if has_media and not frontier_override_active:
         # Provide default prompt if no user message
         vision_prompt = user_message if user_message else "Describe this image/video in detail."
         
@@ -756,6 +797,10 @@ Summary: {analysis.get('summary', 'N/A')}
         except Exception as e:
             print(f"[chat_with_attachments] Classifier failed, using default tier: {e}")
             tier = "fast"  # Fallback to fast tier
+        
+        # v0.15.1: Track explicit override model name
+        # When tier=="override", use override_model_id directly instead of _get_model_name(tier)
+        override_model_name = override_model_id if tier == "override" else None
         
         vision_status = check_vision_available()
         if not vision_status.get("available"):
@@ -799,14 +844,14 @@ Summary: {analysis.get('summary', 'N/A')}
                         vision_result = {
                             "answer": "GOOGLE_API_KEY not set",
                             "provider": "google",
-                            "model": _get_model_name(tier) if tier else "gemini-2.5-pro",
+                            "model": override_model_name or (_get_model_name(tier) if tier else "gemini-2.5-pro"),
                             "error": "No API key"
                         }
                     else:
                         genai.configure(api_key=api_key)
                         
-                        # Get the model for this tier
-                        model_name = _get_model_name(tier)
+                        # Get the model for this tier (or use override)
+                        model_name = override_model_name or _get_model_name(tier)
                         model = genai.GenerativeModel(model_name)
                         
                         # Upload all videos
@@ -866,7 +911,7 @@ Summary: {analysis.get('summary', 'N/A')}
                     vision_result = {
                         "answer": f"Multi-video analysis failed: {str(e)}",
                         "provider": "google",
-                        "model": _get_model_name(tier) if tier else "gemini-2.5-pro",
+                        "model": override_model_name or (_get_model_name(tier) if tier else "gemini-2.5-pro"),
                         "error": str(e)
                     }
             
@@ -905,14 +950,14 @@ Summary: {analysis.get('summary', 'N/A')}
                         vision_result = {
                             "answer": "GOOGLE_API_KEY not set",
                             "provider": "google",
-                            "model": "gemini-2.5-pro",
+                            "model": override_model_name or "gemini-2.5-pro",
                             "error": "No API key"
                         }
                     else:
                         genai.configure(api_key=api_key)
                         
-                        # Get the model for this tier
-                        model_name = _get_model_name(tier)
+                        # Get the model for this tier (or use override)
+                        model_name = override_model_name or _get_model_name(tier)
                         model = genai.GenerativeModel(model_name)
                         
                         # Build prompt with context
@@ -1066,7 +1111,30 @@ Summary: {analysis.get('summary', 'N/A')}
 
     history = memory_service.list_messages(db, project_id, limit=50)
     history_dicts = [{"role": msg.role, "content": msg.content} for msg in history]
-    messages = history_dicts + [{"role": "user", "content": full_message}]
+    
+    # v0.15.1: Build multimodal message when OVERRIDE with images
+    # NOTE: We include the OVERRIDE line in the message - router.py will strip it
+    if frontier_override_active and override_image_data:
+        # Build multimodal content with images + text
+        content_parts = []
+        
+        # Add images first
+        for img_data in override_image_data:
+            content_parts.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{img_data['mime_type']};base64,{img_data['bytes_b64']}"
+                }
+            })
+        
+        # Add text prompt (including OVERRIDE line for router.py to detect)
+        text_content = user_message if user_message else "Describe this image in detail."
+        content_parts.append({"type": "text", "text": text_content})
+        
+        messages = history_dicts + [{"role": "user", "content": content_parts}]
+        print(f"[chat_with_attachments] Built multimodal message: {len(override_image_data)} image(s) + text")
+    else:
+        messages = history_dicts + [{"role": "user", "content": full_message}]
 
     # Classification logic:
     # - If attachments present: Use UNKNOWN, let router's job_classifier decide
@@ -1084,6 +1152,8 @@ Summary: {analysis.get('summary', 'N/A')}
     if attachments_summary:
         system_prompt += "\n\nThe user uploaded files. Review the file information in the context and respond appropriately."
 
+    # v0.15.1: Let router.py handle OVERRIDE detection and routing
+    # The OVERRIDE line is preserved in the message for router.py to process
     task = LLMTask(
         job_type=jt,
         messages=messages,

@@ -1,8 +1,17 @@
 # FILE: app/llm/router.py
 """
-LLM Router (PHASE 4 - v0.15.0)
+LLM Router (PHASE 4 - v0.15.1)
 
-Version: 0.15.0 - Critical Pipeline Spec Integration
+Version: 0.15.1 - Simplified OVERRIDE → Frontier Model Routing
+
+v0.15.1 Changes:
+- NEW: Simplified OVERRIDE mechanism for frontier model routing
+- OVERRIDE (default) → Gemini 3 Pro Preview (GEMINI_FRONTIER_MODEL_ID)
+- OVERRIDE CLAUDE/OPUS → Anthropic frontier (ANTHROPIC_FRONTIER_MODEL_ID)
+- OVERRIDE CHATGPT/GPT/OPENAI → OpenAI frontier (OPENAI_FRONTIER_MODEL_ID)
+- OVERRIDE line stripped from prompt before sending to LLM
+- Override detection happens BEFORE normal classification
+- All other pipeline logic (critique, video+code) still runs after override
 
 v0.15.0 Changes:
 - Integrated file_classifier.py for MIXED_FILE detection and stable [FILE_X] naming
@@ -86,6 +95,11 @@ from app.llm.job_classifier import (
     is_claude_allowed,
     prepare_attachments,
     compute_modality_flags,
+    # v0.15.1: Frontier override detection
+    detect_frontier_override,
+    GEMINI_FRONTIER_MODEL_ID,
+    ANTHROPIC_FRONTIER_MODEL_ID,
+    OPENAI_FRONTIER_MODEL_ID,
 )
 
 # Video transcription for pipelines
@@ -427,6 +441,10 @@ DEFAULT_MODELS: Dict[str, str] = {
     "google_complex": os.getenv("GEMINI_VISION_MODEL_COMPLEX", "gemini-2.5-pro"),
     "google_video": os.getenv("GEMINI_VIDEO_HEAVY_MODEL", "gemini-3.0-pro-preview"),
     "google_critic": os.getenv("GEMINI_OPUS_CRITIC_MODEL", "gemini-3-pro"),
+    # v0.15.1: Frontier models
+    "gemini_frontier": GEMINI_FRONTIER_MODEL_ID,
+    "anthropic_frontier": ANTHROPIC_FRONTIER_MODEL_ID,
+    "openai_frontier": OPENAI_FRONTIER_MODEL_ID,
 }
 
 
@@ -561,8 +579,13 @@ def synthesize_envelope_from_task(
     session_id: Optional[str] = None,
     project_id: int = 1,
     file_map: Optional[str] = None,
+    cleaned_message: Optional[str] = None,
 ) -> JobEnvelope:
-    """Synthesize a JobEnvelope from LLMTask."""
+    """
+    Synthesize a JobEnvelope from LLMTask.
+    
+    v0.15.1: Added cleaned_message parameter for OVERRIDE line removal.
+    """
     phase4_job_type = _map_to_phase4_job_type(task.job_type)
     importance = _default_importance_for_job_type(task.job_type)
     modalities = _default_modalities_for_job_type(task.job_type)
@@ -591,7 +614,35 @@ def synthesize_envelope_from_task(
         system_content = "\n\n".join(system_parts)
         final_messages.append({"role": "system", "content": system_content})
     
-    final_messages.extend(task.messages)
+    # v0.15.1: Replace user message content if cleaned_message provided
+    if cleaned_message is not None:
+        for msg in task.messages:
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    # Simple string message - replace entirely
+                    final_messages.append({"role": "user", "content": cleaned_message})
+                elif isinstance(content, list):
+                    # Multimodal message - replace only the text part
+                    new_content = []
+                    text_replaced = False
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text" and not text_replaced:
+                            # Replace first text part with cleaned message
+                            new_content.append({"type": "text", "text": cleaned_message})
+                            text_replaced = True
+                        else:
+                            new_content.append(part)
+                    # If no text part was found, append the cleaned message
+                    if not text_replaced and cleaned_message:
+                        new_content.append({"type": "text", "text": cleaned_message})
+                    final_messages.append({"role": "user", "content": new_content})
+                else:
+                    final_messages.append(msg)
+            else:
+                final_messages.append(msg)
+    else:
+        final_messages.extend(task.messages)
     
     # v0.15.0: Inject file map if available
     if file_map:
@@ -1079,7 +1130,7 @@ Use the video context above to inform your analysis."""
         if not draft_result.is_success():
             logger.error("[critic] Opus draft failed: %s", draft_result.error_message)
             if trace:
-                trace.log_error("OPUS_DRAFT_FAILED", str(draft_result.error_message))
+                trace.log_error("opus_draft", "OPUS_DRAFT_FAILED", str(draft_result.error_message))
             return LLMResult(
                 content=draft_result.error_message or "",
                 provider=provider_id,
@@ -1121,7 +1172,7 @@ Use the video context above to inform your analysis."""
     except Exception as exc:
         logger.exception("[critic] Opus draft call failed: %s", exc)
         if trace:
-            trace.log_error("OPUS_DRAFT_EXCEPTION", str(exc))
+            trace.log_error("opus_draft", "OPUS_DRAFT_EXCEPTION", str(exc))
         return LLMResult(
             content="",
             provider=provider_id,
@@ -1221,6 +1272,50 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
     job_type_specified = task.job_type is not None and task.job_type != JobType.UNKNOWN
     has_attachments = bool(task.attachments and len(task.attachments) > 0)
 
+    # ==========================================================================
+    # v0.15.1: FRONTIER OVERRIDE CHECK (BEFORE ALL OTHER ROUTING)
+    # ==========================================================================
+    
+    # Extract user message for override detection
+    # Handle both simple string and multimodal (list) content formats
+    user_messages = [m for m in task.messages if m.get("role") == "user"]
+    original_message = ""
+    
+    if user_messages:
+        content = user_messages[-1].get("content", "")
+        if isinstance(content, str):
+            original_message = content
+        elif isinstance(content, list):
+            # Multimodal message - extract text parts
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    original_message = part.get("text", "")
+                    break
+                elif isinstance(part, str):
+                    original_message = part
+                    break
+        
+        if ROUTER_DEBUG:
+            _debug_log(f"Extracted message for override check: {repr(original_message[:100])}...")
+    
+    # Check for OVERRIDE command
+    override_result = detect_frontier_override(original_message)
+    frontier_override_active = override_result is not None
+    cleaned_message = None
+    
+    if frontier_override_active:
+        force_provider, force_model_id, cleaned_message = override_result
+        
+        print(f"[router] FRONTIER OVERRIDE ACTIVE: {force_provider} → {force_model_id}")
+        if ROUTER_DEBUG:
+            _debug_log("=" * 70)
+            _debug_log("FRONTIER OVERRIDE DETECTED")
+            _debug_log(f"  Provider: {force_provider}")
+            _debug_log(f"  Model: {force_model_id}")
+            _debug_log(f"  Original message: {len(original_message)} chars")
+            _debug_log(f"  Cleaned message: {len(cleaned_message)} chars")
+            _debug_log("=" * 70)
+
     # v0.15.0: Compute modality flags with file_classifier
     file_map = None
     if has_attachments:
@@ -1230,13 +1325,14 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
         if ROUTER_DEBUG and file_map:
             _debug_log(f"File map generated ({len(file_map)} chars)")
 
-    # Synthesize envelope with file map
+    # Synthesize envelope with file map (and cleaned message if override active)
     try:
         envelope = synthesize_envelope_from_task(
             task=task,
             session_id=session_id,
             project_id=project_id,
             file_map=file_map,
+            cleaned_message=cleaned_message,  # v0.15.1: Pass cleaned message
         )
     except (ValidationError, Exception) as exc:
         logger.warning("[router] Envelope synthesis failed: %s", exc)
@@ -1264,9 +1360,36 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
         _debug_log(f"Task job_type: {task.job_type.value if task.job_type else 'None'}")
         _debug_log(f"Task attachments: {len(task.attachments) if task.attachments else 0}")
         _debug_log(f"Task force_provider: {task.force_provider.value if task.force_provider else 'None'}")
+        _debug_log(f"Frontier override active: {frontier_override_active}")
     
-    # Priority 1: Explicit force_provider override
-    if task.force_provider is not None:
+    # ==========================================================================
+    # v0.15.1: FRONTIER OVERRIDE TAKES PRIORITY
+    # ==========================================================================
+    
+    if frontier_override_active:
+        provider_id = force_provider
+        model_id = force_model_id
+        reason = f"OVERRIDE → {force_provider} frontier ({force_model_id})"
+        
+        # Still need a classified_type for pipeline checks
+        # Use TEXT_HEAVY as default since OVERRIDE implies serious work
+        if force_provider == "anthropic":
+            classified_type = JobType.ORCHESTRATOR
+        elif force_provider == "google":
+            classified_type = JobType.VIDEO_HEAVY  # Use video-capable type for Gemini
+        else:
+            classified_type = JobType.TEXT_HEAVY
+        
+        print(f"[router] OVERRIDE routing: {provider_id}/{model_id}")
+        
+        if ROUTER_DEBUG:
+            _debug_log(f"OVERRIDE: Skipping normal classification")
+            _debug_log(f"  → Provider: {provider_id}")
+            _debug_log(f"  → Model: {model_id}")
+            _debug_log(f"  → Implied job type: {classified_type.value}")
+    
+    # Priority 1: Explicit force_provider override (legacy)
+    elif task.force_provider is not None:
         provider_id = task.force_provider.value
         model_id = task.model or DEFAULT_MODELS.get(provider_id, "")
         reason = "force_provider override"
@@ -1335,7 +1458,7 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
             reason=reason,
         )
         
-        # Attachment safety check
+        # Attachment safety check (skip if frontier override is active)
         provider_id, model_id, reason = _check_attachment_safety(
             task=task,
             decision=decision,
@@ -1344,10 +1467,10 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
         )
     
     # ==========================================================================
-    # HARD RULE ENFORCEMENT
+    # HARD RULE ENFORCEMENT (skip for frontier override)
     # ==========================================================================
     
-    if is_claude_forbidden(classified_type):
+    if not frontier_override_active and is_claude_forbidden(classified_type):
         if provider_id == "anthropic":
             logger.error(
                 "[router] BLOCKED: Attempted to route %s to Claude - forcing to Gemini",
@@ -1358,7 +1481,7 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
             reason = f"FORCED: {classified_type.value} cannot go to Claude"
     
     # ==========================================================================
-    # VIDEO+CODE DEBUG PIPELINE CHECK
+    # VIDEO+CODE DEBUG PIPELINE CHECK (still runs with override)
     # ==========================================================================
     
     if classified_type == JobType.VIDEO_CODE_DEBUG:
@@ -1374,7 +1497,7 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
         )
     
     # ==========================================================================
-    # HIGH-STAKES CRITIQUE PIPELINE CHECK
+    # HIGH-STAKES CRITIQUE PIPELINE CHECK (still runs with override if Opus)
     # ==========================================================================
     
     normalized_job_type = normalize_job_type_for_high_stakes(classified_type.value, reason)
@@ -1459,6 +1582,7 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
             "model": model_id,
             "reason": reason,
             "file_map_injected": file_map is not None,
+            "frontier_override": frontier_override_active,
         },
     )
 
@@ -1576,7 +1700,7 @@ def get_routing_info() -> Dict[str, Any]:
     """Get routing configuration info."""
     models = get_model_config()
     return {
-        "routing_version": "0.15.0",
+        "routing_version": "0.15.1",
         "spec_compliance": "Critical Pipeline Spec v1.0",
         "job_types": {
             "CHAT_LIGHT": {"provider": "openai", "model": models["openai"]},
@@ -1589,11 +1713,17 @@ def get_routing_info() -> Dict[str, Any]:
             "OPUS_CRITIC": {"provider": "google", "model": models["gemini_critic"]},
         },
         "default_models": DEFAULT_MODELS,
+        "frontier_models": {
+            "gemini": GEMINI_FRONTIER_MODEL_ID,
+            "anthropic": ANTHROPIC_FRONTIER_MODEL_ID,
+            "openai": OPENAI_FRONTIER_MODEL_ID,
+        },
         "hard_rules": [
             "Images/video NEVER go to Claude",
             "PDFs NEVER go to Claude",
             "MIXED_FILE (docs with images) → Gemini",
             "opus.critic is EXPLICIT ONLY",
+            "OVERRIDE → Frontier model (skips normal routing)",
         ],
         "modules_integrated": {
             "file_classifier": FILE_CLASSIFIER_AVAILABLE,
@@ -1661,6 +1791,12 @@ __all__ = [
     
     # v0.15.0: File map injection
     "inject_file_map_into_messages",
+    
+    # v0.15.1: Frontier override
+    "detect_frontier_override",
+    "GEMINI_FRONTIER_MODEL_ID",
+    "ANTHROPIC_FRONTIER_MODEL_ID", 
+    "OPENAI_FRONTIER_MODEL_ID",
     
     # Compatibility
     "analyze_with_vision",
