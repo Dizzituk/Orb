@@ -1,226 +1,302 @@
-# app/llm/web_search.py
+# FILE: app/llm/web_search.py
 """
-Web search grounding using Gemini.
-Uses the new google-genai SDK with google_search tool.
+Web search orchestration for Orb.
+
+- Performs search via local tool: app.tools.registry -> web_search (DuckDuckGo Lite/HTML fallback).
+- Fetches top sources via local http_fetch to provide real page text evidence.
+- Asks an LLM to answer using ONLY those sources.
+- Provider-side browsing is forbidden; this module never enables it.
 """
 
+from __future__ import annotations
+
+import asyncio
+import html as _html
+import inspect
+import logging
 import os
-from datetime import datetime
-from typing import Optional, Dict, Any, List
+import re
+from typing import Optional, Any
 
-# Try new SDK first (google-genai), fall back to old SDK (google-generativeai)
-HAS_NEW_SDK = False
-HAS_OLD_SDK = False
+from pydantic import BaseModel, Field
 
-try:
-    from google import genai
-    from google.genai import types
-    HAS_NEW_SDK = True
-    print("[web_search] Using new google-genai SDK")
-except ImportError:
-    try:
-        import google.generativeai as genai_old
-        HAS_OLD_SDK = True
-        print("[web_search] Using old google-generativeai SDK")
-    except ImportError:
-        print("[web_search] No Gemini SDK installed")
+from app.tools.registry import execute_tool_async
+from app.providers.registry import llm_call as registry_llm_call, is_provider_available
+
+logger = logging.getLogger(__name__)
 
 
-def is_web_search_available() -> bool:
-    """Check if web search is available."""
-    return (HAS_NEW_SDK or HAS_OLD_SDK) and bool(os.getenv("GOOGLE_API_KEY"))
+class WebSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    max_results: int = Field(5, ge=1, le=10)
 
 
-def get_current_datetime() -> str:
-    """Get current date and time formatted for prompt."""
-    now = datetime.now()
-    return now.strftime("%A, %B %d, %Y at %I:%M %p")
+class WebSearchSource(BaseModel):
+    title: str
+    url: str
+    snippet: str = ""
 
 
-def search_and_answer(
-    query: str,
-    context: Optional[str] = None,
-    history: Optional[List[Dict[str, str]]] = None,
-) -> Dict[str, Any]:
-    """
-    Perform a web-grounded search query using Gemini.
-    """
-    api_key = os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        return {
-            "answer": "Web search unavailable: GOOGLE_API_KEY not set",
-            "sources": [],
-            "search_queries": [],
-            "provider": "none",
-            "error": "missing_api_key",
-        }
-    
-    if HAS_NEW_SDK:
-        return _search_with_new_sdk(query, context, history, api_key)
-    elif HAS_OLD_SDK:
-        return _search_with_old_sdk(query, context, history, api_key)
-    else:
-        return {
-            "answer": "Web search unavailable: No Gemini SDK installed. Run: pip install google-genai",
-            "sources": [],
-            "search_queries": [],
-            "provider": "none",
-            "error": "missing_dependency",
-        }
+class WebSearchResponse(BaseModel):
+    ok: bool
+    query: str
+    provider: str = ""
+    answer: str = ""
+    sources: list[WebSearchSource] = []
+    error: str = ""
 
 
-def _search_with_new_sdk(
-    query: str,
-    context: Optional[str],
-    history: Optional[List[Dict[str, str]]],
-    api_key: str,
-) -> Dict[str, Any]:
-    """Use new google-genai SDK with google_search tool."""
-    try:
-        from google import genai
-        from google.genai import types
-        
-        # Initialize client with API key
-        client = genai.Client(api_key=api_key)
-        
-        # Create Google Search tool
-        google_search_tool = types.Tool(
-            google_search=types.GoogleSearch()
-        )
-        
-        # Get current date/time
-        current_datetime = get_current_datetime()
-        
-        # Build prompt with current date/time
-        prompt = f"""Current date and time: {current_datetime}
-
-Search the web for the most up-to-date information and answer the following question.
-Make sure to find results from today or the most recent available data.
-
-Question: {query}"""
-        
-        if context:
-            prompt = f"Context: {context}\n\n{prompt}"
-        
-        print(f"[web_search] Querying with google_search tool: {query[:80]}...")
-        print(f"[web_search] Current datetime: {current_datetime}")
-        
-        # Generate with search grounding
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                tools=[google_search_tool],
-            ),
-        )
-        
-        # Extract answer
-        answer = response.text if response.text else "No response generated"
-        
-        # Extract grounding metadata
-        sources = []
-        search_queries = []
-        
-        if response.candidates and len(response.candidates) > 0:
-            candidate = response.candidates[0]
-            
-            if hasattr(candidate, 'grounding_metadata') and candidate.grounding_metadata:
-                metadata = candidate.grounding_metadata
-                
-                # Get search queries
-                if hasattr(metadata, 'web_search_queries'):
-                    search_queries = list(metadata.web_search_queries or [])
-                    print(f"[web_search] Search queries: {search_queries}")
-                
-                # Get sources from grounding_chunks
-                if hasattr(metadata, 'grounding_chunks'):
-                    for chunk in (metadata.grounding_chunks or []):
-                        if hasattr(chunk, 'web') and chunk.web:
-                            sources.append({
-                                "title": getattr(chunk.web, 'title', 'Source'),
-                                "uri": getattr(chunk.web, 'uri', ''),
-                            })
-        
-        print(f"[web_search] Success: {len(sources)} sources found")
-        
-        return {
-            "answer": answer,
-            "sources": sources,
-            "search_queries": search_queries,
-            "provider": "gemini-grounded",
-        }
-        
-    except Exception as e:
-        print(f"[web_search] New SDK error: {type(e).__name__}: {e}")
-        return {
-            "answer": f"Web search failed: {str(e)}",
-            "sources": [],
-            "search_queries": [],
-            "provider": "gemini",
-            "error": str(e),
-        }
-
-
-def _search_with_old_sdk(
-    query: str,
-    context: Optional[str],
-    history: Optional[List[Dict[str, str]]],
-    api_key: str,
-) -> Dict[str, Any]:
-    """Use old google-generativeai SDK."""
-    try:
-        import google.generativeai as genai
-        
-        genai.configure(api_key=api_key)
-        
-        model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash",
-        )
-        
-        current_datetime = get_current_datetime()
-        
-        prompt = f"""Current date and time: {current_datetime}
-
-Search the web for the most up-to-date information and answer: {query}"""
-        
-        if context:
-            prompt = f"Context: {context}\n\n{prompt}"
-        
-        print(f"[web_search] Using old SDK (no grounding): {query[:80]}...")
-        
-        response = model.generate_content(prompt)
-        
-        return {
-            "answer": response.text if response.text else "No response",
-            "sources": [],
-            "search_queries": [],
-            "provider": "gemini-basic",
-            "note": "Grounding requires google-genai SDK. Install with: pip install google-genai",
-        }
-        
-    except Exception as e:
-        print(f"[web_search] Old SDK error: {e}")
-        return {
-            "answer": f"Web search failed: {str(e)}",
-            "sources": [],
-            "search_queries": [],
-            "provider": "none",
-            "error": str(e),
-        }
-
-
-def format_sources_markdown(sources: List[Dict[str, str]]) -> str:
-    """Format sources as markdown links."""
-    if not sources:
+def _extract_content(llm_result: Any) -> str:
+    if llm_result is None:
         return ""
-    
-    lines = ["\n\n**Sources:**"]
-    for src in sources[:5]:
-        title = src.get("title", "Link")
-        uri = src.get("uri", "")
-        if uri:
-            lines.append(f"- [{title}]({uri})")
+    if isinstance(llm_result, str):
+        return llm_result
+    if isinstance(llm_result, tuple) and llm_result:
+        return llm_result[0] if isinstance(llm_result[0], str) else str(llm_result[0])
+    if isinstance(llm_result, dict):
+        if "content" in llm_result and isinstance(llm_result["content"], str):
+            return llm_result["content"]
+        if "text" in llm_result and isinstance(llm_result["text"], str):
+            return llm_result["text"]
+    c = getattr(llm_result, "content", None)
+    if isinstance(c, str):
+        return c
+    return str(llm_result)
+
+
+def _pick_answer_provider() -> tuple[Optional[str], Optional[str]]:
+    forced_provider = (os.getenv("WEB_SEARCH_PROVIDER_ID") or "").strip() or None
+    forced_model = (os.getenv("WEB_SEARCH_MODEL_ID") or "").strip() or None
+    if forced_provider:
+        return forced_provider, forced_model
+
+    for pid, default_model_env, default_model in [
+        ("openai", "OPENAI_DEFAULT_MODEL", "gpt-4o-mini"),
+        ("anthropic", "ANTHROPIC_DEFAULT_MODEL", "claude-3-5-sonnet-latest"),
+        ("google", "GEMINI_FRONTIER_MODEL_ID", "gemini-3.0-pro-preview"),
+    ]:
+        try:
+            if is_provider_available(pid):
+                return pid, (os.getenv(default_model_env) or default_model)
+        except Exception:
+            continue
+    return None, None
+
+
+def _html_to_text(s: str) -> str:
+    s = re.sub(r"<script[\s\S]*?</script>", " ", s, flags=re.I)
+    s = re.sub(r"<style[\s\S]*?</style>", " ", s, flags=re.I)
+    s = re.sub(r"<noscript[\s\S]*?</noscript>", " ", s, flags=re.I)
+    s = re.sub(r"<svg[\s\S]*?</svg>", " ", s, flags=re.I)
+    s = re.sub(r"<[^>]+>", " ", s)
+    s = _html.unescape(s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _keywords_from_query(q: str) -> list[str]:
+    q = (q or "").lower()
+    # crude tokenization; keep only useful-ish tokens
+    toks = re.split(r"[^a-z0-9\-\_]+", q)
+    toks = [t for t in toks if len(t) >= 3]
+    # add some common pricing-related anchors
+    extras = ["price", "pricing", "token", "tokens", "per", "1m", "million", "input", "output", "$", "usd"]
+    merged = []
+    seen = set()
+    for t in toks + extras:
+        if t and t not in seen:
+            seen.add(t)
+            merged.append(t)
+    return merged[:20]
+
+
+def _extract_relevant_excerpts(text: str, query: str, *, max_chars: int) -> str:
+    """
+    Return a compact excerpt that *actually contains* relevant bits (numbers/keywords),
+    rather than just the first N characters.
+    """
+    if not text:
+        return ""
+
+    max_chars = max(500, min(8000, int(max_chars)))
+    low = text.lower()
+    kws = _keywords_from_query(query)
+
+    # Find match positions
+    positions: list[int] = []
+    for kw in kws:
+        if kw == "$":
+            for m in re.finditer(r"\$", text):
+                positions.append(m.start())
+            continue
+        for m in re.finditer(re.escape(kw), low):
+            positions.append(m.start())
+
+    # If nothing matched, return head (still capped)
+    if not positions:
+        return text[:max_chars]
+
+    # Sort and de-dup positions
+    positions = sorted(set(positions))
+
+    # Build up to 4 windows around matches
+    windows: list[str] = []
+    budget = max_chars
+    window_size = 700  # chars per window (before trimming)
+    half = window_size // 2
+
+    for pos in positions:
+        if budget <= 200:
+            break
+        start = max(0, pos - half)
+        end = min(len(text), pos + half)
+        chunk = text[start:end].strip()
+        if not chunk:
+            continue
+
+        # Avoid near-duplicate windows
+        if windows and chunk[:120] in windows[-1]:
+            continue
+
+        # Trim to budget
+        if len(chunk) > budget:
+            chunk = chunk[:budget]
+        windows.append(chunk)
+        budget -= len(chunk) + 10
+
+        if len(windows) >= 4:
+            break
+
+    # Join with separators so the LLM can see boundaries
+    out = "\n...\n".join(windows)
+    return out[:max_chars]
+
+
+async def _fetch_source_text(url: str, context: Optional[dict]) -> str:
+    try:
+        resp = await execute_tool_async(
+            "http_fetch",
+            "v1",
+            {
+                "url": url,
+                "method": "GET",
+                "headers": {"User-Agent": "Mozilla/5.0", "Accept-Language": "en-GB,en;q=0.9"},
+                # bigger default so we don’t miss content further down the page
+                "max_bytes": 1_000_000,
+            },
+            context=context,
+        )
+        if not resp.ok:
+            return ""
+        raw = str((resp.result or {}).get("text") or "")
+        return _html_to_text(raw)
+    except Exception:
+        return ""
+
+
+async def search_and_answer(req: WebSearchRequest, context: Optional[dict] = None) -> WebSearchResponse:
+    try:
+        # 1) Search
+        tool_resp = await execute_tool_async(
+            "web_search",
+            "v1",
+            {"query": req.query, "max_results": req.max_results},
+            context=context,
+        )
+        if not tool_resp.ok:
+            return WebSearchResponse(ok=False, query=req.query, error=tool_resp.error_message or "web_search tool failed")
+
+        tool_result = tool_resp.result or {}
+        provider = str(tool_result.get("provider") or "")
+        results = tool_result.get("results") or []
+
+        sources: list[WebSearchSource] = []
+        for r in results[: req.max_results]:
+            try:
+                sources.append(
+                    WebSearchSource(
+                        title=str(r.get("title") or ""),
+                        url=str(r.get("url") or ""),
+                        snippet=str(r.get("snippet") or ""),
+                    )
+                )
+            except Exception:
+                continue
+
+        if not sources:
+            return WebSearchResponse(ok=True, query=req.query, provider=provider, answer="", sources=[])
+
+        # 2) Fetch page text for MORE sources by default
+        #    Key fix: don’t only fetch top 3, because the “numbers page” is often #4/#5.
+        env_fetch = os.getenv("WEB_SEARCH_FETCH_SOURCES")
+        if env_fetch is None or not env_fetch.strip():
+            fetch_n = min(5, len(sources), req.max_results)
         else:
-            lines.append(f"- {title}")
-    
-    return "\n".join(lines)
+            fetch_n = int(env_fetch)
+            fetch_n = max(0, min(10, fetch_n, len(sources)))
+
+        fetched_texts: list[str] = []
+        if fetch_n > 0:
+            to_fetch = sources[:fetch_n]
+            texts = await asyncio.gather(*[_fetch_source_text(s.url, context) for s in to_fetch], return_exceptions=False)
+            fetched_texts = [t or "" for t in texts]
+
+        # 3) Evidence: include RELEVANT excerpts, not just the top of the page
+        cap = int(os.getenv("WEB_SEARCH_EVIDENCE_CHARS") or "7000")
+        cap = max(500, min(8000, cap))
+
+        evidence_lines: list[str] = []
+        for i, s in enumerate(sources, start=1):
+            line = f"[{i}] {s.title}\nURL: {s.url}"
+            if s.snippet:
+                line += f"\nSnippet: {s.snippet}"
+
+            if i <= fetch_n:
+                page_text = fetched_texts[i - 1] if i - 1 < len(fetched_texts) else ""
+                excerpt = _extract_relevant_excerpts(page_text, req.query, max_chars=cap) if page_text else ""
+                if excerpt:
+                    line += f"\nPageText: {excerpt}"
+
+            evidence_lines.append(line)
+
+        evidence = "\n\n".join(evidence_lines)
+
+        # 4) Ask an LLM to answer (optional)
+        answer_provider, answer_model = _pick_answer_provider()
+        if not answer_provider:
+            return WebSearchResponse(ok=True, query=req.query, provider=provider, answer="", sources=sources)
+
+        prompt = (
+            "Answer the user's question using ONLY the sources below. "
+            "If the sources don't contain the answer, say you can't find it in the sources. "
+            "Be direct. Include citations like [1], [2].\n\n"
+            f"Question: {req.query}\n\n"
+            f"Sources:\n{evidence}\n"
+        )
+
+        try:
+            sig = inspect.signature(registry_llm_call)
+        except Exception:
+            sig = None
+
+        kwargs = {
+            "provider_id": answer_provider,
+            "model_id": answer_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "system_prompt": None,
+            "temperature": 0.2,
+            "max_tokens": 700,
+            "enable_web_search": False,  # forbid provider-side browsing
+            "context": context,
+        }
+        if sig:
+            kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
+
+        llm_res = await registry_llm_call(**kwargs)  # type: ignore[arg-type]
+        answer = _extract_content(llm_res).strip()
+
+        return WebSearchResponse(ok=True, query=req.query, provider=provider, answer=answer, sources=sources)
+
+    except Exception as e:
+        logger.exception("[web_search] search_and_answer failed: %s", e)
+        return WebSearchResponse(ok=False, query=req.query, error=str(e))

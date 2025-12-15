@@ -1,180 +1,124 @@
 # FILE: app/llm/streaming.py
 """
-Streaming LLM responses using Server-Sent Events.
-All system prompts include current date/time context.
+Orb Streaming LLM Module
 
-v0.13.9 - Streaming Event Contract Fix:
-- CANONICAL EVENT SCHEMA: All providers now yield dict events consistently
-- Removed json.dumps() - events are dicts, not JSON strings
-- Fixed: OpenAI/Anthropic/Gemini now yield {"type": "token", "text": "..."}
-- Fixed: Metadata/error events remain dicts
-- Contract: {"type": "metadata|token|reasoning|error|done", ...}
+Provides streaming interface for different LLM providers.
+All streaming providers must follow the canonical event schema.
 
-v0.13.0 - Phase 4 Routing Fix:
-- Updated DEFAULT_MODELS to use 8-route env vars
-- Added chat.light vs text.heavy distinction
-- Added video.heavy and opus.critic model support
-
-v0.16.1: Updated default models to match Phase-4 routing.
 v0.16.0: Added reasoning support and metadata emission.
 
-CANONICAL STREAMING EVENT SCHEMA
-================================
+CANONICAL EVENT SCHEMA:
 All streaming functions must yield dict events with this structure:
 
 {"type": "metadata", "provider": "...", "model": "..."}
-    - First event from each provider
-    - Contains provider and model information
+    - Sent once at the start to indicate the provider and model being used
 
 {"type": "token", "text": "<chunk of answer>"}
-    - Incremental text chunks for the response
-    - Accumulated to build the complete answer
+    - Streaming chunks of the response
 
 {"type": "reasoning", "text": "<hidden chain-of-thought>"}
     - Optional reasoning/thinking content
-    - Extracted from THINKING tags or similar
 
-{"type": "error", "message": "<error message>"}
-    - Error occurred during streaming
-    - Stream should terminate after this
+{"type": "error", "message": "..."}
+    - Error message if something goes wrong
 
 {"type": "done"}
     - Optional final event indicating completion
-    - Not currently used by providers but part of spec
 
-IMPORTANT: All events are Python dicts, NOT JSON strings.
 The SSE layer (stream_router.py) handles JSON serialization.
 """
 
 import os
-import json
-from typing import AsyncGenerator, Optional, List, Dict
+import logging
+from typing import AsyncGenerator, Dict, List, Optional
 from datetime import datetime
+import asyncio
 
+logger = logging.getLogger(__name__)
 
-# ============ DATETIME CONTEXT ============
-
-def get_datetime_context() -> str:
-    """Get current date/time for system prompts."""
-    now = datetime.now()
-    formatted = now.strftime("%A, %B %d, %Y at %I:%M %p")
-    try:
-        import time
-        tz_name = time.tzname[time.daylight] if time.daylight else time.tzname[0]
-        formatted += f" ({tz_name})"
-    except:
-        pass
-    return f"Current date and time: {formatted}"
-
-
-def enhance_system_prompt(prompt: str) -> str:
-    """Add datetime context to system prompt."""
-    context = get_datetime_context()
-    if prompt:
-        return f"{context}\n\n{prompt}"
-    return context
-
-
-# ============ REASONING INSTRUCTION ============
-
-REASONING_INSTRUCTION = """
-When you respond, structure your answer using these tags:
-
-<THINKING>
-Your internal reasoning, step-by-step analysis, and thought process goes here.
-</THINKING>
-<ANSWER>
-Your final response to the user goes here.
-</ANSWER>
-
-Always include both tags in every response.
-"""
-
-
-def enhance_system_prompt_with_reasoning(prompt: str, enable: bool = True) -> str:
-    """Add reasoning instruction to system prompt if enabled."""
-    enhanced = enhance_system_prompt(prompt)
-    if enable:
-        return f"{enhanced}\n\n{REASONING_INSTRUCTION}"
-    return enhanced
-
-
-# ============ PROVIDER CHECKS ============
-
-HAS_OPENAI = False
-HAS_ANTHROPIC = False
-HAS_GEMINI = False
-
+# Import provider packages conditionally
 try:
     from openai import AsyncOpenAI
     HAS_OPENAI = True
 except ImportError:
-    pass
+    HAS_OPENAI = False
 
 try:
     import anthropic
     HAS_ANTHROPIC = True
 except ImportError:
-    pass
+    HAS_ANTHROPIC = False
 
 try:
     import google.generativeai as genai
     HAS_GEMINI = True
 except ImportError:
-    pass
+    HAS_GEMINI = False
 
-
-# ============ 8-ROUTE DEFAULT MODELS ============
-
+# Default models for each provider
 DEFAULT_MODELS = {
-    # OpenAI routes
+    "openai": "gpt-4.1-mini",
+    "anthropic": "claude-3-5-sonnet-20240620",
+    "google": "gemini-2.0-flash",
+}
+
+# Route-based model overrides
+ROUTE_MODELS = {
     "openai": {
-        "chat.light": os.getenv("OPENAI_MODEL_LIGHT_CHAT", "gpt-4.1-mini"),
-        "text.heavy": os.getenv("OPENAI_MODEL_HEAVY_TEXT", "gpt-4.1"),
-        "default": os.getenv("OPENAI_MODEL_LIGHT_CHAT", "gpt-4.1-mini"),
+        "default": "gpt-4.1-mini",
+        "high_stakes": "gpt-4.1",
+        "budget": "gpt-4.1-mini",
     },
-    # Anthropic routes
     "anthropic": {
-        "code.medium": os.getenv("ANTHROPIC_SONNET_MODEL", "claude-sonnet-4-5-20250929"),
-        "orchestrator": os.getenv("ANTHROPIC_OPUS_MODEL", "claude-opus-4-5-20250514"),
-        "default": os.getenv("ANTHROPIC_SONNET_MODEL", "claude-sonnet-4-5-20250929"),
+        "default": "claude-3-5-sonnet-20240620",
+        "high_stakes": "claude-3-5-sonnet-20240620",
+        "budget": "claude-3-5-haiku-20240307",
     },
-    # Google routes
     "google": {
-        "image.simple": os.getenv("GEMINI_VISION_MODEL_FAST", "gemini-2.0-flash"),
-        "image.complex": os.getenv("GEMINI_VISION_MODEL_COMPLEX", "gemini-2.5-pro"),
-        "video.heavy": os.getenv("GEMINI_VIDEO_HEAVY_MODEL", "gemini-3.0-pro-preview"),
-        "opus.critic": os.getenv("GEMINI_OPUS_CRITIC_MODEL", "gemini-3.0-pro-preview"),
-        "default": os.getenv("GEMINI_VISION_MODEL_FAST", "gemini-2.0-flash"),
+        "default": "gemini-2.0-flash",
+        "high_stakes": "gemini-2.5-pro",
+        "budget": "gemini-2.0-flash",
     },
 }
 
-# Legacy flat defaults (backward compat)
-LEGACY_DEFAULT_MODELS = {
-    "openai": os.getenv("OPENAI_MODEL_LIGHT_CHAT", "gpt-4.1-mini"),
-    "anthropic": os.getenv("ANTHROPIC_SONNET_MODEL", "claude-sonnet-4-5-20250929"),
-    "gemini": os.getenv("GEMINI_VISION_MODEL_FAST", "gemini-2.0-flash"),
-}
+
+def enhance_system_prompt_with_reasoning(prompt: str, enable: bool = True) -> str:
+    """Add reasoning instruction to system prompt if enabled."""
+    if not enable:
+        return prompt
+
+    reasoning_instruction = """
+When responding, use the following format:
+
+<THINKING>
+Your internal reasoning, step-by-step analysis, and thought process goes here.
+</THINKING>
+
+<ANSWER>
+Your final response to the user goes here.
+</ANSWER>
+
+The THINKING section will be hidden from the user.
+"""
+    return prompt + "\n\n" + reasoning_instruction
 
 
-def get_model_for_route(provider: str, route: str) -> str:
-    """Get model for a provider/route combination."""
-    provider_models = DEFAULT_MODELS.get(provider, {})
-    if isinstance(provider_models, dict):
-        return provider_models.get(route, provider_models.get("default", ""))
-    return provider_models
+def get_model_for_route(provider: str, route: Optional[str] = None) -> str:
+    """Get appropriate model for provider and route."""
+    if not route:
+        return DEFAULT_MODELS.get(provider, DEFAULT_MODELS["openai"])
+
+    provider_routes = ROUTE_MODELS.get(provider, {})
+    return provider_routes.get(route, provider_routes.get("default", DEFAULT_MODELS.get(provider, DEFAULT_MODELS["openai"])))
 
 
 def get_default_model(provider: str) -> str:
-    """Get default model for a provider."""
-    provider_models = DEFAULT_MODELS.get(provider, {})
-    if isinstance(provider_models, dict):
-        return provider_models.get("default", "")
-    return provider_models
+    """Get default model for provider."""
+    return DEFAULT_MODELS.get(provider, DEFAULT_MODELS["openai"])
 
 
 def get_available_streaming_providers() -> Dict[str, bool]:
-    """Check which providers support streaming."""
+    """Get dict of available streaming providers."""
     return {
         "openai": HAS_OPENAI and bool(os.getenv("OPENAI_API_KEY")),
         "anthropic": HAS_ANTHROPIC and bool(os.getenv("ANTHROPIC_API_KEY")),
@@ -207,11 +151,12 @@ async def stream_openai(
 ) -> AsyncGenerator[Dict, None]:
     """
     Stream from OpenAI using async client.
-    
+
     Yields dict events following canonical schema:
     - {"type": "metadata", "provider": "openai", "model": "..."}
     - {"type": "token", "text": "..."}
     - {"type": "error", "message": "..."}
+    - {"type": "done", "usage": {...}}  (when available)
     """
     if not HAS_OPENAI:
         yield {"type": "error", "message": "openai package not installed"}
@@ -241,17 +186,67 @@ async def stream_openai(
     # Emit metadata first
     yield {"type": "metadata", "provider": "openai", "model": use_model}
 
+    def _uget(obj, key: str):
+        if obj is None:
+            return None
+        if isinstance(obj, dict):
+            return obj.get(key)
+        return getattr(obj, key, None)
+
+    prompt_tokens = None
+    completion_tokens = None
+    total_tokens = None
+
     try:
-        stream = await client.chat.completions.create(
-            model=use_model,
-            messages=full_messages,
-            stream=True,
-        )
+        # Prefer include_usage if supported by installed OpenAI SDK.
+        create_kwargs = {
+            "model": use_model,
+            "messages": full_messages,
+            "stream": True,
+        }
+
+        try:
+            stream = await client.chat.completions.create(
+                **create_kwargs,
+                stream_options={"include_usage": True},
+            )
+        except TypeError:
+            # Older SDKs may not accept stream_options.
+            stream = await client.chat.completions.create(**create_kwargs)
 
         async for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta.content:
-                # v0.13.9: Changed from raw string to dict event
-                yield {"type": "token", "text": chunk.choices[0].delta.content}
+            # Usage is typically attached to the final chunk when include_usage is enabled.
+            u = _uget(chunk, "usage")
+            if u:
+                pt = _uget(u, "prompt_tokens")
+                ct = _uget(u, "completion_tokens")
+                tt = _uget(u, "total_tokens")
+                if pt is not None:
+                    prompt_tokens = int(pt)
+                if ct is not None:
+                    completion_tokens = int(ct)
+                if tt is not None:
+                    total_tokens = int(tt)
+
+            try:
+                if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                    yield {"type": "token", "text": chunk.choices[0].delta.content}
+            except Exception:
+                # Defensive: never crash streaming on unexpected chunk shapes.
+                continue
+
+        # Emit done with usage if available
+        if prompt_tokens is not None or completion_tokens is not None or total_tokens is not None:
+            if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
+                total_tokens = prompt_tokens + completion_tokens
+            usage = {
+                "prompt_tokens": int(prompt_tokens or 0),
+                "completion_tokens": int(completion_tokens or 0),
+                "total_tokens": int(total_tokens or (int(prompt_tokens or 0) + int(completion_tokens or 0))),
+            }
+            yield {"type": "done", "provider": "openai", "model": use_model, "usage": usage}
+        else:
+            yield {"type": "done", "provider": "openai", "model": use_model}
 
     except Exception as e:
         yield {"type": "error", "message": str(e)}
@@ -266,11 +261,12 @@ async def stream_anthropic(
 ) -> AsyncGenerator[Dict, None]:
     """
     Stream from Anthropic using async client.
-    
+
     Yields dict events following canonical schema:
     - {"type": "metadata", "provider": "anthropic", "model": "..."}
     - {"type": "token", "text": "..."}
     - {"type": "error", "message": "..."}
+    - {"type": "done", "usage": {...}}  (when available)
     """
     if not HAS_ANTHROPIC:
         yield {"type": "error", "message": "anthropic package not installed"}
@@ -297,6 +293,16 @@ async def stream_anthropic(
     # Emit metadata first
     yield {"type": "metadata", "provider": "anthropic", "model": use_model}
 
+    input_tokens = None
+    output_tokens = None
+
+    def _uget(obj, key: str):
+        if obj is None:
+            return None
+        if isinstance(obj, dict):
+            return obj.get(key)
+        return getattr(obj, key, None)
+
     try:
         async with client.messages.stream(
             model=use_model,
@@ -305,8 +311,39 @@ async def stream_anthropic(
             messages=messages,
         ) as stream:
             async for text in stream.text_stream:
-                # v0.13.9: Changed from raw string to dict event
                 yield {"type": "token", "text": text}
+
+            # Try to extract final usage from the final message (SDK dependent).
+            final_msg = None
+            try:
+                maybe = stream.get_final_message()
+                if asyncio.iscoroutine(maybe):
+                    final_msg = await maybe
+                else:
+                    final_msg = maybe
+            except Exception:
+                final_msg = None
+
+            if final_msg is not None:
+                u = _uget(final_msg, "usage")
+                if u:
+                    it = _uget(u, "input_tokens")
+                    ot = _uget(u, "output_tokens")
+                    if it is not None:
+                        input_tokens = int(it)
+                    if ot is not None:
+                        output_tokens = int(ot)
+
+        # Emit done with usage if available
+        if input_tokens is not None or output_tokens is not None:
+            usage = {
+                "prompt_tokens": int(input_tokens or 0),
+                "completion_tokens": int(output_tokens or 0),
+                "total_tokens": int((input_tokens or 0) + (output_tokens or 0)),
+            }
+            yield {"type": "done", "provider": "anthropic", "model": use_model, "usage": usage}
+        else:
+            yield {"type": "done", "provider": "anthropic", "model": use_model}
 
     except Exception as e:
         yield {"type": "error", "message": str(e)}
@@ -321,11 +358,12 @@ async def stream_gemini(
 ) -> AsyncGenerator[Dict, None]:
     """
     Stream from Gemini.
-    
+
     Yields dict events following canonical schema:
     - {"type": "metadata", "provider": "gemini", "model": "..."}
     - {"type": "token", "text": "..."}
     - {"type": "error", "message": "..."}
+    - {"type": "done", "usage": {...}}  (when available)
     """
     if not HAS_GEMINI:
         yield {"type": "error", "message": "google-generativeai package not installed"}
@@ -352,6 +390,17 @@ async def stream_gemini(
     # Emit metadata first
     yield {"type": "metadata", "provider": "gemini", "model": use_model}
 
+    prompt_tokens = None
+    completion_tokens = None
+    total_tokens = None
+
+    def _uget(obj, key: str):
+        if obj is None:
+            return None
+        if isinstance(obj, dict):
+            return obj.get(key)
+        return getattr(obj, key, None)
+
     try:
         gemini_model = genai.GenerativeModel(
             model_name=use_model,
@@ -367,13 +416,38 @@ async def stream_gemini(
         chat = gemini_model.start_chat(history=history)
 
         last_msg = messages[-1]["content"] if messages else ""
-        
         response = chat.send_message(last_msg, stream=True)
 
+        last_chunk = None
         for chunk in response:
-            if chunk.text:
-                # v0.13.9: Changed from raw string to dict event
+            last_chunk = chunk
+            if getattr(chunk, "text", None):
                 yield {"type": "token", "text": chunk.text}
+
+        # Attempt to read usage metadata (SDK dependent).
+        usage_md = _uget(response, "usage_metadata") or _uget(last_chunk, "usage_metadata")
+        if usage_md:
+            pt = _uget(usage_md, "prompt_token_count")
+            ct = _uget(usage_md, "candidates_token_count")
+            tt = _uget(usage_md, "total_token_count")
+            if pt is not None:
+                prompt_tokens = int(pt)
+            if ct is not None:
+                completion_tokens = int(ct)
+            if tt is not None:
+                total_tokens = int(tt)
+
+        if prompt_tokens is not None or completion_tokens is not None or total_tokens is not None:
+            if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
+                total_tokens = prompt_tokens + completion_tokens
+            usage = {
+                "prompt_tokens": int(prompt_tokens or 0),
+                "completion_tokens": int(completion_tokens or 0),
+                "total_tokens": int(total_tokens or (int(prompt_tokens or 0) + int(completion_tokens or 0))),
+            }
+            yield {"type": "done", "provider": "gemini", "model": use_model, "usage": usage}
+        else:
+            yield {"type": "done", "provider": "gemini", "model": use_model}
 
     except Exception as e:
         yield {"type": "error", "message": str(e)}
@@ -390,43 +464,40 @@ async def stream_llm(
     route: Optional[str] = None,
 ) -> AsyncGenerator[Dict, None]:
     """
-    Stream LLM response with canonical event schema.
+    Stream from specified LLM provider.
 
     Args:
-        messages: List of {role, content} dicts
-        system_prompt: System prompt (datetime will be added automatically)
-        provider: openai, anthropic, or gemini (auto-selects if None)
-        model: Model name (uses route or default if None)
+        messages: List of message dicts with role and content
+        system_prompt: System prompt string
+        provider: Provider name ("openai", "anthropic", "gemini")
+        model: Specific model name (optional)
         enable_reasoning: If True, instruct LLM to use THINKING/ANSWER tags
-        route: Route name for model selection (e.g., "chat.light", "orchestrator")
+        route: Route name for model selection (optional)
 
     Yields:
         Dict events following canonical schema:
         - {"type": "metadata", "provider": "...", "model": "..."}
         - {"type": "token", "text": "..."}
+        - {"type": "reasoning", "text": "..."} (optional)
         - {"type": "error", "message": "..."}
-        
-    v0.13.9: All events are now dicts (not JSON strings).
     """
-    # Auto-select provider if not specified
     if not provider:
         provider = get_default_provider()
-        if not provider:
-            yield {"type": "error", "message": "No LLM providers available"}
-            return
 
-    # Route to appropriate provider
+    if not provider:
+        yield {"type": "error", "message": "No LLM providers available"}
+        return
+
+    provider = provider.lower()
+
     if provider == "openai":
         async for event in stream_openai(messages, system_prompt, model, enable_reasoning, route):
             yield event
-
     elif provider == "anthropic":
         async for event in stream_anthropic(messages, system_prompt, model, enable_reasoning, route):
             yield event
-
-    elif provider == "gemini" or provider == "google":
+    elif provider in ("gemini", "google"):
         async for event in stream_gemini(messages, system_prompt, model, enable_reasoning, route):
             yield event
-
     else:
         yield {"type": "error", "message": f"Unknown provider '{provider}'"}
