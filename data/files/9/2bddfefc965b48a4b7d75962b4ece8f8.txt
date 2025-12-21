@@ -1,0 +1,131 @@
+Repo root (VM): C:\Orb
+Controller: http://192.168.250.2:8765
+
+Top-level dirs/files (count of files under each):
+- Orb-backend: 402
+- orb-desktop: 32
+- orb-electron-data: 101
+- sandbox_controller: 3
+
+Condensed tree (depth<=3):
+Orb-backend
+Orb-backend/.env
+Orb-backend/.gitattributes
+Orb-backend/README.md
+Orb-backend/_backup_before_audit
+Orb-backend/_backup_before_audit/main.py
+Orb-backend/_patches
+Orb-backend/_patches/audit_phase10
+Orb-backend/app
+Orb-backend/app/__init__.py
+Orb-backend/app/artefacts
+Orb-backend/app/auth
+Orb-backend/app/crypto
+Orb-backend/app/db.py
+Orb-backend/app/embeddings
+Orb-backend/app/jobs
+Orb-backend/app/llm
+Orb-backend/app/memory
+Orb-backend/app/providers
+Orb-backend/app/tools
+Orb-backend/audit_phase10_bundle
+Orb-backend/audit_phase10_bundle/app
+Orb-backend/audit_phase10_bundle/main.py
+Orb-backend/chat_memory.py
+Orb-backend/data
+Orb-backend/data/auth.json
+Orb-backend/data/backup
+Orb-backend/data/encryption_salt.bin
+Orb-backend/data/files
+Orb-backend/data/logs
+Orb-backend/data/orb.db
+Orb-backend/data/orb_memory.db
+Orb-backend/data/orb_memory_backup_pre_encryption.db
+Orb-backend/data/orb_memory_pre_master_key_backup.db
+Orb-backend/data/routing_policy.json
+Orb-backend/dumy .env.txt
+Orb-backend/leak_scan_results.txt
+Orb-backend/main.py
+Orb-backend/orb.db
+Orb-backend/requirements.txt
+Orb-backend/scripts
+Orb-backend/scripts/add_model_column.py
+Orb-backend/scripts/encrypt_existing_data.py
+Orb-backend/scripts/encrypt_existing_plaintext.py
+Orb-backend/scripts/migrate_to_master_key.py
+Orb-backend/scripts/verify_encryption.py
+Orb-backend/static
+Orb-backend/static/index.html
+Orb-backend/static/main.py
+Orb-backend/static/orb.js
+orb-desktop
+orb-desktop/.gitignore
+orb-desktop/index.html
+orb-desktop/main.js
+orb-desktop/package-lock.json
+orb-desktop/package.json
+orb-desktop/src
+orb-desktop/src/App.tsx
+orb-desktop/src/components
+orb-desktop/src/hooks
+orb-desktop/src/main.tsx
+orb-desktop/src/services
+orb-desktop/src/styles
+orb-desktop/src/types
+orb-desktop/src/vite-env.d.ts
+orb-desktop/start up command.txt
+orb-desktop/tsconfig.json
+orb-desktop/vite.config.ts
+orb-electron-data
+orb-electron-data/.gitattributes
+orb-electron-data/Cache
+orb-electron-data/Cache/Cache_Data
+orb-electron-data/Code Cache
+orb-electron-data/Code Cache/js
+orb-electron-data/Code Cache/wasm
+orb-electron-data/DawnGraphiteCache
+orb-electron-data/DawnGraphiteCache/data_0
+orb-electron-data/DawnGraphiteCache/data_1
+orb-electron-data/DawnGraphiteCache/data_2
+orb-electron-data/DawnGraphiteCache/data_3
+orb-electron-data/DawnGraphiteCache/index
+orb-electron-data/DawnWebGPUCache
+orb-electron-data/DawnWebGPUCache/data_0
+orb-electron-data/DawnWebGPUCache/data_1
+orb-electron-data/DawnWebGPUCache/data_2
+orb-electron-data/DawnWebGPUCache/data_3
+orb-electron-data/DawnWebGPUCache/index
+orb-electron-data/GPUCache
+orb-electron-data/GPUCache/data_0
+orb-electron-data/GPUCache/data_1
+orb-electron-data/GPUCache/data_2
+orb-electron-data/GPUCache/data_3
+orb-electron-data/GPUCache/index
+orb-electron-data/Local State
+orb-electron-data/Local Storage
+orb-electron-data/Local Storage/leveldb
+orb-electron-data/Network
+orb-electron-data/Network/Cookies
+orb-electron-data/Network/Cookies-journal
+orb-electron-data/Network/Network Persistent State
+orb-electron-data/Network/NetworkDataMigrated
+orb-electron-data/Network/Trust Tokens
+orb-electron-data/Network/Trust Tokens-journal
+orb-electron-data/Preferences
+orb-electron-data/Session Storage
+orb-electron-data/Session Storage/000003.log
+orb-electron-data/Session Storage/CURRENT
+orb-electron-data/Session Storage/LOCK
+orb-electron-data/Session Storage/LOG
+orb-electron-data/Session Storage/LOG.old
+orb-electron-data/Session Storage/MANIFEST-000001
+orb-electron-data/Shared Dictionary
+orb-electron-data/Shared Dictionary/cache
+orb-electron-data/Shared Dictionary/db
+orb-electron-data/Shared Dictionary/db-journal
+orb-electron-data/SharedStorage
+orb-electron-data/SharedStorage-wal
+sandbox_controller
+sandbox_controller/esfswfsfsef.txt
+sandbox_controller/main.py
+sandbox_controller/start_controller.ps1

@@ -58,6 +58,13 @@ VIDEO+CODE DEBUG PIPELINE:
 """
 import os
 import logging
+import asyncio
+import json
+import re
+from datetime import datetime
+from pathlib import Path
+from urllib.parse import quote
+from urllib.request import urlopen, Request
 from typing import Optional, List, Dict, Any, Tuple
 from uuid import uuid4
 
@@ -183,6 +190,346 @@ def _debug_log(msg: str):
     if ROUTER_DEBUG:
         print(f"[router-debug] {msg}")
 
+# =============================================================================
+# LOCAL ACTION: ZOBIE MAP (Prompt-triggered repo mapper; read-only)
+# =============================================================================
+
+_ZOBIE_MAP_TIMEOUT_SECS = int(os.getenv("ZOBIE_MAP_TIMEOUT_SECS", "30"))
+_ZOBIE_MAP_DEFAULT_BASE = (os.getenv("ZOBIE_CONTROLLER_BASE") or os.getenv("ZOMBIE_CONTROLLER_BASE") or "http://192.168.250.2:8765").rstrip("/")
+_ZOBIE_MAP_MAX_FILES_DEFAULT = int(os.getenv("ZOBIE_MAP_MAX_FILES", "200000"))
+
+# Do NOT pull secrets (controller allows it, so client must refuse)
+_ZOBIE_DENY_FILE_PATTERNS = [
+    r"(^|/)\.env($|/)",
+    r"\.pem$",
+    r"\.key$",
+    r"\.pfx$",
+    r"\.p12$",
+    r"secrets?",
+    r"credentials?",
+]
+
+_ZOBIE_ANCHOR_BASENAMES = {
+    "package.json", "main.js", "electron.js", "vite.config.js", "vite.config.ts",
+    "requirements.txt", "pyproject.toml", "poetry.lock",
+    "Dockerfile", "docker-compose.yml", "docker-compose.yaml",
+    "README.md", "README.txt",
+}
+
+_ZOBIE_ANCHOR_PATH_HINTS = [
+    "Orb-backend/main.py",
+    "Orb-backend/router.py",
+    "orb-desktop/package.json",
+    "orb-desktop/main.js",
+]
+
+def _zobie_http_json(url: str) -> Any:
+    req = Request(url, headers={"Accept": "application/json"})
+    with urlopen(req, timeout=_ZOBIE_MAP_TIMEOUT_SECS) as r:
+        return json.loads(r.read().decode("utf-8", errors="replace"))
+
+def _zobie_is_denied_path(p: str) -> bool:
+    p2 = p.replace("\\", "/").lower()
+    return any(re.search(pat, p2) for pat in _ZOBIE_DENY_FILE_PATTERNS)
+
+def _zobie_pick_anchor_files(tree_paths: List[str]) -> List[str]:
+    anchors = set()
+
+    tree_set = set(tree_paths)
+    for hp in _ZOBIE_ANCHOR_PATH_HINTS:
+        if hp in tree_set and not _zobie_is_denied_path(hp):
+            anchors.add(hp)
+
+    for p in tree_paths:
+        if _zobie_is_denied_path(p):
+            continue
+        base = p.split("/")[-1]
+        if base in _ZOBIE_ANCHOR_BASENAMES:
+            anchors.add(p)
+
+    for p in tree_paths:
+        if _zobie_is_denied_path(p):
+            continue
+        base = p.split("/")[-1].lower()
+        if base in {"main.py", "app.py", "server.py", "router.py", "main.ts", "main.jsx", "main.tsx"}:
+            anchors.add(p)
+
+    return sorted(list(anchors))[:80]
+
+def _zobie_condensed_tree(paths: List[str], max_depth: int = 3) -> List[str]:
+    out = set()
+    for p in paths:
+        if _zobie_is_denied_path(p):
+            continue
+        parts = p.split("/")
+        for d in range(1, min(max_depth, len(parts)) + 1):
+            out.add("/".join(parts[:d]))
+    return sorted(out)
+
+def _zobie_extract_signals(content: str) -> List[str]:
+    signals: List[str] = []
+
+    for m in re.finditer(r"(?:port\s*[:=]\s*|--port\s+)(\d{2,5})", content, flags=re.IGNORECASE):
+        signals.append(f"Port: {m.group(1)}")
+    if "0.0.0.0" in content:
+        signals.append("Binds to 0.0.0.0")
+    if "localhost" in content:
+        signals.append("References localhost")
+
+    lc = content.lower()
+    if "fastapi" in lc:
+        signals.append("FastAPI detected")
+    if "uvicorn" in lc:
+        signals.append("Uvicorn detected")
+
+    if "electron" in lc:
+        signals.append("Electron detected")
+    if "spawn(" in content or "child_process" in content:
+        signals.append("Spawns subprocess (child_process/spawn)")
+
+    if "keytar" in lc:
+        signals.append("Uses keytar / Credential Manager")
+    if "credential" in lc:
+        signals.append("Credential handling present")
+
+    uniq: List[str] = []
+    for s in signals:
+        if s not in uniq:
+            uniq.append(s)
+    return uniq[:12]
+
+def _zobie_default_out_dir() -> str:
+    env = os.getenv("ZOBIE_MAP_OUT_DIR") or os.getenv("ORB_ZOBIE_MAP_OUT_DIR")
+    if env:
+        return env
+
+    # Preferred: outside the main repo
+    if os.path.isdir(r"D:\zobie_mapper"):
+        return r"D:\zobie_mapper\out"
+
+    # Fallback: still outside repo (cwd)
+    return os.path.join(os.getcwd(), "_zobie_maps")
+
+def _zobie_parse_command(message: str) -> Optional[Dict[str, Any]]:
+    """
+    Supported prompts:
+      - ZOBIE MAP
+      - ZOMBIE MAP
+      - /zobie map
+      - ZOBIE MAP http://192.168.250.2:8765
+      - ZOBIE MAP 192.168.250.2:8765
+      - Optional params: max_files=200000 include_hashes=false
+    """
+    if not message:
+        return None
+
+    m = re.match(r"^\s*(?:/)?zob(?:ie|mbie)\s+map\b(.*)$", message, flags=re.IGNORECASE)
+    if not m:
+        return None
+
+    rest = (m.group(1) or "").strip()
+    base_url = _ZOBIE_MAP_DEFAULT_BASE
+    max_files = _ZOBIE_MAP_MAX_FILES_DEFAULT
+    include_hashes = False
+
+    if rest:
+        parts = rest.split()
+        if parts and (
+            parts[0].startswith("http://")
+            or parts[0].startswith("https://")
+            or re.match(r"^\d{1,3}(?:\.\d{1,3}){3}:\d{2,5}$", parts[0])
+        ):
+            tok = parts.pop(0)
+            base_url = tok if tok.startswith("http") else f"http://{tok}"
+            base_url = base_url.rstrip("/")
+
+        for p in parts:
+            if "=" not in p:
+                continue
+            k, v = p.split("=", 1)
+            k = k.strip().lower()
+            v = v.strip().lower()
+            if k == "max_files":
+                try:
+                    max_files = int(v)
+                except Exception:
+                    pass
+            elif k == "include_hashes":
+                include_hashes = v in {"1", "true", "yes", "y"}
+
+    return {"base_url": base_url, "max_files": max_files, "include_hashes": include_hashes}
+
+def _zobie_run_map_sync(base_url: str, out_dir: str, max_files: int, include_hashes: bool) -> Dict[str, Any]:
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    health = _zobie_http_json(f"{base_url}/health")
+    repo_root = health.get("repo_root", "?")
+
+    tree = _zobie_http_json(
+        f"{base_url}/repo/tree?include_hashes={'true' if include_hashes else 'false'}&max_files={max_files}"
+    )
+    paths = [x.get("path") for x in tree if isinstance(x, dict) and x.get("path")]
+    paths = [p for p in paths if isinstance(p, str)]
+
+    safe_paths = [p for p in paths if not _zobie_is_denied_path(p)]
+
+    top: Dict[str, int] = {}
+    for p in safe_paths:
+        head = p.split("/")[0]
+        top[head] = top.get(head, 0) + 1
+
+    anchors = _zobie_pick_anchor_files(safe_paths)
+
+    file_summaries: List[Dict[str, Any]] = []
+    for p in anchors:
+        data = _zobie_http_json(f"{base_url}/repo/file?path={quote(p)}")
+        content = data.get("content", "") or ""
+        file_summaries.append(
+            {
+                "path": p,
+                "bytes": data.get("bytes"),
+                "signals": _zobie_extract_signals(content),
+            }
+        )
+
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+    tree_txt = out_path / f"REPO_TREE_{stamp}.txt"
+    map_md = out_path / f"ARCH_MAP_{stamp}.md"
+    index_json = out_path / f"INDEX_{stamp}.json"
+
+    # Write condensed tree
+    tree_lines: List[str] = []
+    tree_lines.append(f"Repo root (VM): {repo_root}")
+    tree_lines.append(f"Controller: {base_url}")
+    tree_lines.append("")
+    tree_lines.append("Top-level dirs/files (count of files under each):")
+    for k in sorted(top.keys()):
+        tree_lines.append(f"- {k}: {top[k]}")
+    tree_lines.append("")
+    tree_lines.append("Condensed tree (depth<=3):")
+    tree_lines.extend(_zobie_condensed_tree(safe_paths, max_depth=3))
+    tree_lines.append("")
+    tree_txt.write_text("\n".join(tree_lines), encoding="utf-8")
+
+    # Write small architecture map (Stage 1)
+    md_lines: List[str] = []
+    md_lines.append("# ZombieOrb Repo Map (read-only)")
+    md_lines.append("")
+    md_lines.append(f"- Generated: {datetime.now().isoformat(timespec='seconds')}")
+    md_lines.append(f"- Controller: `{base_url}`")
+    md_lines.append(f"- VM repo root: `{repo_root}`")
+    md_lines.append("")
+    md_lines.append("## High-level layout")
+    for k in sorted(top.keys()):
+        md_lines.append(f"- **{k}** — {top[k]} files")
+    md_lines.append("")
+    md_lines.append("## Anchor files scanned")
+    for s in file_summaries:
+        md_lines.append(f"- `{s['path']}` ({s.get('bytes')} bytes)")
+        for sig in s.get("signals") or []:
+            md_lines.append(f"  - {sig}")
+    md_lines.append("")
+    md_lines.append("## Notes / guardrails")
+    md_lines.append("- This mapper intentionally skips `.env` and key/cert/secret-like files.")
+    md_lines.append("- Output is for cross-checking structure + entrypoints; no changes are made to the VM.")
+    md_lines.append("")
+    map_md.write_text("\n".join(md_lines), encoding="utf-8")
+
+    # Write index
+    index_payload = {
+        "controller": base_url,
+        "repo_root": repo_root,
+        "top_level_counts": top,
+        "anchors": file_summaries,
+        "all_paths_count": len(paths),
+        "safe_paths_count": len(safe_paths),
+        "outputs": {
+            "repo_tree_txt": str(tree_txt),
+            "arch_map_md": str(map_md),
+            "index_json": str(index_json),
+        },
+    }
+    index_json.write_text(json.dumps(index_payload, indent=2), encoding="utf-8")
+
+    return index_payload
+
+async def _maybe_handle_zobie_map(task: LLMTask, original_message: str) -> Optional[LLMResult]:
+    parsed = _zobie_parse_command(original_message)
+    if not parsed:
+        return None
+
+    base_url = parsed["base_url"]
+    max_files = parsed["max_files"]
+    include_hashes = parsed["include_hashes"]
+    out_dir = _zobie_default_out_dir()
+
+    if ROUTER_DEBUG:
+        _debug_log("=" * 70)
+        _debug_log("LOCAL ACTION: ZOBIE MAP")
+        _debug_log(f"  Controller: {base_url}")
+        _debug_log(f"  Out dir: {out_dir}")
+        _debug_log(f"  max_files={max_files} include_hashes={include_hashes}")
+        _debug_log("=" * 70)
+
+    try:
+        payload = await asyncio.to_thread(_zobie_run_map_sync, base_url, out_dir, max_files, include_hashes)
+        outputs = payload.get("outputs") or {}
+
+        content = "\n".join(
+            [
+                "ZOBIE MAP complete (read-only).",
+                f"- Controller: {payload.get('controller')}",
+                f"- VM repo root: {payload.get('repo_root')}",
+                f"- Files: {payload.get('safe_paths_count')}/{payload.get('all_paths_count')} (safe/total)",
+                "",
+                "Outputs:",
+                f"- {outputs.get('repo_tree_txt')}",
+                f"- {outputs.get('arch_map_md')}",
+                f"- {outputs.get('index_json')}",
+            ]
+        )
+
+        return LLMResult(
+            content=content,
+            provider="local",
+            model="zobie_mapper",
+            finish_reason="stop",
+            error_message=None,
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            cost_usd=0.0,
+            raw_response={"local_action": "zobie_map", "payload": payload},
+            job_type=JobType.TEXT_HEAVY,
+            routing_decision={
+                "job_type": "local.zobie.map",
+                "provider": "local",
+                "model": "zobie_mapper",
+                "reason": "Prompt trigger: ZOBIE MAP",
+            },
+        )
+    except Exception as exc:
+        err = f"ZOBIE MAP failed: {type(exc).__name__}: {exc}"
+        return LLMResult(
+            content=err,
+            provider="local",
+            model="zobie_mapper",
+            finish_reason="error",
+            error_message=err,
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            cost_usd=0.0,
+            raw_response={"local_action": "zobie_map", "error": err},
+            job_type=JobType.TEXT_HEAVY,
+            routing_decision={
+                "job_type": "local.zobie.map",
+                "provider": "local",
+                "model": "zobie_mapper",
+                "reason": "Prompt trigger: ZOBIE MAP (failed)",
+            },
+        )
 
 # =============================================================================
 # HIGH-STAKES CRITIQUE PIPELINE CONFIGURATION
@@ -207,7 +554,6 @@ MIN_CRITIQUE_CHARS = int(os.getenv("ORB_MIN_CRITIQUE_CHARS", "1500"))
 GEMINI_CRITIC_MODEL = os.getenv("GEMINI_OPUS_CRITIC_MODEL", "gemini-3-pro")
 GEMINI_CRITIC_MAX_TOKENS = int(os.getenv("GEMINI_CRITIC_MAX_TOKENS", "1024"))
 OPUS_REVISION_MAX_TOKENS = int(os.getenv("OPUS_REVISION_MAX_TOKENS", "2048"))
-
 
 # =============================================================================
 # ENVIRONMENT CONTEXT
@@ -253,64 +599,59 @@ def get_environment_context() -> Dict[str, Any]:
         ]
     }
 
-
 def normalize_job_type_for_high_stakes(job_type_str: str, reason: str = "") -> str:
     """Normalize job type to specific high-stakes string."""
     if job_type_str in HIGH_STAKES_JOB_TYPES and job_type_str != "orchestrator":
         return job_type_str
-    
+
     if job_type_str == "orchestrator":
         reason_lower = reason.lower()
-        
+
         architecture_keywords = ["architecture", "system design", "architect", "system architecture"]
         if any(kw in reason_lower for kw in architecture_keywords):
             print(f"[router] Normalized orchestrator → architecture_design (reason: {reason[:80]})")
             return "architecture_design"
-        
+
         security_keywords = ["security", "security review", "security audit"]
         if any(kw in reason_lower for kw in security_keywords):
             print(f"[router] Normalized orchestrator → security_review (reason: {reason[:80]})")
             return "security_review"
-        
+
         infra_keywords = ["infrastructure", "infra", "deployment"]
         if any(kw in reason_lower for kw in infra_keywords):
             print(f"[router] Normalized orchestrator → high_stakes_infra (reason: {reason[:80]})")
             return "high_stakes_infra"
-        
+
         print(f"[router] Normalized orchestrator → architecture_design (default)")
         return "architecture_design"
-    
-    return job_type_str
 
+    return job_type_str
 
 def is_high_stakes_job(job_type_str: str) -> bool:
     """Check if job type string is in high-stakes set."""
     return job_type_str in HIGH_STAKES_JOB_TYPES
 
-
 def is_opus_model(model_id: str) -> bool:
     """Check if model is Opus (not Sonnet)."""
     return "opus" in model_id.lower()
 
-
 def is_long_enough_for_critique(text: str) -> bool:
     """Check if response is long enough to warrant critique."""
     return len(text or "") >= MIN_CRITIQUE_CHARS
-
 
 # =============================================================================
 # CRITIQUE PROMPT TEMPLATES
 # =============================================================================
 
 def build_critique_prompt_for_architecture(
-    draft_text: str, 
+    draft_text: str,
     original_request: str,
     env_context: Dict[str, Any]
 ) -> str:
     """Build critique prompt for architecture design tasks."""
     forbidden_infra = env_context.get("forbidden_unless_explicit", [])
     acceptable_infra = env_context.get("acceptable_infra", [])
-    
+
     return f"""You are reviewing an architecture design proposal.
 
 ORIGINAL REQUEST:
@@ -364,7 +705,6 @@ If the design is OVER-ENGINEERED:
 
 Keep your critique under 800 words. Be direct and specific."""
 
-
 def build_critique_prompt_for_security(draft_text: str, original_request: str) -> str:
     """Build critique prompt for security review tasks."""
     return f"""You are performing a security review.
@@ -386,7 +726,6 @@ Provide a critical security review focusing on:
 Be aggressive in identifying security issues.
 Keep your critique under 800 words."""
 
-
 def build_critique_prompt_for_general(draft_text: str, original_request: str, job_type_str: str) -> str:
     """Build critique prompt for general high-stakes tasks."""
     return f"""You are reviewing high-stakes technical work.
@@ -406,27 +745,25 @@ Provide a critical technical review focusing on:
 
 Keep your critique under 800 words."""
 
-
 def build_critique_prompt(
-    draft_text: str, 
-    original_request: str, 
+    draft_text: str,
+    original_request: str,
     job_type_str: str,
     env_context: Optional[Dict[str, Any]] = None
 ) -> str:
     """Build critique prompt based on job type."""
-    if job_type_str in ["architecture_design", "big_architecture", "high_stakes_infra", 
+    if job_type_str in ["architecture_design", "big_architecture", "high_stakes_infra",
                          "architecture", "orchestrator"]:
         if not env_context:
             env_context = get_environment_context()
         return build_critique_prompt_for_architecture(draft_text, original_request, env_context)
-    
-    elif job_type_str in ["security_review", "security_sensitive_change", 
+
+    elif job_type_str in ["security_review", "security_sensitive_change",
                            "privacy_sensitive_change"]:
         return build_critique_prompt_for_security(draft_text, original_request)
-    
+
     else:
         return build_critique_prompt_for_general(draft_text, original_request, job_type_str)
-
 
 # =============================================================================
 # DEFAULT MODELS PER PROVIDER
@@ -446,7 +783,6 @@ DEFAULT_MODELS: Dict[str, str] = {
     "anthropic_frontier": ANTHROPIC_FRONTIER_MODEL_ID,
     "openai_frontier": OPENAI_FRONTIER_MODEL_ID,
 }
-
 
 # =============================================================================
 # JOB TYPE MAPPING (Legacy → Phase 4)
@@ -481,11 +817,9 @@ _LEGACY_TO_PHASE4_JOB_TYPE: Dict[str, Phase4JobType] = {
     JobType.VIDEO_HEAVY.value: Phase4JobType.VISION_COMPLEX,
 }
 
-
 def _map_to_phase4_job_type(job_type: JobType) -> Phase4JobType:
     """Map our JobType to Phase 4 JobType."""
     return _LEGACY_TO_PHASE4_JOB_TYPE.get(job_type.value, Phase4JobType.CHAT_SIMPLE)
-
 
 def _default_importance_for_job_type(job_type: JobType) -> Importance:
     """Determine default Importance based on JobType."""
@@ -495,7 +829,6 @@ def _default_importance_for_job_type(job_type: JobType) -> Importance:
         return Importance.MEDIUM
     return Importance.LOW
 
-
 def _default_modalities_for_job_type(job_type: JobType) -> List[Modality]:
     """Determine default modalities based on JobType."""
     if job_type in {
@@ -504,7 +837,6 @@ def _default_modalities_for_job_type(job_type: JobType) -> List[Modality]:
     }:
         return [Modality.TEXT, Modality.IMAGE]
     return [Modality.TEXT]
-
 
 # =============================================================================
 # v0.15.0: FILE MAP INJECTION
@@ -516,22 +848,22 @@ def inject_file_map_into_messages(
 ) -> List[Dict[str, str]]:
     """
     Inject file map into messages for stable file referencing.
-    
+
     Adds file map to system message or creates one if needed.
     """
     if not file_map:
         return messages
-    
+
     file_map_instruction = f"""
 {file_map}
 
 IMPORTANT: When referring to files in your response, always use the [FILE_X] identifiers shown above.
 """
-    
+
     # Check if there's already a system message
     new_messages = []
     system_found = False
-    
+
     for msg in messages:
         if msg.get("role") == "system":
             # Append file map to existing system message
@@ -540,13 +872,12 @@ IMPORTANT: When referring to files in your response, always use the [FILE_X] ide
             system_found = True
         else:
             new_messages.append(msg)
-    
+
     # If no system message, add one at the beginning
     if not system_found:
         new_messages.insert(0, {"role": "system", "content": file_map_instruction})
-    
-    return new_messages
 
+    return new_messages
 
 # =============================================================================
 # CLASSIFY AND ROUTE
@@ -556,19 +887,18 @@ def classify_and_route(task: LLMTask) -> Tuple[Provider, str, JobType, str]:
     """Classify task and determine routing using job_classifier."""
     user_messages = [m for m in task.messages if m.get("role") == "user"]
     message_text = user_messages[-1].get("content", "") if user_messages else ""
-    
+
     requested_type = task.job_type.value if task.job_type else None
     metadata = task.metadata or {}
-    
+
     decision = classifier_classify_and_route(
         message=message_text,
         attachments=task.attachments,
         job_type=requested_type,
         metadata=metadata,
     )
-    
-    return (decision.provider, decision.model, decision.job_type, decision.reason)
 
+    return (decision.provider, decision.model, decision.job_type, decision.reason)
 
 # =============================================================================
 # ENVELOPE SYNTHESIS
@@ -583,7 +913,7 @@ def synthesize_envelope_from_task(
 ) -> JobEnvelope:
     """
     Synthesize a JobEnvelope from LLMTask.
-    
+
     v0.15.1: Added cleaned_message parameter for OVERRIDE line removal.
     """
     phase4_job_type = _map_to_phase4_job_type(task.job_type)
@@ -603,17 +933,17 @@ def synthesize_envelope_from_task(
 
     # Build messages with system/project context
     final_messages = []
-    
+
     system_parts = []
     if task.system_prompt:
         system_parts.append(task.system_prompt)
     if task.project_context:
         system_parts.append(task.project_context)
-    
+
     if system_parts:
         system_content = "\n\n".join(system_parts)
         final_messages.append({"role": "system", "content": system_content})
-    
+
     # v0.15.1: Replace user message content if cleaned_message provided
     if cleaned_message is not None:
         for msg in task.messages:
@@ -643,7 +973,7 @@ def synthesize_envelope_from_task(
                 final_messages.append(msg)
     else:
         final_messages.extend(task.messages)
-    
+
     # v0.15.0: Inject file map if available
     if file_map:
         final_messages = inject_file_map_into_messages(final_messages, file_map)
@@ -677,7 +1007,6 @@ def synthesize_envelope_from_task(
 
     return envelope
 
-
 # =============================================================================
 # ATTACHMENT SAFETY CHECK
 # =============================================================================
@@ -692,7 +1021,7 @@ def _check_attachment_safety(
     provider_id = decision.provider.value
     model_id = decision.model
     reason = decision.reason
-    
+
     if has_attachments and not job_type_specified and provider_id == "anthropic":
         if not is_claude_allowed(decision.job_type):
             logger.warning(
@@ -702,9 +1031,8 @@ def _check_attachment_safety(
             provider_id = "openai"
             model_id = DEFAULT_MODELS["openai_heavy"]
             reason = f"Attachment safety: {decision.job_type.value} not allowed on Claude"
-    
-    return (provider_id, model_id, reason)
 
+    return (provider_id, model_id, reason)
 
 # =============================================================================
 # HIGH-STAKES CRITIQUE PIPELINE
@@ -718,13 +1046,13 @@ async def call_gemini_critic(
     """Call Gemini 3 Pro to critique the Opus draft."""
     user_messages = [m for m in original_task.messages if m.get("role") == "user"]
     original_request = user_messages[-1].get("content", "") if user_messages else ""
-    
+
     env_context = None
-    if job_type_str in ["architecture_design", "big_architecture", "high_stakes_infra", 
+    if job_type_str in ["architecture_design", "big_architecture", "high_stakes_infra",
                          "architecture", "orchestrator"]:
         env_context = get_environment_context()
         print(f"[critic] Passing environment context to architecture critique")
-    
+
     critique_prompt = build_critique_prompt(
         draft_text=draft_result.content,
         original_request=original_request,
@@ -733,9 +1061,9 @@ async def call_gemini_critic(
     )
 
     critique_messages = [{"role": "user", "content": critique_prompt}]
-    
+
     print(f"[critic] Calling Gemini 3 Pro for critique of {job_type_str} task")
-    
+
     try:
         critic_envelope = JobEnvelope(
             job_id=str(uuid4()),
@@ -756,20 +1084,20 @@ async def call_gemini_critic(
             allow_multi_model_review=False,
             needs_tools=[],
         )
-        
+
         result = await registry_llm_call(
             provider_id="google",
             model_id=GEMINI_CRITIC_MODEL,
             messages=critique_messages,
             job_envelope=critic_envelope,
         )
-        
+
         if not result.is_success() or not result.content:
             logger.warning("[critic] Gemini critic failed or returned empty")
             return None
-        
+
         print(f"[critic] Gemini 3 Pro critique completed: {len(result.content)} chars")
-        
+
         return LLMResult(
             content=result.content,
             provider="google",
@@ -782,11 +1110,10 @@ async def call_gemini_critic(
             cost_usd=result.usage.cost_estimate,
             raw_response=result.raw_response,
         )
-        
+
     except Exception as exc:
         logger.exception("[critic] Gemini critic call failed: %s", exc)
         return None
-
 
 async def call_opus_revision(
     original_task: LLMTask,
@@ -797,7 +1124,7 @@ async def call_opus_revision(
     """Call Opus to revise its draft based on Gemini's critique."""
     user_messages = [m for m in original_task.messages if m.get("role") == "user"]
     original_request = user_messages[-1].get("content", "") if user_messages else ""
-    
+
     revision_prompt = f"""You are revising your own previous answer based on external critique. Address the valid concerns raised while maintaining your technical accuracy. Produce an improved final answer.
 
 ORIGINAL REQUEST:
@@ -819,9 +1146,9 @@ Revise your draft answer by:
 Provide your revised, final answer."""
 
     revision_messages = [{"role": "user", "content": revision_prompt}]
-    
+
     print("[critic] Calling Opus for revision using Gemini critique")
-    
+
     try:
         revision_envelope = JobEnvelope(
             job_id=str(uuid4()),
@@ -842,20 +1169,20 @@ Provide your revised, final answer."""
             allow_multi_model_review=False,
             needs_tools=[],
         )
-        
+
         result = await registry_llm_call(
             provider_id="anthropic",
             model_id=opus_model_id,
             messages=revision_messages,
             job_envelope=revision_envelope,
         )
-        
+
         if not result.is_success() or not result.content:
             logger.warning("[critic] Opus revision failed or returned empty")
             return None
-        
+
         print(f"[critic] Opus revision complete: {len(result.content)} chars")
-        
+
         return LLMResult(
             content=result.content,
             provider="anthropic",
@@ -868,11 +1195,10 @@ Provide your revised, final answer."""
             cost_usd=result.usage.cost_estimate,
             raw_response=result.raw_response,
         )
-        
+
     except Exception as exc:
         logger.exception("[critic] Opus revision call failed: %s", exc)
         return None
-
 
 # =============================================================================
 # VIDEO+CODE DEBUG PIPELINE
@@ -885,27 +1211,27 @@ async def run_video_code_debug_pipeline(
 ) -> LLMResult:
     """2-step pipeline for Video+Code debug jobs."""
     print("[video-code] Starting Video+Code debug pipeline")
-    
+
     attachments = task.attachments or []
     flags = compute_modality_flags(attachments)
-    
+
     video_attachments = flags.get("video_attachments", [])
     code_attachments = flags.get("code_attachments", [])
-    
+
     print(f"[video-code] Found {len(video_attachments)} video(s), {len(code_attachments)} code file(s)")
-    
+
     # Step 1: Transcribe videos
     video_transcripts = []
-    
+
     for video_att in video_attachments:
         video_path = getattr(video_att, 'file_path', None)
-        
+
         if not video_path:
             file_id = getattr(video_att, 'file_id', None)
             if file_id:
                 project_id = getattr(task, 'project_id', 1) or 1
                 video_path = f"data/files/{project_id}/{video_att.filename}"
-        
+
         if video_path:
             print(f"[video-code] Step 1: Transcribing video: {video_att.filename}")
             try:
@@ -933,20 +1259,20 @@ async def run_video_code_debug_pipeline(
                 "filename": video_att.filename,
                 "transcript": f"[Video file path not available for: {video_att.filename}]",
             })
-    
+
     print(f"[video-code] Step 1 complete: {len(video_transcripts)} video transcript(s)")
-    
+
     # Step 2: Build context for Sonnet
     transcripts_text = ""
     for vt in video_transcripts:
         transcripts_text += f"\n\n=== Video: {vt['filename']} ===\n{vt['transcript']}"
-    
+
     original_user_message = ""
     for msg in envelope.messages:
         if msg.get("role") == "user":
             original_user_message = msg.get("content", "")
             break
-    
+
     # Build system context with file map
     system_content = f"""You are debugging code based on video recordings of the issue.
 
@@ -964,17 +1290,17 @@ Focus on:
         system_content += f"\n\n{file_map}\n\nIMPORTANT: When referring to files, use the [FILE_X] identifiers above."
 
     enhanced_messages = [{"role": "system", "content": system_content}]
-    
+
     for msg in envelope.messages:
         if msg.get("role") != "system":
             enhanced_messages.append(msg)
-    
+
     envelope.messages = enhanced_messages
-    
+
     # Step 3: Call Sonnet
     sonnet_model = os.getenv("ANTHROPIC_SONNET_MODEL", "claude-sonnet-4-5-20250929")
     print(f"[video-code] Step 2: Calling Sonnet ({sonnet_model}) with code + transcripts")
-    
+
     try:
         result = await registry_llm_call(
             provider_id="anthropic",
@@ -982,7 +1308,7 @@ Focus on:
             messages=envelope.messages,
             job_envelope=envelope,
         )
-        
+
         if not result.is_success():
             print(f"[video-code] Sonnet call failed: {result.error_message}")
             return LLMResult(
@@ -997,9 +1323,9 @@ Focus on:
                 cost_usd=0.0,
                 raw_response=None,
             )
-        
+
         print(f"[video-code] Pipeline complete: {len(result.content)} chars")
-        
+
         llm_result = LLMResult(
             content=result.content,
             provider="anthropic",
@@ -1012,7 +1338,7 @@ Focus on:
             cost_usd=result.usage.cost_estimate,
             raw_response=result.raw_response,
         )
-        
+
         llm_result.routing_decision = {
             "job_type": "video.code.debug",
             "provider": "anthropic",
@@ -1024,9 +1350,9 @@ Focus on:
                 "transcript_chars": len(transcripts_text),
             }
         }
-        
+
         return llm_result
-        
+
     except Exception as exc:
         logger.exception("[video-code] Sonnet call failed: %s", exc)
         return LLMResult(
@@ -1042,7 +1368,6 @@ Focus on:
             raw_response=None,
         )
 
-
 async def run_high_stakes_with_critique(
     task: LLMTask,
     provider_id: str,
@@ -1053,7 +1378,7 @@ async def run_high_stakes_with_critique(
 ) -> LLMResult:
     """Run 3-step critique pipeline for high-stakes Opus work."""
     print(f"[critic] High-stakes pipeline enabled: job_type={job_type_str} model={model_id}")
-    
+
     # v0.15.0: Start audit trace if available
     trace = None
     if AUDIT_AVAILABLE and AUDIT_ENABLED:
@@ -1082,26 +1407,26 @@ async def run_high_stakes_with_critique(
                 frontier_override=False,
                 file_map_injected=bool(file_map),
             )
-    
+
     # Pre-step: Transcribe video attachments if present
     attachments = task.attachments or []
     if attachments:
         flags = compute_modality_flags(attachments)
         video_attachments = flags.get("video_attachments", [])
-        
+
         if video_attachments:
             print(f"[critic] Pre-step: Transcribing {len(video_attachments)} video(s)")
-            
+
             video_transcripts = []
             for video_att in video_attachments:
                 video_path = getattr(video_att, 'file_path', None)
-                
+
                 if not video_path:
                     file_id = getattr(video_att, 'file_id', None)
                     if file_id:
                         project_id = getattr(task, 'project_id', 1) or 1
                         video_path = f"data/files/{project_id}/{video_att.filename}"
-                
+
                 if video_path:
                     print(f"[critic] Pre-step: Transcribing {video_att.filename}")
                     try:
@@ -1112,14 +1437,14 @@ async def run_high_stakes_with_critique(
                         })
                     except Exception as e:
                         print(f"[critic] Pre-step: Transcription failed: {e}")
-            
+
             if video_transcripts:
                 transcripts_text = ""
                 for vt in video_transcripts:
                     transcripts_text += f"\n\n=== Video: {vt['filename']} ===\n{vt['transcript']}"
-                
+
                 print(f"[critic] Pre-step complete: Injected {len(transcripts_text)} chars")
-                
+
                 video_system_msg = {
                     "role": "system",
                     "content": f"""VIDEO CONTEXT (transcribed for this high-stakes review):
@@ -1127,13 +1452,13 @@ async def run_high_stakes_with_critique(
 
 Use the video context above to inform your analysis."""
                 }
-                
+
                 envelope.messages = [video_system_msg] + list(envelope.messages)
-    
+
     # v0.15.0: Inject file map if not already present
     if file_map:
         envelope.messages = inject_file_map_into_messages(envelope.messages, file_map)
-    
+
     # Step 1: Generate Opus Draft
     try:
         draft_result = await registry_llm_call(
@@ -1142,7 +1467,7 @@ Use the video context above to inform your analysis."""
             messages=envelope.messages,
             job_envelope=envelope,
         )
-        
+
         if not draft_result.is_success():
             logger.error("[critic] Opus draft failed: %s", draft_result.error_message)
             if trace:
@@ -1159,7 +1484,7 @@ Use the video context above to inform your analysis."""
                 cost_usd=0.0,
                 raw_response=None,
             )
-        
+
         draft = LLMResult(
             content=draft_result.content,
             provider=provider_id,
@@ -1172,9 +1497,9 @@ Use the video context above to inform your analysis."""
             cost_usd=draft_result.usage.cost_estimate,
             raw_response=draft_result.raw_response,
         )
-        
+
         print(f"[critic] Opus draft complete: {len(draft.content)} chars")
-        
+
         if trace:
             trace.log_model_call(
                 "opus_draft",
@@ -1184,7 +1509,7 @@ Use the video context above to inform your analysis."""
                 draft_result.usage.completion_tokens,
                 draft_result.usage.cost_estimate,
             )
-        
+
     except Exception as exc:
         logger.exception("[critic] Opus draft call failed: %s", exc)
         if trace:
@@ -1201,28 +1526,28 @@ Use the video context above to inform your analysis."""
             cost_usd=0.0,
             raw_response=None,
         )
-    
+
     # Step 2: Check Draft Length
     if not is_long_enough_for_critique(draft.content):
         print(f"[critic] Draft too short for critique ({len(draft.content or '')} chars)")
         if trace:
             trace.finalize(success=True)
         return draft
-    
+
     # Step 3: Call Gemini Critic
     critique = await call_gemini_critic(
         original_task=task,
         draft_result=draft,
         job_type_str=job_type_str,
     )
-    
+
     if not critique or not critique.content:
         print("[critic] Gemini critic failed; returning original Opus draft")
         if trace:
             trace.log_warning("CRITIQUE_FAILED", "Returning original draft")
             trace.finalize(success=True)
         return draft
-    
+
     if trace:
         trace.log_model_call(
             "gemini_critique",
@@ -1232,7 +1557,7 @@ Use the video context above to inform your analysis."""
             critique.completion_tokens,
             critique.cost_usd,
         )
-    
+
     # Step 4: Call Opus for Revision
     revision = await call_opus_revision(
         original_task=task,
@@ -1240,14 +1565,14 @@ Use the video context above to inform your analysis."""
         critique_result=critique,
         opus_model_id=model_id,
     )
-    
+
     if not revision or not revision.content:
         print("[critic] Opus revision failed; returning original Opus draft")
         if trace:
             trace.log_warning("REVISION_FAILED", "Returning original draft")
             trace.finalize(success=True)
         return draft
-    
+
     if trace:
         trace.log_model_call(
             "opus_revision",
@@ -1258,7 +1583,7 @@ Use the video context above to inform your analysis."""
             revision.cost_usd,
         )
         trace.finalize(success=True)
-    
+
     # Success
     revision.routing_decision = {
         "job_type": job_type_str,
@@ -1272,9 +1597,8 @@ Use the video context above to inform your analysis."""
             "total_cost": draft.cost_usd + critique.cost_usd + revision.cost_usd,
         }
     }
-    
-    return revision
 
+    return revision
 
 # =============================================================================
 # CORE CALL FUNCTION (Async)
@@ -1289,20 +1613,16 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
     has_attachments = bool(task.attachments and len(task.attachments) > 0)
 
     # ==========================================================================
-    # v0.15.1: FRONTIER OVERRIDE CHECK (BEFORE ALL OTHER ROUTING)
+    # Extract user message text (string or multimodal list)
     # ==========================================================================
-    
-    # Extract user message for override detection
-    # Handle both simple string and multimodal (list) content formats
     user_messages = [m for m in task.messages if m.get("role") == "user"]
     original_message = ""
-    
+
     if user_messages:
         content = user_messages[-1].get("content", "")
         if isinstance(content, str):
             original_message = content
         elif isinstance(content, list):
-            # Multimodal message - extract text parts
             for part in content:
                 if isinstance(part, dict) and part.get("type") == "text":
                     original_message = part.get("text", "")
@@ -1310,18 +1630,27 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
                 elif isinstance(part, str):
                     original_message = part
                     break
-        
+
         if ROUTER_DEBUG:
             _debug_log(f"Extracted message for override check: {repr(original_message[:100])}...")
-    
-    # Check for OVERRIDE command
+
+    # ==========================================================================
+    # Stage 1: Prompt-triggered ZOBIE MAP (local action, read-only)
+    # ==========================================================================
+    local_action_result = await _maybe_handle_zobie_map(task, original_message)
+    if local_action_result is not None:
+        return local_action_result
+
+    # ==========================================================================
+    # v0.15.1: FRONTIER OVERRIDE CHECK (BEFORE ALL OTHER ROUTING)
+    # ==========================================================================
     override_result = detect_frontier_override(original_message)
     frontier_override_active = override_result is not None
     cleaned_message = None
-    
+
     if frontier_override_active:
         force_provider, force_model_id, cleaned_message = override_result
-        
+
         print(f"[router] FRONTIER OVERRIDE ACTIVE: {force_provider} → {force_model_id}")
         if ROUTER_DEBUG:
             _debug_log("=" * 70)
@@ -1337,7 +1666,7 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
     if has_attachments:
         modality_flags = compute_modality_flags(task.attachments or [])
         file_map = modality_flags.get("file_map")
-        
+
         if ROUTER_DEBUG and file_map:
             _debug_log(f"File map generated ({len(file_map)} chars)")
 
@@ -1368,7 +1697,6 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
     # ==========================================================================
     # PROVIDER/MODEL SELECTION
     # ==========================================================================
-    
     if ROUTER_DEBUG:
         _debug_log("=" * 70)
         _debug_log("ROUTER START")
@@ -1377,16 +1705,15 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
         _debug_log(f"Task attachments: {len(task.attachments) if task.attachments else 0}")
         _debug_log(f"Task force_provider: {task.force_provider.value if task.force_provider else 'None'}")
         _debug_log(f"Frontier override active: {frontier_override_active}")
-    
+
     # ==========================================================================
     # v0.15.1: FRONTIER OVERRIDE TAKES PRIORITY
     # ==========================================================================
-    
     if frontier_override_active:
         provider_id = force_provider
         model_id = force_model_id
         reason = f"OVERRIDE → {force_provider} frontier ({force_model_id})"
-        
+
         # Still need a classified_type for pipeline checks
         # Use TEXT_HEAVY as default since OVERRIDE implies serious work
         if force_provider == "anthropic":
@@ -1395,15 +1722,15 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
             classified_type = JobType.VIDEO_HEAVY  # Use video-capable type for Gemini
         else:
             classified_type = JobType.TEXT_HEAVY
-        
+
         print(f"[router] OVERRIDE routing: {provider_id}/{model_id}")
-        
+
         if ROUTER_DEBUG:
             _debug_log(f"OVERRIDE: Skipping normal classification")
             _debug_log(f"  → Provider: {provider_id}")
             _debug_log(f"  → Model: {model_id}")
             _debug_log(f"  → Implied job type: {classified_type.value}")
-    
+
     # Priority 1: Explicit force_provider override (legacy)
     elif task.force_provider is not None:
         provider_id = task.force_provider.value
@@ -1413,18 +1740,18 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
         logger.info("[router] Using force_provider: %s / %s", provider_id, model_id)
         if ROUTER_DEBUG:
             _debug_log(f"Priority 1: force_provider override → {provider_id}/{model_id}")
-    
+
     # Priority 2: Job classifier
     else:
         if ROUTER_DEBUG:
             _debug_log(f"Priority 2: Using job classifier")
-        
+
         if task.job_type and task.job_type != JobType.UNKNOWN:
             classified_type = task.job_type
-            
+
             if ROUTER_DEBUG:
                 _debug_log(f"  Task has pre-set job_type: {classified_type.value}")
-            
+
             if classified_type == JobType.CHAT_LIGHT or classified_type.value in ["chat.light", "chat_light", "casual_chat"]:
                 provider = Provider.OPENAI
                 provider_id = "openai"
@@ -1441,39 +1768,39 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
         else:
             if ROUTER_DEBUG:
                 _debug_log(f"  No valid pre-classification, calling classifier...")
-            
+
             provider, model_id, classified_type, reason = classify_and_route(task)
             provider_id = provider.value
-            
+
             if ROUTER_DEBUG:
                 _debug_log(f"  Classifier returned: {classified_type.value} → {provider_id}/{model_id}")
-            
+
             if classified_type == JobType.CHAT_LIGHT or classified_type.value in ["chat.light", "chat_light", "casual_chat"]:
                 provider = Provider.OPENAI
                 provider_id = "openai"
                 model_id = os.getenv("OPENAI_MODEL_LIGHT_CHAT", "gpt-4.1-mini")
                 reason = "HARD OVERRIDE: CHAT_LIGHT forced to GPT mini"
                 print("[router] OVERRIDE: Forcing CHAT_LIGHT → openai/gpt-4.1-mini")
-        
+
         if task.model:
             if ROUTER_DEBUG:
                 _debug_log(f"  Task.model override: {task.model}")
             model_id = task.model
-        
+
         print(f"[router] Final routing: {classified_type.value} → {provider_id}/{model_id}")
-        
+
         if ROUTER_DEBUG:
             _debug_log("=" * 70)
             _debug_log(f"ROUTING DECISION: {classified_type.value} → {provider_id}/{model_id}")
             _debug_log("=" * 70)
-        
+
         decision = RoutingDecision(
             job_type=classified_type,
             provider=provider,
             model=model_id,
             reason=reason,
         )
-        
+
         # Attachment safety check (skip if frontier override is active)
         provider_id, model_id, reason = _check_attachment_safety(
             task=task,
@@ -1481,11 +1808,10 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
             has_attachments=has_attachments,
             job_type_specified=job_type_specified,
         )
-    
+
     # ==========================================================================
     # HARD RULE ENFORCEMENT (skip for frontier override)
     # ==========================================================================
-    
     if not frontier_override_active and is_claude_forbidden(classified_type):
         if provider_id == "anthropic":
             logger.error(
@@ -1495,42 +1821,40 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
             provider_id = "google"
             model_id = os.getenv("GEMINI_VISION_MODEL_COMPLEX", "gemini-2.5-pro")
             reason = f"FORCED: {classified_type.value} cannot go to Claude"
-    
+
     # ==========================================================================
     # VIDEO+CODE DEBUG PIPELINE CHECK (still runs with override)
     # ==========================================================================
-    
     if classified_type == JobType.VIDEO_CODE_DEBUG:
         if ROUTER_DEBUG:
             _debug_log("VIDEO+CODE DEBUG PIPELINE TRIGGERED")
-        
+
         print(f"[router] VIDEO+CODE PIPELINE: {classified_type.value}")
-        
+
         return await run_video_code_debug_pipeline(
             task=task,
             envelope=envelope,
             file_map=file_map,
         )
-    
+
     # ==========================================================================
     # HIGH-STAKES CRITIQUE PIPELINE CHECK (still runs with override if Opus)
     # ==========================================================================
-    
     normalized_job_type = normalize_job_type_for_high_stakes(classified_type.value, reason)
-    
+
     should_run_critique = (
         provider_id == "anthropic" and
         is_opus_model(model_id) and
         is_high_stakes_job(normalized_job_type)
     )
-    
+
     if should_run_critique:
         if ROUTER_DEBUG:
             _debug_log("HIGH-STAKES CRITIQUE PIPELINE TRIGGERED")
             _debug_log(f"  Normalized Job Type: {normalized_job_type}")
-        
+
         print(f"[router] HIGH-STAKES PIPELINE: {classified_type.value} → {normalized_job_type}")
-        
+
         return await run_high_stakes_with_critique(
             task=task,
             provider_id=provider_id,
@@ -1539,7 +1863,7 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
             job_type_str=normalized_job_type,
             file_map=file_map,
         )
-    
+
     # ==========================================================================
     # NORMAL LLM CALL
     # ==========================================================================
@@ -1672,7 +1996,6 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
         },
     )
 
-
 # =============================================================================
 # HIGH-LEVEL HELPERS (Async)
 # =============================================================================
@@ -1692,7 +2015,6 @@ async def quick_chat_async(message: str, context: Optional[str] = None) -> LLMRe
     )
     return await call_llm_async(task)
 
-
 async def request_code_async(message: str, context: Optional[str] = None, high_stakes: bool = False) -> LLMResult:
     """Async helper for code tasks."""
     messages: List[Dict[str, str]] = []
@@ -1710,7 +2032,6 @@ async def request_code_async(message: str, context: Optional[str] = None, high_s
     )
     return await call_llm_async(task)
 
-
 async def review_work_async(message: str, context: Optional[str] = None) -> LLMResult:
     """Async helper for review/critique."""
     messages: List[Dict[str, str]] = []
@@ -1726,7 +2047,6 @@ async def review_work_async(message: str, context: Optional[str] = None) -> LLMR
     )
     return await call_llm_async(task)
 
-
 # =============================================================================
 # SYNC WRAPPERS
 # =============================================================================
@@ -1736,24 +2056,20 @@ def call_llm(task: LLMTask) -> LLMResult:
     import asyncio
     return asyncio.run(call_llm_async(task))
 
-
 def quick_chat(message: str, context: Optional[str] = None) -> LLMResult:
     """Sync wrapper for quick_chat_async."""
     import asyncio
     return asyncio.run(quick_chat_async(message=message, context=context))
-
 
 def request_code(message: str, context: Optional[str] = None, high_stakes: bool = False) -> LLMResult:
     """Sync wrapper for request_code_async."""
     import asyncio
     return asyncio.run(request_code_async(message, context, high_stakes))
 
-
 def review_work(message: str, context: Optional[str] = None) -> LLMResult:
     """Sync wrapper for review_work_async."""
     import asyncio
     return asyncio.run(review_work_async(message=message, context=context))
-
 
 # =============================================================================
 # COMPATIBILITY HELPERS
@@ -1768,7 +2084,6 @@ def analyze_with_vision(prompt: str, image_description: Optional[str] = None, co
         parts.append("\n\n[Context]\n" + context)
     return quick_chat(message="".join(parts), context=None)
 
-
 def web_search_query(query: str, context: Optional[str] = None) -> LLMResult:
     """Compatibility wrapper for legacy web search."""
     parts = [f"[WEB SEARCH STYLE QUERY]\n{query}"]
@@ -1776,11 +2091,9 @@ def web_search_query(query: str, context: Optional[str] = None) -> LLMResult:
         parts.append("\n\n[ADDITIONAL CONTEXT]\n" + context)
     return quick_chat(message="".join(parts), context=None)
 
-
 def list_job_types() -> List[str]:
     """List available job types."""
     return [jt.value for jt in JobType]
-
 
 def get_routing_info() -> Dict[str, Any]:
     """Get routing configuration info."""
@@ -1826,26 +2139,21 @@ def get_routing_info() -> Dict[str, Any]:
         },
     }
 
-
 def is_policy_routing_enabled() -> bool:
     """Always True - we use job_classifier."""
     return True
-
 
 def enable_policy_routing() -> None:
     """No-op for compatibility."""
     logger.info("[router] Policy routing is always enabled")
 
-
 def disable_policy_routing() -> None:
     """No-op for compatibility."""
     logger.info("[router] Policy routing cannot be disabled")
 
-
 def reload_routing_policy() -> None:
     """No-op for compatibility."""
     logger.info("[router] Routing policy reload requested (no-op)")
-
 
 # =============================================================================
 # EXPORTS
@@ -1857,33 +2165,33 @@ __all__ = [
     "quick_chat_async",
     "request_code_async",
     "review_work_async",
-    
+
     # Sync wrappers
     "call_llm",
     "quick_chat",
     "request_code",
     "review_work",
-    
+
     # Classification
     "classify_and_route",
     "normalize_job_type_for_high_stakes",
-    
+
     # High-stakes pipeline
     "run_high_stakes_with_critique",
     "is_high_stakes_job",
     "is_opus_model",
     "HIGH_STAKES_JOB_TYPES",
     "get_environment_context",
-    
+
     # v0.15.0: File map injection
     "inject_file_map_into_messages",
-    
+
     # v0.15.1: Frontier override
     "detect_frontier_override",
     "GEMINI_FRONTIER_MODEL_ID",
-    "ANTHROPIC_FRONTIER_MODEL_ID", 
+    "ANTHROPIC_FRONTIER_MODEL_ID",
     "OPENAI_FRONTIER_MODEL_ID",
-    
+
     # Compatibility
     "analyze_with_vision",
     "web_search_query",
