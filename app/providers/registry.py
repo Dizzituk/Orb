@@ -12,6 +12,11 @@ Supported (if keys + SDKs installed):
 - OpenAI (AsyncOpenAI)
 - Anthropic (AsyncAnthropic)
 - Google Gemini (google.generativeai)
+
+NOTE (OpenAI token param drift):
+- Some newer OpenAI chat-capable models (e.g. gpt-5.*) reject `max_tokens`
+  and require `max_completion_tokens` instead.
+- This module routes token limits accordingly, with a retry fallback.
 """
 
 from __future__ import annotations
@@ -150,6 +155,18 @@ def _build_anthropic_tools(tool_defs: List[dict]) -> List[dict]:
         }
         for t in tool_defs
     ]
+
+
+def _openai_token_param_name(model_id: str) -> str:
+    """
+    OpenAI token-limit parameter name differs for some newer models.
+    - Legacy: max_tokens
+    - Newer chat models (incl gpt-5.*): max_completion_tokens
+    """
+    m = (model_id or "").strip().lower()
+    if m.startswith("gpt-5") or m.startswith("o1") or m.startswith("o3"):
+        return "max_completion_tokens"
+    return "max_tokens"
 
 
 async def _execute_tool_by_name(name: str, args: dict, context: Optional[dict]) -> dict:
@@ -303,17 +320,41 @@ class ProviderRegistry:
         oai_messages = _normalize_messages_for_openai(messages, system_prompt)
         tools_param = _build_openai_tools(tool_defs) if tool_defs else None
 
-        while True:
-            tool_iters += 1
-
-            resp = await client.chat.completions.create(
+        async def _create_chat_completion():
+            base_kwargs: Dict[str, Any] = dict(
                 model=model_id,
                 messages=oai_messages,
                 temperature=temperature,
-                max_tokens=max_tokens,
                 tools=tools_param,
                 tool_choice="auto" if tools_param else None,
             )
+
+            token_param = _openai_token_param_name(model_id)
+            base_kwargs[token_param] = int(max_tokens)
+
+            # Robust retry: if server says max_tokens unsupported, retry as max_completion_tokens.
+            try:
+                return await client.chat.completions.create(**base_kwargs)
+            except TypeError as e:
+                # SDK too old to accept max_completion_tokens etc.
+                if token_param == "max_completion_tokens":
+                    logger.warning("[openai] SDK TypeError for max_completion_tokens; retrying with max_tokens: %s", e)
+                    base_kwargs.pop("max_completion_tokens", None)
+                    base_kwargs["max_tokens"] = int(max_tokens)
+                    return await client.chat.completions.create(**base_kwargs)
+                raise
+            except Exception as e:
+                msg = str(e)
+                if "Unsupported parameter: 'max_tokens'" in msg and "max_completion_tokens" in msg:
+                    base_kwargs.pop("max_tokens", None)
+                    base_kwargs["max_completion_tokens"] = int(max_tokens)
+                    return await client.chat.completions.create(**base_kwargs)
+                raise
+
+        while True:
+            tool_iters += 1
+
+            resp = await _create_chat_completion()
 
             choice = resp.choices[0]
             msg = choice.message

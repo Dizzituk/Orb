@@ -1,4 +1,0 @@
-# Create a timestamped backup of the entire backend
-$timestamp = Get-Date -Format "yyyy-MM-dd_HHmmss"
-Copy-Item -Path "D:\Orb" -Destination "D:\Orb_backup_$timestamp" -Recurse
-Write-Host "Backup created at D:\Orb_backup_$timestamp"

@@ -26,6 +26,10 @@ All streaming functions must yield dict events with this structure:
     - Optional final event indicating completion
 
 The SSE layer (stream_router.py) handles JSON serialization.
+
+NOTE (OpenAI token param drift):
+Some newer OpenAI chat models (e.g. gpt-5.*) reject `max_tokens` and require
+`max_completion_tokens`. This module sets the correct param based on model.
 """
 
 import os
@@ -33,6 +37,7 @@ import logging
 from typing import AsyncGenerator, Dict, List, Optional
 from datetime import datetime
 import asyncio
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +145,22 @@ def get_default_provider() -> Optional[str]:
     return get_available_streaming_provider()
 
 
+def _int_env(name: str) -> Optional[int]:
+    v = os.getenv(name, "").strip()
+    if not v:
+        return None
+    try:
+        return int(v)
+    except Exception:
+        return None
+
+
+def _openai_needs_max_completion_tokens(model: str) -> bool:
+    m = (model or "").strip().lower()
+    # Covers gpt-5.* and typical "o-series" reasoning models if you add them later.
+    return m.startswith("gpt-5") or m.startswith("o1") or m.startswith("o3")
+
+
 # ============ STREAMING GENERATORS ============
 
 async def stream_openai(
@@ -197,14 +218,29 @@ async def stream_openai(
     completion_tokens = None
     total_tokens = None
 
+    # Optional token caps (env-tunable). For gpt-5.* prefer max_completion_tokens.
+    max_completion_tokens = (
+        _int_env("OPENAI_MAX_COMPLETION_TOKENS")
+        or _int_env("OPENAI_STREAM_MAX_COMPLETION_TOKENS")
+    )
+    legacy_max_tokens = (
+        _int_env("OPENAI_MAX_TOKENS")
+        or _int_env("OPENAI_STREAM_MAX_TOKENS")
+    )
+
     try:
-        # Prefer include_usage if supported by installed OpenAI SDK.
         create_kwargs = {
             "model": use_model,
             "messages": full_messages,
             "stream": True,
         }
 
+        if _openai_needs_max_completion_tokens(use_model):
+            create_kwargs["max_completion_tokens"] = int(max_completion_tokens or 8192)
+        elif legacy_max_tokens is not None:
+            create_kwargs["max_tokens"] = int(legacy_max_tokens)
+
+        # Prefer include_usage if supported by installed OpenAI SDK.
         try:
             stream = await client.chat.completions.create(
                 **create_kwargs,
@@ -232,7 +268,6 @@ async def stream_openai(
                 if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
                     yield {"type": "token", "text": chunk.choices[0].delta.content}
             except Exception:
-                # Defensive: never crash streaming on unexpected chunk shapes.
                 continue
 
         # Emit done with usage if available
@@ -313,7 +348,6 @@ async def stream_anthropic(
             async for text in stream.text_stream:
                 yield {"type": "token", "text": text}
 
-            # Try to extract final usage from the final message (SDK dependent).
             final_msg = None
             try:
                 maybe = stream.get_final_message()
@@ -334,7 +368,6 @@ async def stream_anthropic(
                     if ot is not None:
                         output_tokens = int(ot)
 
-        # Emit done with usage if available
         if input_tokens is not None or output_tokens is not None:
             usage = {
                 "prompt_tokens": int(input_tokens or 0),
@@ -374,7 +407,6 @@ async def stream_gemini(
         yield {"type": "error", "message": "GOOGLE_API_KEY not set"}
         return
 
-    # Use provided model, route-based model, or default
     if model:
         use_model = model
     elif route:
@@ -384,10 +416,8 @@ async def stream_gemini(
 
     genai.configure(api_key=api_key)
 
-    # Enhance system prompt
     enhanced_prompt = enhance_system_prompt_with_reasoning(system_prompt, enable_reasoning)
 
-    # Emit metadata first
     yield {"type": "metadata", "provider": "gemini", "model": use_model}
 
     prompt_tokens = None
@@ -407,7 +437,6 @@ async def stream_gemini(
             system_instruction=enhanced_prompt,
         )
 
-        # Convert messages to Gemini format
         history = []
         for msg in messages[:-1]:
             role = "user" if msg["role"] == "user" else "model"
@@ -424,7 +453,6 @@ async def stream_gemini(
             if getattr(chunk, "text", None):
                 yield {"type": "token", "text": chunk.text}
 
-        # Attempt to read usage metadata (SDK dependent).
         usage_md = _uget(response, "usage_metadata") or _uget(last_chunk, "usage_metadata")
         if usage_md:
             pt = _uget(usage_md, "prompt_token_count")

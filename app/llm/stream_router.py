@@ -3,16 +3,21 @@ r"""
 Streaming endpoints for real-time LLM responses.
 Uses Server-Sent Events (SSE).
 
+LOCAL TOOL TRIGGER - ZOBIE MAP
+- Runs mapper script locally (host) against sandbox controller API
+- Produces evidence artifacts in ORB_ZOBIE_MAPPER_OUT_DIR
+
 LOCAL TOOL TRIGGER - CREATE ARCHITECTURE MAP
 - Runs mapper script locally (host) against sandbox controller API
-- Builds an evidence pack (tree + mapper artifacts + selected code files)
-- Calls an LLM to produce a deeply detailed architecture map
-- Saves output markdown as ARCH_MAP_FULL_V{N}_*.md
-- Also ingests the map into Memory as a DocumentContent so Orb can answer questions about it later
+- Generates a detailed architecture map *in sections* to avoid context overflows
+- Writes section files + a stitched full file into ORB_ZOBIE_MAPPER_OUT_DIR
+- Only streams short progress + final summary to the UI (no giant map dump)
+- Optionally ingests section docs + full doc into Memory as DocumentContent
 
 NOTE ABOUT OPENAI MODELS:
-- Anything routed through /v1/chat/completions MUST use a chat-capable model ID (e.g. *-chat-latest).
-- The error you saw for gpt-5.2-pro is expected if this code path uses chat-completions.
+- Some newer OpenAI models reject 'max_tokens' and require 'max_completion_tokens'.
+- To avoid provider-wrapper drift breaking this tool, the archmap tool includes a direct
+  OpenAI call path that uses 'max_completion_tokens' when provider == "openai".
 """
 
 import os
@@ -23,7 +28,7 @@ import sys
 import logging
 import asyncio
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict, Any, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -73,13 +78,11 @@ ZOBIE_MAPPER_OUT_DIR = os.getenv("ORB_ZOBIE_MAPPER_OUT_DIR", r"D:\tools\zobie_ma
 ZOBIE_MAPPER_TIMEOUT_SEC = int(os.getenv("ORB_ZOBIE_MAPPER_TIMEOUT_SEC", "300"))
 
 # OPTIONAL: extra mapper args (lets you run your “full” mode without changing code)
-# Example:
-# ORB_ZOBIE_MAPPER_ARGS=200000 false 1500000 full
 ZOBIE_MAPPER_ARGS_RAW = os.getenv("ORB_ZOBIE_MAPPER_ARGS", "").strip()
 ZOBIE_MAPPER_ARGS = ZOBIE_MAPPER_ARGS_RAW.split() if ZOBIE_MAPPER_ARGS_RAW else []
 
 # =============================================================================
-# LOCAL TOOL: CREATE ARCHITECTURE MAP (mapper -> evidence pack -> GPT -> file)
+# LOCAL TOOL: CREATE ARCHITECTURE MAP (mapper -> evidence -> LLM -> files)
 # =============================================================================
 
 _ARCHMAP_TRIGGER_SET = {
@@ -103,16 +106,32 @@ ARCHMAP_MODEL = os.getenv(
 # Optional: path on HOST to a style template (your big map)
 ARCHMAP_TEMPLATE_PATH = os.getenv("ORB_ZOBIE_ARCHMAP_TEMPLATE_PATH", "")
 
-# Evidence limits (deterministic + safe)
+# Evidence tuning (hard-capped inside code to avoid context overflow)
 ARCHMAP_MAX_FILES = int(os.getenv("ORB_ZOBIE_ARCHMAP_MAX_FILES", "200000"))
 ARCHMAP_MAX_CODE_FILES = int(os.getenv("ORB_ZOBIE_ARCHMAP_MAX_CODE_FILES", "120"))
 ARCHMAP_MAX_CHARS_PER_FILE = int(os.getenv("ORB_ZOBIE_ARCHMAP_MAX_CHARS_PER_FILE", "18000"))
-ARCHMAP_CONTROLLER_TIMEOUT_SEC = int(os.getenv("ORB_ZOBIE_ARCHMAP_CONTROLLER_TIMEOUT_SEC", "30"))
 ARCHMAP_MAX_ARTIFACT_CHARS = int(os.getenv("ORB_ZOBIE_ARCHMAP_MAX_ARTIFACT_CHARS", "200000"))
 
-# Ingest the final map into Memory so other windows can query it
+# Controller call timeout (artifact fetch)
+ARCHMAP_CONTROLLER_TIMEOUT_SEC = int(os.getenv("ORB_ZOBIE_ARCHMAP_CONTROLLER_TIMEOUT_SEC", "30"))
+
+# Output behavior (Option 2: write files, only brief UI output)
+ARCHMAP_STREAM_TOKENS_TO_CLIENT = os.getenv("ORB_ZOBIE_ARCHMAP_STREAM_TOKENS_TO_CLIENT", "0") == "1"
+
+# Sectioned generation (prevents context_length_exceeded)
+ARCHMAP_SECTION_MODE = os.getenv("ORB_ZOBIE_ARCHMAP_SECTION_MODE", "1") == "1"
+ARCHMAP_SECTION_MAX_SCANNED_FILES = int(os.getenv("ORB_ZOBIE_ARCHMAP_SECTION_MAX_SCANNED_FILES", "60"))
+ARCHMAP_SECTION_MAX_CHARS = int(os.getenv("ORB_ZOBIE_ARCHMAP_SECTION_MAX_CHARS", "120000"))
+
+# OpenAI direct-call settings for this tool (bypasses max_tokens drift)
+ARCHMAP_OPENAI_URL = os.getenv("ORB_ZOBIE_OPENAI_URL", "https://api.openai.com/v1/chat/completions")
+ARCHMAP_OPENAI_TIMEOUT_SEC = int(os.getenv("ORB_ZOBIE_OPENAI_TIMEOUT_SEC", "180"))
+ARCHMAP_OPENAI_MAX_COMPLETION_TOKENS = int(os.getenv("ORB_ZOBIE_OPENAI_MAX_COMPLETION_TOKENS", "8000"))
+ARCHMAP_OPENAI_TEMPERATURE = float(os.getenv("ORB_ZOBIE_OPENAI_TEMPERATURE", "1"))
+
+# Ingest into memory so other windows can query it
 ARCHMAP_INGEST_TO_MEMORY = os.getenv("ORB_ZOBIE_ARCHMAP_INGEST_TO_MEMORY", "1") == "1"
-ARCHMAP_DOC_RAW_MAX_CHARS = int(os.getenv("ORB_ZOBIE_ARCHMAP_DOC_RAW_MAX_CHARS", "400000"))
+ARCHMAP_DOC_RAW_MAX_CHARS = int(os.getenv("ORB_ZOBIE_ARCHMAP_DOC_RAW_MAX_CHARS", "60000"))
 
 # Do NOT pull secrets (controller allows it, so tool must refuse)
 _DENY_FILE_PATTERNS = [
@@ -143,7 +162,7 @@ def _is_archmap_trigger(msg: str) -> bool:
     return s in _ARCHMAP_TRIGGER_SET
 
 
-def _chunk_text(s: str, chunk_size: int = 80) -> List[str]:
+def _chunk_text(s: str, chunk_size: int = 120) -> List[str]:
     if not s:
         return []
     return [s[i : i + chunk_size] for i in range(0, len(s), chunk_size)]
@@ -201,7 +220,7 @@ def _next_archmap_version(out_dir: str) -> int:
         return 1
 
 
-def _controller_http_json(url: str):
+def _controller_http_json(url: str) -> Dict[str, Any]:
     """
     stdlib-only JSON fetch.
     """
@@ -221,12 +240,6 @@ def _controller_http_json(url: str):
         raise RuntimeError(f"Bad JSON from {url}: {e}") from e
 
 
-def _controller_fetch_repo_tree(max_files: int) -> List[str]:
-    tree_url = f"{ZOBIE_CONTROLLER_URL}/repo/tree?include_hashes=false&max_files={int(max_files)}"
-    tree = _controller_http_json(tree_url)
-    return [x["path"] for x in tree if isinstance(x, dict) and "path" in x]
-
-
 def _controller_fetch_file_content(repo_path: str) -> str:
     """
     Fetch repo file content from sandbox controller.
@@ -243,7 +256,6 @@ def _controller_fetch_file_content(repo_path: str) -> str:
     if len(content) > ARCHMAP_MAX_CHARS_PER_FILE:
         content = content[:ARCHMAP_MAX_CHARS_PER_FILE] + "\n\n<<truncated>>\n"
 
-    # Line-numbering helps the LLM reference “where” something is.
     return _line_number(content)
 
 
@@ -290,7 +302,16 @@ def _select_archmap_code_files(all_paths: List[str]) -> List[str]:
         if _is_denied_repo_path(p):
             continue
         low = p.lower()
-        if low.endswith(("pyproject.toml", "requirements.txt", "package.json", "vite.config.ts", "vite.config.js", "readme.md")):
+        if low.endswith(
+            (
+                "pyproject.toml",
+                "requirements.txt",
+                "package.json",
+                "vite.config.ts",
+                "vite.config.js",
+                "readme.md",
+            )
+        ):
             wanted.append(p)
 
     # De-dupe preserve order
@@ -302,22 +323,25 @@ def _select_archmap_code_files(all_paths: List[str]) -> List[str]:
         seen.add(p)
         out.append(p)
 
-    return out[:ARCHMAP_MAX_CODE_FILES]
+    # Safety cap: never let env override create a 272k+ prompt again.
+    hard_cap = min(max(10, ARCHMAP_MAX_CODE_FILES), 160)
+    return out[:hard_cap]
 
 
-def _ingest_archmap_to_memory(
+def _ingest_generated_markdown_to_memory(
     db: Session,
     project_id: int,
     file_path: str,
     provider: str,
     model: str,
-    raw_map: str,
+    raw_text: str,
+    doc_type: str,
+    description: str,
 ):
     """
-    Store the generated map as:
+    Store generated markdown as:
     - a File record (points to the saved markdown)
     - a DocumentContent record (so _build_document_context can inject it)
-    This is what allows “another window” to quiz Orb about the map.
     """
     try:
         filename = os.path.basename(file_path)
@@ -327,13 +351,13 @@ def _ingest_archmap_to_memory(
                 project_id=project_id,
                 path=file_path,
                 original_name=filename,
-                file_type="generated/architecture_map",
-                description=f"Generated architecture map saved at {file_path}",
+                file_type=f"generated/{doc_type}",
+                description=description,
             ),
         )
 
-        trimmed = raw_map[:ARCHMAP_DOC_RAW_MAX_CHARS]
-        if len(raw_map) > ARCHMAP_DOC_RAW_MAX_CHARS:
+        trimmed = raw_text[:ARCHMAP_DOC_RAW_MAX_CHARS]
+        if len(raw_text) > ARCHMAP_DOC_RAW_MAX_CHARS:
             trimmed += "\n\n<<trimmed for DB storage>>\n"
 
         memory_service.create_document_content(
@@ -342,20 +366,20 @@ def _ingest_archmap_to_memory(
                 project_id=project_id,
                 file_id=file_rec.id,
                 filename=filename,
-                doc_type="architecture_map",
+                doc_type=doc_type,
                 raw_text=trimmed,
                 summary=None,
                 structured_data=None,
             ),
         )
 
-        # Also leave a small assistant message breadcrumb (lightweight)
+        # Leave a small assistant message breadcrumb (lightweight)
         memory_service.create_message(
             db,
             memory_schemas.MessageCreate(
                 project_id=project_id,
                 role="assistant",
-                content=f"[archmap] Saved + ingested: {file_path}",
+                content=f"[{doc_type}] Saved + ingested: {file_path}",
                 provider=provider,
                 model=model,
             ),
@@ -364,7 +388,7 @@ def _ingest_archmap_to_memory(
         logger.exception("[archmap] ingest failed: %s", e)
 
 
-def _parse_reasoning_tags(raw: str) -> tuple:
+def _parse_reasoning_tags(raw: str) -> Tuple[str, str]:
     thinking_match = re.search(r"<THINKING>([\s\S]*?)</THINKING>", raw, re.IGNORECASE)
     answer_match = re.search(r"<ANSWER>([\s\S]*?)</ANSWER>", raw, re.IGNORECASE)
 
@@ -406,7 +430,7 @@ def _coerce_int(v) -> int:
         return 0
 
 
-def _extract_usage_tokens(usage_obj) -> tuple[int, int]:
+def _extract_usage_tokens(usage_obj) -> Tuple[int, int]:
     if usage_obj is None:
         return (0, 0)
     if isinstance(usage_obj, dict):
@@ -416,6 +440,214 @@ def _extract_usage_tokens(usage_obj) -> tuple[int, int]:
     pt = getattr(usage_obj, "prompt_tokens", None) or getattr(usage_obj, "input_tokens", None)
     ct = getattr(usage_obj, "completion_tokens", None) or getattr(usage_obj, "output_tokens", None)
     return (_coerce_int(pt), _coerce_int(ct))
+
+
+def _openai_chat_completion_nonstream(
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    timeout_sec: int,
+    max_completion_tokens: int,
+    temperature: float,
+) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """
+    Direct OpenAI call for the archmap tool only.
+    Robust to models that reject non-default temperature values.
+    Returns (content, usage_dict_or_None)
+    """
+    from urllib.request import Request, urlopen
+    from urllib.error import URLError, HTTPError
+
+    api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY_ORB") or ""
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY not set (required for ORB_ZOBIE_ARCHMAP_PROVIDER=openai).")
+
+    base_payload: Dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "max_completion_tokens": int(max_completion_tokens),
+        "stream": False,
+    }
+
+    # Some models only support default temperature (effectively 1). If you set !=1, we’ll try once then fallback.
+    want_temp: Optional[float] = None
+    try:
+        t = float(temperature)
+        if abs(t - 1.0) > 1e-9:
+            want_temp = t
+    except Exception:
+        want_temp = None
+
+    def _do(payload: Dict[str, Any]) -> Dict[str, Any]:
+        body = json.dumps(payload).encode("utf-8")
+        req = Request(
+            ARCHMAP_OPENAI_URL,
+            data=body,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with urlopen(req, timeout=timeout_sec) as r:
+                raw = r.read().decode("utf-8", errors="replace")
+                return json.loads(raw)
+        except HTTPError as e:
+            try:
+                msg = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                msg = ""
+            raise RuntimeError(f"OpenAI HTTP {e.code}: {msg or str(e)}") from e
+        except URLError as e:
+            raise RuntimeError(f"OpenAI network error: {e}") from e
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"OpenAI bad JSON: {e}") from e
+
+    # Attempt 1 (with temperature if requested)
+    payload1 = dict(base_payload)
+    if want_temp is not None:
+        payload1["temperature"] = want_temp
+
+    try:
+        data = _do(payload1)
+    except RuntimeError as e:
+        # If temperature is rejected, retry once without it (default behavior)
+        msg = str(e)
+        if ("\"param\": \"temperature\"" in msg) or ("param" in msg and "temperature" in msg and "unsupported" in msg):
+            payload2 = dict(base_payload)  # no temperature
+            data = _do(payload2)
+        else:
+            raise
+
+    choices = data.get("choices") or []
+    if not choices:
+        raise RuntimeError(f"OpenAI returned no choices: {data}")
+
+    msg_obj = choices[0].get("message") or {}
+    content = msg_obj.get("content") or ""
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else None
+    return content, usage
+
+
+
+def _load_index_json(index_path: str) -> Dict[str, Any]:
+    try:
+        raw = _safe_read_text(index_path, max_bytes=5_000_000)
+        return json.loads(raw)
+    except Exception:
+        return {}
+
+
+def _fmt_scanned_file(sf: Dict[str, Any], max_items: int = 50) -> str:
+    """
+    Compact markdown representation of one scanned file record from INDEX_*.json.
+    """
+    p = sf.get("path", "")
+    out: List[str] = []
+    out.append(f"### {p}")
+    out.append(f"- language: `{sf.get('language','')}`")
+    out.append(f"- bytes: `{sf.get('bytes','')}`")
+
+    sigs = sf.get("signals") or []
+    if sigs:
+        out.append("- signals:")
+        for s in sigs[:12]:
+            out.append(f"  - {s}")
+
+    envs = sf.get("env_vars") or []
+    if envs:
+        out.append("- env vars referenced:")
+        out.append("  - " + ", ".join(envs[:50]))
+
+    routes = sf.get("routes") or []
+    if routes:
+        out.append("- FastAPI routes (decorators):")
+        for r in routes[:max_items]:
+            out.append(
+                f"  - L{r.get('line','?')}: `{r.get('decorator_target','?')}.{r.get('method','?')}` `{r.get('path','?')}`"
+            )
+
+    inc = sf.get("include_router_hits") or []
+    if inc:
+        out.append("- include_router hits:")
+        for h in inc[:20]:
+            out.append(f"  - L{h.get('line','?')}: {str(h.get('text',''))[:240]}")
+
+    syms = sf.get("symbols") or []
+    if syms:
+        out.append("- symbols:")
+        for s in syms[:max_items]:
+            out.append(f"  - L{s.get('line','?')}: `{s.get('kind','?')}` `{s.get('name','?')}`")
+
+    kl = sf.get("key_lines") or []
+    if kl:
+        out.append("- key lines:")
+        for k in kl[:20]:
+            out.append(f"  - L{k.get('line','?')}: {str(k.get('text',''))[:260]}")
+
+    out.append("")
+    return "\n".join(out)
+
+
+def _section_plan() -> List[Dict[str, Any]]:
+    """
+    Section plan tuned for Orb/Zobie layout.
+    Each section targets a subset of scanned_files to keep prompts small.
+    """
+    return [
+        {"name": "System overview & process boundaries", "prefixes": ["Orb-backend/", "orb-desktop/", "sandbox_controller/"], "limit": 30},
+        {"name": "Sandbox controller (repo scanner API)", "prefixes": ["sandbox_controller/"], "limit": 20},
+        {"name": "Backend entrypoints, FastAPI app wiring, route topology", "prefixes": ["Orb-backend/"], "contains": ["/main.py", "/router.py", "app/router.py", "app/main.py"], "limit": 50},
+        {"name": "LLM subsystem: routing, streaming, critique pipeline, providers", "prefixes": ["Orb-backend/"], "contains": ["/app/llm/"], "limit": 60},
+        {"name": "Memory + embeddings: DB models, document ingestion, semantic search", "prefixes": ["Orb-backend/"], "contains": ["/app/memory/", "/app/embeddings/"], "limit": 60},
+        {"name": "Auth + security + encryption evidence", "prefixes": ["Orb-backend/"], "contains": ["/app/auth/", "encrypt", "Fernet", "keytar", "Credential"], "limit": 60},
+        {"name": "Desktop (Electron/Vite): boot flow, backend spawn, IPC boundaries", "prefixes": ["orb-desktop/"], "limit": 40},
+    ]
+
+
+def _pick_scanned_files_for_section(index_data: Dict[str, Any], sec: Dict[str, Any]) -> List[Dict[str, Any]]:
+    scanned = index_data.get("scanned_files") or []
+    if not isinstance(scanned, list):
+        return []
+
+    prefixes = sec.get("prefixes") or []
+    contains = sec.get("contains") or []
+    limit = int(sec.get("limit") or ARCHMAP_SECTION_MAX_SCANNED_FILES)
+
+    def _match_path(p: str) -> bool:
+        if not p:
+            return False
+        if prefixes and not any(p.startswith(pref) for pref in prefixes):
+            return False
+        if contains:
+            low = p.lower()
+            # any contains token can be a substring of the path
+            if not any(tok.lower() in low for tok in contains):
+                return False
+        return True
+
+    matches = []
+    for sf in scanned:
+        try:
+            p = sf.get("path", "")
+            if _match_path(p):
+                matches.append(sf)
+        except Exception:
+            continue
+
+    # If section has no matches, fall back to prefix-only.
+    if not matches and prefixes:
+        for sf in scanned:
+            p = (sf or {}).get("path", "")
+            if any(p.startswith(pref) for pref in prefixes):
+                matches.append(sf)
+
+    return matches[:max(5, min(limit, 120))]
 
 
 async def generate_local_zobie_map_stream(
@@ -440,8 +672,8 @@ async def generate_local_zobie_map_stream(
         f"- Out dir: {ZOBIE_MAPPER_OUT_DIR}\n"
         f"- Extra args: {ZOBIE_MAPPER_ARGS_RAW or '(none)'}\n\n"
     )
-    for ch in _chunk_text(header, 120):
-        yield f"data: {json.dumps({'type': 'token', 'content': ch})}\n\n"
+    for ch in _chunk_text(header, 160):
+        yield "data: " + json.dumps({'type': 'token', 'content': ch}) + "\n\n"
 
     cmd = [sys.executable, ZOBIE_MAPPER_SCRIPT, ZOBIE_CONTROLLER_URL, ZOBIE_MAPPER_OUT_DIR] + ZOBIE_MAPPER_ARGS
 
@@ -483,9 +715,9 @@ async def generate_local_zobie_map_stream(
             memory_service.create_message(db, memory_schemas.MessageCreate(project_id=project_id, role="user", content=message, provider="local"))
             memory_service.create_message(db, memory_schemas.MessageCreate(project_id=project_id, role="assistant", content=err_text, provider=provider, model=model))
 
-            for ch in _chunk_text(err_text, 120):
-                yield f"data: {json.dumps({'type': 'token', 'content': ch})}\n\n"
-            yield f"data: {json.dumps({'type': 'error', 'error': 'ZOBIE MAP failed'})}\n\n"
+            for ch in _chunk_text(err_text, 160):
+                yield "data: " + json.dumps({'type': 'token', 'content': ch}) + "\n\n"
+            yield "data: " + json.dumps({'type': 'error', 'error': 'ZOBIE MAP failed'}) + "\n\n"
             return
 
         wrote_lines = []
@@ -508,10 +740,10 @@ async def generate_local_zobie_map_stream(
             trace.finalize(success=True)
             trace_finished = True
 
-        for ch in _chunk_text(summary, 120):
-            yield f"data: {json.dumps({'type': 'token', 'content': ch})}\n\n"
+        for ch in _chunk_text(summary, 160):
+            yield "data: " + json.dumps({'type': 'token', 'content': ch}) + "\n\n"
 
-        yield f"data: {json.dumps({'type': 'done', 'provider': provider, 'model': model, 'total_length': len(summary)})}\n\n"
+        yield "data: " + json.dumps({'type': 'done', 'provider': provider, 'model': model, 'total_length': len(summary)}) + "\n\n"
         return
 
     except asyncio.CancelledError:
@@ -536,9 +768,9 @@ async def generate_local_zobie_map_stream(
         except Exception:
             pass
 
-        for ch in _chunk_text(err_text, 120):
-            yield f"data: {json.dumps({'type': 'token', 'content': ch})}\n\n"
-        yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+        for ch in _chunk_text(err_text, 160):
+            yield "data: " + json.dumps({'type': 'token', 'content': ch}) + "\n\n"
+        yield "data: " + json.dumps({'type': 'error', 'error': str(e)}) + "\n\n"
         return
 
 
@@ -555,13 +787,6 @@ async def generate_local_architecture_map_stream(
     provider = ARCHMAP_PROVIDER
     model = ARCHMAP_MODEL
 
-    # Hard guard: if you use OpenAI chat-completions, a non-chat model will fail exactly like you saw.
-    if provider == "openai" and ("-pro" in model and "chat" not in model):
-        raise RuntimeError(
-            f"OpenAI model '{model}' is not chat-capable for this endpoint. "
-            f"Set ORB_ZOBIE_ARCHMAP_MODEL to a chat model (e.g. gpt-5.2-chat-latest)."
-        )
-
     os.makedirs(ZOBIE_MAPPER_OUT_DIR, exist_ok=True)
 
     header = (
@@ -572,12 +797,12 @@ async def generate_local_architecture_map_stream(
         f"LLM: {provider}/{model}\n"
         f"Extra mapper args: {ZOBIE_MAPPER_ARGS_RAW or '(none)'}\n\n"
     )
-    for ch in _chunk_text(header, 120):
-        yield f"data: {json.dumps({'type': 'token', 'content': ch})}\n\n"
+    for ch in _chunk_text(header, 160):
+        yield "data: " + json.dumps({'type': 'token', 'content': ch}) + "\n\n"
 
     try:
         # 1) Run mapper subprocess
-        yield f"data: {json.dumps({'type': 'token', 'content': 'Step 1/4: Running mapper...\\n'})}\n\n"
+        yield "data: " + json.dumps({'type': 'token', 'content': 'Step 1/4: Running mapper...\\n'}) + "\n\n"
         cmd = [sys.executable, ZOBIE_MAPPER_SCRIPT, ZOBIE_CONTROLLER_URL, ZOBIE_MAPPER_OUT_DIR] + ZOBIE_MAPPER_ARGS
 
         proc = await asyncio.create_subprocess_exec(
@@ -625,167 +850,209 @@ async def generate_local_architecture_map_stream(
 
         stamp = _extract_mapper_stamp(tree_path)
 
-        # 2) Build evidence pack
-        yield f"data: {json.dumps({'type': 'token', 'content': 'Step 2/4: Building evidence pack...\\n'})}\n\n"
+        # 2) Load artifacts (small caps)
+        yield "data: " + json.dumps({'type': 'token', 'content': 'Step 2/4: Building section evidence...\\n'}) + "\n\n"
 
-        repo_tree_txt = _cap_text("REPO_TREE", _safe_read_text(tree_path), ARCHMAP_MAX_ARTIFACT_CHARS)
-        arch_map_md = _cap_text("ARCH_MAP", _safe_read_text(arch_path), ARCHMAP_MAX_ARTIFACT_CHARS)
-        index_raw = _cap_text("INDEX", _safe_read_text(index_path), ARCHMAP_MAX_ARTIFACT_CHARS)
-
-        # Include extra “full mode” artifacts if mapper produced them (same stamp)
-        extra_artifacts = {}
-        if stamp:
-            candidates = {
-                "TREE_JSON": os.path.join(ZOBIE_MAPPER_OUT_DIR, f"TREE_{stamp}.json"),
-                "SYMBOL_INDEX": os.path.join(ZOBIE_MAPPER_OUT_DIR, f"SYMBOL_INDEX_{stamp}.json"),
-                "IMPORT_GRAPH": os.path.join(ZOBIE_MAPPER_OUT_DIR, f"IMPORT_GRAPH_{stamp}.json"),
-                "ENV_MAP": os.path.join(ZOBIE_MAPPER_OUT_DIR, f"ENV_MAP_{stamp}.json"),
-                "ROUTE_MAP": os.path.join(ZOBIE_MAPPER_OUT_DIR, f"ROUTE_MAP_{stamp}.json"),
-                "CALLGRAPH_EDGES": os.path.join(ZOBIE_MAPPER_OUT_DIR, f"CALLGRAPH_EDGES_{stamp}.json"),
-                "EXCERPTS": os.path.join(ZOBIE_MAPPER_OUT_DIR, f"EXCERPTS_{stamp}.jsonl"),
-                "STATS": os.path.join(ZOBIE_MAPPER_OUT_DIR, f"STATS_{stamp}.json"),
-                "EVIDENCE_MANIFEST": os.path.join(ZOBIE_MAPPER_OUT_DIR, f"EVIDENCE_MANIFEST_{stamp}.json"),
-            }
-            for k, p in candidates.items():
-                if os.path.exists(p):
-                    extra_artifacts[k] = _cap_text(k, _safe_read_text(p, max_bytes=3_000_000), ARCHMAP_MAX_ARTIFACT_CHARS)
-
-        # Fetch full repo tree + select code files from controller
-        all_paths = _controller_fetch_repo_tree(max_files=ARCHMAP_MAX_FILES)
-        selected_files = _select_archmap_code_files(all_paths)
-
-        code_blocks: List[str] = []
-        for p in selected_files:
-            content = _controller_fetch_file_content(p)
-            code_blocks.append(f"=== FILE: {p} ===\n{content}\n")
+        repo_tree_txt = _cap_text("REPO_TREE", _safe_read_text(tree_path), 80_000)
+        # keep the big evidence pack available, but we don't shove it into every prompt
+        evidence_pack_md = _safe_read_text(arch_path, max_bytes=5_000_000)
+        index_data = _load_index_json(index_path)
 
         template_txt = ""
         if ARCHMAP_TEMPLATE_PATH and os.path.exists(ARCHMAP_TEMPLATE_PATH):
+            # IMPORTANT: cap the template hard to prevent token blowups
             template_txt = _safe_read_text(ARCHMAP_TEMPLATE_PATH, max_bytes=1_500_000)
+            template_txt = _cap_text("TEMPLATE", template_txt, 20_000)
 
         # Versioning (starts at V1 and increments)
         version_n = _next_archmap_version(ZOBIE_MAPPER_OUT_DIR)
+        stamp2 = datetime.now().strftime("%Y-%m-%d_%H%M")
 
-        # 3) Call LLM and stream output
-        yield f"data: {json.dumps({'type': 'token', 'content': 'Step 3/4: Generating architecture map with LLM...\\n\\n'})}\n\n"
+        # 3) Generate map sections with LLM
+        yield "data: " + json.dumps({'type': 'token', 'content': 'Step 3/4: Generating architecture map sections...\\n'}) + "\n\n"
 
-        system_prompt = (
+        system_prompt_base = (
             "You are Orb's repository architecture mapper.\n"
             "Hard rules:\n"
             "- Use ONLY the evidence provided.\n"
             "- If a detail is not explicitly supported, write: 'Unknown (not in provided data)'.\n"
-            "- Prefer explicit paths, symbol/route tables, env var tables, import graph, and line references.\n"
-            "- Output ONE Markdown document.\n"
+            "- Prefer explicit paths, symbol/route tables, env var tables, and line references.\n"
+            "- Output Markdown.\n"
             f"- Title the document: 'Orb Architecture Map v{version_n}'.\n"
         )
         if template_txt:
-            system_prompt += "\nSTYLE TEMPLATE (follow its tone/organization, but DO NOT copy any 'v31' wording):\n" + template_txt + "\nEND TEMPLATE\n"
+            system_prompt_base += "\nSTYLE TEMPLATE (follow its tone/organization):\n" + template_txt + "\nEND TEMPLATE\n"
 
-        extras_block = ""
-        if extra_artifacts:
-            parts = []
-            for k in sorted(extra_artifacts.keys()):
-                parts.append(f"---- {k} ----\n{extra_artifacts[k]}\n")
-            extras_block = "\n".join(parts)
+        sections = _section_plan() if ARCHMAP_SECTION_MODE else [{"name": "Full architecture map", "prefixes": [], "limit": 120}]
+        section_files: List[str] = []
+        section_summaries: List[str] = []
+        all_section_texts: List[str] = []
 
-        user_prompt = (
-            f"Create a deeply detailed repository architecture map (v{version_n}).\n\n"
-            "EVIDENCE PACK:\n\n"
-            "---- REPO_TREE (mapper output) ----\n"
-            f"{repo_tree_txt}\n\n"
-            "---- ARCH_MAP (mapper output) ----\n"
-            f"{arch_map_md}\n\n"
-            "---- INDEX (mapper output JSON) ----\n"
-            f"{index_raw}\n\n"
-            + (f"{extras_block}\n\n" if extras_block else "")
-            + "---- SELECTED CODE FILES (from sandbox controller; line-numbered) ----\n"
-            + f"{''.join(code_blocks)}\n\n"
-            "REQUIREMENTS:\n"
-            "- No gaps in the explanation of *how the repo works* based on evidence.\n"
-            "- Include explicit tables/indices where evidence supports it:\n"
-            "  1) Repo layout + entrypoints\n"
-            "  2) API route map (method/path -> handler file -> line range if available)\n"
-            "  3) Module/symbol index (file -> functions/classes -> line numbers)\n"
-            "  4) Env var map (var -> where read -> purpose if evidenced)\n"
-            "  5) Startup/run flow (process boundaries: Electron/Backend/Controller)\n"
-            "  6) Data/encryption flows (only what is evidenced)\n"
-            "- Add an 'Evidence References' section listing exact FILE paths used.\n"
-            "- Do not invent anything.\n"
-        )
+        for idx, sec in enumerate(sections, start=1):
+            sec_name = sec.get("name", f"Section {idx}")
+            yield "data: " + json.dumps({'type': 'token', 'content': f'  - Section {idx}/{len(sections)}: {sec_name}...\\n'}) + "\n\n"
 
-        accumulated = ""
-        final_usage = None
+            scanned_subset = _pick_scanned_files_for_section(index_data, sec)
+            evidence_blocks: List[str] = []
+            for sf in scanned_subset:
+                evidence_blocks.append(_fmt_scanned_file(sf))
 
-        async for event in stream_llm(
-            provider=provider,
-            model=model,
-            messages=[{"role": "user", "content": user_prompt}],
-            system_prompt=system_prompt,
-        ):
-            if isinstance(event, str):
-                event = {"type": "token", "content": event}
-            if not isinstance(event, dict):
-                event = {"type": "token", "content": str(event)}
+            evidence_joined = "\n".join(evidence_blocks)
+            evidence_joined = _cap_text("SECTION_EVIDENCE", evidence_joined, ARCHMAP_SECTION_MAX_CHARS)
 
-            event_type = event.get("type", "token")
+            user_prompt = (
+                f"Write the '{sec_name}' section for Orb Architecture Map v{version_n}.\n\n"
+                "EVIDENCE:\n"
+                "---- REPO_TREE (condensed) ----\n"
+                f"{repo_tree_txt}\n\n"
+                "---- SECTION SCANNED FILES (from INDEX_*.json; line-referenced snippets) ----\n"
+                f"{evidence_joined}\n\n"
+                "REQUIREMENTS:\n"
+                "- Be explicit about routes, modules, process boundaries, and data flows *only if evidenced*.\n"
+                "- Include tables where appropriate (routes, env vars, key modules).\n"
+                "- End the section with 'Evidence References' listing exact FILE paths used in this section.\n"
+                "- Do not invent anything.\n"
+            )
 
-            if event_type == "token":
-                content = event.get("content") or event.get("text") or ""
-                if content:
-                    accumulated += content
-                    yield f"data: {json.dumps({'type': 'token', 'content': content})}\n\n"
+            # LLM call (quiet by default)
+            section_raw = ""
+            usage = None
 
-            elif event_type in ("metadata", "usage"):
-                u = event.get("usage") or event.get("data")
-                if isinstance(u, dict):
-                    final_usage = u
+            if provider == "openai":
+                # Bypass wrapper drift (max_tokens vs max_completion_tokens)
+                section_raw, usage = await asyncio.to_thread(
+                    _openai_chat_completion_nonstream,
+                    model,
+                    system_prompt_base,
+                    user_prompt,
+                    ARCHMAP_OPENAI_TIMEOUT_SEC,
+                    ARCHMAP_OPENAI_MAX_COMPLETION_TOKENS,
+                    ARCHMAP_OPENAI_TEMPERATURE,
+                )
+            else:
+                # fall back to existing streaming wrapper for other providers
+                accumulated = ""
+                async for event in stream_llm(provider=provider, model=model, messages=[{"role": "user", "content": user_prompt}], system_prompt=system_prompt_base):
+                    if isinstance(event, str):
+                        accumulated += event
+                        if ARCHMAP_STREAM_TOKENS_TO_CLIENT:
+                            yield "data: " + json.dumps({'type': 'token', 'content': event}) + "\n\n"
+                        continue
+                    if isinstance(event, dict):
+                        if event.get("type") == "token":
+                            t = event.get("content") or event.get("text") or ""
+                            if t:
+                                accumulated += t
+                                if ARCHMAP_STREAM_TOKENS_TO_CLIENT:
+                                    yield "data: " + json.dumps({'type': 'token', 'content': t}) + "\n\n"
+                        elif event.get("type") in ("metadata", "usage"):
+                            u = event.get("usage") or event.get("data")
+                            if isinstance(u, dict):
+                                usage = u
+                        elif event.get("type") == "error":
+                            raise RuntimeError(event.get("message") or event.get("error") or "Unknown LLM error")
+                        elif event.get("type") == "done":
+                            u = event.get("usage")
+                            if isinstance(u, dict):
+                                usage = u
+                            break
+                section_raw = accumulated
 
-            elif event_type == "error":
-                error_msg = event.get("message") or event.get("error") or "Unknown LLM error"
-                raise RuntimeError(error_msg)
+            section_text, _reason = _parse_reasoning_tags(section_raw)
 
-            elif event_type == "done":
-                u = event.get("usage")
-                if isinstance(u, dict):
-                    final_usage = u
-                break
+            # Save section
+            sec_path = os.path.join(ZOBIE_MAPPER_OUT_DIR, f"ARCH_MAP_SECTION_V{version_n}_{idx:02d}_{stamp2}.md")
+            with open(sec_path, "w", encoding="utf-8") as f:
+                f.write(f"# Orb Architecture Map v{version_n}\n\n")
+                f.write(f"## {sec_name}\n\n")
+                f.write(section_text.strip() + "\n")
 
-        # 4) Save + ingest
-        yield f"data: {json.dumps({'type': 'token', 'content': '\\n\\nStep 4/4: Saving output...\\n'})}\n\n"
+            section_files.append(sec_path)
+            all_section_texts.append((f"## {sec_name}\n\n" + section_text.strip() + "\n"))
 
-        stamp2 = datetime.now().strftime("%Y-%m-%d_%H%M")
+            # FIX: never use backslashes in f-string expressions; avoid nesting f-strings inside json.dumps.
+            ui_line = f"    ✓ Section saved: {sec_path}\n"
+            yield "data: " + json.dumps({'type': 'token', 'content': ui_line}) + "\n\n"
+
+            # optional: ingest each section (keeps Orb's memory modular)
+            if ARCHMAP_INGEST_TO_MEMORY:
+                _ingest_generated_markdown_to_memory(
+                    db=db,
+                    project_id=project_id,
+                    file_path=sec_path,
+                    provider=provider,
+                    model=model,
+                    raw_text=section_text,
+                    doc_type="architecture_map_section",
+                    description=f"Architecture map section: {sec_name}",
+                )
+
+            # tiny per-section summary (helps the UI, but bounded)
+            brief = section_text.strip().splitlines()
+            section_summaries.append(f"- {idx:02d} {sec_name}: {brief[0][:120] if brief else ''}")
+
+        # Stitch full map
+        yield "data: " + json.dumps({'type': 'token', 'content': '  - Stitching full map...\\n'}) + "\n\n"
+        full_text = f"# Orb Architecture Map v{version_n}\n\n"
+        full_text += "\n".join(all_section_texts).strip() + "\n\n"
+        full_text += "## Evidence References\n\n"
+        full_text += "- REPO_TREE artifact: " + os.path.basename(tree_path) + "\n"
+        full_text += "- ARCH_MAP evidence pack: " + os.path.basename(arch_path) + "\n"
+        full_text += "- INDEX artifact: " + os.path.basename(index_path) + "\n"
+
         out_full = os.path.join(ZOBIE_MAPPER_OUT_DIR, f"ARCH_MAP_FULL_V{version_n}_{stamp2}.md")
         with open(out_full, "w", encoding="utf-8") as f:
-            f.write(accumulated)
+            f.write(full_text)
+
+        # 4) Persist + brief UI summary (NO giant dump)
+        yield "data: " + json.dumps({'type': 'token', 'content': 'Step 4/4: Saving + recording...\\n'}) + "\n\n"
 
         duration_ms = max(0, int(loop.time() * 1000) - started_ms)
 
-        # Persist user message + completion breadcrumb
         memory_service.create_message(db, memory_schemas.MessageCreate(project_id=project_id, role="user", content=message, provider="local"))
+
+        final_summary = (
+            "CREATE ARCHITECTURE MAP complete.\n\n"
+            f"Saved full map:\n- {out_full}\n\n"
+            "Saved sections:\n" + "\n".join(f"- {p}" for p in section_files) + "\n\n"
+            "Section headlines:\n" + "\n".join(section_summaries[:20]) + ("\n" if section_summaries else "")
+        )
+
         memory_service.create_message(
             db,
             memory_schemas.MessageCreate(
                 project_id=project_id,
                 role="assistant",
-                content=f"CREATE ARCHITECTURE MAP complete.\n\nSaved:\n- {out_full}\n",
+                content=final_summary,
                 provider=provider,
                 model=model,
             ),
         )
 
-        # Ingest into DocumentContent so other windows can query it (via _build_document_context)
+        # Ingest full map too (trimmed for DB)
         if ARCHMAP_INGEST_TO_MEMORY:
-            _ingest_archmap_to_memory(db=db, project_id=project_id, file_path=out_full, provider=provider, model=model, raw_map=accumulated)
+            _ingest_generated_markdown_to_memory(
+                db=db,
+                project_id=project_id,
+                file_path=out_full,
+                provider=provider,
+                model=model,
+                raw_text=full_text,
+                doc_type="architecture_map",
+                description=f"Generated architecture map (stitched) saved at {out_full}",
+            )
 
-        # Audit trace
+        # Audit trace (best-effort, usage may be None for direct OpenAI path)
         if trace and not trace_finished:
-            prompt_tokens, completion_tokens = _extract_usage_tokens(final_usage)
+            prompt_tokens, completion_tokens = _extract_usage_tokens(None)
             trace.log_model_call("primary", provider, model, "primary", prompt_tokens, completion_tokens, duration_ms, success=True, error=None)
             trace.finalize(success=True)
             trace_finished = True
 
-        yield f"data: {json.dumps({'type': 'token', 'content': f'Saved: {out_full}\\n'})}\n\n"
-        yield f"data: {json.dumps({'type': 'done', 'provider': provider, 'model': model, 'total_length': len(accumulated)})}\n\n"
+        for ch in _chunk_text(final_summary, 180):
+            yield "data: " + json.dumps({'type': 'token', 'content': ch}) + "\n\n"
+
+        yield "data: " + json.dumps({'type': 'done', 'provider': provider, 'model': model, 'total_length': len(full_text)}) + "\n\n"
         return
 
     except asyncio.CancelledError:
@@ -810,9 +1077,9 @@ async def generate_local_architecture_map_stream(
         except Exception:
             pass
 
-        for ch in _chunk_text(err_text, 120):
-            yield f"data: {json.dumps({'type': 'token', 'content': ch})}\n\n"
-        yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+        for ch in _chunk_text(err_text, 180):
+            yield "data: " + json.dumps({'type': 'token', 'content': ch}) + "\n\n"
+        yield "data: " + json.dumps({'type': 'error', 'error': str(e)}) + "\n\n"
         return
 
 
@@ -1001,7 +1268,7 @@ def _classify_job_type(message: str, requested_type: str) -> JobType:
     return JobType.CASUAL_CHAT
 
 
-def _select_provider_for_job_type(job_type: JobType) -> tuple:
+def _select_provider_for_job_type(job_type: JobType) -> Tuple[str, str]:
     if job_type in RoutingConfig.GPT_ONLY_JOBS:
         return ("openai", DEFAULT_MODELS["openai"])
 
@@ -1085,7 +1352,7 @@ async def generate_high_stakes_critique_stream(
                 trace.log_model_call("primary", provider, model, "primary", hs_prompt_tokens, hs_completion_tokens, duration_ms, success=False, error=str(error_message))
                 trace.finalize(success=False, error_message=str(error_message))
                 trace_finished = True
-            yield f"data: {json.dumps({'type': 'error', 'error': str(error_message)})}\n\n"
+            yield "data: " + json.dumps({'type': 'error', 'error': str(error_message)}) + "\n\n"
             return
 
         content = content or ""
@@ -1097,11 +1364,11 @@ async def generate_high_stakes_critique_stream(
         chunk_size = 50
         for i in range(0, len(final_answer), chunk_size):
             chunk = final_answer[i : i + chunk_size]
-            yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
+            yield "data: " + json.dumps({'type': 'token', 'content': chunk}) + "\n\n"
             await asyncio.sleep(0.01)
 
         if enable_reasoning and reasoning:
-            yield f"data: {json.dumps({'type': 'reasoning', 'content': reasoning})}\n\n"
+            yield "data: " + json.dumps({'type': 'reasoning', 'content': reasoning}) + "\n\n"
 
         memory_service.create_message(db, memory_schemas.MessageCreate(project_id=project_id, role="user", content=message, provider="local"))
         memory_service.create_message(
@@ -1120,7 +1387,7 @@ async def generate_high_stakes_critique_stream(
             trace.finalize(success=True)
             trace_finished = True
 
-        yield f"data: {json.dumps({'type': 'done', 'provider': provider, 'model': model, 'total_length': len(final_answer)})}\n\n"
+        yield "data: " + json.dumps({'type': 'done', 'provider': provider, 'model': model, 'total_length': len(final_answer)}) + "\n\n"
 
     except asyncio.CancelledError:
         if trace and not trace_finished:
@@ -1134,7 +1401,7 @@ async def generate_high_stakes_critique_stream(
             trace.log_model_call("primary", provider, model, "primary", 0, 0, 0, success=False, error=str(e))
             trace.finalize(success=False, error_message=str(e))
             trace_finished = True
-        yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+        yield "data: " + json.dumps({'type': 'error', 'error': str(e)}) + "\n\n"
         return
 
 
@@ -1172,14 +1439,14 @@ async def generate_sse_stream(
                 content = event.get("content") or event.get("text") or ""
                 if content:
                     accumulated += content
-                    yield f"data: {json.dumps({'type': 'token', 'content': content})}\n\n"
+                    yield "data: " + json.dumps({'type': 'token', 'content': content}) + "\n\n"
 
             elif event_type == "reasoning":
                 content = event.get("content") or ""
                 if content:
                     reasoning_content += content
                     if enable_reasoning:
-                        yield f"data: {json.dumps({'type': 'reasoning', 'content': content})}\n\n"
+                        yield "data: " + json.dumps({'type': 'reasoning', 'content': content}) + "\n\n"
 
             elif event_type == "metadata":
                 maybe_provider = event.get("provider")
@@ -1192,7 +1459,7 @@ async def generate_sse_stream(
                 if isinstance(u, dict):
                     final_usage = u
                 if os.getenv("ORB_ROUTER_DEBUG") == "1":
-                    yield f"data: {json.dumps({'type': 'metadata', 'provider': current_provider, 'model': current_model})}\n\n"
+                    yield "data: " + json.dumps({'type': 'metadata', 'provider': current_provider, 'model': current_model}) + "\n\n"
 
             elif event_type == "usage":
                 u = event.get("usage") or event.get("data")
@@ -1207,7 +1474,7 @@ async def generate_sse_stream(
                     trace.log_model_call("primary", current_provider, current_model, "primary", 0, 0, duration_ms, success=False, error=str(error_msg))
                     trace.finalize(success=False, error_message=str(error_msg))
                     trace_finished = True
-                yield f"data: {json.dumps({'type': 'error', 'error': str(error_msg)})}\n\n"
+                yield "data: " + json.dumps({'type': 'error', 'error': str(error_msg)}) + "\n\n"
                 return
 
             elif event_type == "done":
@@ -1238,7 +1505,7 @@ async def generate_sse_stream(
             trace.log_model_call("primary", current_provider, current_model, "primary", 0, 0, duration_ms, success=False, error=str(e))
             trace.finalize(success=False, error_message=str(e))
             trace_finished = True
-        yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+        yield "data: " + json.dumps({'type': 'error', 'error': str(e)}) + "\n\n"
         return
 
     duration_ms = max(0, int(loop.time() * 1000) - started_ms)
@@ -1266,7 +1533,7 @@ async def generate_sse_stream(
         trace.finalize(success=True)
         trace_finished = True
 
-    yield f"data: {json.dumps({'type': 'done', 'provider': current_provider, 'model': current_model, 'total_length': len(answer_content)})}\n\n"
+    yield "data: " + json.dumps({'type': 'done', 'provider': current_provider, 'model': current_model, 'total_length': len(answer_content)}) + "\n\n"
 
 
 @router.post("/chat")
