@@ -321,35 +321,68 @@ class ProviderRegistry:
         tools_param = _build_openai_tools(tool_defs) if tool_defs else None
 
         async def _create_chat_completion():
-            base_kwargs: Dict[str, Any] = dict(
+            base_kwargs = dict(
                 model=model_id,
                 messages=oai_messages,
-                temperature=temperature,
+                stream=False,
                 tools=tools_param,
                 tool_choice="auto" if tools_param else None,
             )
 
+            # Tokens: map param name based on model family.
             token_param = _openai_token_param_name(model_id)
             base_kwargs[token_param] = int(max_tokens)
 
-            # Robust retry: if server says max_tokens unsupported, retry as max_completion_tokens.
+            # Temperature: only send if not default; some OpenAI models only accept default.
             try:
-                return await client.chat.completions.create(**base_kwargs)
-            except TypeError as e:
-                # SDK too old to accept max_completion_tokens etc.
-                if token_param == "max_completion_tokens":
-                    logger.warning("[openai] SDK TypeError for max_completion_tokens; retrying with max_tokens: %s", e)
-                    base_kwargs.pop("max_completion_tokens", None)
-                    base_kwargs["max_tokens"] = int(max_tokens)
+                t = float(temperature) if temperature is not None else None
+            except Exception:
+                t = None
+            if t is not None and abs(t - 1.0) > 1e-9:
+                base_kwargs["temperature"] = t
+
+            # Robust retry: handle SDK param mismatch, server-side max_tokens mismatch, and
+            # model families that reject non-default temperature.
+            temp_fallback_used = False
+            while True:
+                try:
                     return await client.chat.completions.create(**base_kwargs)
-                raise
-            except Exception as e:
-                msg = str(e)
-                if "Unsupported parameter: 'max_tokens'" in msg and "max_completion_tokens" in msg:
-                    base_kwargs.pop("max_tokens", None)
-                    base_kwargs["max_completion_tokens"] = int(max_tokens)
-                    return await client.chat.completions.create(**base_kwargs)
-                raise
+                except TypeError as e:
+                    msg = str(e)
+                    # Older SDKs don't accept max_completion_tokens.
+                    if "max_completion_tokens" in msg and "unexpected keyword argument" in msg:
+                        base_kwargs.pop("max_completion_tokens", None)
+                        base_kwargs["max_tokens"] = int(max_tokens)
+                        continue
+                    raise
+                except Exception as e:
+                    msg = str(e)
+
+                    # Some models only support the default temperature (1).
+                    if (not temp_fallback_used) and ("temperature" in msg) and (
+                        "Unsupported value" in msg
+                        or "does not support" in msg
+                        or "unsupported_value" in msg
+                        or '"param": "temperature"' in msg
+                        or "'param': 'temperature'" in msg
+                    ):
+                        if "temperature" in base_kwargs:
+                            logger.warning(
+                                "[openai] temperature unsupported for model %s; retrying without temperature. err=%s",
+                                model_id,
+                                msg,
+                            )
+                            base_kwargs.pop("temperature", None)
+                            temp_fallback_used = True
+                            continue
+
+                    # Server-side error: wrong tokens param name.
+                    if "Unsupported parameter: 'max_tokens'" in msg and "max_completion_tokens" in msg:
+                        base_kwargs.pop("max_tokens", None)
+                        base_kwargs["max_completion_tokens"] = int(max_tokens)
+                        continue
+
+                    raise
 
         while True:
             tool_iters += 1

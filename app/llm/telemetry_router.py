@@ -1,39 +1,70 @@
 # FILE: app/llm/telemetry_router.py
-"""Telemetry endpoints backed by app.llm.audit_logger.
-
-These endpoints are meant for *live health checking* (polling-friendly).
-They intentionally do NOT expose prompts/outputs or any sensitive payloads.
-
-Routes
-- GET /telemetry/health  -> aggregate metrics
-- GET /telemetry/recent?limit=50 -> recent sanitized events
-"""
-
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from typing import Any, Dict, List
 
-from app.auth import require_auth
-from app.auth.middleware import AuthResult
-from app.llm.audit_logger import get_audit_logger
+from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel, Field
+
+from app.auth import AuthResult, require_auth
+
+# Audit logger lives alongside this router in app/llm/audit_logger.py
+# Use a relative import so it works regardless of project root / PYTHONPATH.
+from .audit_logger import get_audit_logger
+
 
 router = APIRouter(prefix="/telemetry", tags=["telemetry"])
 
 
-@router.get("/health")
-def telemetry_health(auth: AuthResult = Depends(require_auth)):
-    logger = get_audit_logger()
-    if not logger or not logger.enabled:
-        return {"ok": True, "enabled": False, "message": "audit/telemetry disabled"}
-    return {"ok": True, "enabled": True, **logger.get_metrics()}
+class TelemetryHealthResponse(BaseModel):
+    ok: bool = True
+    enabled: bool = True
+    counts: Dict[str, int] = Field(default_factory=dict)
+    by_provider: Dict[str, Any] = Field(default_factory=dict)
+    avg_latency_ms: float = 0.0
+    in_memory_events: int = 0
 
 
-@router.get("/recent")
+class TelemetryRecentResponse(BaseModel):
+    ok: bool = True
+    enabled: bool = True
+    events: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+@router.get("/health", response_model=TelemetryHealthResponse)
+def telemetry_health(auth: AuthResult = Depends(require_auth)) -> TelemetryHealthResponse:
+    log = get_audit_logger()
+    if log is None:
+        return TelemetryHealthResponse(ok=True, enabled=False)
+
+    try:
+        snap = log.get_metrics()
+    except Exception:
+        # Telemetry must never crash the API.
+        return TelemetryHealthResponse(ok=True, enabled=True)
+
+    return TelemetryHealthResponse(
+        ok=bool(snap.get("ok", True)),
+        enabled=True,
+        counts=snap.get("counts", {}) or {},
+        by_provider=snap.get("by_provider", {}) or {},
+        avg_latency_ms=float(snap.get("avg_latency_ms", 0.0) or 0.0),
+        in_memory_events=int(snap.get("in_memory_events", 0) or 0),
+    )
+
+
+@router.get("/recent", response_model=TelemetryRecentResponse)
 def telemetry_recent(
-    limit: int = Query(default=50, ge=1, le=500),
+    limit: int = Query(50, ge=1, le=500),
     auth: AuthResult = Depends(require_auth),
-):
-    logger = get_audit_logger()
-    if not logger or not logger.enabled:
-        return {"ok": True, "enabled": False, "events": []}
-    return {"ok": True, "enabled": True, "events": logger.get_recent_events(limit=limit)}
+) -> TelemetryRecentResponse:
+    log = get_audit_logger()
+    if log is None:
+        return TelemetryRecentResponse(ok=True, enabled=False, events=[])
+
+    try:
+        events = log.get_recent_events(limit=limit) or []
+    except Exception:
+        events = []
+
+    return TelemetryRecentResponse(ok=True, enabled=True, events=events)

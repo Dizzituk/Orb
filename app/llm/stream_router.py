@@ -462,7 +462,7 @@ def _openai_chat_completion_nonstream(
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY not set (required for ORB_ZOBIE_ARCHMAP_PROVIDER=openai).")
 
-    base_payload: Dict[str, Any] = {
+    base_payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -473,7 +473,7 @@ def _openai_chat_completion_nonstream(
     }
 
     # Some models only support default temperature (effectively 1). If you set !=1, we’ll try once then fallback.
-    want_temp: Optional[float] = None
+    want_temp = None
     try:
         t = float(temperature)
         if abs(t - 1.0) > 1e-9:
@@ -532,7 +532,6 @@ def _openai_chat_completion_nonstream(
     content = msg_obj.get("content") or ""
     usage = data.get("usage") if isinstance(data.get("usage"), dict) else None
     return content, usage
-
 
 
 def _load_index_json(index_path: str) -> Dict[str, Any]:

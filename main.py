@@ -51,6 +51,7 @@ import json
 import re
 from pathlib import Path
 from uuid import uuid4
+import time
 from typing import Optional, List
 
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File as FastAPIFile, Form
@@ -79,6 +80,7 @@ from app.llm.schemas import Provider, AttachmentInfo
 from app.llm.clients import check_provider_availability, call_openai
 from app.llm.stream_router import router as stream_router
 from app.llm.telemetry_router import router as telemetry_router
+from app.llm.audit_logger import get_audit_logger, RoutingTrace
 from app.llm.web_search_router import router as web_search_router
 from app.embeddings.router import router as embeddings_router, search_router as embeddings_search_router
 from app.embeddings import service as embeddings_service
@@ -315,6 +317,20 @@ def build_document_context(db: Session, project_id: int, user_message: str) -> s
     except Exception as e:
         print(f"[build_document_context] Error: {e}")
         return ""
+
+
+
+
+def _make_session_id(auth: AuthResult) -> str:
+    """Best-effort stable session id for audit correlation."""
+    sid = getattr(auth, "session_id", None)
+    if sid:
+        return str(sid)
+    uid = getattr(auth, "user_id", None)
+    if uid:
+        return str(uid)
+    # Fallback: avoid crashing if auth object changes
+    return "unknown"
 
 
 def _extract_provider_value(result: LLMResult) -> str:
@@ -1235,7 +1251,61 @@ def direct_llm(
     )
 
     try:
-        result = call_llm(task)
+        audit = get_audit_logger()
+        trace: RoutingTrace | None = None
+        request_id = str(uuid4())
+        if getattr(audit, "enabled", False):
+            trace = audit.start_trace(
+                session_id=_make_session_id(auth),
+                project_id=project_id,
+                user_text=req.message,
+                request_id=request_id,
+                attachments=None,
+            )
+            trace.log_request_start(
+                job_type=jt.value,
+                resolved_job_type=jt.value,
+                provider=provider_value,
+                model=model_value,
+                reason="main.py /chat",
+                frontier_override=None,
+                file_map_injected=False,
+                attachments=None,
+            )
+
+        t0 = time.perf_counter()
+        try:
+            result = call_llm(task)
+        except Exception as e:
+            if trace:
+                trace.log_error(
+                    where="main.chat",
+                    error_type=type(e).__name__,
+                    message=str(e),
+                )
+                trace.finalize(success=False, error_type=type(e).__name__, message=str(e))
+            raise
+
+        dt_ms = int((time.perf_counter() - t0) * 1000)
+        if trace:
+            trace.log_routing_decision(
+                job_type=jt.value,
+                provider=getattr(result, "provider", provider_value),
+                model=getattr(result, "model", model_value),
+                reason="call_llm result",
+                frontier_override=None,
+            )
+            trace.log_model_call(
+                stage="primary",
+                provider=getattr(result, "provider", provider_value),
+                model=getattr(result, "model", model_value),
+                role="primary",
+                prompt_tokens=0,
+                completion_tokens=0,
+                duration_ms=dt_ms,
+                success=True,
+            )
+            trace.finalize(success=True)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
