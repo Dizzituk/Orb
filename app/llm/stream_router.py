@@ -123,6 +123,13 @@ from app.llm.local_tools.archmap_helpers import (
     _openai_chat_completion_nonstream,
 )
 
+# Local-tool streaming helpers (kept out of this file to keep it small)
+from app.llm.local_tools.zobie_tools import (
+    generate_local_architecture_map_stream,
+    generate_local_zobie_map_stream,
+)
+
+
 
 
 def _is_zobie_map_trigger(msg: str) -> bool:

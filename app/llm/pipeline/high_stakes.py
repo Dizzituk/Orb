@@ -1,4 +1,5 @@
 # FILE: app/llm/pipeline/high_stakes.py
+# FILE: app/llm/pipeline/high_stakes.py
 """High-stakes critique pipeline configuration and prompt builders.
 
 Extracted from app.llm.router to keep the router thin and make sanity checks easier.
