@@ -64,6 +64,28 @@ def _sse_token(content: str) -> str:
 def _sse_error(error: str) -> str:
     return "data: " + json.dumps({"type": "error", "error": error}) + "\n\n"
 
+def _sse_done(
+    *,
+    provider: str,
+    model: str,
+    total_length: int = 0,
+    success: bool = True,
+    error: Optional[str] = None,
+    meta: Optional[Dict[str, Any]] = None,
+) -> str:
+    payload: Dict[str, Any] = {
+        "type": "done",
+        "provider": provider,
+        "model": model,
+        "total_length": int(total_length or 0),
+        "success": bool(success),
+    }
+    if error:
+        payload["error"] = str(error)
+    if meta:
+        payload["meta"] = meta
+    return "data: " + json.dumps(payload) + "\n\n"
+
 
 def _chunk_text(text: str, chunk_size: int = 1200) -> List[str]:
     if not text:
@@ -192,6 +214,7 @@ async def generate_local_zobie_map_stream(
         if trace is not None:
             trace.log_error(f"Zobie mapper failed: {e}")
         yield _sse_error(f"ZOBIE MAP failed: {e}")
+        yield _sse_done(provider="local", model="zobie_mapper", success=False, error=str(e))
         return
 
     # Record a small breadcrumb in memory (optional but useful for debugging)
@@ -217,6 +240,7 @@ async def generate_local_zobie_map_stream(
 
     summary = "Repo scan complete.\n\nOutputs:\n" + "\n".join(f"- {p}" for p in output_paths) + "\n"
     yield _sse_token(summary)
+    yield _sse_done(provider="local", model="zobie_mapper", total_length=len(summary), meta={"outputs": output_paths, "out_dir": ZOBIE_MAPPER_OUT_DIR})
 
 
 async def generate_local_architecture_map_stream(
@@ -237,6 +261,7 @@ async def generate_local_architecture_map_stream(
         if trace is not None:
             trace.log_error(f"Mapper failed: {e}")
         yield _sse_error(f"Mapper failed: {e}")
+        yield _sse_done(provider=ARCHMAP_PROVIDER, model=ARCHMAP_MODEL, success=False, error=str(e))
         return
 
     # Determine key artifacts
@@ -259,6 +284,7 @@ async def generate_local_architecture_map_stream(
             index_path = _find_latest_matching(ZOBIE_MAPPER_OUT_DIR, r"^INDEX_\d{4}-\d{2}-\d{2}_\d{4}\.json$")
     if not (arch_path and index_path):
         yield _sse_error("Mapper ran but expected artifacts were not found (ARCH_MAP_*.md and INDEX_*.json).")
+        yield _sse_done(provider=ARCHMAP_PROVIDER, model=ARCHMAP_MODEL, success=False, error="artifacts_not_found")
         return
 
     stamp2 = datetime.now().strftime("%Y-%m-%d_%H%M")
@@ -334,6 +360,7 @@ async def generate_local_architecture_map_stream(
             if trace is not None:
                 trace.log_error(f"Archmap section failed ({sec_name}): {e}")
             yield _sse_error(f"Section generation failed ({sec_name}): {e}")
+            yield _sse_done(provider=ARCHMAP_PROVIDER, model=ARCHMAP_MODEL, success=False, error=str(e), meta={"section": sec_name})
             return
 
         section_text, _reason = _parse_reasoning_tags(raw)
@@ -438,3 +465,4 @@ async def generate_local_architecture_map_stream(
         + "\n"
     )
     yield _sse_token(summary)
+    yield _sse_done(provider=ARCHMAP_PROVIDER, model=ARCHMAP_MODEL, total_length=len(summary), meta={"version": version_n, "full": out_full, "sections": section_files, "out_dir": ZOBIE_MAPPER_OUT_DIR})

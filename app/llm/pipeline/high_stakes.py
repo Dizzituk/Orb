@@ -43,6 +43,86 @@ try:
 except ImportError:
     AUDIT_AVAILABLE = False
 
+
+# =============================================================================
+# Audit integration (stable API via app.llm.audit_logger)
+# =============================================================================
+
+def _maybe_start_trace(
+    task: LLMTask,
+    envelope: JobEnvelope,
+    *,
+    job_type_str: str,
+    provider_id: str,
+    model_id: str,
+):
+    """Start an audit trace if auditing is enabled. Audit must never break routing."""
+    if not (AUDIT_AVAILABLE and AUDIT_ENABLED):
+        return None, None
+
+    try:
+        audit_logger = get_audit_logger()
+    except Exception:
+        return None, None
+
+    if not audit_logger:
+        return None, None
+
+    request_id = str(getattr(envelope, "job_id", None) or getattr(task, "request_id", None) or str(uuid4()))
+    session_id = str(getattr(envelope, "session_id", None) or getattr(task, "session_id", None) or "session-unknown")
+    project_id = int(getattr(envelope, "project_id", None) or getattr(task, "project_id", None) or 0)
+    sandbox_mode = bool(getattr(task, "sandbox_mode", False))
+
+    try:
+        trace = audit_logger.start_trace(
+            session_id=session_id,
+            project_id=project_id,
+            user_text=None,
+            is_critical=True,
+            sandbox_mode=sandbox_mode,
+            request_id=request_id,
+        )
+        # Canonical routing decision event (enum-safe)
+        trace.log_routing_decision(
+            job_type=job_type_str,
+            provider=provider_id,
+            model=model_id,
+            reason="high_stakes_pipeline",
+        )
+    except Exception:
+        return audit_logger, None
+
+    return audit_logger, trace
+
+
+def _maybe_complete_trace(audit_logger, trace, *, success: bool = True, error_message: str = "") -> None:
+    if not audit_logger or not trace:
+        return
+    try:
+        audit_logger.complete_trace(trace, success=bool(success), error_message=str(error_message or ""))
+    except Exception:
+        return
+
+
+def _trace_step(trace, step: str, **kv) -> None:
+    if not trace:
+        return
+    try:
+        extra = " ".join([f"{k}={v}" for k, v in (kv or {}).items()])
+        msg = f"{step}" + (f" {extra}" if extra else "")
+        trace.log_warning("PIPELINE_STEP", msg)
+    except Exception:
+        return
+
+
+def _trace_error(trace, step: str, message: str) -> None:
+    if not trace:
+        return
+    try:
+        trace.log_error("PIPELINE_ERROR", f"{step}: {message}")
+    except Exception:
+        return
+
 AUDIT_ENABLED = os.getenv("ORB_AUDIT_ENABLED", "1") == "1"
 
 logger = logging.getLogger(__name__)
@@ -122,20 +202,20 @@ def normalize_job_type_for_high_stakes(job_type_str: str, reason: str = "") -> s
 
         architecture_keywords = ["architecture", "system design", "architect", "system architecture"]
         if any(kw in reason_lower for kw in architecture_keywords):
-            print(f"[router] Normalized orchestrator → architecture_design (reason: {reason[:80]})")
+            logger.info("[router] Normalized orchestrator → architecture_design (reason: %s)", reason[:80])
             return "architecture_design"
 
         security_keywords = ["security", "security review", "security audit"]
         if any(kw in reason_lower for kw in security_keywords):
-            print(f"[router] Normalized orchestrator → security_review (reason: {reason[:80]})")
+            logger.info("[router] Normalized orchestrator → security_review (reason: %s)", reason[:80])
             return "security_review"
 
         infra_keywords = ["infrastructure", "infra", "deployment"]
         if any(kw in reason_lower for kw in infra_keywords):
-            print(f"[router] Normalized orchestrator → high_stakes_infra (reason: {reason[:80]})")
+            logger.info("[router] Normalized orchestrator → high_stakes_infra (reason: %s)", reason[:80])
             return "high_stakes_infra"
 
-        print(f"[router] Normalized orchestrator → big_architecture (default, reason: {reason[:80]})")
+        logger.info("[router] Normalized orchestrator → big_architecture (default, reason: %s)", reason[:80])
         return "big_architecture"
 
     # Generic mapping for other job types that might still be high impact
@@ -280,59 +360,87 @@ def build_critique_prompt(
 
 
 def _map_to_phase4_job_type(job_type: JobType) -> Phase4JobType:
-    """Map router JobType enum to Phase 4 JobType enum.
+    """Map router JobType enum (app.llm.schemas.JobType) to Phase 4 JobType enum (app.jobs.schemas.JobType).
 
-    NOTE:
-    The router's JobType enum has changed over time (e.g. SECURITY vs SECURITY_REVIEW).
-    This mapper must be resilient to missing enum members to avoid AttributeError during
-    envelope synthesis.
+    Router JobType and Phase-4 JobType evolve independently. This mapper must:
+    - never reference missing enum members directly (would raise AttributeError),
+    - return a *valid* Phase4JobType member for all inputs.
     """
-    # Prefer the enum value string when available; fall back to str(job_type)
-    try:
-        key = (job_type.value or "").strip().lower()  # type: ignore[attr-defined]
-    except Exception:
-        key = (str(job_type) or "").strip().lower()
 
-    # Guarded direct comparisons (safe even if enum members are missing)
+    def _p4(*names: str) -> Phase4JobType:
+        for n in names:
+            v = getattr(Phase4JobType, n, None)
+            if v is not None:
+                return v
+        return list(Phase4JobType)[0]
+
+    # Build a robust key for fuzzy routing across legacy names.
+    name = getattr(job_type, "name", "") or ""
+    value = getattr(job_type, "value", "") or ""
+    key = f"{name} {value} {job_type}".strip().lower()
+
+    # === Explicit primary-route mappings (8-route system) ===
     if getattr(JobType, "CHAT_LIGHT", None) is not None and job_type == getattr(JobType, "CHAT_LIGHT"):
-        return Phase4JobType.QUICK_CHAT
+        return _p4("CHAT_SIMPLE")
+
     if getattr(JobType, "TEXT_HEAVY", None) is not None and job_type == getattr(JobType, "TEXT_HEAVY"):
-        return Phase4JobType.TEXT_HEAVY
+        return _p4("CHAT_RESEARCH", "CHAT_SIMPLE")
+
     if getattr(JobType, "CODE_MEDIUM", None) is not None and job_type == getattr(JobType, "CODE_MEDIUM"):
-        return Phase4JobType.CODE_MEDIUM
+        return _p4("CODE_SMALL", "CODE_REPO")
+
     if getattr(JobType, "ORCHESTRATOR", None) is not None and job_type == getattr(JobType, "ORCHESTRATOR"):
-        return Phase4JobType.ORCHESTRATOR
-    if getattr(JobType, "ARCHITECTURE", None) is not None and job_type == getattr(JobType, "ARCHITECTURE"):
-        return Phase4JobType.ARCHITECTURE
-    # SECURITY is historically either JobType.SECURITY or JobType.SECURITY_REVIEW (or similar).
-    if getattr(JobType, "SECURITY", None) is not None and job_type == getattr(JobType, "SECURITY"):
-        return Phase4JobType.SECURITY
-    if getattr(JobType, "SECURITY_REVIEW", None) is not None and job_type == getattr(JobType, "SECURITY_REVIEW"):
-        return Phase4JobType.SECURITY
-    if getattr(JobType, "INFRASTRUCTURE", None) is not None and job_type == getattr(JobType, "INFRASTRUCTURE"):
-        return Phase4JobType.INFRASTRUCTURE
-    if getattr(JobType, "MIXED_FILE", None) is not None and job_type == getattr(JobType, "MIXED_FILE"):
-        return Phase4JobType.MIXED_FILE
+        # ORCHESTRATOR spans architecture + multi-file code; pick best-effort based on legacy hints.
+        if "arch" in key:
+            return _p4("APP_ARCHITECTURE", "ORCHESTRATION_PLAN")
+        if any(tok in key for tok in ("code", "refactor", "migration", "bug", "repo")):
+            return _p4("CODE_REPO", "ORCHESTRATION_PLAN")
+        return _p4("ORCHESTRATION_PLAN", "CHAT_RESEARCH")
+
+    if getattr(JobType, "IMAGE_SIMPLE", None) is not None and job_type == getattr(JobType, "IMAGE_SIMPLE"):
+        return _p4("VISION_SIMPLE", "VISION_COMPLEX")
+
+    if getattr(JobType, "IMAGE_COMPLEX", None) is not None and job_type == getattr(JobType, "IMAGE_COMPLEX"):
+        return _p4("VISION_COMPLEX", "VISION_SIMPLE")
+
+    if getattr(JobType, "DOCUMENT_PDF_TEXT", None) is not None and job_type == getattr(JobType, "DOCUMENT_PDF_TEXT"):
+        return _p4("CHAT_RESEARCH", "CHAT_SIMPLE")
+
+    if getattr(JobType, "DOCUMENT_PDF_VISION", None) is not None and job_type == getattr(JobType, "DOCUMENT_PDF_VISION"):
+        return _p4("VISION_COMPLEX", "VISION_SIMPLE")
+
+    if getattr(JobType, "VIDEO_HEAVY", None) is not None and job_type == getattr(JobType, "VIDEO_HEAVY"):
+        return _p4("VIDEO_ADVANCED", "VIDEO_SIMPLE")
+
     if getattr(JobType, "VIDEO_CODE_DEBUG", None) is not None and job_type == getattr(JobType, "VIDEO_CODE_DEBUG"):
-        return Phase4JobType.VIDEO_CODE_DEBUG
+        return _p4("VIDEO_ADVANCED", "VIDEO_SIMPLE")
 
-    # String-based fallbacks for forward compatibility
-    if "security" in key:
-        return Phase4JobType.SECURITY
-    if "infra" in key or "deploy" in key:
-        return Phase4JobType.INFRASTRUCTURE
-    if "arch" in key:
-        return Phase4JobType.ARCHITECTURE
-    if "mixed" in key or "file" in key:
-        return Phase4JobType.MIXED_FILE
+    if getattr(JobType, "OPUS_CRITIC", None) is not None and job_type == getattr(JobType, "OPUS_CRITIC"):
+        return _p4("CRITIQUE_REVIEW", "CHAT_RESEARCH")
+
+    # === Fuzzy fallback for legacy names (safe) ===
+    if "critique" in key or "review" in key:
+        return _p4("CRITIQUE_REVIEW", "CHAT_RESEARCH")
+
     if "video" in key:
-        return Phase4JobType.VIDEO_CODE_DEBUG
-    if "code" in key:
-        return Phase4JobType.CODE_MEDIUM
-    if "chat" in key:
-        return Phase4JobType.QUICK_CHAT
+        return _p4("VIDEO_ADVANCED", "VIDEO_SIMPLE")
 
-    return Phase4JobType.TEXT_HEAVY
+    if any(tok in key for tok in ("image", "vision", "ocr", "screenshot", "pdf_vision")):
+        return _p4("VISION_COMPLEX", "VISION_SIMPLE")
+
+    if any(tok in key for tok in ("arch", "architecture")):
+        return _p4("APP_ARCHITECTURE", "ORCHESTRATION_PLAN")
+
+    if any(tok in key for tok in ("repo", "refactor", "migration", "code", "bugfix", "bug_analysis", "bug")):
+        return _p4("CODE_REPO", "CODE_SMALL")
+
+    # Security / privacy / infra (Phase-4 spec has no dedicated security job type)
+    if any(tok in key for tok in ("security", "privacy", "infra", "high_stakes")):
+        return _p4("ORCHESTRATION_PLAN", "CHAT_RESEARCH")
+
+    return _p4("CHAT_RESEARCH", "CHAT_SIMPLE")
+
+
 # =============================================================================
 # CRITIQUE PIPELINE (Opus draft → Gemini critique → Opus revision)
 # =============================================================================
@@ -342,6 +450,7 @@ async def call_gemini_critic(
     original_task: LLMTask,
     draft_result: LLMResult,
     job_type_str: str,
+    envelope: JobEnvelope,
 ) -> Optional[LLMResult]:
     """Call Gemini 3 Pro to critique the Opus draft."""
     user_messages = [m for m in original_task.messages if m.get("role") == "user"]
@@ -351,7 +460,7 @@ async def call_gemini_critic(
     if job_type_str in ["architecture_design", "big_architecture", "high_stakes_infra",
                          "architecture", "orchestrator"]:
         env_context = get_environment_context()
-        print(f"[critic] Passing environment context to architecture critique")
+        logger.info("[critic] Passing environment context to architecture critique")
 
     critique_prompt = build_critique_prompt(
         draft_text=draft_result.content,
@@ -367,11 +476,13 @@ async def call_gemini_critic(
 
     try:
         critic_envelope = JobEnvelope(
-            envelope_id=str(uuid4()),
-            job_type=Phase4JobType.TEXT_HEAVY,
+            job_id=str(uuid4()),
+            session_id=getattr(envelope, 'session_id', None) or getattr(original_task, 'session_id', None) or 'session-unknown',
+            project_id=int(getattr(envelope, 'project_id', None) or getattr(original_task, 'project_id', None) or 0),
+            job_type=getattr(Phase4JobType, "CRITIQUE_REVIEW", getattr(Phase4JobType, "CHAT_RESEARCH", list(Phase4JobType)[0])),
             importance=Importance.HIGH,
             data_sensitivity=DataSensitivity.INTERNAL,
-            modalities=[Modality.TEXT],
+            modalities_in=[Modality.TEXT],
             budget=JobBudget(
                 max_tokens=GEMINI_CRITIC_MAX_TOKENS,
                 max_cost_estimate=0.05,
@@ -379,7 +490,7 @@ async def call_gemini_critic(
             ),
             output_contract=OutputContract.TEXT_RESPONSE,
             messages=critique_messages,
-            metadata={"critique_for_job_type": job_type_str},
+            metadata={"critic": "gemini"},
             allow_multi_model_review=False,
             needs_tools=[],
         )
@@ -408,7 +519,7 @@ async def call_gemini_critic(
         )
 
     except Exception as exc:
-        logger.exception("[critic] Gemini critic call failed: %s", exc)
+        logger.warning("[critic] Gemini critic call failed: %s", exc, exc_info=False)
         return None
 
 
@@ -417,6 +528,7 @@ async def call_opus_revision(
     draft_result: LLMResult,
     critique_result: LLMResult,
     opus_model_id: str,
+    envelope: JobEnvelope,
 ) -> Optional[LLMResult]:
     """Call Opus to revise its draft based on Gemini's critique."""
     user_messages = [m for m in original_task.messages if m.get("role") == "user"]
@@ -442,12 +554,16 @@ CRITIQUE:
     try:
         opus_model = os.getenv("ANTHROPIC_OPUS_MODEL", opus_model_id)
 
+        phase4_job_type = _map_to_phase4_job_type(original_task.job_type)
+
         revision_envelope = JobEnvelope(
-            envelope_id=str(uuid4()),
-            job_type=Phase4JobType.TEXT_HEAVY,
+            job_id=str(uuid4()),
+            session_id=getattr(envelope, 'session_id', None) or getattr(original_task, 'session_id', None) or 'session-unknown',
+            project_id=int(getattr(envelope, 'project_id', None) or getattr(original_task, 'project_id', None) or 0),
+            job_type=phase4_job_type,
             importance=Importance.HIGH,
             data_sensitivity=DataSensitivity.INTERNAL,
-            modalities=[Modality.TEXT],
+            modalities_in=[Modality.TEXT],
             budget=JobBudget(
                 max_tokens=OPUS_REVISION_MAX_TOKENS,
                 max_cost_estimate=0.10,
@@ -484,7 +600,7 @@ CRITIQUE:
         )
 
     except Exception as exc:
-        logger.exception("[critic] Opus revision call failed: %s", exc)
+        logger.warning("[critic] Opus revision call failed: %s", exc, exc_info=False)
         return None
 
 
@@ -497,26 +613,14 @@ async def run_high_stakes_with_critique(
     file_map: Optional[str] = None,
 ) -> LLMResult:
     """Run 3-step critique pipeline for high-stakes Opus work."""
-    print(f"[critic] High-stakes pipeline enabled: job_type={job_type_str} model={model_id}")
-
-    # v0.15.0: Start audit trace if available
-    trace = None
-    if AUDIT_AVAILABLE and AUDIT_ENABLED:
-        audit_logger = get_audit_logger()
-        if audit_logger:
-            trace = RoutingTrace(
-                session_id=getattr(task, "session_id", None),
-                envelope_id=envelope.envelope_id,
-                job_type=job_type_str,
-                provider=provider_id,
-                model=model_id,
-            )
-            trace.add_event(AuditEventType.ROUTER_DECISION, {
-                "pipeline": "high_stakes_critique",
-                "job_type": job_type_str,
-                "provider": provider_id,
-                "model": model_id,
-            })
+    logger.info("[critic] High-stakes pipeline enabled: job_type=%s model=%s", job_type_str, model_id)    # v0.15.0: Start audit trace (audit must never break routing)
+    audit_logger, trace = _maybe_start_trace(
+        task,
+        envelope,
+        job_type_str=job_type_str,
+        provider_id=provider_id,
+        model_id=model_id,
+    )
 
     # -------------------------------------------------------------------------
     # Pre-step: If video exists, transcribe for context and append to prompt.
@@ -531,7 +635,7 @@ async def run_high_stakes_with_critique(
             try:
                 video_path = video_att.path if hasattr(video_att, "path") else None
                 if video_path:
-                    print(f"[critic] Pre-step: Transcribing {video_att.filename}")
+                    logger.info("[critic] Pre-step: Transcribing %s", getattr(video_att, "filename", "video"))
                     try:
                         transcript = await transcribe_video_for_context(video_path)
                         video_transcripts.append({
@@ -539,7 +643,7 @@ async def run_high_stakes_with_critique(
                             "transcript": transcript,
                         })
                     except Exception as e:
-                        print(f"[critic] Pre-step: Transcription failed: {e}")
+                        logger.warning("[critic] Pre-step: Transcription failed: %s", e, exc_info=False)
             except Exception:
                 pass
 
@@ -565,12 +669,7 @@ async def run_high_stakes_with_critique(
         ]
 
     if trace is not None:
-        trace.add_event(AuditEventType.PIPELINE_STEP, {
-            "step": "draft",
-            "provider": provider_id,
-            "model": model_id,
-            "messages_count": len(draft_messages),
-        })
+        _trace_step(trace, 'draft')
 
     try:
         draft_result = await registry_llm_call(
@@ -582,7 +681,8 @@ async def run_high_stakes_with_critique(
     except Exception as exc:
         err_msg = f"High-stakes draft call failed: {type(exc).__name__}: {exc}"
         if trace is not None:
-            trace.add_event(AuditEventType.ERROR, {"step": "draft", "error": err_msg})
+            _trace_error(trace, 'draft', err_msg)
+        _maybe_complete_trace(audit_logger, trace, success=False, error_message=err_msg)
         return LLMResult(
             content=err_msg,
             provider=provider_id,
@@ -610,23 +710,14 @@ async def run_high_stakes_with_critique(
     )
 
     if trace is not None:
-        trace.add_event(AuditEventType.PIPELINE_STEP, {
-            "step": "draft_done",
-            "tokens": draft.total_tokens,
-            "cost": draft.cost_usd,
-        })
+        _trace_step(trace, 'draft_done')
 
     # Only critique if the draft is long enough.
     if not is_long_enough_for_critique(draft.content):
-        print("[critic] Draft too short for critique; returning draft.")
+        logger.warning("[critic] Draft too short for critique; returning draft.")
         if trace is not None:
-            trace.add_event(AuditEventType.PIPELINE_STEP, {
-                "step": "skip_critique_short_draft",
-                "chars": len(draft.content or ""),
-            })
-            audit_logger = get_audit_logger() if AUDIT_AVAILABLE and AUDIT_ENABLED else None
-            if audit_logger:
-                audit_logger.write_trace(trace)
+            _trace_step(trace, 'skip_critique_short_draft')
+            _maybe_complete_trace(audit_logger, trace, success=True)
 
         draft.routing_decision = {
             "job_type": job_type_str,
@@ -639,15 +730,13 @@ async def run_high_stakes_with_critique(
     # -------------------------------------------------------------------------
     # Step 2: Critique (Gemini)
     # -------------------------------------------------------------------------
-    critique = await call_gemini_critic(original_task=task, draft_result=draft, job_type_str=job_type_str)
+    critique = await call_gemini_critic(original_task=task, draft_result=draft, job_type_str=job_type_str, envelope=envelope)
 
     if not critique:
-        print("[critic] Critique failed; returning draft.")
+        logger.warning("[critic] Critique failed; returning draft.")
         if trace is not None:
-            trace.add_event(AuditEventType.PIPELINE_STEP, {"step": "critique_failed"})
-            audit_logger = get_audit_logger() if AUDIT_AVAILABLE and AUDIT_ENABLED else None
-            if audit_logger:
-                audit_logger.write_trace(trace)
+            _trace_step(trace, 'critique_failed')
+            _maybe_complete_trace(audit_logger, trace, success=True)
 
         draft.routing_decision = {
             "job_type": job_type_str,
@@ -658,11 +747,7 @@ async def run_high_stakes_with_critique(
         return draft
 
     if trace is not None:
-        trace.add_event(AuditEventType.PIPELINE_STEP, {
-            "step": "critique_done",
-            "tokens": critique.total_tokens,
-            "cost": critique.cost_usd,
-        })
+        _trace_step(trace, 'critique_done')
 
     # -------------------------------------------------------------------------
     # Step 3: Revision (Opus)
@@ -672,15 +757,14 @@ async def run_high_stakes_with_critique(
         draft_result=draft,
         critique_result=critique,
         opus_model_id=model_id,
+        envelope=envelope,
     )
 
     if not revision:
-        print("[critic] Revision failed; returning draft.")
+        logger.warning("[critic] Revision failed; returning draft.")
         if trace is not None:
-            trace.add_event(AuditEventType.PIPELINE_STEP, {"step": "revision_failed"})
-            audit_logger = get_audit_logger() if AUDIT_AVAILABLE and AUDIT_ENABLED else None
-            if audit_logger:
-                audit_logger.write_trace(trace)
+            _trace_step(trace, 'revision_failed')
+            _maybe_complete_trace(audit_logger, trace, success=True)
 
         draft.routing_decision = {
             "job_type": job_type_str,
@@ -691,14 +775,8 @@ async def run_high_stakes_with_critique(
         return draft
 
     if trace is not None:
-        trace.add_event(AuditEventType.PIPELINE_STEP, {
-            "step": "revision_done",
-            "tokens": revision.total_tokens,
-            "cost": revision.cost_usd,
-        })
-        audit_logger = get_audit_logger() if AUDIT_AVAILABLE and AUDIT_ENABLED else None
-        if audit_logger:
-            audit_logger.write_trace(trace)
+        _trace_step(trace, 'revision_done')
+        _maybe_complete_trace(audit_logger, trace, success=True)
 
     revision.routing_decision = {
         "job_type": job_type_str,
@@ -712,5 +790,7 @@ async def run_high_stakes_with_critique(
             "total_cost": draft.cost_usd + critique.cost_usd + revision.cost_usd,
         }
     }
+
+    _maybe_complete_trace(audit_logger, trace, success=True)
 
     return revision

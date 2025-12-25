@@ -1,5 +1,4 @@
 # FILE: app/llm/routing/job_routing.py
-# FILE: app/llm/routing/job_routing.py
 """Routing helpers extracted from app.llm.router.
 
 Goal: keep app.llm.router focused on orchestration while preserving behaviour.
@@ -39,8 +38,25 @@ def _default_importance_for_job_type(job_type: JobType) -> Importance:
 
     if job_type in (JobType.CHAT_LIGHT,):
         return low
-
-    if job_type in (JobType.APP_ARCHITECTURE, JobType.ORCHESTRATOR):
+    # Architecture / orchestration jobs (schema evolves; avoid hard refs to removed members)
+    arch_jobs = tuple(
+        jt for jt in (
+            getattr(JobType, "APP_ARCHITECTURE", None),   # legacy / removed in current router schema
+            getattr(JobType, "BIG_ARCHITECTURE", None),
+            getattr(JobType, "ARCHITECTURE_DESIGN", None),
+            getattr(JobType, "ARCHITECTURE", None),
+            getattr(JobType, "ORCHESTRATOR", None),
+            getattr(JobType, "DEEP_PLANNING", None),
+            getattr(JobType, "IMPLEMENTATION_PLAN", None),
+            getattr(JobType, "HIGH_STAKES_INFRA", None),
+            getattr(JobType, "SECURITY_REVIEW", None),
+            getattr(JobType, "SECURITY_SENSITIVE_CHANGE", None),
+            getattr(JobType, "PRIVACY_SENSITIVE_CHANGE", None),
+            getattr(JobType, "PUBLIC_APP_PACKAGING", None),
+        )
+        if jt is not None
+    )
+    if arch_jobs and job_type in arch_jobs:
         return high
 
     if job_type in (JobType.CRITIQUE_REVIEW,):
