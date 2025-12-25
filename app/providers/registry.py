@@ -466,20 +466,25 @@ class ProviderRegistry:
 
         tool_iters = 0
         final_system, user_assistant_messages = _normalize_messages_for_anthropic(messages, system_prompt)
-        tools_param = _build_anthropic_tools(tool_defs) if tool_defs else None
+        tools_param = _build_anthropic_tools(tool_defs) if tool_defs else None  # leave as None unless real tools exist
 
         running_messages = list(user_assistant_messages)
 
         while True:
             tool_iters += 1
-            resp = await client.messages.create(
+            
+            create_kwargs = dict(
                 model=model_id,
                 system=final_system if final_system else None,
                 messages=running_messages,
                 temperature=temperature,
                 max_tokens=min(max_tokens, 8192),
-                tools=tools_param,
             )
+            # Anthropic expects 'tools' to be a proper list; do not pass None.
+            if tools_param is not None and isinstance(tools_param, list) and len(tools_param) > 0:
+                create_kwargs["tools"] = tools_param
+
+            resp = await client.messages.create(**create_kwargs)
 
             content_blocks = resp.content or []
             tool_uses = [b for b in content_blocks if getattr(b, "type", None) == "tool_use"]
