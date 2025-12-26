@@ -18,8 +18,10 @@ PHASE 4 FIXES:
 from __future__ import annotations
 
 import logging
+import json
+import os
 from datetime import datetime
-from typing import Optional
+from typing import Any, Dict, Optional
 from uuid import uuid4
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -46,9 +48,13 @@ from app.jobs.schemas import (
 )
 from app.providers.registry import llm_call, LlmCallStatus
 from app.artefacts.service import ArtefactService
+from app.jobs.stage3_locks import (
+    append_stage3_ledger_event,
+    parse_spec_echo_headers,
+    write_stage3_artifacts,
+)
 
 logger = logging.getLogger(__name__)
-
 
 # =============================================================================
 # ROUTING HELPERS
@@ -608,6 +614,8 @@ async def create_and_run_job(
 
         # Spec Gate for architecture jobs (PoT Spec)
         if envelope.job_type in (JobType.APP_ARCHITECTURE, JobType.CODE_REPO):
+            from app.pot_spec.spec_gate import run_spec_gate, detect_user_questions
+
             spec_gate_provider = os.getenv("SPEC_GATE_PROVIDER", "openai")
             spec_gate_model = os.getenv(
                 "OPENAI_SPEC_GATE_MODEL",
@@ -675,8 +683,108 @@ async def create_and_run_job(
                 },
             )
 
+
+        # Stage 3: ledger STAGE_STARTED for spec-hash-locked jobs
+        if envelope.job_type in (JobType.APP_ARCHITECTURE, JobType.CODE_REPO):
+            stage_name = "architecture_job_execution" if envelope.job_type == JobType.APP_ARCHITECTURE else "code_repo_job_execution"
+            append_stage3_ledger_event(
+                job_id,
+                {
+                    "event": "STAGE_STARTED",
+                    "job_id": job_id,
+                    "stage": stage_name,
+                    "spec_id": spec_id,
+                    "spec_hash": spec_hash,
+                    "ts_utc": datetime.utcnow().isoformat() + "Z",
+                },
+            )
+
         # Execute job
         result = await execute_job(envelope, db)
+
+
+        # Stage 3: Spec-hash lock verification (refuse-on-mismatch)
+        if envelope.job_type in (JobType.APP_ARCHITECTURE, JobType.CODE_REPO):
+            stage_name = "architecture_job_execution" if envelope.job_type == JobType.APP_ARCHITECTURE else "code_repo_job_execution"
+            returned_spec_id, returned_spec_hash, parse_note = parse_spec_echo_headers(result.content or "")
+            verified = (returned_spec_id == spec_id and returned_spec_hash == spec_hash)
+
+            # Best-effort artifact storage (raw output + meta)
+            provider_name = getattr(getattr(result, "routing_decision", None), "provider", None)
+            model_name = getattr(getattr(result, "routing_decision", None), "model", None)
+            written_paths = write_stage3_artifacts(
+                job_id=job_id,
+                stage=stage_name,
+                raw_output=result.content or "",
+                expected_spec_id=spec_id,
+                expected_spec_hash=spec_hash,
+                returned_spec_id=returned_spec_id,
+                returned_spec_hash=returned_spec_hash,
+                verified=verified,
+                provider=provider_name,
+                model=model_name,
+            )
+
+            append_stage3_ledger_event(
+                job_id,
+                {
+                    "event": "STAGE_SPEC_HASH_VERIFIED" if verified else "STAGE_SPEC_HASH_MISMATCH",
+                    "job_id": job_id,
+                    "stage": stage_name,
+                    "expected_spec_id": spec_id,
+                    "expected_spec_hash": spec_hash,
+                    "returned_spec_id": returned_spec_id,
+                    "returned_spec_hash": returned_spec_hash,
+                    "parse_note": parse_note,
+                    "ts_utc": datetime.utcnow().isoformat() + "Z",
+                },
+            )
+            append_stage3_ledger_event(
+                job_id,
+                {
+                    "event": "STAGE_OUTPUT_STORED",
+                    "job_id": job_id,
+                    "stage": stage_name,
+                    "paths": written_paths,
+                    "ts_utc": datetime.utcnow().isoformat() + "Z",
+                },
+            )
+
+            if not verified:
+                # Fail fast: stop pipeline, mark job failed
+                job.state = JobState.FAILED.value
+                job.output_content = result.content
+                job.error_type = ErrorType.MODEL_ERROR.value
+                job.error_message = (
+                    "Stage 3 spec-hash lock failed: "
+                    f"expected SPEC_ID={spec_id}, SPEC_HASH={spec_hash}; "
+                    f"got SPEC_ID={returned_spec_id}, SPEC_HASH={returned_spec_hash} ({parse_note})"
+                )
+                job.completed_at = datetime.utcnow()
+                db.commit()
+
+                return JobResult(
+                    job_id=job_id,
+                    session_id=envelope.session_id,
+                    project_id=envelope.project_id,
+                    job_type=envelope.job_type.value,
+                    state=JobState.FAILED,
+                    content=job.output_content,
+                    output_contract=envelope.output_contract,
+                    artefact_id=result.artefact_id,
+                    routing_decision=result.routing_decision,
+                    tools_used=result.tools_used,
+                    was_reviewed=result.was_reviewed,
+                    critique_issues=result.critique_issues,
+                    unresolved_blockers=result.unresolved_blockers,
+                    usage_metrics=result.usage_metrics,
+                    total_cost_estimate=result.total_cost_estimate,
+                    started_at=result.started_at,
+                    completed_at=job.completed_at,
+                    duration_seconds=result.duration_seconds,
+                    error_type=ErrorType.MODEL_ERROR,
+                    error_message=job.error_message,
+                )
 
         # Hard enforcement: downstream stages must not ask user questions
         if envelope.job_type in (JobType.APP_ARCHITECTURE, JobType.CODE_REPO):
