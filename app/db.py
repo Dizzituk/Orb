@@ -15,6 +15,7 @@ engine = create_engine(
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+# Shared declarative base for all ORM models
 Base = declarative_base()
 
 
@@ -32,4 +33,7 @@ def init_db():
     # Import models so Base.metadata knows about them
     from app.memory import models  # noqa: F401
     from app.embeddings import models as embedding_models  # noqa: F401
+    from app.jobs import models as job_models  # noqa: F401
+    from app.pot_spec import models as pot_spec_models  # noqa: F401
+
     Base.metadata.create_all(bind=engine)

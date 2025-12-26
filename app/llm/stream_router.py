@@ -454,11 +454,47 @@ async def generate_high_stakes_critique_stream(
             enable_reasoning=enable_reasoning,
         )
 
+        envelope = synthesize_envelope_from_task(task)
+
+        # Spec Gate (only stage allowed to ask user questions)
+        if (job_type_str or "").strip().lower() == "architecture_design":
+            spec_gate_provider = os.getenv("SPEC_GATE_PROVIDER", "openai")
+            spec_gate_model = os.getenv("OPENAI_SPEC_GATE_MODEL", DEFAULT_MODELS["openai"])
+
+            spec_id, spec_hash, open_questions = await run_spec_gate(
+                db,
+                job_id=envelope.job_id,
+                user_intent=message,
+                provider_id=spec_gate_provider,
+                model_id=spec_gate_model,
+                constraints_hint={"stability_accuracy": "high", "allowed_tools": "free_only"},
+            )
+
+            if open_questions:
+                yield "data: " + json.dumps(
+                    {
+                        "type": "pause",
+                        "pause_state": "needs_spec_clarification",
+                        "job_id": envelope.job_id,
+                        "spec_id": spec_id,
+                        "spec_hash": spec_hash,
+                        "open_questions": open_questions,
+                        "artifacts_written": f"jobs/{envelope.job_id}/spec/ + jobs/{envelope.job_id}/ledger/",
+                    }
+                ) + "\n\n"
+                return
+
+            system_prompt = system_prompt + (
+                "\n\nYou MUST echo these identifiers at the TOP of your response exactly:\n"
+                f"SPEC_ID: {spec_id}\nSPEC_HASH: {spec_hash}\n"
+                "Do not ask the user any questions."
+            )
+
         result = await run_high_stakes_with_critique(
             task=task,
             provider_id=provider,
             model_id=model,
-            envelope=synthesize_envelope_from_task(task),
+            envelope=envelope,
             job_type_str=job_type_str,
         )
 
@@ -484,6 +520,50 @@ async def generate_high_stakes_critique_stream(
 
         content = content or ""
         final_answer, reasoning = _parse_reasoning_tags(content)
+
+        # Hard enforcement: downstream stages must not ask user questions
+        if (job_type_str or "").strip().lower() == "architecture_design":
+            if detect_user_questions(final_answer or ""):
+                from app.pot_spec.ledger import append_event
+                from app.pot_spec.service import get_job_artifact_root
+
+                job_root = get_job_artifact_root()
+                append_event(
+                    job_artifact_root=job_root,
+                    job_id=envelope.job_id,
+                    event={
+                        "event": "POLICY_VIOLATION_STAGE_ASKED_QUESTIONS",
+                        "job_id": envelope.job_id,
+                        "stage": "HIGH_STAKES_PRIMARY",
+                        "status": "rejected",
+                    },
+                )
+
+                spec_gate_provider = os.getenv("SPEC_GATE_PROVIDER", "openai")
+                spec_gate_model = os.getenv("OPENAI_SPEC_GATE_MODEL", DEFAULT_MODELS["openai"])
+
+                spec_id, spec_hash, open_questions = await run_spec_gate(
+                    db,
+                    job_id=envelope.job_id,
+                    user_intent=message,
+                    provider_id=spec_gate_provider,
+                    model_id=spec_gate_model,
+                    reroute_reason="Downstream stage asked the user questions. Only Spec Gate may ask questions.",
+                    downstream_output_excerpt=(final_answer or "")[:2000],
+                )
+
+                yield "data: " + json.dumps(
+                    {
+                        "type": "pause",
+                        "pause_state": "needs_spec_clarification",
+                        "job_id": envelope.job_id,
+                        "spec_id": spec_id,
+                        "spec_hash": spec_hash,
+                        "open_questions": open_questions,
+                        "artifacts_written": f"jobs/{envelope.job_id}/spec/ + jobs/{envelope.job_id}/ledger/",
+                    }
+                ) + "\n\n"
+                return
 
         if trace and not trace_finished:
             trace.log_model_call("primary", provider, model, "primary", hs_prompt_tokens, hs_completion_tokens, duration_ms, success=True)

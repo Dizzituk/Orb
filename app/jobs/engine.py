@@ -82,6 +82,18 @@ def _determine_routing(envelope: JobEnvelope) -> tuple[str, str, float]:
     return "openai", "gpt-4o", 0.7
 
 
+
+def _extract_user_intent(messages: list[dict]) -> str:
+    for m in reversed(messages or []):
+        if (m.get("role") == "user") and m.get("content"):
+            return str(m.get("content")).strip()
+    # Fallback: stringify full messages
+    try:
+        return json.dumps(messages or [], ensure_ascii=False)
+    except Exception:
+        return ""
+
+
 def _build_routing_decision(
     envelope: JobEnvelope,
     provider_id: str,
@@ -593,9 +605,150 @@ async def create_and_run_job(
         db.commit()
         
         logger.info(f"[engine] Job {job_id} transitioned to RUNNING")
-        
+
+        # Spec Gate for architecture jobs (PoT Spec)
+        if envelope.job_type in (JobType.APP_ARCHITECTURE, JobType.CODE_REPO):
+            spec_gate_provider = os.getenv("SPEC_GATE_PROVIDER", "openai")
+            spec_gate_model = os.getenv(
+                "OPENAI_SPEC_GATE_MODEL",
+                os.getenv("OPENAI_DEFAULT_MODEL", "gpt-5-mini"),
+            )
+            user_intent = _extract_user_intent(request.messages)
+            spec_id, spec_hash, open_questions = await run_spec_gate(
+                db,
+                job_id=job_id,
+                user_intent=user_intent,
+                provider_id=spec_gate_provider,
+                model_id=spec_gate_model,
+                repo_snapshot=request.metadata if isinstance(request.metadata, dict) else None,
+                constraints_hint={"stability_accuracy": "high", "allowed_tools": "free_only"},
+            )
+
+            if open_questions:
+                paused_payload = {
+                    "pause_state": JobState.NEEDS_SPEC_CLARIFICATION.value,
+                    "job_id": job_id,
+                    "spec_id": spec_id,
+                    "spec_hash": spec_hash,
+                    "open_questions": open_questions,
+                    "artifacts_written": f"jobs/{job_id}/spec/ + jobs/{job_id}/ledger/",
+                }
+
+                job.state = JobState.NEEDS_SPEC_CLARIFICATION.value
+                job.output_content = json.dumps(paused_payload, ensure_ascii=False, indent=2)
+                job.completed_at = datetime.utcnow()
+                db.commit()
+
+                return JobResult(
+                    job_id=job_id,
+                    session_id=envelope.session_id,
+                    project_id=envelope.project_id,
+                    job_type=envelope.job_type.value,
+                    state=JobState.NEEDS_SPEC_CLARIFICATION,
+                    content=job.output_content,
+                    output_contract=envelope.output_contract,
+                    artefact_id=None,
+                    routing_decision=routing_decision,
+                    tools_used=[],
+                    was_reviewed=False,
+                    critique_issues=[],
+                    unresolved_blockers=len(open_questions),
+                    usage_metrics=[],
+                    total_cost_estimate=0.0,
+                    started_at=datetime.utcnow(),
+                    completed_at=datetime.utcnow(),
+                    duration_seconds=0.0,
+                    error_type=None,
+                    error_message=None,
+                )
+
+            # Inject spec echo requirement for downstream stages
+            envelope.messages.insert(
+                0,
+                {
+                    "role": "system",
+                    "content": (
+                        "You MUST echo these identifiers at the TOP of your response exactly:\n"
+                        f"SPEC_ID: {spec_id}\nSPEC_HASH: {spec_hash}\n"
+                        "Do not ask the user any questions."
+                    ),
+                },
+            )
+
         # Execute job
         result = await execute_job(envelope, db)
+
+        # Hard enforcement: downstream stages must not ask user questions
+        if envelope.job_type in (JobType.APP_ARCHITECTURE, JobType.CODE_REPO):
+            if detect_user_questions(result.content or ""):
+                from app.pot_spec.ledger import append_event
+                from app.pot_spec.service import get_job_artifact_root
+
+                job_root = get_job_artifact_root()
+                append_event(
+                    job_artifact_root=job_root,
+                    job_id=job_id,
+                    event={
+                        "event": "POLICY_VIOLATION_STAGE_ASKED_QUESTIONS",
+                        "job_id": job_id,
+                        "stage": "JOB_EXECUTION",
+                        "status": "rejected",
+                    },
+                )
+
+                spec_gate_provider = os.getenv("SPEC_GATE_PROVIDER", "openai")
+                spec_gate_model = os.getenv(
+                    "OPENAI_SPEC_GATE_MODEL",
+                    os.getenv("OPENAI_DEFAULT_MODEL", "gpt-5-mini"),
+                )
+                user_intent = _extract_user_intent(request.messages)
+                spec_id, spec_hash, open_questions = await run_spec_gate(
+                    db,
+                    job_id=job_id,
+                    user_intent=user_intent,
+                    provider_id=spec_gate_provider,
+                    model_id=spec_gate_model,
+                    reroute_reason="Downstream stage asked the user questions. Only Spec Gate may ask questions.",
+                    downstream_output_excerpt=(result.content or "")[:2000],
+                )
+
+                paused_payload = {
+                    "pause_state": JobState.NEEDS_SPEC_CLARIFICATION.value,
+                    "job_id": job_id,
+                    "spec_id": spec_id,
+                    "spec_hash": spec_hash,
+                    "open_questions": open_questions,
+                    "artifacts_written": f"jobs/{job_id}/spec/ + jobs/{job_id}/ledger/",
+                }
+
+                job.state = JobState.NEEDS_SPEC_CLARIFICATION.value
+                job.output_content = json.dumps(paused_payload, ensure_ascii=False, indent=2)
+                job.completed_at = datetime.utcnow()
+                db.commit()
+
+                return JobResult(
+                    job_id=job_id,
+                    session_id=envelope.session_id,
+                    project_id=envelope.project_id,
+                    job_type=envelope.job_type.value,
+                    state=JobState.NEEDS_SPEC_CLARIFICATION,
+                    content=job.output_content,
+                    output_contract=envelope.output_contract,
+                    artefact_id=None,
+                    routing_decision=routing_decision,
+                    tools_used=[],
+                    was_reviewed=False,
+                    critique_issues=[],
+                    unresolved_blockers=len(open_questions),
+                    usage_metrics=[],
+                    total_cost_estimate=result.total_cost_estimate,
+                    started_at=result.started_at,
+                    completed_at=datetime.utcnow(),
+                    duration_seconds=result.duration_seconds,
+                    error_type=None,
+                    error_message=None,
+                )
+
         
         # Update job with result
         job.state = result.state.value

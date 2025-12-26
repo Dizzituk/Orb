@@ -56,6 +56,7 @@ class JobState(str, Enum):
     """Job lifecycle states (Phase 4 spec)."""
     PENDING = "pending"
     RUNNING = "running"
+    NEEDS_SPEC_CLARIFICATION = "needs_spec_clarification"
     CANCELLING = "cancelling"
     CANCELLED = "cancelled"
     FAILED = "failed"
