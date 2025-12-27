@@ -467,10 +467,63 @@ class DeletionReport:
 # =============================================================================
 
 @dataclass
+class SamplingParams:
+    """LLM sampling parameters for deterministic replay."""
+    temperature: float = 0.0
+    top_p: float = 1.0
+    top_k: Optional[int] = None
+    max_tokens: int = 4096
+    seed: Optional[int] = None  # For providers that support it
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "top_k": self.top_k,
+            "max_tokens": self.max_tokens,
+            "seed": self.seed,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SamplingParams":
+        return cls(
+            temperature=data.get("temperature", 0.0),
+            top_p=data.get("top_p", 1.0),
+            top_k=data.get("top_k"),
+            max_tokens=data.get("max_tokens", 4096),
+            seed=data.get("seed"),
+        )
+
+
+@dataclass
+class StageConfig:
+    """Configuration for a single stage in the pipeline."""
+    model_id: str
+    provider_id: str
+    sampling: SamplingParams = field(default_factory=SamplingParams)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "model_id": self.model_id,
+            "provider_id": self.provider_id,
+            "sampling": self.sampling.to_dict(),
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "StageConfig":
+        return cls(
+            model_id=data.get("model_id", ""),
+            provider_id=data.get("provider_id", ""),
+            sampling=SamplingParams.from_dict(data.get("sampling", {})),
+        )
+
+
+@dataclass
 class ReplayPack:
     """Deterministic replay bundle for a job.
     
     Contains everything needed to replay decisions stage-by-stage.
+    Includes full model IDs AND sampling parameters for true determinism.
     """
     pack_id: str
     job_id: str
@@ -485,8 +538,11 @@ class ReplayPack:
     # Ledger
     ledger_path: str = ""
     
-    # Model identifiers per stage
+    # Model identifiers per stage (legacy, kept for compatibility)
     model_versions: Dict[str, str] = field(default_factory=dict)
+    
+    # Full stage configs with sampling params (new)
+    stage_configs: Dict[str, StageConfig] = field(default_factory=dict)
     
     # Verification outputs
     verification_paths: List[str] = field(default_factory=list)
@@ -505,6 +561,7 @@ class ReplayPack:
             "plan_path": self.plan_path,
             "ledger_path": self.ledger_path,
             "model_versions": self.model_versions,
+            "stage_configs": {k: v.to_dict() for k, v in self.stage_configs.items()},
             "verification_paths": self.verification_paths,
             "commands_log_path": self.commands_log_path,
         }
@@ -537,5 +594,7 @@ __all__ = [
     "QuarantineReport",
     "DeletionReport",
     # Block 12: Replay
+    "SamplingParams",
+    "StageConfig",
     "ReplayPack",
 ]

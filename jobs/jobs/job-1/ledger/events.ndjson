@@ -1,0 +1,2 @@
+{"event":"STAGE_SPEC_HASH_COMPUTED","expected_spec_hash":"correct_hash","job_id":"job-1","spec_id":"abc-123","stage_name":"test_stage","status":"ok","ts":"2025-12-27T22:03:00Z"}
+{"event":"STAGE_SPEC_HASH_VERIFIED","expected_spec_hash":"correct_hash","job_id":"job-1","observed_spec_hash":"correct_hash","spec_id":"abc-123","stage_name":"test_stage","status":"ok","ts":"2025-12-27T22:03:00Z","verified":true}

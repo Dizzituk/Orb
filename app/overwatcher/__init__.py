@@ -34,6 +34,8 @@ from app.overwatcher.schemas import (
     QuarantineReport,
     DeletionReport,
     # Block 12
+    SamplingParams,
+    StageConfig,
     ReplayPack,
 )
 
@@ -69,6 +71,16 @@ from app.overwatcher.replay import (
     compare_replay_packs,
 )
 
+from app.overwatcher.orchestrator import (
+    PipelineState,
+    HashVerificationError,
+    BoundaryViolationError,
+    VerificationFailedError,
+    verify_stage_hash,
+    execute_chunk_with_rollback,
+    build_hash_header,
+)
+
 __all__ = [
     # Schemas
     "ChunkStatus",
@@ -88,6 +100,8 @@ __all__ = [
     "QuarantineCandidate",
     "QuarantineReport",
     "DeletionReport",
+    "SamplingParams",
+    "StageConfig",
     "ReplayPack",
     # Planner (Block 7)
     "generate_chunk_plan",
@@ -111,4 +125,12 @@ __all__ = [
     "generate_replay_pack",
     "load_replay_pack",
     "compare_replay_packs",
+    # Orchestrator
+    "PipelineState",
+    "HashVerificationError",
+    "BoundaryViolationError",
+    "VerificationFailedError",
+    "verify_stage_hash",
+    "execute_chunk_with_rollback",
+    "build_hash_header",
 ]

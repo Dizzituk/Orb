@@ -129,6 +129,7 @@ def generate_replay_pack(
     ledger_path = job_dir / "ledger" / "events.ndjson"
     if ledger_path.exists():
         pack.model_versions = extract_model_versions(ledger_path)
+        pack.stage_configs = extract_stage_configs(ledger_path)
     
     # 8. Create commands log from ledger
     if ledger_path.exists():
@@ -170,6 +171,51 @@ def extract_model_versions(ledger_path: Path) -> Dict[str, str]:
         logger.warning(f"[replay] Failed to extract model versions: {e}")
     
     return models
+
+
+def extract_stage_configs(ledger_path: Path) -> Dict[str, Any]:
+    """Extract full stage configurations including sampling params from ledger.
+    
+    Returns dict of stage_name -> StageConfig
+    """
+    from app.overwatcher.schemas import StageConfig, SamplingParams
+    
+    configs = {}
+    
+    try:
+        with open(ledger_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                try:
+                    event = json.loads(line)
+                    stage = event.get("stage_name") or event.get("stage") or event.get("event", "")
+                    model = event.get("model")
+                    provider = event.get("provider") or event.get("provider_id", "")
+                    
+                    if model and stage and stage not in configs:
+                        # Extract sampling params if present
+                        sampling = SamplingParams(
+                            temperature=event.get("temperature", 0.0),
+                            top_p=event.get("top_p", 1.0),
+                            top_k=event.get("top_k"),
+                            max_tokens=event.get("max_tokens", 4096),
+                            seed=event.get("seed"),
+                        )
+                        
+                        configs[stage] = StageConfig(
+                            model_id=model,
+                            provider_id=provider,
+                            sampling=sampling,
+                        )
+                except json.JSONDecodeError:
+                    pass
+    except Exception as e:
+        logger.warning(f"[replay] Failed to extract stage configs: {e}")
+    
+    return configs
 
 
 def extract_commands_log(ledger_path: Path) -> List[str]:
