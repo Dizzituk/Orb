@@ -171,6 +171,7 @@ def _openai_token_param_name(model_id: str) -> str:
 
 async def _execute_tool_by_name(name: str, args: dict, context: Optional[dict]) -> dict:
     from app.tools.registry import execute_tool_async
+
     resp = await execute_tool_async(name, "v1", args, context=context)
     return resp.to_dict()
 
@@ -212,7 +213,9 @@ class ProviderRegistry:
         enable_tools: bool = False,
         tool_names: Optional[List[str]] = None,
         job_envelope: Optional[dict] = None,
+        **kwargs: Any,  # absorb future constraints, e.g. data_sensitivity_constraint
     ) -> LlmCallResult:
+        # NOTE: kwargs intentionally ignored. This keeps Phase4 callers forward-compatible.
         if enable_web_search:
             logger.warning("[registry] enable_web_search requested but forbidden; ignoring.")
 
@@ -238,6 +241,7 @@ class ProviderRegistry:
         tool_defs: List[dict] = []
         if enable_tools:
             from app.tools.registry import get_tool_registry
+
             reg = get_tool_registry()
             for td in reg.list_tools(status=None):
                 if td.status.value != "enabled":
@@ -472,7 +476,7 @@ class ProviderRegistry:
 
         while True:
             tool_iters += 1
-            
+
             create_kwargs = dict(
                 model=model_id,
                 system=final_system if final_system else None,
@@ -502,7 +506,9 @@ class ProviderRegistry:
                 running_messages.append(
                     {
                         "role": "assistant",
-                        "content": [b.model_dump() if hasattr(b, "model_dump") else _safe_json(b) for b in content_blocks],
+                        "content": [
+                            b.model_dump() if hasattr(b, "model_dump") else _safe_json(b) for b in content_blocks
+                        ],
                     }
                 )
 
@@ -629,6 +635,7 @@ async def llm_call(
     enable_tools: bool = False,
     tool_names: Optional[List[str]] = None,
     job_envelope: Optional[dict] = None,
+    **kwargs: Any,  # absorb future constraints, e.g. data_sensitivity_constraint
 ) -> LlmCallResult:
     return await get_provider_registry().llm_call(
         provider_id=provider_id,
@@ -642,6 +649,7 @@ async def llm_call(
         enable_tools=enable_tools,
         tool_names=tool_names,
         job_envelope=job_envelope,
+        **kwargs,
     )
 
 

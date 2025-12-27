@@ -7,7 +7,8 @@ Block 1 requires:
 """
 
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, JSON, Index, UniqueConstraint
+
+from sqlalchemy import Column, DateTime, Index, Integer, JSON, String, UniqueConstraint
 
 from app.db import Base
 
@@ -27,6 +28,10 @@ class PoTSpecRecord(Base):
     # Metadata
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     created_by_model = Column(String(128), nullable=False)
+
+    # Mirror location (relative to job artifact root)
+    # Block 1: mirror path stored for traceability; bytes are identical to canonical bytes hashed.
+    file_path = Column(String(512), nullable=True)
 
     # Full spec payload (stored as structured JSON)
     spec_json = Column(JSON, nullable=False)

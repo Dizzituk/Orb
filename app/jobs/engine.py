@@ -14,45 +14,52 @@ Responsibilities:
 PHASE 4 FIXES:
 - Fixed session upsert race condition using INSERT OR IGNORE pattern
 - Uses SQLite-safe upsert to prevent IntegrityError on concurrent requests
+
+PATCH (2025-12-26):
+- Ensure all JSON columns get JSON-serializable dicts/lists:
+  use model_dump(mode="json") for routing_decision_json, tool_invocations_json,
+  critique_issues_json, usage_metrics_json, and error_details_json.
+  This fixes: "Object of type datetime is not JSON serializable"
 """
+
 from __future__ import annotations
 
-import logging
 import json
+import logging
 import os
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 from uuid import uuid4
-from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy import text
 
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.artefacts.service import ArtefactService
 from app.jobs.models import Job, Session as SessionModel
 from app.jobs.schemas import (
-    JobEnvelope,
-    JobType,
-    JobState,
+    CreateJobRequest,
+    DataSensitivity,
     ErrorType,
     Importance,
-    DataSensitivity,
-    Modality,
     JobBudget,
+    JobEnvelope,
+    JobResult,
+    JobState,
+    JobType,
+    Modality,
+    ModelSelection,
     OutputContract,
+    RoutingDecision,
+    UsageMetrics,
     ValidationError,
     validate_job_envelope,
-    CreateJobRequest,
-    JobResult,
-    RoutingDecision,
-    ModelSelection,
-    UsageMetrics,
 )
-from app.providers.registry import llm_call, LlmCallStatus
-from app.artefacts.service import ArtefactService
 from app.jobs.stage3_locks import (
     append_stage3_ledger_event,
     parse_spec_echo_headers,
     write_stage3_artifacts,
 )
+from app.providers.registry import LlmCallStatus, llm_call
 
 logger = logging.getLogger(__name__)
 
@@ -60,40 +67,36 @@ logger = logging.getLogger(__name__)
 # ROUTING HELPERS
 # =============================================================================
 
+
 def _determine_routing(envelope: JobEnvelope) -> tuple[str, str, float]:
     """
     Determine provider, model, and temperature for a job.
-    
-    This is a simple routing implementation for this branch.
-    Later branches will integrate with full policy routing.
-    
+
     Returns:
-        Tuple of (provider_id, model_id, temperature)
+        (provider_id, model_id, temperature)
     """
     job_type = envelope.job_type
-    
+
     # High-stakes or architecture jobs → Claude
     if job_type in (JobType.APP_ARCHITECTURE, JobType.CODE_REPO):
         return "anthropic", "claude-sonnet-4-20250514", 0.7
-    
+
     # Code jobs → Claude
     if job_type == JobType.CODE_SMALL:
         return "anthropic", "claude-sonnet-4-20250514", 0.7
-    
+
     # Simple chat → GPT
     if job_type == JobType.CHAT_SIMPLE:
         return "openai", "gpt-4o", 0.7
-    
+
     # Default to GPT
     return "openai", "gpt-4o", 0.7
-
 
 
 def _extract_user_intent(messages: list[dict]) -> str:
     for m in reversed(messages or []):
         if (m.get("role") == "user") and m.get("content"):
             return str(m.get("content")).strip()
-    # Fallback: stringify full messages
     try:
         return json.dumps(messages or [], ensure_ascii=False)
     except Exception:
@@ -106,20 +109,13 @@ def _build_routing_decision(
     model_id: str,
     temperature: float,
 ) -> RoutingDecision:
-    """
-    Build a RoutingDecision object.
-    
-    For this branch, we use simple single-model routing.
-    Multi-model critique will be added in later branches.
-    """
-    # Simple tier mapping
     tier_map = {
         "claude-sonnet-4-20250514": "S",
         "gpt-4o": "A",
         "gemini-2.0-flash": "B",
     }
     tier = tier_map.get(model_id, "B")
-    
+
     return RoutingDecision(
         job_id=envelope.job_id or "unknown",
         job_type=envelope.job_type.value,
@@ -130,7 +126,7 @@ def _build_routing_decision(
             tier=tier,
             role="architect",
         ),
-        reviewers=[],  # No multi-model review in this branch
+        reviewers=[],
         arbiter=None,
         temperature=temperature,
         max_tokens=envelope.budget.max_tokens,
@@ -143,17 +139,14 @@ def _build_routing_decision(
 
 
 def _build_system_prompt(envelope: JobEnvelope, provider_id: str) -> str:
-    """Build system prompt based on job type and provider."""
     job_type = envelope.job_type
-    
-    # Base prompts per provider
+
     if provider_id == "openai":
         base = """You are Orb, a fast and helpful assistant.
 
 Your role: Handle conversational tasks, summaries, explanations, and lightweight text work.
 
 Be concise, clear, and direct. Get to the point quickly."""
-    
     elif provider_id == "anthropic":
         if job_type == JobType.APP_ARCHITECTURE:
             base = """You are Orb's engineering brain — a senior backend architect.
@@ -166,7 +159,6 @@ CRITICAL RULES:
 3. Consider scalability, maintainability, and security.
 4. Be thorough and precise.
 5. Include concrete examples where helpful."""
-        
         elif job_type in (JobType.CODE_SMALL, JobType.CODE_REPO):
             base = """You are Orb's engineering brain — a senior backend architect and implementer.
 
@@ -180,60 +172,60 @@ CRITICAL RULES:
 5. Think through edge cases before writing code.
 
 Be precise, technical, and thorough."""
-        
         else:
             base = """You are Orb's engineering brain — a senior backend architect.
 
 Your role: Handle complex technical tasks with precision and thoroughness.
 
 Be precise, technical, and thorough."""
-    
-    else:  # google
+    else:
         base = """You are Orb's analyst — a reviewer and vision specialist.
 
 Your role: Analyze content, review work, identify patterns, and provide structured feedback.
 
 Be analytical, precise, and actionable."""
-    
-    # Add custom system prompt if provided
+
     if envelope.system_prompt:
         base += f"\n\n{envelope.system_prompt}"
-    
+
     return base
+
+
+def _placeholder_routing_decision(envelope: JobEnvelope) -> RoutingDecision:
+    """Used for early returns (paused/validation) where we haven't executed main routing yet."""
+    return RoutingDecision(
+        job_id=envelope.job_id or "unknown",
+        job_type=envelope.job_type.value,
+        resolved_job_type=envelope.job_type.value,
+        architect=ModelSelection(
+            provider="unknown",
+            model_id="unknown",
+            tier="B",
+            role="architect",
+        ),
+        reviewers=[],
+        arbiter=None,
+        temperature=0.7,
+        max_tokens=envelope.budget.max_tokens,
+        timeout_seconds=envelope.budget.max_wall_time_seconds,
+        data_sensitivity_constraint=envelope.data_sensitivity.value,
+        allowed_tools=envelope.allowed_tools or [],
+        forbidden_tools=envelope.forbidden_tools,
+        fallback_occurred=False,
+    )
 
 
 # =============================================================================
 # SESSION UPSERT (Race-condition safe)
 # =============================================================================
 
-def _get_or_create_session(
-    db: Session,
-    session_id: str,
-    project_id: int,
-) -> SessionModel:
-    """
-    Get or create a session in a race-condition safe manner.
-    
-    Uses INSERT OR IGNORE pattern to handle concurrent requests
-    with the same session_id without raising IntegrityError.
-    
-    Args:
-        db: Database session
-        session_id: Session identifier
-        project_id: Project identifier
-    
-    Returns:
-        SessionModel instance (existing or newly created)
-    """
-    # First, try to get existing session
+
+def _get_or_create_session(db: Session, session_id: str, project_id: int) -> SessionModel:
     session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
     if session:
         return session
-    
-    # Session doesn't exist - try to create it
-    # Use INSERT OR IGNORE to handle race conditions
+
     try:
-        # Create new session
         session = SessionModel(
             id=session_id,
             project_id=project_id,
@@ -244,13 +236,11 @@ def _get_or_create_session(
         logger.info(f"[engine] Created new session: {session_id}")
         return session
     except IntegrityError:
-        # Another request created the session - rollback and fetch it
         db.rollback()
         logger.debug(f"[engine] Session {session_id} created by concurrent request, fetching")
         session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
         if session:
             return session
-        # This should never happen, but handle it gracefully
         raise RuntimeError(f"Failed to get or create session: {session_id}")
 
 
@@ -258,153 +248,35 @@ def _get_or_create_session(
 # JOB EXECUTION ENGINE
 # =============================================================================
 
-async def execute_job(
-    envelope: JobEnvelope,
-    db: Session,
-) -> JobResult:
-    """
-    Execute a job using the provider registry.
-    
-    This is the core execution function that:
-    1. Routes to appropriate provider
-    2. Calls LLM via registry
-    3. Handles errors and maps to ErrorType
-    4. Stores artefacts for structured outputs
-    5. Returns complete JobResult
-    
-    Args:
-        envelope: Complete job specification
-        db: Database session
-    
-    Returns:
-        JobResult with execution details
-    """
+
+async def execute_job(envelope: JobEnvelope, db: Session) -> JobResult:
     job_id = envelope.job_id or str(uuid4())
     started_at = datetime.utcnow()
-    
+
+    provider_id, model_id, temperature = _determine_routing(envelope)
+    routing_decision = _build_routing_decision(envelope, provider_id, model_id, temperature)
+    routing_decision.job_id = job_id
+
+    system_prompt = _build_system_prompt(envelope, provider_id)
+
+    logger.info(f"[engine] Executing job {job_id}: {envelope.job_type.value} → {provider_id}/{model_id}")
+
     try:
-        # Determine routing
-        provider_id, model_id, temperature = _determine_routing(envelope)
-        routing_decision = _build_routing_decision(envelope, provider_id, model_id, temperature)
-        routing_decision.job_id = job_id
-        
-        # Build system prompt
-        system_prompt = _build_system_prompt(envelope, provider_id)
-        
-        logger.info(
-            f"[engine] Executing job {job_id}: {envelope.job_type.value} "
-            f"→ {provider_id}/{model_id}"
-        )
-        
-        # Call provider registry
         result = await llm_call(
             provider_id=provider_id,
             model_id=model_id,
             messages=envelope.messages,
             system_prompt=system_prompt,
-            job_envelope=envelope,
+            job_envelope=envelope.model_dump(mode="json") if hasattr(envelope, "model_dump") else None,
             temperature=temperature,
             max_tokens=envelope.budget.max_tokens,
             timeout_seconds=envelope.budget.max_wall_time_seconds,
         )
-        
+    except Exception as exc:
         completed_at = datetime.utcnow()
         duration = (completed_at - started_at).total_seconds()
-        
-        # Handle result based on status
-        if result.is_success():
-            # Success case
-            content = result.content
-            
-            # Store artefact if needed
-            artefact_id = None
-            if envelope.output_contract in (
-                OutputContract.ARCHITECTURE_DOC,
-                OutputContract.CODE_PATCH_PROPOSAL,
-            ):
-                artefact_id = await _store_artefact(
-                    db=db,
-                    envelope=envelope,
-                    content=content,
-                    job_id=job_id,
-                )
-            
-            # Build usage metrics
-            usage_metrics = [
-                UsageMetrics(
-                    model_id=model_id,
-                    provider=provider_id,
-                    prompt_tokens=result.usage.prompt_tokens,
-                    completion_tokens=result.usage.completion_tokens,
-                    total_tokens=result.usage.total_tokens,
-                    cost_estimate=result.usage.cost_estimate,
-                )
-            ]
-            
-            return JobResult(
-                job_id=job_id,
-                session_id=envelope.session_id,
-                project_id=envelope.project_id,
-                job_type=envelope.job_type.value,
-                state=JobState.SUCCEEDED,
-                content=content,
-                output_contract=envelope.output_contract,
-                artefact_id=artefact_id,
-                routing_decision=routing_decision,
-                tools_used=[],  # No tool invocations in this branch
-                was_reviewed=False,
-                critique_issues=[],
-                unresolved_blockers=0,
-                usage_metrics=usage_metrics,
-                total_cost_estimate=result.usage.cost_estimate,
-                started_at=started_at,
-                completed_at=completed_at,
-                duration_seconds=duration,
-            )
-        
-        else:
-            # Error case - map LlmCallStatus to ErrorType
-            if result.status == LlmCallStatus.TIMEOUT:
-                error_type = ErrorType.TIMEOUT
-            elif result.status == LlmCallStatus.RATE_LIMITED:
-                error_type = ErrorType.MODEL_ERROR
-            else:
-                error_type = ErrorType.MODEL_ERROR
-            
-            logger.error(
-                f"[engine] Job {job_id} failed: {result.error_code} - {result.error_message}"
-            )
-            
-            return JobResult(
-                job_id=job_id,
-                session_id=envelope.session_id,
-                project_id=envelope.project_id,
-                job_type=envelope.job_type.value,
-                state=JobState.FAILED,
-                content="",
-                output_contract=envelope.output_contract,
-                routing_decision=routing_decision,
-                tools_used=[],
-                was_reviewed=False,
-                critique_issues=[],
-                unresolved_blockers=0,
-                usage_metrics=[],
-                total_cost_estimate=0.0,
-                started_at=started_at,
-                completed_at=completed_at,
-                duration_seconds=duration,
-                error_type=error_type,
-                error_message=result.error_message,
-                error_details={"error_code": result.error_code},
-            )
-    
-    except Exception as e:
-        # Unexpected error
-        completed_at = datetime.utcnow()
-        duration = (completed_at - started_at).total_seconds()
-        
-        logger.exception(f"[engine] Unexpected error in job {job_id}")
-        
+        logger.exception("[engine] LLM call crashed for job %s: %s", job_id, exc)
+
         return JobResult(
             job_id=job_id,
             session_id=envelope.session_id,
@@ -413,23 +285,8 @@ async def execute_job(
             state=JobState.FAILED,
             content="",
             output_contract=envelope.output_contract,
-            routing_decision=RoutingDecision(
-                job_id=job_id,
-                job_type=envelope.job_type.value,
-                resolved_job_type=envelope.job_type.value,
-                architect=ModelSelection(
-                    provider="unknown",
-                    model_id="unknown",
-                    tier="B",
-                    role="architect",
-                ),
-                temperature=0.7,
-                max_tokens=envelope.budget.max_tokens,
-                timeout_seconds=envelope.budget.max_wall_time_seconds,
-                data_sensitivity_constraint=envelope.data_sensitivity.value,
-                allowed_tools=[],
-                forbidden_tools=[],
-            ),
+            artefact_id=None,
+            routing_decision=routing_decision,
             tools_used=[],
             was_reviewed=False,
             critique_issues=[],
@@ -440,37 +297,106 @@ async def execute_job(
             completed_at=completed_at,
             duration_seconds=duration,
             error_type=ErrorType.INTERNAL_ERROR,
-            error_message=str(e),
-            error_details={"exception_type": type(e).__name__},
+            error_message=str(exc),
+            error_details={"exception_type": type(exc).__name__},
         )
 
+    completed_at = datetime.utcnow()
+    duration = (completed_at - started_at).total_seconds()
 
-async def _store_artefact(
-    db: Session,
-    envelope: JobEnvelope,
-    content: str,
-    job_id: str,
-) -> Optional[str]:
-    """
-    Store artefact for structured outputs.
-    
-    Returns:
-        Artefact ID if stored, None otherwise
-    """
+    if result.is_success():
+        content = result.content or ""
+
+        artefact_id: Optional[str] = None
+        if envelope.output_contract in (OutputContract.ARCHITECTURE_DOC, OutputContract.CODE_PATCH_PROPOSAL):
+            artefact_id = await _store_artefact(db=db, envelope=envelope, content=content, job_id=job_id)
+
+        usage_metrics = [
+            UsageMetrics(
+                model_id=model_id,
+                provider=provider_id,
+                prompt_tokens=getattr(result.usage, "prompt_tokens", 0),
+                completion_tokens=getattr(result.usage, "completion_tokens", 0),
+                total_tokens=getattr(result.usage, "total_tokens", 0),
+                cost_estimate=getattr(result.usage, "cost_estimate", 0.0),
+            )
+        ]
+
+        return JobResult(
+            job_id=job_id,
+            session_id=envelope.session_id,
+            project_id=envelope.project_id,
+            job_type=envelope.job_type.value,
+            state=JobState.SUCCEEDED,
+            content=content,
+            output_contract=envelope.output_contract,
+            artefact_id=artefact_id,
+            routing_decision=routing_decision,
+            tools_used=[],
+            was_reviewed=False,
+            critique_issues=[],
+            unresolved_blockers=0,
+            usage_metrics=usage_metrics,
+            total_cost_estimate=float(getattr(result.usage, "cost_estimate", 0.0) or 0.0),
+            started_at=started_at,
+            completed_at=completed_at,
+            duration_seconds=duration,
+        )
+
+    # Error case
+    err_msg = result.error_message or "Unknown provider error"
+    lowered = err_msg.lower()
+
+    # Registry currently exposes generic statuses; infer timeout if text suggests it.
+    if ("timeout" in lowered) or ("timed out" in lowered):
+        error_type = ErrorType.TIMEOUT
+    elif result.status in (LlmCallStatus.PROVIDER_UNAVAILABLE, LlmCallStatus.INVALID_REQUEST):
+        error_type = ErrorType.MODEL_ERROR
+    else:
+        error_type = ErrorType.MODEL_ERROR
+
+    return JobResult(
+        job_id=job_id,
+        session_id=envelope.session_id,
+        project_id=envelope.project_id,
+        job_type=envelope.job_type.value,
+        state=JobState.FAILED,
+        content="",
+        output_contract=envelope.output_contract,
+        artefact_id=None,
+        routing_decision=routing_decision,
+        tools_used=[],
+        was_reviewed=False,
+        critique_issues=[],
+        unresolved_blockers=0,
+        usage_metrics=[],
+        total_cost_estimate=0.0,
+        started_at=started_at,
+        completed_at=completed_at,
+        duration_seconds=duration,
+        error_type=error_type,
+        error_message=err_msg,
+        error_details={"status": getattr(result.status, "value", str(result.status))},
+    )
+
+
+async def _store_artefact(db: Session, envelope: JobEnvelope, content: str, job_id: str) -> Optional[str]:
     try:
-        # Determine artefact type and name
         if envelope.output_contract == OutputContract.ARCHITECTURE_DOC:
             artefact_type = "architecture_doc"
-            name = envelope.metadata.get("artefact_name", f"Architecture - {datetime.utcnow().strftime('%Y%m%d-%H%M%S')}")
-        
+            name = (envelope.metadata or {}).get(
+                "artefact_name",
+                f"Architecture - {datetime.utcnow().strftime('%Y%m%d-%H%M%S')}",
+            )
         elif envelope.output_contract == OutputContract.CODE_PATCH_PROPOSAL:
             artefact_type = "code_patch_proposal"
-            name = envelope.metadata.get("artefact_name", f"Code Patch - {datetime.utcnow().strftime('%Y%m%d-%H%M%S')}")
-        
+            name = (envelope.metadata or {}).get(
+                "artefact_name",
+                f"Code Patch - {datetime.utcnow().strftime('%Y%m%d-%H%M%S')}",
+            )
         else:
             return None
-        
-        # Write artefact
+
         artefact = ArtefactService.write_artefact(
             db=db,
             project_id=envelope.project_id,
@@ -484,49 +410,29 @@ async def _store_artefact(
             },
             created_by_job_id=job_id,
         )
-        
+
         logger.info(f"[engine] Stored artefact {artefact.id} for job {job_id}")
         return artefact.id
-    
-    except Exception as e:
-        logger.error(f"[engine] Failed to store artefact for job {job_id}: {e}")
+    except Exception as exc:
+        logger.error(f"[engine] Failed to store artefact for job {job_id}: {exc}")
         return None
 
 
-async def create_and_run_job(
-    request: CreateJobRequest,
-    db: Session,
-) -> JobResult:
-    """
-    Create a job from request, persist it, and execute.
-    
-    This is the main entry point for job execution from HTTP endpoints.
-    
-    Args:
-        request: Job creation request
-        db: Database session
-    
-    Returns:
-        JobResult with execution details
-    """
+async def create_and_run_job(request: CreateJobRequest, db: Session) -> JobResult:
     job_id = str(uuid4())
-    
+
     try:
-        # Create or get session (race-condition safe)
         session_id = request.session_id or str(uuid4())
         session = _get_or_create_session(db, session_id, request.project_id)
-        
-        # Convert request to envelope
+
         envelope = _request_to_envelope(request, job_id, session_id)
-        
+
         # Validate envelope
         try:
             validate_job_envelope(envelope)
         except ValidationError as e:
-            # Validation failed
             logger.warning(f"[engine] Job validation failed: {e.errors}")
-            
-            # Create failed job entry
+
             job = Job(
                 id=job_id,
                 session_id=session_id,
@@ -538,15 +444,14 @@ async def create_and_run_job(
                 data_sensitivity=envelope.data_sensitivity.value,
                 state=JobState.FAILED.value,
                 triggered_by="user",
-                envelope_json=envelope.model_dump(),
+                envelope_json=envelope.model_dump(mode="json"),
                 error_type=ErrorType.VALIDATION_ERROR.value,
                 error_message=f"Validation failed: {'; '.join(e.errors)}",
                 created_at=datetime.utcnow(),
             )
             db.add(job)
             db.commit()
-            
-            # Return error result
+
             return JobResult(
                 job_id=job_id,
                 session_id=session_id,
@@ -555,23 +460,8 @@ async def create_and_run_job(
                 state=JobState.FAILED,
                 content="",
                 output_contract=envelope.output_contract,
-                routing_decision=RoutingDecision(
-                    job_id=job_id,
-                    job_type=envelope.job_type.value,
-                    resolved_job_type=envelope.job_type.value,
-                    architect=ModelSelection(
-                        provider="none",
-                        model_id="none",
-                        tier="B",
-                        role="architect",
-                    ),
-                    temperature=0.7,
-                    max_tokens=envelope.budget.max_tokens,
-                    timeout_seconds=envelope.budget.max_wall_time_seconds,
-                    data_sensitivity_constraint=envelope.data_sensitivity.value,
-                    allowed_tools=[],
-                    forbidden_tools=[],
-                ),
+                artefact_id=None,
+                routing_decision=_placeholder_routing_decision(envelope),
                 tools_used=[],
                 was_reviewed=False,
                 critique_issues=[],
@@ -583,8 +473,9 @@ async def create_and_run_job(
                 duration_seconds=0.0,
                 error_type=ErrorType.VALIDATION_ERROR,
                 error_message=f"Validation failed: {'; '.join(e.errors)}",
+                error_details={"errors": list(e.errors)},
             )
-        
+
         # Create pending job entry
         job = Job(
             id=job_id,
@@ -597,31 +488,35 @@ async def create_and_run_job(
             data_sensitivity=envelope.data_sensitivity.value,
             state=JobState.PENDING.value,
             triggered_by="user",
-            envelope_json=envelope.model_dump(),
+            envelope_json=envelope.model_dump(mode="json"),
             created_at=datetime.utcnow(),
         )
         db.add(job)
         db.commit()
-        
+
         logger.info(f"[engine] Created job {job_id} in state PENDING")
-        
+
         # Transition to RUNNING
         job.state = JobState.RUNNING.value
         job.started_at = datetime.utcnow()
         db.commit()
-        
+
         logger.info(f"[engine] Job {job_id} transitioned to RUNNING")
+
+        # ---------------------------------------------------------------------
+        # Spec Gate + Stage 3 locks variables
+        # ---------------------------------------------------------------------
+        spec_id: Optional[str] = None
+        spec_hash: Optional[str] = None
 
         # Spec Gate for architecture jobs (PoT Spec)
         if envelope.job_type in (JobType.APP_ARCHITECTURE, JobType.CODE_REPO):
-            from app.pot_spec.spec_gate import run_spec_gate, detect_user_questions
+            from app.pot_spec.spec_gate import detect_user_questions, run_spec_gate
 
             spec_gate_provider = os.getenv("SPEC_GATE_PROVIDER", "openai")
-            spec_gate_model = os.getenv(
-                "OPENAI_SPEC_GATE_MODEL",
-                os.getenv("OPENAI_DEFAULT_MODEL", "gpt-5-mini"),
-            )
+            spec_gate_model = os.getenv("OPENAI_SPEC_GATE_MODEL", os.getenv("OPENAI_DEFAULT_MODEL", "gpt-5-mini"))
             user_intent = _extract_user_intent(request.messages)
+
             spec_id, spec_hash, open_questions = await run_spec_gate(
                 db,
                 job_id=job_id,
@@ -656,15 +551,15 @@ async def create_and_run_job(
                     content=job.output_content,
                     output_contract=envelope.output_contract,
                     artefact_id=None,
-                    routing_decision=routing_decision,
+                    routing_decision=_placeholder_routing_decision(envelope),
                     tools_used=[],
                     was_reviewed=False,
                     critique_issues=[],
                     unresolved_blockers=len(open_questions),
                     usage_metrics=[],
                     total_cost_estimate=0.0,
-                    started_at=datetime.utcnow(),
-                    completed_at=datetime.utcnow(),
+                    started_at=job.started_at or datetime.utcnow(),
+                    completed_at=job.completed_at or datetime.utcnow(),
                     duration_seconds=0.0,
                     error_type=None,
                     error_message=None,
@@ -683,10 +578,12 @@ async def create_and_run_job(
                 },
             )
 
-
-        # Stage 3: ledger STAGE_STARTED for spec-hash-locked jobs
-        if envelope.job_type in (JobType.APP_ARCHITECTURE, JobType.CODE_REPO):
-            stage_name = "architecture_job_execution" if envelope.job_type == JobType.APP_ARCHITECTURE else "code_repo_job_execution"
+            # Stage 3: ledger STAGE_STARTED for spec-hash-locked jobs
+            stage_name = (
+                "architecture_job_execution"
+                if envelope.job_type == JobType.APP_ARCHITECTURE
+                else "code_repo_job_execution"
+            )
             append_stage3_ledger_event(
                 job_id,
                 {
@@ -699,25 +596,41 @@ async def create_and_run_job(
                 },
             )
 
+        # ---------------------------------------------------------------------
         # Execute job
+        # ---------------------------------------------------------------------
         result = await execute_job(envelope, db)
 
-
+        # ---------------------------------------------------------------------
         # Stage 3: Spec-hash lock verification (refuse-on-mismatch)
+        # ---------------------------------------------------------------------
         if envelope.job_type in (JobType.APP_ARCHITECTURE, JobType.CODE_REPO):
-            stage_name = "architecture_job_execution" if envelope.job_type == JobType.APP_ARCHITECTURE else "code_repo_job_execution"
-            returned_spec_id, returned_spec_hash, parse_note = parse_spec_echo_headers(result.content or "")
-            verified = (returned_spec_id == spec_id and returned_spec_hash == spec_hash)
+            from app.pot_spec.spec_gate import detect_user_questions, run_spec_gate
 
-            # Best-effort artifact storage (raw output + meta)
-            provider_name = getattr(getattr(result, "routing_decision", None), "provider", None)
-            model_name = getattr(getattr(result, "routing_decision", None), "model", None)
+            stage_name = (
+                "architecture_job_execution"
+                if envelope.job_type == JobType.APP_ARCHITECTURE
+                else "code_repo_job_execution"
+            )
+
+            returned_spec_id, returned_spec_hash, parse_note = parse_spec_echo_headers(result.content or "")
+            verified = (returned_spec_id == spec_id) and (returned_spec_hash == spec_hash)
+
+            # Pull provider/model from routing decision safely
+            provider_name = None
+            model_name = None
+            try:
+                provider_name = result.routing_decision.architect.provider
+                model_name = result.routing_decision.architect.model_id
+            except Exception:
+                pass
+
             written_paths = write_stage3_artifacts(
                 job_id=job_id,
                 stage=stage_name,
                 raw_output=result.content or "",
-                expected_spec_id=spec_id,
-                expected_spec_hash=spec_hash,
+                expected_spec_id=spec_id or "",
+                expected_spec_hash=spec_hash or "",
                 returned_spec_id=returned_spec_id,
                 returned_spec_hash=returned_spec_hash,
                 verified=verified,
@@ -751,7 +664,6 @@ async def create_and_run_job(
             )
 
             if not verified:
-                # Fail fast: stop pipeline, mark job failed
                 job.state = JobState.FAILED.value
                 job.output_content = result.content
                 job.error_type = ErrorType.MODEL_ERROR.value
@@ -769,7 +681,7 @@ async def create_and_run_job(
                     project_id=envelope.project_id,
                     job_type=envelope.job_type.value,
                     state=JobState.FAILED,
-                    content=job.output_content,
+                    content=job.output_content or "",
                     output_contract=envelope.output_contract,
                     artefact_id=result.artefact_id,
                     routing_decision=result.routing_decision,
@@ -784,10 +696,10 @@ async def create_and_run_job(
                     duration_seconds=result.duration_seconds,
                     error_type=ErrorType.MODEL_ERROR,
                     error_message=job.error_message,
+                    error_details={"parse_note": parse_note},
                 )
 
-        # Hard enforcement: downstream stages must not ask user questions
-        if envelope.job_type in (JobType.APP_ARCHITECTURE, JobType.CODE_REPO):
+            # Hard enforcement: downstream stages must not ask user questions
             if detect_user_questions(result.content or ""):
                 from app.pot_spec.ledger import append_event
                 from app.pot_spec.service import get_job_artifact_root
@@ -810,7 +722,8 @@ async def create_and_run_job(
                     os.getenv("OPENAI_DEFAULT_MODEL", "gpt-5-mini"),
                 )
                 user_intent = _extract_user_intent(request.messages)
-                spec_id, spec_hash, open_questions = await run_spec_gate(
+
+                spec_id2, spec_hash2, open_questions2 = await run_spec_gate(
                     db,
                     job_id=job_id,
                     user_intent=user_intent,
@@ -823,9 +736,9 @@ async def create_and_run_job(
                 paused_payload = {
                     "pause_state": JobState.NEEDS_SPEC_CLARIFICATION.value,
                     "job_id": job_id,
-                    "spec_id": spec_id,
-                    "spec_hash": spec_hash,
-                    "open_questions": open_questions,
+                    "spec_id": spec_id2,
+                    "spec_hash": spec_hash2,
+                    "open_questions": open_questions2,
                     "artifacts_written": f"jobs/{job_id}/spec/ + jobs/{job_id}/ledger/",
                 }
 
@@ -843,11 +756,11 @@ async def create_and_run_job(
                     content=job.output_content,
                     output_contract=envelope.output_contract,
                     artefact_id=None,
-                    routing_decision=routing_decision,
+                    routing_decision=_placeholder_routing_decision(envelope),
                     tools_used=[],
                     was_reviewed=False,
                     critique_issues=[],
-                    unresolved_blockers=len(open_questions),
+                    unresolved_blockers=len(open_questions2),
                     usage_metrics=[],
                     total_cost_estimate=result.total_cost_estimate,
                     started_at=result.started_at,
@@ -857,47 +770,64 @@ async def create_and_run_job(
                     error_message=None,
                 )
 
-        
-        # Update job with result
+        # ---------------------------------------------------------------------
+        # Update DB job record with result (JSON-SAFE)
+        # ---------------------------------------------------------------------
         job.state = result.state.value
         job.output_content = result.content
         job.output_contract = result.output_contract.value
         job.artefact_id = result.artefact_id
-        job.routing_decision_json = result.routing_decision.model_dump()
-        job.tool_invocations_json = [t.model_dump() for t in result.tools_used]
-        job.critique_issues_json = [c.model_dump() for c in result.critique_issues]
-        job.was_reviewed = result.was_reviewed
-        job.unresolved_blockers = result.unresolved_blockers
-        job.usage_metrics_json = [u.model_dump() for u in result.usage_metrics]
-        job.total_tokens = sum(u.total_tokens for u in result.usage_metrics)
-        job.total_cost_estimate = result.total_cost_estimate
+
+        # FIX: JSON-safe dumps
+        job.routing_decision_json = result.routing_decision.model_dump(mode="json")
+        job.tool_invocations_json = [t.model_dump(mode="json") for t in (result.tools_used or [])]
+        job.critique_issues_json = [c.model_dump(mode="json") for c in (result.critique_issues or [])]
+        job.was_reviewed = bool(result.was_reviewed)
+        job.unresolved_blockers = int(result.unresolved_blockers or 0)
+        job.usage_metrics_json = [u.model_dump(mode="json") for u in (result.usage_metrics or [])]
+
+        job.total_tokens = sum(int(u.total_tokens or 0) for u in (result.usage_metrics or []))
+        job.total_cost_estimate = float(result.total_cost_estimate or 0.0)
         job.completed_at = result.completed_at
-        job.duration_seconds = result.duration_seconds
-        
+        job.duration_seconds = float(result.duration_seconds or 0.0)
+
         if result.error_type:
             job.error_type = result.error_type.value
             job.error_message = result.error_message
-            job.error_details_json = result.error_details
-        
+
+            # FIX: error_details must be JSON-serializable
+            if result.error_details is None:
+                job.error_details_json = None
+            elif hasattr(result.error_details, "model_dump"):
+                job.error_details_json = result.error_details.model_dump(mode="json")
+            else:
+                job.error_details_json = result.error_details
+
         db.commit()
-        
+
         # Update session stats
-        session.job_count += 1
-        session.last_activity = datetime.utcnow()
-        session.total_cost_estimate += result.total_cost_estimate
-        db.commit()
-        
+        try:
+            session.job_count += 1
+            session.last_activity = datetime.utcnow()
+            session.total_cost_estimate += float(result.total_cost_estimate or 0.0)
+            db.commit()
+        except Exception:
+            # Don't fail the job return just because session stats couldn't update
+            db.rollback()
+            logger.warning("[engine] Failed updating session stats for session_id=%s", session_id, exc_info=True)
+
         logger.info(
-            f"[engine] Job {job_id} completed: {result.state.value} "
-            f"(cost=${result.total_cost_estimate:.4f})"
+            "[engine] Job %s completed: %s (cost=$%.4f)",
+            job_id,
+            result.state.value,
+            float(result.total_cost_estimate or 0.0),
         )
-        
+
         return result
-    
+
     except Exception as e:
         logger.exception(f"[engine] Unexpected error creating/running job {job_id}")
-        
-        # Try to update job if it exists
+
         try:
             job = db.query(Job).filter(Job.id == job_id).first()
             if job:
@@ -908,40 +838,25 @@ async def create_and_run_job(
                 db.commit()
         except Exception:
             pass
-        
+
         raise
 
 
-def _request_to_envelope(
-    request: CreateJobRequest,
-    job_id: str,
-    session_id: str,
-) -> JobEnvelope:
-    """
-    Convert CreateJobRequest to JobEnvelope.
-    
-    Fills in reasonable defaults for fields not provided.
-    """
-    # Parse job_type string to enum
+def _request_to_envelope(request: CreateJobRequest, job_id: str, session_id: str) -> JobEnvelope:
     try:
         job_type = JobType(request.job_type)
     except ValueError:
-        # Unknown job type - try to be helpful
         raise ValueError(
-            f"Unknown job_type: '{request.job_type}'. "
-            f"Must be one of: {[jt.value for jt in JobType]}"
+            f"Unknown job_type: '{request.job_type}'. Must be one of: {[jt.value for jt in JobType]}"
         )
-    
-    # Determine defaults based on job type
+
     importance = request.importance or Importance.MEDIUM
     data_sensitivity = request.data_sensitivity or DataSensitivity.INTERNAL
-    
-    # Determine modalities
+
     modalities = [Modality.TEXT]
     if request.attachments:
         modalities.append(Modality.IMAGE)
-    
-    # Determine output contract
+
     output_contract_map = {
         JobType.CHAT_SIMPLE: OutputContract.TEXT_RESPONSE,
         JobType.CHAT_RESEARCH: OutputContract.TEXT_RESPONSE,
@@ -953,7 +868,7 @@ def _request_to_envelope(
         JobType.CRITIQUE_REVIEW: OutputContract.CRITIQUE_REVIEW,
     }
     output_contract = output_contract_map.get(job_type, OutputContract.TEXT_RESPONSE)
-    
+
     return JobEnvelope(
         job_id=job_id,
         session_id=session_id,
@@ -962,8 +877,8 @@ def _request_to_envelope(
         importance=importance,
         data_sensitivity=data_sensitivity,
         modalities_in=modalities,
-        needs_internet=request.needs_internet,
-        allow_multi_model_review=request.allow_multi_model_review,
+        needs_internet=bool(request.needs_internet),
+        allow_multi_model_review=bool(request.allow_multi_model_review),
         messages=request.messages,
         system_prompt=request.system_prompt,
         attachments=request.attachments,

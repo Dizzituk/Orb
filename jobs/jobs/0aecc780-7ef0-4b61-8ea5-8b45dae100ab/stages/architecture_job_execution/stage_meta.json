@@ -1,0 +1,12 @@
+{
+  "expected_spec_id": "3881718b-b1ca-4fb7-be2b-f0dfcc4b7a51",
+  "expected_spec_hash": "e35be341284a6a46ccb33ba7e252e2040ae55bee385fd76900fe881bc5cbd751",
+  "returned_spec_id": "3881718b-b1ca-4fb7-be2b-f0dfcc4b7a51",
+  "returned_spec_hash": "e35be341284a6a46ccb33ba7e252e2040ae55bee385fd76900fe881bc5cbd751",
+  "verified": true,
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-20250514",
+  "stored_raw_output": "D:\\Orb\\jobs\\jobs\\0aecc780-7ef0-4b61-8ea5-8b45dae100ab\\stages\\architecture_job_execution\\stage_output.md",
+  "raw_output_sha256": "0ac277fe09579ecb9e83f6483d0b215afebff23eb106037f19ab751e77b7c762",
+  "stored_at_utc": "2025-12-27T10:06:38.718390Z"
+}

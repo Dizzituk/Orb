@@ -1,0 +1,2 @@
+{"event":"SPEC_GATE_STARTED","inputs":{"reroute_reason":null,"user_intent_chars":106},"job_id":"7c9bfe7f-0136-40ea-84c2-6fd4faf87a9e","model":"gpt-5-mini","provider":"openai","status":"ok","ts":"2025-12-27T07:58:05Z"}
+{"error":"Spec Gate output was not valid JSON","event":"SPEC_GATE_PARSE_FAILED","job_id":"7c9bfe7f-0136-40ea-84c2-6fd4faf87a9e","model":"gpt-5-mini","provider":"openai","raw_excerpt":"","status":"error","ts":"2025-12-27T07:58:23Z"}

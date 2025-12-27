@@ -125,7 +125,7 @@ class OutputContract(str, Enum):
 
 class JobBudget(BaseModel):
     """Resource constraints."""
-    max_tokens: int = Field(default=100000, ge=1000)
+    max_tokens: int = Field(default=8192, ge=1000)
     max_cost_estimate: float = Field(default=1.0, ge=0.0)
     max_wall_time_seconds: int = Field(default=300, ge=10)
 
@@ -296,7 +296,7 @@ class RoutingDecision(BaseModel):
     
     # Parameters
     temperature: float = 0.7
-    max_tokens: int = 100000
+    max_tokens: int = 8192
     timeout_seconds: int = 120
     
     # Constraints

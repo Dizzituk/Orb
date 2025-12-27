@@ -4,21 +4,21 @@ Phase 4 Jobs Router - HTTP API Endpoints
 
 Provides REST API for job management:
 - POST /jobs/create - Create and execute job
-- GET /jobs/{job_id} - Get job status and result
 - GET /jobs/list - List jobs with filters
+- GET /jobs/{job_id} - Get job status and result
 - POST /jobs/{job_id}/cancel - Cancel job (basic implementation)
 """
 from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.jobs.models import Job, Session as SessionModel
+from app.jobs.models import Job
 from app.jobs.schemas import (
     CreateJobRequest,
     CreateJobResponse,
     GetJobResponse,
-    ListJobsRequest,
     ListJobsResponse,
     JobResult,
     JobState,
@@ -46,13 +46,19 @@ router = APIRouter()
 def _reconstruct_job_result(job: Job) -> Optional[JobResult]:
     """
     Reconstruct JobResult from database Job model.
-    
+
     Parses all JSON fields into proper Pydantic models.
-    Returns None if job is not in a completed state.
+    Returns None if job is not in a terminal/paused state where result is meaningful.
     """
-    if job.state not in (JobState.SUCCEEDED.value, JobState.FAILED.value, JobState.CANCELLED.value):
+    allowed_states = (
+        JobState.SUCCEEDED.value,
+        JobState.FAILED.value,
+        JobState.CANCELLED.value,
+        JobState.NEEDS_SPEC_CLARIFICATION.value,  # IMPORTANT: allow paused payload to be returned
+    )
+    if job.state not in allowed_states:
         return None
-    
+
     # Parse routing decision
     routing_decision = None
     if job.routing_decision_json:
@@ -61,9 +67,9 @@ def _reconstruct_job_result(job: Job) -> Optional[JobResult]:
         except Exception as e:
             logger.warning(f"[router] Failed to parse routing_decision_json for job {job.id}: {e}")
             routing_decision = None
-    
+
     if not routing_decision:
-        # Fallback routing decision
+        # Fallback routing decision (used for paused jobs where routing may not be persisted yet)
         routing_decision = RoutingDecision(
             job_id=job.id,
             job_type=job.job_type,
@@ -74,14 +80,17 @@ def _reconstruct_job_result(job: Job) -> Optional[JobResult]:
                 tier="B",
                 role="architect",
             ),
+            reviewers=[],
+            arbiter=None,
             temperature=0.7,
-            max_tokens=100000,
+            max_tokens=8192,
             timeout_seconds=300,
             data_sensitivity_constraint=job.data_sensitivity,
             allowed_tools=[],
             forbidden_tools=[],
+            fallback_occurred=False,
         )
-    
+
     # Parse tool invocations
     tools_used = []
     if job.tool_invocations_json:
@@ -90,7 +99,7 @@ def _reconstruct_job_result(job: Job) -> Optional[JobResult]:
         except Exception as e:
             logger.warning(f"[router] Failed to parse tool_invocations_json for job {job.id}: {e}")
             tools_used = []
-    
+
     # Parse critique issues
     critique_issues = []
     if job.critique_issues_json:
@@ -99,7 +108,7 @@ def _reconstruct_job_result(job: Job) -> Optional[JobResult]:
         except Exception as e:
             logger.warning(f"[router] Failed to parse critique_issues_json for job {job.id}: {e}")
             critique_issues = []
-    
+
     # Parse usage metrics
     usage_metrics = []
     if job.usage_metrics_json:
@@ -108,7 +117,7 @@ def _reconstruct_job_result(job: Job) -> Optional[JobResult]:
         except Exception as e:
             logger.warning(f"[router] Failed to parse usage_metrics_json for job {job.id}: {e}")
             usage_metrics = []
-    
+
     # Parse error type
     error_type = None
     if job.error_type:
@@ -117,14 +126,13 @@ def _reconstruct_job_result(job: Job) -> Optional[JobResult]:
         except ValueError:
             logger.warning(f"[router] Invalid error_type '{job.error_type}' for job {job.id}")
             error_type = ErrorType.INTERNAL_ERROR
-    
+
     # Parse output contract
     try:
         output_contract = OutputContract(job.output_contract)
-    except ValueError:
-        logger.warning(f"[router] Invalid output_contract '{job.output_contract}' for job {job.id}")
+    except Exception:
         output_contract = OutputContract.TEXT_RESPONSE
-    
+
     return JobResult(
         job_id=job.id,
         session_id=job.session_id,
@@ -159,87 +167,24 @@ async def create_job(
     request: CreateJobRequest,
     db: Session = Depends(get_db),
 ):
-    """
-    Create and execute a new job.
-    
-    For this branch, jobs execute inline (not queued).
-    
-    Request body:
-    - project_id: Project identifier
-    - job_type: Type of job (chat_simple, code_small, app_architecture, etc.)
-    - messages: List of message dicts
-    - session_id: Optional session ID
-    - importance, data_sensitivity, needs_internet, etc.
-    
-    Returns:
-    - job_id: Created job identifier
-    - session_id: Session identifier
-    - state: Job state (should be SUCCEEDED or FAILED after execution)
-    - created_at: Timestamp
-    """
     try:
-        logger.info(
-            f"[jobs] Creating job: type={request.job_type} project={request.project_id}"
-        )
-        
-        # Create and execute job
+        logger.info(f"[jobs] Creating job: type={request.job_type} project={request.project_id}")
         result = await create_and_run_job(request, db)
-        
         return CreateJobResponse(
             job_id=result.job_id,
             session_id=result.session_id,
             state=result.state,
             created_at=result.started_at,
         )
-    
     except ValueError as e:
-        # Validation or request errors
         logger.error(f"[jobs] Invalid request: {e}")
         raise HTTPException(status_code=400, detail=str(e))
-    
     except Exception as e:
-        # Unexpected errors
-        logger.exception(f"[jobs] Error creating job")
+        logger.exception("[jobs] Error creating job")
         raise HTTPException(status_code=500, detail=f"Internal error: {e}")
 
 
-@router.get("/{job_id}", response_model=GetJobResponse)
-async def get_job(
-    job_id: str,
-    db: Session = Depends(get_db),
-):
-    """
-    Get job status and result.
-    
-    Path parameters:
-    - job_id: Job identifier
-    
-    Returns:
-    - job_id, session_id, project_id
-    - state: Job state (pending, running, succeeded, failed, etc.)
-    - result: Complete JobResult if job is finished
-    - created_at, updated_at: Timestamps
-    """
-    job = db.query(Job).filter(Job.id == job_id).first()
-    
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
-    
-    # Reconstruct JobResult from stored data
-    result = _reconstruct_job_result(job)
-    
-    return GetJobResponse(
-        job_id=job.id,
-        session_id=job.session_id,
-        project_id=job.project_id,
-        state=JobState(job.state),
-        job_type=job.job_type,
-        result=result,
-        created_at=job.created_at,
-        updated_at=job.completed_at or job.created_at,
-    )
-
-
+# IMPORTANT: define /list BEFORE /{job_id} so /jobs/list doesn't get routed as job_id="list"
 @router.get("/list", response_model=ListJobsResponse)
 async def list_jobs(
     project_id: Optional[int] = Query(None),
@@ -249,48 +194,21 @@ async def list_jobs(
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
-    """
-    List jobs with filters.
-    
-    Query parameters:
-    - project_id: Filter by project
-    - session_id: Filter by session
-    - state: Filter by state (pending, running, succeeded, failed, etc.)
-    - limit: Maximum results (1-100, default 20)
-    - offset: Pagination offset (default 0)
-    
-    Returns:
-    - jobs: List of job summaries
-    - total: Total count matching filters
-    - limit, offset: Pagination parameters
-    """
-    # Build query
     query = db.query(Job)
-    
+
     if project_id is not None:
         query = query.filter(Job.project_id == project_id)
-    
     if session_id is not None:
         query = query.filter(Job.session_id == session_id)
-    
     if state is not None:
         query = query.filter(Job.state == state)
-    
-    # Get total count BEFORE pagination
+
     total = query.count()
-    
-    # Apply pagination
-    query = query.order_by(Job.created_at.desc())
-    query = query.limit(limit).offset(offset)
-    
-    jobs_list = query.all()
-    
-    # Build response
+    jobs_list = query.order_by(Job.created_at.desc()).limit(limit).offset(offset).all()
+
     jobs_response = []
     for job in jobs_list:
-        # Reconstruct JobResult from stored data
         result = _reconstruct_job_result(job)
-        
         jobs_response.append(
             GetJobResponse(
                 job_id=job.id,
@@ -303,12 +221,30 @@ async def list_jobs(
                 updated_at=job.completed_at or job.created_at,
             )
         )
-    
-    return ListJobsResponse(
-        jobs=jobs_response,
-        total=total,
-        limit=limit,
-        offset=offset,
+
+    return ListJobsResponse(jobs=jobs_response, total=total, limit=limit, offset=offset)
+
+
+@router.get("/{job_id}", response_model=GetJobResponse)
+async def get_job(
+    job_id: str,
+    db: Session = Depends(get_db),
+):
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    result = _reconstruct_job_result(job)
+
+    return GetJobResponse(
+        job_id=job.id,
+        session_id=job.session_id,
+        project_id=job.project_id,
+        state=JobState(job.state),
+        job_type=job.job_type,
+        result=result,
+        created_at=job.created_at,
+        updated_at=job.completed_at or job.created_at,
     )
 
 
@@ -317,58 +253,27 @@ async def cancel_job(
     job_id: str,
     db: Session = Depends(get_db),
 ):
-    """
-    Cancel a job.
-    
-    For this branch, cancellation is basic:
-    - If job is PENDING: Mark as CANCELLED
-    - If job is RUNNING or completed: Cannot cancel (return error)
-    
-    Path parameters:
-    - job_id: Job identifier
-    
-    Returns:
-    - job_id: Job identifier
-    - state: New state (cancelled)
-    """
     job = db.query(Job).filter(Job.id == job_id).first()
-    
     if not job:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
-    
-    # Check current state
+
     if job.state == JobState.PENDING.value:
-        # Can cancel pending jobs
         job.state = JobState.CANCELLED.value
-        job.completed_at = job.created_at  # Set completed time
+        job.completed_at = job.created_at
         db.commit()
-        
         logger.info(f"[jobs] Cancelled job {job_id}")
-        
-        return {
-            "job_id": job_id,
-            "state": JobState.CANCELLED.value,
-        }
-    
-    elif job.state == JobState.RUNNING.value:
-        # Cannot cancel running jobs in this branch (no worker queue)
+        return {"job_id": job_id, "state": JobState.CANCELLED.value}
+
+    if job.state == JobState.RUNNING.value:
         raise HTTPException(
             status_code=409,
-            detail="Cannot cancel running job in this branch. Job execution is inline."
+            detail="Cannot cancel running job in this branch. Job execution is inline.",
         )
-    
-    elif job.state in (JobState.SUCCEEDED.value, JobState.FAILED.value, JobState.CANCELLED.value):
-        # Already completed
-        raise HTTPException(
-            status_code=409,
-            detail=f"Job already completed with state: {job.state}"
-        )
-    
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Cannot cancel job in state: {job.state}"
-        )
+
+    if job.state in (JobState.SUCCEEDED.value, JobState.FAILED.value, JobState.CANCELLED.value):
+        raise HTTPException(status_code=409, detail=f"Job already completed with state: {job.state}")
+
+    raise HTTPException(status_code=400, detail=f"Cannot cancel job in state: {job.state}")
 
 
 __all__ = ["router"]
