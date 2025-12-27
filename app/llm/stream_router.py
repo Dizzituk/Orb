@@ -54,6 +54,17 @@ from app.llm.router import (
     is_opus_model,
 )
 
+# v0.16.0: Log introspection integration
+try:
+    from app.introspection.chat_integration import (
+        detect_log_intent,
+        handle_log_request,
+        format_log_response_for_chat,
+    )
+    _INTROSPECTION_AVAILABLE = True
+except ImportError:
+    _INTROSPECTION_AVAILABLE = False
+
 router = APIRouter(prefix="/stream", tags=["streaming"])
 logger = logging.getLogger(__name__)
 
@@ -140,6 +151,71 @@ def _is_zobie_map_trigger(msg: str) -> bool:
 def _is_archmap_trigger(msg: str) -> bool:
     s = (msg or "").strip().lower()
     return s in _ARCHMAP_TRIGGER_SET
+
+
+# =============================================================================
+# LOCAL TOOL: LOG INTROSPECTION (v0.16.0)
+# =============================================================================
+
+def _is_introspection_trigger(msg: str) -> bool:
+    """Check if message is a log introspection request."""
+    if not _INTROSPECTION_AVAILABLE:
+        return False
+    intent = detect_log_intent(msg)
+    return intent.is_log_request
+
+
+async def generate_introspection_stream(
+    project_id: int,
+    message: str,
+    db: Session,
+    trace: Optional[RoutingTrace] = None,
+):
+    """Generate SSE stream for log introspection results."""
+    try:
+        intent = detect_log_intent(message)
+        
+        yield "data: " + json.dumps({
+            'type': 'token',
+            'content': '📋 Fetching logs...\n\n'
+        }) + "\n\n"
+        
+        summary, structured = await handle_log_request(db, intent)
+        
+        # Format response for display
+        response = format_log_response_for_chat(summary, structured)
+        
+        # Stream the response in chunks
+        chunk_size = 80
+        for i in range(0, len(response), chunk_size):
+            chunk = response[i:i + chunk_size]
+            yield "data: " + json.dumps({'type': 'token', 'content': chunk}) + "\n\n"
+            await asyncio.sleep(0.01)
+        
+        # Store in memory
+        from app.memory import service as mem_svc, schemas as mem_schemas
+        mem_svc.create_message(db, mem_schemas.MessageCreate(
+            project_id=project_id, role="user", content=message, provider="local"
+        ))
+        mem_svc.create_message(db, mem_schemas.MessageCreate(
+            project_id=project_id, role="assistant", content=response, provider="introspection", model="log_query"
+        ))
+        
+        if trace:
+            trace.finalize(success=True)
+        
+        yield "data: " + json.dumps({
+            'type': 'done',
+            'provider': 'introspection',
+            'model': 'log_query',
+            'total_length': len(response)
+        }) + "\n\n"
+        
+    except Exception as e:
+        logger.exception("[introspection] Stream failed: %s", e)
+        if trace:
+            trace.finalize(success=False, error_message=str(e))
+        yield "data: " + json.dumps({'type': 'error', 'error': str(e)}) + "\n\n"
 
 
 def _chunk_text(s: str, chunk_size: int = 120) -> List[str]:
@@ -775,6 +851,19 @@ async def stream_chat(req: StreamChatRequest, db: Session = Depends(get_db), aut
 
         return StreamingResponse(
             generate_local_zobie_map_stream(project_id=req.project_id, message=req.message, db=db, trace=trace),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    # v0.16.0: Log introspection trigger
+    if _INTROSPECTION_AVAILABLE and _is_introspection_trigger(req.message):
+        routing_reason = "Local tool trigger: LOG INTROSPECTION"
+        if trace:
+            trace.log_request_start(job_type=req.job_type or "", resolved_job_type="local.introspection", provider="introspection", model="log_query", reason=routing_reason, frontier_override=False, file_map_injected=False, attachments=None)
+            trace.log_routing_decision(job_type="local.introspection", provider="introspection", model="log_query", reason=routing_reason, frontier_override=False, file_map_injected=False)
+
+        return StreamingResponse(
+            generate_introspection_stream(project_id=req.project_id, message=req.message, db=db, trace=trace),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
