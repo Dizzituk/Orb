@@ -18,6 +18,12 @@ NOTE ABOUT OPENAI MODELS:
 - Some newer OpenAI models reject 'max_tokens' and require 'max_completion_tokens'.
 - To avoid provider-wrapper drift breaking this tool, the archmap tool includes a direct
   OpenAI call path that uses 'max_completion_tokens' when provider == "openai".
+
+v3 (2025-12): Stage 3 Spec Hash Lock fixes
+- Fixed: task.system_prompt now updated AFTER Spec Gate runs
+- Fixed: envelope rebuilt with updated system_prompt
+- Added: Stage 3 verification after high-stakes result returns
+- Added: Fail-fast on spec hash mismatch
 """
 
 import os
@@ -54,6 +60,14 @@ from app.llm.router import (
     is_opus_model,
 )
 
+# Spec Gate imports (Stage 2 + Stage 3)
+from app.pot_spec.spec_gate import run_spec_gate, detect_user_questions
+from app.jobs.stage3_locks import (
+    build_spec_echo_instruction,
+    verify_and_store_stage3,
+    append_stage3_ledger_event,
+)
+
 # v0.16.0: Log introspection integration
 try:
     from app.introspection.chat_integration import (
@@ -88,7 +102,7 @@ ZOBIE_MAPPER_SCRIPT = os.getenv("ORB_ZOBIE_MAPPER_SCRIPT", r"D:\tools\zobie_mapp
 ZOBIE_MAPPER_OUT_DIR = os.getenv("ORB_ZOBIE_MAPPER_OUT_DIR", r"D:\tools\zobie_mapper\out")
 ZOBIE_MAPPER_TIMEOUT_SEC = int(os.getenv("ORB_ZOBIE_MAPPER_TIMEOUT_SEC", "300"))
 
-# OPTIONAL: extra mapper args (lets you run your “full” mode without changing code)
+# OPTIONAL: extra mapper args (lets you run your "full" mode without changing code)
 ZOBIE_MAPPER_ARGS_RAW = os.getenv("ORB_ZOBIE_MAPPER_ARGS", "").strip()
 ZOBIE_MAPPER_ARGS = ZOBIE_MAPPER_ARGS_RAW.split() if ZOBIE_MAPPER_ARGS_RAW else []
 
@@ -191,7 +205,7 @@ async def generate_introspection_stream(
             chunk = response[i:i + chunk_size]
             yield "data: " + json.dumps({'type': 'token', 'content': chunk}) + "\n\n"
             await asyncio.sleep(0.01)
-        
+
         # Store in memory
         from app.memory import service as mem_svc, schemas as mem_schemas
         mem_svc.create_message(db, mem_schemas.MessageCreate(
@@ -200,17 +214,17 @@ async def generate_introspection_stream(
         mem_svc.create_message(db, mem_schemas.MessageCreate(
             project_id=project_id, role="assistant", content=response, provider="introspection", model="log_query"
         ))
-        
+
         if trace:
             trace.finalize(success=True)
-        
+
         yield "data: " + json.dumps({
             'type': 'done',
             'provider': 'introspection',
             'model': 'log_query',
             'total_length': len(response)
         }) + "\n\n"
-        
+
     except Exception as e:
         logger.exception("[introspection] Stream failed: %s", e)
         if trace:
@@ -515,11 +529,27 @@ async def generate_high_stakes_critique_stream(
     trace: Optional[RoutingTrace] = None,
     enable_reasoning: bool = False,
 ):
+    """Generate SSE stream for high-stakes critique pipeline.
+    
+    This function:
+    1. Runs Spec Gate for architecture_design jobs
+    2. Injects SPEC_ID/SPEC_HASH header instruction into system_prompt
+    3. Rebuilds task and envelope with updated system_prompt
+    4. Runs high-stakes critique pipeline
+    5. Verifies spec hash in response (Stage 3)
+    6. Fails fast on mismatch
+    """
     loop = asyncio.get_event_loop()
     started_ms = int(loop.time() * 1000)
     trace_finished = False
 
+    # Track spec gate state for verification after result
+    spec_id: Optional[str] = None
+    spec_hash: Optional[str] = None
+    needs_verification = False
+
     try:
+        # Build initial task (will be rebuilt after Spec Gate if needed)
         task = LLMTask(
             project_id=project_id,
             user_message=message,
@@ -536,6 +566,17 @@ async def generate_high_stakes_critique_stream(
         if (job_type_str or "").strip().lower() == "architecture_design":
             spec_gate_provider = os.getenv("SPEC_GATE_PROVIDER", "openai")
             spec_gate_model = os.getenv("OPENAI_SPEC_GATE_MODEL", DEFAULT_MODELS["openai"])
+
+            # Log Stage 2 start
+            append_stage3_ledger_event(
+                envelope.job_id,
+                {
+                    "event": "STAGE_STARTED",
+                    "job_id": envelope.job_id,
+                    "stage": "spec_gate_streaming",
+                    "ts_utc": datetime.utcnow().isoformat() + "Z",
+                },
+            )
 
             spec_id, spec_hash, open_questions = await run_spec_gate(
                 db,
@@ -560,18 +601,66 @@ async def generate_high_stakes_critique_stream(
                 ) + "\n\n"
                 return
 
-            system_prompt = system_prompt + (
-                "\n\nYou MUST echo these identifiers at the TOP of your response exactly:\n"
-                f"SPEC_ID: {spec_id}\nSPEC_HASH: {spec_hash}\n"
-                "Do not ask the user any questions."
+            # FIX: Build header instruction using helper
+            header_instruction = build_spec_echo_instruction(spec_id, spec_hash)
+            
+            # FIX: Update system_prompt with header instruction
+            updated_system_prompt = system_prompt + "\n\n" + header_instruction
+            
+            # FIX: Rebuild task with updated system_prompt
+            task = LLMTask(
+                project_id=project_id,
+                user_message=message,
+                system_prompt=updated_system_prompt,
+                messages=messages,
+                full_context=full_context,
+                job_type=job_type_str,
+                enable_reasoning=enable_reasoning,
+            )
+            
+            # FIX: Rebuild envelope with updated task
+            envelope = synthesize_envelope_from_task(task)
+            
+            # Mark that we need to verify the response
+            needs_verification = True
+
+            # Log Stage 3 start
+            append_stage3_ledger_event(
+                envelope.job_id,
+                {
+                    "event": "STAGE_STARTED",
+                    "job_id": envelope.job_id,
+                    "stage": "high_stakes_streaming",
+                    "spec_id": spec_id,
+                    "spec_hash": spec_hash,
+                    "ts_utc": datetime.utcnow().isoformat() + "Z",
+                },
             )
 
+        # Load spec JSON for Block 4-6 pipeline if available
+        spec_json_str: Optional[str] = None
+        if spec_id and spec_hash:
+            try:
+                from app.pot_spec.service import get_job_artifact_root
+                import pathlib
+                job_root = get_job_artifact_root()
+                spec_path = pathlib.Path(job_root) / "jobs" / envelope.job_id / "spec" / "spec_v1.json"
+                if spec_path.exists():
+                    spec_json_str = spec_path.read_text(encoding="utf-8")
+            except Exception as e:
+                logger.warning(f"[stream] Failed to load spec JSON: {e}")
+        
         result = await run_high_stakes_with_critique(
             task=task,
             provider_id=provider,
             model_id=model,
             envelope=envelope,
             job_type_str=job_type_str,
+            db=db,
+            spec_id=spec_id,
+            spec_hash=spec_hash,
+            spec_json=spec_json_str,
+            use_json_critique=True,
         )
 
         usage_obj = getattr(result, "usage", None)
@@ -595,6 +684,36 @@ async def generate_high_stakes_critique_stream(
             return
 
         content = content or ""
+        
+        # =====================================================================
+        # FIX: Stage 3 verification - check spec hash before processing content
+        # =====================================================================
+        if needs_verification and spec_id and spec_hash:
+            verified, error_msg = verify_and_store_stage3(
+                job_id=envelope.job_id,
+                stage_name="high_stakes_streaming",
+                spec_id=spec_id,
+                expected_spec_hash=spec_hash,
+                raw_output=content,
+                provider=provider,
+                model=model,
+            )
+            
+            if not verified:
+                # Fail fast on mismatch
+                logger.error(f"[stream] Stage 3 spec hash verification failed: {error_msg}")
+                if trace and not trace_finished:
+                    trace.log_model_call("primary", provider, model, "primary", hs_prompt_tokens, hs_completion_tokens, duration_ms, success=False, error=error_msg)
+                    trace.finalize(success=False, error_message=error_msg)
+                    trace_finished = True
+                yield "data: " + json.dumps({
+                    'type': 'error',
+                    'error': error_msg,
+                    'error_type': 'STAGE_SPEC_HASH_MISMATCH',
+                    'job_id': envelope.job_id,
+                }) + "\n\n"
+                return
+
         final_answer, reasoning = _parse_reasoning_tags(content)
 
         # Hard enforcement: downstream stages must not ask user questions
@@ -699,81 +818,45 @@ async def generate_sse_stream(
     trace: Optional[RoutingTrace] = None,
     enable_reasoning: bool = False,
 ):
-    accumulated = ""
-    reasoning_content = ""
-    current_provider = provider
-    current_model = model
-    final_usage = None
-
+    """Generate SSE stream for normal (non-high-stakes) LLM responses."""
     loop = asyncio.get_event_loop()
     started_ms = int(loop.time() * 1000)
     trace_finished = False
 
+    current_provider = provider
+    current_model = model
+    final_usage = None
+    accumulated = ""
+    reasoning_content = ""
+
     try:
-        async for event in stream_llm(provider=provider, model=model, messages=messages, system_prompt=system_prompt):
-            if isinstance(event, str):
-                event = {"type": "token", "content": event}
-            if not isinstance(event, dict):
-                event = {"type": "token", "content": str(event)}
-
-            event_type = event.get("type", "token")
-
+        async for event in stream_llm(
+            provider=provider,
+            model=model,
+            system_prompt=system_prompt,
+            messages=messages,
+            enable_reasoning=enable_reasoning,
+        ):
+            event_type = event.get("type")
             if event_type == "token":
-                content = event.get("content") or event.get("text") or ""
-                if content:
-                    accumulated += content
-                    yield "data: " + json.dumps({'type': 'token', 'content': content}) + "\n\n"
-
+                chunk = event.get("content", "")
+                accumulated += chunk
+                yield "data: " + json.dumps(event) + "\n\n"
             elif event_type == "reasoning":
-                content = event.get("content") or ""
-                if content:
-                    reasoning_content += content
-                    if enable_reasoning:
-                        yield "data: " + json.dumps({'type': 'reasoning', 'content': content}) + "\n\n"
-
-            elif event_type == "metadata":
-                maybe_provider = event.get("provider")
-                maybe_model = event.get("model")
-                if maybe_provider:
-                    current_provider = str(maybe_provider)
-                if maybe_model:
-                    current_model = str(maybe_model)
-                u = event.get("usage")
-                if isinstance(u, dict):
-                    final_usage = u
-                if os.getenv("ORB_ROUTER_DEBUG") == "1":
-                    yield "data: " + json.dumps({'type': 'metadata', 'provider': current_provider, 'model': current_model}) + "\n\n"
-
+                reasoning_content += event.get("content", "")
+                yield "data: " + json.dumps(event) + "\n\n"
             elif event_type == "usage":
-                u = event.get("usage") or event.get("data")
-                if isinstance(u, dict):
-                    final_usage = u
-
+                final_usage = event.get("usage")
             elif event_type == "error":
-                error_msg = event.get("message") or event.get("error") or "Unknown error"
-                logger.error(f"[stream] Provider error: {error_msg}")
-                duration_ms = max(0, int(loop.time() * 1000) - started_ms)
+                yield "data: " + json.dumps(event) + "\n\n"
                 if trace and not trace_finished:
-                    trace.log_model_call("primary", current_provider, current_model, "primary", 0, 0, duration_ms, success=False, error=str(error_msg))
-                    trace.finalize(success=False, error_message=str(error_msg))
+                    trace.log_model_call("primary", current_provider, current_model, "primary", 0, 0, 0, success=False, error=event.get("error"))
+                    trace.finalize(success=False, error_message=event.get("error"))
                     trace_finished = True
-                yield "data: " + json.dumps({'type': 'error', 'error': str(error_msg)}) + "\n\n"
                 return
-
             elif event_type == "done":
-                maybe_provider = event.get("provider")
-                maybe_model = event.get("model")
-                if maybe_provider:
-                    current_provider = str(maybe_provider)
-                if maybe_model:
-                    current_model = str(maybe_model)
-                u = event.get("usage")
-                if isinstance(u, dict):
-                    final_usage = u
-                break
-
-            else:
-                logger.warning(f"[stream] Unknown event type '{event_type}' from provider: {event}")
+                current_provider = event.get("provider", current_provider)
+                current_model = event.get("model", current_model)
 
     except asyncio.CancelledError:
         if trace and not trace_finished:

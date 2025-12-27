@@ -2,14 +2,16 @@
 """Stage 3 spec-hash locks (refuse-on-mismatch).
 
 Isolated helpers for:
-- parsing SPEC_ID/SPEC_HASH header echo
+- building SPEC_ID/SPEC_HASH echo instructions for stages
+- parsing SPEC_ID/SPEC_HASH header echo from stage output
 - best-effort ledger event append
 - best-effort artifact storage (raw output + meta json)
 - spec-hash verification with structured logging
 
 This keeps app/jobs/engine.py smaller without changing behavior.
 
-New in v2:
+v3 (2025-12):
+- Added build_spec_echo_instruction() helper for consistent header injection
 - verify_spec_hash(): Verify and emit STAGE_SPEC_HASH_* events
 - Integrated with new ledger emit_* functions
 """
@@ -26,6 +28,42 @@ from typing import Any, Dict, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
+# =============================================================================
+# Header Instruction Builder
+# =============================================================================
+
+def build_spec_echo_instruction(spec_id: str, spec_hash: str) -> str:
+    """Build the 2-line header echo instruction for high-stakes stages.
+    
+    This instruction must be included in the system prompt for any stage
+    that requires spec-hash verification. The stage must output these
+    two lines at the TOP of its response.
+    
+    Args:
+        spec_id: The spec ID from Spec Gate
+        spec_hash: The spec hash from Spec Gate
+    
+    Returns:
+        Instruction string to append to system prompt
+    
+    Example output:
+        You MUST echo these identifiers at the TOP of your response exactly:
+        SPEC_ID: abc-123
+        SPEC_HASH: def456...
+        Do not ask the user any questions.
+    """
+    return (
+        "You MUST echo these identifiers at the TOP of your response exactly:\n"
+        f"SPEC_ID: {spec_id}\n"
+        f"SPEC_HASH: {spec_hash}\n"
+        "Do not ask the user any questions."
+    )
+
+
+# =============================================================================
+# Header Parsing
+# =============================================================================
+
 def parse_spec_echo_headers(output: str, *, max_lines: int = 10) -> Tuple[Optional[str], Optional[str], str]:
     """Parse the 2-line header echo:
 
@@ -35,6 +73,14 @@ def parse_spec_echo_headers(output: str, *, max_lines: int = 10) -> Tuple[Option
     Returns (returned_spec_id, returned_spec_hash, parse_note).
 
     Parsing is strict but tolerates leading BOM/whitespace/newlines (for header detection only).
+    
+    parse_note values:
+    - "ok": Both headers found and non-empty
+    - "empty_output": No output provided
+    - "missing_header_lines": Fewer than 2 non-empty lines in first max_lines
+    - "missing_SPEC_ID": First line doesn't start with "SPEC_ID:"
+    - "missing_SPEC_HASH": Second line doesn't start with "SPEC_HASH:"
+    - "empty_spec_fields": Headers found but values are empty
     """
     if not output:
         return None, None, "empty_output"
@@ -75,6 +121,10 @@ def parse_spec_echo_headers(output: str, *, max_lines: int = 10) -> Tuple[Option
     return returned_spec_id, returned_spec_hash, "ok"
 
 
+# =============================================================================
+# Artifact Storage
+# =============================================================================
+
 def write_stage3_artifacts(
     *,
     job_id: str,
@@ -91,6 +141,10 @@ def write_stage3_artifacts(
     """Write Stage 3 artifacts (raw output + meta JSON). Returns dict of paths written.
 
     Best-effort: failures here must not crash the job engine.
+    
+    Artifacts are stored at:
+        jobs/<job_id>/stages/<stage>/stage_output.md (or .txt)
+        jobs/<job_id>/stages/<stage>/stage_meta.json
     """
     try:
         from app.pot_spec.service import get_job_artifact_root
@@ -130,6 +184,10 @@ def write_stage3_artifacts(
         return {}
 
 
+# =============================================================================
+# Ledger Helpers
+# =============================================================================
+
 def append_stage3_ledger_event(job_id: str, event: Dict[str, Any]) -> None:
     """Best-effort ledger append for Stage 3 events."""
     try:
@@ -145,7 +203,7 @@ def append_stage3_ledger_event(job_id: str, event: Dict[str, Any]) -> None:
 
 
 # =============================================================================
-# Spec-Hash Verification (new)
+# Spec-Hash Verification
 # =============================================================================
 
 def verify_spec_hash(
@@ -254,9 +312,99 @@ def verify_spec_hash(
         return verified, returned_spec_id, returned_spec_hash, parse_note
 
 
+def verify_and_store_stage3(
+    *,
+    job_id: str,
+    stage_name: str,
+    spec_id: str,
+    expected_spec_hash: str,
+    raw_output: str,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """
+    Combined verification + artifact storage for Stage 3.
+    
+    This is a convenience wrapper that:
+    1. Verifies spec hash from output
+    2. Writes stage artifacts (raw output + meta)
+    3. Logs appropriate ledger events
+    
+    Args:
+        job_id: Job UUID
+        stage_name: Name of the stage being verified
+        spec_id: Expected spec ID
+        expected_spec_hash: Expected spec hash
+        raw_output: Raw output from the stage (containing header)
+        provider: Provider name (for metadata)
+        model: Model name (for metadata)
+    
+    Returns:
+        (verified, error_message)
+        
+        verified: True if verification passed
+        error_message: Empty string if verified, otherwise describes the failure
+    """
+    # Verify
+    verified, returned_spec_id, returned_spec_hash, parse_note = verify_spec_hash(
+        job_id=job_id,
+        stage_name=stage_name,
+        spec_id=spec_id,
+        expected_spec_hash=expected_spec_hash,
+        raw_output=raw_output,
+    )
+    
+    # Store artifacts
+    write_stage3_artifacts(
+        job_id=job_id,
+        stage=stage_name,
+        raw_output=raw_output,
+        expected_spec_id=spec_id,
+        expected_spec_hash=expected_spec_hash,
+        returned_spec_id=returned_spec_id,
+        returned_spec_hash=returned_spec_hash,
+        verified=verified,
+        provider=provider,
+        model=model,
+    )
+    
+    # Log ledger events
+    append_stage3_ledger_event(
+        job_id,
+        {
+            "event": "STAGE_SPEC_HASH_VERIFIED" if verified else "STAGE_SPEC_HASH_MISMATCH",
+            "job_id": job_id,
+            "stage": stage_name,
+            "expected_spec_id": spec_id,
+            "expected_spec_hash": expected_spec_hash,
+            "returned_spec_id": returned_spec_id,
+            "returned_spec_hash": returned_spec_hash,
+            "parse_note": parse_note,
+            "ts_utc": datetime.utcnow().isoformat() + "Z",
+        },
+    )
+    
+    if not verified:
+        error_msg = (
+            f"Stage 3 spec-hash lock failed for {stage_name}: "
+            f"expected SPEC_ID={spec_id}, SPEC_HASH={expected_spec_hash}; "
+            f"got SPEC_ID={returned_spec_id}, SPEC_HASH={returned_spec_hash} ({parse_note})"
+        )
+        return False, error_msg
+    
+    return True, ""
+
+
 __all__ = [
+    # Instruction builder
+    "build_spec_echo_instruction",
+    # Parsing
     "parse_spec_echo_headers",
+    # Artifacts
     "write_stage3_artifacts",
+    # Ledger
     "append_stage3_ledger_event",
+    # Verification
     "verify_spec_hash",
+    "verify_and_store_stage3",
 ]
