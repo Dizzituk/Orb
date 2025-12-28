@@ -1,13 +1,17 @@
 # FILE: app/overwatcher/executor.py
 """Block 8: Implementation Executor with Diff Boundary Enforcement.
 
-Sonnet applies a chunk; Overwatcher rejects changes outside allowed files.
+Spec v2.3 Block 8:
+- Model: Claude Sonnet (claude-sonnet-4-5-20250514)
+- Fallback: GPT-5.2 Thinking (gpt-5.2-thinking)
+- Purpose: Generate code for each chunk (full files only for touched files)
 
 Key behaviors:
 - Execute chunk implementation via Sonnet
 - Check diff against allowed_files boundaries
 - Reject violations before applying
 - Support rollback on failure
+- Emit proper ledger events
 """
 
 from __future__ import annotations
@@ -19,7 +23,7 @@ import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from uuid import uuid4
 
 from app.overwatcher.schemas import (
@@ -32,9 +36,23 @@ from app.overwatcher.schemas import (
 
 logger = logging.getLogger(__name__)
 
-# Configuration
-SONNET_MODEL = os.getenv("ORB_SONNET_MODEL", "claude-sonnet-4-20250514")
+# =============================================================================
+# Configuration (Spec v2.3 §10 and §3.3)
+# =============================================================================
+
+# Block 8 uses Claude Sonnet for implementation
+IMPLEMENTER_PROVIDER = os.getenv("ORB_IMPLEMENTER_PROVIDER", "anthropic")
+IMPLEMENTER_MODEL = os.getenv("ORB_IMPLEMENTER_MODEL", "claude-sonnet-4-5-20250514")
+
+# Fallback per spec §3.3
+IMPLEMENTER_FALLBACK_PROVIDER = os.getenv("ORB_IMPLEMENTER_FALLBACK_PROVIDER", "openai")
+IMPLEMENTER_FALLBACK_MODEL = os.getenv("ORB_IMPLEMENTER_FALLBACK_MODEL", "gpt-5.2-thinking")
+
+# Sandbox configuration
 SANDBOX_ROOT = os.getenv("ORB_SANDBOX_ROOT", "D:\\SandboxOrb")
+
+# Implementation output limits
+IMPLEMENTER_MAX_OUTPUT_TOKENS = int(os.getenv("ORB_IMPLEMENTER_MAX_OUTPUT_TOKENS", "16000"))
 
 
 # =============================================================================
@@ -59,6 +77,8 @@ def check_diff_boundaries(
     base_dir: str = "",
 ) -> DiffCheckResult:
     """Check if file changes respect chunk boundaries.
+    
+    Spec v2.3: Boundary violations trigger rollback.
     
     Args:
         chunk: The chunk being implemented
@@ -123,7 +143,7 @@ def check_diff_boundaries(
 
 
 def parse_git_diff_stat(diff_output: str) -> Tuple[List[str], List[str], List[str]]:
-    """Parse git diff --stat output to get file lists.
+    """Parse git diff --name-status output to get file lists.
     
     Returns (added, modified, deleted)
     """
@@ -136,7 +156,7 @@ def parse_git_diff_stat(diff_output: str) -> Tuple[List[str], List[str], List[st
         if not line or line.startswith("create mode"):
             continue
         
-        # Parse status lines like "A  path/to/file.py" or "M  path/to/file.py"
+        # Parse status lines like "A\tpath/to/file.py" or "M\tpath/to/file.py"
         if line.startswith("A\t") or line.startswith("A "):
             added.append(line[2:].strip())
         elif line.startswith("M\t") or line.startswith("M "):
@@ -238,7 +258,22 @@ def get_working_tree_changes(repo_path: str) -> Tuple[List[str], List[str], List
 # Implementation Prompt
 # =============================================================================
 
-IMPLEMENTATION_PROMPT = """You are implementing a specific chunk of an architecture.
+IMPLEMENTATION_SYSTEM = """You are an expert programmer implementing a specific chunk of an approved architecture.
+
+CRITICAL RULES:
+1. You may ONLY touch files listed in ALLOWED FILES
+2. For each file, output the COMPLETE file content
+3. Use markers: # FILE: path/to/file.py followed by code block
+4. Do not touch any files outside the allowed list
+5. Verify your implementation will pass the listed verification commands
+
+You must echo these exact lines at the start of your response:
+SPEC_ID: {spec_id}
+SPEC_HASH: {spec_hash}
+
+Then provide the implementation."""
+
+IMPLEMENTATION_PROMPT = """Implement this chunk:
 
 CHUNK DETAILS:
 - ID: {chunk_id}
@@ -253,30 +288,45 @@ ALLOWED FILES:
 STEPS:
 {steps_text}
 
-IMPORTANT RULES:
-1. You may ONLY touch files listed in ALLOWED FILES
-2. For modified files, output the COMPLETE new file content
-3. Use clear file markers: ```python:path/to/file.py
-4. Do not touch any files outside the allowed list
-5. After implementation, all verification commands should pass
-
-VERIFICATION COMMANDS:
+VERIFICATION COMMANDS (must pass after implementation):
 {verification_commands}
 
-Implement this chunk. For each file, provide the complete content."""
+OUTPUT FORMAT:
+For each file, use this exact format:
+
+# FILE: path/to/file.py
+```python
+<complete file content>
+```
+
+Implement this chunk now. Provide complete file contents for all touched files."""
 
 
-def build_implementation_prompt(chunk: Chunk) -> str:
-    """Build prompt for Sonnet to implement chunk."""
+def build_implementation_prompt(
+    chunk: Chunk,
+    spec_id: str,
+    spec_hash: str,
+) -> Tuple[str, str]:
+    """Build system and user prompts for implementation.
+    
+    Returns:
+        (system_prompt, user_prompt)
+    """
     steps_text = ""
     for i, step in enumerate(chunk.steps, 1):
-        steps_text += f"{i}. [{step.action.value}] {step.file_path}: {step.description}\n"
+        action = step.action.value if isinstance(step.action, FileAction) else step.action
+        steps_text += f"{i}. [{action}] {step.file_path}: {step.description}\n"
         if step.details:
             steps_text += f"   Details: {step.details}\n"
     
     verification_commands = "\n".join(chunk.verification.commands) if chunk.verification.commands else "None specified"
     
-    return IMPLEMENTATION_PROMPT.format(
+    system = IMPLEMENTATION_SYSTEM.format(
+        spec_id=spec_id,
+        spec_hash=spec_hash,
+    )
+    
+    user = IMPLEMENTATION_PROMPT.format(
         chunk_id=chunk.chunk_id,
         title=chunk.title,
         objective=chunk.objective,
@@ -286,6 +336,8 @@ def build_implementation_prompt(chunk: Chunk) -> str:
         steps_text=steps_text or "No specific steps defined",
         verification_commands=verification_commands,
     )
+    
+    return system, user
 
 
 # =============================================================================
@@ -296,7 +348,8 @@ def extract_files_from_output(output: str) -> Dict[str, str]:
     """Extract file contents from LLM output.
     
     Looks for patterns like:
-    ```python:path/to/file.py
+    # FILE: path/to/file.py
+    ```python
     content
     ```
     
@@ -304,24 +357,43 @@ def extract_files_from_output(output: str) -> Dict[str, str]:
     """
     files = {}
     
-    # Pattern: ```language:path\ncontent\n```
-    pattern = r"```(?:\w+)?:([^\n]+)\n([\s\S]*?)```"
+    # Pattern: # FILE: path\n```language\ncontent\n```
+    pattern = r"#\s*FILE:\s*([^\n]+)\n```(?:\w+)?\n([\s\S]*?)```"
     matches = re.findall(pattern, output)
     
     for path, content in matches:
         path = path.strip()
-        files[path] = content
+        files[path] = content.rstrip()
     
-    # Also try simpler pattern: # FILE: path\n```\ncontent\n```
-    pattern2 = r"#\s*FILE:\s*([^\n]+)\n```(?:\w+)?\n([\s\S]*?)```"
+    # Also try: ```language:path\ncontent\n```
+    pattern2 = r"```(?:\w+)?:([^\n]+)\n([\s\S]*?)```"
     matches2 = re.findall(pattern2, output)
     
     for path, content in matches2:
         path = path.strip()
         if path not in files:
-            files[path] = content
+            files[path] = content.rstrip()
     
     return files
+
+
+def parse_spec_headers(output: str) -> Tuple[Optional[str], Optional[str]]:
+    """Parse SPEC_ID and SPEC_HASH headers from output.
+    
+    Returns:
+        (spec_id, spec_hash)
+    """
+    spec_id = None
+    spec_hash = None
+    
+    lines = output.strip().split("\n") if output else []
+    for line in lines[:5]:
+        if line.strip().startswith("SPEC_ID:"):
+            spec_id = line.split(":", 1)[1].strip()
+        elif line.strip().startswith("SPEC_HASH:"):
+            spec_hash = line.split(":", 1)[1].strip()
+    
+    return spec_id, spec_hash
 
 
 # =============================================================================
@@ -329,91 +401,211 @@ def extract_files_from_output(output: str) -> Dict[str, str]:
 # =============================================================================
 
 async def execute_chunk(
+    *,
     chunk: Chunk,
     repo_path: str,
-    llm_call_fn,
-    provider_id: str = "anthropic",
+    spec_id: str,
+    spec_hash: str,
+    job_id: str,
+    job_artifact_root: str,
+    llm_call_fn: Callable,
+    provider_id: str = None,
     model_id: str = None,
     dry_run: bool = False,
 ) -> Tuple[bool, DiffCheckResult, Dict[str, str]]:
     """Execute a chunk implementation.
     
+    Spec v2.3 Block 8:
+    - Primary: Claude Sonnet
+    - Fallback: GPT-5.2 Thinking
+    - Emits CHUNK_IMPLEMENTED or BOUNDARY_VIOLATION
+    
     Args:
         chunk: Chunk to implement
         repo_path: Path to repository
+        spec_id: Spec ID for header echo
+        spec_hash: Spec hash for header echo
+        job_id: Job UUID
+        job_artifact_root: Root for artifacts
         llm_call_fn: Async function to call LLM
-        provider_id: LLM provider
-        model_id: LLM model (defaults to SONNET_MODEL)
+        provider_id: LLM provider (default: anthropic)
+        model_id: LLM model (default: claude-sonnet)
         dry_run: If True, don't write files
     
     Returns:
         (success, diff_result, file_contents)
     """
-    model_id = model_id or SONNET_MODEL
+    from app.pot_spec.ledger import (
+        emit_chunk_implemented,
+        emit_boundary_violation,
+        emit_stage_started,
+        emit_provider_fallback,
+        emit_stage_failed,
+    )
+    
+    stage_run_id = str(uuid4())
+    
+    # Default to spec-mandated models
+    provider_id = provider_id or IMPLEMENTER_PROVIDER
+    model_id = model_id or IMPLEMENTER_MODEL
     
     logger.info(f"[executor] Executing chunk {chunk.chunk_id}: {chunk.title}")
     
+    # Emit stage started
+    try:
+        emit_stage_started(
+            job_artifact_root=job_artifact_root,
+            job_id=job_id,
+            stage_id="implementation",
+            stage_run_id=stage_run_id,
+        )
+    except Exception as e:
+        logger.warning(f"[executor] Failed to emit stage started: {e}")
+    
     # Build implementation prompt
-    prompt = build_implementation_prompt(chunk)
+    system_prompt, user_prompt = build_implementation_prompt(chunk, spec_id, spec_hash)
     
     messages = [
-        {"role": "system", "content": "You are an expert programmer implementing a specific chunk. Follow the file permissions exactly."},
-        {"role": "user", "content": prompt},
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
     ]
+    
+    # Try primary model
+    result = None
+    used_fallback = False
     
     try:
         result = await llm_call_fn(
             provider_id=provider_id,
             model_id=model_id,
             messages=messages,
+            max_tokens=IMPLEMENTER_MAX_OUTPUT_TOKENS,
         )
+    except Exception as e:
+        logger.warning(f"[executor] Primary model failed ({provider_id}/{model_id}): {e}")
         
-        raw_output = result.content if hasattr(result, "content") else str(result)
-        
-        # Extract files from output
-        files = extract_files_from_output(raw_output)
-        
-        if not files:
-            logger.warning(f"[executor] No files extracted from output")
-            return False, DiffCheckResult(passed=False, violations=[]), {}
-        
-        # Determine which files are added vs modified
-        files_added = []
-        files_modified = []
-        
-        for path in files.keys():
+        # Try fallback
+        if IMPLEMENTER_FALLBACK_PROVIDER and IMPLEMENTER_FALLBACK_MODEL:
+            try:
+                emit_provider_fallback(
+                    job_artifact_root=job_artifact_root,
+                    job_id=job_id,
+                    from_provider=provider_id,
+                    from_model=model_id,
+                    to_provider=IMPLEMENTER_FALLBACK_PROVIDER,
+                    to_model=IMPLEMENTER_FALLBACK_MODEL,
+                    reason=str(e),
+                )
+            except Exception:
+                pass
+            
+            try:
+                result = await llm_call_fn(
+                    provider_id=IMPLEMENTER_FALLBACK_PROVIDER,
+                    model_id=IMPLEMENTER_FALLBACK_MODEL,
+                    messages=messages,
+                    max_tokens=IMPLEMENTER_MAX_OUTPUT_TOKENS,
+                )
+                used_fallback = True
+                provider_id = IMPLEMENTER_FALLBACK_PROVIDER
+                model_id = IMPLEMENTER_FALLBACK_MODEL
+            except Exception as e2:
+                logger.error(f"[executor] Fallback model also failed: {e2}")
+    
+    if result is None:
+        try:
+            emit_stage_failed(
+                job_artifact_root=job_artifact_root,
+                job_id=job_id,
+                stage_id="implementation",
+                error_type="llm_call_failed",
+                error_message="Both primary and fallback models failed",
+            )
+        except Exception:
+            pass
+        return False, DiffCheckResult(passed=False, violations=[]), {}
+    
+    raw_output = result.content if hasattr(result, "content") else str(result)
+    
+    # Verify spec hash
+    returned_spec_id, returned_spec_hash = parse_spec_headers(raw_output)
+    if returned_spec_hash and returned_spec_hash != spec_hash:
+        logger.error(f"[executor] SPEC_HASH mismatch: expected {spec_hash[:16]}..., got {returned_spec_hash[:16]}...")
+        try:
+            emit_stage_failed(
+                job_artifact_root=job_artifact_root,
+                job_id=job_id,
+                stage_id="implementation",
+                error_type="spec_hash_mismatch",
+                error_message=f"Expected {spec_hash}, got {returned_spec_hash}",
+            )
+        except Exception:
+            pass
+        return False, DiffCheckResult(passed=False, violations=[]), {}
+    
+    # Extract files from output
+    files = extract_files_from_output(raw_output)
+    
+    if not files:
+        logger.warning(f"[executor] No files extracted from output")
+        return False, DiffCheckResult(passed=False, violations=[]), {}
+    
+    # Determine which files are added vs modified
+    files_added = []
+    files_modified = []
+    
+    for path in files.keys():
+        full_path = Path(repo_path) / path
+        if full_path.exists():
+            files_modified.append(path)
+        else:
+            files_added.append(path)
+    
+    # Check boundaries BEFORE writing
+    diff_result = check_diff_boundaries(
+        chunk=chunk,
+        files_added=files_added,
+        files_modified=files_modified,
+        files_deleted=[],  # LLM doesn't delete via output
+        base_dir=repo_path,
+    )
+    
+    if not diff_result.passed:
+        logger.warning(f"[executor] Boundary violations: {[v.file_path for v in diff_result.violations]}")
+        try:
+            emit_boundary_violation(
+                job_artifact_root=job_artifact_root,
+                job_id=job_id,
+                chunk_id=chunk.chunk_id,
+                violations=[v.to_dict() for v in diff_result.violations],
+            )
+        except Exception as e:
+            logger.warning(f"[executor] Failed to emit boundary violation: {e}")
+        return False, diff_result, files
+    
+    # Write files if not dry run
+    if not dry_run:
+        for path, content in files.items():
             full_path = Path(repo_path) / path
-            if full_path.exists():
-                files_modified.append(path)
-            else:
-                files_added.append(path)
-        
-        # Check boundaries BEFORE writing
-        diff_result = check_diff_boundaries(
-            chunk=chunk,
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text(content, encoding="utf-8")
+            logger.info(f"[executor] Wrote: {path}")
+    
+    # Emit success event
+    try:
+        emit_chunk_implemented(
+            job_artifact_root=job_artifact_root,
+            job_id=job_id,
+            chunk_id=chunk.chunk_id,
             files_added=files_added,
             files_modified=files_modified,
-            files_deleted=[],  # Sonnet doesn't delete via output
-            base_dir=repo_path,
+            model=model_id,
         )
-        
-        if not diff_result.passed:
-            logger.warning(f"[executor] Boundary violations: {[v.file_path for v in diff_result.violations]}")
-            return False, diff_result, files
-        
-        # Write files if not dry run
-        if not dry_run:
-            for path, content in files.items():
-                full_path = Path(repo_path) / path
-                full_path.parent.mkdir(parents=True, exist_ok=True)
-                full_path.write_text(content, encoding="utf-8")
-                logger.info(f"[executor] Wrote: {path}")
-        
-        return True, diff_result, files
-        
     except Exception as e:
-        logger.error(f"[executor] Chunk execution failed: {e}")
-        return False, DiffCheckResult(passed=False, violations=[]), {}
+        logger.warning(f"[executor] Failed to emit chunk implemented: {e}")
+    
+    logger.info(f"[executor] Chunk {chunk.chunk_id} implemented: {len(files_added)} added, {len(files_modified)} modified (model={model_id}, fallback={used_fallback})")
+    return True, diff_result, files
 
 
 # =============================================================================
@@ -495,13 +687,22 @@ def rollback_chunk(
 
 
 __all__ = [
+    # Configuration
+    "IMPLEMENTER_PROVIDER",
+    "IMPLEMENTER_MODEL",
+    "IMPLEMENTER_FALLBACK_PROVIDER",
+    "IMPLEMENTER_FALLBACK_MODEL",
     # Boundary checking
+    "normalize_path",
     "check_diff_boundaries",
     "get_git_changes",
     "get_working_tree_changes",
-    # Execution
+    # Prompt building
     "build_implementation_prompt",
+    # File extraction
     "extract_files_from_output",
+    "parse_spec_headers",
+    # Execution
     "execute_chunk",
     # Rollback
     "create_backup",
