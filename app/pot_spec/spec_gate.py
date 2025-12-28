@@ -330,9 +330,10 @@ async def _attempt_spec_gate_call(
             provider_id=provider_id,
             model_id=model_id,
             messages=messages,
-            temperature=0.7,
+            temperature=0,  # Deterministic for reproducible spec hashes
             max_tokens=1500,
             timeout_seconds=120,
+            reasoning={"effort": "none"},  # GPT-5.x: no reasoning overhead for extraction
         )
 
         status = getattr(result, "status", None)

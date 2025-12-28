@@ -1,0 +1,12 @@
+{
+  "expected_spec_id": "8e14f386-be9d-4d07-a6bb-355062c26593",
+  "expected_spec_hash": "1c9507647b65c20c834305d4dfe8d9f6e6729384d12a66c2668b85486c06ba7e",
+  "returned_spec_id": "8e14f386-be9d-4d07-a6bb-355062c26593",
+  "returned_spec_hash": "1c9507647b65c20c834305d4dfe8d9f6e6729384d12a66c2668b85486c06ba7e",
+  "verified": true,
+  "provider": "anthropic",
+  "model": "claude-opus-4-5-20251101",
+  "stored_raw_output": "D:\\Orb\\jobs\\jobs\\1631973d-c31d-4a88-9ac1-fd0228c1034e\\stages\\high_stakes_streaming\\stage_output.txt",
+  "raw_output_sha256": "a3698d1ea14ae63465f9a55c3e85fa6ce36de46b0593ada60c7844ce32aa8874",
+  "stored_at_utc": "2025-12-27T23:51:18.832369Z"
+}

@@ -1,0 +1,67 @@
+{
+  "blocking_issues": [
+    {
+      "id": "ISSUE-001",
+      "spec_ref": "constraints.line_clear_scoring",
+      "arch_ref": "actions.CheckLines",
+      "category": "correctness",
+      "severity": "blocking",
+      "description": "The scoring logic described as 'basePoints * (level + 1)' is an oversimplification and does not conform to the requirement to 'Follow official Tetris scoring guidelines'. Official guidelines are more complex, including different rewards for T-spins and back-to-back Tetrises. Additionally, the points awarded for soft drops (in MovePieceDown) are non-standard.",
+      "fix_suggestion": "Specify the exact scoring table to be implemented, referencing a specific official guideline (e.g., The Tetris Company's 2009 guideline). Remove the non-standard point award for soft drops."
+    },
+    {
+      "id": "ISSUE-002",
+      "spec_ref": "constraints.rotation_system",
+      "arch_ref": "actions.RotatePiece",
+      "category": "completeness",
+      "severity": "blocking",
+      "description": "The architecture fails to define the specific rotation system and wall kick handling as required. Stating rotation will happen 'with wall kick if needed' is insufficient for an architectural review, as different systems (like SRS) have precise and complex rules.",
+      "fix_suggestion": "Specify the exact rotation system to be used (e.g., Super Rotation System - SRS). Include or reference the data tables for all piece rotation states and their corresponding wall kick offset checks."
+    }
+  ],
+  "non_blocking_issues": [
+    {
+      "id": "ISSUE-003",
+      "spec_ref": "MUST-1",
+      "arch_ref": "state.currentPiece",
+      "category": "clarity",
+      "severity": "non_blocking",
+      "description": "The architecture does not define the data structure for representing the shapes of the tetrominoes themselves (e.g., a 4x4 grid, a list of relative coordinates). This ambiguity makes it difficult to assess the feasibility and correctness of rotation and collision logic.",
+      "fix_suggestion": "Add a definition for the data structure used to represent each piece's shape in its different rotational states."
+    },
+    {
+      "id": "ISSUE-004",
+      "spec_ref": "should:Show ghost piece",
+      "arch_ref": "state",
+      "category": "completeness",
+      "severity": "non_blocking",
+      "description": "The architecture omits the 'ghost piece' feature, which is a 'should' requirement in the specification for showing a preview of where the current piece will land.",
+      "fix_suggestion": "Add a new item to the 'state' section to track the ghost piece's position. Describe the logic (likely in 'GameTick' or after a player action) responsible for calculating its final position."
+    },
+    {
+      "id": "ISSUE-005",
+      "spec_ref": "can:High score persistence",
+      "arch_ref": "actions.SaveHighScore",
+      "category": "completeness",
+      "severity": "non_blocking",
+      "description": "The `SaveHighScore` action mentions persisting the score but fails to specify the technical mechanism (e.g., local file, browser localStorage, Windows Registry). This detail is needed for a complete design.",
+      "fix_suggestion": "Specify the storage mechanism to be used for persisting the high score, ensuring it aligns with the 'local_only' infrastructure constraint from the environment."
+    }
+  ],
+  "overall_pass": false,
+  "summary": "The architecture provides a good high-level functional decomposition of a Tetris game, identifying the necessary screens, state, and actions. However, it is critically incomplete in its current form. It fails to provide sufficient detail on key algorithmic components, specifically the scoring and rotation systems, which are explicitly constrained by the specification. These omissions are blocking issues as they prevent a proper assessment of the system's correctness and adherence to core requirements. The document should be revised to include these technical details before approval.",
+  "spec_coverage": {
+    "MUST-1": "covered",
+    "MUST-2": "covered",
+    "MUST-3": "covered",
+    "MUST-4": "covered",
+    "MUST-5": "covered",
+    "MUST-6": "covered",
+    "MUST-7": "covered",
+    "MUST-8": "covered",
+    "MUST-9": "covered",
+    "MUST-10": "covered"
+  },
+  "critique_model": "gemini-2.5-pro",
+  "critique_version": "v2"
+}

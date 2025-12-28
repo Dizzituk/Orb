@@ -542,6 +542,8 @@ async def generate_high_stakes_critique_stream(
     loop = asyncio.get_event_loop()
     started_ms = int(loop.time() * 1000)
     trace_finished = False
+    
+    print(f"[DEBUG] generate_high_stakes_critique_stream started: job_type={job_type_str}, provider={provider}, model={model}")
 
     # Track spec gate state for verification after result
     spec_id: Optional[str] = None
@@ -586,6 +588,9 @@ async def generate_high_stakes_critique_stream(
                 model_id=spec_gate_model,
                 constraints_hint={"stability_accuracy": "high", "allowed_tools": "free_only"},
             )
+            
+            # DEBUG: Log spec gate result
+            print(f"[DEBUG] Spec gate completed: spec_id={spec_id}, spec_hash={spec_hash[:16] if spec_hash else None}..., open_questions={len(open_questions) if open_questions else 0}")
 
             if open_questions:
                 yield "data: " + json.dumps(
@@ -618,8 +623,16 @@ async def generate_high_stakes_critique_stream(
                 enable_reasoning=enable_reasoning,
             )
             
+            # CRITICAL: Preserve original job_id before rebuilding
+            original_job_id = envelope.job_id
+            
             # FIX: Rebuild envelope with updated task
             envelope = synthesize_envelope_from_task(task)
+            
+            # CRITICAL: Restore original job_id to ensure spec lookup works
+            envelope.job_id = original_job_id
+            logger.info(f"[stream] Preserved job_id {original_job_id} after envelope rebuild")
+            print(f"[DEBUG] Envelope rebuilt with preserved job_id={original_job_id}")
             
             # Mark that we need to verify the response
             needs_verification = True
@@ -644,12 +657,19 @@ async def generate_high_stakes_critique_stream(
                 from app.pot_spec.service import get_job_artifact_root
                 import pathlib
                 job_root = get_job_artifact_root()
-                spec_path = pathlib.Path(job_root) / "jobs" / envelope.job_id / "spec" / "spec_v1.json"
+                spec_path = pathlib.Path(job_root) /  envelope.job_id / "spec" / "spec_v1.json"
+                print(f"[DEBUG] Loading spec from: {spec_path}")
+                print(f"[DEBUG] Path exists: {spec_path.exists()}")
                 if spec_path.exists():
                     spec_json_str = spec_path.read_text(encoding="utf-8")
+                    print(f"[DEBUG] Spec JSON loaded: {len(spec_json_str)} chars")
+                else:
+                    print(f"[DEBUG] Spec file NOT FOUND at {spec_path}")
             except Exception as e:
                 logger.warning(f"[stream] Failed to load spec JSON: {e}")
+                print(f"[DEBUG] Exception loading spec: {e}")
         
+        print(f"[DEBUG] Calling run_high_stakes_with_critique: provider={provider}, model={model}, job_id={envelope.job_id}")
         result = await run_high_stakes_with_critique(
             task=task,
             provider_id=provider,
@@ -662,6 +682,7 @@ async def generate_high_stakes_critique_stream(
             spec_json=spec_json_str,
             use_json_critique=True,
         )
+        print(f"[DEBUG] run_high_stakes_with_critique returned: type={type(result)}")
 
         usage_obj = getattr(result, "usage", None)
         if usage_obj is None and isinstance(result, dict):
@@ -674,6 +695,8 @@ async def generate_high_stakes_critique_stream(
         if isinstance(result, dict):
             error_message = error_message or result.get("error_message") or result.get("error")
             content = content if content is not None else result.get("content")
+        
+        print(f"[DEBUG] Result parsed: error_message={error_message}, content_len={len(content) if content else 0}")
 
         if error_message:
             if trace and not trace_finished:
@@ -689,6 +712,7 @@ async def generate_high_stakes_critique_stream(
         # FIX: Stage 3 verification - check spec hash before processing content
         # =====================================================================
         if needs_verification and spec_id and spec_hash:
+            print(f"[DEBUG] Running Stage 3 verification: spec_id={spec_id}, spec_hash={spec_hash[:16]}...")
             verified, error_msg = verify_and_store_stage3(
                 job_id=envelope.job_id,
                 stage_name="high_stakes_streaming",
@@ -698,6 +722,7 @@ async def generate_high_stakes_critique_stream(
                 provider=provider,
                 model=model,
             )
+            print(f"[DEBUG] Stage 3 verification result: verified={verified}, error_msg={error_msg}")
             
             if not verified:
                 # Fail fast on mismatch
@@ -789,6 +814,7 @@ async def generate_high_stakes_critique_stream(
             trace.finalize(success=True)
             trace_finished = True
 
+        print(f"[DEBUG] Streaming complete, yielding done event: provider={provider}, model={model}, total_length={len(final_answer)}")
         yield "data: " + json.dumps({'type': 'done', 'provider': provider, 'model': model, 'total_length': len(final_answer)}) + "\n\n"
 
     except asyncio.CancelledError:
@@ -799,6 +825,9 @@ async def generate_high_stakes_critique_stream(
         raise
     except Exception as e:
         logger.exception("[stream] High-stakes stream failed: %s", e)
+        print(f"[DEBUG] EXCEPTION in high-stakes stream: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
         if trace and not trace_finished:
             trace.log_model_call("primary", provider, model, "primary", 0, 0, 0, success=False, error=str(e))
             trace.finalize(success=False, error_message=str(e))

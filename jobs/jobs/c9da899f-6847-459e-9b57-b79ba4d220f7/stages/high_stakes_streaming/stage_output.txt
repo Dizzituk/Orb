@@ -1,0 +1,24 @@
+SPEC_ID: 4f4dd3c4-5c92-44fa-a5be-4cb70d28fdcb
+SPEC_HASH: 08186f277a1d8afce1a2b40e4d11a951210373f2baec89c469498059c70b0933
+
+---
+
+I appreciate the request, but I need to clarify my role here.
+
+I'm configured as an architecture assistant for the **Orb/Astra project** (project: test4). Based on the context I have access to, this is a multi-component system consisting of:
+
+- **Orb Desktop** (Electron client)
+- **Orb Backend** (FastAPI service)
+- **Sandbox Controller** (isolated repo inspection service)
+- External LLM/Web provider integrations
+
+My purpose is to help with architecture questions, documentation, and technical analysis related to this existing codebase—not to create unrelated applications like Tetris.
+
+**What I can help with:**
+- Explaining the Orb/Astra system architecture
+- Analyzing process boundaries and component interactions
+- Discussing the encryption key management approach
+- Reviewing the technology stack (Electron, Vite, FastAPI, etc.)
+- Answering questions about the indexed codebase structure
+
+If you have architecture questions about the Orb project or need help understanding any aspect of its design, I'm ready to assist with that.

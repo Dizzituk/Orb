@@ -17,6 +17,11 @@ NOTE (OpenAI token param drift):
 - Some newer OpenAI chat-capable models (e.g. gpt-5.*) reject `max_tokens`
   and require `max_completion_tokens` instead.
 - This module routes token limits accordingly, with a retry fallback.
+
+NOTE (GPT-5.x reasoning parameter):
+- GPT-5.x models support a `reasoning` parameter: {"effort": "none"|"low"|"medium"|"high"|"xhigh"}
+- When reasoning.effort != "none", temperature/top_p/logprobs are NOT supported
+- This module handles the reasoning parameter for GPT-5.x and o3/o4 models
 """
 
 from __future__ import annotations
@@ -164,9 +169,30 @@ def _openai_token_param_name(model_id: str) -> str:
     - Newer chat models (incl gpt-5.*): max_completion_tokens
     """
     m = (model_id or "").strip().lower()
-    if m.startswith("gpt-5") or m.startswith("o1") or m.startswith("o3"):
+    if m.startswith("gpt-5") or m.startswith("o1") or m.startswith("o3") or m.startswith("o4"):
         return "max_completion_tokens"
     return "max_tokens"
+
+
+def _is_reasoning_model(model_id: str) -> bool:
+    """Check if model supports the reasoning parameter (GPT-5.x, o3, o4)."""
+    m = (model_id or "").strip().lower()
+    return m.startswith("gpt-5") or m.startswith("o3") or m.startswith("o4")
+
+
+def _supports_temperature(model_id: str) -> bool:
+    """Check if model supports non-default temperature.
+    
+    GPT-5.x models and o-series only accept temperature=1.
+    """
+    m = (model_id or "").strip().lower()
+    # Models known to reject non-default temperature
+    # All GPT-5 variants (gpt-5-mini, gpt-5.2-chat, gpt-5.2-pro, etc.)
+    if m.startswith("gpt-5"):
+        return False
+    if m.startswith("o1") or m.startswith("o3") or m.startswith("o4"):
+        return False
+    return True
 
 
 async def _execute_tool_by_name(name: str, args: dict, context: Optional[dict]) -> dict:
@@ -213,6 +239,7 @@ class ProviderRegistry:
         enable_tools: bool = False,
         tool_names: Optional[List[str]] = None,
         job_envelope: Optional[dict] = None,
+        reasoning: Optional[dict] = None,  # GPT-5.x: {"effort": "none"|"low"|"medium"|"high"|"xhigh"}
         **kwargs: Any,  # absorb future constraints, e.g. data_sensitivity_constraint
     ) -> LlmCallResult:
         # NOTE: kwargs intentionally ignored. This keeps Phase4 callers forward-compatible.
@@ -264,6 +291,7 @@ class ProviderRegistry:
                     timeout_seconds=timeout_seconds,
                     tool_defs=tool_defs,
                     context=context,
+                    reasoning=reasoning,
                 )
             if chosen == "anthropic":
                 return await self._call_anthropic(
@@ -315,6 +343,7 @@ class ProviderRegistry:
         timeout_seconds: int,
         tool_defs: List[dict],
         context: Optional[dict],
+        reasoning: Optional[dict] = None,
     ) -> LlmCallResult:
         from openai import AsyncOpenAI
 
@@ -337,13 +366,16 @@ class ProviderRegistry:
             token_param = _openai_token_param_name(model_id)
             base_kwargs[token_param] = int(max_tokens)
 
-            # Temperature: only send if not default; some OpenAI models only accept default.
-            try:
-                t = float(temperature) if temperature is not None else None
-            except Exception:
-                t = None
-            if t is not None and abs(t - 1.0) > 1e-9:
-                base_kwargs["temperature"] = t
+            # Temperature handling
+            # Some models (gpt-5.2-chat-*, o1, o3, o4) only accept default temperature.
+            # Pre-filter to avoid unnecessary retries.
+            if _supports_temperature(model_id):
+                try:
+                    t = float(temperature) if temperature is not None else None
+                except Exception:
+                    t = None
+                if t is not None and abs(t - 1.0) > 1e-9:
+                    base_kwargs["temperature"] = t
 
             # Robust retry: handle SDK param mismatch, server-side max_tokens mismatch, and
             # model families that reject non-default temperature.
@@ -635,6 +667,7 @@ async def llm_call(
     enable_tools: bool = False,
     tool_names: Optional[List[str]] = None,
     job_envelope: Optional[dict] = None,
+    reasoning: Optional[dict] = None,  # GPT-5.x: {"effort": "none"|"low"|"medium"|"high"|"xhigh"}
     **kwargs: Any,  # absorb future constraints, e.g. data_sensitivity_constraint
 ) -> LlmCallResult:
     return await get_provider_registry().llm_call(
@@ -649,6 +682,7 @@ async def llm_call(
         enable_tools=enable_tools,
         tool_names=tool_names,
         job_envelope=job_envelope,
+        reasoning=reasoning,
         **kwargs,
     )
 

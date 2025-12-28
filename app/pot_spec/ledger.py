@@ -53,7 +53,7 @@ def append_event(job_artifact_root: str, job_id: str, event: dict[str, Any]) -> 
 
     Returns the absolute path written.
     """
-    ledger_dir = os.path.join(job_artifact_root, "jobs", job_id, "ledger")
+    ledger_dir = os.path.join(job_artifact_root, job_id, "ledger")
     os.makedirs(ledger_dir, exist_ok=True)
     path = os.path.join(ledger_dir, "events.ndjson")
 
@@ -77,7 +77,7 @@ def read_events(job_artifact_root: str, job_id: str) -> list[dict[str, Any]]:
     
     Returns list of event dicts, or empty list if ledger doesn't exist.
     """
-    ledger_path = os.path.join(job_artifact_root, "jobs", job_id, "ledger", "events.ndjson")
+    ledger_path = os.path.join(job_artifact_root, job_id, "ledger", "events.ndjson")
     
     if not os.path.exists(ledger_path):
         return []

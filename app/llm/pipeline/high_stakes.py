@@ -343,7 +343,7 @@ def store_architecture_artifact(
     if LEDGER_AVAILABLE:
         try:
             job_root = get_job_artifact_root()
-            arch_dir = Path(job_root) / "jobs" / job_id / "arch"
+            arch_dir = Path(job_root) / job_id / "arch"
             arch_dir.mkdir(parents=True, exist_ok=True)
             
             mirror_path = str(arch_dir / f"arch_v{arch_version}.md")
@@ -407,7 +407,7 @@ def store_critique_artifact(
     if LEDGER_AVAILABLE:
         try:
             job_root = get_job_artifact_root()
-            critique_dir = Path(job_root) / "jobs" / job_id / "critique"
+            critique_dir = Path(job_root) / job_id / "critique"
             critique_dir.mkdir(parents=True, exist_ok=True)
             
             # Write JSON artifact

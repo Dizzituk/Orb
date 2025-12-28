@@ -1,0 +1,94 @@
+{
+  "blocking_issues": [
+    {
+      "id": "ISSUE-001",
+      "spec_ref": "MUST-2, MUST-3, MUST-4, MUST-5",
+      "arch_ref": "N/A",
+      "category": "completeness",
+      "severity": "blocking",
+      "description": "The architecture defines the game state and UI screens but completely omits the core game loop and input handling logic. There is no description of how pieces fall over time, how player inputs (move, rotate, drop) are processed, or how these actions interact with the game state.",
+      "fix_suggestion": "Add a new section titled 'Game Logic' or 'Gameplay Loop' that details the main event loop, timing for gravity, player input processing, and state update rules for piece movement and rotation."
+    },
+    {
+      "id": "ISSUE-002",
+      "spec_ref": "MUST-10",
+      "arch_ref": "rotationSystem",
+      "category": "completeness",
+      "severity": "blocking",
+      "description": "The document lacks a description of the collision detection algorithm. It is impossible to implement piece movement, rotation, or locking without defining how the system checks for collisions with the board boundaries and other locked pieces.",
+      "fix_suggestion": "Add a subsection under 'Game Logic' that describes the algorithm for checking if a piece's position and orientation is valid (i.e., not colliding with walls or other pieces on the board)."
+    },
+    {
+      "id": "ISSUE-003",
+      "spec_ref": "MUST-6",
+      "arch_ref": "state",
+      "category": "completeness",
+      "severity": "blocking",
+      "description": "While the state includes 'linesCleared' and a 'board' array, the logic for detecting and clearing completed horizontal lines is not defined. This is a fundamental mechanic of the game.",
+      "fix_suggestion": "Describe the process for scanning the 'board' state for complete lines after a piece locks, how those lines are removed, and how the rows above are shifted down."
+    },
+    {
+      "id": "ISSUE-004",
+      "spec_ref": "MUST-7",
+      "arch_ref": "GameOverScreen",
+      "category": "completeness",
+      "severity": "blocking",
+      "description": "The architecture specifies a 'GameOverScreen' and a 'gameover' status but does not define the precise trigger condition. The logic for determining when a new piece cannot be spawned (the game over condition) is missing.",
+      "fix_suggestion": "Specify the condition for triggering the game over state, typically by checking if a new piece's spawn location is already occupied by a locked piece."
+    },
+    {
+      "id": "ISSUE-005",
+      "spec_ref": "MUST-3",
+      "arch_ref": "rotationSystem.wallKickData",
+      "category": "completeness",
+      "severity": "blocking",
+      "description": "The architecture document is physically truncated. The 'rotationSystem.wallKickData' section is incomplete, which is critical for implementing the specified Super Rotation System (SRS).",
+      "fix_suggestion": "Complete the 'wallKickData' section with the standard offset tables for all relevant piece types and rotation transitions as defined by the Tetris Guideline."
+    }
+  ],
+  "non_blocking_issues": [
+    {
+      "id": "ISSUE-006",
+      "spec_ref": "constraint:line_clear_scoring",
+      "arch_ref": "state.score",
+      "category": "completeness",
+      "severity": "non_blocking",
+      "description": "The document mentions following the '2009 Tetris Guideline scoring system' and includes state for back-to-back bonuses, but it does not specify the actual scoring rules (e.g., points per line clear, T-spin scores, combo bonuses).",
+      "fix_suggestion": "Add a 'Scoring System' section that explicitly lists the point values for single, double, triple, and Tetris line clears, as well as any other scoring mechanics like T-spins and combos that will be implemented."
+    },
+    {
+      "id": "ISSUE-007",
+      "spec_ref": "N/A",
+      "arch_ref": "state.highScore",
+      "category": "completeness",
+      "severity": "non_blocking",
+      "description": "The 'highScore' state is defined as being 'persisted to storage', but the mechanism for this persistence (e.g., local file, browser localStorage, registry) is not specified.",
+      "fix_suggestion": "Specify the intended storage mechanism for persisting the high score between game sessions to ensure it meets environment constraints."
+    },
+    {
+      "id": "ISSUE-008",
+      "spec_ref": "MUST-1",
+      "arch_ref": "rotationSystem.pieceDefinitions",
+      "category": "clarity",
+      "severity": "non_blocking",
+      "description": "The piece shape definitions are given as coordinates relative to a center of rotation, but this center point is not explicitly defined for each piece. This ambiguity could lead to incorrect implementation of rotation.",
+      "fix_suggestion": "For each piece in 'pieceDefinitions', add a 'pivot' or 'center' coordinate to explicitly define the point around which the piece rotates."
+    }
+  ],
+  "overall_pass": false,
+  "summary": "The architecture provides a solid definition of the game's UI screens and data state. However, it is critically incomplete as it entirely omits descriptions of the core game loop, input handling, collision detection, and line-clearing logic, all of which are fundamental requirements. The document is also physically truncated, leaving the crucial 'wallKickData' section unfinished. It cannot be approved without addressing these blocking completeness issues.",
+  "spec_coverage": {
+    "MUST-1": "covered",
+    "MUST-2": "missing",
+    "MUST-3": "partial",
+    "MUST-4": "missing",
+    "MUST-5": "missing",
+    "MUST-6": "partial",
+    "MUST-7": "partial",
+    "MUST-8": "covered",
+    "MUST-9": "covered",
+    "MUST-10": "missing"
+  },
+  "critique_model": "gemini-2.5-pro",
+  "critique_version": "v2"
+}
