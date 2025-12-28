@@ -16,18 +16,30 @@ Reliability improvements (2025-12):
 - Retry with fallback providers (openai → anthropic → google) on empty/invalid output
 - Validate spec quality before writing: require meaningful goal, requirements, or real questions
 - If all retries fail, create spec with system-generated clarification questions (never silent empty success)
+
+v1.2 (2025-12-28):
+- Fixed: detect_user_questions now uses smarter heuristics (density, code block stripping)
+- Fixed: Long architecture docs no longer trigger false positive question detection
+
+v1.1 (2025-12-28):
+- Fixed: Prompt now requires questions for vague/incomplete requests
+- Added: Debug logging for artifact write tracing
+- Fixed: No silent failures on artifact write
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional, List, Tuple
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 # Optional imports (keep Spec Gate resilient if other modules move)
 try:
@@ -54,9 +66,9 @@ except Exception:  # pragma: no cover
 
 # Fallback provider chain for retries (order matters)
 FALLBACK_PROVIDERS: List[Tuple[str, str]] = [
-    ("openai", os.getenv("OPENAI_SPEC_GATE_MODEL", os.getenv("OPENAI_DEFAULT_MODEL", "gpt-4o-mini"))),
-    ("anthropic", os.getenv("ANTHROPIC_SPEC_GATE_MODEL", "claude-sonnet-4-20250514")),
-    ("google", os.getenv("GOOGLE_SPEC_GATE_MODEL", "gemini-2.0-flash")),
+    ("openai", os.getenv("OPENAI_SPEC_GATE_MODEL", "gpt-5.2-chat-latest")),
+    ("anthropic", os.getenv("ANTHROPIC_SPEC_GATE_MODEL", "claude-opus-4-5-20251101")),
+    ("google", os.getenv("GOOGLE_SPEC_GATE_MODEL", "gemini-3-pro-preview")),
 ]
 
 # Maximum retry attempts across providers
@@ -74,11 +86,15 @@ def _utc_ts() -> str:
 def _artifact_root() -> str:
     if callable(get_job_artifact_root):
         try:
-            return str(get_job_artifact_root())
-        except Exception:
-            pass
+            root = str(get_job_artifact_root())
+            logger.debug(f"[spec_gate] _artifact_root from service: {root}")
+            return root
+        except Exception as e:
+            logger.warning(f"[spec_gate] get_job_artifact_root() failed: {e}")
     # Safe fallback: match service.py default
-    return os.path.abspath(os.getenv("ORB_JOB_ARTIFACT_ROOT", "jobs").strip() or "jobs")
+    fallback = os.path.abspath(os.getenv("ORB_JOB_ARTIFACT_ROOT", "jobs").strip() or "jobs")
+    logger.debug(f"[spec_gate] _artifact_root fallback: {fallback}")
+    return fallback
 
 
 def _ensure_dir(path: str) -> None:
@@ -95,7 +111,8 @@ def _append_event(job_artifact_root: str, job_id: str, event: dict[str, Any]) ->
     except Exception:
         pass
 
-    ledger_dir = os.path.join(job_artifact_root, job_id, "ledger")
+    # FIX: Added "jobs" segment to path
+    ledger_dir = os.path.join(job_artifact_root, "jobs", job_id, "ledger")
     _ensure_dir(ledger_dir)
     ledger_file = os.path.join(ledger_dir, "events.ndjson")
     with open(ledger_file, "a", encoding="utf-8") as f:
@@ -108,13 +125,35 @@ def _canonical_json_bytes(obj: Any) -> bytes:
 
 
 def _write_spec_file(job_artifact_root: str, job_id: str, spec_version: int, payload: dict[str, Any]) -> tuple[str, str]:
-    spec_dir = os.path.join(job_artifact_root, job_id, "spec")
-    _ensure_dir(spec_dir)
+    # FIX: Added "jobs" segment to path
+    spec_dir = os.path.join(job_artifact_root, "jobs", job_id, "spec")
+    logger.debug(f"[spec_gate] _write_spec_file: spec_dir={spec_dir}")
+    
+    try:
+        _ensure_dir(spec_dir)
+    except Exception as e:
+        logger.error(f"[spec_gate] Failed to create spec directory {spec_dir}: {e}")
+        raise
+    
     path = os.path.join(spec_dir, f"spec_v{spec_version}.json")
+    logger.debug(f"[spec_gate] Writing spec to: {path}")
 
     raw = _canonical_json_bytes(payload)
-    with open(path, "wb") as f:
-        f.write(raw)
+    try:
+        with open(path, "wb") as f:
+            f.write(raw)
+    except Exception as e:
+        logger.error(f"[spec_gate] Failed to write spec file {path}: {e}")
+        raise
+    
+    # Verify write succeeded
+    if not os.path.exists(path):
+        err_msg = f"[spec_gate] Spec file not created after write: {path}"
+        logger.error(err_msg)
+        raise IOError(err_msg)
+    
+    file_size = os.path.getsize(path)
+    logger.info(f"[spec_gate] Spec file written successfully: {path} ({file_size} bytes)")
 
     spec_hash = hashlib.sha256(raw).hexdigest()
     return path, spec_hash
@@ -167,11 +206,64 @@ def _safe_excerpt(text: str, max_len: int = 2000) -> str:
 # =============================================================================
 
 def detect_user_questions(text: str) -> bool:
-    """Heuristic only: true if the user text likely contains questions to resolve before proceeding."""
+    """Heuristic: true if text contains direct questions TO the user.
+    
+    Ignores:
+    - Question marks inside code blocks
+    - Rhetorical/documentation questions in large documents
+    - Low question density (< 1 question per 2000 chars)
+    
+    Triggers on:
+    - High question density in short text
+    - Explicit user-directed phrases like "please clarify", "Q1:", etc.
+    """
     if not text:
         return False
-    # '?' is the strongest signal; keep it simple and stable.
-    return "?" in text
+    
+    # Strip code blocks (```...```) to avoid false positives from code comments
+    text_no_code = re.sub(r'```[\s\S]*?```', '', text)
+    text_no_code = re.sub(r'`[^`]+`', '', text_no_code)
+    
+    # Count question marks
+    question_count = text_no_code.count('?')
+    
+    if question_count == 0:
+        return False
+    
+    # For long documents (>5000 chars), require high question density
+    # Architecture docs often have 1-2 "?" in comments/docs - that's not "asking questions"
+    text_len = len(text_no_code)
+    if text_len > 5000:
+        # Require at least 1 question per 2000 chars to trigger
+        density_threshold = text_len / 2000
+        if question_count < density_threshold:
+            return False
+    
+    # Check for explicit user-directed question phrases
+    user_question_patterns = [
+        r'\bplease (answer|clarify|confirm|specify|choose|select)\b',
+        r'\bwhich (would you|do you|option)\b',
+        r'\bdo you (want|need|prefer|require)\b',
+        r'\bwould you (like|prefer)\b',
+        r'\bcan you (clarify|specify|confirm)\b',
+        r'\bwhat (would you|do you)\b',
+        r'\b(Q\d+|Question \d+):\s*\w',  # Numbered questions like "Q1:" or "Question 1:"
+    ]
+    
+    text_lower = text_no_code.lower()
+    for pattern in user_question_patterns:
+        if re.search(pattern, text_lower):
+            return True
+    
+    # For short text (<2000 chars), any question mark is suspicious
+    if text_len < 2000 and question_count >= 1:
+        return True
+    
+    # For medium text (2000-5000 chars), require 3+ questions
+    if text_len < 5000 and question_count >= 3:
+        return True
+    
+    return False
 
 
 @dataclass
@@ -310,14 +402,27 @@ async def _attempt_spec_gate_call(
         "  },\n"
         '  "constraints": {"key": "value constraints"},\n'
         '  "acceptance_tests": ["list of testable acceptance criteria"],\n'
-        '  "open_questions": ["ONLY include if genuinely unclear - prefer empty []"],\n'
+        '  "open_questions": ["questions you MUST ask if any critical info is missing"],\n'
         '  "recommendations": ["optional suggestions"]\n'
         "}\n\n"
-        "CRITICAL RULES:\n"
-        "- Extract EXPLICIT requirements from user intent into must/should/can lists.\n"
-        "- Do NOT leave requirements arrays empty if user specified what they want.\n"
-        "- open_questions MUST be [] unless something is genuinely ambiguous.\n"
-        "- Output valid JSON only, no markdown code fences, no prose before/after.\n"
+        "CRITICAL RULES FOR HIGH-STAKES ARCHITECTURE:\n"
+        "1. HANDLING USER ANSWERS:\n"
+        "   - If the input contains 'Previous conversation:' with Q&A, the user is ANSWERING questions.\n"
+        "   - Extract all answers and incorporate them into requirements/constraints.\n"
+        "   - If all questions are answered satisfactorily, set open_questions to [].\n"
+        "   - Only add NEW questions if answers revealed new ambiguities.\n\n"
+        "2. INITIAL REQUESTS (no previous conversation):\n"
+        "   - You MUST ask clarifying questions in open_questions if:\n"
+        "     * Platform/language/framework is not specified\n"
+        "     * Scale/performance requirements are unclear\n"
+        "     * User type/audience is not defined\n"
+        "     * Core features are ambiguous\n"
+        "     * Deployment environment is unknown\n"
+        "   - A vague request like 'create Tetris' REQUIRES questions about platform, language, features.\n\n"
+        "3. GENERAL RULES:\n"
+        "   - Extract EXPLICIT requirements from user intent into must/should/can lists.\n"
+        "   - If user specified what they want clearly, populate requirements and leave open_questions empty.\n"
+        "   - Output valid JSON only, no markdown code fences, no prose before/after.\n"
     )
 
     messages = [

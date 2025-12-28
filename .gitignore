@@ -1,0 +1,8 @@
+*.jsonl
+*.ndjson
+*.md
+*.json
+*.txt
+*.db
+data/orb_memory.db
+.env

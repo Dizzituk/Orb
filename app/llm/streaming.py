@@ -338,10 +338,13 @@ async def stream_anthropic(
             return obj.get(key)
         return getattr(obj, key, None)
 
+    # Configurable max tokens for Anthropic (default 16384 for complete architecture docs)
+    anthropic_max_tokens = int(os.getenv("ANTHROPIC_STREAM_MAX_TOKENS", "16384"))
+
     try:
         async with client.messages.stream(
             model=use_model,
-            max_tokens=4096,
+            max_tokens=anthropic_max_tokens,
             system=enhanced_prompt,
             messages=messages,
         ) as stream:

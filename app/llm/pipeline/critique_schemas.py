@@ -357,9 +357,39 @@ Your output MUST be valid JSON matching this schema exactly:
 {CRITIQUE_JSON_SCHEMA}
 ```
 
+CRITICAL CALIBRATION - READ CAREFULLY:
+======================================
+A "blocking" issue is something that would make the system INCORRECT or UNBUILDABLE.
+
+BLOCKING issues (should catch real problems):
+- Security vulnerabilities that could cause data breach or system compromise
+- Missing components that are EXPLICITLY REQUIRED in the spec
+- Architectural decisions that make the spec requirements IMPOSSIBLE to implement
+- INTERNAL CONTRADICTIONS within the document (e.g., says "20 rows" in one place, "22 rows" elsewhere)
+- VALUES THAT CONTRADICT USER ANSWERS from the spec (e.g., spec says DAS=150ms but doc says 167ms)
+- Off-by-one errors or incorrect calculations that would produce wrong behavior
+- Incomplete sections that are critical to implementation (truncated content)
+
+NOT BLOCKING (use non_blocking instead):
+- Typos, grammar, formatting issues that don't affect meaning
+- Missing OPTIONAL features or nice-to-haves not in spec
+- Performance optimizations that aren't spec requirements
+- Style preferences or alternative approaches that would still work
+- Minor documentation gaps that don't affect implementation
+- Suggestions for improvement beyond spec requirements
+
+KEY CHECKS:
+1. Internal consistency: Do all numbers/values match throughout the document?
+2. Spec compliance: Do values match what the user specified in Q&A?
+3. Completeness: Are all MUST requirements from spec addressed?
+4. Correctness: Are calculations and references accurate?
+
+ASK YOURSELF: "Would building this produce the CORRECT system per the spec?"
+If values contradict or are inconsistent, that's BLOCKING even if technically buildable.
+
 RULES:
-1. blocking_issues: Problems that MUST be fixed before approval (security flaws, spec violations, missing critical components)
-2. non_blocking_issues: Improvements that SHOULD be made but don't block approval
+1. blocking_issues: Issues that would result in incorrect or broken implementation
+2. non_blocking_issues: Style, optimization, and enhancement suggestions
 3. Each issue MUST have a unique id (ISSUE-001, ISSUE-002, etc.)
 4. Each issue SHOULD reference spec_ref (which spec requirement) and arch_ref (which section)
 5. category must be one of: security, correctness, completeness, clarity, performance

@@ -21,7 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -174,7 +174,7 @@ def write_stage3_artifacts(
             "model": model,
             "stored_raw_output": str(output_path),
             "raw_output_sha256": hashlib.sha256((raw_output or "").encode("utf-8", errors="replace")).hexdigest(),
-            "stored_at_utc": datetime.utcnow().isoformat() + "Z",
+            "stored_at_utc": datetime.now(timezone.utc).isoformat(),
         }
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -380,7 +380,7 @@ def verify_and_store_stage3(
             "returned_spec_id": returned_spec_id,
             "returned_spec_hash": returned_spec_hash,
             "parse_note": parse_note,
-            "ts_utc": datetime.utcnow().isoformat() + "Z",
+            "ts_utc": datetime.now(timezone.utc).isoformat(),
         },
     )
     

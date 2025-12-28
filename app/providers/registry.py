@@ -195,6 +195,39 @@ def _supports_temperature(model_id: str) -> bool:
     return True
 
 
+def _is_chat_model(model_id: str) -> bool:
+    """Check if model supports the chat completions endpoint.
+    
+    Pro models (gpt-5.2-pro, gpt-5-pro, o1-pro, o3-pro) require the
+    completions endpoint, not chat completions.
+    """
+    m = (model_id or "").strip().lower()
+    # Pro models are NOT chat-capable (except preview variants)
+    if "-pro" in m and "-preview" not in m:
+        # gpt-5.2-pro, gpt-5-pro, o1-pro, o3-pro → completions only
+        return False
+    return True
+
+
+def _messages_to_prompt(messages: List[dict], system_prompt: Optional[str]) -> str:
+    """Convert messages array to a single prompt string for completions API."""
+    parts: List[str] = []
+    if system_prompt:
+        parts.append(f"System: {system_prompt}")
+    for m in messages:
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        if role == "system":
+            parts.append(f"System: {content}")
+        elif role == "assistant":
+            parts.append(f"Assistant: {content}")
+        else:
+            parts.append(f"User: {content}")
+    # Add prompt for assistant response
+    parts.append("Assistant:")
+    return "\n\n".join(parts)
+
+
 async def _execute_tool_by_name(name: str, args: dict, context: Optional[dict]) -> dict:
     from app.tools.registry import execute_tool_async
 
@@ -347,6 +380,17 @@ class ProviderRegistry:
     ) -> LlmCallResult:
         from openai import AsyncOpenAI
 
+        # Route non-chat models (e.g., gpt-5.2-pro) to Responses API
+        if not _is_chat_model(model_id):
+            return await self._call_openai_responses(
+                api_key=api_key,
+                model_id=model_id,
+                messages=messages,
+                system_prompt=system_prompt,
+                max_tokens=max_tokens,
+                timeout_seconds=timeout_seconds,
+            )
+
         client = AsyncOpenAI(api_key=api_key, timeout=timeout_seconds)
 
         tool_iters = 0
@@ -484,6 +528,84 @@ class ProviderRegistry:
                 raw_response=_safe_json(resp.model_dump() if hasattr(resp, "model_dump") else {}),
             )
 
+    async def _call_openai_responses(
+        self,
+        api_key: str,
+        model_id: str,
+        messages: List[dict],
+        system_prompt: Optional[str],
+        max_tokens: int,
+        timeout_seconds: int,
+    ) -> LlmCallResult:
+        """Call OpenAI Responses API for Pro models (e.g., gpt-5.2-pro).
+        
+        Pro models require the Responses API (v1/responses), not Chat Completions.
+        See: https://platform.openai.com/docs/api-reference/responses
+        """
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(api_key=api_key, timeout=timeout_seconds)
+        
+        logger.debug(f"[registry] Using Responses API for {model_id}")
+        
+        try:
+            # Build input - Responses API accepts messages array directly
+            input_messages = []
+            if system_prompt:
+                input_messages.append({"role": "system", "content": system_prompt})
+            for m in messages:
+                role = m.get("role", "user")
+                content = m.get("content", "")
+                if role in ("system", "user", "assistant"):
+                    input_messages.append({"role": role, "content": str(content)})
+                else:
+                    input_messages.append({"role": "user", "content": str(content)})
+            
+            # Call Responses API
+            resp = await client.responses.create(
+                model=model_id,
+                input=input_messages,
+            )
+            
+            # Extract text from response
+            # The SDK provides output_text as a convenience property
+            content = getattr(resp, "output_text", "") or ""
+            
+            # Fallback: extract from output array if output_text not available
+            if not content and hasattr(resp, "output") and resp.output:
+                text_parts = []
+                for item in resp.output:
+                    if hasattr(item, "type") and item.type == "message":
+                        if hasattr(item, "content"):
+                            for block in item.content:
+                                if hasattr(block, "type") and block.type == "output_text":
+                                    text_parts.append(getattr(block, "text", ""))
+                content = "\n".join(text_parts)
+            
+            # Extract usage
+            usage = LlmUsage()
+            if hasattr(resp, "usage") and resp.usage:
+                usage.prompt_tokens = getattr(resp.usage, "input_tokens", 0)
+                usage.completion_tokens = getattr(resp.usage, "output_tokens", 0)
+                usage.total_tokens = usage.prompt_tokens + usage.completion_tokens
+            
+            return LlmCallResult(
+                status=LlmCallStatus.SUCCESS,
+                provider_id="openai",
+                model_id=model_id,
+                content=content.strip(),
+                usage=usage,
+                raw_response=_safe_json(resp.model_dump() if hasattr(resp, "model_dump") else {}),
+            )
+        except Exception as exc:
+            logger.exception("[registry] OpenAI Responses API call failed: %s", exc)
+            return LlmCallResult(
+                status=LlmCallStatus.ERROR,
+                provider_id="openai",
+                model_id=model_id,
+                error_message=str(exc),
+            )
+
     async def _call_anthropic(
         self,
         api_key: str,
@@ -514,7 +636,7 @@ class ProviderRegistry:
                 system=final_system if final_system else None,
                 messages=running_messages,
                 temperature=temperature,
-                max_tokens=min(max_tokens, 8192),
+                max_tokens=min(max_tokens, 128000),
             )
             # Anthropic expects 'tools' to be a proper list; do not pass None.
             if tools_param is not None and isinstance(tools_param, list) and len(tools_param) > 0:
