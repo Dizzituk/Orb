@@ -1,12 +1,10 @@
 # FILE: app/llm/stream_router.py
-r"""
+"""
 Streaming endpoints for real-time LLM responses.
 Uses Server-Sent Events (SSE).
 
+v3.3 (2025-12): Added sandbox/zombie control integration
 v3.2 (2025-12): Split into multiple files for maintainability
-- stream_utils.py: Helper functions
-- high_stakes_stream.py: High-stakes critique generator
-- stream_router.py: Main router (this file)
 """
 
 import os
@@ -30,7 +28,6 @@ from .streaming import stream_llm, get_available_streaming_provider
 from app.llm.audit_logger import get_audit_logger, RoutingTrace
 from app.llm.router import is_high_stakes_job, is_opus_model
 
-# Import from split modules
 from .stream_utils import (
     DEFAULT_MODELS,
     parse_reasoning_tags,
@@ -44,7 +41,7 @@ from .stream_utils import (
 )
 from .high_stakes_stream import generate_high_stakes_critique_stream
 
-# v0.16.0: Log introspection integration
+# Log introspection integration
 try:
     from app.introspection.chat_integration import (
         detect_log_intent,
@@ -54,6 +51,13 @@ try:
     _INTROSPECTION_AVAILABLE = True
 except ImportError:
     _INTROSPECTION_AVAILABLE = False
+
+# Sandbox/zombie control integration
+try:
+    from app.sandbox import handle_sandbox_prompt, detect_sandbox_intent
+    _SANDBOX_AVAILABLE = True
+except ImportError:
+    _SANDBOX_AVAILABLE = False
 
 router = APIRouter(prefix="/stream", tags=["streaming"])
 logger = logging.getLogger(__name__)
@@ -98,6 +102,52 @@ def _is_introspection_trigger(msg: str) -> bool:
     return intent.is_log_request
 
 
+def _is_sandbox_trigger(msg: str) -> bool:
+    if not _SANDBOX_AVAILABLE:
+        return False
+    tool, _ = detect_sandbox_intent(msg)
+    return tool is not None
+
+
+# =============================================================================
+# SANDBOX STREAM
+# =============================================================================
+
+async def generate_sandbox_stream(
+    project_id: int,
+    message: str,
+    db: Session,
+    trace: Optional[RoutingTrace] = None,
+):
+    """Generate SSE stream for sandbox control commands."""
+    try:
+        yield "data: " + json.dumps({"type": "token", "content": "🧟 "}) + "\n\n"
+        response_text = handle_sandbox_prompt(message)
+        chunk_size = 50
+        for i in range(0, len(response_text), chunk_size):
+            chunk = response_text[i:i + chunk_size]
+            yield "data: " + json.dumps({"type": "token", "content": chunk}) + "\n\n"
+            await asyncio.sleep(0.01)
+        memory_service.create_message(db, memory_schemas.MessageCreate(
+            project_id=project_id, role="user", content=message, provider="local"
+        ))
+        memory_service.create_message(db, memory_schemas.MessageCreate(
+            project_id=project_id, role="assistant", content=response_text,
+            provider="local", model="sandbox_manager"
+        ))
+        if trace:
+            trace.finalize(success=True)
+        yield "data: " + json.dumps({
+            "type": "done", "provider": "local", "model": "sandbox_manager",
+            "total_length": len(response_text)
+        }) + "\n\n"
+    except Exception as e:
+        logger.exception("[sandbox] Stream failed: %s", e)
+        if trace:
+            trace.finalize(success=False, error_message=str(e))
+        yield "data: " + json.dumps({"type": "error", "error": str(e)}) + "\n\n"
+
+
 # =============================================================================
 # INTROSPECTION STREAM
 # =============================================================================
@@ -111,44 +161,32 @@ async def generate_introspection_stream(
     """Generate SSE stream for log introspection results."""
     try:
         intent = detect_log_intent(message)
-        
-        yield "data: " + json.dumps({
-            'type': 'token',
-            'content': '📋 Fetching logs...\n\n'
-        }) + "\n\n"
-        
+        yield "data: " + json.dumps({"type": "token", "content": "📋 Fetching logs...\n\n"}) + "\n\n"
         summary, structured = await handle_log_request(db, intent)
         response = format_log_response_for_chat(summary, structured)
-        
         chunk_size = 80
         for i in range(0, len(response), chunk_size):
             chunk = response[i:i + chunk_size]
-            yield "data: " + json.dumps({'type': 'token', 'content': chunk}) + "\n\n"
+            yield "data: " + json.dumps({"type": "token", "content": chunk}) + "\n\n"
             await asyncio.sleep(0.01)
-
-        from app.memory import service as mem_svc, schemas as mem_schemas
-        mem_svc.create_message(db, mem_schemas.MessageCreate(
+        memory_service.create_message(db, memory_schemas.MessageCreate(
             project_id=project_id, role="user", content=message, provider="local"
         ))
-        mem_svc.create_message(db, mem_schemas.MessageCreate(
-            project_id=project_id, role="assistant", content=response, provider="introspection", model="log_query"
+        memory_service.create_message(db, memory_schemas.MessageCreate(
+            project_id=project_id, role="assistant", content=response,
+            provider="introspection", model="log_query"
         ))
-
         if trace:
             trace.finalize(success=True)
-
         yield "data: " + json.dumps({
-            'type': 'done',
-            'provider': 'introspection',
-            'model': 'log_query',
-            'total_length': len(response)
+            "type": "done", "provider": "introspection", "model": "log_query",
+            "total_length": len(response)
         }) + "\n\n"
-
     except Exception as e:
         logger.exception("[introspection] Stream failed: %s", e)
         if trace:
             trace.finalize(success=False, error_message=str(e))
-        yield "data: " + json.dumps({'type': 'error', 'error': str(e)}) + "\n\n"
+        yield "data: " + json.dumps({"type": "error", "error": str(e)}) + "\n\n"
 
 
 # =============================================================================
@@ -170,7 +208,6 @@ async def generate_sse_stream(
     loop = asyncio.get_event_loop()
     started_ms = int(loop.time() * 1000)
     trace_finished = False
-
     current_provider = provider
     current_model = model
     final_usage = None
@@ -179,20 +216,18 @@ async def generate_sse_stream(
 
     try:
         async for event in stream_llm(
-            provider=provider,
-            model=model,
-            system_prompt=system_prompt,
-            messages=messages,
-            enable_reasoning=enable_reasoning,
+            provider=provider, model=model, system_prompt=system_prompt,
+            messages=messages, enable_reasoning=enable_reasoning,
         ):
             event_type = event.get("type")
             if event_type == "token":
-                chunk = event.get("content", "")
+                chunk = event.get("text", event.get("content", ""))
                 accumulated += chunk
-                yield "data: " + json.dumps(event) + "\n\n"
+                yield "data: " + json.dumps({"type": "token", "content": chunk}) + "\n\n"
             elif event_type == "reasoning":
-                reasoning_content += event.get("content", "")
-                yield "data: " + json.dumps(event) + "\n\n"
+                chunk = event.get("text", event.get("content", ""))
+                reasoning_content += chunk
+                yield "data: " + json.dumps({"type": "reasoning", "content": chunk}) + "\n\n"
             elif event_type == "usage":
                 final_usage = event.get("usage")
             elif event_type == "error":
@@ -205,7 +240,6 @@ async def generate_sse_stream(
             elif event_type == "done":
                 current_provider = event.get("provider", current_provider)
                 current_model = event.get("model", current_model)
-
     except asyncio.CancelledError:
         if trace and not trace_finished:
             trace.log_warning("STREAM", "client_disconnect")
@@ -219,27 +253,21 @@ async def generate_sse_stream(
             trace.log_model_call("primary", current_provider, current_model, "primary", 0, 0, duration_ms, success=False, error=str(e))
             trace.finalize(success=False, error_message=str(e))
             trace_finished = True
-        yield "data: " + json.dumps({'type': 'error', 'error': str(e)}) + "\n\n"
+        yield "data: " + json.dumps({"type": "error", "error": str(e)}) + "\n\n"
         return
 
     duration_ms = max(0, int(loop.time() * 1000) - started_ms)
-
     answer_content, extracted_reasoning = parse_reasoning_tags(accumulated)
     if extracted_reasoning:
         reasoning_content = extracted_reasoning
 
-    memory_service.create_message(db, memory_schemas.MessageCreate(project_id=project_id, role="user", content=message, provider="local"))
-    memory_service.create_message(
-        db,
-        memory_schemas.MessageCreate(
-            project_id=project_id,
-            role="assistant",
-            content=answer_content,
-            provider=current_provider,
-            model=current_model,
-            reasoning=reasoning_content or None,
-        ),
-    )
+    memory_service.create_message(db, memory_schemas.MessageCreate(
+        project_id=project_id, role="user", content=message, provider="local"
+    ))
+    memory_service.create_message(db, memory_schemas.MessageCreate(
+        project_id=project_id, role="assistant", content=answer_content,
+        provider=current_provider, model=current_model, reasoning=reasoning_content or None,
+    ))
 
     if trace and not trace_finished:
         prompt_tokens, completion_tokens = extract_usage_tokens(final_usage)
@@ -247,7 +275,10 @@ async def generate_sse_stream(
         trace.finalize(success=True)
         trace_finished = True
 
-    yield "data: " + json.dumps({'type': 'done', 'provider': current_provider, 'model': current_model, 'total_length': len(answer_content)}) + "\n\n"
+    yield "data: " + json.dumps({
+        "type": "done", "provider": current_provider, "model": current_model,
+        "total_length": len(answer_content)
+    }) + "\n\n"
 
 
 # =============================================================================
@@ -285,44 +316,62 @@ async def stream_chat(req: StreamChatRequest, db: Session = Depends(get_db), aut
     if audit:
         trace = audit.start_trace(session_id=make_session_id(auth), project_id=req.project_id, user_text=req.message, request_id=request_id)
 
-    # Local tool triggers
+    # =========================================================================
+    # LOCAL TOOL TRIGGERS (checked before LLM routing)
+    # =========================================================================
+
+    # Sandbox/zombie control
+    if _SANDBOX_AVAILABLE and _is_sandbox_trigger(req.message):
+        routing_reason = "Local tool trigger: SANDBOX CONTROL"
+        if trace:
+            trace.log_request_start(job_type=req.job_type or "", resolved_job_type="local.sandbox", provider="local", model="sandbox_manager", reason=routing_reason, frontier_override=False, file_map_injected=False, attachments=None)
+            trace.log_routing_decision(job_type="local.sandbox", provider="local", model="sandbox_manager", reason=routing_reason, frontier_override=False, file_map_injected=False)
+        return StreamingResponse(
+            generate_sandbox_stream(project_id=req.project_id, message=req.message, db=db, trace=trace),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    # Architecture map
     if _is_archmap_trigger(req.message):
         routing_reason = "Local tool trigger: CREATE ARCHITECTURE MAP"
         if trace:
             trace.log_request_start(job_type=req.job_type or "", resolved_job_type="local.architecture_map", provider=ARCHMAP_PROVIDER, model=ARCHMAP_MODEL, reason=routing_reason, frontier_override=False, file_map_injected=False, attachments=None)
             trace.log_routing_decision(job_type="local.architecture_map", provider=ARCHMAP_PROVIDER, model=ARCHMAP_MODEL, reason=routing_reason, frontier_override=False, file_map_injected=False)
-
         return StreamingResponse(
             generate_local_architecture_map_stream(project_id=req.project_id, message=req.message, db=db, trace=trace),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    # Zobie map
     if _is_zobie_map_trigger(req.message):
         routing_reason = "Local tool trigger: ZOBIE MAP"
         if trace:
             trace.log_request_start(job_type=req.job_type or "", resolved_job_type="local.zobie_map", provider="local", model="zobie_mapper", reason=routing_reason, frontier_override=False, file_map_injected=False, attachments=None)
             trace.log_routing_decision(job_type="local.zobie_map", provider="local", model="zobie_mapper", reason=routing_reason, frontier_override=False, file_map_injected=False)
-
         return StreamingResponse(
             generate_local_zobie_map_stream(project_id=req.project_id, message=req.message, db=db, trace=trace),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    # Log introspection
     if _INTROSPECTION_AVAILABLE and _is_introspection_trigger(req.message):
         routing_reason = "Local tool trigger: LOG INTROSPECTION"
         if trace:
             trace.log_request_start(job_type=req.job_type or "", resolved_job_type="local.introspection", provider="introspection", model="log_query", reason=routing_reason, frontier_override=False, file_map_injected=False, attachments=None)
             trace.log_routing_decision(job_type="local.introspection", provider="introspection", model="log_query", reason=routing_reason, frontier_override=False, file_map_injected=False)
-
         return StreamingResponse(
             generate_introspection_stream(project_id=req.project_id, message=req.message, db=db, trace=trace),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    # Build context
+    # =========================================================================
+    # BUILD CONTEXT
+    # =========================================================================
+
     context_block = build_context_block(db, req.project_id)
     semantic_context = get_semantic_context(db, req.project_id, req.message) if req.use_semantic_search else ""
     doc_context = build_document_context(db, req.project_id)
@@ -335,51 +384,44 @@ async def stream_chat(req: StreamChatRequest, db: Session = Depends(get_db), aut
     if doc_context:
         full_context += "=== UPLOADED DOCUMENTS ===" + doc_context
 
-    # Job continuation
+    # =========================================================================
+    # JOB CONTINUATION
+    # =========================================================================
+
     if req.continue_job_id and req.job_state == "needs_spec_clarification":
         print(f"[stream_router] Continuing job {req.continue_job_id} (state: {req.job_state})")
-        
         provider = "anthropic"
         model = DEFAULT_MODELS["anthropic_opus"]
         job_type_value = "architecture_design"
         routing_reason = f"Job continuation: {req.continue_job_id} (spec clarification)"
-        
         if trace:
             trace.log_request_start(job_type="architecture_design", resolved_job_type=job_type_value, provider=provider, model=model, reason=routing_reason, frontier_override=False, file_map_injected=False, attachments=None)
             trace.log_routing_decision(job_type=job_type_value, provider=provider, model=model, reason=routing_reason, frontier_override=False, file_map_injected=False)
-        
         messages: List[dict] = []
         if req.include_history:
             history = memory_service.list_messages(db, req.project_id, limit=req.history_limit)
             messages = [{"role": msg.role, "content": msg.content} for msg in history]
         messages.append({"role": "user", "content": req.message})
-        
         system_prompt = f"Project: {project.name}."
         if project.description:
             system_prompt += f" {project.description}"
         if full_context:
             system_prompt += f"\n\nYou have access to the following context from this project:\n\n{full_context}"
-        
         return StreamingResponse(
             generate_high_stakes_critique_stream(
-                project_id=req.project_id,
-                message=req.message,
-                provider=provider,
-                model=model,
-                system_prompt=system_prompt,
-                messages=messages,
-                full_context=full_context,
-                job_type_str=job_type_value,
-                db=db,
-                trace=trace,
-                enable_reasoning=req.enable_reasoning,
-                continue_job_id=req.continue_job_id,
+                project_id=req.project_id, message=req.message, provider=provider, model=model,
+                system_prompt=system_prompt, messages=messages, full_context=full_context,
+                job_type_str=job_type_value, db=db, trace=trace,
+                enable_reasoning=req.enable_reasoning, continue_job_id=req.continue_job_id,
             ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    # Normal routing
+    # =========================================================================
+    # NORMAL ROUTING
+    # =========================================================================
+
     job_type = classify_job_type(req.message, req.job_type or "")
     job_type_value = job_type.value
 
@@ -434,35 +476,23 @@ Use this context to answer the user's questions. If asked about people, document
 or information that appears in the context above, use that information to respond.
 Do NOT claim you don't have information if it's present in the context."""
 
+    # High-stakes routing
     if provider == "anthropic" and is_opus_model(model) and is_high_stakes_job(job_type_value):
         return StreamingResponse(
             generate_high_stakes_critique_stream(
-                project_id=req.project_id,
-                message=req.message,
-                provider=provider,
-                model=model,
-                system_prompt=system_prompt,
-                messages=messages,
-                full_context=full_context,
-                job_type_str=job_type_value,
-                db=db,
-                trace=trace,
-                enable_reasoning=req.enable_reasoning,
+                project_id=req.project_id, message=req.message, provider=provider, model=model,
+                system_prompt=system_prompt, messages=messages, full_context=full_context,
+                job_type_str=job_type_value, db=db, trace=trace, enable_reasoning=req.enable_reasoning,
             ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    # Normal stream
     return StreamingResponse(
         generate_sse_stream(
-            project_id=req.project_id,
-            message=req.message,
-            provider=provider,
-            model=model,
-            system_prompt=system_prompt,
-            messages=messages,
-            db=db,
-            trace=trace,
+            project_id=req.project_id, message=req.message, provider=provider, model=model,
+            system_prompt=system_prompt, messages=messages, db=db, trace=trace,
             enable_reasoning=req.enable_reasoning,
         ),
         media_type="text/event-stream",

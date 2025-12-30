@@ -20,6 +20,12 @@ Sandbox Bridge:
 - SandboxVerifier: Block 9 verification via isolated sandbox
 - SandboxExecutor: Block 8 file writes via sandbox
 - EvidenceLoader: Load zobie_map evidence packs
+
+Safety & Enforcement:
+- Enforcement: Global output validation (no-code rule, token caps)
+- IncidentReport: Strike 3 hard stop artifacts with human review
+- ViolationType: Code detection patterns (fences, diffs, commands)
+- Token limits: DEFAULT=1500, MAX=2000, BREAK_GLASS=4000
 """
 
 from app.overwatcher.schemas import (
@@ -170,6 +176,32 @@ from app.overwatcher.job_runner import (
     run_shell_job,
 )
 
+# Enforcement Layer (Safety)
+from app.overwatcher.enforcement import (
+    ViolationType,
+    Violation,
+    EnforcementResult,
+    detect_code_violations,
+    enforce_overwatcher_output,
+    enforce_and_reject,
+    is_implementer_output_valid,
+    DEFAULT_OUTPUT_TOKENS,
+    MAX_OUTPUT_TOKENS,
+    BREAK_GLASS_TOKENS,
+)
+
+# Incident Reports (Strike 3 Hard Stop)
+from app.overwatcher.incident_report import (
+    IncidentSeverity,
+    IncidentCategory,
+    ResolutionStatus,
+    StrikeRecord,
+    IncidentReport,
+    build_incident_report,
+    store_incident_report,
+    load_incident_report,
+)
+
 __all__ = [
     # Schemas
     "ChunkStatus",
@@ -278,4 +310,24 @@ __all__ = [
     "JobResult",
     "run_simple_job",
     "run_shell_job",
+    # Enforcement Layer (Safety)
+    "ViolationType",
+    "Violation",
+    "EnforcementResult",
+    "detect_code_violations",
+    "enforce_overwatcher_output",
+    "enforce_and_reject",
+    "is_implementer_output_valid",
+    "DEFAULT_OUTPUT_TOKENS",
+    "MAX_OUTPUT_TOKENS",
+    "BREAK_GLASS_TOKENS",
+    # Incident Reports (Strike 3)
+    "IncidentSeverity",
+    "IncidentCategory",
+    "ResolutionStatus",
+    "StrikeRecord",
+    "IncidentReport",
+    "build_incident_report",
+    "store_incident_report",
+    "load_incident_report",
 ]
