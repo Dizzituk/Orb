@@ -549,7 +549,7 @@ class FallbackHandler:
         Returns:
             FallbackResult with operation result or failure info
         """
-        result = FallbackResult()
+        result = FallbackResult(success=False)
         
         current_provider = initial_provider
         current_model = initial_model

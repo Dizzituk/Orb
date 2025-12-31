@@ -1,2 +1,8 @@
 {"event":"STAGE_SPEC_HASH_COMPUTED","expected_spec_hash":"correct_hash","job_id":"job-1","spec_id":"abc-123","stage_name":"test_stage","status":"ok","ts":"2025-12-27T22:03:00Z"}
 {"event":"STAGE_SPEC_HASH_VERIFIED","expected_spec_hash":"correct_hash","job_id":"job-1","observed_spec_hash":"correct_hash","spec_id":"abc-123","stage_name":"test_stage","status":"ok","ts":"2025-12-27T22:03:00Z","verified":true}
+{"event":"STAGE_SPEC_HASH_COMPUTED","expected_spec_hash":"correct_hash","job_id":"job-1","spec_id":"abc-123","stage_name":"test_stage","status":"ok","ts":"2025-12-30T21:24:24Z"}
+{"event":"STAGE_SPEC_HASH_COMPUTED","expected_spec_hash":"correct_hash","job_id":"job-1","spec_id":"abc-123","stage_name":"test_stage","status":"ok","ts":"2025-12-30T21:46:52Z"}
+{"event":"STAGE_SPEC_HASH_COMPUTED","expected_spec_hash":"correct_hash","job_id":"job-1","spec_id":"abc-123","stage_name":"test_stage","status":"ok","ts":"2025-12-30T22:00:43Z"}
+{"event":"STAGE_SPEC_HASH_COMPUTED","expected_spec_hash":"correct_hash","job_id":"job-1","spec_id":"abc-123","stage_name":"test_stage","status":"ok","ts":"2025-12-30T22:11:07Z"}
+{"event":"STAGE_SPEC_HASH_COMPUTED","expected_spec_hash":"correct_hash","job_id":"job-1","spec_id":"abc-123","stage_name":"test_stage","status":"ok","ts":"2025-12-30T22:15:40Z"}
+{"event":"STAGE_SPEC_HASH_COMPUTED","expected_spec_hash":"correct_hash","job_id":"job-1","spec_id":"abc-123","stage_name":"test_stage","status":"ok","ts":"2025-12-30T22:20:36Z"}

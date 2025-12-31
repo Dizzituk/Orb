@@ -19,6 +19,23 @@ from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
+
+# Custom exceptions for clear error handling
+class EncryptionError(Exception):
+    """Base exception for encryption errors."""
+    pass
+
+
+class EncryptionNotInitializedError(EncryptionError):
+    """Raised when encryption operations attempted without initialization."""
+    pass
+
+
+class DecryptionError(EncryptionError):
+    """Raised when decryption fails (wrong key, tampered data, etc.)."""
+    pass
+
+
 # Salt storage path (used only for legacy migration)
 SALT_PATH = Path("data/encryption_salt.bin")
 
@@ -54,7 +71,9 @@ class EncryptionManager:
         """
         Decrypt a string.
         Expects base64-encoded ciphertext prefixed with 'ENC:'.
-        Returns original plaintext, or ciphertext if decryption fails.
+        
+        Raises:
+            DecryptionError: If decryption fails (wrong key, tampered data, etc.)
         """
         if not ciphertext:
             return ciphertext
@@ -68,10 +87,18 @@ class EncryptionManager:
             encrypted_bytes = base64.urlsafe_b64decode(encoded.encode('ascii'))
             plaintext = self._fernet.decrypt(encrypted_bytes)
             return plaintext.decode('utf-8')
-        except (InvalidToken, ValueError, UnicodeDecodeError) as e:
-            print(f"[crypto] Decryption failed: {e}")
-            # Return as-is if decryption fails (might be corrupted or wrong key)
-            return ciphertext
+        except InvalidToken as e:
+            raise DecryptionError(
+                "Decryption failed: invalid token (wrong key or tampered data)"
+            ) from e
+        except ValueError as e:
+            raise DecryptionError(
+                f"Decryption failed: invalid ciphertext format - {e}"
+            ) from e
+        except UnicodeDecodeError as e:
+            raise DecryptionError(
+                f"Decryption failed: invalid UTF-8 in decrypted data - {e}"
+            ) from e
     
     def is_encrypted(self, value: str) -> bool:
         """Check if a value is encrypted."""
@@ -271,18 +298,27 @@ def is_encryption_ready() -> bool:
 def encrypt_string(plaintext: str) -> str:
     """
     Encrypt a string using the current encryption key.
-    Returns plaintext unchanged if encryption not initialized.
+    
+    Raises:
+        EncryptionNotInitializedError: If encryption not initialized.
     """
     if not _encryption_manager:
-        return plaintext
+        raise EncryptionNotInitializedError(
+            "Encryption not initialized. Call set_encryption_key() or init_master_key_from_env() first."
+        )
     return _encryption_manager.encrypt(plaintext)
 
 
 def decrypt_string(ciphertext: str) -> str:
     """
     Decrypt a string using the current encryption key.
-    Returns ciphertext unchanged if encryption not initialized.
+    
+    Raises:
+        EncryptionNotInitializedError: If encryption not initialized.
+        DecryptionError: If decryption fails (wrong key, tampered data, etc.)
     """
     if not _encryption_manager:
-        return ciphertext
+        raise EncryptionNotInitializedError(
+            "Encryption not initialized. Call set_encryption_key() or init_master_key_from_env() first."
+        )
     return _encryption_manager.decrypt(ciphertext)

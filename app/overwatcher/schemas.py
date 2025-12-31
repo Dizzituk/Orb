@@ -6,6 +6,11 @@ Block 7-12 data structures:
 - VerificationResult: Gate pass/fail with evidence
 - QuarantineCandidate: File with static/dynamic evidence
 - ReplayPack: Deterministic replay bundle
+
+Governance (Global Policy Spec v1.0):
+- StrikeState: Per-job strike tracking
+- StrikeEvent: Individual strike record
+- HumanOverride: Override token
 """
 
 from __future__ import annotations
@@ -55,6 +60,159 @@ class QuarantineReason(str, Enum):
     DEAD_CODE = "dead_code"
     DEPRECATED = "deprecated"
     MANUAL_FLAG = "manual_flag"
+
+
+# =============================================================================
+# Governance Enums (Global Policy Spec v1.0)
+# =============================================================================
+
+class SignatureType(str, Enum):
+    """Type of signature for strike tracking."""
+    ERROR = "error"
+    SPEC_HOLE = "spec_hole"
+
+
+class OverrideType(str, Enum):
+    """Human override actions for governance."""
+    RESUME_AFTER_STRIKE3 = "resume_after_strike3"
+    CLEAR_SIGNATURE = "clear_signature"
+    FORCE_CONTINUE = "force_continue"
+
+
+class HoleType(str, Enum):
+    """Spec Gate hole classification."""
+    MISSING_INFO = "missing_info"
+    CONTRADICTION = "contradiction"
+    AMBIGUITY = "ambiguity"
+    SAFETY_GAP = "safety_gap"
+
+
+# =============================================================================
+# Governance Dataclasses (Global Policy Spec v1.0)
+# =============================================================================
+
+@dataclass
+class StrikeEvent:
+    """Record of a single strike occurrence."""
+    signature: str
+    signature_type: SignatureType
+    strike_number: int
+    timestamp: str
+    diagnosis_summary: str = ""
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "signature": self.signature,
+            "signature_type": self.signature_type.value if isinstance(self.signature_type, SignatureType) else self.signature_type,
+            "strike_number": self.strike_number,
+            "timestamp": self.timestamp,
+            "diagnosis_summary": self.diagnosis_summary,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "StrikeEvent":
+        return cls(
+            signature=data.get("signature", ""),
+            signature_type=SignatureType(data.get("signature_type", "error")),
+            strike_number=data.get("strike_number", 0),
+            timestamp=data.get("timestamp", ""),
+            diagnosis_summary=data.get("diagnosis_summary", ""),
+        )
+
+
+@dataclass
+class StrikeState:
+    """Per-job strike tracking state.
+    
+    Persisted to: jobs/<job_id>/governance/strike_state.json
+    """
+    job_id: str
+    created_at: str = ""
+    updated_at: str = ""
+    strikes_by_error_sig: Dict[str, int] = field(default_factory=dict)
+    strikes_by_spec_hole_sig: Dict[str, int] = field(default_factory=dict)
+    history: List[StrikeEvent] = field(default_factory=list)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "job_id": self.job_id,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "strikes_by_error_sig": self.strikes_by_error_sig,
+            "strikes_by_spec_hole_sig": self.strikes_by_spec_hole_sig,
+            "history": [e.to_dict() for e in self.history],
+        }
+    
+    def to_json(self, indent: int = 2) -> str:
+        return json.dumps(self.to_dict(), indent=indent, ensure_ascii=False)
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "StrikeState":
+        return cls(
+            job_id=data.get("job_id", ""),
+            created_at=data.get("created_at", ""),
+            updated_at=data.get("updated_at", ""),
+            strikes_by_error_sig=data.get("strikes_by_error_sig", {}),
+            strikes_by_spec_hole_sig=data.get("strikes_by_spec_hole_sig", {}),
+            history=[StrikeEvent.from_dict(e) for e in data.get("history", [])],
+        )
+    
+    @classmethod
+    def from_json(cls, json_str: str) -> "StrikeState":
+        return cls.from_dict(json.loads(json_str))
+    
+    def save(self, jobs_dir: Path) -> Path:
+        """Save strike state to jobs/<job_id>/governance/strike_state.json"""
+        governance_dir = jobs_dir / self.job_id / "governance"
+        governance_dir.mkdir(parents=True, exist_ok=True)
+        
+        state_file = governance_dir / "strike_state.json"
+        with open(state_file, "w") as f:
+            f.write(self.to_json())
+        
+        return state_file
+    
+    @classmethod
+    def load(cls, jobs_dir: Path, job_id: str) -> Optional["StrikeState"]:
+        """Load strike state from jobs/<job_id>/governance/strike_state.json"""
+        state_file = jobs_dir / job_id / "governance" / "strike_state.json"
+        if not state_file.exists():
+            return None
+        
+        with open(state_file) as f:
+            return cls.from_json(f.read())
+
+
+@dataclass
+class HumanOverride:
+    """Human override token for governance decisions."""
+    override_type: OverrideType
+    reason: str
+    user_id: str
+    timestamp: str
+    target_signature: Optional[str] = None
+    acknowledged_incident_id: Optional[str] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "override_type": self.override_type.value if isinstance(self.override_type, OverrideType) else self.override_type,
+            "reason": self.reason,
+            "user_id": self.user_id,
+            "timestamp": self.timestamp,
+            "target_signature": self.target_signature,
+            "acknowledged_incident_id": self.acknowledged_incident_id,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "HumanOverride":
+        return cls(
+            override_type=OverrideType(data.get("override_type", "force_continue")),
+            reason=data.get("reason", ""),
+            user_id=data.get("user_id", ""),
+            timestamp=data.get("timestamp", ""),
+            target_signature=data.get("target_signature"),
+            acknowledged_incident_id=data.get("acknowledged_incident_id"),
+        )
 
 
 # =============================================================================
@@ -115,48 +273,29 @@ class ChunkVerification:
 
 @dataclass
 class Chunk:
-    """A bounded implementation unit for Sonnet coding.
-    
-    Each chunk is context-sized and self-contained:
-    - Clear objective and scope
-    - Explicit file permissions (add/modify/delete)
-    - Spec and arch traceability
-    - Verification commands
-    - Rollback plan
-    - Stop conditions
-    """
+    """A bounded implementation unit for Sonnet coding."""
     chunk_id: str
     title: str
     objective: str
     
-    # Traceability
-    spec_refs: List[str] = field(default_factory=list)  # ["MUST-1", "SHOULD-2"]
-    arch_refs: List[str] = field(default_factory=list)  # ["Section 2.1", "Module: Auth"]
+    spec_refs: List[str] = field(default_factory=list)
+    arch_refs: List[str] = field(default_factory=list)
     
-    # File permissions (Block 8 enforcement)
     allowed_files: Dict[str, List[str]] = field(default_factory=lambda: {
         "add": [],
         "modify": [],
         "delete_candidates": [],
     })
     
-    # Implementation steps
     steps: List[ChunkStep] = field(default_factory=list)
-    
-    # Verification (Block 9)
     verification: ChunkVerification = field(default_factory=ChunkVerification)
-    
-    # Rollback
     rollback_plan: str = ""
-    
-    # Stop conditions
     stop_conditions: List[str] = field(default_factory=list)
     
-    # Metadata
     status: ChunkStatus = ChunkStatus.PENDING
-    priority: int = 0  # Lower = higher priority
+    priority: int = 0
     estimated_tokens: int = 0
-    dependencies: List[str] = field(default_factory=list)  # chunk_ids this depends on
+    dependencies: List[str] = field(default_factory=list)
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -223,7 +362,6 @@ class ChunkPlan:
     
     chunks: List[Chunk] = field(default_factory=list)
     
-    # Metadata
     created_at: str = ""
     total_estimated_tokens: int = 0
     
@@ -249,46 +387,48 @@ class ChunkPlan:
             plan_id=data.get("plan_id", ""),
             job_id=data.get("job_id", ""),
             arch_id=data.get("arch_id", ""),
-            arch_version=data.get("arch_version", 1),
+            arch_version=data.get("arch_version", 0),
             spec_id=data.get("spec_id", ""),
             spec_hash=data.get("spec_hash", ""),
             chunks=[Chunk.from_dict(c) for c in data.get("chunks", [])],
             created_at=data.get("created_at", ""),
             total_estimated_tokens=data.get("total_estimated_tokens", 0),
         )
+    
+    @classmethod
+    def from_json(cls, json_str: str) -> "ChunkPlan":
+        return cls.from_dict(json.loads(json_str))
 
 
 # =============================================================================
-# Block 8: Diff Boundary Result
+# Block 8: Boundary Enforcement
 # =============================================================================
 
 @dataclass
 class BoundaryViolation:
-    """A file touched outside allowed boundaries."""
+    """A single boundary violation in a diff."""
     file_path: str
-    action: str  # "added", "modified", "deleted"
-    reason: str  # Why it's a violation
+    violation_type: str
+    details: str
     
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        return {
+            "file_path": self.file_path,
+            "violation_type": self.violation_type,
+            "details": self.details,
+        }
 
 
 @dataclass
 class DiffCheckResult:
-    """Result of checking implementation diff against chunk boundaries."""
-    passed: bool
+    """Result of checking a diff against chunk boundaries."""
+    allowed: bool
     violations: List[BoundaryViolation] = field(default_factory=list)
-    files_added: List[str] = field(default_factory=list)
-    files_modified: List[str] = field(default_factory=list)
-    files_deleted: List[str] = field(default_factory=list)
     
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "passed": self.passed,
+            "allowed": self.allowed,
             "violations": [v.to_dict() for v in self.violations],
-            "files_added": self.files_added,
-            "files_modified": self.files_modified,
-            "files_deleted": self.files_deleted,
         }
 
 
@@ -304,57 +444,81 @@ class CommandResult:
     stdout: str
     stderr: str
     duration_ms: int
-    passed: bool
+    timed_out: bool = False
     
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        return {
+            "command": self.command,
+            "exit_code": self.exit_code,
+            "stdout": self.stdout,
+            "stderr": self.stderr,
+            "duration_ms": self.duration_ms,
+            "timed_out": self.timed_out,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CommandResult":
+        return cls(
+            command=data.get("command", ""),
+            exit_code=data.get("exit_code", -1),
+            stdout=data.get("stdout", ""),
+            stderr=data.get("stderr", ""),
+            duration_ms=data.get("duration_ms", 0),
+            timed_out=data.get("timed_out", False),
+        )
 
 
 @dataclass
 class VerificationResult:
-    """Result of verification gate for a chunk."""
+    """Complete verification result for a chunk."""
     chunk_id: str
     status: VerificationStatus
     
-    # Individual command results
     command_results: List[CommandResult] = field(default_factory=list)
     
-    # Summary
     tests_passed: int = 0
     tests_failed: int = 0
     lint_errors: int = 0
     type_errors: int = 0
     
-    # Evidence paths
-    evidence_paths: List[str] = field(default_factory=list)
-    
-    # Legacy tracking (existing failures not caused by this chunk)
-    legacy_failures: List[str] = field(default_factory=list)
+    summary: str = ""
     
     def to_dict(self) -> Dict[str, Any]:
         return {
             "chunk_id": self.chunk_id,
             "status": self.status.value if isinstance(self.status, VerificationStatus) else self.status,
-            "command_results": [r.to_dict() for r in self.command_results],
+            "command_results": [cr.to_dict() for cr in self.command_results],
             "tests_passed": self.tests_passed,
             "tests_failed": self.tests_failed,
             "lint_errors": self.lint_errors,
             "type_errors": self.type_errors,
-            "evidence_paths": self.evidence_paths,
-            "legacy_failures": self.legacy_failures,
+            "summary": self.summary,
         }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "VerificationResult":
+        return cls(
+            chunk_id=data.get("chunk_id", ""),
+            status=VerificationStatus(data.get("status", "error")),
+            command_results=[CommandResult.from_dict(cr) for cr in data.get("command_results", [])],
+            tests_passed=data.get("tests_passed", 0),
+            tests_failed=data.get("tests_failed", 0),
+            lint_errors=data.get("lint_errors", 0),
+            type_errors=data.get("type_errors", 0),
+            summary=data.get("summary", ""),
+        )
 
 
 # =============================================================================
-# Block 10-11: Quarantine Schema
+# Block 10-11: Quarantine
 # =============================================================================
 
 @dataclass
 class StaticEvidence:
     """Static analysis evidence for quarantine decision."""
-    rg_references: int = 0  # Count of references found by ripgrep
-    import_count: int = 0   # Count of imports of this file
-    config_references: int = 0  # References in config files
+    rg_references: int = 0
+    import_count: int = 0
+    config_references: int = 0
     last_modified: str = ""
     
     def to_dict(self) -> Dict[str, Any]:
@@ -378,14 +542,13 @@ class QuarantineCandidate:
     """A file candidate for quarantine."""
     file_path: str
     reason: QuarantineReason
-    confidence: float  # 0.0 to 1.0
+    confidence: float
     
     static_evidence: StaticEvidence = field(default_factory=StaticEvidence)
     dynamic_evidence: DynamicEvidence = field(default_factory=DynamicEvidence)
     
-    # Status
     quarantined: bool = False
-    quarantine_path: Optional[str] = None  # Where it was moved
+    quarantine_path: Optional[str] = None
     deleted: bool = False
     
     def to_dict(self) -> Dict[str, Any]:
@@ -409,11 +572,9 @@ class QuarantineReport:
     
     candidates: List[QuarantineCandidate] = field(default_factory=list)
     
-    # Verification after quarantine
     repo_still_passes: bool = False
     verification_evidence: Optional[VerificationResult] = None
     
-    # Metadata
     created_at: str = ""
     
     def to_dict(self) -> Dict[str, Any]:
@@ -438,14 +599,12 @@ class DeletionReport:
     quarantine_report_id: str
     
     deleted_files: List[str] = field(default_factory=list)
-    deletion_evidence: Dict[str, str] = field(default_factory=dict)  # file -> reason
+    deletion_evidence: Dict[str, str] = field(default_factory=dict)
     
-    # Verification after deletion
     repo_still_passes: bool = False
     verification_evidence: Optional[VerificationResult] = None
     
-    # Approval
-    approved_by: str = ""  # "user" or "auto"
+    approved_by: str = ""
     approved_at: str = ""
     
     def to_dict(self) -> Dict[str, Any]:
@@ -473,7 +632,7 @@ class SamplingParams:
     top_p: float = 1.0
     top_k: Optional[int] = None
     max_tokens: int = 4096
-    seed: Optional[int] = None  # For providers that support it
+    seed: Optional[int] = None
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -520,34 +679,22 @@ class StageConfig:
 
 @dataclass
 class ReplayPack:
-    """Deterministic replay bundle for a job.
-    
-    Contains everything needed to replay decisions stage-by-stage.
-    Includes full model IDs AND sampling parameters for true determinism.
-    """
+    """Deterministic replay bundle for a job."""
     pack_id: str
     job_id: str
     created_at: str
     
-    # Artifact references
     spec_path: str = ""
     arch_path: str = ""
     critique_paths: List[str] = field(default_factory=list)
     plan_path: str = ""
     
-    # Ledger
     ledger_path: str = ""
     
-    # Model identifiers per stage (legacy, kept for compatibility)
     model_versions: Dict[str, str] = field(default_factory=dict)
-    
-    # Full stage configs with sampling params (new)
     stage_configs: Dict[str, StageConfig] = field(default_factory=dict)
     
-    # Verification outputs
     verification_paths: List[str] = field(default_factory=list)
-    
-    # Tool commands executed
     commands_log_path: str = ""
     
     def to_dict(self) -> Dict[str, Any]:
@@ -576,6 +723,14 @@ __all__ = [
     "VerificationStatus",
     "FileAction",
     "QuarantineReason",
+    # Governance Enums
+    "SignatureType",
+    "OverrideType",
+    "HoleType",
+    # Governance Dataclasses
+    "StrikeEvent",
+    "StrikeState",
+    "HumanOverride",
     # Block 7: Chunks
     "ChunkStep",
     "ChunkVerification",
