@@ -37,6 +37,7 @@ def init_db():
     """
     Create all tables. Call once at startup.
     
+    v2.1: Added specs module tables (Weaver/Spec Gate).
     v2.0: Added preference and confidence system tables.
     """
     # Import models so Base.metadata knows about them
@@ -48,5 +49,8 @@ def init_db():
     # v2.0: Import ASTRA memory models (both original and preference system)
     from app.astra_memory import models as astra_models  # noqa: F401
     from app.astra_memory import preference_models  # noqa: F401
+    
+    # v2.1: Import specs models (Weaver/Spec Gate)
+    from app.specs import models as spec_models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)

@@ -3,6 +3,7 @@
 Streaming endpoints for real-time LLM responses.
 Uses Server-Sent Events (SSE).
 
+v4.2 (2026-01): Added Weaver stream handler for spec building
 v4.1 (2026-01): CRITICAL FIX - CHAT mode returns early, bypasses job classification
 v4.0 (2026-01): ASTRA Translation Layer integration - prevents misfires
 v3.4 (2025-12): Added UPDATE ARCHITECTURE command
@@ -43,7 +44,6 @@ from .stream_utils import (
     select_provider_for_job_type,
 )
 from .high_stakes_stream import generate_high_stakes_critique_stream
-from .stream_memory import inject_memory_for_stream
 
 # =============================================================================
 # TRANSLATION LAYER IMPORT
@@ -79,6 +79,13 @@ try:
 except ImportError:
     _SANDBOX_AVAILABLE = False
 
+# Weaver stream integration (v4.2)
+try:
+    from app.llm.weaver_stream import generate_weaver_stream
+    _WEAVER_AVAILABLE = True
+except ImportError:
+    _WEAVER_AVAILABLE = False
+
 router = APIRouter(prefix="/stream", tags=["streaming"])
 logger = logging.getLogger(__name__)
 
@@ -89,9 +96,9 @@ logger = logging.getLogger(__name__)
 
 _ZOBIE_TRIGGER_SET = {"zobie map", "zombie map", "zobie_map", "/zobie_map", "/zombie_map"}
 
-ZOBIE_CONTROLLER_URL = (os.getenv("ORB_ZOBIE_CONTROLLER_URL") or "").rstrip("/")
+ZOBIE_CONTROLLER_URL = os.getenv("ORB_ZOBIE_CONTROLLER_URL", "http://192.168.250.2:8765")
 ZOBIE_MAPPER_SCRIPT = os.getenv("ORB_ZOBIE_MAPPER_SCRIPT", r"D:\tools\zobie_mapper\zobie_map.py")
-ZOBIE_MAPPER_OUT_DIR = os.getenv("ORB_ZOBIE_MAPPER_OUT_DIR", "").strip()
+ZOBIE_MAPPER_OUT_DIR = os.getenv("ORB_ZOBIE_MAPPER_OUT_DIR", r"D:\tools\zobie_mapper\out")
 ZOBIE_MAPPER_TIMEOUT_SEC = int(os.getenv("ORB_ZOBIE_MAPPER_TIMEOUT_SEC", "300"))
 ZOBIE_MAPPER_ARGS_RAW = os.getenv("ORB_ZOBIE_MAPPER_ARGS", "").strip()
 ZOBIE_MAPPER_ARGS = ZOBIE_MAPPER_ARGS_RAW.split() if ZOBIE_MAPPER_ARGS_RAW else []
@@ -101,24 +108,12 @@ from app.llm.local_tools.archmap_helpers import (
     _UPDATE_ARCH_TRIGGER_SET,
     ARCHMAP_PROVIDER,
     ARCHMAP_MODEL,
-    default_controller_base_url,
-    default_zobie_mapper_out_dir,
 )
-
-# Resolve sandbox defaults (drive-agnostic) if env vars not provided.
-if not ZOBIE_CONTROLLER_URL:
-    ZOBIE_CONTROLLER_URL = default_controller_base_url(__file__)
-if not ZOBIE_MAPPER_OUT_DIR:
-    ZOBIE_MAPPER_OUT_DIR = default_zobie_mapper_out_dir(__file__)
-
 from app.llm.local_tools.zobie_tools import (
     generate_local_architecture_map_stream,
     generate_local_zobie_map_stream,
     generate_update_architecture_stream,
 )
-
-# Architecture query (file-based, no service)
-from app.llm.local_tools import arch_query
 
 
 # =============================================================================
@@ -149,18 +144,6 @@ def _is_sandbox_trigger(msg: str) -> bool:
         return False
     tool, _ = detect_sandbox_intent(msg)
     return tool is not None
-
-
-def _is_arch_query_trigger(msg: str) -> bool:
-    """Detect architecture/signature queries."""
-    if not arch_query.is_service_available():
-        return False
-    msg_lower = (msg or "").lower()
-    triggers = ["structure of", "signatures of", "signatures in", "find function", 
-                "find class", "find method", "what's in", "whats in", "search for"]
-    has_py = ".py" in msg_lower
-    has_struct = any(w in msg_lower for w in ["structure", "signature", "function", "class", "method"])
-    return any(t in msg_lower for t in triggers) or (has_py and has_struct)
 
 
 # =============================================================================
@@ -228,6 +211,19 @@ def _intent_to_routing_info(intent: "CanonicalIntent") -> Optional[dict]:
             "model": DEFAULT_MODELS.get("anthropic_opus", "claude-opus-4-5-20251101"),
             "reason": "Translation layer: RUN CRITICAL PIPELINE",
         },
+        # SPEC GATE FLOW (v4.2)
+        CanonicalIntent.WEAVER_BUILD_SPEC: {
+            "type": "local.weaver",
+            "provider": "openai",
+            "model": "gpt-5.2",
+            "reason": "Translation layer: WEAVER BUILD SPEC",
+        },
+        CanonicalIntent.SEND_TO_SPEC_GATE: {
+            "type": "local.spec_gate",
+            "provider": "openai",
+            "model": "gpt-5.2-pro",
+            "reason": "Translation layer: SEND TO SPEC GATE",
+        },
     }
     return mapping.get(intent, None)
 
@@ -269,42 +265,6 @@ async def generate_sandbox_stream(
         if trace:
             trace.finalize(success=False, error_message=str(e))
         yield "data: " + json.dumps({"type": "error", "error": str(e)}) + "\n\n"
-
-
-async def generate_arch_query_stream(
-    project_id: int,
-    message: str,
-    db: Session,
-    trace: Optional[RoutingTrace] = None,
-):
-    """Generate SSE stream for architecture queries."""
-    try:
-        yield "data: " + json.dumps({"type": "token", "content": "📐 "}) + "\n\n"
-        response_text = arch_query.query_architecture(message)
-        chunk_size = 100
-        for i in range(0, len(response_text), chunk_size):
-            chunk = response_text[i:i + chunk_size]
-            yield "data: " + json.dumps({"type": "token", "content": chunk}) + "\n\n"
-            await asyncio.sleep(0.005)
-        memory_service.create_message(db, memory_schemas.MessageCreate(
-            project_id=project_id, role="user", content=message, provider="local"
-        ))
-        memory_service.create_message(db, memory_schemas.MessageCreate(
-            project_id=project_id, role="assistant", content=response_text,
-            provider="local", model="arch_query"
-        ))
-        if trace:
-            trace.finalize(success=True)
-        yield "data: " + json.dumps({
-            "type": "done", "provider": "local", "model": "arch_query",
-            "total_length": len(response_text)
-        }) + "\n\n"
-    except Exception as e:
-        logger.error(f"[arch_query] Error: {e}")
-        if trace:
-            trace.log_error("ARCH_QUERY", str(e))
-            trace.finalize(success=False, error_message=str(e))
-        yield "data: " + json.dumps({"type": "error", "message": str(e)}) + "\n\n"
 
 
 # =============================================================================
@@ -562,20 +522,6 @@ async def stream_chat(
         # Translation layer is available - use it for routing decisions
         
         # =====================================================================
-        # ARCH QUERY: Check BEFORE chat mode - structure/signature queries
-        # =====================================================================
-        if _is_arch_query_trigger(req.message):
-            routing_reason = "Architecture query (pre-translation check)"
-            if trace:
-                trace.log_request_start(job_type=req.job_type or "", resolved_job_type="local.arch_query", provider="local", model="arch_query", reason=routing_reason, frontier_override=False, file_map_injected=False, attachments=None)
-                trace.log_routing_decision(job_type="local.arch_query", provider="local", model="arch_query", reason=routing_reason, frontier_override=False, file_map_injected=False)
-            return StreamingResponse(
-                generate_arch_query_stream(project_id=req.project_id, message=req.message, db=db, trace=trace),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-            )
-        
-        # =====================================================================
         # CHAT MODE: RETURN EARLY - bypass job classification entirely (v4.1)
         # This prevents "Tell me about Overwatcher" from triggering SpecGate
         # =====================================================================
@@ -641,9 +587,6 @@ Use this context to answer the user's questions. If asked about people, document
 or information that appears in the context above, use that information to respond.
 Do NOT claim you don't have information if it's present in the context."""
             
-            # ASTRA Memory injection
-            system_prompt = inject_memory_for_stream(db, messages, system_prompt, 'chat_light')
-
             # RETURN EARLY - never reaches job classification
             return StreamingResponse(
                 generate_sse_stream(
@@ -747,6 +690,27 @@ Do NOT claim you don't have information if it's present in the context."""
                             media_type="text/event-stream",
                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
                         )
+                    
+                    # SPEC GATE FLOW HANDLERS (v4.2)
+                    elif intent == CanonicalIntent.WEAVER_BUILD_SPEC:
+                        if _WEAVER_AVAILABLE:
+                            return StreamingResponse(
+                                generate_weaver_stream(
+                                    project_id=req.project_id,
+                                    message=req.message,
+                                    db=db,
+                                    trace=trace,
+                                    conversation_id=str(req.project_id),
+                                ),
+                                media_type="text/event-stream",
+                                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                            )
+                        else:
+                            logger.warning("[weaver] Weaver stream not available")
+                    
+                    elif intent == CanonicalIntent.SEND_TO_SPEC_GATE:
+                        # TODO: Implement spec_gate_stream handler
+                        logger.info("[spec_gate] Send to Spec Gate requested - handler pending")
             
             # If command mode but not executing (blocked by gates), fall through to lightweight chat
             if not translation_result.should_execute:
@@ -782,18 +746,6 @@ Do NOT claim you don't have information if it's present in the context."""
                 trace.log_routing_decision(job_type="local.update_architecture", provider="local", model="architecture_scanner", reason=routing_reason, frontier_override=False, file_map_injected=False)
             return StreamingResponse(
                 generate_update_architecture_stream(project_id=req.project_id, message=req.message, db=db, trace=trace),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-            )
-        
-        # ARCHITECTURE QUERY (structure/signature queries)
-        if _is_arch_query_trigger(req.message):
-            routing_reason = "Local tool trigger: ARCHITECTURE QUERY"
-            if trace:
-                trace.log_request_start(job_type=req.job_type or "", resolved_job_type="local.arch_query", provider="local", model="arch_query", reason=routing_reason, frontier_override=False, file_map_injected=False, attachments=None)
-                trace.log_routing_decision(job_type="local.arch_query", provider="local", model="arch_query", reason=routing_reason, frontier_override=False, file_map_injected=False)
-            return StreamingResponse(
-                generate_arch_query_stream(project_id=req.project_id, message=req.message, db=db, trace=trace),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
@@ -943,9 +895,6 @@ Use this context to answer the user's questions. If asked about people, document
 or information that appears in the context above, use that information to respond.
 Do NOT claim you don't have information if it's present in the context."""
     
-    # ASTRA Memory injection
-    system_prompt = inject_memory_for_stream(db, messages, system_prompt, job_type_value)
-
     # High-stakes routing
     if provider == "anthropic" and is_opus_model(model) and is_high_stakes_job(job_type_value):
         return StreamingResponse(

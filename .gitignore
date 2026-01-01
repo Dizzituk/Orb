@@ -17,3 +17,6 @@ data/orb_memory.db
 *.pyc
 .env
 *.db
+*.pyc
+*.docx
+*.pyc

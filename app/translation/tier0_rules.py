@@ -10,6 +10,7 @@ Handles:
 - Spec Gate flow commands ("How does that look all together", "Send to Spec Gate")
 - Obvious chat patterns (questions, past tense, etc.)
 
+v1.2 (2026-01): Fixed "critical architecture" -> SEND_TO_SPEC_GATE (was incorrectly in Weaver)
 v1.1 (2026-01): Added Spec Gate flow handlers (WEAVER_BUILD_SPEC, SEND_TO_SPEC_GATE)
 """
 from __future__ import annotations
@@ -55,6 +56,12 @@ def tier0_classify(text: str) -> Tier0RuleResult:
     5. No match (needs Tier 1)
     """
     text_stripped = text.strip()
+    
+    # Strip wake phrase prefix if present (e.g., "Astra, command: X" -> "X")
+    text_stripped = re.sub(
+        r'^(?:astra,?\s*)?(?:command:?\s*)?(?:feedback:?\s*)?',
+        '', text_stripped, flags=re.IGNORECASE
+    ).strip()
     
     # 1. Check exact trigger phrase matches
     result = _check_exact_trigger_phrases(text_stripped)
@@ -275,6 +282,7 @@ def check_weaver_trigger(text: str) -> Tier0RuleResult:
     text_stripped = text.strip()
     
     # Exact phrase matches (case-insensitive)
+    # NOTE: "critical architecture" moved to check_spec_gate_trigger (v1.2)
     exact_phrases = [
         "how does that look all together",
         "how does that look all together?",
@@ -336,11 +344,44 @@ def check_spec_gate_trigger(text: str) -> Tier0RuleResult:
     
     Sends refined candidate spec to Spec Gate for validation.
     Explicit "send to spec gate" type commands.
+    Also handles simple "Yes" confirmations after Weaver prompt.
     """
     text_lower = text.strip().lower()
     
+    # Simple affirmative responses (after Weaver asks "Shall I send to Spec Gate?")
+    # These are short, so we match exactly
+    simple_affirmatives = [
+        "yes",
+        "yes please",
+        "yes, please",
+        "yep",
+        "yeah",
+        "sure",
+        "go ahead",
+        "do it",
+        "proceed",
+        "send it",
+        "ok",
+        "okay",
+        "affirmative",
+        "confirmed",
+        "confirm",
+        "y",
+    ]
+    
+    if text_lower in simple_affirmatives:
+        return Tier0RuleResult(
+            matched=True,
+            intent=CanonicalIntent.SEND_TO_SPEC_GATE,
+            confidence=0.95,  # Slightly lower - relies on context
+            rule_name="specgate_affirmative",
+            reason=f"Spec Gate affirmative confirmation: '{text_lower}'",
+        )
+    
     # Exact phrase matches (case-insensitive)
+    # "critical architecture" triggers Spec Gate validation (v1.2)
     exact_phrases = [
+        "critical architecture",
         "send to spec gate",
         "send that to spec gate",
         "send this to spec gate",
@@ -378,6 +419,7 @@ def check_spec_gate_trigger(text: str) -> Tier0RuleResult:
         r"^spec ?gate[,:]?\s*validate$",
         r"^(?:now )?send (?:it )?to spec ?gate$",
         r"^(?:go ahead and )?send (?:it )?to spec ?gate$",
+        r"^critical architecture$",
     ]
     
     for pattern in specgate_patterns:
@@ -408,6 +450,7 @@ def check_critical_pipeline_trigger(text: str) -> Tier0RuleResult:
         r"^start the pipeline$",
         r"^run (?:the )?critical pipeline for job\s+",
         r"^execute (?:the )?pipeline$",
+        r"^critical pipeline$",
     ]
     
     for pattern in patterns:

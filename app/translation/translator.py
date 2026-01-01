@@ -143,20 +143,7 @@ class Translator:
         Resolve intent for a command-capable message.
         Goes through Tier 0 -> Cache -> Tier 1 -> Gates
         """
-        # Step 3a: Directive vs Story Gate (first!)
-        directive_result = check_directive_gate(text)
-        result.directive_gate = directive_result
-        
-        if not directive_result.passed:
-            # Not a directive - treat as chat
-            result.resolved_intent = CanonicalIntent.CHAT_ONLY
-            result.latency_tier = LatencyTier.TIER_0_RULES
-            result.should_execute = False
-            result.execution_blocked_reason = f"Directive gate: {directive_result.reason}"
-            logger.debug(f"Blocked by directive gate: {directive_result.detected_pattern}")
-            return result
-        
-        # Step 3b: Tier 0 Rules
+        # Step 3a: Tier 0 Rules (run FIRST to catch known commands)
         tier0_result = tier0_classify(text)
         if tier0_result.matched:
             result.resolved_intent = tier0_result.intent
@@ -170,6 +157,18 @@ class Translator:
             
             # Continue to gates for commands
             return await self._apply_gates(text, result, ui_context, conversation_id)
+        # Step 3b: Directive vs Story Gate (only for non-tier0 matches)
+        directive_result = check_directive_gate(text)
+        result.directive_gate = directive_result
+        
+        if not directive_result.passed:
+            # Not a directive - treat as chat
+            result.resolved_intent = CanonicalIntent.CHAT_ONLY
+            result.latency_tier = LatencyTier.TIER_0_RULES
+            result.should_execute = False
+            result.execution_blocked_reason = f"Directive gate: {directive_result.reason}"
+            logger.debug(f"Blocked by directive gate: {directive_result.detected_pattern}")
+            return result
         
         # Step 3c: Phrase Cache Lookup
         cache_lookup = self._phrase_cache.lookup(text)

@@ -201,7 +201,7 @@ INTENT_DEFINITIONS: Dict[CanonicalIntent, IntentDefinition] = {
             r"^[Ss]ubmit (?:the )?spec(?: for validation)?$",
             r"^[Ss]pec ?[Gg]ate[,:]?\s*validate$",
         ],
-        requires_context=["spec_content"],  # Requires a spec to have been built
+        requires_context=[],  # Auto-fetches latest draft spec
         requires_confirmation=False,  # Not high-stakes until pipeline runs
         description="Send refined candidate spec to Spec Gate for validation",
         behavior=(
@@ -379,3 +379,4 @@ def get_intent_by_trigger_phrase(phrase: str) -> Optional[CanonicalIntent]:
         if phrase in defn.trigger_phrases:
             return intent
     return None
+
