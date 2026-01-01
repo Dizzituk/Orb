@@ -1,24 +1,24 @@
 # FILE: app/astra_memory/__init__.py
 """
-ASTRA Memory System (Job 5)
+ASTRA Memory System (AstraJob 5)
 
 Three layers of memory:
-1. Job-local: Per-job state, execution timeline, Overwatcher verdicts
-2. Global brain: Cross-job preferences, patterns, lessons
-3. Overwatcher state: Risk scores, intervention history, cross-job patterns
+1. AstraJob-local: Per-AstraJob state, execution timeline, Overwatcher verdicts
+2. Global brain: Cross-AstraJob preferences, patterns, lessons
+3. Overwatcher state: Risk scores, intervention history, cross-AstraJob patterns
 
 Tables:
-- astra_jobs: Job registry with spec/arch links
+- astra_jobs: AstraJob registry with spec/arch links
 - astra_job_files: Files touched (Atlas link)
 - astra_job_events: Ledger index
 - astra_job_chunks: Execution chunks
-- astra_overwatch_summary: Per-job Overwatcher stats
-- astra_global_prefs: Cross-job preferences
-- astra_overwatch_patterns: Cross-job patterns
+- astra_overwatch_summary: Per-AstraJob Overwatcher stats
+- astra_global_prefs: Cross-AstraJob preferences
+- astra_overwatch_patterns: Cross-AstraJob patterns
 """
 
 from app.astra_memory.models import (
-    Job,
+    AstraJob,
     JobFile,
     JobEvent,
     JobChunk,
@@ -28,7 +28,7 @@ from app.astra_memory.models import (
 )
 
 from app.astra_memory.service import (
-    # Job lifecycle
+    # AstraJob lifecycle
     create_job,
     update_job_status,
     link_spec_to_job,
@@ -60,7 +60,7 @@ from app.astra_memory.service import (
 
 __all__ = [
     # Models
-    "Job",
+    "AstraJob",
     "JobFile",
     "JobEvent",
     "JobChunk",

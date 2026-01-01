@@ -27,7 +27,7 @@ from app.db import Base
 # JOB REGISTRY
 # =============================================================================
 
-class Job(Base):
+class AstraJob(Base):
     """
     Central job registry.
     
@@ -114,7 +114,7 @@ class JobFile(Base):
     touched_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     # Relationships
-    job = relationship("Job", back_populates="files")
+    job = relationship("AstraJob", back_populates="files")
     
     __table_args__ = (
         Index("ix_job_files_path_job", "path", "job_id"),
@@ -158,7 +158,7 @@ class JobEvent(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     # Relationships
-    job = relationship("Job", back_populates="events")
+    job = relationship("AstraJob", back_populates="events")
     
     __table_args__ = (
         Index("ix_job_events_type_ts", "event_type", "ts"),
@@ -213,7 +213,7 @@ class JobChunk(Base):
     completed_at = Column(DateTime, nullable=True)
     
     # Relationships
-    job = relationship("Job", back_populates="chunks")
+    job = relationship("AstraJob", back_populates="chunks")
 
 
 # =============================================================================
@@ -263,7 +263,7 @@ class OverwatchSummary(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
-    job = relationship("Job", back_populates="overwatch")
+    job = relationship("AstraJob", back_populates="overwatch")
 
 
 # =============================================================================
@@ -360,7 +360,7 @@ class OverwatchPattern(Base):
 # =============================================================================
 
 __all__ = [
-    "Job",
+    "AstraJob",
     "JobFile",
     "JobEvent",
     "JobChunk",

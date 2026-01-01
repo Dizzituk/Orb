@@ -41,6 +41,18 @@ from app.overwatcher.schemas import (
 
 logger = logging.getLogger(__name__)
 
+# Block 9 integration - verified execution loop with Overwatcher
+try:
+    from app.overwatcher.block9_loop import (
+        Block9State,
+        run_chunk_block9,
+        run_chunks_block9,
+    )
+    BLOCK9_AVAILABLE = True
+except ImportError:
+    BLOCK9_AVAILABLE = False
+    logger.warning("[orchestrator] block9_loop not available, using legacy strike loop")
+
 
 # =============================================================================
 # Pipeline State
@@ -572,34 +584,57 @@ async def run_implementation_loop(
     passed_chunks = []
     failed_chunks = []
     
-    for chunk in sorted_chunks:
-        logger.info(f"[orchestrator] Processing chunk {chunk.chunk_id}: {chunk.title}")
+    # Use Block 9 loop if available (integrates Overwatcher diagnosis)
+    if BLOCK9_AVAILABLE:
+        block9_state = Block9State(
+            job_id=state.job_id,
+            spec_id=state.spec_id or "",
+            spec_hash=state.spec_hash or "",
+            repo_path=repo_path,
+            job_artifact_root=job_artifact_root,
+        )
         
-        try:
-            success, _ = await run_chunk_with_strikes(
-                chunk=chunk,
-                repo_path=repo_path,
-                state=state,
-                job_artifact_root=job_artifact_root,
-                llm_call_fn=llm_call_fn,
-            )
+        passed_chunks, failed_chunks = await run_chunks_block9(
+            chunks=sorted_chunks,
+            state=block9_state,
+            llm_call_fn=llm_call_fn,
+            db_session=None,  # Pass db session if available
+            stop_on_failure=stop_on_failure,
+        )
+        
+        # Update PipelineState for compatibility
+        state.completed_chunks = passed_chunks
+        state.failed_chunks = failed_chunks
+    else:
+        # Legacy path - run_chunk_with_strikes without Overwatcher integration
+        for chunk in sorted_chunks:
+            logger.info(f"[orchestrator] Processing chunk {chunk.chunk_id}: {chunk.title}")
             
-            if success:
-                passed_chunks.append(chunk.chunk_id)
-                logger.info(f"[orchestrator] Chunk {chunk.chunk_id} VERIFIED")
-            else:
-                failed_chunks.append(chunk.chunk_id)
+            try:
+                success, _ = await run_chunk_with_strikes(
+                    chunk=chunk,
+                    repo_path=repo_path,
+                    state=state,
+                    job_artifact_root=job_artifact_root,
+                    llm_call_fn=llm_call_fn,
+                )
+                
+                if success:
+                    passed_chunks.append(chunk.chunk_id)
+                    logger.info(f"[orchestrator] Chunk {chunk.chunk_id} VERIFIED")
+                else:
+                    failed_chunks.append(chunk.chunk_id)
+                    
+                    if stop_on_failure:
+                        logger.error(f"[orchestrator] Stopping due to chunk failure")
+                        break
+                        
+            except StrikeThreeError as e:
+                failed_chunks.append(e.chunk_id)
                 
                 if stop_on_failure:
-                    logger.error(f"[orchestrator] Stopping due to chunk failure")
+                    logger.error(f"[orchestrator] Stopping due to Strike 3 on {e.chunk_id}")
                     break
-                    
-        except StrikeThreeError as e:
-            failed_chunks.append(e.chunk_id)
-            
-            if stop_on_failure:
-                logger.error(f"[orchestrator] Stopping due to Strike 3 on {e.chunk_id}")
-                break
     
     # Emit job completion
     try:

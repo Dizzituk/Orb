@@ -1,13 +1,13 @@
 # FILE: app/astra_memory/service.py
 """
-ASTRA Memory Service (Job 5)
+ASTRA Memory Service (AstraJob 5)
 
 Core principle:
 1. Write to NDJSON ledger FIRST (source of truth)
 2. Project key facts to SQLite (queryable index)
 
 This service handles:
-- Job lifecycle (create, update status, complete)
+- AstraJob lifecycle (create, update status, complete)
 - File tracking (link to Atlas)
 - Event projection (ledger → SQLite)
 - Overwatcher state persistence
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # Import models
 try:
     from app.astra_memory.models import (
-        Job,
+        AstraJob,
         JobFile,
         JobEvent,
         JobChunk,
@@ -73,7 +73,7 @@ def _hash_content(content: str) -> str:
 
 
 # =============================================================================
-# JOB LIFECYCLE
+# AstraJob LIFECYCLE
 # =============================================================================
 
 def create_job(
@@ -83,12 +83,12 @@ def create_job(
     repo_root: Optional[str] = None,
     provider: Optional[str] = None,
     model: Optional[str] = None,
-) -> Job:
+) -> AstraJob:
     """
-    Create a new job record.
+    Create a new AstraJob record.
     
     1. Write JOB_CREATED event to ledger
-    2. Create Job row in SQLite
+    2. Create AstraJob row in SQLite
     """
     if not _MODELS_AVAILABLE:
         raise RuntimeError("astra_memory models not available")
@@ -114,7 +114,7 @@ def create_job(
         )
     
     # 2. Create SQLite row
-    job = Job(
+    AstraJob = AstraJob(
         job_id=job_id,
         user_intent=user_intent,
         repo_root=repo_root,
@@ -124,12 +124,12 @@ def create_job(
         created_at=now,
         updated_at=now,
     )
-    db.add(job)
+    db.add(AstraJob)
     db.commit()
-    db.refresh(job)
+    db.refresh(AstraJob)
     
-    logger.info(f"[astra_memory] Created job {job_id}")
-    return job
+    logger.info(f"[astra_memory] Created AstraJob {job_id}")
+    return AstraJob
 
 
 def update_job_status(
@@ -137,18 +137,18 @@ def update_job_status(
     job_id: str,
     status: str,
     error_message: Optional[str] = None,
-) -> Optional[Job]:
+) -> Optional[AstraJob]:
     """
-    Update job status.
+    Update AstraJob status.
     
     Valid statuses: created, spec_gate, planning, executing, verifying, completed, failed, aborted
     """
     if not _MODELS_AVAILABLE:
         return None
     
-    job = db.query(Job).filter(Job.job_id == job_id).first()
-    if not job:
-        logger.warning(f"[astra_memory] Job not found: {job_id}")
+    AstraJob = db.query(AstraJob).filter(AstraJob.job_id == job_id).first()
+    if not AstraJob:
+        logger.warning(f"[astra_memory] AstraJob not found: {job_id}")
         return None
     
     # Write to ledger
@@ -159,7 +159,7 @@ def update_job_status(
             event={
                 "event": "JOB_STATUS_CHANGED",
                 "job_id": job_id,
-                "old_status": job.status,
+                "old_status": AstraJob.status,
                 "new_status": status,
                 "error_message": error_message,
                 "ts": _utc_ts(),
@@ -167,14 +167,14 @@ def update_job_status(
         )
     
     # Update SQLite
-    job.status = status
-    job.updated_at = _utc_now()
+    AstraJob.status = status
+    AstraJob.updated_at = _utc_now()
     
     if status in ("completed", "failed", "aborted"):
-        job.completed_at = _utc_now()
+        AstraJob.completed_at = _utc_now()
     
     db.commit()
-    return job
+    return AstraJob
 
 
 def link_spec_to_job(
@@ -183,19 +183,19 @@ def link_spec_to_job(
     spec_id: str,
     spec_hash: str,
     spec_version: int,
-) -> Optional[Job]:
-    """Link a PoT spec to a job."""
+) -> Optional[AstraJob]:
+    """Link a PoT spec to a AstraJob."""
     if not _MODELS_AVAILABLE:
         return None
     
-    job = db.query(Job).filter(Job.job_id == job_id).first()
-    if not job:
+    AstraJob = db.query(AstraJob).filter(AstraJob.job_id == job_id).first()
+    if not AstraJob:
         return None
     
-    job.spec_id = spec_id
-    job.spec_hash = spec_hash
-    job.spec_version = spec_version
-    job.updated_at = _utc_now()
+    AstraJob.spec_id = spec_id
+    AstraJob.spec_hash = spec_hash
+    AstraJob.spec_version = spec_version
+    AstraJob.updated_at = _utc_now()
     
     if _LEDGER_AVAILABLE:
         ledger_append(
@@ -212,7 +212,7 @@ def link_spec_to_job(
         )
     
     db.commit()
-    return job
+    return AstraJob
 
 
 def link_arch_to_job(
@@ -221,19 +221,19 @@ def link_arch_to_job(
     arch_id: str,
     arch_hash: str,
     arch_version: int,
-) -> Optional[Job]:
-    """Link an architecture snapshot to a job."""
+) -> Optional[AstraJob]:
+    """Link an architecture snapshot to a AstraJob."""
     if not _MODELS_AVAILABLE:
         return None
     
-    job = db.query(Job).filter(Job.job_id == job_id).first()
-    if not job:
+    AstraJob = db.query(AstraJob).filter(AstraJob.job_id == job_id).first()
+    if not AstraJob:
         return None
     
-    job.arch_id = arch_id
-    job.arch_hash = arch_hash
-    job.arch_version = arch_version
-    job.updated_at = _utc_now()
+    AstraJob.arch_id = arch_id
+    AstraJob.arch_hash = arch_hash
+    AstraJob.arch_version = arch_version
+    AstraJob.updated_at = _utc_now()
     
     if _LEDGER_AVAILABLE:
         ledger_append(
@@ -250,7 +250,7 @@ def link_arch_to_job(
         )
     
     db.commit()
-    return job
+    return AstraJob
 
 
 # =============================================================================
@@ -269,7 +269,7 @@ def record_file_touch(
     symbol_name: Optional[str] = None,
 ) -> Optional[JobFile]:
     """
-    Record a file being touched by a job.
+    Record a file being touched by a AstraJob.
     
     Actions: read, create, modify, delete
     """
@@ -313,7 +313,7 @@ def record_file_touch(
 
 
 def get_files_for_job(db: Session, job_id: str) -> List[JobFile]:
-    """Get all files touched by a job."""
+    """Get all files touched by a AstraJob."""
     if not _MODELS_AVAILABLE:
         return []
     return db.query(JobFile).filter(JobFile.job_id == job_id).all()
@@ -385,7 +385,7 @@ def get_events_for_job(
     event_type: Optional[str] = None,
     severity: Optional[str] = None,
 ) -> List[JobEvent]:
-    """Query events for a job with optional filters."""
+    """Query events for a AstraJob with optional filters."""
     if not _MODELS_AVAILABLE:
         return []
     
@@ -524,7 +524,7 @@ def get_or_create_overwatch_summary(
     db: Session,
     job_id: str,
 ) -> Optional[OverwatchSummary]:
-    """Get or create Overwatcher summary for a job."""
+    """Get or create Overwatcher summary for a AstraJob."""
     if not _MODELS_AVAILABLE:
         return None
     
@@ -681,7 +681,7 @@ def get_prefs_for_component(db: Session, component: str) -> List[GlobalPref]:
 
 
 # =============================================================================
-# OVERWATCHER PATTERNS (Cross-Job)
+# OVERWATCHER PATTERNS (Cross-AstraJob)
 # =============================================================================
 
 def record_overwatch_pattern(
@@ -713,7 +713,7 @@ def record_overwatch_pattern(
         pattern.occurrence_count += 1
         pattern.last_occurrence = _utc_now()
         
-        # Add job to list
+        # Add AstraJob to list
         job_ids = pattern.job_ids or []
         if job_id not in job_ids:
             job_ids.append(job_id)
@@ -760,36 +760,36 @@ def get_patterns_for_file(db: Session, path: str) -> List[OverwatchPattern]:
 # QUERY HELPERS
 # =============================================================================
 
-def get_job(db: Session, job_id: str) -> Optional[Job]:
-    """Get a job by ID."""
+def get_job(db: Session, job_id: str) -> Optional[AstraJob]:
+    """Get a AstraJob by ID."""
     if not _MODELS_AVAILABLE:
         return None
-    return db.query(Job).filter(Job.job_id == job_id).first()
+    return db.query(AstraJob).filter(AstraJob.job_id == job_id).first()
 
 
-def get_jobs_by_status(db: Session, status: str, limit: int = 100) -> List[Job]:
+def get_jobs_by_status(db: Session, status: str, limit: int = 100) -> List[AstraJob]:
     """Get jobs by status."""
     if not _MODELS_AVAILABLE:
         return []
     return (
-        db.query(Job)
-        .filter(Job.status == status)
-        .order_by(Job.created_at.desc())
+        db.query(AstraJob)
+        .filter(AstraJob.status == status)
+        .order_by(AstraJob.created_at.desc())
         .limit(limit)
         .all()
     )
 
 
-def get_escalated_jobs(db: Session, limit: int = 100) -> List[Job]:
+def get_escalated_jobs(db: Session, limit: int = 100) -> List[AstraJob]:
     """Get jobs where Overwatcher escalated."""
     if not _MODELS_AVAILABLE:
         return []
     
     return (
-        db.query(Job)
+        db.query(AstraJob)
         .join(OverwatchSummary)
         .filter(OverwatchSummary.escalated == True)
-        .order_by(Job.created_at.desc())
+        .order_by(AstraJob.created_at.desc())
         .limit(limit)
         .all()
     )
@@ -800,7 +800,7 @@ def get_escalated_jobs(db: Session, limit: int = 100) -> List[Job]:
 # =============================================================================
 
 __all__ = [
-    # Job lifecycle
+    # AstraJob lifecycle
     "create_job",
     "update_job_status",
     "link_spec_to_job",
