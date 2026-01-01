@@ -1,6 +1,6 @@
 # FILE: tests/test_astra_memory.py
 """
-Tests for ASTRA Memory System (Job 5).
+Tests for ASTRA Memory System (AstraJob 5).
 """
 
 import sys
@@ -18,7 +18,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
 from app.astra_memory.models import (
-    Job, JobFile, JobEvent, JobChunk,
+    AstraJob, JobFile, JobEvent, JobChunk,
     OverwatchSummary, GlobalPref, OverwatchPattern,
 )
 
@@ -36,79 +36,79 @@ def db_session():
 
 class TestJobModel:
     def test_create_job(self, db_session):
-        job = Job(job_id="job-123", user_intent="Build a REST API", status="created")
+        job = AstraJob(job_id="AstraJob-123", user_intent="Build a REST API", status="created")
         db_session.add(job)
         db_session.commit()
-        loaded = db_session.query(Job).filter(Job.job_id == "job-123").first()
+        loaded = db_session.query(AstraJob).filter(AstraJob.job_id == "AstraJob-123").first()
         assert loaded is not None
         assert loaded.user_intent == "Build a REST API"
 
     def test_job_with_spec_link(self, db_session):
-        job = Job(job_id="job-456", spec_id="spec-abc", spec_hash="hash123", spec_version=1, status="spec_gate")
+        job = AstraJob(job_id="AstraJob-456", spec_id="spec-abc", spec_hash="hash123", spec_version=1, status="spec_gate")
         db_session.add(job)
         db_session.commit()
-        loaded = db_session.query(Job).filter(Job.job_id == "job-456").first()
+        loaded = db_session.query(AstraJob).filter(AstraJob.job_id == "AstraJob-456").first()
         assert loaded.spec_id == "spec-abc"
 
     def test_job_with_arch_link(self, db_session):
-        job = Job(job_id="job-789", arch_id="arch-xyz", arch_hash="archhash", arch_version=2, status="planning")
+        job = AstraJob(job_id="AstraJob-789", arch_id="arch-xyz", arch_hash="archhash", arch_version=2, status="planning")
         db_session.add(job)
         db_session.commit()
-        loaded = db_session.query(Job).filter(Job.job_id == "job-789").first()
+        loaded = db_session.query(AstraJob).filter(AstraJob.job_id == "AstraJob-789").first()
         assert loaded.arch_id == "arch-xyz"
 
 
 class TestJobFileModel:
     def test_record_file_touch(self, db_session):
-        job = Job(job_id="job-file-test", status="executing")
+        job = AstraJob(job_id="AstraJob-file-test", status="executing")
         db_session.add(job)
         db_session.commit()
         file_record = JobFile(
-            job_id="job-file-test", arch_id="arch-001", path="app/api/router.py",
+            job_id="AstraJob-file-test", arch_id="arch-001", path="app/api/router.py",
             action="modify", hash_before="abc123", hash_after="def456", chunk_id="chunk-001"
         )
         db_session.add(file_record)
         db_session.commit()
-        loaded = db_session.query(JobFile).filter(JobFile.job_id == "job-file-test").first()
+        loaded = db_session.query(JobFile).filter(JobFile.job_id == "AstraJob-file-test").first()
         assert loaded.path == "app/api/router.py"
         assert loaded.action == "modify"
 
     def test_multiple_files_per_job(self, db_session):
-        job = Job(job_id="job-multi-file", status="executing")
+        job = AstraJob(job_id="AstraJob-multi-file", status="executing")
         db_session.add(job)
         db_session.commit()
         files = [
-            JobFile(job_id="job-multi-file", path="file1.py", action="create"),
-            JobFile(job_id="job-multi-file", path="file2.py", action="modify"),
-            JobFile(job_id="job-multi-file", path="file3.py", action="read"),
+            JobFile(job_id="AstraJob-multi-file", path="file1.py", action="create"),
+            JobFile(job_id="AstraJob-multi-file", path="file2.py", action="modify"),
+            JobFile(job_id="AstraJob-multi-file", path="file3.py", action="read"),
         ]
         db_session.add_all(files)
         db_session.commit()
-        count = db_session.query(JobFile).filter(JobFile.job_id == "job-multi-file").count()
+        count = db_session.query(JobFile).filter(JobFile.job_id == "AstraJob-multi-file").count()
         assert count == 3
 
 
 class TestOverwatchSummaryModel:
     def test_create_summary(self, db_session):
-        job = Job(job_id="job-ow-test", status="completed")
+        job = AstraJob(job_id="AstraJob-ow-test", status="completed")
         db_session.add(job)
         db_session.commit()
         summary = OverwatchSummary(
-            job_id="job-ow-test", risk_level="medium", risk_score=0.65,
+            job_id="AstraJob-ow-test", risk_level="medium", risk_score=0.65,
             total_interventions=3, warnings_count=2, blocks_count=1
         )
         db_session.add(summary)
         db_session.commit()
-        loaded = db_session.query(OverwatchSummary).filter(OverwatchSummary.job_id == "job-ow-test").first()
+        loaded = db_session.query(OverwatchSummary).filter(OverwatchSummary.job_id == "AstraJob-ow-test").first()
         assert loaded.risk_level == "medium"
         assert loaded.total_interventions == 3
 
     def test_hard_stopped_summary(self, db_session):
-        job = Job(job_id="job-ow-stopped", status="aborted")
+        job = AstraJob(job_id="AstraJob-ow-stopped", status="aborted")
         db_session.add(job)
         db_session.commit()
         summary = OverwatchSummary(
-            job_id="job-ow-stopped", risk_level="critical", current_strikes=3,
+            job_id="AstraJob-ow-stopped", risk_level="critical", current_strikes=3,
             max_strikes_hit=True, hard_stopped=True
         )
         db_session.add(summary)
@@ -145,7 +145,7 @@ class TestOverwatchPatternModel:
     def test_create_pattern(self, db_session):
         pattern = OverwatchPattern(
             pattern_type="file_fragility", target_path="app/critical/security.py",
-            occurrence_count=3, job_ids=["job-1", "job-2", "job-3"], severity="warn"
+            occurrence_count=3, job_ids=["AstraJob-1", "AstraJob-2", "AstraJob-3"], severity="warn"
         )
         db_session.add(pattern)
         db_session.commit()
@@ -165,26 +165,26 @@ class TestOverwatchPatternModel:
 
 class TestRelationships:
     def test_job_files_relationship(self, db_session):
-        job = Job(job_id="job-rel-test", status="executing")
+        job = AstraJob(job_id="AstraJob-rel-test", status="executing")
         db_session.add(job)
         db_session.commit()
         files = [
-            JobFile(job_id="job-rel-test", path="f1.py", action="create"),
-            JobFile(job_id="job-rel-test", path="f2.py", action="modify"),
+            JobFile(job_id="AstraJob-rel-test", path="f1.py", action="create"),
+            JobFile(job_id="AstraJob-rel-test", path="f2.py", action="modify"),
         ]
         db_session.add_all(files)
         db_session.commit()
-        loaded_job = db_session.query(Job).filter(Job.job_id == "job-rel-test").first()
+        loaded_job = db_session.query(AstraJob).filter(AstraJob.job_id == "AstraJob-rel-test").first()
         assert len(loaded_job.files) == 2
 
     def test_job_overwatch_relationship(self, db_session):
-        job = Job(job_id="job-ow-rel", status="completed")
+        job = AstraJob(job_id="AstraJob-ow-rel", status="completed")
         db_session.add(job)
         db_session.commit()
-        summary = OverwatchSummary(job_id="job-ow-rel", risk_level="low")
+        summary = OverwatchSummary(job_id="AstraJob-ow-rel", risk_level="low")
         db_session.add(summary)
         db_session.commit()
-        loaded_job = db_session.query(Job).filter(Job.job_id == "job-ow-rel").first()
+        loaded_job = db_session.query(AstraJob).filter(AstraJob.job_id == "AstraJob-ow-rel").first()
         assert loaded_job.overwatch is not None
         assert loaded_job.overwatch.risk_level == "low"
 
@@ -192,30 +192,30 @@ class TestRelationships:
 class TestQueries:
     def test_jobs_by_status(self, db_session):
         jobs = [
-            Job(job_id="j1", status="completed"),
-            Job(job_id="j2", status="completed"),
-            Job(job_id="j3", status="failed"),
+            AstraJob(job_id="j1", status="completed"),
+            AstraJob(job_id="j2", status="completed"),
+            AstraJob(job_id="j3", status="failed"),
         ]
         db_session.add_all(jobs)
         db_session.commit()
-        completed = db_session.query(Job).filter(Job.status == "completed").all()
+        completed = db_session.query(AstraJob).filter(AstraJob.status == "completed").all()
         assert len(completed) == 2
 
     def test_escalated_jobs_query(self, db_session):
-        j1 = Job(job_id="j-esc-1", status="completed")
-        j2 = Job(job_id="j-esc-2", status="aborted")
+        j1 = AstraJob(job_id="j-esc-1", status="completed")
+        j2 = AstraJob(job_id="j-esc-2", status="aborted")
         db_session.add_all([j1, j2])
         db_session.commit()
         db_session.add(OverwatchSummary(job_id="j-esc-1", risk_level="low", escalated=False))
         db_session.add(OverwatchSummary(job_id="j-esc-2", risk_level="high", escalated=True))
         db_session.commit()
-        escalated = db_session.query(Job).join(OverwatchSummary).filter(OverwatchSummary.escalated == True).all()
+        escalated = db_session.query(AstraJob).join(OverwatchSummary).filter(OverwatchSummary.escalated == True).all()
         assert len(escalated) == 1
         assert escalated[0].job_id == "j-esc-2"
 
     def test_jobs_touching_file(self, db_session):
-        j1 = Job(job_id="jf-1", status="completed")
-        j2 = Job(job_id="jf-2", status="completed")
+        j1 = AstraJob(job_id="jf-1", status="completed")
+        j2 = AstraJob(job_id="jf-2", status="completed")
         db_session.add_all([j1, j2])
         db_session.commit()
         db_session.add(JobFile(job_id="jf-1", path="app/api.py", action="modify"))

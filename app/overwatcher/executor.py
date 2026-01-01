@@ -326,6 +326,7 @@ def build_implementation_prompt(
     chunk: Chunk,
     spec_id: str,
     spec_hash: str,
+    fix_actions_context: Optional[str] = None,
 ) -> Tuple[str, str]:
     """Build the implementation prompt for a chunk.
     
@@ -378,6 +379,15 @@ Verification Commands:
 
 Please implement all required changes. Output complete file contents for each file.
 """
+    
+    # Inject Overwatcher FIX_ACTIONS if provided (from previous failure diagnosis)
+    if fix_actions_context:
+        user_prompt = f"""IMPORTANT - OVERWATCHER GUIDANCE FROM PREVIOUS FAILURE:
+{fix_actions_context}
+
+---
+
+{user_prompt}"""
     
     return system_prompt, user_prompt
 
@@ -448,6 +458,7 @@ async def execute_chunk(
     dry_run: bool = False,
     provider_id: str = IMPLEMENTER_PROVIDER,
     model_id: str = IMPLEMENTER_MODEL,
+    fix_actions_context: Optional[str] = None,
 ) -> Tuple[bool, DiffCheckResult, Dict[str, str]]:
     """Execute implementation for a single chunk.
     
@@ -468,8 +479,10 @@ async def execute_chunk(
     """
     logger.info(f"[executor] Executing chunk {chunk.chunk_id}")
     
-    # Build implementation prompt
-    system_prompt, user_prompt = build_implementation_prompt(chunk, spec_id, spec_hash)
+    # Build implementation prompt (includes Overwatcher FIX_ACTIONS if retrying)
+    system_prompt, user_prompt = build_implementation_prompt(
+        chunk, spec_id, spec_hash, fix_actions_context
+    )
     
     messages = [
         {"role": "system", "content": system_prompt},
