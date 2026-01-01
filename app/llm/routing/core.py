@@ -52,6 +52,7 @@ ZOBIE MAP LOCAL ACTION:
 import os
 import logging
 import asyncio
+import inspect
 import json
 import re
 from datetime import datetime
@@ -191,7 +192,7 @@ from app.llm.routing.job_routing import (
 )
 from app.llm.routing.envelope import synthesize_envelope_from_task
 from app.llm.routing.video_code_debug import run_video_code_debug_pipeline
-from app.llm.routing.local_actions import _maybe_handle_zobie_map
+from app.llm.routing.local_actions import maybe_handle_local_action
 
 
 # =============================================================================
@@ -206,6 +207,80 @@ def _debug_log(msg: str):
     if ROUTER_DEBUG:
         print(f"[router-debug] {msg}")
 
+
+def _call_classifier(classify_fn, task, message_text: str, requested_type=None):
+    """
+    Call the job classifier in a backwards/forwards-compatible way.
+
+    Classifiers in this repo historically come in two shapes:
+      1) task-first:    classify_and_route(task, ...)
+      2) message-first: classify_and_route(message, attachments=None, job_type=None, metadata=None)
+
+    This helper inspects the classifier signature and passes only the
+    arguments it is likely to accept, preserving existing behavior while
+    avoiding hard failures when signatures evolve.
+    """
+
+    def _task_attr(name, default=None):
+        try:
+            return getattr(task, name)
+        except Exception:
+            return default
+
+    try:
+        sig = inspect.signature(classify_fn)
+    except Exception:
+        # Conservative fallback: try task-first then message-first.
+        try:
+            return classify_fn(task, message_text, requested_type=requested_type)
+        except TypeError:
+            try:
+                return classify_fn(task)
+            except TypeError:
+                return classify_fn(message_text, _task_attr("attachments"))
+
+    params = list(sig.parameters.values())
+    has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params)
+
+    positional = [
+        p for p in params
+        if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    names = [p.name for p in positional]
+
+    TASK_NAMES = {"task", "llm_task", "request", "req"}
+    MESSAGE_NAMES = {"message", "message_text", "text", "prompt", "input_text"}
+
+    args = []
+
+    # Decide whether this classifier is message-first or task-first.
+    # If the first positional param looks like a message, prefer message-first.
+    if names and (names[0] in MESSAGE_NAMES) and (names[0] not in TASK_NAMES):
+        # message-first: (message, attachments?, job_type?, metadata?)
+        args.append(message_text)
+        if len(names) >= 2 and names[1] in {"attachments", "files", "file_attachments", "attachment_infos"}:
+            args.append(_task_attr("attachments"))
+        if len(names) >= 3 and names[2] in {"job_type", "type", "job"}:
+            args.append(_task_attr("job_type"))
+        if len(names) >= 4 and names[3] in {"metadata", "meta", "context"}:
+            args.append(_task_attr("metadata"))
+    else:
+        # task-first: (task, message_text?)
+        if names:
+            args.append(task)
+        if len(names) >= 2 and names[1] in MESSAGE_NAMES:
+            args.append(message_text)
+
+    # Build kwargs only for supported names unless **kwargs exists.
+    kwargs = {}
+    if has_var_kw:
+        kwargs["requested_type"] = requested_type
+    else:
+        supported = {p.name for p in params}
+        if "requested_type" in supported:
+            kwargs["requested_type"] = requested_type
+
+    return classify_fn(*args, **kwargs)
 
 # =============================================================================
 # ATTACHMENT SAFETY CHECK
@@ -231,7 +306,7 @@ def _check_attachment_safety(
         return provider, model, reason
 
     # If Claude is forbidden for these attachments, force OpenAI
-    if is_claude_forbidden(task.attachments):
+    if is_claude_forbidden(decision.job_type):
         if provider == Provider.ANTHROPIC:
             print("[router] Claude forbidden for attachments; forcing OpenAI")
             provider = Provider.OPENAI
@@ -241,7 +316,7 @@ def _check_attachment_safety(
 
     # If job type explicitly specified by user, we respect it, but keep provider safe.
     if job_type_specified:
-        if provider == Provider.ANTHROPIC and not is_claude_allowed(task.attachments):
+        if provider == Provider.ANTHROPIC and not is_claude_allowed(decision.job_type):
             print("[router] Job type specified but Claude not allowed; forcing OpenAI")
             provider = Provider.OPENAI
             model = get_model_config(Provider.OPENAI, task.job_type).model
@@ -285,7 +360,7 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
     # Local action: ZOBIE MAP (prompt-triggered)
     # ==========================================================================
     try:
-        local_result = await _maybe_handle_zobie_map(task, message_text)
+        local_result = await maybe_handle_local_action(task, message_text)
         if local_result is not None:
             return local_result
     except Exception as exc:
@@ -315,7 +390,17 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
     # Step 1: Classify and route
     # ==========================================================================
     requested_type = task.job_type if job_type_specified else None
-    provider, model, job_type, reason = classify_and_route(task, message_text, requested_type=requested_type)
+    classifier_out = _call_classifier(classifier_classify_and_route, task, message_text, requested_type=requested_type)
+
+    # classifier may return a RoutingDecision-like object (e.g., Pydantic model).
+    # Avoid unpacking (Pydantic models are iterable over fields) and extract attributes instead.
+    if hasattr(classifier_out, 'provider') and hasattr(classifier_out, 'model') and hasattr(classifier_out, 'job_type'):
+        provider = getattr(classifier_out, 'provider')
+        model = getattr(classifier_out, 'model')
+        job_type = getattr(classifier_out, 'job_type')
+        reason = getattr(classifier_out, 'reason', '')
+    else:
+        provider, model, job_type, reason = classifier_out
 
     # Apply OVERRIDE routing if present
     if override_result:

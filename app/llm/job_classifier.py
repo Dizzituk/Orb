@@ -864,6 +864,10 @@ def prepare_attachments(
     
     result = []
     for att in raw_attachments:
+        # Accept legacy/simple attachment formats where entries may be strings
+        # (e.g., filename, path, or file_id). Normalize to dict for `.get()` usage.
+        if isinstance(att, str):
+            att = {"filename": att}
         if isinstance(att, AttachmentInfo):
             result.append(att)
         else:

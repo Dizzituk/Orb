@@ -117,6 +117,9 @@ from app.llm.local_tools.zobie_tools import (
     generate_update_architecture_stream,
 )
 
+# Architecture query (file-based, no service)
+from app.llm.local_tools import arch_query
+
 
 # =============================================================================
 # LEGACY TRIGGER DETECTION (used if translation layer not available)
@@ -146,6 +149,18 @@ def _is_sandbox_trigger(msg: str) -> bool:
         return False
     tool, _ = detect_sandbox_intent(msg)
     return tool is not None
+
+
+def _is_arch_query_trigger(msg: str) -> bool:
+    """Detect architecture/signature queries."""
+    if not arch_query.is_service_available():
+        return False
+    msg_lower = (msg or "").lower()
+    triggers = ["structure of", "signatures of", "signatures in", "find function", 
+                "find class", "find method", "what's in", "whats in", "search for"]
+    has_py = ".py" in msg_lower
+    has_struct = any(w in msg_lower for w in ["structure", "signature", "function", "class", "method"])
+    return any(t in msg_lower for t in triggers) or (has_py and has_struct)
 
 
 # =============================================================================
@@ -254,6 +269,42 @@ async def generate_sandbox_stream(
         if trace:
             trace.finalize(success=False, error_message=str(e))
         yield "data: " + json.dumps({"type": "error", "error": str(e)}) + "\n\n"
+
+
+async def generate_arch_query_stream(
+    project_id: int,
+    message: str,
+    db: Session,
+    trace: Optional[RoutingTrace] = None,
+):
+    """Generate SSE stream for architecture queries."""
+    try:
+        yield "data: " + json.dumps({"type": "token", "content": "📐 "}) + "\n\n"
+        response_text = arch_query.query_architecture(message)
+        chunk_size = 100
+        for i in range(0, len(response_text), chunk_size):
+            chunk = response_text[i:i + chunk_size]
+            yield "data: " + json.dumps({"type": "token", "content": chunk}) + "\n\n"
+            await asyncio.sleep(0.005)
+        memory_service.create_message(db, memory_schemas.MessageCreate(
+            project_id=project_id, role="user", content=message, provider="local"
+        ))
+        memory_service.create_message(db, memory_schemas.MessageCreate(
+            project_id=project_id, role="assistant", content=response_text,
+            provider="local", model="arch_query"
+        ))
+        if trace:
+            trace.finalize(success=True)
+        yield "data: " + json.dumps({
+            "type": "done", "provider": "local", "model": "arch_query",
+            "total_length": len(response_text)
+        }) + "\n\n"
+    except Exception as e:
+        logger.error(f"[arch_query] Error: {e}")
+        if trace:
+            trace.log_error("ARCH_QUERY", str(e))
+            trace.finalize(success=False, error_message=str(e))
+        yield "data: " + json.dumps({"type": "error", "message": str(e)}) + "\n\n"
 
 
 # =============================================================================
@@ -511,6 +562,20 @@ async def stream_chat(
         # Translation layer is available - use it for routing decisions
         
         # =====================================================================
+        # ARCH QUERY: Check BEFORE chat mode - structure/signature queries
+        # =====================================================================
+        if _is_arch_query_trigger(req.message):
+            routing_reason = "Architecture query (pre-translation check)"
+            if trace:
+                trace.log_request_start(job_type=req.job_type or "", resolved_job_type="local.arch_query", provider="local", model="arch_query", reason=routing_reason, frontier_override=False, file_map_injected=False, attachments=None)
+                trace.log_routing_decision(job_type="local.arch_query", provider="local", model="arch_query", reason=routing_reason, frontier_override=False, file_map_injected=False)
+            return StreamingResponse(
+                generate_arch_query_stream(project_id=req.project_id, message=req.message, db=db, trace=trace),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+        
+        # =====================================================================
         # CHAT MODE: RETURN EARLY - bypass job classification entirely (v4.1)
         # This prevents "Tell me about Overwatcher" from triggering SpecGate
         # =====================================================================
@@ -721,6 +786,18 @@ Do NOT claim you don't have information if it's present in the context."""
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
         
+        # ARCHITECTURE QUERY (structure/signature queries)
+        if _is_arch_query_trigger(req.message):
+            routing_reason = "Local tool trigger: ARCHITECTURE QUERY"
+            if trace:
+                trace.log_request_start(job_type=req.job_type or "", resolved_job_type="local.arch_query", provider="local", model="arch_query", reason=routing_reason, frontier_override=False, file_map_injected=False, attachments=None)
+                trace.log_routing_decision(job_type="local.arch_query", provider="local", model="arch_query", reason=routing_reason, frontier_override=False, file_map_injected=False)
+            return StreamingResponse(
+                generate_arch_query_stream(project_id=req.project_id, message=req.message, db=db, trace=trace),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+        
         # CREATE ARCHITECTURE MAP (legacy)
         if _is_archmap_trigger(req.message):
             routing_reason = "Local tool trigger: CREATE ARCHITECTURE MAP"
@@ -891,5 +968,3 @@ Do NOT claim you don't have information if it's present in the context."""
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
-
-

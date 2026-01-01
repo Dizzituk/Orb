@@ -1,9 +1,9 @@
 # FILE: app/llm/routing/local_actions.py
 """Prompt-triggered local actions for the router.
 
-Currently contains the ZOBIE MAP local action (read-only repo mapper).
-Extracted from app.llm.routing.core to keep the core router smaller and easier to sanity-check.
-Behavior is intended to be identical to the legacy implementation.
+Contains:
+- ZOBIE MAP: read-only repo mapper
+- ARCH QUERY: architecture/signature queries via arch_query_service
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from app.llm.local_tools.archmap_helpers import default_controller_base_url
+from app.llm.local_tools import arch_query
 from urllib.request import Request, urlopen
 
 from app.llm.schemas import JobType, LLMResult, LLMTask
@@ -31,6 +32,59 @@ def _debug_log(msg: str):
 
 
 # =============================================================================
+# LOCAL ACTION: ARCH QUERY (Architecture/signature queries)
+# =============================================================================
+
+async def _maybe_handle_arch_query(task: LLMTask, original_message: str) -> Optional[LLMResult]:
+    """Handle architecture query requests via arch_query_service."""
+    msg_lower = original_message.lower()
+    
+    # Trigger patterns
+    triggers = ["structure of", "signatures of", "signatures in", "find function", 
+                "find class", "find method", "what's in", "whats in", "search for"]
+    has_py = ".py" in msg_lower
+    has_struct = any(w in msg_lower for w in ["structure", "signature", "function", "class", "method"])
+    
+    if not (any(t in msg_lower for t in triggers) or (has_py and has_struct)):
+        return None
+    
+    if not arch_query.is_service_available():
+        _debug_log("arch_query_service not available at localhost:8780")
+        return None
+    
+    _debug_log(f"LOCAL ACTION: ARCH QUERY - {original_message[:80]}")
+    
+    try:
+        result = arch_query.query_architecture(original_message)
+        if result.startswith("Error:"):
+            _debug_log(f"arch_query returned error: {result}")
+            return None
+        
+        return LLMResult(
+            content=result,
+            provider="local",
+            model="arch_query",
+            finish_reason="stop",
+            error_message=None,
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            cost_usd=0.0,
+            raw_response={"local_action": "arch_query"},
+            job_type=JobType.TEXT_HEAVY,
+            routing_decision={
+                "job_type": "local.arch.query",
+                "provider": "local",
+                "model": "arch_query",
+                "reason": "Architecture structure query",
+            },
+        )
+    except Exception as e:
+        _debug_log(f"arch_query exception: {e}")
+        return None
+
+
+# =============================================================================
 # LOCAL ACTION: ZOBIE MAP (Prompt-triggered repo mapper; read-only)
 # =============================================================================
 
@@ -38,7 +92,6 @@ _ZOBIE_MAP_TIMEOUT_SECS = int(os.getenv("ZOBIE_MAP_TIMEOUT_SECS", "30"))
 _ZOBIE_MAP_DEFAULT_BASE = (os.getenv("ZOBIE_CONTROLLER_BASE") or os.getenv("ZOMBIE_CONTROLLER_BASE") or default_controller_base_url(__file__)).rstrip("/")
 _ZOBIE_MAP_MAX_FILES_DEFAULT = int(os.getenv("ZOBIE_MAP_MAX_FILES", "200000"))
 
-# Do NOT pull secrets (controller allows it, so client must refuse)
 _ZOBIE_DENY_FILE_PATTERNS = [
     r"(^|/)\.env($|/)",
     r"\.pem$",
@@ -90,7 +143,6 @@ def _zobie_pick_anchor_files(tree_paths: List[str]) -> List[str]:
         if base in _ZOBIE_ANCHOR_BASENAMES:
             anchors.add(p)
 
-    # also grab "main entry" files to help the mapper
     for p in tree_paths:
         if _zobie_is_denied_path(p):
             continue
@@ -206,7 +258,6 @@ def _zobie_run_map_sync(base_url: str, out_path: Path, max_files: int = 200000, 
     map_md = out_path / f"ARCH_MAP_{stamp}.md"
     index_json = out_path / f"INDEX_{stamp}.json"
 
-    # Write condensed tree
     tree_lines: List[str] = []
     tree_lines.append(f"Repo root (VM): {base_url}")
     tree_lines.append(f"Generated: {datetime.now().isoformat(timespec='seconds')}")
@@ -219,7 +270,6 @@ def _zobie_run_map_sync(base_url: str, out_path: Path, max_files: int = 200000, 
 
     tree_txt.write_text("\n".join(tree_lines), encoding="utf-8", errors="replace")
 
-    # Write architecture map prompt bundle
     md_lines: List[str] = []
     md_lines.append("# Architecture Map (Zobie Mapper)")
     md_lines.append("")
@@ -329,3 +379,23 @@ async def _maybe_handle_zobie_map(task: LLMTask, original_message: str) -> Optio
                 "reason": "Prompt trigger: ZOBIE MAP (failed)",
             },
         )
+
+
+# =============================================================================
+# MAIN DISPATCHER
+# =============================================================================
+
+async def maybe_handle_local_action(task: LLMTask, original_message: str) -> Optional[LLMResult]:
+    """Try all local action handlers. Returns result if handled, None otherwise."""
+    
+    # Architecture queries (check first - more common)
+    result = await _maybe_handle_arch_query(task, original_message)
+    if result:
+        return result
+    
+    # Zobie map
+    result = await _maybe_handle_zobie_map(task, original_message)
+    if result:
+        return result
+    
+    return None

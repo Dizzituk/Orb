@@ -61,6 +61,8 @@ import re
 from pathlib import Path
 from uuid import uuid4
 import time
+import asyncio
+import inspect
 from typing import Optional, List
 
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File as FastAPIFile, Form
@@ -365,6 +367,26 @@ def _make_session_id(auth: AuthResult) -> str:
     return "unknown"
 
 
+def _sync_await(maybe_awaitable):
+    """Resolve an awaitable returned from a sync call path.
+
+    Fixes cases where call_llm (or downstream) returns a coroutine.
+    In normal operation call_llm is sync and this is a no-op.
+    """
+    if inspect.isawaitable(maybe_awaitable):
+        try:
+            # If we're somehow on a running loop in this thread, we can't block safely.
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(maybe_awaitable)
+        raise RuntimeError(
+            "call_llm returned an awaitable on a running event loop. "
+            "Convert the caller to async and await the result."
+        )
+    return maybe_awaitable
+
+
+
 def _extract_provider_value(result: LLMResult) -> str:
     if result.provider is None:
         return "unknown"
@@ -488,7 +510,7 @@ def chat(
     )
 
     try:
-        result: LLMResult = call_llm(task)
+        result: LLMResult = _sync_await(call_llm(task))
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -1213,7 +1235,7 @@ Summary: {analysis.get('summary', 'N/A')}
     )
 
     try:
-        result: LLMResult = call_llm(task)
+        result: LLMResult = _sync_await(call_llm(task))
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -1307,7 +1329,7 @@ def direct_llm(
 
         t0 = time.perf_counter()
         try:
-            result = call_llm(task)
+            result = _sync_await(call_llm(task))
         except Exception as e:
             if trace:
                 trace.log_error(
@@ -1353,7 +1375,6 @@ def direct_llm(
         was_reviewed=result.was_reviewed,
         critic_review=result.critic_review,
     )
-
 
 
 
