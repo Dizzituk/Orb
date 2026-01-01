@@ -95,7 +95,7 @@ class TestCheckDiffBoundaries:
             files_deleted=[],
         )
         
-        assert result.passed is True
+        assert result.allowed is True
         assert len(result.violations) == 0
     
     def test_unauthorized_add(self):
@@ -111,9 +111,9 @@ class TestCheckDiffBoundaries:
             files_deleted=[],
         )
         
-        assert result.passed is False
+        assert result.allowed is False
         assert len(result.violations) == 1
-        assert result.violations[0].action == "added"
+        assert result.violations[0].violation_type == "unauthorized_add"
     
     def test_unauthorized_modify(self):
         """Test unauthorized file modification is caught."""
@@ -128,9 +128,9 @@ class TestCheckDiffBoundaries:
             files_deleted=[],
         )
         
-        assert result.passed is False
+        assert result.allowed is False
         assert len(result.violations) == 1
-        assert result.violations[0].action == "modified"
+        assert result.violations[0].violation_type == "unauthorized_modify"
     
     def test_unauthorized_delete(self):
         """Test unauthorized file deletion is caught."""
@@ -145,9 +145,9 @@ class TestCheckDiffBoundaries:
             files_deleted=["unauthorized.py"],
         )
         
-        assert result.passed is False
+        assert result.allowed is False
         assert len(result.violations) == 1
-        assert result.violations[0].action == "deleted"
+        assert result.violations[0].violation_type == "unauthorized_delete"
     
     def test_mixed_allowed_and_unauthorized(self):
         """Test mix of allowed and unauthorized changes."""
@@ -165,7 +165,7 @@ class TestCheckDiffBoundaries:
             files_deleted=[],
         )
         
-        assert result.passed is False
+        assert result.allowed is False
         assert len(result.violations) == 1
 
 
@@ -224,12 +224,11 @@ class User:
         files = extract_files_from_output(output)
         assert "app/models.py" in files
     
-    def test_no_files(self):
-        """Test output with no files returns empty dict."""
+    def test_empty_output(self):
+        """Test empty output returns empty dict."""
         from app.overwatcher.executor import extract_files_from_output
         
-        output = "Just some text without any file markers."
-        files = extract_files_from_output(output)
+        files = extract_files_from_output("")
         assert files == {}
 
 

@@ -29,10 +29,10 @@ class TestStreamRouterImports:
         from app.llm.stream_router import router
         assert router is not None
 
-    def test_stream_chat_request_model(self):
-        """Test StreamChatRequest model is defined."""
-        from app.llm.stream_router import StreamChatRequest
-        assert StreamChatRequest is not None
+    def test_stream_request_model(self):
+        """Test StreamRequest model is defined."""
+        from app.llm.stream_router import StreamRequest
+        assert StreamRequest is not None
 
 
 class TestTriggerDetection:
@@ -130,41 +130,41 @@ class TestZobieTriggerSet:
         assert isinstance(_ZOBIE_TRIGGER_SET, set)
 
 
-class TestStreamChatRequest:
-    """Test StreamChatRequest model."""
+class TestStreamRequest:
+    """Test StreamRequest model."""
 
     def test_required_fields(self):
         """Test required fields are enforced."""
-        from app.llm.stream_router import StreamChatRequest
+        from app.llm.stream_router import StreamRequest
         from pydantic import ValidationError
 
         # Should work with required fields
-        req = StreamChatRequest(project_id=1, message="hello")
+        req = StreamRequest(project_id=1, message="hello")
         assert req.project_id == 1
         assert req.message == "hello"
 
         # Should fail without required fields
         with pytest.raises(ValidationError):
-            StreamChatRequest(project_id=1)  # Missing message
+            StreamRequest(project_id=1)  # Missing message
 
     def test_default_values(self):
         """Test default values are set correctly."""
-        from app.llm.stream_router import StreamChatRequest
+        from app.llm.stream_router import StreamRequest
 
-        req = StreamChatRequest(project_id=1, message="hello")
+        req = StreamRequest(project_id=1, message="hello")
         
         assert req.provider is None
         assert req.model is None
         assert req.include_history == True
         assert req.history_limit == 20
-        assert req.use_semantic_search == False
+        assert req.use_semantic_search == True
         assert req.enable_reasoning == False
 
     def test_optional_fields(self):
         """Test optional fields can be set."""
-        from app.llm.stream_router import StreamChatRequest
+        from app.llm.stream_router import StreamRequest
 
-        req = StreamChatRequest(
+        req = StreamRequest(
             project_id=1,
             message="hello",
             provider="anthropic",

@@ -98,47 +98,38 @@ def check_diff_boundaries(
     allowed_delete = {normalize_path(p, base_dir) for p in chunk.allowed_files.get("delete_candidates", [])}
     
     # Check added files
-    normalized_added = []
     for f in files_added:
         nf = normalize_path(f, base_dir)
-        normalized_added.append(nf)
         if nf not in allowed_add:
             violations.append(BoundaryViolation(
                 file_path=f,
-                action="added",
-                reason=f"File not in allowed_files.add list",
+                violation_type="unauthorized_add",
+                details="File not in allowed_files.add list",
             ))
     
     # Check modified files
-    normalized_modified = []
     for f in files_modified:
         nf = normalize_path(f, base_dir)
-        normalized_modified.append(nf)
         if nf not in allowed_modify:
             violations.append(BoundaryViolation(
                 file_path=f,
-                action="modified",
-                reason=f"File not in allowed_files.modify list",
+                violation_type="unauthorized_modify",
+                details="File not in allowed_files.modify list",
             ))
     
     # Check deleted files
-    normalized_deleted = []
     for f in files_deleted:
         nf = normalize_path(f, base_dir)
-        normalized_deleted.append(nf)
         if nf not in allowed_delete:
             violations.append(BoundaryViolation(
                 file_path=f,
-                action="deleted",
-                reason=f"File not in allowed_files.delete_candidates list",
+                violation_type="unauthorized_delete",
+                details="File not in allowed_files.delete_candidates list",
             ))
     
     return DiffCheckResult(
-        passed=len(violations) == 0,
+        allowed=len(violations) == 0,
         violations=violations,
-        files_added=normalized_added,
-        files_modified=normalized_modified,
-        files_deleted=normalized_deleted,
     )
 
 
@@ -246,8 +237,7 @@ def get_working_tree_changes(repo_path: str) -> Tuple[List[str], List[str], List
             if line.strip():
                 added.append(line.strip())
         
-        # Deduplicate
-        return list(set(added)), list(set(modified)), list(set(deleted))
+        return added, modified, deleted
         
     except Exception as e:
         logger.warning(f"[executor] Failed to get working tree changes: {e}")
@@ -255,212 +245,228 @@ def get_working_tree_changes(repo_path: str) -> Tuple[List[str], List[str], List
 
 
 # =============================================================================
-# Implementation Prompt
+# File Extraction from LLM Output
 # =============================================================================
 
-IMPLEMENTATION_SYSTEM = """You are an expert programmer implementing a specific chunk of an approved architecture.
+# Pattern to match file headers like "# FILE: path/to/file.py"
+FILE_HEADER_PATTERN = re.compile(r'^#\s*FILE:\s*(.+?)\s*$', re.MULTILINE)
 
-CRITICAL RULES:
-1. You may ONLY touch files listed in ALLOWED FILES
-2. For each file, output the COMPLETE file content
-3. Use markers: # FILE: path/to/file.py followed by code block
-4. Do not touch any files outside the allowed list
-5. Verify your implementation will pass the listed verification commands
+# Pattern to extract code blocks
+CODE_BLOCK_PATTERN = re.compile(r'```(?:\w+)?\n(.*?)```', re.DOTALL)
 
-You must echo these exact lines at the start of your response:
-SPEC_ID: {spec_id}
-SPEC_HASH: {spec_hash}
 
-Then provide the implementation."""
+def extract_files_from_output(output: str) -> Dict[str, str]:
+    """Extract files from LLM output.
+    
+    Expected format:
+    # FILE: path/to/file.py
+    ```python
+    <content>
+    ```
+    
+    Returns dict of path -> content
+    """
+    if not output:
+        return {}
+    
+    files = {}
+    
+    # Find all file headers
+    headers = list(FILE_HEADER_PATTERN.finditer(output))
+    
+    for i, match in enumerate(headers):
+        file_path = match.group(1).strip()
+        
+        # Get content between this header and next (or end)
+        start = match.end()
+        end = headers[i + 1].start() if i + 1 < len(headers) else len(output)
+        section = output[start:end]
+        
+        # Extract code block content
+        code_match = CODE_BLOCK_PATTERN.search(section)
+        if code_match:
+            content = code_match.group(1)
+            # Remove trailing newline if present
+            if content.endswith('\n'):
+                content = content[:-1]
+            files[file_path] = content
+    
+    return files
 
-IMPLEMENTATION_PROMPT = """Implement this chunk:
 
-CHUNK DETAILS:
-- ID: {chunk_id}
-- Title: {title}
-- Objective: {objective}
+def parse_spec_headers(output: str) -> Tuple[Optional[str], Optional[str]]:
+    """Parse SPEC_ID and SPEC_HASH from LLM output.
+    
+    Returns (spec_id, spec_hash)
+    """
+    if not output:
+        return None, None
+    
+    spec_id = None
+    spec_hash = None
+    
+    # Look for SPEC_ID: <value>
+    match = re.search(r'SPEC_ID:\s*(\S+)', output)
+    if match:
+        spec_id = match.group(1)
+    
+    # Look for SPEC_HASH: <value>
+    match = re.search(r'SPEC_HASH:\s*(\S+)', output)
+    if match:
+        spec_hash = match.group(1)
+    
+    return spec_id, spec_hash
 
-ALLOWED FILES:
-- Add: {allowed_add}
-- Modify: {allowed_modify}
-- Delete candidates: {allowed_delete}
 
-STEPS:
-{steps_text}
-
-VERIFICATION COMMANDS (must pass after implementation):
-{verification_commands}
-
-OUTPUT FORMAT:
-For each file, use this exact format:
-
-# FILE: path/to/file.py
-```python
-<complete file content>
-```
-
-Implement this chunk now. Provide complete file contents for all touched files."""
-
+# =============================================================================
+# Implementation Prompt Building
+# =============================================================================
 
 def build_implementation_prompt(
     chunk: Chunk,
     spec_id: str,
     spec_hash: str,
 ) -> Tuple[str, str]:
-    """Build system and user prompts for implementation.
+    """Build the implementation prompt for a chunk.
     
-    Returns:
-        (system_prompt, user_prompt)
+    Returns (system_prompt, user_prompt)
     """
-    steps_text = ""
-    for i, step in enumerate(chunk.steps, 1):
-        action = step.action.value if isinstance(step.action, FileAction) else step.action
-        steps_text += f"{i}. [{action}] {step.file_path}: {step.description}\n"
+    # System prompt with spec echo requirement
+    system_prompt = f"""You are an expert code implementer. Your task is to implement code changes according to specifications.
+
+IMPORTANT: You MUST include these exact headers at the start of your response:
+SPEC_ID: {spec_id}
+SPEC_HASH: {spec_hash}
+
+For each file you create or modify, use this format:
+# FILE: path/to/file.py
+```python
+<complete file content>
+```
+
+Rules:
+1. Output COMPLETE file contents, not patches
+2. Only modify files listed in allowed_files
+3. Follow the verification commands to ensure correctness
+4. Include all necessary imports and dependencies
+"""
+    
+    # User prompt with chunk details
+    allowed_files_str = json.dumps(chunk.allowed_files, indent=2)
+    
+    steps_str = ""
+    for step in chunk.steps:
+        steps_str += f"\n- {step.description}"
         if step.details:
-            steps_text += f"   Details: {step.details}\n"
+            steps_str += f"\n  Details: {step.details}"
     
-    verification_commands = "\n".join(chunk.verification.commands) if chunk.verification.commands else "None specified"
+    verification_str = "\n".join(f"- {cmd}" for cmd in chunk.verification.commands)
     
-    system = IMPLEMENTATION_SYSTEM.format(
-        spec_id=spec_id,
-        spec_hash=spec_hash,
-    )
+    user_prompt = f"""Implement the following chunk:
+
+Chunk ID: {chunk.chunk_id}
+Title: {chunk.title}
+Objective: {chunk.objective}
+
+Allowed Files:
+{allowed_files_str}
+
+Steps:{steps_str}
+
+Verification Commands:
+{verification_str}
+
+Please implement all required changes. Output complete file contents for each file.
+"""
     
-    user = IMPLEMENTATION_PROMPT.format(
-        chunk_id=chunk.chunk_id,
-        title=chunk.title,
-        objective=chunk.objective,
-        allowed_add=", ".join(chunk.allowed_files.get("add", [])) or "None",
-        allowed_modify=", ".join(chunk.allowed_files.get("modify", [])) or "None",
-        allowed_delete=", ".join(chunk.allowed_files.get("delete_candidates", [])) or "None",
-        steps_text=steps_text or "No specific steps defined",
-        verification_commands=verification_commands,
-    )
-    
-    return system, user
+    return system_prompt, user_prompt
 
 
 # =============================================================================
-# File Extraction from LLM Output
+# Ledger Event Emission (stubs for event system)
 # =============================================================================
 
-def extract_files_from_output(output: str) -> Dict[str, str]:
-    """Extract file contents from LLM output.
-    
-    Looks for patterns like:
-    # FILE: path/to/file.py
-    ```python
-    content
-    ```
-    
-    Returns dict of path -> content
-    """
-    files = {}
-    
-    # Pattern: # FILE: path\n```language\ncontent\n```
-    pattern = r"#\s*FILE:\s*([^\n]+)\n```(?:\w+)?\n([\s\S]*?)```"
-    matches = re.findall(pattern, output)
-    
-    for path, content in matches:
-        path = path.strip()
-        files[path] = content.rstrip()
-    
-    # Also try: ```language:path\ncontent\n```
-    pattern2 = r"```(?:\w+)?:([^\n]+)\n([\s\S]*?)```"
-    matches2 = re.findall(pattern2, output)
-    
-    for path, content in matches2:
-        path = path.strip()
-        if path not in files:
-            files[path] = content.rstrip()
-    
-    return files
+def emit_chunk_implemented(
+    job_artifact_root: str,
+    job_id: str,
+    chunk_id: str,
+    files_added: List[str],
+    files_modified: List[str],
+    model: str,
+) -> None:
+    """Emit chunk implementation event."""
+    logger.info(f"[executor] Event: chunk_implemented {chunk_id}")
 
 
-def parse_spec_headers(output: str) -> Tuple[Optional[str], Optional[str]]:
-    """Parse SPEC_ID and SPEC_HASH headers from output.
-    
-    Returns:
-        (spec_id, spec_hash)
-    """
-    spec_id = None
-    spec_hash = None
-    
-    lines = output.strip().split("\n") if output else []
-    for line in lines[:5]:
-        if line.strip().startswith("SPEC_ID:"):
-            spec_id = line.split(":", 1)[1].strip()
-        elif line.strip().startswith("SPEC_HASH:"):
-            spec_hash = line.split(":", 1)[1].strip()
-    
-    return spec_id, spec_hash
+def emit_boundary_violation(
+    job_artifact_root: str,
+    job_id: str,
+    chunk_id: str,
+    violations: List[Dict[str, Any]],
+) -> None:
+    """Emit boundary violation event."""
+    logger.warning(f"[executor] Event: boundary_violation {chunk_id}: {violations}")
+
+
+def emit_stage_failed(
+    job_artifact_root: str,
+    job_id: str,
+    stage_id: str,
+    error_type: str,
+    error_message: str,
+) -> None:
+    """Emit stage failure event."""
+    logger.error(f"[executor] Event: stage_failed {stage_id}: {error_type} - {error_message}")
+
+
+def emit_provider_fallback(
+    job_artifact_root: str,
+    job_id: str,
+    from_provider: str,
+    from_model: str,
+    to_provider: str,
+    to_model: str,
+    reason: str,
+) -> None:
+    """Emit provider fallback event."""
+    logger.info(f"[executor] Event: provider_fallback {from_provider}/{from_model} -> {to_provider}/{to_model}")
 
 
 # =============================================================================
-# Chunk Execution
+# Main Execution
 # =============================================================================
 
 async def execute_chunk(
     *,
     chunk: Chunk,
     repo_path: str,
-    spec_id: str,
-    spec_hash: str,
-    job_id: str,
-    job_artifact_root: str,
+    spec_id: Optional[str] = None,
+    spec_hash: Optional[str] = None,
+    job_id: str = "",
+    job_artifact_root: str = "",
     llm_call_fn: Callable,
-    provider_id: str = None,
-    model_id: str = None,
     dry_run: bool = False,
+    provider_id: str = IMPLEMENTER_PROVIDER,
+    model_id: str = IMPLEMENTER_MODEL,
 ) -> Tuple[bool, DiffCheckResult, Dict[str, str]]:
-    """Execute a chunk implementation.
-    
-    Spec v2.3 Block 8:
-    - Primary: Claude Sonnet
-    - Fallback: GPT-5.2 Thinking
-    - Emits CHUNK_IMPLEMENTED or BOUNDARY_VIOLATION
+    """Execute implementation for a single chunk.
     
     Args:
-        chunk: Chunk to implement
-        repo_path: Path to repository
-        spec_id: Spec ID for header echo
-        spec_hash: Spec hash for header echo
-        job_id: Job UUID
-        job_artifact_root: Root for artifacts
+        chunk: The chunk to implement
+        repo_path: Path to repository root
+        spec_id: Spec ID for validation
+        spec_hash: Spec hash for validation  
+        job_id: Job UUID for tracking
+        job_artifact_root: Root directory for artifacts
         llm_call_fn: Async function to call LLM
-        provider_id: LLM provider (default: anthropic)
-        model_id: LLM model (default: claude-sonnet)
-        dry_run: If True, don't write files
+        dry_run: If True, check boundaries but don't write files
+        provider_id: LLM provider to use
+        model_id: LLM model to use
     
     Returns:
-        (success, diff_result, file_contents)
+        (success, diff_result, files_dict)
     """
-    from app.pot_spec.ledger import (
-        emit_chunk_implemented,
-        emit_boundary_violation,
-        emit_stage_started,
-        emit_provider_fallback,
-        emit_stage_failed,
-    )
-    
-    stage_run_id = str(uuid4())
-    
-    # Default to spec-mandated models
-    provider_id = provider_id or IMPLEMENTER_PROVIDER
-    model_id = model_id or IMPLEMENTER_MODEL
-    
-    logger.info(f"[executor] Executing chunk {chunk.chunk_id}: {chunk.title}")
-    
-    # Emit stage started
-    try:
-        emit_stage_started(
-            job_artifact_root=job_artifact_root,
-            job_id=job_id,
-            stage_id="implementation",
-            stage_run_id=stage_run_id,
-        )
-    except Exception as e:
-        logger.warning(f"[executor] Failed to emit stage started: {e}")
+    logger.info(f"[executor] Executing chunk {chunk.chunk_id}")
     
     # Build implementation prompt
     system_prompt, user_prompt = build_implementation_prompt(chunk, spec_id, spec_hash)
@@ -523,7 +529,7 @@ async def execute_chunk(
             )
         except Exception:
             pass
-        return False, DiffCheckResult(passed=False, violations=[]), {}
+        return False, DiffCheckResult(allowed=False, violations=[]), {}
     
     raw_output = result.content if hasattr(result, "content") else str(result)
     
@@ -541,14 +547,14 @@ async def execute_chunk(
             )
         except Exception:
             pass
-        return False, DiffCheckResult(passed=False, violations=[]), {}
+        return False, DiffCheckResult(allowed=False, violations=[]), {}
     
     # Extract files from output
     files = extract_files_from_output(raw_output)
     
     if not files:
         logger.warning(f"[executor] No files extracted from output")
-        return False, DiffCheckResult(passed=False, violations=[]), {}
+        return False, DiffCheckResult(allowed=False, violations=[]), {}
     
     # Determine which files are added vs modified
     files_added = []
@@ -570,7 +576,7 @@ async def execute_chunk(
         base_dir=repo_path,
     )
     
-    if not diff_result.passed:
+    if not diff_result.allowed:
         logger.warning(f"[executor] Boundary violations: {[v.file_path for v in diff_result.violations]}")
         try:
             emit_boundary_violation(

@@ -126,27 +126,24 @@ class TestChunkPlan:
 class TestDiffCheckResult:
     def test_passed_result(self):
         result = DiffCheckResult(
-            passed=True,
+            allowed=True,
             violations=[],
-            files_added=["new.py"],
-            files_modified=["existing.py"],
-            files_deleted=[],
         )
-        assert result.passed is True
+        assert result.allowed is True
         assert len(result.violations) == 0
 
     def test_failed_result(self):
         result = DiffCheckResult(
-            passed=False,
+            allowed=False,
             violations=[
                 BoundaryViolation(
                     file_path="forbidden.py",
-                    action="modified",
-                    reason="Not in allowed list",
+                    violation_type="unauthorized_modify",
+                    details="Not in allowed list",
                 )
             ],
         )
-        assert result.passed is False
+        assert result.allowed is False
         assert len(result.violations) == 1
 
 
@@ -175,7 +172,7 @@ class TestVerificationResult:
                     stdout="2 failed",
                     stderr="",
                     duration_ms=1000,
-                    passed=False,
+                    timed_out=False,
                 )
             ],
         )

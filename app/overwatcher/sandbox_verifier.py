@@ -60,8 +60,13 @@ def shell_to_command_result(
         stdout=shell_result.stdout,
         stderr=shell_result.stderr,
         duration_ms=shell_result.duration_ms,
-        passed=shell_result.ok,
+        timed_out=not shell_result.ok and shell_result.exit_code == -1,
     )
+
+
+def command_passed(result: CommandResult) -> bool:
+    """Check if a CommandResult represents a passing command."""
+    return result.exit_code == 0 and not result.timed_out
 
 
 def parse_pytest_counts(output: str) -> Tuple[int, int]:
@@ -148,7 +153,7 @@ def sandbox_run_pytest(
             stdout="",
             stderr=str(e),
             duration_ms=0,
-            passed=False,
+            timed_out=True,
         ), 0, 0
 
 
@@ -176,7 +181,7 @@ def sandbox_run_ruff(
                 stdout="No Python files to check",
                 stderr="",
                 duration_ms=0,
-                passed=True,
+                timed_out=False,
             ), 0
         target = " ".join(py_files)
     else:
@@ -199,7 +204,7 @@ def sandbox_run_ruff(
             stdout="",
             stderr=str(e),
             duration_ms=0,
-            passed=False,
+            timed_out=True,
         ), 0
 
 
@@ -227,7 +232,7 @@ def sandbox_run_mypy(
                 stdout="No Python files to check",
                 stderr="",
                 duration_ms=0,
-                passed=True,
+                timed_out=False,
             ), 0
         target = " ".join(py_files)
     else:
@@ -250,7 +255,7 @@ def sandbox_run_mypy(
             stdout="",
             stderr=str(e),
             duration_ms=0,
-            passed=False,
+            timed_out=True,
         ), 0
 
 
@@ -280,7 +285,7 @@ def sandbox_run_command(
             stdout="",
             stderr=str(e),
             duration_ms=0,
-            passed=False,
+            timed_out=True,
         )
 
 
@@ -376,7 +381,7 @@ async def verify_chunk_sandbox(
             evidence_paths.append(str(evidence_path))
     
     # Determine overall status
-    all_passed = all(r.passed for r in results)
+    all_passed = all(command_passed(r) for r in results)
     
     if all_passed and tests_failed == 0 and lint_errors == 0 and type_errors == 0:
         status = VerificationStatus.PASSED
@@ -391,8 +396,6 @@ async def verify_chunk_sandbox(
         tests_failed=tests_failed,
         lint_errors=lint_errors,
         type_errors=type_errors,
-        evidence_paths=evidence_paths,
-        legacy_failures=[],
     )
 
 
@@ -420,7 +423,7 @@ async def run_full_verification_sandbox(
             stdout="",
             stderr="Sandbox not available",
             duration_ms=0,
-            passed=False,
+            timed_out=False,
         )
     
     result, passed, failed = sandbox_run_pytest(
@@ -430,7 +433,7 @@ async def run_full_verification_sandbox(
         timeout=timeout,
     )
     
-    return result.passed and failed == 0, result
+    return command_passed(result) and failed == 0, result
 
 
 async def run_smoke_boot_sandbox(
@@ -459,19 +462,20 @@ async def run_smoke_boot_sandbox(
             stdout="",
             stderr="Sandbox not available",
             duration_ms=0,
-            passed=False,
+            timed_out=False,
         )
     
     module = entry_point.split(":")[0]
     command = f'python -c "import {module}"'
     result = sandbox_run_command(client, command, timeout=timeout)
     
-    return result.passed, result
+    return command_passed(result), result
 
 
 __all__ = [
     # Conversion
     "shell_to_command_result",
+    "command_passed",
     "parse_pytest_counts",
     "parse_lint_error_count",
     "parse_type_error_count",

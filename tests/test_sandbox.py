@@ -128,8 +128,46 @@ class TestSandboxVerifier:
         
         assert cmd_result.command == "pytest tests/"
         assert cmd_result.exit_code == 0
-        assert cmd_result.passed is True
+        assert cmd_result.timed_out is False
         assert cmd_result.stdout == "test output"
+    
+    def test_command_passed_helper(self):
+        """Test command_passed helper function."""
+        from app.overwatcher.schemas import CommandResult
+        from app.overwatcher.sandbox_verifier import command_passed
+        
+        # Passing command
+        result_pass = CommandResult(
+            command="pytest",
+            exit_code=0,
+            stdout="ok",
+            stderr="",
+            duration_ms=100,
+            timed_out=False,
+        )
+        assert command_passed(result_pass) is True
+        
+        # Failing command (non-zero exit)
+        result_fail = CommandResult(
+            command="pytest",
+            exit_code=1,
+            stdout="fail",
+            stderr="",
+            duration_ms=100,
+            timed_out=False,
+        )
+        assert command_passed(result_fail) is False
+        
+        # Timed out command
+        result_timeout = CommandResult(
+            command="pytest",
+            exit_code=0,
+            stdout="",
+            stderr="",
+            duration_ms=100,
+            timed_out=True,
+        )
+        assert command_passed(result_timeout) is False
     
     def test_parse_pytest_counts(self):
         """Test pytest output parsing."""
@@ -216,12 +254,12 @@ class TestSandboxExecutor:
             "app/existing.py": FileEntry(path="app/existing.py", size_bytes=100),
         }
         
-        result = check_sandbox_boundaries(chunk, files_to_write, existing_tree)
+        result, files_added, files_modified = check_sandbox_boundaries(chunk, files_to_write, existing_tree)
         
-        assert result.passed is True
+        assert result.allowed is True
         assert len(result.violations) == 0
-        assert "app/new_file.py" in result.files_added
-        assert "app/existing.py" in result.files_modified
+        assert "app/new_file.py" in files_added
+        assert "app/existing.py" in files_modified
     
     def test_check_sandbox_boundaries_violation(self):
         """Test boundary check fails for disallowed files."""
@@ -248,9 +286,9 @@ class TestSandboxExecutor:
         
         existing_tree = {}
         
-        result = check_sandbox_boundaries(chunk, files_to_write, existing_tree)
+        result, files_added, files_modified = check_sandbox_boundaries(chunk, files_to_write, existing_tree)
         
-        assert result.passed is False
+        assert result.allowed is False
         assert len(result.violations) == 1
         assert result.violations[0].file_path == "app/forbidden.py"
 

@@ -67,7 +67,7 @@ def check_sandbox_boundaries(
     chunk: Chunk,
     files_to_write: Dict[str, str],
     existing_tree: Dict[str, FileEntry],
-) -> DiffCheckResult:
+) -> Tuple[DiffCheckResult, List[str], List[str]]:
     """Check if file writes respect chunk boundaries.
     
     Args:
@@ -76,7 +76,7 @@ def check_sandbox_boundaries(
         existing_tree: Current sandbox file tree
     
     Returns:
-        DiffCheckResult with any violations
+        Tuple of (DiffCheckResult, files_added, files_modified)
     """
     violations = []
     files_added = []
@@ -96,8 +96,8 @@ def check_sandbox_boundaries(
             if norm_path not in allowed_modify:
                 violations.append(BoundaryViolation(
                     file_path=path,
-                    action="modified",
-                    reason="File not in allowed_files.modify list",
+                    violation_type="unauthorized_modify",
+                    details="File not in allowed_files.modify list",
                 ))
             else:
                 files_modified.append(norm_path)
@@ -106,19 +106,18 @@ def check_sandbox_boundaries(
             if norm_path not in allowed_add:
                 violations.append(BoundaryViolation(
                     file_path=path,
-                    action="added",
-                    reason="File not in allowed_files.add list",
+                    violation_type="unauthorized_add",
+                    details="File not in allowed_files.add list",
                 ))
             else:
                 files_added.append(norm_path)
     
-    return DiffCheckResult(
-        passed=len(violations) == 0,
+    result = DiffCheckResult(
+        allowed=len(violations) == 0,
         violations=violations,
-        files_added=files_added,
-        files_modified=files_modified,
-        files_deleted=[],
     )
+    
+    return result, files_added, files_modified
 
 
 # =============================================================================
@@ -317,15 +316,15 @@ async def execute_chunk_sandbox(
     # Check sandbox connection
     if not client.is_connected():
         logger.error("[sandbox_executor] Sandbox not available")
-        return False, DiffCheckResult(passed=False, violations=[]), {}
+        return False, DiffCheckResult(allowed=False, violations=[]), {}
     
     # Get current tree for boundary checking
     existing_tree = get_sandbox_file_tree(client)
     
     # Check boundaries BEFORE writing
-    diff_result = check_sandbox_boundaries(chunk, files, existing_tree)
+    diff_result, files_added, files_modified = check_sandbox_boundaries(chunk, files, existing_tree)
     
-    if not diff_result.passed:
+    if not diff_result.allowed:
         logger.warning(
             f"[sandbox_executor] Boundary violations: "
             f"{[v.file_path for v in diff_result.violations]}"
@@ -351,7 +350,7 @@ async def execute_chunk_sandbox(
     
     logger.info(
         f"[sandbox_executor] Chunk {chunk.chunk_id} executed: "
-        f"{len(diff_result.files_added)} added, {len(diff_result.files_modified)} modified"
+        f"{len(files_added)} added, {len(files_modified)} modified"
     )
     
     return True, diff_result, files
