@@ -43,6 +43,7 @@ from .stream_utils import (
     select_provider_for_job_type,
 )
 from .high_stakes_stream import generate_high_stakes_critique_stream
+from .stream_memory import inject_memory_for_stream
 
 # =============================================================================
 # TRANSLATION LAYER IMPORT
@@ -575,6 +576,9 @@ Use this context to answer the user's questions. If asked about people, document
 or information that appears in the context above, use that information to respond.
 Do NOT claim you don't have information if it's present in the context."""
             
+            # ASTRA Memory injection
+            system_prompt = inject_memory_for_stream(db, messages, system_prompt, 'chat_light')
+
             # RETURN EARLY - never reaches job classification
             return StreamingResponse(
                 generate_sse_stream(
@@ -862,6 +866,9 @@ Use this context to answer the user's questions. If asked about people, document
 or information that appears in the context above, use that information to respond.
 Do NOT claim you don't have information if it's present in the context."""
     
+    # ASTRA Memory injection
+    system_prompt = inject_memory_for_stream(db, messages, system_prompt, job_type_value)
+
     # High-stakes routing
     if provider == "anthropic" and is_opus_model(model) and is_high_stakes_job(job_type_value):
         return StreamingResponse(
@@ -884,3 +891,5 @@ Do NOT claim you don't have information if it's present in the context."""
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+

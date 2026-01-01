@@ -190,6 +190,40 @@ from app.astra_memory.confidence_config import (
 )
 
 # =============================================================================
+# v2.0 PYRAMID GENERATOR
+# =============================================================================
+
+from app.astra_memory.pyramid_generator import (
+    generate_pyramid_for_content,
+    generate_l0_sentence,
+    generate_l1_bullets,
+    generate_l2_paragraphs,
+    run_pyramid_generation,
+    get_pyramid_stats,
+)
+
+# =============================================================================
+# v2.0 PREFERENCE LEARNING
+# =============================================================================
+
+from app.astra_memory.learning import (
+    record_message_feedback,
+    analyze_conversation_patterns,
+)
+
+# =============================================================================
+# v2.0 DECAY JOB
+# =============================================================================
+
+from app.astra_memory.decay_job import (
+    run_confidence_decay,
+    get_decay_metrics,
+    DecayJobScheduler,
+    get_scheduler,
+    run_decay_now,
+)
+
+# =============================================================================
 # ALL EXPORTS
 # =============================================================================
 
@@ -295,4 +329,23 @@ __all__ = [
     "DEFAULT_CONFIG",
     "get_config",
     "get_evidence_weight",
+    
+    # === v2.0 Pyramid Generator ===
+    "generate_pyramid_for_content",
+    "generate_l0_sentence",
+    "generate_l1_bullets",
+    "generate_l2_paragraphs",
+    "run_pyramid_generation",
+    "get_pyramid_stats",
+    
+    # === v2.0 Preference Learning ===
+    "record_message_feedback",
+    "analyze_conversation_patterns",
+    
+    # === v2.0 Decay Job ===
+    "run_confidence_decay",
+    "get_decay_metrics",
+    "DecayJobScheduler",
+    "get_scheduler",
+    "run_decay_now",
 ]

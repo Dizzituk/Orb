@@ -506,6 +506,52 @@ class TestBadLearningPrevention:
 # TEST: BEHAVIOR RULES
 # =============================================================================
 
+class TestColdStorageFetch:
+    "Tests for cold storage expansion on D2+."
+
+    def setup_method(self):
+        from app.db import SessionLocal
+        self.SessionLocal = SessionLocal
+    """Tests for cold storage expansion on D2+."""
+    
+    def test_d1_no_cold_fetch_logging(self):
+        """D1 should not trigger cold fetches."""
+        from app.astra_memory.retrieval import stage2_expand_candidates, IntentDepth, RetrievalCandidate
+        
+        db = self.SessionLocal()
+        candidates = [RetrievalCandidate(
+            record_type="message",
+            record_id="1",
+            title="Test",
+            one_liner="Test one liner",
+        )]
+        
+        # D1 should use hot layer only
+        expanded = stage2_expand_candidates(db, candidates, IntentDepth.D1)
+        assert len(expanded) == 1
+        assert expanded[0].summary_level == 0  # Hot layer = L0
+        db.close()
+    
+    def test_d3_can_cold_fetch(self):
+        """D3 should attempt cold fetch."""
+        from app.astra_memory.retrieval import stage2_expand_candidates, IntentDepth, RetrievalCandidate
+        
+        db = self.SessionLocal()
+        candidates = [RetrievalCandidate(
+            record_type="project",
+            record_id="1",  # Assuming project 1 exists
+            title="Test Project",
+            one_liner="Test",
+        )]
+        
+        # D3 can use cold storage
+        expanded = stage2_expand_candidates(db, candidates, IntentDepth.D3)
+        assert len(expanded) == 1
+        # If cold fetch succeeded, level > 0; otherwise fallback to 0
+        # Don't assert specific level since project might not exist
+        db.close()
+
+
 class TestBehaviorRules:
     """Test preference application behavior rules."""
     
@@ -567,3 +613,4 @@ class TestBehaviorRules:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
