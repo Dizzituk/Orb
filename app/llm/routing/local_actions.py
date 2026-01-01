@@ -14,6 +14,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from app.llm.local_tools.archmap_helpers import default_controller_base_url
 from urllib.request import Request, urlopen
 
 from app.llm.schemas import JobType, LLMResult, LLMTask
@@ -34,7 +35,7 @@ def _debug_log(msg: str):
 # =============================================================================
 
 _ZOBIE_MAP_TIMEOUT_SECS = int(os.getenv("ZOBIE_MAP_TIMEOUT_SECS", "30"))
-_ZOBIE_MAP_DEFAULT_BASE = (os.getenv("ZOBIE_CONTROLLER_BASE") or os.getenv("ZOMBIE_CONTROLLER_BASE") or "http://192.168.250.2:8765").rstrip("/")
+_ZOBIE_MAP_DEFAULT_BASE = (os.getenv("ZOBIE_CONTROLLER_BASE") or os.getenv("ZOMBIE_CONTROLLER_BASE") or default_controller_base_url(__file__)).rstrip("/")
 _ZOBIE_MAP_MAX_FILES_DEFAULT = int(os.getenv("ZOBIE_MAP_MAX_FILES", "200000"))
 
 # Do NOT pull secrets (controller allows it, so client must refuse)

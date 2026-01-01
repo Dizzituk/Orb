@@ -21,6 +21,120 @@ from app.memory import service as memory_service, schemas as memory_schemas
 logger = logging.getLogger(__name__)
 
 # =============================================================================
+# PATH RESOLUTION (drive-agnostic defaults; env vars still override)
+# =============================================================================
+
+def _env_first(*names: str) -> Optional[str]:
+    for n in names:
+        v = os.getenv(n)
+        if v and str(v).strip():
+            return str(v).strip()
+    return None
+
+
+def get_repo_root(start_file: Optional[str] = None) -> Path:
+    """Best-effort backend repo root discovery (no hard-coded drive letters)."""
+    env_root = _env_first("ORB_REPO_ROOT", "ORB_BACKEND_ROOT", "ZOMBIEORB_REPO_ROOT", "ZOBIEORB_REPO_ROOT")
+    if env_root:
+        try:
+            return Path(env_root).expanduser().resolve()
+        except Exception:
+            pass
+
+    start = Path(start_file).resolve() if start_file else Path(__file__).resolve()
+
+    markers = (".git", "pyproject.toml", "requirements.txt")
+    for p in (start,) + tuple(start.parents):
+        try:
+            if any((p / m).exists() for m in markers):
+                return p
+        except Exception:
+            pass
+
+        # If we're inside .../app/... assume repo root is parent of app/
+        try:
+            if p.name == "app" and (p / "__init__.py").exists():
+                return p.parent
+        except Exception:
+            pass
+
+    # Fallback: relative to this module location (repo/app/llm/local_tools/...)
+    try:
+        return start.parents[3]
+    except Exception:
+        return start
+
+
+def default_architecture_dir(start_file: Optional[str] = None) -> str:
+    rr = get_repo_root(start_file)
+    return str((rr / ".architecture").resolve())
+
+
+def default_archmap_output_dir(start_file: Optional[str] = None) -> str:
+    # Keep map output repo-local by default (promotion-safe).
+    return default_architecture_dir(start_file)
+
+
+def default_sandbox_cache_root(start_file: Optional[str] = None) -> str:
+    rr = get_repo_root(start_file)
+    return str((rr / "_sandbox_cache").resolve())
+
+
+def _read_controller_addr_txt(cache_root: Path) -> Optional[str]:
+    addr_file = cache_root / "controller_addr.txt"
+    try:
+        if addr_file.exists():
+            v = addr_file.read_text(encoding="utf-8", errors="replace").strip()
+            return v or None
+    except Exception:
+        return None
+    return None
+
+
+def default_controller_base_url(start_file: Optional[str] = None) -> str:
+    """Controller base URL resolution.
+
+    Precedence:
+    1) ORB_ZOBIE_CONTROLLER_URL (and legacy aliases)
+    2) <repo_root>/_sandbox_cache/controller_addr.txt (written by start_controller.ps1)
+    3) Historical fallback (kept for backwards compatibility)
+    """
+    env_url = _env_first(
+        "ORB_ZOBIE_CONTROLLER_URL",
+        "ZOBIE_CONTROLLER_BASE",
+        "ZOMBIE_CONTROLLER_BASE",
+        "ZOBIE_CONTROLLER_URL",
+        "ZOMBIE_CONTROLLER_URL",
+    )
+    if env_url:
+        return env_url.rstrip("/")
+
+    cache_root = Path(default_sandbox_cache_root(start_file))
+    txt = _read_controller_addr_txt(cache_root)
+    if txt:
+        return txt.rstrip("/")
+
+    return "http://192.168.250.2:8765"
+
+
+def default_zobie_mapper_out_dir(start_file: Optional[str] = None) -> str:
+    """Default mapper output dir.
+
+    If legacy D:\tools\zobie_mapper\out exists, keep using it.
+    Otherwise store mapper artifacts under repo-local cache.
+    """
+    legacy = Path(r"D:\tools\zobie_mapper\out")
+    try:
+        if legacy.exists():
+            return str(legacy.resolve())
+    except Exception:
+        pass
+
+    cache_root = Path(default_sandbox_cache_root(start_file))
+    return str((cache_root / "zobie_mapper_out").resolve())
+
+
+# =============================================================================
 # TRIGGER SETS
 # =============================================================================
 
@@ -47,10 +161,10 @@ _ARCHMAP_TRIGGER_SET = {
 
 # Internal architecture storage (fixed filenames, no timestamps)
 # Default: Orb/.architecture/ (relative to repo root)
-ARCHITECTURE_DIR = os.getenv("ORB_ARCHITECTURE_DIR", r"D:\Orb\.architecture")
+ARCHITECTURE_DIR = os.getenv("ORB_ARCHITECTURE_DIR") or default_architecture_dir(__file__)
 
 # Output for human-readable map
-ARCHMAP_OUTPUT_DIR = os.getenv("ORB_ARCHMAP_OUTPUT_DIR", r"D:\tools\zobie_mapper\out")
+ARCHMAP_OUTPUT_DIR = os.getenv("ORB_ARCHMAP_OUTPUT_DIR") or default_archmap_output_dir(__file__)
 ARCHMAP_OUTPUT_FILE = "ARCHITECTURE_MAP.md"  # Single file, always overwritten
 
 # =============================================================================
@@ -72,7 +186,7 @@ ARCHMAP_FALLBACK_MODEL = os.getenv("ORB_ARCHMAP_FALLBACK_MODEL", "gpt-5-mini")
 # =============================================================================
 
 # Controller base URL (sandbox controller)
-ARCHMAP_CONTROLLER_BASE_URL = os.getenv("ORB_ZOBIE_CONTROLLER_URL", "http://192.168.250.2:8765")
+ARCHMAP_CONTROLLER_BASE_URL = os.getenv("ORB_ZOBIE_CONTROLLER_URL") or default_controller_base_url(__file__)
 ARCHMAP_CONTROLLER_TIMEOUT_SEC = int(os.getenv("ORB_ARCHMAP_CONTROLLER_TIMEOUT_SEC", "30"))
 
 # Zobie mapper script

@@ -3,11 +3,14 @@
 
 Extracted from app.llm.routing.core to keep the core router smaller and easier to sanity-check.
 Behavior is intended to be identical to the legacy implementation.
+
+v2.0: Added memory injection from ASTRA memory system.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 from uuid import uuid4
 
@@ -27,7 +30,28 @@ from app.llm.routing.job_routing import (
 )
 from app.llm.pipeline.high_stakes import _map_to_phase4_job_type
 
+# v2.0: Memory injection
+from app.llm.routing.memory_injection import (
+    build_memory_context,
+    inject_memory_into_system_prompt,
+    get_memory_injection_stats,
+    MEMORY_AVAILABLE,
+)
+
 logger = logging.getLogger(__name__)
+
+# Environment flag to disable memory injection
+MEMORY_INJECTION_ENABLED = os.getenv("ORB_MEMORY_INJECTION", "1") == "1"
+
+
+def _get_db_session():
+    """Get a database session for memory retrieval."""
+    try:
+        from app.db import SessionLocal
+        return SessionLocal()
+    except Exception as e:
+        logger.warning(f"[envelope] Failed to get DB session: {e}")
+        return None
 
 
 def synthesize_envelope_from_task(
@@ -41,6 +65,7 @@ def synthesize_envelope_from_task(
     Synthesize a JobEnvelope from LLMTask.
 
     v0.15.1: Added cleaned_message parameter for OVERRIDE line removal.
+    v2.0: Added memory injection from ASTRA memory system.
     """
     phase4_job_type = _map_to_phase4_job_type(task.job_type)
     importance = _default_importance_for_job_type(task.job_type)
@@ -57,7 +82,44 @@ def synthesize_envelope_from_task(
         max_wall_time_seconds=timeout,
     )
 
+    # ==========================================================================
+    # v2.0: Memory injection
+    # ==========================================================================
+    memory_context = None
+    memory_stats = None
+    
+    if MEMORY_AVAILABLE and MEMORY_INJECTION_ENABLED:
+        db = _get_db_session()
+        if db:
+            try:
+                # Determine job type string for preference filtering
+                job_type_str = None
+                if task.job_type:
+                    job_type_str = task.job_type.value if hasattr(task.job_type, 'value') else str(task.job_type)
+                
+                memory_context = build_memory_context(
+                    db=db,
+                    messages=task.messages,
+                    job_type=job_type_str,
+                    component="llm_router",
+                )
+                memory_stats = get_memory_injection_stats(memory_context)
+                
+                if not memory_context.is_empty():
+                    logger.info(
+                        f"[envelope] Memory injected: depth={memory_stats['depth']} "
+                        f"tokens≈{memory_stats['token_estimate']} "
+                        f"prefs={len(memory_stats['preferences_applied'])} "
+                        f"records={memory_stats['records_retrieved']}"
+                    )
+            except Exception as e:
+                logger.warning(f"[envelope] Memory injection failed: {e}")
+            finally:
+                db.close()
+
+    # ==========================================================================
     # Build messages with system/project context
+    # ==========================================================================
     final_messages = []
 
     system_parts = []
@@ -66,8 +128,13 @@ def synthesize_envelope_from_task(
     if task.project_context:
         system_parts.append(task.project_context)
 
-    if system_parts:
-        system_content = "\n\n".join(system_parts)
+    system_content = "\n\n".join(system_parts) if system_parts else None
+    
+    # v2.0: Inject memory into system prompt
+    if memory_context and not memory_context.is_empty():
+        system_content = inject_memory_into_system_prompt(system_content, memory_context)
+
+    if system_content:
         final_messages.append({"role": "system", "content": system_content})
 
     # v0.15.1: Replace user message content if cleaned_message provided
@@ -120,6 +187,8 @@ def synthesize_envelope_from_task(
             "legacy_routing": routing.model_dump() if routing else None,
             "legacy_context": task.project_context,
             "file_map": file_map,
+            # v2.0: Memory injection metadata
+            "memory_injection": memory_stats,
         },
         allow_multi_model_review=False,
         needs_tools=[],
