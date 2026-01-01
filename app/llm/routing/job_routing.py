@@ -59,7 +59,7 @@ def _default_importance_for_job_type(job_type: JobType) -> Importance:
     if arch_jobs and job_type in arch_jobs:
         return high
 
-    if job_type in (JobType.CRITIQUE_REVIEW,):
+    if job_type in (getattr(JobType, "CRITIQUE_REVIEW", None),) and job_type is not None:
         return high
 
     if job_type in (JobType.VIDEO_CODE_DEBUG, JobType.VIDEO_HEAVY):
@@ -166,3 +166,4 @@ def classify_and_route(task: LLMTask) -> Tuple[Provider, str, JobType, str]:
     reason = getattr(decision, "reason", None) or "classified"
 
     return (provider, model, job_type, reason)
+

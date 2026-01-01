@@ -58,6 +58,8 @@ from app.llm.local_tools.archmap_helpers import (
     load_architecture_imports,
     build_archmap_prompt,
     ARCHMAP_SYSTEM_PROMPT,
+    default_controller_base_url,
+    default_zobie_mapper_out_dir,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,8 +68,8 @@ logger = logging.getLogger(__name__)
 # ZOBIE MAPPER SETTINGS (for raw scan)
 # =============================================================================
 
-ZOBIE_CONTROLLER_URL = os.getenv("ORB_ZOBIE_CONTROLLER_URL", "http://192.168.250.2:8765")
-ZOBIE_MAPPER_OUT_DIR = os.getenv("ORB_ZOBIE_MAPPER_OUT_DIR", r"D:\tools\zobie_mapper\out")
+ZOBIE_CONTROLLER_URL = os.getenv("ORB_ZOBIE_CONTROLLER_URL") or default_controller_base_url(__file__)
+ZOBIE_MAPPER_OUT_DIR = os.getenv("ORB_ZOBIE_MAPPER_OUT_DIR") or default_zobie_mapper_out_dir(__file__)
 ZOBIE_MAPPER_ARGS_RAW = os.getenv("ORB_ZOBIE_MAPPER_ARGS", "200000 0 60 120000").strip()
 ZOBIE_MAPPER_ARGS: List[str] = [a for a in ZOBIE_MAPPER_ARGS_RAW.split() if a]
 
