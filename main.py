@@ -96,6 +96,7 @@ from app.embeddings import service as embeddings_service
 
 # v0.16.0: Log introspection feature
 from app.introspection.router import router as introspection_router
+from app.astra_memory.router import router as astra_memory_router
 
 # v0.12.7: Import video detection and vision functions
 from app.llm.file_analyzer import is_video_mime_type
@@ -175,6 +176,17 @@ def on_startup():
         print("[startup] Phase 4 Job System: [X] DISABLED")
 
 
+    # ASTRA Memory: Auto-index on startup
+    try:
+        from app.astra_memory.indexer import run_full_index
+        from app.db import SessionLocal
+        _db = SessionLocal()
+        _results = run_full_index(_db)
+        print(f"[startup] ASTRA memory indexed: {sum(_results.values())} records")
+        _db.close()
+    except Exception as e:
+        print(f"[startup] ASTRA memory indexing skipped: {e}")
+
 # ====== ROUTERS ======
 
 app.include_router(auth_router)
@@ -184,6 +196,7 @@ app.include_router(telemetry_router)
 app.include_router(web_search_router)
 app.include_router(embeddings_router)
 app.include_router(embeddings_search_router)
+app.include_router(astra_memory_router)
 
 # v0.16.0: Log introspection (read-only, requires auth)
 app.include_router(
@@ -1340,3 +1353,10 @@ def direct_llm(
         was_reviewed=result.was_reviewed,
         critic_review=result.critic_review,
     )
+
+
+
+
+
+
+

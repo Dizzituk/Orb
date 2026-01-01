@@ -234,6 +234,108 @@ def stage1_candidate_selection(
 # STAGE 2: DEPTH-GATED EXPANSION
 # =============================================================================
 
+# Cold storage fetch functions - fetch full content from source tables
+def _fetch_cold_message(db: Session, record_id: str) -> Optional[str]:
+    """Fetch full message content from Messages table."""
+    try:
+        from app.memory.models import Message
+        msg = db.query(Message).filter(Message.id == int(record_id)).first()
+        if msg and msg.content:
+            # Check for encryption marker
+            if msg.content.startswith('ENC:') or '[ENCRYPTED' in msg.content:
+                return None  # Encryption not available
+            return msg.content
+    except Exception as e:
+        logger.warning(f"Cold fetch message {record_id} failed: {e}")
+    return None
+
+
+def _fetch_cold_note(db: Session, record_id: str) -> Optional[str]:
+    """Fetch full note content from Notes table."""
+    try:
+        from app.memory.models import Note
+        note = db.query(Note).filter(Note.id == int(record_id)).first()
+        if note and note.content:
+            if note.content.startswith('ENC:') or '[ENCRYPTED' in note.content:
+                return None
+            return f"# {note.title}\n\n{note.content}"
+    except Exception as e:
+        logger.warning(f"Cold fetch note {record_id} failed: {e}")
+    return None
+
+
+def _fetch_cold_document(db: Session, record_id: str) -> Optional[str]:
+    """Fetch full document content from DocumentContent table."""
+    try:
+        from app.memory.models import DocumentContent
+        doc = db.query(DocumentContent).filter(DocumentContent.id == int(record_id)).first()
+        if doc:
+            parts = []
+            if doc.filename:
+                parts.append(f"# Document: {doc.filename}")
+            if doc.summary and not doc.summary.startswith('ENC:'):
+                parts.append(f"\n## Summary\n{doc.summary}")
+            if doc.raw_text and not doc.raw_text.startswith('ENC:'):
+                # Truncate very long documents
+                text = doc.raw_text
+                if len(text) > 10000:
+                    text = text[:8000] + "\n\n[...truncated...]\n\n" + text[-2000:]
+                parts.append(f"\n## Content\n{text}")
+            if parts:
+                return "\n".join(parts)
+    except Exception as e:
+        logger.warning(f"Cold fetch document {record_id} failed: {e}")
+    return None
+
+
+def _fetch_cold_project(db: Session, record_id: str) -> Optional[str]:
+    """Fetch project details."""
+    try:
+        from app.memory.models import Project
+        proj = db.query(Project).filter(Project.id == int(record_id)).first()
+        if proj:
+            parts = [f"# Project: {proj.name}"]
+            if proj.description:
+                parts.append(f"\n{proj.description}")
+            # Get message count
+            msg_count = len(proj.messages) if proj.messages else 0
+            note_count = len(proj.notes) if proj.notes else 0
+            file_count = len(proj.files) if proj.files else 0
+            parts.append(f"\nStats: {msg_count} messages, {note_count} notes, {file_count} files")
+            return "\n".join(parts)
+    except Exception as e:
+        logger.warning(f"Cold fetch project {record_id} failed: {e}")
+    return None
+
+
+def _fetch_cold_storage(
+    db: Session,
+    record_type: str,
+    record_id: str,
+) -> Optional[str]:
+    """
+    Fetch full content from cold storage (source tables).
+    
+    Returns None if:
+    - Record not found
+    - Encryption not available
+    - Fetch error
+    """
+    fetch_map = {
+        "message": _fetch_cold_message,
+        "note": _fetch_cold_note,
+        "document": _fetch_cold_document,
+        "document_content": _fetch_cold_document,
+        "project": _fetch_cold_project,
+    }
+    
+    fetcher = fetch_map.get(record_type)
+    if fetcher:
+        return fetcher(db, record_id)
+    
+    logger.debug(f"No cold fetcher for record_type={record_type}")
+    return None
+
 def get_summary_for_depth(
     db: Session,
     artifact_type: str,
@@ -292,6 +394,13 @@ def stage2_expand_candidates(
     Stage 2: Expand candidates based on depth.
     
     CRITICAL: D0/D1 must NEVER fetch cold artifacts.
+    
+    Expansion strategy:
+    - D0: No memory at all
+    - D1: Hot layer only (one_liner, title)
+    - D2: Try summary pyramid L1/L2, fallback to cold storage (truncated)
+    - D3: Full cold storage fetch
+    - D4: Full cold storage + metadata
     """
     cfg = get_config().retrieval
     
@@ -308,9 +417,10 @@ def stage2_expand_candidates(
         return []  # D0: no memory
     
     expanded = []
+    cold_fetches = 0  # Track for logging
     
     for candidate in candidates[:max_items]:
-        # D0/D1: Use hot layer only
+        # D0/D1: Use hot layer only - NEVER fetch cold
         if depth in (IntentDepth.D0, IntentDepth.D1):
             # INVARIANT: Never fetch cold for D0/D1
             expanded.append(ExpandedRecord(
@@ -322,13 +432,48 @@ def stage2_expand_candidates(
                 relevance_score=candidate.relevance_score,
             ))
         else:
-            # D2+: Can expand from summary pyramid
-            content, level = get_summary_for_depth(
+            # D2+: Can expand from summary pyramid or cold storage
+            content = None
+            level = 0
+            
+            # First, try summary pyramid
+            pyramid_content, pyramid_level = get_summary_for_depth(
                 db, candidate.record_type, candidate.record_id, depth
             )
             
+            if pyramid_content:
+                content = pyramid_content
+                level = pyramid_level
+            else:
+                # No pyramid - fetch from cold storage
+                cold_content = _fetch_cold_storage(
+                    db, candidate.record_type, candidate.record_id
+                )
+                
+                if cold_content:
+                    cold_fetches += 1
+                    
+                    # Truncate based on depth
+                    if depth == IntentDepth.D2:
+                        # D2: Limit to ~2000 chars per record
+                        if len(cold_content) > 2000:
+                            cold_content = cold_content[:1800] + "\n\n[...truncated for D2...]"
+                        level = 2
+                    elif depth == IntentDepth.D3:
+                        # D3: Limit to ~8000 chars
+                        if len(cold_content) > 8000:
+                            cold_content = cold_content[:7000] + "\n\n[...truncated for D3...]"
+                        level = 3
+                    else:  # D4
+                        # D4: Full content (still cap at reasonable limit)
+                        if len(cold_content) > 32000:
+                            cold_content = cold_content[:30000] + "\n\n[...truncated for D4...]"
+                        level = 3
+                    
+                    content = cold_content
+            
             if not content:
-                # Fallback to hot layer
+                # Ultimate fallback: hot layer
                 content = candidate.one_liner or candidate.title
                 level = 0
             
@@ -340,6 +485,9 @@ def stage2_expand_candidates(
                 summary_level=level,
                 relevance_score=candidate.relevance_score,
             ))
+    
+    if cold_fetches > 0:
+        logger.info(f"[retrieval] Cold fetches: {cold_fetches} records for depth {depth.value}")
     
     return expanded
 

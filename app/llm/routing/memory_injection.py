@@ -114,21 +114,43 @@ def _format_preferences(preferences: List[Any]) -> str:
     return "\n".join(lines)
 
 
-def _format_retrieved_records(result: Any) -> str:
-    """Format retrieved records as readable text."""
+def _format_retrieved_records(result: Any, max_per_record: int = 2000) -> str:
+    """
+    Format retrieved records as readable text.
+    
+    For hot-only (D0/D1): Shows title + one-liner
+    For cold (D2+): Shows full content (already depth-truncated in retrieval)
+    """
     if not result or not result.records:
         return ""
     
     lines = []
+    total_chars = 0
+    max_total = 16000  # Cap total context size
+    
     for record in result.records:
+        if total_chars >= max_total:
+            lines.append(f"\n[...{len(result.records) - len(lines)} more records omitted...]")
+            break
+            
         title = record.title
         content = record.content
+        summary_level = getattr(record, 'summary_level', 0)
         
-        # Truncate long content
-        if len(content) > 200:
-            content = content[:200] + "..."
+        # For hot-only (L0), keep brief
+        if summary_level == 0:
+            if len(content) > 200:
+                content = content[:200] + "..."
+            lines.append(f"• [{record.record_type}] {title}: {content}")
+        else:
+            # For cold content (L1+), include full retrieved content
+            # Already truncated by depth in retrieval layer
+            if len(content) > max_per_record:
+                content = content[:max_per_record] + "..."
+            
+            lines.append(f"\n### [{record.record_type.upper()}] {title}\n{content}")
         
-        lines.append(f"• [{record.record_type}] {title}: {content}")
+        total_chars += len(lines[-1])
     
     return "\n".join(lines)
 
