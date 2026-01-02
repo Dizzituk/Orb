@@ -4,6 +4,9 @@ Overwatcher streaming handler for ASTRA command flow.
 
 Final stage: Supervises and executes approved changes via Implementer.
 
+v3.3 (2026-01): FIX - Token events use 'text' not 'content'
+v3.2 (2026-01): DEBUG - Added print statements to diagnose empty response
+v3.0 (2026-01): CRITICAL FIX - Actually wire LLM function to Overwatcher
 v2.1 (2026-01): Fixed db_session parameter name
 v2.0 (2026-01): Real implementation - connects to overwatcher_command.py
 v1.0 (2026-01): Stub implementation
@@ -12,7 +15,8 @@ v1.0 (2026-01): Stub implementation
 import json
 import logging
 import asyncio
-from typing import Optional, Any, AsyncGenerator
+import os
+from typing import Optional, Any, AsyncGenerator, Callable
 
 from sqlalchemy.orm import Session
 
@@ -51,23 +55,180 @@ try:
     from app.overwatcher.overwatcher_command import (
         run_overwatcher_command,
         OverwatcherCommandResult,
-        SMOKE_TEST_FILENAME,
-        SMOKE_TEST_CONTENT,
     )
     OVERWATCHER_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     OVERWATCHER_AVAILABLE = False
     run_overwatcher_command = None
     OverwatcherCommandResult = None
-    logger.warning("[overwatcher_stream] overwatcher_command not available - using stub")
+    logger.warning(f"[overwatcher_stream] overwatcher_command not available - using stub: {e}")
+
+# Import streaming for LLM calls
+try:
+    from app.llm.streaming import stream_llm
+    STREAMING_AVAILABLE = True
+except ImportError:
+    stream_llm = None
+    STREAMING_AVAILABLE = False
+    logger.warning("[overwatcher_stream] streaming not available - LLM calls disabled")
+
+# Import centralized stage configuration
+try:
+    from app.llm.stage_models import get_overwatcher_config
+    STAGE_MODELS_AVAILABLE = True
+except ImportError:
+    get_overwatcher_config = None
+    STAGE_MODELS_AVAILABLE = False
+    logger.warning("[overwatcher_stream] stage_models not available - using fallback config")
 
 
 # ---------------------------------------------------------------------------
-# Constants
+# Configuration (from centralized stage_models)
 # ---------------------------------------------------------------------------
 
-OVERWATCHER_PROVIDER = "anthropic"
-OVERWATCHER_MODEL = "claude-sonnet-4-5-20250929"
+def _get_overwatcher_provider_model() -> tuple[str, str]:
+    """
+    Get Overwatcher provider and model from centralized config.
+    
+    v3.1: NO HARDCODED FALLBACKS. Uses stage_models.get_overwatcher_config() 
+    which reads from env vars. If stage_models unavailable, FAIL.
+    
+    Returns:
+        Tuple of (provider, model)
+    
+    Raises:
+        RuntimeError: If stage_models not available (config is mandatory)
+    """
+    if not STAGE_MODELS_AVAILABLE or get_overwatcher_config is None:
+        raise RuntimeError(
+            "FATAL: stage_models not available. Cannot determine Overwatcher model. "
+            "Ensure app/llm/stage_models.py exists and OVERWATCHER_PROVIDER + OVERWATCHER_MODEL "
+            "env vars are set."
+        )
+    
+    config = get_overwatcher_config()
+    logger.info(f"[overwatcher_stream] Using config: {config.provider}/{config.model}")
+    return config.provider, config.model
+
+
+# ---------------------------------------------------------------------------
+# LLM Call Function Factory
+# ---------------------------------------------------------------------------
+
+def create_overwatcher_llm_fn() -> Optional[Callable]:
+    """
+    Create an async LLM call function for Overwatcher reasoning.
+    
+    v3.3: FIX - Token events use 'text' field, not 'content'
+    v3.2: Added debug prints to diagnose empty response issue.
+    v3.1: Signature matches what run_overwatcher() expects.
+    
+    Returns:
+        Async callable compatible with run_overwatcher(), or None if unavailable.
+    """
+    if not STREAMING_AVAILABLE or stream_llm is None:
+        logger.error("[overwatcher_stream] Cannot create LLM function - streaming not available")
+        return None
+    
+    # Get configured provider/model from centralized config
+    default_provider, default_model = _get_overwatcher_provider_model()
+    
+    async def llm_call_fn(
+        messages: list,
+        provider_id: Optional[str] = None,
+        model_id: Optional[str] = None,
+        max_tokens: int = 2000,
+        **kwargs,  # Accept any extra kwargs for forward compatibility
+    ) -> str:
+        """
+        Call LLM for Overwatcher reasoning.
+        
+        Signature matches what run_overwatcher() in overwatcher.py expects.
+        
+        Args:
+            messages: List of message dicts with role/content
+            provider_id: Provider override (defaults to env config)
+            model_id: Model override (defaults to env config)
+            max_tokens: Max output tokens
+            **kwargs: Extra args ignored for compatibility
+        
+        Returns:
+            Complete LLM response text
+        """
+        use_provider = provider_id or default_provider
+        use_model = model_id or default_model
+        
+        logger.info(f"[overwatcher_llm] Calling {use_provider}/{use_model} for policy reasoning (max_tokens={max_tokens})")
+        
+        # Extract system prompt from messages if present
+        system_prompt = ""
+        user_messages = []
+        for msg in messages:
+            if msg.get("role") == "system":
+                system_prompt = msg.get("content", "")
+            else:
+                user_messages.append(msg)
+        
+        response_parts = []
+        event_count = 0
+        
+        try:
+            async for event in stream_llm(
+                messages=user_messages if user_messages else messages,
+                system_prompt=system_prompt,
+                provider=use_provider,
+                model=use_model,
+                route="overwatcher",
+            ):
+                event_count += 1
+                
+                if isinstance(event, dict):
+                    event_type = event.get("type", "")
+                    
+                    # v3.3 FIX: Token events use 'text' field, not 'content'
+                    if event_type == "token":
+                        content = event.get("text", "")
+                        if content:
+                            response_parts.append(content)
+                    elif event_type == "text":
+                        content = event.get("content", event.get("text", ""))
+                        if content:
+                            response_parts.append(content)
+                    elif event_type == "error":
+                        error_msg = event.get("message", event.get("error", "Unknown error"))
+                        logger.error(f"[overwatcher_llm] Stream error: {error_msg}")
+                        raise RuntimeError(f"LLM stream error: {error_msg}")
+                    elif event_type == "done":
+                        break
+                    elif event_type == "metadata":
+                        # Skip metadata events
+                        continue
+                    else:
+                        # Unknown event type - try to extract content anyway
+                        content = (
+                            event.get("text") or 
+                            event.get("content") or 
+                            event.get("delta") or
+                            ""
+                        )
+                        if content:
+                            response_parts.append(content)
+                            
+                elif isinstance(event, str):
+                    response_parts.append(event)
+            
+            full_response = "".join(response_parts)
+            
+            logger.info(f"[overwatcher_llm] Response received: {len(full_response)} chars from {event_count} events")
+            logger.info(f"[overwatcher_llm] Response preview: {full_response[:500]!r}")
+            
+            return full_response
+            
+        except Exception as e:
+            logger.exception(f"[overwatcher_llm] LLM call failed: {e}")
+            raise
+    
+    return llm_call_fn
 
 
 # ---------------------------------------------------------------------------
@@ -111,23 +272,39 @@ async def generate_overwatcher_stream(
     trace: Optional[Any] = None,
     conversation_id: Optional[str] = None,
     job_id: Optional[str] = None,
+    force_llm: bool = True,  # v3.0: Default to requiring LLM
 ) -> AsyncGenerator[str, None]:
     """
     Generate SSE stream for Overwatcher execution.
     
+    v3.0: Now properly wires LLM function to enable policy reasoning.
+    
     Flow:
     1. Resolve spec (from DB or create smoke test)
     2. Load work artifacts (if any)
-    3. Run Overwatcher supervisor for APPROVE/REJECT
-    4. If approved: Run Implementer (Claude Sonnet)
-    5. Run verification
-    6. Stream results
+    3. Create LLM call function for policy reasoning
+    4. Run Overwatcher supervisor for APPROVE/REJECT with ACTUAL LLM
+    5. If approved: Run Implementer (in sandbox)
+    6. Run verification
+    7. Stream results
+    
+    Args:
+        project_id: Project ID
+        message: User message
+        db: Database session
+        trace: Optional routing trace
+        conversation_id: Optional conversation ID
+        job_id: Optional job ID to continue
+        force_llm: If True, fail if LLM not available (default: True)
     """
     response_parts = []
     
     def emit(content: str):
         """Helper to track response content."""
         response_parts.append(content)
+    
+    # Get configured provider/model at start (used for logging and done events)
+    ow_provider, ow_model = _get_overwatcher_provider_model()
     
     try:
         # Header
@@ -147,7 +324,30 @@ async def generate_overwatcher_stream(
                 logger.warning(f"[overwatcher_stream] Could not get active job: {e}")
         
         # ---------------------------------------------------------------------------
-        # Step 2: Run real Overwatcher command (if available)
+        # Step 2: Create LLM function (v3.0 - THE CRITICAL FIX)
+        # ---------------------------------------------------------------------------
+        
+        llm_call_fn = create_overwatcher_llm_fn()
+        
+        if llm_call_fn is None:
+            if force_llm:
+                error_msg = "❌ LLM function unavailable - cannot run policy reasoning.\n"
+                error_msg += "Overwatcher requires LLM for policy evaluation.\n"
+                yield sse_token(error_msg)
+                emit(error_msg)
+                yield sse_error("LLM unavailable for Overwatcher")
+                if trace:
+                    trace.finalize(success=False, error_message="LLM unavailable")
+                return
+            else:
+                yield sse_token("⚠️ Running without LLM (smoke test mode)\n\n")
+                emit("⚠️ Running without LLM (smoke test mode)\n\n")
+        else:
+            yield sse_token(f"✅ LLM attached: `{ow_provider}/{ow_model}`\n\n")
+            emit(f"✅ LLM attached: `{ow_provider}/{ow_model}`\n\n")
+        
+        # ---------------------------------------------------------------------------
+        # Step 3: Run real Overwatcher command (if available)
         # ---------------------------------------------------------------------------
         
         if OVERWATCHER_AVAILABLE and run_overwatcher_command:
@@ -156,13 +356,15 @@ async def generate_overwatcher_stream(
             
             yield sse_event("execution_started", stage="overwatcher", job_id=job_id)
             
-            # Call the real implementation
+            # Call the real implementation WITH the LLM function
             try:
                 result: OverwatcherCommandResult = await run_overwatcher_command(
                     project_id=project_id,
                     job_id=job_id,
                     message=message,
-                    db_session=db,  # v2.1: Fixed parameter name (was db=db)
+                    db_session=db,
+                    llm_call_fn=llm_call_fn,  # v3.0: THE FIX - actually pass the LLM!
+                    use_smoke_test=(llm_call_fn is None),  # Only use smoke test if no LLM
                 )
                 
                 # Stream stage trace as it happened
@@ -279,7 +481,7 @@ async def generate_overwatcher_stream(
                 emit(error_msg)
                 if trace:
                     trace.finalize(success=False, error_message="No active job")
-                yield sse_done(OVERWATCHER_PROVIDER, OVERWATCHER_MODEL, sum(len(p) for p in response_parts))
+                yield sse_done(ow_provider, ow_model, sum(len(p) for p in response_parts))
                 return
             
             yield sse_token(f"Job: `{job_id}`\n\n")
@@ -346,16 +548,16 @@ This was a stub execution. Install overwatcher_command.py for real functionality
                     project_id=project_id,
                     role="assistant",
                     content=full_response,
-                    provider=OVERWATCHER_PROVIDER,
-                    model=OVERWATCHER_MODEL
+                    provider=ow_provider,
+                    model=ow_model
                 ))
             except Exception as e:
                 logger.warning(f"[overwatcher_stream] Could not save to memory: {e}")
         
         # Final done event
         yield sse_done(
-            OVERWATCHER_PROVIDER,
-            OVERWATCHER_MODEL,
+            ow_provider,
+            ow_model,
             len(full_response),
             job_id=job_id,
         )
@@ -367,4 +569,4 @@ This was a stub execution. Install overwatcher_command.py for real functionality
         yield sse_error(str(e))
 
 
-__all__ = ["generate_overwatcher_stream"]
+__all__ = ["generate_overwatcher_stream", "create_overwatcher_llm_fn"]

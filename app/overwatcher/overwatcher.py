@@ -1,22 +1,20 @@
 # FILE: app/overwatcher/overwatcher.py
 """Overwatcher - Supervisor that diagnoses failures without writing code.
 
-Spec v2.3 §9.1-9.2:
-- Overwatcher (GPT-5.2 Pro): supervisor only
+v3.1 (2026-01): Uses centralized stage_models for all config (no hardcoded models)
+
+Role:
 - Diagnoses failures, defines fix actions, enforces constraints
 - Must NOT write code, patches, diffs, or full files
+- Model configured via OVERWATCHER_PROVIDER and OVERWATCHER_MODEL env vars
 
-Output Contract (§9.2):
+Output Contract:
 - DECISION: PASS | FAIL | NEEDS_INFO
 - DIAGNOSIS: root cause hypothesis
 - FIX_ACTIONS: ordered, file-targeted actions (no code)
 - CONSTRAINTS: invariants to respect
 - VERIFICATION: commands + expected outcomes
 - BLOCKERS / NONBLOCKERS lists
-
-Cost Guardrails (§9.6):
-- Max output tokens: 2,000
-- Non-streaming via OpenAI Responses API only
 """
 
 from __future__ import annotations
@@ -36,19 +34,61 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# Configuration
+# Configuration - v3.1: Uses centralized stage_models (NO HARDCODED DEFAULTS)
 # =============================================================================
 
-# Block 9 uses GPT-5.2 Pro (frontier tier, Responses API only)
-OVERWATCHER_PROVIDER = os.getenv("ORB_OVERWATCHER_PROVIDER", "openai")
-OVERWATCHER_MODEL = os.getenv("ORB_OVERWATCHER_MODEL", "gpt-5.2-pro")
+# Import centralized config
+try:
+    from app.llm.stage_models import get_overwatcher_config, get_stage_config
+    _STAGE_MODELS_AVAILABLE = True
+except ImportError:
+    get_overwatcher_config = None
+    get_stage_config = None
+    _STAGE_MODELS_AVAILABLE = False
+    logger.warning("[overwatcher] stage_models not available")
 
-# Fallback per spec §3.3
-OVERWATCHER_FALLBACK_PROVIDER = os.getenv("ORB_OVERWATCHER_FALLBACK_PROVIDER", "google")
-OVERWATCHER_FALLBACK_MODEL = os.getenv("ORB_OVERWATCHER_FALLBACK_MODEL", "gemini-3-pro-preview")
 
-# Spec §9.6: Hard limits
-OVERWATCHER_MAX_OUTPUT_TOKENS = 2_000
+def _get_overwatcher_config():
+    """
+    Get Overwatcher configuration from centralized stage_models.
+    
+    v3.1: NO HARDCODED DEFAULTS. All config comes from env vars via stage_models.
+    
+    Returns:
+        StageConfig with provider, model, max_output_tokens, timeout_seconds
+    
+    Raises:
+        RuntimeError if stage_models unavailable
+    """
+    if not _STAGE_MODELS_AVAILABLE or get_overwatcher_config is None:
+        raise RuntimeError(
+            "FATAL: stage_models not available. Ensure app/llm/stage_models.py exists "
+            "and OVERWATCHER_PROVIDER + OVERWATCHER_MODEL env vars are set."
+        )
+    return get_overwatcher_config()
+
+
+def _get_fallback_config():
+    """
+    Get fallback configuration for Overwatcher.
+    
+    Uses OVERWATCHER_FALLBACK stage config if available.
+    Returns None if no fallback configured.
+    """
+    if not _STAGE_MODELS_AVAILABLE or get_stage_config is None:
+        return None
+    try:
+        # Only return fallback if explicitly configured in env
+        fallback_provider = os.getenv("OVERWATCHER_FALLBACK_PROVIDER", "").strip()
+        fallback_model = os.getenv("OVERWATCHER_FALLBACK_MODEL", "").strip()
+        if fallback_provider and fallback_model:
+            return get_stage_config("OVERWATCHER_FALLBACK")
+        return None
+    except Exception:
+        return None
+
+
+# Max input tokens (reasonable constant, not model-specific)
 OVERWATCHER_MAX_INPUT_TOKENS = 120_000
 
 
@@ -230,31 +270,31 @@ CRITICAL RULES - YOU MUST FOLLOW:
 4. Fix actions describe WHAT to do, not HOW (no code)
 
 You must respond with ONLY a valid JSON object matching this schema:
-{
+{{
   "decision": "PASS" | "FAIL" | "NEEDS_INFO",
   "diagnosis": "Root cause hypothesis (1-2 sentences)",
   "fix_actions": [
-    {
+    {{
       "order": 1,
       "target_file": "path/to/file.py",
       "action_type": "add_function|modify_function|fix_import|add_error_handling|etc",
       "description": "High-level description of what to change (NO CODE)",
       "rationale": "Why this fixes the issue"
-    }
+    }}
   ],
   "constraints": ["List of invariants to respect"],
   "verification": [
-    {
+    {{
       "command": "pytest tests/test_foo.py -v",
       "expected_outcome": "all tests pass",
       "timeout_seconds": 60
-    }
+    }}
   ],
   "blockers": ["Issues that must be fixed"],
   "nonblockers": ["Issues that can be deferred"],
   "confidence": 0.0-1.0,
   "needs_deep_research": true|false
-}
+}}
 
 SPEC HASH LOCK: {spec_hash}
 You must preserve this spec hash. Do not suggest changes that would alter the spec."""
@@ -267,7 +307,7 @@ Remember:
 - Output ONLY JSON
 - NO code in fix_actions descriptions
 - decision must be PASS, FAIL, or NEEDS_INFO
-- Strike {strike_number}/3 - {"Consider needs_deep_research if stuck" if strike_number == 1 else "Deep research available if needed" if strike_number == 2 else "Final strike - be thorough"}"""
+- Strike {strike_number}/3 - {strike_hint}"""
 
 
 def build_overwatcher_prompt(
@@ -292,6 +332,7 @@ def build_overwatcher_prompt(
     user = OVERWATCHER_USER.format(
         evidence_text=evidence.to_prompt_text(),
         strike_number=evidence.strike_number,
+        strike_hint=strike_hint,
     )
     
     return system, user
@@ -309,7 +350,12 @@ def parse_overwatcher_output(raw_output: str) -> OverwatcherOutput:
     - JSON in code fences
     - Partial/malformed JSON
     """
+    logger.info(f"[overwatcher_parse] Input length: {len(raw_output) if raw_output else 0} chars")
+    preview = repr(raw_output[:300]) if raw_output else 'None'
+    logger.info(f"[overwatcher_parse] Input preview: {preview}")
+    
     if not raw_output:
+        logger.warning("[overwatcher_parse] Empty output received")
         return OverwatcherOutput(
             decision=Decision.FAIL,
             diagnosis="Empty output from Overwatcher",
@@ -321,17 +367,28 @@ def parse_overwatcher_output(raw_output: str) -> OverwatcherOutput:
     fence_match = re.search(r"```(?:json)?\s*\n?([\s\S]*?)\n?```", text)
     if fence_match:
         text = fence_match.group(1).strip()
+        logger.info(f"[overwatcher_parse] Extracted from fence: {len(text)} chars")
     
     # Try direct parse
     try:
         data = json.loads(text)
-        return OverwatcherOutput.from_dict(data)
-    except json.JSONDecodeError:
-        pass
+        logger.info(f"[overwatcher_parse] Direct JSON parse succeeded, keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}")
+        try:
+            return OverwatcherOutput.from_dict(data)
+        except (ValueError, KeyError, TypeError) as e:
+            logger.error(f"[overwatcher_parse] from_dict failed: {e}")
+            logger.error(f"[overwatcher_parse] Data was: {data}")
+            return OverwatcherOutput(
+                decision=Decision.FAIL,
+                diagnosis=f"Invalid Overwatcher output format: {e}",
+            )
+    except json.JSONDecodeError as e:
+        logger.warning(f"[overwatcher_parse] Direct parse failed: {e}")
     
     # Try to find JSON object
     start = text.find("{")
     if start == -1:
+        logger.warning(f"[overwatcher_parse] No JSON object found in output")
         return OverwatcherOutput(
             decision=Decision.FAIL,
             diagnosis=f"Could not parse Overwatcher output: {text[:200]}",
@@ -365,10 +422,20 @@ def parse_overwatcher_output(raw_output: str) -> OverwatcherOutput:
     
     if end > start:
         try:
-            data = json.loads(text[start:end])
-            return OverwatcherOutput.from_dict(data)
-        except json.JSONDecodeError:
-            pass
+            extracted = text[start:end]
+            logger.info(f"[overwatcher_parse] Brace extraction: {len(extracted)} chars")
+            data = json.loads(extracted)
+            logger.info(f"[overwatcher_parse] Brace JSON parse succeeded, keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}")
+            try:
+                return OverwatcherOutput.from_dict(data)
+            except (ValueError, KeyError, TypeError) as e:
+                logger.error(f"[overwatcher_parse] from_dict failed on brace-extracted: {e}")
+                return OverwatcherOutput(
+                    decision=Decision.FAIL,
+                    diagnosis=f"Invalid Overwatcher output format: {e}",
+                )
+        except json.JSONDecodeError as e:
+            logger.warning(f"[overwatcher_parse] Brace-extracted JSON parse failed: {e}")
     
     return OverwatcherOutput(
         decision=Decision.FAIL,
@@ -391,17 +458,14 @@ async def run_overwatcher(
 ) -> OverwatcherOutput:
     """Run Overwatcher analysis on evidence bundle.
     
-    Spec v2.3 §9.1-9.2:
-    - Uses GPT-5.2 Pro via Responses API
-    - Output is decision-only (no code)
-    - Max 2,000 output tokens
+    v3.1: Uses centralized stage_models for configuration.
     
     Args:
         evidence: Evidence bundle to analyze
         llm_call_fn: Async function to call LLM
         job_artifact_root: Root for artifacts
-        provider_id: LLM provider (default: openai)
-        model_id: LLM model (default: gpt-5.2-pro)
+        provider_id: LLM provider (defaults to OVERWATCHER_PROVIDER from env)
+        model_id: LLM model (defaults to OVERWATCHER_MODEL from env)
         deep_research_context: Additional context from Strike 2 research
     
     Returns:
@@ -416,10 +480,13 @@ async def run_overwatcher(
     
     stage_run_id = str(uuid4())
     
-    # Default to spec-mandated model
-    provider_id = provider_id or OVERWATCHER_PROVIDER
-    model_id = model_id or OVERWATCHER_MODEL
+    # v3.1: Get config from stage_models (reads from env vars)
+    config = _get_overwatcher_config()
+    provider_id = provider_id or config.provider
+    model_id = model_id or config.model
+    max_output_tokens = config.max_output_tokens
     
+    logger.info(f"[overwatcher] Using {provider_id}/{model_id} (max_tokens={max_output_tokens})")
     logger.info(f"[overwatcher] Running analysis for chunk {evidence.chunk_id} (strike {evidence.strike_number})")
     
     # Emit stage started
@@ -459,22 +526,22 @@ async def run_overwatcher(
             provider_id=provider_id,
             model_id=model_id,
             messages=messages,
-            max_tokens=OVERWATCHER_MAX_OUTPUT_TOKENS,
-            # Note: GPT-5.2 Pro uses Responses API, not streaming
+            max_tokens=max_output_tokens,
         )
     except Exception as e:
         logger.warning(f"[overwatcher] Primary model failed ({provider_id}/{model_id}): {e}")
         
-        # Try fallback
-        if OVERWATCHER_FALLBACK_PROVIDER and OVERWATCHER_FALLBACK_MODEL:
+        # Try fallback if configured
+        fallback_config = _get_fallback_config()
+        if fallback_config:
             try:
                 emit_provider_fallback(
                     job_artifact_root=job_artifact_root,
                     job_id=evidence.job_id,
                     from_provider=provider_id,
                     from_model=model_id,
-                    to_provider=OVERWATCHER_FALLBACK_PROVIDER,
-                    to_model=OVERWATCHER_FALLBACK_MODEL,
+                    to_provider=fallback_config.provider,
+                    to_model=fallback_config.model,
                     reason=str(e),
                 )
             except Exception:
@@ -482,10 +549,10 @@ async def run_overwatcher(
             
             try:
                 result = await llm_call_fn(
-                    provider_id=OVERWATCHER_FALLBACK_PROVIDER,
-                    model_id=OVERWATCHER_FALLBACK_MODEL,
+                    provider_id=fallback_config.provider,
+                    model_id=fallback_config.model,
                     messages=messages,
-                    max_tokens=OVERWATCHER_MAX_OUTPUT_TOKENS,
+                    max_tokens=fallback_config.max_output_tokens,
                 )
                 used_fallback = True
             except Exception as e2:
@@ -500,6 +567,8 @@ async def run_overwatcher(
     
     # Parse output
     raw_output = result.content if hasattr(result, "content") else str(result)
+    logger.info(f"[overwatcher] Raw output length: {len(raw_output) if raw_output else 0}")
+    
     output = parse_overwatcher_output(raw_output)
     
     # Validate no code in output
@@ -548,9 +617,8 @@ __all__ = [
     "build_overwatcher_prompt",
     "parse_overwatcher_output",
     "run_overwatcher",
-    # Config
-    "OVERWATCHER_PROVIDER",
-    "OVERWATCHER_MODEL",
-    "OVERWATCHER_MAX_OUTPUT_TOKENS",
+    # Config (v3.1: now functions, not constants)
+    "_get_overwatcher_config",
+    "_get_fallback_config",
     "OVERWATCHER_MAX_INPUT_TOKENS",
 ]
