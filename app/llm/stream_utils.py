@@ -1,6 +1,8 @@
 # FILE: app/llm/stream_utils.py
 """
 Stream utilities - helper functions for stream_router.py
+
+v3.3 (2026-01): Fixed DEFAULT_MODELS to use runtime env lookup instead of import-time frozen values.
 """
 
 import os
@@ -15,14 +17,82 @@ from app.memory import service as memory_service
 from app.llm.schemas import JobType, RoutingConfig
 
 
-# Default models
-DEFAULT_MODELS = {
-    "openai": os.getenv("OPENAI_DEFAULT_MODEL", "gpt-5-mini"),
-    "anthropic": os.getenv("ANTHROPIC_SONNET_MODEL", "claude-sonnet-4-5-20250929"),
-    "anthropic_opus": os.getenv("ANTHROPIC_OPUS_MODEL", "claude-opus-4-5-20251101"),
-    "gemini": os.getenv("GEMINI_DEFAULT_MODEL", "gemini-2.0-flash"),
+# =============================================================================
+# Model Configuration - RUNTIME LOOKUP (not frozen at import)
+# =============================================================================
+
+# Hard-coded fallbacks ONLY used if env vars are completely unset
+_HARDCODED_FALLBACKS = {
+    "openai": "gpt-4o-mini",
+    "anthropic": "claude-sonnet-4-5-20250929",
+    "anthropic_opus": "claude-opus-4-5-20251101",
+    "gemini": "gemini-2.0-flash",
 }
 
+
+def get_default_model(provider_key: str) -> str:
+    """Get default model for a provider at RUNTIME (reads env on each call).
+    
+    This ensures env var changes take effect without restarting the server.
+    """
+    env_map = {
+        "openai": "OPENAI_DEFAULT_MODEL",
+        "anthropic": "ANTHROPIC_SONNET_MODEL",
+        "anthropic_opus": "ANTHROPIC_OPUS_MODEL",
+        "gemini": "GEMINI_DEFAULT_MODEL",
+    }
+    env_var = env_map.get(provider_key)
+    if env_var:
+        val = os.getenv(env_var)
+        if val:
+            return val
+    return _HARDCODED_FALLBACKS.get(provider_key, _HARDCODED_FALLBACKS["openai"])
+
+
+def get_spec_gate_model() -> str:
+    """Get SpecGate model at RUNTIME with proper precedence.
+    
+    Precedence:
+    1. OPENAI_SPEC_GATE_MODEL (if set)
+    2. OPENAI_DEFAULT_MODEL (if set)
+    3. Hard-coded fallback
+    """
+    spec_gate_model = os.getenv("OPENAI_SPEC_GATE_MODEL")
+    if spec_gate_model:
+        return spec_gate_model
+    default_model = os.getenv("OPENAI_DEFAULT_MODEL")
+    if default_model:
+        return default_model
+    return _HARDCODED_FALLBACKS["openai"]
+
+
+def get_spec_gate_provider() -> str:
+    """Get SpecGate provider at RUNTIME."""
+    return os.getenv("SPEC_GATE_PROVIDER", "openai")
+
+
+# DEPRECATED: Kept for backwards compatibility but now delegates to runtime lookup
+# New code should use get_default_model() directly
+class _DefaultModelsProxy:
+    """Proxy that looks up env vars at access time, not import time."""
+    
+    def __getitem__(self, key: str) -> str:
+        return get_default_model(key)
+    
+    def get(self, key: str, default: Optional[str] = None) -> str:
+        result = get_default_model(key)
+        # If we got the hardcoded fallback and a different default was requested, use that
+        if result == _HARDCODED_FALLBACKS.get(key) and default is not None:
+            return default
+        return result
+
+
+DEFAULT_MODELS = _DefaultModelsProxy()
+
+
+# =============================================================================
+# Utility Functions
+# =============================================================================
 
 def chunk_text(s: str, chunk_size: int = 120) -> List[str]:
     if not s:
@@ -224,17 +294,17 @@ def classify_job_type(message: str, requested_type: str) -> JobType:
 
 def select_provider_for_job_type(job_type: JobType) -> Tuple[str, str]:
     if job_type in RoutingConfig.GPT_ONLY_JOBS:
-        return ("openai", DEFAULT_MODELS["openai"])
+        return ("openai", get_default_model("openai"))
 
     if job_type in RoutingConfig.HIGH_STAKES_JOBS:
         print(f"[stream_utils] High-stakes job '{job_type.value}' → Opus")
-        return ("anthropic", DEFAULT_MODELS["anthropic_opus"])
+        return ("anthropic", get_default_model("anthropic_opus"))
 
     if job_type in RoutingConfig.CLAUDE_PRIMARY_JOBS:
-        return ("anthropic", DEFAULT_MODELS["anthropic"])
+        return ("anthropic", get_default_model("anthropic"))
 
     if job_type == JobType.DEEP_RESEARCH:
-        return ("gemini", DEFAULT_MODELS["gemini"])
+        return ("gemini", get_default_model("gemini"))
 
     provider_key = os.getenv("ORB_DEFAULT_PROVIDER", "anthropic")
-    return (provider_key, DEFAULT_MODELS.get(provider_key, DEFAULT_MODELS["openai"]))
+    return (provider_key, get_default_model(provider_key))

@@ -2,6 +2,9 @@
 """
 High-stakes critique stream generator.
 
+v3.5 (2026-01): Integrated stage tracing for full command visibility
+v3.4 (2026-01): Fixed spec gate model env var precedence (OPENAI_SPEC_GATE_MODEL takes priority)
+v3.3 (2026-01): Uses run_spec_gate_v2 with project_id for DB persistence (restart survival)
 v3.2 (2025-12): Added comprehensive debug logging for streaming diagnosis
 """
 
@@ -23,7 +26,10 @@ from app.llm.router import (
     synthesize_envelope_from_task,
 )
 
-from app.pot_spec.spec_gate import run_spec_gate, detect_user_questions
+# v3.3: Use spec_gate_v2 for DB persistence
+from app.pot_spec.spec_gate_v2 import run_spec_gate_v2
+from app.pot_spec.spec_gate import detect_user_questions
+
 from app.jobs.stage3_locks import (
     build_spec_echo_instruction,
     verify_and_store_stage3,
@@ -31,10 +37,49 @@ from app.jobs.stage3_locks import (
 )
 
 from .stream_utils import (
-    DEFAULT_MODELS,
     parse_reasoning_tags,
     extract_usage_tokens,
 )
+
+# v3.5: Stage tracing
+try:
+    from .stage_trace import StageTrace, log_model_resolution
+    _STAGE_TRACE_AVAILABLE = True
+except ImportError:
+    _STAGE_TRACE_AVAILABLE = False
+    StageTrace = None
+
+# v3.6: Centralized stage models
+try:
+    from .stage_models import get_spec_gate_config, get_critique_config, get_revision_config
+    _STAGE_MODELS_AVAILABLE = True
+except ImportError:
+    _STAGE_MODELS_AVAILABLE = False
+
+
+def _get_spec_gate_config() -> tuple[str, str]:
+    """
+    Get Spec Gate provider and model from env vars AT RUNTIME.
+    
+    v3.4: Ensures env vars are respected without hardcoded overrides.
+    
+    Precedence for model:
+    1. OPENAI_SPEC_GATE_MODEL (explicit spec gate override)
+    2. OPENAI_DEFAULT_MODEL (general default)
+    3. "gpt-4.1-mini" (hardcoded fallback only if both env vars unset)
+    
+    Returns: (provider, model)
+    """
+    provider = os.getenv("SPEC_GATE_PROVIDER", "openai")
+    
+    # v3.4: Explicit precedence - OPENAI_SPEC_GATE_MODEL wins over everything
+    model = os.getenv("OPENAI_SPEC_GATE_MODEL")
+    if not model:
+        model = os.getenv("OPENAI_DEFAULT_MODEL")
+    if not model:
+        model = "gpt-4.1-mini"  # Last resort hardcoded default
+    
+    return provider, model
 
 logger = logging.getLogger(__name__)
 
@@ -62,14 +107,26 @@ async def generate_high_stakes_critique_stream(
     4. Runs high-stakes critique pipeline
     5. Verifies spec hash in response (Stage 3)
     6. Fails fast on mismatch
+    
+    v3.3: Now persists validated specs to DB via run_spec_gate_v2 for restart survival.
+    v3.5: Stage tracing for full command visibility.
     """
     loop = asyncio.get_event_loop()
     started_ms = int(loop.time() * 1000)
     trace_finished = False
     
+    # v3.5: Create stage trace
+    stage_trace = None
+    if _STAGE_TRACE_AVAILABLE and StageTrace:
+        stage_trace = StageTrace.start(
+            command_type=f"high_stakes_{job_type_str}",
+            project_id=project_id,
+            job_id=continue_job_id,
+        )
+    
     print(f"[DEBUG] ========== HIGH STAKES STREAM START ==========")
     print(f"[DEBUG] job_type={job_type_str}, provider={provider}, model={model}")
-    print(f"[DEBUG] message length: {len(message)}, messages count: {len(messages)}")
+    print(f"[DEBUG] project_id={project_id}, message length: {len(message)}, messages count: {len(messages)}")
 
     spec_id: Optional[str] = None
     spec_hash: Optional[str] = None
@@ -95,12 +152,31 @@ async def generate_high_stakes_critique_stream(
             envelope.job_id = continue_job_id
             print(f"[DEBUG] Continuing existing job: {continue_job_id}")
 
+        # =====================================================================
         # Spec Gate (only stage allowed to ask user questions)
+        # =====================================================================
         if (job_type_str or "").strip().lower() == "architecture_design":
-            print(f"[DEBUG] Architecture job detected, running Spec Gate...")
-            spec_gate_provider = os.getenv("SPEC_GATE_PROVIDER", "openai")
-            spec_gate_model = os.getenv("OPENAI_SPEC_GATE_MODEL", DEFAULT_MODELS["openai"])
+            print(f"[DEBUG] Architecture job detected, running Spec Gate v2...")
+            
+            # v3.4: Use helper function for proper env var precedence
+            spec_gate_provider, spec_gate_model = _get_spec_gate_config()
+            
+            # v3.4: Explicit audit logging of what we're about to use
+            print(f"[SPEC_GATE_AUDIT] Provider: {spec_gate_provider}")
+            print(f"[SPEC_GATE_AUDIT] Model: {spec_gate_model}")
+            print(f"[SPEC_GATE_AUDIT] OPENAI_SPEC_GATE_MODEL env: {os.getenv('OPENAI_SPEC_GATE_MODEL', '<not set>')}")
+            print(f"[SPEC_GATE_AUDIT] SPEC_GATE_PROVIDER env: {os.getenv('SPEC_GATE_PROVIDER', '<not set>')}")
             print(f"[DEBUG] Spec Gate: provider={spec_gate_provider}, model={spec_gate_model}")
+            
+            # Determine spec_version based on continuation
+            spec_version = 1
+            if continue_job_id and messages:
+                # Count previous spec gate rounds from messages
+                spec_gate_rounds = sum(1 for msg in messages 
+                                       if msg.get("role") == "assistant" 
+                                       and "Spec Gate" in msg.get("content", ""))
+                spec_version = spec_gate_rounds + 1
+                print(f"[DEBUG] Continuation detected, spec_version={spec_version}")
             
             if continue_job_id and messages:
                 conversation_parts = []
@@ -135,20 +211,44 @@ async def generate_high_stakes_critique_stream(
                 },
             )
 
-            print(f"[DEBUG] Calling run_spec_gate...")
-            spec_id, spec_hash, open_questions = await run_spec_gate(
+            # v3.5: Enter spec gate stage
+            if stage_trace:
+                stage_trace.set_job_id(envelope.job_id)
+                stage_trace.enter_stage("spec_gate", provider=spec_gate_provider, model=spec_gate_model,
+                                       spec_version=spec_version)
+
+            # v3.3: Use run_spec_gate_v2 with project_id for DB persistence
+            print(f"[DEBUG] Calling run_spec_gate_v2 with project_id={project_id}...")
+            spec_gate_result = await run_spec_gate_v2(
                 db,
                 job_id=envelope.job_id,
                 user_intent=spec_gate_user_intent,
                 provider_id=spec_gate_provider,
                 model_id=spec_gate_model,
+                project_id=project_id,  # CRITICAL: enables DB persistence
+                spec_version=spec_version,
                 constraints_hint={"stability_accuracy": "high", "allowed_tools": "free_only"},
             )
             
-            print(f"[DEBUG] Spec gate completed: spec_id={spec_id}, hash={spec_hash[:16] if spec_hash else None}..., questions={len(open_questions) if open_questions else 0}")
+            # Unpack result
+            spec_id = spec_gate_result.spec_id
+            spec_hash = spec_gate_result.spec_hash
+            open_questions = spec_gate_result.open_questions
+            
+            print(f"[DEBUG] Spec gate completed: spec_id={spec_id}, hash={spec_hash[:16] if spec_hash else None}...")
+            print(f"[DEBUG] questions={len(open_questions) if open_questions else 0}, ready_for_pipeline={spec_gate_result.ready_for_pipeline}")
+            print(f"[DEBUG] db_persisted={spec_gate_result.db_persisted}")
 
             if open_questions:
                 print(f"[DEBUG] Open questions found, returning early")
+                
+                # v3.5: Exit spec gate stage (paused for questions)
+                if stage_trace:
+                    stage_trace.exit_stage("spec_gate", success=True, 
+                                          questions_count=len(open_questions),
+                                          outcome="needs_clarification")
+                    stage_trace.finish(success=True, outcome="paused_for_spec_clarification")
+                
                 questions_text = "\n\n".join([f"**Q{i+1}:** {q}" for i, q in enumerate(open_questions)])
                 intro = "🔍 **Spec Gate - Clarification Needed**\n\nBefore I can design the architecture, I need to clarify a few things:\n\n"
                 full_response = intro + questions_text + "\n\n---\n*Please answer these questions so I can create a complete specification.*"
@@ -174,20 +274,36 @@ async def generate_high_stakes_critique_stream(
                     "spec_id": spec_id,
                     "spec_hash": spec_hash,
                     "open_questions": open_questions,
+                    "spec_version": spec_version,
                     "artifacts_written": f"jobs/{envelope.job_id}/spec/ + jobs/{envelope.job_id}/ledger/",
                 }) + "\n\n"
                 
-                yield "data: " + json.dumps({
-                    'type': 'done',
-                    'provider': 'spec_gate',
-                    'model': spec_gate_model,
-                    'total_length': len(full_response)
-                }) + "\n\n"
+                if trace and not trace_finished:
+                    trace.finalize(success=True)
+                    trace_finished = True
                 return
 
-            print(f"[DEBUG] No open questions, proceeding to high-stakes pipeline")
-            header_instruction = build_spec_echo_instruction(spec_id, spec_hash)
-            updated_system_prompt = system_prompt + "\n\n" + header_instruction
+            # Spec is complete (no questions) - proceed to architecture generation
+            print(f"[DEBUG] Spec complete, injecting SPEC_ID/SPEC_HASH header instruction")
+            
+            # v3.5: Exit spec gate stage (complete)
+            if stage_trace:
+                stage_trace.exit_stage("spec_gate", success=True, 
+                                      spec_id=spec_id, spec_hash=spec_hash[:16] if spec_hash else None,
+                                      db_persisted=spec_gate_result.db_persisted)
+            
+            # Emit ready for pipeline (spec_gate_v2 already emits this, but log here too)
+            if spec_gate_result.ready_for_pipeline:
+                print(f"[DEBUG] Spec ready for pipeline, db_persisted={spec_gate_result.db_persisted}")
+            
+            needs_verification = True
+            spec_header_instruction = build_spec_echo_instruction(spec_id, spec_hash)
+            
+            updated_system_prompt = (
+                spec_header_instruction
+                + "\n\n---\n\n"
+                + system_prompt
+            )
             
             task = LLMTask(
                 project_id=project_id,
@@ -198,52 +314,27 @@ async def generate_high_stakes_critique_stream(
                 job_type=job_type_str,
                 enable_reasoning=enable_reasoning,
             )
-            
-            original_job_id = envelope.job_id
             envelope = synthesize_envelope_from_task(task)
-            envelope.job_id = original_job_id
-            print(f"[DEBUG] Envelope rebuilt, job_id={original_job_id}")
-            
-            needs_verification = True
+            envelope.job_id = continue_job_id or envelope.job_id
+            print(f"[DEBUG] Task rebuilt with spec header, job_id={envelope.job_id}")
 
-            append_stage3_ledger_event(
-                envelope.job_id,
-                {
-                    "event": "STAGE_STARTED",
-                    "job_id": envelope.job_id,
-                    "stage": "high_stakes_streaming",
-                    "spec_id": spec_id,
-                    "spec_hash": spec_hash,
-                    "ts_utc": datetime.utcnow().isoformat() + "Z",
-                },
-            )
-
-        # Load spec JSON
-        spec_json_str: Optional[str] = None
-        if spec_id and spec_hash:
-            try:
-                from app.pot_spec.service import get_job_artifact_root
-                import pathlib
-                job_root = get_job_artifact_root()
-                spec_path = pathlib.Path(job_root) / "jobs" / envelope.job_id / "spec" / "spec_v1.json"
-                print(f"[DEBUG] Loading spec from: {spec_path}, exists={spec_path.exists()}")
-                if spec_path.exists():
-                    spec_json_str = spec_path.read_text(encoding="utf-8")
-                    print(f"[DEBUG] Spec JSON loaded: {len(spec_json_str)} chars")
-            except Exception as e:
-                print(f"[DEBUG] Exception loading spec: {e}")
-        
+        # =====================================================================
+        # Run high-stakes critique pipeline
+        # =====================================================================
         print(f"[DEBUG] ========== CALLING run_high_stakes_with_critique ==========")
+        print(f"[DEBUG] provider={provider}, model={model}")
+        print(f"[DEBUG] system_prompt length: {len(task.system_prompt)}")
+        
+        # v3.5: Enter critique pipeline stage
+        if stage_trace:
+            stage_trace.enter_stage("critique_pipeline", provider=provider, model=model)
+        
         result = await run_high_stakes_with_critique(
-            task=task,
+            db=db,
+            envelope=envelope,
             provider_id=provider,
             model_id=model,
-            envelope=envelope,
-            job_type_str=job_type_str,
-            db=db,
-            spec_id=spec_id,
-            spec_hash=spec_hash,
-            spec_json=spec_json_str,
+            trace=trace,
             use_json_critique=True,
         )
         print(f"[DEBUG] ========== run_high_stakes_with_critique RETURNED ==========")
@@ -277,7 +368,9 @@ async def generate_high_stakes_critique_stream(
         if content:
             print(f"[DEBUG] Content preview (first 300): {content[:300]}")
         
+        # =====================================================================
         # Stage 3 verification
+        # =====================================================================
         if needs_verification and spec_id and spec_hash:
             print(f"[DEBUG] ========== STAGE 3 VERIFICATION ==========")
             verified, error_msg = verify_and_store_stage3(
@@ -316,7 +409,9 @@ async def generate_high_stakes_critique_stream(
         if not final_answer:
             print(f"[DEBUG] WARNING: final_answer is EMPTY!")
 
-        # Check for user questions
+        # =====================================================================
+        # Check for user questions (policy violation)
+        # =====================================================================
         if (job_type_str or "").strip().lower() == "architecture_design":
             print(f"[DEBUG] ========== CHECKING FOR USER QUESTIONS ==========")
             has_questions = detect_user_questions(final_answer or "")
@@ -339,18 +434,25 @@ async def generate_high_stakes_critique_stream(
                     },
                 )
 
-                spec_gate_provider = os.getenv("SPEC_GATE_PROVIDER", "openai")
-                spec_gate_model = os.getenv("OPENAI_SPEC_GATE_MODEL", DEFAULT_MODELS["openai"])
+                # v3.4: Use helper function for proper env var precedence
+                spec_gate_provider, spec_gate_model = _get_spec_gate_config()
+                print(f"[SPEC_GATE_AUDIT] Reroute - Provider: {spec_gate_provider}, Model: {spec_gate_model}")
 
-                spec_id, spec_hash, open_questions = await run_spec_gate(
+                # v3.3: Use run_spec_gate_v2 with project_id for reroute case too
+                reroute_result = await run_spec_gate_v2(
                     db,
                     job_id=envelope.job_id,
                     user_intent=message,
                     provider_id=spec_gate_provider,
                     model_id=spec_gate_model,
+                    project_id=project_id,  # CRITICAL: enables DB persistence
                     reroute_reason="Downstream stage asked the user questions. Only Spec Gate may ask questions.",
                     downstream_output_excerpt=(final_answer or "")[:2000],
                 )
+                
+                spec_id = reroute_result.spec_id
+                spec_hash = reroute_result.spec_hash
+                open_questions = reroute_result.open_questions
 
                 yield "data: " + json.dumps({
                     "type": "pause",
@@ -363,6 +465,9 @@ async def generate_high_stakes_critique_stream(
                 }) + "\n\n"
                 return
 
+        # =====================================================================
+        # Stream response to UI
+        # =====================================================================
         print(f"[DEBUG] ========== STREAMING TO UI ==========")
         print(f"[DEBUG] Streaming {len(final_answer)} chars")
         
@@ -382,6 +487,9 @@ async def generate_high_stakes_critique_stream(
         if enable_reasoning and reasoning:
             yield "data: " + json.dumps({'type': 'reasoning', 'content': reasoning}) + "\n\n"
 
+        # =====================================================================
+        # Save to memory
+        # =====================================================================
         print(f"[DEBUG] ========== SAVING TO MEMORY ==========")
         memory_service.create_message(db, memory_schemas.MessageCreate(project_id=project_id, role="user", content=message, provider="local"))
         memory_service.create_message(
@@ -400,6 +508,15 @@ async def generate_high_stakes_critique_stream(
             trace.finalize(success=True)
             trace_finished = True
 
+        # v3.5: Exit critique pipeline and finish trace
+        if stage_trace:
+            stage_trace.log_model_call(provider, model, "critique_pipeline", 
+                                      tokens_used=hs_prompt_tokens + hs_completion_tokens,
+                                      success=True)
+            stage_trace.exit_stage("critique_pipeline", success=True,
+                                  tokens_used=hs_prompt_tokens + hs_completion_tokens)
+            stage_trace.finish(success=True, outcome="completed")
+
         print(f"[DEBUG] ========== STREAMING COMPLETE ==========")
         yield "data: " + json.dumps({'type': 'done', 'provider': provider, 'model': model, 'total_length': len(final_answer)}) + "\n\n"
 
@@ -409,6 +526,8 @@ async def generate_high_stakes_critique_stream(
             trace.log_warning("STREAM", "client_disconnect")
             trace.finalize(success=False, error_message="client_disconnect")
             trace_finished = True
+        if stage_trace:
+            stage_trace.finish(success=False, error="client_disconnect")
         raise
     except Exception as e:
         logger.exception("[high_stakes] Stream failed: %s", e)
@@ -420,5 +539,7 @@ async def generate_high_stakes_critique_stream(
             trace.log_model_call("primary", provider, model, "primary", 0, 0, 0, success=False, error=str(e))
             trace.finalize(success=False, error_message=str(e))
             trace_finished = True
+        if stage_trace:
+            stage_trace.finish(success=False, error=str(e))
         yield "data: " + json.dumps({'type': 'error', 'error': str(e)}) + "\n\n"
         return

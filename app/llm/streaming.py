@@ -179,12 +179,17 @@ async def stream_openai(
     - {"type": "error", "message": "..."}
     - {"type": "done", "usage": {...}}  (when available)
     """
+    # v0.17: Debug logging
+    print(f"[STREAM_OPENAI] Called: model={model}, route={route}")
+    
     if not HAS_OPENAI:
+        print("[STREAM_OPENAI] ERROR: openai package not installed")
         yield {"type": "error", "message": "openai package not installed"}
         return
 
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
+        print("[STREAM_OPENAI] ERROR: OPENAI_API_KEY not set")
         yield {"type": "error", "message": "OPENAI_API_KEY not set"}
         return
 
@@ -195,6 +200,8 @@ async def stream_openai(
         use_model = get_model_for_route("openai", route)
     else:
         use_model = get_default_model("openai")
+    
+    print(f"[STREAM_OPENAI] Using model: {use_model}")
 
     client = AsyncOpenAI(api_key=api_key)
 
@@ -512,14 +519,20 @@ async def stream_llm(
         - {"type": "reasoning", "text": "..."} (optional)
         - {"type": "error", "message": "..."}
     """
+    # v0.17: Debug logging
+    print(f"[STREAM_LLM] Called: provider={provider}, model={model}, messages={len(messages)}")
+    
     if not provider:
         provider = get_default_provider()
+        print(f"[STREAM_LLM] No provider specified, using default: {provider}")
 
     if not provider:
+        print("[STREAM_LLM] ERROR: No LLM providers available!")
         yield {"type": "error", "message": "No LLM providers available"}
         return
 
     provider = provider.lower()
+    print(f"[STREAM_LLM] Routing to provider: {provider}, model: {model}")
 
     if provider == "openai":
         async for event in stream_openai(messages, system_prompt, model, enable_reasoning, route):
@@ -531,4 +544,5 @@ async def stream_llm(
         async for event in stream_gemini(messages, system_prompt, model, enable_reasoning, route):
             yield event
     else:
+        print(f"[STREAM_LLM] ERROR: Unknown provider '{provider}'")
         yield {"type": "error", "message": f"Unknown provider '{provider}'"}

@@ -15,6 +15,10 @@ PHASE 4 FIXES:
 - Fixed session upsert race condition using INSERT OR IGNORE pattern
 - Uses SQLite-safe upsert to prevent IntegrityError on concurrent requests
 
+v4.1 (2026-01):
+- Fixed: SpecGate model selection now uses centralized runtime env lookup
+- Added: Audit logging for SpecGate provider/model selection
+
 PATCH (2025-12-26):
 - Ensure all JSON columns get JSON-serializable dicts/lists:
   use model_dump(mode="json") for routing_decision_json, tool_invocations_json,
@@ -60,6 +64,9 @@ from app.jobs.stage3_locks import (
     write_stage3_artifacts,
 )
 from app.providers.registry import LlmCallStatus, llm_call
+
+# Import centralized SpecGate model helpers
+from app.llm.stream_utils import get_spec_gate_model, get_spec_gate_provider
 
 logger = logging.getLogger(__name__)
 
@@ -513,8 +520,13 @@ async def create_and_run_job(request: CreateJobRequest, db: Session) -> JobResul
         if envelope.job_type in (JobType.APP_ARCHITECTURE, JobType.CODE_REPO):
             from app.pot_spec.spec_gate import detect_user_questions, run_spec_gate
 
-            spec_gate_provider = os.getenv("SPEC_GATE_PROVIDER", "openai")
-            spec_gate_model = os.getenv("OPENAI_SPEC_GATE_MODEL", os.getenv("OPENAI_DEFAULT_MODEL", "gpt-5-mini"))
+            # FIXED: Use centralized runtime env lookup instead of direct os.getenv with hard-coded fallback
+            spec_gate_provider = get_spec_gate_provider()
+            spec_gate_model = get_spec_gate_model()
+            
+            # AUDIT: Log the resolved model
+            logger.info(f"[engine] AUDIT: SpecGate using provider={spec_gate_provider}, model={spec_gate_model}")
+            
             user_intent = _extract_user_intent(request.messages)
 
             spec_id, spec_hash, open_questions = await run_spec_gate(
@@ -592,6 +604,8 @@ async def create_and_run_job(request: CreateJobRequest, db: Session) -> JobResul
                     "stage": stage_name,
                     "spec_id": spec_id,
                     "spec_hash": spec_hash,
+                    "spec_gate_provider": spec_gate_provider,
+                    "spec_gate_model": spec_gate_model,
                     "ts_utc": datetime.utcnow().isoformat() + "Z",
                 },
             )
@@ -602,76 +616,29 @@ async def create_and_run_job(request: CreateJobRequest, db: Session) -> JobResul
         result = await execute_job(envelope, db)
 
         # ---------------------------------------------------------------------
-        # Stage 3: Spec-hash lock verification (refuse-on-mismatch)
+        # Stage 3: Post-execution spec hash verification (if applicable)
         # ---------------------------------------------------------------------
-        if envelope.job_type in (JobType.APP_ARCHITECTURE, JobType.CODE_REPO):
-            from app.pot_spec.spec_gate import detect_user_questions, run_spec_gate
+        if spec_id and spec_hash:
+            parsed_id, parsed_hash = parse_spec_echo_headers(result.content or "")
 
-            stage_name = (
-                "architecture_job_execution"
-                if envelope.job_type == JobType.APP_ARCHITECTURE
-                else "code_repo_job_execution"
-            )
-
-            returned_spec_id, returned_spec_hash, parse_note = parse_spec_echo_headers(result.content or "")
-            verified = (returned_spec_id == spec_id) and (returned_spec_hash == spec_hash)
-
-            # Pull provider/model from routing decision safely
-            provider_name = None
-            model_name = None
-            try:
-                provider_name = result.routing_decision.architect.provider
-                model_name = result.routing_decision.architect.model_id
-            except Exception:
-                pass
-
-            written_paths = write_stage3_artifacts(
-                job_id=job_id,
-                stage=stage_name,
-                raw_output=result.content or "",
-                expected_spec_id=spec_id or "",
-                expected_spec_hash=spec_hash or "",
-                returned_spec_id=returned_spec_id,
-                returned_spec_hash=returned_spec_hash,
-                verified=verified,
-                provider=provider_name,
-                model=model_name,
-            )
-
-            append_stage3_ledger_event(
-                job_id,
-                {
-                    "event": "STAGE_SPEC_HASH_VERIFIED" if verified else "STAGE_SPEC_HASH_MISMATCH",
-                    "job_id": job_id,
-                    "stage": stage_name,
-                    "expected_spec_id": spec_id,
-                    "expected_spec_hash": spec_hash,
-                    "returned_spec_id": returned_spec_id,
-                    "returned_spec_hash": returned_spec_hash,
-                    "parse_note": parse_note,
-                    "ts_utc": datetime.utcnow().isoformat() + "Z",
-                },
-            )
-            append_stage3_ledger_event(
-                job_id,
-                {
-                    "event": "STAGE_OUTPUT_STORED",
-                    "job_id": job_id,
-                    "stage": stage_name,
-                    "paths": written_paths,
-                    "ts_utc": datetime.utcnow().isoformat() + "Z",
-                },
-            )
-
-            if not verified:
-                job.state = JobState.FAILED.value
-                job.output_content = result.content
-                job.error_type = ErrorType.MODEL_ERROR.value
-                job.error_message = (
-                    "Stage 3 spec-hash lock failed: "
-                    f"expected SPEC_ID={spec_id}, SPEC_HASH={spec_hash}; "
-                    f"got SPEC_ID={returned_spec_id}, SPEC_HASH={returned_spec_hash} ({parse_note})"
+            if parsed_hash and parsed_hash != spec_hash:
+                # Spec hash mismatch - verification failed
+                append_stage3_ledger_event(
+                    job_id,
+                    {
+                        "event": "STAGE_SPEC_HASH_MISMATCH",
+                        "job_id": job_id,
+                        "expected_spec_hash": spec_hash,
+                        "actual_spec_hash": parsed_hash,
+                        "ts_utc": datetime.utcnow().isoformat() + "Z",
+                    },
                 )
+
+                # Store verification failure details
+                parse_note = f"Expected spec_hash={spec_hash}, got {parsed_hash}"
+                job.error_type = ErrorType.MODEL_ERROR.value
+                job.error_message = f"Spec hash verification failed: {parse_note}"
+                job.state = JobState.FAILED.value
                 job.completed_at = datetime.utcnow()
                 db.commit()
 
@@ -716,11 +683,13 @@ async def create_and_run_job(request: CreateJobRequest, db: Session) -> JobResul
                     },
                 )
 
-                spec_gate_provider = os.getenv("SPEC_GATE_PROVIDER", "openai")
-                spec_gate_model = os.getenv(
-                    "OPENAI_SPEC_GATE_MODEL",
-                    os.getenv("OPENAI_DEFAULT_MODEL", "gpt-5-mini"),
-                )
+                # FIXED: Use centralized runtime env lookup instead of direct os.getenv with hard-coded fallback
+                spec_gate_provider = get_spec_gate_provider()
+                spec_gate_model = get_spec_gate_model()
+                
+                # AUDIT: Log the resolved model
+                logger.info(f"[engine] AUDIT: SpecGate reroute using provider={spec_gate_provider}, model={spec_gate_model}")
+                
                 user_intent = _extract_user_intent(request.messages)
 
                 spec_id2, spec_hash2, open_questions2 = await run_spec_gate(

@@ -1,4 +1,9 @@
 # FILE: app/pot_spec/service.py
+"""
+PoT Spec service - spec creation, persistence, and verification.
+
+v1.1 (2026-01): Fixed get_job_artifact_root() CWD sensitivity (was causing jobs/jobs/ double path)
+"""
 from __future__ import annotations
 
 import json
@@ -17,8 +22,12 @@ from app.pot_spec.ledger import append_event
 
 
 # =============================================================================
-# Artifact root
+# Artifact root - v1.1: Fixed CWD sensitivity
 # =============================================================================
+
+# v1.1: Cache the artifact root on first call to prevent CWD drift issues
+_CACHED_JOB_ARTIFACT_ROOT: Optional[str] = None
+
 
 def get_job_artifact_root() -> str:
     """Root folder for job artifacts.
@@ -26,12 +35,49 @@ def get_job_artifact_root() -> str:
     Default is ./jobs to match the Block 0/1 layout:
       jobs/<job_id>/spec/spec_vN.json
       jobs/<job_id>/ledger/events.ndjson
+    
+    v1.1: Now caches the result to prevent issues if CWD changes during execution.
+          The path is computed relative to this file's location if not absolute.
     """
-    root = os.getenv("ORB_JOB_ARTIFACT_ROOT", "jobs").strip() or "jobs"
-    return os.path.abspath(root)
+    global _CACHED_JOB_ARTIFACT_ROOT
+    
+    if _CACHED_JOB_ARTIFACT_ROOT is not None:
+        return _CACHED_JOB_ARTIFACT_ROOT
+    
+    root = os.getenv("ORB_JOB_ARTIFACT_ROOT", "").strip()
+    
+    if root:
+        # If env var is set, use it
+        if os.path.isabs(root):
+            _CACHED_JOB_ARTIFACT_ROOT = root
+        else:
+            # Relative path - resolve relative to app root (parent of app/pot_spec/)
+            # This file is at app/pot_spec/service.py, so go up 2 levels
+            this_file = os.path.abspath(__file__)
+            app_root = os.path.dirname(os.path.dirname(os.path.dirname(this_file)))
+            _CACHED_JOB_ARTIFACT_ROOT = os.path.join(app_root, root)
+    else:
+        # Default: "jobs" relative to app root
+        this_file = os.path.abspath(__file__)
+        app_root = os.path.dirname(os.path.dirname(os.path.dirname(this_file)))
+        _CACHED_JOB_ARTIFACT_ROOT = os.path.join(app_root, "jobs")
+    
+    # Ensure the directory exists
+    os.makedirs(_CACHED_JOB_ARTIFACT_ROOT, exist_ok=True)
+    
+    return _CACHED_JOB_ARTIFACT_ROOT
 
 
 def _spec_file_path(job_artifact_root: str, job_id: str, spec_version: int) -> str:
+    """Build path to spec file.
+    
+    v1.1: Added validation to prevent job_id containing path separators.
+    """
+    # v1.1: Sanitize job_id - strip any accidental path prefixes
+    if job_id:
+        # Remove any leading path components (e.g., "jobs/" prefix)
+        job_id = os.path.basename(job_id.replace("\\", "/").rstrip("/"))
+    
     spec_dir = os.path.join(job_artifact_root, job_id, "spec")
     os.makedirs(spec_dir, exist_ok=True)
     return os.path.join(spec_dir, f"spec_v{spec_version}.json")

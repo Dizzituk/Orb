@@ -8,8 +8,11 @@ Handles:
 - Obvious capitalised commands ("CREATE ARCHITECTURE MAP")
 - Obvious natural commands ("Start your zombie", "update architecture")
 - Spec Gate flow commands ("How does that look all together", "Send to Spec Gate")
+- Critical Pipeline commands ("run critical pipeline")
+- Overwatcher commands ("send to overwatcher")
 - Obvious chat patterns (questions, past tense, etc.)
 
+v1.3 (2026-01): Added check_overwatcher_trigger, wired check_critical_pipeline_trigger
 v1.2 (2026-01): Fixed "critical architecture" -> SEND_TO_SPEC_GATE (was incorrectly in Weaver)
 v1.1 (2026-01): Added Spec Gate flow handlers (WEAVER_BUILD_SPEC, SEND_TO_SPEC_GATE)
 """
@@ -79,6 +82,14 @@ def tier0_classify(text: str) -> Tier0RuleResult:
         return result
     
     result = check_spec_gate_trigger(text_stripped)
+    if result.matched:
+        return result
+    
+    result = check_critical_pipeline_trigger(text_stripped)
+    if result.matched:
+        return result
+    
+    result = check_overwatcher_trigger(text_stripped)
     if result.matched:
         return result
     
@@ -461,6 +472,38 @@ def check_critical_pipeline_trigger(text: str) -> Tier0RuleResult:
                 confidence=1.0,
                 rule_name="critical_pipeline",
                 reason="Critical pipeline command detected",
+            )
+    
+    return Tier0RuleResult(matched=False)
+
+
+def check_overwatcher_trigger(text: str) -> Tier0RuleResult:
+    """
+    Special handler for Overwatcher execution triggers.
+    
+    Final stage: Overwatcher implements the approved changes.
+    High-stakes - requires confirmation.
+    """
+    text_lower = text.strip().lower()
+    
+    patterns = [
+        r"^send to overwatcher$",
+        r"^send (?:it |that )?to overwatcher$",
+        r"^overwatcher execute$",
+        r"^run overwatcher$",
+        r"^execute overwatcher$",
+        r"^overwatcher$",
+        r"^(?:ok(?:ay)?,?\s*)?send (?:it |that )?to overwatcher$",
+    ]
+    
+    for pattern in patterns:
+        if re.match(pattern, text_lower):
+            return Tier0RuleResult(
+                matched=True,
+                intent=CanonicalIntent.OVERWATCHER_EXECUTE_CHANGES,
+                confidence=1.0,
+                rule_name="overwatcher_execute",
+                reason="Overwatcher execute command detected",
             )
     
     return Tier0RuleResult(matched=False)

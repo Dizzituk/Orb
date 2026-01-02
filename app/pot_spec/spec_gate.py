@@ -17,6 +17,15 @@ Reliability improvements (2025-12):
 - Validate spec quality before writing: require meaningful goal, requirements, or real questions
 - If all retries fail, create spec with system-generated clarification questions (never silent empty success)
 
+v1.4 (2026-01):
+- Uses centralized stage_models for provider/model configuration
+- Simplified fallback chain logic
+
+v1.3 (2026-01):
+- Fixed: Env vars now read at RUNTIME, not module load time
+- Added: Explicit audit logging of actual provider/model used for each LLM call
+- Added: SPEC_GATE_LLM_CALL event with actual_provider/actual_model fields
+
 v1.2 (2025-12-28):
 - Fixed: detect_user_questions now uses smarter heuristics (density, code block stripping)
 - Fixed: Long architecture docs no longer trigger false positive question detection
@@ -61,18 +70,83 @@ except Exception:  # pragma: no cover
 
 
 # =============================================================================
-# Configuration
+# Configuration - v1.4: Uses centralized stage_models
 # =============================================================================
-
-# Fallback provider chain for retries (order matters)
-FALLBACK_PROVIDERS: List[Tuple[str, str]] = [
-    ("openai", os.getenv("OPENAI_SPEC_GATE_MODEL", "gpt-5.2-chat-latest")),
-    ("anthropic", os.getenv("ANTHROPIC_SPEC_GATE_MODEL", "claude-opus-4-5-20251101")),
-    ("google", os.getenv("GOOGLE_SPEC_GATE_MODEL", "gemini-3-pro-preview")),
-]
 
 # Maximum retry attempts across providers
 MAX_SPEC_GATE_ATTEMPTS = 3
+
+# v1.4: Import centralized stage_models
+try:
+    from app.llm.stage_models import get_spec_gate_config, get_stage_config
+    _STAGE_MODELS_AVAILABLE = True
+except ImportError:
+    _STAGE_MODELS_AVAILABLE = False
+
+
+def _get_spec_gate_model_config() -> dict:
+    """
+    Get Spec Gate model configuration from env vars AT RUNTIME.
+    
+    v1.4: Uses centralized stage_models if available.
+    
+    Returns dict with keys: provider, model, fallback_providers
+    """
+    if _STAGE_MODELS_AVAILABLE:
+        cfg = get_spec_gate_config()
+        return {
+            "provider": cfg.provider,
+            "model": cfg.model,
+            # Fallback uses different stages' configs
+            "fallback_providers": _build_fallback_chain(cfg.provider),
+        }
+    
+    # Legacy fallback if stage_models not available
+    return {
+        "provider": os.getenv("SPEC_GATE_PROVIDER", "openai"),
+        "model": os.getenv(
+            "SPEC_GATE_MODEL",
+            os.getenv("OPENAI_SPEC_GATE_MODEL",
+                os.getenv("OPENAI_DEFAULT_MODEL", "gpt-4.1-mini"))
+        ),
+        "fallback_providers": [
+            ("openai", os.getenv("OPENAI_DEFAULT_MODEL", "gpt-4.1-mini")),
+            ("anthropic", os.getenv("ANTHROPIC_SONNET_MODEL", "claude-sonnet-4-5-20250929")),
+            ("google", os.getenv("GOOGLE_DEFAULT_MODEL", "gemini-2.0-flash")),
+        ],
+    }
+
+
+def _build_fallback_chain(primary_provider: str) -> List[Tuple[str, str]]:
+    """
+    Build fallback provider chain, starting with non-primary providers.
+    
+    This ensures if the primary fails, we try other providers.
+    """
+    # Get default models for each provider from env
+    provider_models = {
+        "openai": os.getenv("OPENAI_DEFAULT_MODEL", "gpt-4.1-mini"),
+        "anthropic": os.getenv("ANTHROPIC_SONNET_MODEL", "claude-sonnet-4-5-20250929"),
+        "google": os.getenv("GOOGLE_DEFAULT_MODEL", "gemini-2.0-flash"),
+    }
+    
+    # Build chain: other providers first, then primary as last resort
+    chain = []
+    for provider in ["openai", "anthropic", "google"]:
+        if provider != primary_provider:
+            chain.append((provider, provider_models[provider]))
+    
+    return chain
+
+
+def _get_fallback_providers_runtime() -> List[Tuple[str, str]]:
+    """
+    Get fallback provider chain with models read AT RUNTIME from env vars.
+    
+    v1.4: Uses centralized stage_models config.
+    """
+    config = _get_spec_gate_model_config()
+    return config.get("fallback_providers", [])
 
 
 # =============================================================================
@@ -363,9 +437,15 @@ def parse_spec_gate_output(text: str) -> _SpecGateDraft:
 
 
 def _get_available_providers() -> List[Tuple[str, str]]:
-    """Return list of (provider_id, model_id) that are currently available."""
+    """Return list of (provider_id, model_id) that are currently available.
+    
+    v1.3: Now reads env vars at RUNTIME via _get_fallback_providers_runtime()
+    """
     available = []
-    for provider_id, model_id in FALLBACK_PROVIDERS:
+    # v1.3: Get fallback list at runtime, not from module-level constant
+    fallback_providers = _get_fallback_providers_runtime()
+    
+    for provider_id, model_id in fallback_providers:
         if is_provider_available is not None and callable(is_provider_available):
             if is_provider_available(provider_id):
                 available.append((provider_id, model_id))
@@ -386,9 +466,32 @@ async def _attempt_spec_gate_call(
     """Make a single Spec Gate LLM call attempt.
     
     Returns: (draft_or_none, raw_text, error_message_or_none)
+    
+    v1.3: Added explicit audit logging of actual provider/model used
     """
     if llm_call is None:
         return None, "", "llm_call not available"
+    
+    # v1.3: Log EXACTLY which provider/model we're about to call
+    logger.info(f"[spec_gate] LLM CALL: provider={provider_id}, model={model_id}, job={job_id}, attempt={attempt_number}")
+    print(f"[SPEC_GATE_AUDIT] Calling LLM: provider={provider_id}, model={model_id}")
+    
+    # v1.3: Emit audit event BEFORE the call so we can trace what was requested
+    _append_event(
+        job_root,
+        job_id,
+        {
+            "event": "SPEC_GATE_LLM_CALL",
+            "job_id": job_id,
+            "attempt": attempt_number,
+            "actual_provider": provider_id,
+            "actual_model": model_id,
+            "env_openai_spec_gate_model": os.getenv("OPENAI_SPEC_GATE_MODEL", "<not set>"),
+            "env_spec_gate_provider": os.getenv("SPEC_GATE_PROVIDER", "<not set>"),
+            "status": "calling",
+            "ts": _utc_ts(),
+        },
+    )
     
     system = (
         "You are Spec Gate. Convert the user's intent into a PoT spec DRAFT as a single JSON object.\n"
@@ -444,6 +547,24 @@ async def _attempt_spec_gate_call(
         status = getattr(result, "status", None)
         status_str = str(status).lower() if status is not None else ""
         raw_text = (getattr(result, "content", "") or "").strip()
+        
+        # v1.3: Log what model the provider actually used (if returned in result)
+        actual_model_returned = getattr(result, "model", None) or getattr(result, "model_id", None)
+        if actual_model_returned and actual_model_returned != model_id:
+            logger.warning(f"[spec_gate] MODEL MISMATCH: requested={model_id}, returned={actual_model_returned}")
+            _append_event(
+                job_root,
+                job_id,
+                {
+                    "event": "SPEC_GATE_MODEL_MISMATCH",
+                    "job_id": job_id,
+                    "attempt": attempt_number,
+                    "requested_model": model_id,
+                    "actual_model_returned": actual_model_returned,
+                    "status": "warn",
+                    "ts": _utc_ts(),
+                },
+            )
 
         if not raw_text:
             _append_event(
@@ -492,6 +613,9 @@ async def _attempt_spec_gate_call(
                     },
                 )
                 return None, raw_text, f"Draft has no meaningful content from {provider_id}/{model_id}"
+            
+            # v1.3: Log successful call with actual model used
+            logger.info(f"[spec_gate] LLM CALL SUCCESS: provider={provider_id}, model={model_id}, questions={len(draft.open_questions or [])}")
             
             return draft, raw_text, None
             
@@ -631,6 +755,7 @@ async def run_spec_gate(
 
     # -------------------------------------------------------------------------
     # Build provider attempt order: requested provider first, then fallbacks
+    # v1.3: Fallbacks now read at runtime
     # -------------------------------------------------------------------------
     providers_to_try: List[Tuple[str, str]] = [(provider_id, model_id)]
     available_fallbacks = _get_available_providers()
@@ -641,6 +766,7 @@ async def run_spec_gate(
     # Cap total attempts
     providers_to_try = providers_to_try[:MAX_SPEC_GATE_ATTEMPTS]
 
+    # v1.3: Log the actual env var values for debugging
     _append_event(
         job_root,
         job_id,
@@ -650,6 +776,11 @@ async def run_spec_gate(
             "primary_provider": provider_id,
             "primary_model": model_id,
             "fallback_chain": [f"{p}/{m}" for p, m in providers_to_try],
+            "env_vars": {
+                "OPENAI_SPEC_GATE_MODEL": os.getenv("OPENAI_SPEC_GATE_MODEL", "<not set>"),
+                "SPEC_GATE_PROVIDER": os.getenv("SPEC_GATE_PROVIDER", "<not set>"),
+                "OPENAI_DEFAULT_MODEL": os.getenv("OPENAI_DEFAULT_MODEL", "<not set>"),
+            },
             "inputs": {"reroute_reason": reroute_reason, "user_intent_chars": len(user_intent or "")},
             "status": "ok",
             "ts": _utc_ts(),

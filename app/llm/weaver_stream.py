@@ -11,9 +11,13 @@ Flow:
 3. Validate and parse spec
 4. Store in database
 5. Stream markdown summary to user
+6. Register flow state for Spec Gate routing
 
 INVARIANT: Weaver uses GPT-5.2 latest, NOT frontier models.
 INVARIANT: Every spec stores source_message_ids for reproducibility.
+
+v1.1 (2026-01): Added flow state registration for command flow continuity
+v1.0: Initial implementation
 """
 from __future__ import annotations
 import json
@@ -40,6 +44,14 @@ from app.specs import (
     get_latest_draft_spec,
 )
 from app.llm.audit_logger import RoutingTrace
+
+# Import flow state management
+try:
+    from app.llm.spec_flow_state import start_weaver_flow
+    _FLOW_STATE_AVAILABLE = True
+except ImportError:
+    _FLOW_STATE_AVAILABLE = False
+    start_weaver_flow = None
 
 logger = logging.getLogger(__name__)
 
@@ -457,6 +469,15 @@ async def generate_weaver_stream(
             project_id=project_id, role="assistant", content=response_content,
             provider=WEAVER_PROVIDER, model=f"weaver-{WEAVER_MODEL}"
         ))
+        
+        # Register flow state for command flow continuity
+        # This ensures "yes" or "Astra, command: critical architecture" routes to Spec Gate
+        if _FLOW_STATE_AVAILABLE and start_weaver_flow:
+            try:
+                start_weaver_flow(project_id, spec_schema.spec_id)
+                logger.debug(f"[weaver] Registered flow state for project {project_id}, spec {spec_schema.spec_id}")
+            except Exception as e:
+                logger.warning(f"[weaver] Failed to register flow state: {e}")
         
         if trace:
             trace.finalize(success=True)

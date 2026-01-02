@@ -7,6 +7,12 @@ This module provides run_spec_gate_v2() which:
 2. Filters questions through clarification state (dedupe, 3-round cap)
 3. Returns SpecGateResult with ready_for_pipeline flag
 4. Provides confirmation handler for critical pipeline gate
+5. Persists validated specs to DB for restart survival
+
+v1.3 (2026-01): Fixed jobs/jobs/ double path bug in _get_spec_file_path
+v1.2 (2026-01): Added DB persistence for validated specs (fixes restart lookup)
+v1.1 (2026-01): Added round 3 directive to force spec output (no questions)
+v1.0 (2026-01): Initial implementation
 
 Usage:
     # Instead of:
@@ -25,6 +31,7 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -32,6 +39,10 @@ from datetime import datetime, timezone
 from typing import Any, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# Optional Imports (keep module resilient)
+# =============================================================================
 
 # Import original spec_gate
 try:
@@ -62,6 +73,15 @@ except ImportError:
     _CLARIFICATION_AVAILABLE = False
     logger.warning("[spec_gate_v2] clarification_state module not available")
 
+# Import specs service for DB persistence (CRITICAL for restart survival)
+try:
+    from app.specs.service import create_spec, update_spec_status
+    from app.specs.schema import SpecSchema, SpecStatus
+    _SPECS_SERVICE_AVAILABLE = True
+except ImportError:
+    _SPECS_SERVICE_AVAILABLE = False
+    logger.warning("[spec_gate_v2] specs.service module not available - validated specs won't persist to DB")
+
 
 # =============================================================================
 # Result Dataclass
@@ -80,6 +100,7 @@ class SpecGateResult:
     clarification_round: int = 0
     spec_summary_markdown: Optional[str] = None
     spec_file_path: Optional[str] = None
+    db_persisted: bool = False  # v1.2: Track if spec was saved to DB
     
     def __iter__(self):
         """Allow unpacking as (spec_id, spec_hash, open_questions)."""
@@ -101,7 +122,8 @@ def _get_artifact_root() -> str:
 
 
 def _get_spec_file_path(job_root: str, job_id: str, spec_version: int) -> str:
-    return os.path.join(job_root, "jobs", job_id, "spec", f"spec_v{spec_version}.json")
+    # v1.2 FIX: Removed extra "jobs" - job_root already IS the jobs directory
+    return os.path.join(job_root, job_id, "spec", f"spec_v{spec_version}.json")
 
 
 def _filter_questions_with_clarification(
@@ -139,6 +161,123 @@ def _filter_questions_with_clarification(
     return questions, decision, state
 
 
+def _persist_validated_spec_to_db(
+    db: Any,
+    project_id: int,
+    spec_id: str,
+    spec_hash: str,
+    spec_version: int,
+    spec_file_path: str,
+    job_id: str,
+    job_root: str,
+) -> bool:
+    """
+    Persist a validated spec to the specs DB table.
+    
+    This is CRITICAL for restart survival - without this, get_latest_validated_spec()
+    returns None after app restart because it only queries the DB, not filesystem.
+    
+    Returns True if successfully persisted, False otherwise.
+    """
+    if not _SPECS_SERVICE_AVAILABLE:
+        logger.warning("[spec_gate_v2] Cannot persist spec to DB - specs.service not available")
+        return False
+    
+    if not project_id:
+        logger.error("[spec_gate_v2] Cannot persist spec to DB - project_id not provided")
+        return False
+    
+    try:
+        # Load spec payload from filesystem
+        with open(spec_file_path, "r", encoding="utf-8") as f:
+            spec_payload = json.load(f)
+        
+        # Extract fields for SpecSchema
+        goal = spec_payload.get("goal", "")
+        title = goal[:200] if goal else f"Spec {spec_id[:8]}"
+        created_by_model = spec_payload.get("created_by_model", "spec_gate_v2")
+        
+        # Build content_markdown from payload if possible
+        content_markdown = None
+        if spec_payload.get("requirements"):
+            md_parts = [f"# {title}", "", "## Goal", goal, ""]
+            reqs = spec_payload.get("requirements", {})
+            if reqs.get("must"):
+                md_parts.append("## Must Have")
+                for r in reqs["must"]:
+                    md_parts.append(f"- {r}")
+                md_parts.append("")
+            if reqs.get("should"):
+                md_parts.append("## Should Have")
+                for r in reqs["should"]:
+                    md_parts.append(f"- {r}")
+                md_parts.append("")
+            content_markdown = "\n".join(md_parts)
+        
+        # Create spec in DB
+        db_spec = create_spec(
+            db=db,
+            project_id=project_id,
+            spec_schema=SpecSchema(
+                spec_id=spec_id,
+                spec_hash=spec_hash,
+                title=title,
+                summary=goal,
+                content_json=spec_payload,
+                content_markdown=content_markdown,
+                spec_version=str(spec_version),
+            ),
+            generator_model=created_by_model,
+        )
+        
+        # Mark as validated (this is the key step!)
+        update_spec_status(
+            db=db,
+            spec_id=spec_id,
+            new_status=SpecStatus.VALIDATED.value,
+            validation_result={
+                "source": "spec_gate_v2",
+                "spec_version": spec_version,
+                "job_id": job_id,
+                "validated_at": _utc_ts(),
+            },
+            triggered_by="spec_gate_v2",
+        )
+        
+        # Commit the transaction
+        db.commit()
+        
+        logger.info(f"[spec_gate_v2] Spec {spec_id} persisted to DB with status=validated (project_id={project_id})")
+        
+        # Emit ledger event for audit trail
+        _append_event(job_root, job_id, {
+            "event": "SPEC_PERSISTED_TO_DB",
+            "job_id": job_id,
+            "spec_id": spec_id,
+            "spec_hash": spec_hash,
+            "spec_version": spec_version,
+            "project_id": project_id,
+            "status": "validated",
+            "ts": _utc_ts(),
+        })
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"[spec_gate_v2] Failed to persist spec {spec_id} to DB: {e}", exc_info=True)
+        # Don't fail the whole flow - filesystem spec still exists
+        # Critical pipeline can still work within the same session
+        _append_event(job_root, job_id, {
+            "event": "SPEC_DB_PERSIST_FAILED",
+            "job_id": job_id,
+            "spec_id": spec_id,
+            "error": str(e),
+            "status": "error",
+            "ts": _utc_ts(),
+        })
+        return False
+
+
 # =============================================================================
 # Main Function
 # =============================================================================
@@ -150,21 +289,63 @@ async def run_spec_gate_v2(
     provider_id: str,
     model_id: str,
     *,
+    project_id: Optional[int] = None,  # v1.2: Required for DB persistence
     repo_snapshot: Optional[dict] = None,
     constraints_hint: Optional[dict] = None,
     spec_version: int = 1,
     **kwargs,
 ) -> SpecGateResult:
-    """Run Spec Gate with clarification state management."""
+    """
+    Run Spec Gate with clarification state management and DB persistence.
+    
+    Args:
+        db: SQLAlchemy database session
+        job_id: Unique job identifier
+        user_intent: User's request/intent text
+        provider_id: LLM provider (openai, anthropic, google)
+        model_id: Model identifier
+        project_id: Project ID - REQUIRED for DB persistence and restart survival
+        repo_snapshot: Optional repository state snapshot
+        constraints_hint: Optional constraints for spec generation
+        spec_version: Spec version number (increments with clarification rounds)
+        **kwargs: Additional arguments passed to run_spec_gate
+    
+    Returns:
+        SpecGateResult with spec details, questions, and pipeline readiness
+    """
     if not _SPEC_GATE_AVAILABLE:
         raise RuntimeError("spec_gate module not available")
     
+    # Warn if project_id not provided (will break restart survival)
+    if project_id is None:
+        logger.warning("[spec_gate_v2] project_id not provided - spec won't persist to DB for restart survival")
+    
     job_root = _get_artifact_root()
     
+    # =========================================================================
+    # ROUND 3 DIRECTIVE: Force spec output, no more questions
+    # =========================================================================
+    effective_intent = user_intent
+    if spec_version >= 3:
+        round3_directive = """
+[FINAL ROUND - MANDATORY SPEC OUTPUT]
+This is clarification round 3 of 3. You MUST NOT ask any more questions.
+You MUST output the complete, final spec based on all information gathered so far.
+If any details are missing, make reasonable assumptions and note them in the spec.
+DO NOT return questions. Return the complete spec JSON only.
+
+User context and answers:
+"""
+        effective_intent = round3_directive + user_intent
+        logger.info(f"[spec_gate_v2] Round 3: Forcing spec output (no questions)")
+    
+    # =========================================================================
+    # Call underlying spec_gate
+    # =========================================================================
     spec_id, spec_hash, raw_questions = await run_spec_gate(
         db,
         job_id,
-        user_intent,
+        effective_intent,
         provider_id,
         model_id,
         repo_snapshot=repo_snapshot,
@@ -172,6 +353,9 @@ async def run_spec_gate_v2(
         **kwargs,
     )
     
+    # =========================================================================
+    # Filter questions through clarification state
+    # =========================================================================
     filtered_questions, decision, clarification_state = _filter_questions_with_clarification(
         questions=raw_questions,
         job_artifact_root=job_root,
@@ -179,16 +363,46 @@ async def run_spec_gate_v2(
         spec_version=spec_version,
     )
     
-    ready_for_pipeline = (decision == ClarificationDecision.READY_FOR_CONFIRM)
-    hard_stopped = (decision == ClarificationDecision.HARD_STOP)
+    # ROUND 3 OVERRIDE: Force ready_for_pipeline even if questions returned
+    round3_forced = False
+    if spec_version >= 3 and filtered_questions:
+        logger.warning(f"[spec_gate_v2] Round 3 but got {len(filtered_questions)} questions - forcing ready_for_pipeline")
+        decision = ClarificationDecision.READY_FOR_CONFIRM if _CLARIFICATION_AVAILABLE else "ready"
+        round3_forced = True
+        # Clear questions so we proceed (they're logged for reference)
+        filtered_questions = []
+    
+    # =========================================================================
+    # Determine pipeline readiness
+    # =========================================================================
+    ready_for_pipeline = (decision == ClarificationDecision.READY_FOR_CONFIRM) if _CLARIFICATION_AVAILABLE else (decision == "ready")
+    hard_stopped = (decision == ClarificationDecision.HARD_STOP) if _CLARIFICATION_AVAILABLE else False
     hard_stop_reason = clarification_state.hard_stop_reason if (hard_stopped and clarification_state) else None
     
     spec_file_path = _get_spec_file_path(job_root, job_id, spec_version)
     
+    # =========================================================================
+    # CRITICAL: Persist validated spec to DB for restart survival
+    # =========================================================================
+    db_persisted = False
+    if ready_for_pipeline and project_id:
+        db_persisted = _persist_validated_spec_to_db(
+            db=db,
+            project_id=project_id,
+            spec_id=spec_id,
+            spec_hash=spec_hash,
+            spec_version=spec_version,
+            spec_file_path=spec_file_path,
+            job_id=job_id,
+            job_root=job_root,
+        )
+    
+    # =========================================================================
+    # Generate spec summary markdown
+    # =========================================================================
     spec_summary_markdown = None
     if ready_for_pipeline and _CLARIFICATION_AVAILABLE:
         try:
-            import json
             with open(spec_file_path, "r", encoding="utf-8") as f:
                 spec_payload = json.load(f)
             spec_payload["spec_hash"] = spec_hash
@@ -200,7 +414,9 @@ async def run_spec_gate_v2(
         except Exception as e:
             logger.warning(f"[spec_gate_v2] Failed to build summary: {e}")
     
-    # Emit events
+    # =========================================================================
+    # Emit ledger events
+    # =========================================================================
     if filtered_questions:
         _append_event(job_root, job_id, {
             "event": "SPEC_QUESTIONS_FILTERED",
@@ -220,6 +436,7 @@ async def run_spec_gate_v2(
             "spec_id": spec_id,
             "spec_version": spec_version,
             "awaiting_confirmation": True,
+            "db_persisted": db_persisted,
             "status": "ok",
             "ts": _utc_ts(),
         })
@@ -244,6 +461,7 @@ async def run_spec_gate_v2(
         clarification_round=clarification_state.current_round if clarification_state else 0,
         spec_summary_markdown=spec_summary_markdown,
         spec_file_path=spec_file_path,
+        db_persisted=db_persisted,
     )
 
 
