@@ -9,6 +9,7 @@ This module provides run_spec_gate_v2() which:
 4. Provides confirmation handler for critical pipeline gate
 5. Persists validated specs to DB for restart survival
 
+v1.4 (2026-01): FIXED import error (Spec as SpecSchema) and path mismatch (added "jobs" segment)
 v1.3 (2026-01): Fixed jobs/jobs/ double path bug in _get_spec_file_path
 v1.2 (2026-01): Added DB persistence for validated specs (fixes restart lookup)
 v1.1 (2026-01): Added round 3 directive to force spec output (no questions)
@@ -74,13 +75,15 @@ except ImportError:
     logger.warning("[spec_gate_v2] clarification_state module not available")
 
 # Import specs service for DB persistence (CRITICAL for restart survival)
+# v1.4 FIX: Import Spec as SpecSchema (the class is named "Spec" not "SpecSchema")
 try:
     from app.specs.service import create_spec, update_spec_status
-    from app.specs.schema import SpecSchema, SpecStatus
+    from app.specs.schema import Spec as SpecSchema, SpecStatus
     _SPECS_SERVICE_AVAILABLE = True
-except ImportError:
+    logger.info("[spec_gate_v2] specs.service module loaded successfully")
+except ImportError as e:
     _SPECS_SERVICE_AVAILABLE = False
-    logger.warning("[spec_gate_v2] specs.service module not available - validated specs won't persist to DB")
+    logger.warning(f"[spec_gate_v2] specs.service module not available - validated specs won't persist to DB: {e}")
 
 
 # =============================================================================
@@ -122,8 +125,14 @@ def _get_artifact_root() -> str:
 
 
 def _get_spec_file_path(job_root: str, job_id: str, spec_version: int) -> str:
-    # v1.2 FIX: Removed extra "jobs" - job_root already IS the jobs directory
-    return os.path.join(job_root, job_id, "spec", f"spec_v{spec_version}.json")
+    """
+    Get the path to a spec file.
+    
+    v1.4 FIX: Added "jobs" segment to match spec_gate.py's _write_spec_file path.
+    spec_gate.py writes to: job_root/jobs/<job_id>/spec/spec_v<N>.json
+    So we must read from the same path.
+    """
+    return os.path.join(job_root, "jobs", job_id, "spec", f"spec_v{spec_version}.json")
 
 
 def _filter_questions_with_clarification(
@@ -189,6 +198,10 @@ def _persist_validated_spec_to_db(
     
     try:
         # Load spec payload from filesystem
+        if not os.path.exists(spec_file_path):
+            logger.error(f"[spec_gate_v2] Spec file not found: {spec_file_path}")
+            return False
+            
         with open(spec_file_path, "r", encoding="utf-8") as f:
             spec_payload = json.load(f)
         
@@ -212,74 +225,63 @@ def _persist_validated_spec_to_db(
                 for r in reqs["should"]:
                     md_parts.append(f"- {r}")
                 md_parts.append("")
+            if reqs.get("can"):
+                md_parts.append("## Nice to Have")
+                for r in reqs["can"]:
+                    md_parts.append(f"- {r}")
+                md_parts.append("")
             content_markdown = "\n".join(md_parts)
         
-        # Create spec in DB
+        # Create SpecSchema object
+        from app.specs.schema import SpecProvenance, SpecRequirements, SpecConstraints, SpecSafety
+        
+        spec_schema = SpecSchema(
+            spec_id=spec_id,
+            spec_version=str(spec_version),
+            title=title,
+            summary=goal[:500] if goal else "",
+            objective=goal,
+        )
+        
+        # Set provenance
+        spec_schema.provenance = SpecProvenance(
+            job_id=job_id,
+            generator_model=created_by_model,
+            created_at=spec_payload.get("created_at", datetime.now(timezone.utc).isoformat()),
+        )
+        
+        # Create in DB
         db_spec = create_spec(
             db=db,
             project_id=project_id,
-            spec_schema=SpecSchema(
-                spec_id=spec_id,
-                spec_hash=spec_hash,
-                title=title,
-                summary=goal,
-                content_json=spec_payload,
-                content_markdown=content_markdown,
-                spec_version=str(spec_version),
-            ),
+            spec_schema=spec_schema,
             generator_model=created_by_model,
         )
         
-        # Mark as validated (this is the key step!)
+        # Update status to VALIDATED
         update_spec_status(
             db=db,
             spec_id=spec_id,
             new_status=SpecStatus.VALIDATED.value,
             validation_result={
-                "source": "spec_gate_v2",
-                "spec_version": spec_version,
-                "job_id": job_id,
+                "valid": True,
                 "validated_at": _utc_ts(),
+                "spec_hash": spec_hash,
+                "spec_file": spec_file_path,
             },
             triggered_by="spec_gate_v2",
         )
         
-        # Commit the transaction
-        db.commit()
-        
-        logger.info(f"[spec_gate_v2] Spec {spec_id} persisted to DB with status=validated (project_id={project_id})")
-        
-        # Emit ledger event for audit trail
-        _append_event(job_root, job_id, {
-            "event": "SPEC_PERSISTED_TO_DB",
-            "job_id": job_id,
-            "spec_id": spec_id,
-            "spec_hash": spec_hash,
-            "spec_version": spec_version,
-            "project_id": project_id,
-            "status": "validated",
-            "ts": _utc_ts(),
-        })
-        
+        logger.info(f"[spec_gate_v2] Spec {spec_id} persisted to DB with status=validated")
         return True
         
     except Exception as e:
-        logger.error(f"[spec_gate_v2] Failed to persist spec {spec_id} to DB: {e}", exc_info=True)
-        # Don't fail the whole flow - filesystem spec still exists
-        # Critical pipeline can still work within the same session
-        _append_event(job_root, job_id, {
-            "event": "SPEC_DB_PERSIST_FAILED",
-            "job_id": job_id,
-            "spec_id": spec_id,
-            "error": str(e),
-            "status": "error",
-            "ts": _utc_ts(),
-        })
+        logger.exception(f"[spec_gate_v2] Failed to persist spec to DB: {e}")
         return False
 
 
 # =============================================================================
-# Main Function
+# Main Entry Point
 # =============================================================================
 
 async def run_spec_gate_v2(
@@ -288,19 +290,18 @@ async def run_spec_gate_v2(
     user_intent: str,
     provider_id: str,
     model_id: str,
-    *,
-    project_id: Optional[int] = None,  # v1.2: Required for DB persistence
+    project_id: Optional[int] = None,
     repo_snapshot: Optional[dict] = None,
     constraints_hint: Optional[dict] = None,
     spec_version: int = 1,
     **kwargs,
 ) -> SpecGateResult:
     """
-    Run Spec Gate with clarification state management and DB persistence.
+    Run Spec Gate with clarification state management.
     
     Args:
-        db: SQLAlchemy database session
-        job_id: Unique job identifier
+        db: Database session
+        job_id: Job identifier
         user_intent: User's request/intent text
         provider_id: LLM provider (openai, anthropic, google)
         model_id: Model identifier

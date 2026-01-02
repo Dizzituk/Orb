@@ -22,3 +22,6 @@ data/orb_memory.db
 *.pyc
 *.pyc
 .env
+*.pyc
+*.ndjson
+*.ndjson
