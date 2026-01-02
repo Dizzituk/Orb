@@ -7,6 +7,10 @@ Block 4: Architecture generation as versioned artifact with spec traceability
 Block 5: Structured JSON critique with blocking/non-blocking issues (critique.py)
 Block 6: Revision loop until critique passes (revision.py)
 
+v4.1 (2026-01):
+- Uses stage_models for provider/model configuration (env-driven)
+- ARCHITECTURE_PROVIDER/ARCHITECTURE_MODEL from env controls draft generation
+
 v4.0 (2025-12):
 - REFACTORED: Split into 3 files for maintainability:
   - high_stakes.py: Orchestrator, routing, architecture storage (~400 lines)
@@ -104,6 +108,13 @@ try:
 except ImportError:
     STAGE3_AVAILABLE = False
 
+# Stage models (env-driven model resolution)
+try:
+    from app.llm.stage_models import get_architecture_config
+    _STAGE_MODELS_AVAILABLE = True
+except ImportError:
+    _STAGE_MODELS_AVAILABLE = False
+
 
 # =============================================================================
 # Configuration
@@ -115,11 +126,30 @@ logger = logging.getLogger(__name__)
 
 MIN_CRITIQUE_CHARS = int(os.getenv("ORB_MIN_CRITIQUE_CHARS", "1500"))
 
-# Token limits for architecture generation
-OPUS_DRAFT_MAX_TOKENS = int(os.getenv("OPUS_DRAFT_MAX_TOKENS", "16384"))
 
-# Timeout for Opus calls (architecture generation can take 2-5 minutes)
-OPUS_TIMEOUT_SECONDS = int(os.getenv("OPUS_TIMEOUT_SECONDS", "300"))
+def _get_architecture_draft_config() -> tuple[str, str, int, int]:
+    """Get architecture draft provider/model from stage_models or env vars AT RUNTIME.
+    
+    Returns: (provider, model, max_tokens, timeout)
+    """
+    if _STAGE_MODELS_AVAILABLE:
+        try:
+            cfg = get_architecture_config()
+            return cfg.provider, cfg.model, cfg.max_output_tokens, cfg.timeout_seconds
+        except Exception:
+            pass
+    
+    # Fallback to legacy env vars
+    provider = os.getenv("ARCHITECTURE_PROVIDER", "anthropic")
+    model = os.getenv("ARCHITECTURE_MODEL") or os.getenv("ANTHROPIC_OPUS_MODEL", "claude-opus-4-5-20251101")
+    max_tokens = int(os.getenv("ARCHITECTURE_MAX_OUTPUT_TOKENS") or os.getenv("OPUS_DRAFT_MAX_TOKENS", "60000"))
+    timeout = int(os.getenv("ARCHITECTURE_TIMEOUT_SECONDS") or os.getenv("OPUS_TIMEOUT_SECONDS", "300"))
+    return provider, model, max_tokens, timeout
+
+
+# Legacy exports (for backward compatibility)
+OPUS_DRAFT_MAX_TOKENS = int(os.getenv("ARCHITECTURE_MAX_OUTPUT_TOKENS") or os.getenv("OPUS_DRAFT_MAX_TOKENS", "60000"))
+OPUS_TIMEOUT_SECONDS = int(os.getenv("ARCHITECTURE_TIMEOUT_SECONDS") or os.getenv("OPUS_TIMEOUT_SECONDS", "300"))
 
 HIGH_STAKES_JOB_TYPES = {
     "architecture_design",
@@ -449,14 +479,18 @@ async def run_high_stakes_with_critique(
     if trace:
         _trace_step(trace, 'draft')
     
+    # Get architecture config for max_tokens and timeout (use stage_models if available)
+    _, _, arch_max_tokens, arch_timeout = _get_architecture_draft_config()
+    print(f"[DEBUG] [high_stakes] Draft generation: provider={provider_id}, model={model_id}, max_tokens={arch_max_tokens}")
+    
     try:
         draft_result = await registry_llm_call(
             provider_id=provider_id,
             model_id=model_id,
             messages=draft_messages,
             job_envelope=envelope,
-            max_tokens=OPUS_DRAFT_MAX_TOKENS,
-            timeout_seconds=OPUS_TIMEOUT_SECONDS,
+            max_tokens=arch_max_tokens,
+            timeout_seconds=arch_timeout,
         )
     except Exception as exc:
         err_msg = f"High-stakes draft failed: {exc}"

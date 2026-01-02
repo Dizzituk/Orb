@@ -6,6 +6,10 @@ Block 6 of the PoT (Proof of Thought) system:
 - Revision loop until critique passes or max iterations
 - Legacy single-revision for backward compatibility
 
+v1.1 (2026-01):
+- Uses stage_models for provider/model configuration (env-driven)
+- No more hardcoded provider - REVISION_PROVIDER/REVISION_MODEL from env
+
 v1.0 (2025-12):
 - Extracted from high_stakes.py for better maintainability
 - Spec-anchored revision prompt prevents drift from reviewer suggestions
@@ -60,6 +64,13 @@ try:
 except ImportError:
     LEDGER_AVAILABLE = False
 
+# Stage models (env-driven model resolution)
+try:
+    from app.llm.stage_models import get_revision_config, get_architecture_config
+    _STAGE_MODELS_AVAILABLE = True
+except ImportError:
+    _STAGE_MODELS_AVAILABLE = False
+
 
 # =============================================================================
 # Configuration
@@ -67,9 +78,53 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-OPUS_REVISION_MAX_TOKENS = int(os.getenv("OPUS_REVISION_MAX_TOKENS", "16384"))
-OPUS_REVISION_TIMEOUT = int(os.getenv("OPUS_REVISION_TIMEOUT", "300"))
 MAX_REVISION_ITERATIONS = int(os.getenv("ORB_MAX_REVISION_ITERATIONS", "3"))
+
+
+def _get_revision_model_config() -> tuple[str, str, int, int]:
+    """Get revision provider/model from stage_models or env vars AT RUNTIME.
+    
+    Returns: (provider, model, max_tokens, timeout)
+    """
+    if _STAGE_MODELS_AVAILABLE:
+        try:
+            cfg = get_revision_config()
+            return cfg.provider, cfg.model, cfg.max_output_tokens, cfg.timeout_seconds
+        except Exception:
+            pass
+    
+    # Fallback to legacy env vars
+    provider = os.getenv("REVISION_PROVIDER", "anthropic")
+    model = os.getenv("REVISION_MODEL") or os.getenv("ANTHROPIC_OPUS_MODEL", "claude-opus-4-5-20251101")
+    max_tokens = int(os.getenv("REVISION_MAX_OUTPUT_TOKENS") or os.getenv("OPUS_REVISION_MAX_TOKENS", "60000"))
+    timeout = int(os.getenv("REVISION_TIMEOUT_SECONDS") or os.getenv("OPUS_REVISION_TIMEOUT", "300"))
+    return provider, model, max_tokens, timeout
+
+
+def _get_architecture_model_config() -> tuple[str, str, int, int]:
+    """Get architecture provider/model from stage_models or env vars AT RUNTIME.
+    
+    Returns: (provider, model, max_tokens, timeout)
+    """
+    if _STAGE_MODELS_AVAILABLE:
+        try:
+            cfg = get_architecture_config()
+            return cfg.provider, cfg.model, cfg.max_output_tokens, cfg.timeout_seconds
+        except Exception:
+            pass
+    
+    # Fallback to legacy env vars
+    provider = os.getenv("ARCHITECTURE_PROVIDER", "anthropic")
+    model = os.getenv("ARCHITECTURE_MODEL") or os.getenv("ANTHROPIC_OPUS_MODEL", "claude-opus-4-5-20251101")
+    max_tokens = int(os.getenv("ARCHITECTURE_MAX_OUTPUT_TOKENS") or os.getenv("OPUS_DRAFT_MAX_TOKENS", "60000"))
+    timeout = int(os.getenv("ARCHITECTURE_TIMEOUT_SECONDS") or os.getenv("OPUS_TIMEOUT_SECONDS", "300"))
+    return provider, model, max_tokens, timeout
+
+
+# Legacy exports (for backward compatibility - these get value at import time)
+# For truly dynamic lookup, use _get_revision_model_config() directly
+OPUS_REVISION_MAX_TOKENS = int(os.getenv("REVISION_MAX_OUTPUT_TOKENS") or os.getenv("OPUS_REVISION_MAX_TOKENS", "60000"))
+OPUS_REVISION_TIMEOUT = int(os.getenv("REVISION_TIMEOUT_SECONDS") or os.getenv("OPUS_REVISION_TIMEOUT", "300"))
 
 
 # =============================================================================
@@ -192,15 +247,23 @@ async def call_revision(
     opus_model_id: str,
     envelope: JobEnvelope,
 ) -> Optional[str]:
-    """Call Opus to revise architecture based on blocking issues.
+    """Call revision model based on blocking issues.
     
-    Uses spec-anchored prompt to prevent drift from Gemini suggestions.
+    Uses REVISION_PROVIDER/REVISION_MODEL from env via stage_models.
+    Uses spec-anchored prompt to prevent drift from reviewer suggestions.
     Returns revised architecture content or None on failure.
     """
+    # Get config from stage_models (runtime lookup)
+    revision_provider, revision_model, revision_max_tokens, revision_timeout = _get_revision_model_config()
+    
+    # Allow override from caller (for backward compat)
+    if opus_model_id and opus_model_id != revision_model:
+        revision_model = opus_model_id
+    
     # DEBUG: Log revision start
-    print(f"[DEBUG] [revision] Starting Opus revision: model={opus_model_id}")
+    print(f"[DEBUG] [revision] Starting revision: provider={revision_provider}, model={revision_model}")
     print(f"[DEBUG] [revision] Blocking issues to address: {len(critique.blocking_issues)}")
-    logger.info(f"[revision] Calling Opus revision with {len(critique.blocking_issues)} blocking issues")
+    logger.info(f"[revision] Calling revision with {len(critique.blocking_issues)} blocking issues")
     
     # Use spec-anchored prompt instead of generic one
     revision_prompt = build_spec_anchored_revision_prompt(
@@ -218,8 +281,6 @@ async def call_revision(
     ]
     
     try:
-        opus_model = os.getenv("ANTHROPIC_OPUS_MODEL", opus_model_id)
-        
         revision_envelope = JobEnvelope(
             job_id=str(uuid4()),
             session_id=getattr(envelope, 'session_id', 'session-unknown'),
@@ -229,33 +290,33 @@ async def call_revision(
             data_sensitivity=DataSensitivity.INTERNAL,
             modalities_in=[Modality.TEXT],
             budget=JobBudget(
-                max_tokens=OPUS_REVISION_MAX_TOKENS,
+                max_tokens=revision_max_tokens,
                 max_cost_estimate=0.15,
-                max_wall_time_seconds=120,
+                max_wall_time_seconds=revision_timeout,
             ),
             output_contract=OutputContract.TEXT_RESPONSE,
             messages=revision_messages,
-            metadata={"revision": True, "spec_anchored": True},
+            metadata={"revision": True, "spec_anchored": True, "provider": revision_provider},
             allow_multi_model_review=False,
             needs_tools=[],
         )
         
-        print(f"[DEBUG] [revision] Sending revision request to Opus...")
+        print(f"[DEBUG] [revision] Sending revision request to {revision_provider}/{revision_model}...")
         result = await registry_llm_call(
-            provider_id="anthropic",
-            model_id=opus_model,
+            provider_id=revision_provider,
+            model_id=revision_model,
             messages=revision_messages,
             job_envelope=revision_envelope,
-            max_tokens=OPUS_REVISION_MAX_TOKENS,
-            timeout_seconds=OPUS_REVISION_TIMEOUT,
+            max_tokens=revision_max_tokens,
+            timeout_seconds=revision_timeout,
         )
         
         if not result or not result.content:
-            print(f"[DEBUG] [revision] ERROR: Empty response from Opus")
+            print(f"[DEBUG] [revision] ERROR: Empty response from {revision_provider}")
             return None
         
         print(f"[DEBUG] [revision] Received revised architecture: {len(result.content)} chars")
-        logger.info(f"[revision] Opus revision complete: {len(result.content)} chars")
+        logger.info(f"[revision] Revision complete: {len(result.content)} chars")
         return result.content
         
     except Exception as exc:
@@ -453,7 +514,19 @@ async def call_opus_revision(
     opus_model_id: str,
     envelope: JobEnvelope,
 ) -> Optional[LLMResult]:
-    """Call Opus to revise its draft based on critique (legacy)."""
+    """Call revision model based on critique (legacy).
+    
+    Uses REVISION_PROVIDER/REVISION_MODEL from env via stage_models.
+    """
+    # Get config from stage_models (runtime lookup)
+    revision_provider, revision_model, revision_max_tokens, revision_timeout = _get_revision_model_config()
+    
+    # Allow override from caller (for backward compat)
+    if opus_model_id and opus_model_id != revision_model:
+        revision_model = opus_model_id
+    
+    print(f"[DEBUG] [revision-legacy] Using: provider={revision_provider}, model={revision_model}")
+    
     user_messages = [m for m in original_task.messages if m.get("role") == "user"]
     original_request = user_messages[-1].get("content", "") if user_messages else ""
 
@@ -475,7 +548,6 @@ CRITIQUE:
     ]
 
     try:
-        opus_model = os.getenv("ANTHROPIC_OPUS_MODEL", opus_model_id)
         phase4_job_type = _map_to_phase4_job_type(original_task.job_type)
 
         revision_envelope = JobEnvelope(
@@ -487,24 +559,24 @@ CRITIQUE:
             data_sensitivity=DataSensitivity.INTERNAL,
             modalities_in=[Modality.TEXT],
             budget=JobBudget(
-                max_tokens=OPUS_REVISION_MAX_TOKENS,
+                max_tokens=revision_max_tokens,
                 max_cost_estimate=0.10,
-                max_wall_time_seconds=60,
+                max_wall_time_seconds=revision_timeout,
             ),
             output_contract=OutputContract.TEXT_RESPONSE,
             messages=revision_messages,
-            metadata={"revision_of_draft": True},
+            metadata={"revision_of_draft": True, "provider": revision_provider},
             allow_multi_model_review=False,
             needs_tools=[],
         )
 
         result = await registry_llm_call(
-            provider_id="anthropic",
-            model_id=opus_model,
+            provider_id=revision_provider,
+            model_id=revision_model,
             messages=revision_messages,
             job_envelope=revision_envelope,
-            max_tokens=OPUS_REVISION_MAX_TOKENS,
-            timeout_seconds=OPUS_REVISION_TIMEOUT,
+            max_tokens=revision_max_tokens,
+            timeout_seconds=revision_timeout,
         )
 
         if not result:
@@ -512,8 +584,8 @@ CRITIQUE:
 
         return LLMResult(
             content=result.content,
-            provider="anthropic",
-            model=opus_model,
+            provider=revision_provider,
+            model=revision_model,
             finish_reason="stop",
             error_message=None,
             prompt_tokens=result.usage.prompt_tokens,
@@ -524,7 +596,7 @@ CRITIQUE:
         )
 
     except Exception as exc:
-        logger.warning(f"[critic] Opus revision call failed: {exc}")
+        logger.warning(f"[revision-legacy] Revision call failed: {exc}")
         return None
 
 

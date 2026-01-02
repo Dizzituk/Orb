@@ -128,11 +128,15 @@ def _get_spec_file_path(job_root: str, job_id: str, spec_version: int) -> str:
     """
     Get the path to a spec file.
     
-    v1.4 FIX: Added "jobs" segment to match spec_gate.py's _write_spec_file path.
-    spec_gate.py writes to: job_root/jobs/<job_id>/spec/spec_v<N>.json
-    So we must read from the same path.
+    v1.5 FIX: Always look for spec_v1.json since spec_gate.py hardcodes version=1.
+    The spec_version parameter is kept for API compatibility but not used in path.
+    spec_gate.py writes to: job_root/jobs/<job_id>/spec/spec_v1.json (always v1)
+    
+    TODO: Fix spec_gate.py to accept and use spec_version parameter, then 
+    revert this to use spec_version in the path.
     """
-    return os.path.join(job_root, "jobs", job_id, "spec", f"spec_v{spec_version}.json")
+    # Always use v1 since spec_gate.py hardcodes spec_version=1
+    return os.path.join(job_root, "jobs", job_id, "spec", "spec_v1.json")
 
 
 def _filter_questions_with_clarification(

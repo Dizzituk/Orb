@@ -25,3 +25,7 @@ data/orb_memory.db
 *.pyc
 *.ndjson
 *.ndjson
+*.ndjson
+/app/llm/__pycache__
+*.md
+.env

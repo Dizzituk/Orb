@@ -6,6 +6,10 @@ Block 5 of the PoT (Proof of Thought) system:
 - Spec-anchored critique (verifies architecture against spec)
 - Legacy prose-based critique for backward compatibility
 
+v1.1 (2026-01):
+- Uses stage_models for provider/model configuration (env-driven)
+- No more hardcoded provider - CRITIQUE_PROVIDER/CRITIQUE_MODEL from env
+
 v1.0 (2025-12):
 - Extracted from high_stakes.py for better maintainability
 - Spec verification protocol in system messages
@@ -53,6 +57,13 @@ try:
 except ImportError:
     LEDGER_AVAILABLE = False
 
+# Stage models (env-driven model resolution)
+try:
+    from app.llm.stage_models import get_critique_config
+    _STAGE_MODELS_AVAILABLE = True
+except ImportError:
+    _STAGE_MODELS_AVAILABLE = False
+
 
 # =============================================================================
 # Configuration
@@ -60,8 +71,31 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-GEMINI_CRITIC_MODEL = os.getenv("GEMINI_CRITIC_MODEL", "gemini-3-pro-preview")
-GEMINI_CRITIC_MAX_TOKENS = int(os.getenv("GEMINI_CRITIC_MAX_TOKENS", "2048"))
+
+def _get_critique_model_config() -> tuple[str, str, int]:
+    """Get critique provider/model from stage_models or env vars AT RUNTIME.
+    
+    Returns: (provider, model, max_tokens)
+    """
+    if _STAGE_MODELS_AVAILABLE:
+        try:
+            cfg = get_critique_config()
+            return cfg.provider, cfg.model, cfg.max_output_tokens
+        except Exception:
+            pass
+    
+    # Fallback to legacy env vars
+    provider = os.getenv("CRITIQUE_PROVIDER", "google")
+    model = os.getenv("CRITIQUE_MODEL") or os.getenv("GEMINI_CRITIC_MODEL", "gemini-2.0-flash")
+    max_tokens = int(os.getenv("CRITIQUE_MAX_OUTPUT_TOKENS") or os.getenv("GEMINI_CRITIC_MAX_TOKENS", "60000"))
+    return provider, model, max_tokens
+
+
+# Legacy exports (for backward compatibility - these call runtime lookup)
+# Note: These are module-level variables that get the current value at import time
+# For truly dynamic lookup, use _get_critique_model_config() directly
+GEMINI_CRITIC_MODEL = os.getenv("CRITIQUE_MODEL") or os.getenv("GEMINI_CRITIC_MODEL", "gemini-2.0-flash")
+GEMINI_CRITIC_MAX_TOKENS = int(os.getenv("CRITIQUE_MAX_OUTPUT_TOKENS") or os.getenv("GEMINI_CRITIC_MAX_TOKENS", "60000"))
 
 
 # =============================================================================
@@ -146,13 +180,17 @@ async def call_json_critic(
     env_context: Optional[Dict[str, Any]] = None,
     envelope: JobEnvelope,
 ) -> CritiqueResult:
-    """Call Gemini critic with JSON output schema.
+    """Call critic with JSON output schema.
     
     Returns structured CritiqueResult.
+    Uses CRITIQUE_PROVIDER/CRITIQUE_MODEL from env via stage_models.
     """
+    # Get config from stage_models (runtime lookup)
+    critique_provider, critique_model, critique_max_tokens = _get_critique_model_config()
+    
     # DEBUG: Log critique start
-    print(f"[DEBUG] [critique] Starting JSON critic: model={GEMINI_CRITIC_MODEL}")
-    logger.info(f"[critique] Calling Gemini JSON critic: {GEMINI_CRITIC_MODEL}")
+    print(f"[DEBUG] [critique] Starting JSON critic: provider={critique_provider}, model={critique_model}")
+    logger.info(f"[critique] Calling JSON critic: {critique_provider}/{critique_model}")
     
     critique_prompt = build_json_critique_prompt(
         draft_text=arch_content,
@@ -188,35 +226,36 @@ Your suggestions must align with the spec. Do not expand scope."""
             data_sensitivity=DataSensitivity.INTERNAL,
             modalities_in=[Modality.TEXT],
             budget=JobBudget(
-                max_tokens=GEMINI_CRITIC_MAX_TOKENS,
+                max_tokens=critique_max_tokens,
                 max_cost_estimate=0.05,
                 max_wall_time_seconds=90,
             ),
             output_contract=OutputContract.TEXT_RESPONSE,
             messages=critique_messages,
-            metadata={"critic": "gemini_json"},
+            metadata={"critic": "json", "provider": critique_provider},
             allow_multi_model_review=False,
             needs_tools=[],
         )
         
-        print(f"[DEBUG] [critique] Sending request to Gemini...")
+        print(f"[DEBUG] [critique] Sending request to {critique_provider}/{critique_model}...")
         result = await registry_llm_call(
-            provider_id="google",
-            model_id=GEMINI_CRITIC_MODEL,
+            provider_id=critique_provider,
+            model_id=critique_model,
             messages=critique_messages,
             job_envelope=critic_envelope,
+            max_tokens=critique_max_tokens,
         )
         
         if not result or not result.content:
-            logger.warning("[critic] Empty response from Gemini critic")
-            print(f"[DEBUG] [critique] ERROR: Empty response from Gemini")
+            logger.warning("[critic] Empty response from critic")
+            print(f"[DEBUG] [critique] ERROR: Empty response from {critique_provider}")
             return CritiqueResult(
                 summary="Critique failed: empty response",
-                critique_model=GEMINI_CRITIC_MODEL,
+                critique_model=critique_model,
             )
         
         print(f"[DEBUG] [critique] Received response: {len(result.content)} chars")
-        critique = parse_critique_output(result.content, model=GEMINI_CRITIC_MODEL)
+        critique = parse_critique_output(result.content, model=critique_model)
         
         # DEBUG: Log critique result
         print(f"[DEBUG] [critique] Result: overall_pass={critique.overall_pass}, blocking={len(critique.blocking_issues)}, non_blocking={len(critique.non_blocking_issues)}")
@@ -245,9 +284,11 @@ Your suggestions must align with the spec. Do not expand scope."""
     except Exception as exc:
         logger.warning(f"[critic] JSON critic call failed: {exc}")
         print(f"[DEBUG] [critique] EXCEPTION: {exc}")
+        # Get model for error response
+        _, model_for_error, _ = _get_critique_model_config()
         return CritiqueResult(
             summary=f"Critique failed: {exc}",
-            critique_model=GEMINI_CRITIC_MODEL,
+            critique_model=model_for_error,
         )
 
 
@@ -359,10 +400,16 @@ async def call_gemini_critic(
     envelope: JobEnvelope,
     env_context: Optional[Dict[str, Any]] = None,
 ) -> Optional[LLMResult]:
-    """Call Gemini to critique the Opus draft (legacy prose format)."""
+    """Call critic for prose-based critique (legacy format).
+    
+    Uses CRITIQUE_PROVIDER/CRITIQUE_MODEL from env via stage_models.
+    """
+    # Get config from stage_models (runtime lookup)
+    critique_provider, critique_model, critique_max_tokens = _get_critique_model_config()
+    
     # DEBUG: Log critique start
-    print(f"[DEBUG] [critique-legacy] Starting Gemini critic: model={GEMINI_CRITIC_MODEL}")
-    logger.info(f"[critique-legacy] Calling Gemini critic: {GEMINI_CRITIC_MODEL}")
+    print(f"[DEBUG] [critique-legacy] Starting critic: provider={critique_provider}, model={critique_model}")
+    logger.info(f"[critique-legacy] Calling critic: {critique_provider}/{critique_model}")
     
     user_messages = [m for m in original_task.messages if m.get("role") == "user"]
     original_request = user_messages[-1].get("content", "") if user_messages else ""
@@ -389,27 +436,28 @@ async def call_gemini_critic(
             data_sensitivity=DataSensitivity.INTERNAL,
             modalities_in=[Modality.TEXT],
             budget=JobBudget(
-                max_tokens=GEMINI_CRITIC_MAX_TOKENS,
+                max_tokens=critique_max_tokens,
                 max_cost_estimate=0.05,
                 max_wall_time_seconds=60,
             ),
             output_contract=OutputContract.TEXT_RESPONSE,
             messages=critique_messages,
-            metadata={"critic": "gemini"},
+            metadata={"critic": "prose", "provider": critique_provider},
             allow_multi_model_review=False,
             needs_tools=[],
         )
 
-        print(f"[DEBUG] [critique-legacy] Sending request to Gemini...")
+        print(f"[DEBUG] [critique-legacy] Sending request to {critique_provider}/{critique_model}...")
         result = await registry_llm_call(
-            provider_id="google",
-            model_id=GEMINI_CRITIC_MODEL,
+            provider_id=critique_provider,
+            model_id=critique_model,
             messages=critique_messages,
             job_envelope=critic_envelope,
+            max_tokens=critique_max_tokens,
         )
 
         if not result:
-            print(f"[DEBUG] [critique-legacy] ERROR: No result from Gemini")
+            print(f"[DEBUG] [critique-legacy] ERROR: No result from {critique_provider}")
             return None
 
         print(f"[DEBUG] [critique-legacy] Received response: {len(result.content)} chars")
@@ -417,8 +465,8 @@ async def call_gemini_critic(
         
         return LLMResult(
             content=result.content,
-            provider="google",
-            model=GEMINI_CRITIC_MODEL,
+            provider=critique_provider,
+            model=critique_model,
             finish_reason="stop",
             error_message=None,
             prompt_tokens=result.usage.prompt_tokens,
@@ -429,7 +477,7 @@ async def call_gemini_critic(
         )
 
     except Exception as exc:
-        logger.warning(f"[critic] Gemini critic call failed: {exc}")
+        logger.warning(f"[critic] Critic call failed: {exc}")
         print(f"[DEBUG] [critique-legacy] EXCEPTION: {exc}")
         return None
 

@@ -3,6 +3,8 @@
 Canonical intent definitions for ASTRA Translation Layer.
 This is the CLOSED SET of allowed intents. No free-form execution.
 
+v1.2 (2026-01): Fixed Overwatcher gating - removed change_set_id requirement,
+                added proper trigger patterns for "run overwatcher"
 v1.1 (2026-01): Added Spec Gate flow intents (WEAVER_BUILD_SPEC, SEND_TO_SPEC_GATE)
 """
 from __future__ import annotations
@@ -263,31 +265,88 @@ INTENT_DEFINITIONS: Dict[CanonicalIntent, IntentDefinition] = {
         ),
     ),
     
+    # -------------------------------------------------------------------------
+    # OVERWATCHER (v1.2 - FIXED GATING)
+    # -------------------------------------------------------------------------
+    # Overwatcher is the SYSTEM SUPERVISOR, not just a pipeline stage.
+    # It should run when:
+    #   - A validated spec exists (spec_id + spec_hash)
+    #   - Critical Pipeline completed for that spec
+    # It should NOT hard-require:
+    #   - change_set_id (Overwatcher derives/creates this)
+    #   - "no blocking issues" (Overwatcher evaluates these itself)
+    # -------------------------------------------------------------------------
+    
     CanonicalIntent.OVERWATCHER_EXECUTE_CHANGES: IntentDefinition(
         intent=CanonicalIntent.OVERWATCHER_EXECUTE_CHANGES,
         trigger_phrases=[
+            # Primary triggers (v1.2)
+            "run overwatcher",
+            "Run overwatcher",
+            "Run Overwatcher",
+            "execute overwatcher",
+            "Execute overwatcher",
+            "Execute Overwatcher",
+            "start overwatcher",
+            "Start overwatcher",
+            "Start Overwatcher",
+            # Astra command variants
+            "Astra, command: run overwatcher",
+            "astra, command: run overwatcher",
+            "Astra command run overwatcher",
+            # Legacy triggers
             "Execute overwatcher changes",
             "Apply overwatcher changes",
+            # Send to overwatcher
+            "send to overwatcher",
+            "Send to overwatcher",
+            "Send to Overwatcher",
         ],
         trigger_patterns=[
+            # Primary patterns (v1.2)
+            r"^(?:[Aa]stra[,:]?\s*)?(?:command[:\s]+)?[Rr]un\s+[Oo]verwatcher$",
+            r"^(?:[Aa]stra[,:]?\s*)?[Ee]xecute\s+[Oo]verwatcher$",
+            r"^(?:[Aa]stra[,:]?\s*)?[Ss]tart\s+[Oo]verwatcher$",
+            r"^[Oo]verwatcher\s+run$",
+            r"^[Rr]un\s+the\s+[Oo]verwatcher$",
+            r"^[Ii]nvoke\s+[Oo]verwatcher$",
+            r"^[Tt]rigger\s+[Oo]verwatcher$",
+            r"^[Ss]end\s+to\s+[Oo]verwatcher$",
+            # Legacy patterns
             r"^[Ee]xecute [Oo]verwatcher [Cc]hanges$",
             r"^[Aa]pply [Oo]verwatcher [Cc]hanges$",
             r"^[Oo]verwatcher[,:]\s*execute$",
         ],
-        requires_context=["change_set_id"],
-        requires_confirmation=True,
-        confirmation_prompt=(
-            "⚠️ HIGH-STAKES OPERATION\n"
-            "You are about to execute Overwatcher changes: {change_set_id}\n"
-            "This will modify the codebase.\n"
-            "\n"
-            "Type 'Yes' to confirm."
-        ),
-        description="Execute Overwatcher-approved changes to codebase",
+        # v1.2: REMOVED change_set_id - Overwatcher resolves/derives this internally
+        # Overwatcher-specific gating happens in gates.py check_overwatcher_gate()
+        requires_context=[],
+        requires_confirmation=False,  # Overwatcher handles its own safety checks
+        confirmation_prompt=None,
+        description="Run Overwatcher supervisor to execute approved changes",
         behavior=(
-            "Execute Overwatcher changes with full verification.\n"
-            "Requires explicit Yes confirmation.\n"
-            "NO silent execution."
+            "Overwatcher is the SYSTEM SUPERVISOR.\n"
+            "\n"
+            "Responsibilities:\n"
+            "- Final safety + correctness decision after Critical Pipeline\n"
+            "- Reasoning over remaining issues with full system awareness\n"
+            "- Coordinating execution in Windows Sandbox\n"
+            "- Supervising implementation jobs (Implementer = Claude Sonnet)\n"
+            "- Validating outputs and logging evidence\n"
+            "- Deciding whether work is acceptable to proceed\n"
+            "\n"
+            "Gating (checked in gates.py):\n"
+            "- REQUIRES: validated spec (spec_id + spec_hash) resolvable\n"
+            "- REQUIRES: Critical Pipeline completed for that spec\n"
+            "- NOT REQUIRED: change_set_id (Overwatcher derives internally)\n"
+            "- NOT REQUIRED: zero blocking issues (Overwatcher evaluates these)\n"
+            "\n"
+            "Blocking issue handling:\n"
+            "- Overwatcher reads critic's blocking list\n"
+            "- Reasons about each with system-level knowledge\n"
+            "- Decides severity itself (hard-stop vs proceed-with-warning)\n"
+            "- Logs override decisions in evidence bundle\n"
+            "\n"
+            "NO fallback to chat if context missing - structured error instead."
         ),
     ),
     
@@ -370,6 +429,13 @@ def get_spec_gate_flow_intents() -> List[CanonicalIntent]:
     ]
 
 
+def get_overwatcher_intents() -> List[CanonicalIntent]:
+    """Get intents related to Overwatcher."""
+    return [
+        CanonicalIntent.OVERWATCHER_EXECUTE_CHANGES,
+    ]
+
+
 def get_intent_by_trigger_phrase(phrase: str) -> Optional[CanonicalIntent]:
     """
     Exact match lookup for trigger phrases.
@@ -379,4 +445,3 @@ def get_intent_by_trigger_phrase(phrase: str) -> Optional[CanonicalIntent]:
         if phrase in defn.trigger_phrases:
             return intent
     return None
-
