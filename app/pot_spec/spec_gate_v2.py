@@ -2,32 +2,10 @@
 """
 Spec Gate v2 - Wraps spec_gate with clarification state management.
 
-This module provides run_spec_gate_v2() which:
-1. Calls the original run_spec_gate()
-2. Filters questions through clarification state (dedupe, 3-round cap)
-3. Returns SpecGateResult with ready_for_pipeline flag
-4. Provides confirmation handler for critical pipeline gate
-5. Persists validated specs to DB for restart survival
-
-v1.4 (2026-01): FIXED import error (Spec as SpecSchema) and path mismatch (added "jobs" segment)
-v1.3 (2026-01): Fixed jobs/jobs/ double path bug in _get_spec_file_path
-v1.2 (2026-01): Added DB persistence for validated specs (fixes restart lookup)
-v1.1 (2026-01): Added round 3 directive to force spec output (no questions)
-v1.0 (2026-01): Initial implementation
-
-Usage:
-    # Instead of:
-    spec_id, spec_hash, questions = await run_spec_gate(...)
-    
-    # Use:
-    result = await run_spec_gate_v2(...)
-    if result.ready_for_pipeline:
-        print(result.spec_summary_markdown)
-        # await user confirmation
-    elif result.hard_stopped:
-        print(f"HARD STOP: {result.hard_stop_reason}")
-    else:
-        # show result.open_questions to user
+CRITICAL FIX (for Overwatcher):
+- When persisting a validated spec to DB, persist the *raw spec JSON* (spec_payload)
+  into the DB record (spec_json/content). Otherwise Overwatcher sees an empty shell
+  and cannot find deliverables / target file.
 """
 
 from __future__ import annotations
@@ -45,21 +23,22 @@ logger = logging.getLogger(__name__)
 # Optional Imports (keep module resilient)
 # =============================================================================
 
-# Import original spec_gate
 try:
     from app.pot_spec.spec_gate import run_spec_gate, _artifact_root, _append_event, _utc_ts
     _SPEC_GATE_AVAILABLE = True
 except ImportError:
     _SPEC_GATE_AVAILABLE = False
     run_spec_gate = None
+
     def _artifact_root():
         return os.path.abspath(os.getenv("ORB_JOB_ARTIFACT_ROOT", "jobs"))
+
     def _append_event(*args, **kwargs):
         pass
+
     def _utc_ts():
         return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-# Import clarification state
 try:
     from app.pot_spec.clarification_state import (
         ClarificationState,
@@ -74,8 +53,6 @@ except ImportError:
     _CLARIFICATION_AVAILABLE = False
     logger.warning("[spec_gate_v2] clarification_state module not available")
 
-# Import specs service for DB persistence (CRITICAL for restart survival)
-# v1.4 FIX: Import Spec as SpecSchema (the class is named "Spec" not "SpecSchema")
 try:
     from app.specs.service import create_spec, update_spec_status
     from app.specs.schema import Spec as SpecSchema, SpecStatus
@@ -83,16 +60,11 @@ try:
     logger.info("[spec_gate_v2] specs.service module loaded successfully")
 except ImportError as e:
     _SPECS_SERVICE_AVAILABLE = False
-    logger.warning(f"[spec_gate_v2] specs.service module not available - validated specs won't persist to DB: {e}")
+    logger.warning(f"[spec_gate_v2] specs.service not available - validated specs won't persist to DB: {e}")
 
-
-# =============================================================================
-# Result Dataclass
-# =============================================================================
 
 @dataclass
 class SpecGateResult:
-    """Result from run_spec_gate_v2 with clarification state."""
     spec_id: str
     spec_hash: str
     open_questions: List[str]
@@ -103,20 +75,14 @@ class SpecGateResult:
     clarification_round: int = 0
     spec_summary_markdown: Optional[str] = None
     spec_file_path: Optional[str] = None
-    db_persisted: bool = False  # v1.2: Track if spec was saved to DB
-    
+    db_persisted: bool = False
+
     def __iter__(self):
-        """Allow unpacking as (spec_id, spec_hash, open_questions)."""
         return iter([self.spec_id, self.spec_hash, self.open_questions])
-    
+
     def __getitem__(self, idx):
-        """Allow indexing like tuple."""
         return [self.spec_id, self.spec_hash, self.open_questions][idx]
 
-
-# =============================================================================
-# Helper Functions
-# =============================================================================
 
 def _get_artifact_root() -> str:
     if _SPEC_GATE_AVAILABLE:
@@ -125,17 +91,7 @@ def _get_artifact_root() -> str:
 
 
 def _get_spec_file_path(job_root: str, job_id: str, spec_version: int) -> str:
-    """
-    Get the path to a spec file.
-    
-    v1.5 FIX: Always look for spec_v1.json since spec_gate.py hardcodes version=1.
-    The spec_version parameter is kept for API compatibility but not used in path.
-    spec_gate.py writes to: job_root/jobs/<job_id>/spec/spec_v1.json (always v1)
-    
-    TODO: Fix spec_gate.py to accept and use spec_version parameter, then 
-    revert this to use spec_version in the path.
-    """
-    # Always use v1 since spec_gate.py hardcodes spec_version=1
+    # spec_gate.py currently hardcodes v1
     return os.path.join(job_root, "jobs", job_id, "spec", "spec_v1.json")
 
 
@@ -145,32 +101,30 @@ def _filter_questions_with_clarification(
     job_id: str,
     spec_version: int,
 ) -> Tuple[List[str], "ClarificationDecision", Optional["ClarificationState"]]:
-    """Filter questions through clarification state."""
     if not _CLARIFICATION_AVAILABLE:
-        # Stub for when module unavailable
         class _StubDecision:
             CONTINUE = "continue"
             READY_FOR_CONFIRM = "ready"
         if questions:
             return questions, _StubDecision.CONTINUE, None
         return [], _StubDecision.READY_FOR_CONFIRM, None
-    
+
     state = load_clarification_state(job_artifact_root, job_id)
     decision = state.record_questions(questions, spec_version)
     save_clarification_state(job_artifact_root, job_id, state)
-    
+
     if decision == ClarificationDecision.HARD_STOP:
         return [], decision, state
-    
+
     if decision == ClarificationDecision.ALREADY_ASKED:
         return [], ClarificationDecision.READY_FOR_CONFIRM, state
-    
+
     if decision == ClarificationDecision.READY_FOR_CONFIRM:
         return [], decision, state
-    
+
     if state.rounds:
         return state.rounds[-1].questions_asked, decision, state
-    
+
     return questions, decision, state
 
 
@@ -185,40 +139,35 @@ def _persist_validated_spec_to_db(
     job_root: str,
 ) -> bool:
     """
-    Persist a validated spec to the specs DB table.
-    
-    This is CRITICAL for restart survival - without this, get_latest_validated_spec()
-    returns None after app restart because it only queries the DB, not filesystem.
-    
-    Returns True if successfully persisted, False otherwise.
+    Persist validated spec to DB AND store raw JSON in DB record
+    so Overwatcher can parse deliverables/targets.
     """
     if not _SPECS_SERVICE_AVAILABLE:
         logger.warning("[spec_gate_v2] Cannot persist spec to DB - specs.service not available")
         return False
-    
+
     if not project_id:
         logger.error("[spec_gate_v2] Cannot persist spec to DB - project_id not provided")
         return False
-    
+
     try:
-        # Load spec payload from filesystem
         if not os.path.exists(spec_file_path):
             logger.error(f"[spec_gate_v2] Spec file not found: {spec_file_path}")
             return False
-            
+
         with open(spec_file_path, "r", encoding="utf-8") as f:
             spec_payload = json.load(f)
-        
-        # Extract fields for SpecSchema
-        goal = spec_payload.get("goal", "")
-        title = goal[:200] if goal else f"Spec {spec_id[:8]}"
-        created_by_model = spec_payload.get("created_by_model", "spec_gate_v2")
-        
-        # Build content_markdown from payload if possible
+
+        # Robust title/goal extraction (handles drift)
+        goal = (spec_payload.get("goal") or "").strip()
+        title = (goal[:200] if goal else (spec_payload.get("title") or "").strip()[:200]) or f"Spec {spec_id[:8]}"
+        created_by_model = spec_payload.get("created_by_model") or "spec_gate_v2"
+
+        # Optional markdown summary
         content_markdown = None
-        if spec_payload.get("requirements"):
-            md_parts = [f"# {title}", "", "## Goal", goal, ""]
-            reqs = spec_payload.get("requirements", {})
+        reqs = spec_payload.get("requirements") or {}
+        if isinstance(reqs, dict) and any(reqs.get(k) for k in ("must", "should", "can")):
+            md_parts = [f"# {title}", "", "## Goal", goal or "(not provided)", ""]
             if reqs.get("must"):
                 md_parts.append("## Must Have")
                 for r in reqs["must"]:
@@ -234,35 +183,70 @@ def _persist_validated_spec_to_db(
                 for r in reqs["can"]:
                     md_parts.append(f"- {r}")
                 md_parts.append("")
+            # Include deliverables if present (Overwatcher-critical)
+            dels = spec_payload.get("deliverables")
+            if isinstance(dels, list) and dels:
+                md_parts.append("## Deliverables")
+                for d in dels:
+                    if isinstance(d, dict):
+                        md_parts.append(f"- {d.get('action')} {d.get('target')} {d.get('filename')}")
+                md_parts.append("")
             content_markdown = "\n".join(md_parts)
-        
-        # Create SpecSchema object
-        from app.specs.schema import SpecProvenance, SpecRequirements, SpecConstraints, SpecSafety
-        
+
+        raw_json_text = json.dumps(spec_payload, ensure_ascii=False, indent=2)
+
+        # Create SpecSchema (minimal required fields)
         spec_schema = SpecSchema(
             spec_id=spec_id,
             spec_version=str(spec_version),
             title=title,
-            summary=goal[:500] if goal else "",
-            objective=goal,
+            summary=(goal[:500] if goal else (spec_payload.get("summary") or "")[:500]),
+            objective=(goal or spec_payload.get("objective") or ""),
         )
-        
-        # Set provenance
-        spec_schema.provenance = SpecProvenance(
-            job_id=job_id,
-            generator_model=created_by_model,
-            created_at=spec_payload.get("created_at", datetime.now(timezone.utc).isoformat()),
-        )
-        
-        # Create in DB
+
+        # Best-effort attach raw content so DB record carries the real spec
+        for attr, val in (
+            ("spec_json", spec_payload),
+            ("content", raw_json_text),
+            ("content_markdown", content_markdown),
+        ):
+            try:
+                setattr(spec_schema, attr, val)
+            except Exception:
+                pass
+
+        # Provenance (best-effort, don’t explode if schema differs)
+        try:
+            from app.specs.schema import SpecProvenance
+            spec_schema.provenance = SpecProvenance(
+                job_id=job_id,
+                generator_model=created_by_model,
+                created_at=spec_payload.get("created_at", datetime.now(timezone.utc).isoformat()),
+            )
+        except Exception:
+            pass
+
         db_spec = create_spec(
             db=db,
             project_id=project_id,
             spec_schema=spec_schema,
             generator_model=created_by_model,
         )
-        
-        # Update status to VALIDATED
+
+        # Ensure DB row also has raw JSON (covers cases where create_spec ignores spec_schema extras)
+        try:
+            if hasattr(db_spec, "spec_json"):
+                db_spec.spec_json = spec_payload
+            if hasattr(db_spec, "content"):
+                db_spec.content = raw_json_text
+            if content_markdown and hasattr(db_spec, "content_markdown"):
+                db_spec.content_markdown = content_markdown
+            db.add(db_spec)
+            db.commit()
+        except Exception:
+            # Don’t hard-fail persistence if this extra write fails; status still updated below.
+            logger.exception("[spec_gate_v2] Failed to attach raw spec payload to DB row (non-fatal)")
+
         update_spec_status(
             db=db,
             spec_id=spec_id,
@@ -272,21 +256,18 @@ def _persist_validated_spec_to_db(
                 "validated_at": _utc_ts(),
                 "spec_hash": spec_hash,
                 "spec_file": spec_file_path,
+                "has_deliverables": bool(spec_payload.get("deliverables")),
             },
             triggered_by="spec_gate_v2",
         )
-        
-        logger.info(f"[spec_gate_v2] Spec {spec_id} persisted to DB with status=validated")
+
+        logger.info(f"[spec_gate_v2] Spec {spec_id} persisted to DB with status=validated (raw JSON stored)")
         return True
-        
+
     except Exception as e:
         logger.exception(f"[spec_gate_v2] Failed to persist spec to DB: {e}")
         return False
 
-
-# =============================================================================
-# Main Entry Point
-# =============================================================================
 
 async def run_spec_gate_v2(
     db: Any,
@@ -300,36 +281,14 @@ async def run_spec_gate_v2(
     spec_version: int = 1,
     **kwargs,
 ) -> SpecGateResult:
-    """
-    Run Spec Gate with clarification state management.
-    
-    Args:
-        db: Database session
-        job_id: Job identifier
-        user_intent: User's request/intent text
-        provider_id: LLM provider (openai, anthropic, google)
-        model_id: Model identifier
-        project_id: Project ID - REQUIRED for DB persistence and restart survival
-        repo_snapshot: Optional repository state snapshot
-        constraints_hint: Optional constraints for spec generation
-        spec_version: Spec version number (increments with clarification rounds)
-        **kwargs: Additional arguments passed to run_spec_gate
-    
-    Returns:
-        SpecGateResult with spec details, questions, and pipeline readiness
-    """
     if not _SPEC_GATE_AVAILABLE:
         raise RuntimeError("spec_gate module not available")
-    
-    # Warn if project_id not provided (will break restart survival)
+
     if project_id is None:
         logger.warning("[spec_gate_v2] project_id not provided - spec won't persist to DB for restart survival")
-    
+
     job_root = _get_artifact_root()
-    
-    # =========================================================================
-    # ROUND 3 DIRECTIVE: Force spec output, no more questions
-    # =========================================================================
+
     effective_intent = user_intent
     if spec_version >= 3:
         round3_directive = """
@@ -342,11 +301,8 @@ DO NOT return questions. Return the complete spec JSON only.
 User context and answers:
 """
         effective_intent = round3_directive + user_intent
-        logger.info(f"[spec_gate_v2] Round 3: Forcing spec output (no questions)")
-    
-    # =========================================================================
-    # Call underlying spec_gate
-    # =========================================================================
+        logger.info("[spec_gate_v2] Round 3: Forcing spec output (no questions)")
+
     spec_id, spec_hash, raw_questions = await run_spec_gate(
         db,
         job_id,
@@ -357,38 +313,25 @@ User context and answers:
         constraints_hint=constraints_hint,
         **kwargs,
     )
-    
-    # =========================================================================
-    # Filter questions through clarification state
-    # =========================================================================
+
     filtered_questions, decision, clarification_state = _filter_questions_with_clarification(
         questions=raw_questions,
         job_artifact_root=job_root,
         job_id=job_id,
         spec_version=spec_version,
     )
-    
-    # ROUND 3 OVERRIDE: Force ready_for_pipeline even if questions returned
-    round3_forced = False
+
     if spec_version >= 3 and filtered_questions:
-        logger.warning(f"[spec_gate_v2] Round 3 but got {len(filtered_questions)} questions - forcing ready_for_pipeline")
+        logger.warning("[spec_gate_v2] Round 3 returned questions - forcing ready_for_pipeline")
         decision = ClarificationDecision.READY_FOR_CONFIRM if _CLARIFICATION_AVAILABLE else "ready"
-        round3_forced = True
-        # Clear questions so we proceed (they're logged for reference)
         filtered_questions = []
-    
-    # =========================================================================
-    # Determine pipeline readiness
-    # =========================================================================
+
     ready_for_pipeline = (decision == ClarificationDecision.READY_FOR_CONFIRM) if _CLARIFICATION_AVAILABLE else (decision == "ready")
     hard_stopped = (decision == ClarificationDecision.HARD_STOP) if _CLARIFICATION_AVAILABLE else False
     hard_stop_reason = clarification_state.hard_stop_reason if (hard_stopped and clarification_state) else None
-    
+
     spec_file_path = _get_spec_file_path(job_root, job_id, spec_version)
-    
-    # =========================================================================
-    # CRITICAL: Persist validated spec to DB for restart survival
-    # =========================================================================
+
     db_persisted = False
     if ready_for_pipeline and project_id:
         db_persisted = _persist_validated_spec_to_db(
@@ -401,10 +344,7 @@ User context and answers:
             job_id=job_id,
             job_root=job_root,
         )
-    
-    # =========================================================================
-    # Generate spec summary markdown
-    # =========================================================================
+
     spec_summary_markdown = None
     if ready_for_pipeline and _CLARIFICATION_AVAILABLE:
         try:
@@ -418,10 +358,7 @@ User context and answers:
             )
         except Exception as e:
             logger.warning(f"[spec_gate_v2] Failed to build summary: {e}")
-    
-    # =========================================================================
-    # Emit ledger events
-    # =========================================================================
+
     if filtered_questions:
         _append_event(job_root, job_id, {
             "event": "SPEC_QUESTIONS_FILTERED",
@@ -433,7 +370,7 @@ User context and answers:
             "status": "ok",
             "ts": _utc_ts(),
         })
-    
+
     if ready_for_pipeline:
         _append_event(job_root, job_id, {
             "event": "SPEC_READY_FOR_PIPELINE",
@@ -445,7 +382,7 @@ User context and answers:
             "status": "ok",
             "ts": _utc_ts(),
         })
-    
+
     if hard_stopped:
         _append_event(job_root, job_id, {
             "event": "SPEC_GATE_HARD_STOP",
@@ -454,7 +391,7 @@ User context and answers:
             "status": "hard_stop",
             "ts": _utc_ts(),
         })
-    
+
     return SpecGateResult(
         spec_id=spec_id,
         spec_hash=spec_hash,
@@ -470,34 +407,29 @@ User context and answers:
     )
 
 
-# =============================================================================
-# Confirmation Handler
-# =============================================================================
-
 async def confirm_spec_for_pipeline(
     job_id: str,
     spec_version: int,
     spec_hash: str,
     user_confirmed: bool = False,
 ) -> Tuple[bool, str]:
-    """Handle user confirmation before critical pipeline."""
     if not _CLARIFICATION_AVAILABLE:
         return user_confirmed, "Clarification module not available"
-    
+
     job_root = _get_artifact_root()
     state = load_clarification_state(job_root, job_id)
-    
+
     if not state.ready_for_pipeline:
         return False, "Spec not ready (has open questions)"
-    
+
     if state.hard_stopped:
         return False, f"Hard stopped: {state.hard_stop_reason}"
-    
+
     if not user_confirmed:
         return False, "Awaiting user confirmation"
-    
+
     confirmed = state.confirm_for_pipeline(spec_version=spec_version, spec_hash=spec_hash)
-    
+
     if confirmed:
         save_clarification_state(job_root, job_id, state)
         _append_event(job_root, job_id, {
@@ -510,7 +442,7 @@ async def confirm_spec_for_pipeline(
             "ts": _utc_ts(),
         })
         return True, "Confirmed - proceeding to critical pipeline"
-    
+
     return False, "Confirmation failed"
 
 

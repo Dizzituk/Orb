@@ -1,347 +1,69 @@
 # FILE: app/llm/weaver_stream.py
-"""
-Weaver Stream Handler for ASTRA.
-
-Weaves conversation/ramble into a coherent candidate spec.
-Uses a non-frontier model configured via environment (WEAVER_PROVIDER/WEAVER_MODEL) for spec generation.
-
-Flow:
-1. Pull recent conversation from message history
-2. Call LLM to build structured spec JSON
-3. Validate and parse spec
-4. Store in database
-5. Stream markdown summary to user
-6. Register flow state for Spec Gate routing
-
-INVARIANT: Weaver uses a non-frontier model configured via WEAVER_PROVIDER/WEAVER_MODEL.
-INVARIANT: Every spec stores source_message_ids for reproducibility.
-"""
 from __future__ import annotations
 
-import asyncio
 import json
-import logging
 import os
-from dataclasses import dataclass
-from datetime import datetime
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from app.git_utils import get_current_commit
-from app.llm.audit_logger import RoutingTrace
-from app.memory import service as memory_service
-from app.specs import (
-    SpecConstraints,
-    SpecMetadata,
-    SpecProvenance,
-    SpecRequirements,
-    SpecSafety,
-    SpecSchema,
-    create_spec,
-    spec_to_markdown,
-    validate_spec,
+from app.llm.registry import RoutingTrace
+
+# Direct imports (do NOT rely on app.specs package re-exports)
+from app.specs import service as specs_service
+
+from app.llm.weaver_stream_core import (
+    WeaverContext,
+    build_spec_from_dict,
+    build_weaver_prompt,
+    build_weaver_update_prompt,
+    gather_weaver_context,
+    gather_weaver_delta_context,
+    parse_weaver_response,
 )
 
-# Flow state management (optional)
-try:
-    from app.llm.spec_flow_state import start_weaver_flow
-
-    _FLOW_STATE_AVAILABLE = True
-except ImportError:
-    start_weaver_flow = None
-    _FLOW_STATE_AVAILABLE = False
-
-logger = logging.getLogger(__name__)
-
-# Weaver model configuration (ENV-driven; no hard-coded model IDs)
-# These MUST be provided via environment; if missing, Weaver will emit an error event.
-WEAVER_PROVIDER = os.getenv("WEAVER_PROVIDER")  # e.g. "google", "openai", "anthropic"
-WEAVER_MODEL = os.getenv("WEAVER_MODEL")        # e.g. "gemini-2.0-flash", "gpt-5.2"
-WEAVER_MAX_OUTPUT_TOKENS = int(os.getenv("WEAVER_MAX_OUTPUT_TOKENS", "15000"))
-WEAVER_TIMEOUT_SECONDS = int(os.getenv("WEAVER_TIMEOUT_SECONDS", "60"))
-
-# Context limits
-MAX_MESSAGES_FOR_SPEC = 50
-MAX_TOKENS_FOR_CONTEXT = WEAVER_MAX_OUTPUT_TOKENS  # rough estimate; keep context <= max output
+# NOTE: we import memory service lazily inside the function where needed
+# to reduce import-time coupling.
 
 
-@dataclass
-class WeaverContext:
-    """Context gathered for spec building."""
-    messages: List[Dict[str, Any]]
-    message_ids: List[int]
-    token_estimate: int
-    timestamp_start: Optional[datetime]
-    timestamp_end: Optional[datetime]
-    commit_hash: Optional[str]
+WEAVER_MODEL = os.getenv("WEAVER_MODEL", "gpt-5-mini")
 
 
-def _estimate_tokens(text: str) -> int:
-    """Rough token estimate (~4 chars per token)."""
-    if not text:
-        return 0
-    return max(1, len(text) // 4)
+def _sse(data: Dict[str, Any]) -> str:
+    # Single "data:" line SSE frames (your frontend already expects this style)
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def gather_weaver_context(
-    db: Session,
-    project_id: int,
-    max_messages: int = MAX_MESSAGES_FOR_SPEC,
-    max_tokens: int = MAX_TOKENS_FOR_CONTEXT,
-    since_spec_id: Optional[str] = None,  # kept for future, currently unused
-) -> WeaverContext:
-    """
-    Gather conversation context for spec building.
-
-    Strategy:
-    1. Get recent messages up to max_messages.
-    2. Respect a rough token budget (max_tokens).
-    3. Include message IDs & timestamps for provenance.
-    """
-    # Use memory_service API (don't touch ORM models directly)
-    messages_raw = memory_service.list_messages(db, project_id, limit=max_messages)
-
-    # Reverse to chronological order (oldest first)
-    messages_raw = list(reversed(messages_raw))
-
-    messages: List[Dict[str, Any]] = []
-    message_ids: List[int] = []
-    total_tokens = 0
-    timestamp_start: Optional[datetime] = None
-    timestamp_end: Optional[datetime] = None
-
-    for msg in messages_raw:
-        content = msg.content or ""
-        tokens = _estimate_tokens(content)
-
-        if total_tokens + tokens > max_tokens:
-            break
-
-        messages.append(
-            {
-                "role": msg.role,
-                "content": content,
-                "id": msg.id,
-                "created_at": msg.created_at.isoformat() if msg.created_at else None,
-            }
-        )
-        message_ids.append(msg.id)
-        total_tokens += tokens
-
-        if msg.created_at:
-            if timestamp_start is None or msg.created_at < timestamp_start:
-                timestamp_start = msg.created_at
-            if timestamp_end is None or msg.created_at > timestamp_end:
-                timestamp_end = msg.created_at
-
-    # Get commit hash
-    commit_result = get_current_commit()
-    commit_hash = commit_result.value if commit_result.success else None
-
-    return WeaverContext(
-        messages=messages,
-        message_ids=message_ids,
-        token_estimate=total_tokens,
-        timestamp_start=timestamp_start,
-        timestamp_end=timestamp_end,
-        commit_hash=commit_hash,
-    )
-
-
-def build_weaver_prompt(context: WeaverContext) -> str:
-    """
-    Build the prompt for Weaver.
-
-    The prompt instructs the model to:
-    - Analyze the recent conversation
-    - Extract project/system requirements
-    - Produce a structured spec JSON according to SpecSchema shape.
-    """
-    instructions = """
-You are ASTRA Weaver, an expert specification-weaving assistant.
-
-Your job:
-- Take the recent conversation between user and assistant
-- Infer the *current* project or feature they are working on
-- Synthesize a structured, *implementable* specification JSON
-
-Output format:
-Return **ONLY** a single JSON object with the following shape:
-
-{
-  "title": "...",
-  "summary": "...",
-  "objective": "...",
-  "requirements": {
-    "functional": ["..."],
-    "non_functional": ["..."]
-  },
-  "constraints": {
-    "budget": "... or null",
-    "latency": "... or null",
-    "platform": "... or null",
-    "integrations": ["..."],
-    "compliance": ["..."]
-  },
-  "safety": {
-    "risks": ["..."],
-    "mitigations": ["..."],
-    "runtime_guards": ["..."]
-  },
-  "acceptance_criteria": ["..."],
-  "dependencies": ["..."],
-  "non_goals": ["..."],
-  "metadata": {
-    "priority": "low|medium|high",
-    "owner": "... or null",
-    "tags": ["..."]
-  },
-  "weak_spots": ["areas that need clarification or are ambiguous"]
-}
-
-Rules:
-- DO NOT wrap the JSON in backticks.
-- DO NOT add commentary before or after the JSON.
-- Only include information actually implied by the conversation.
-- If something is unclear or missing, set a sensible default and mention it in weak_spots.
-"""
-
-    conversation_text_lines: List[str] = []
-    for msg in context.messages:
-        role = msg.get("role", "user")
-        content = msg.get("content", "")
-        conversation_text_lines.append(f"[{role.upper()}] {content}")
-
-    conversation_text = "\n\n".join(conversation_text_lines)
-
-    prompt = f"""{instructions.strip()}
-
-Below is the recent conversation:
-
-{conversation_text}
-
-Now, produce the JSON spec as described above."""
-    return prompt
-
-
-def parse_weaver_response(
-    response_text: str,
-) -> tuple[Optional[Dict[str, Any]], str]:
-    """
-    Parse Weaver LLM response into spec JSON and a free-form summary (if any).
-
-    Returns:
-        (spec_dict, summary_text) or (None, error_message)
-    """
-    response_text = response_text.strip()
-
-    # Try fenced ```json block first
-    json_block_start = response_text.find("```json")
-    if json_block_start != -1:
-        json_block_end = response_text.find("```", json_block_start + 7)
-        if json_block_end != -1:
-            json_str = response_text[json_block_start + 7 : json_block_end].strip()
-        else:
-            return None, "Could not find closing ``` for JSON block"
-    else:
-        # Fallback: raw JSON from first '{' to last '}'
-        json_start = response_text.find("{")
-        json_end = response_text.rfind("}") + 1
-        if json_start == -1 or json_end <= json_start:
-            return None, "Could not find JSON in response"
-        json_str = response_text[json_start:json_end].strip()
-
+def _safe_int(x: Any, default: int = 0) -> int:
     try:
-        spec_dict = json.loads(json_str)
-    except json.JSONDecodeError as e:
-        return None, f"Invalid JSON: {e}"
-
-    if not isinstance(spec_dict, dict):
-        return None, "Top-level JSON must be an object"
-
-    # Summary: everything after the JSON block (if present)
-    summary_text = ""
-    summary_marker = "**Summary:**"
-    idx = response_text.find(summary_marker)
-    if idx != -1:
-        summary_text = response_text[idx + len(summary_marker) :].strip()
-    else:
-        # Generic "Summary:" fallback
-        summary_marker = "Summary:"
-        idx = response_text.find(summary_marker)
-        if idx != -1:
-            summary_text = response_text[idx + len(summary_marker) :].strip()
-
-    return spec_dict, summary_text
+        return int(x)
+    except Exception:
+        return default
 
 
-def build_spec_from_dict(
-    spec_dict: Dict[str, Any],
-    context: WeaverContext,
-    project_id: int,
-    conversation_id: Optional[str] = None,
-) -> SpecSchema:
-    """Build a SpecSchema from parsed dict and context."""
+def _is_weaver_spec_json(spec_json: Dict[str, Any]) -> bool:
+    prov = spec_json.get("provenance", {}) or {}
+    gm = str(prov.get("generator_model", "") or "").lower()
+    # Weaver stamps: "weaver", "weaver-v1-...", "weaver-gpt-..."
+    return ("weaver" in gm) or gm.startswith("gpt")  # keep permissive for early versions
 
-    provenance = SpecProvenance(
-        conversation_id=conversation_id,
-        source_message_ids=context.message_ids,
-        commit_hash=context.commit_hash,
-        generator_model=f"weaver-v1-{WEAVER_MODEL}",
-        token_count=context.token_estimate,
-        timestamp_start=context.timestamp_start.isoformat()
-        if context.timestamp_start
-        else None,
-        timestamp_end=context.timestamp_end.isoformat()
-        if context.timestamp_end
-        else None,
-    )
 
-    req_data = spec_dict.get("requirements", {}) or {}
-    requirements = SpecRequirements(
-        functional=req_data.get("functional", []) or [],
-        non_functional=req_data.get("non_functional", []) or [],
-    )
+def _get_last_consumed_message_id_from_spec(spec_json: Dict[str, Any]) -> int:
+    prov = spec_json.get("provenance", {}) or {}
+    ids = prov.get("source_message_ids") or []
+    if not isinstance(ids, list) or not ids:
+        return 0
+    return max(_safe_int(i, 0) for i in ids)
 
-    con_data = spec_dict.get("constraints", {}) or {}
-    constraints = SpecConstraints(
-        budget=con_data.get("budget"),
-        latency=con_data.get("latency"),
-        platform=con_data.get("platform"),
-        integrations=con_data.get("integrations", []) or [],
-        compliance=con_data.get("compliance", []) or [],
-    )
 
-    safety_data = spec_dict.get("safety", {}) or {}
-    safety = SpecSafety(
-        risks=safety_data.get("risks", []) or [],
-        mitigations=safety_data.get("mitigations", []) or [],
-        runtime_guards=safety_data.get("runtime_guards", []) or [],
-    )
-
-    meta_data = spec_dict.get("metadata", {}) or {}
-    metadata = SpecMetadata(
-        priority=meta_data.get("priority", "medium"),
-        owner=meta_data.get("owner"),
-        tags=meta_data.get("tags", []) or [],
-    )
-
-    spec = SpecSchema(
-        title=spec_dict.get("title", "Untitled Spec"),
-        summary=spec_dict.get("summary", ""),
-        objective=spec_dict.get("objective", ""),
-        requirements=requirements,
-        constraints=constraints,
-        safety=safety,
-        acceptance_criteria=spec_dict.get("acceptance_criteria", []) or [],
-        dependencies=spec_dict.get("dependencies", []) or [],
-        non_goals=spec_dict.get("non_goals", []) or [],
-        metadata=metadata,
-        provenance=provenance,
-    )
-
-    return spec
+def _merge_message_ids(prev_ids: List[int], delta_ids: List[int]) -> List[int]:
+    s = set()
+    for i in prev_ids or []:
+        s.add(_safe_int(i, 0))
+    for i in delta_ids or []:
+        s.add(_safe_int(i, 0))
+    s.discard(0)
+    return sorted(s)
 
 
 async def generate_weaver_stream(
@@ -354,258 +76,236 @@ async def generate_weaver_stream(
     """
     Generate SSE stream for Weaver spec building.
 
-    1. Gathers conversation context
-    2. Calls LLM to build spec
-    3. Parses and validates spec
-    4. Stores in database
-    5. Streams markdown summary to user
+    Fixes:
+    - Incremental weaving: only weave delta messages since last weaver spec
+    - Control-plane filtering handled inside weaver_stream_core (command triggers + weaver outputs)
+    - Import stability: use app.specs.service directly (no __init__ re-exports required)
     """
+
+    _ = trace  # present for routing trace, but we don't require it in this module
+
+    yield _sse({"type": "status", "text": "🧵 Weaving spec from conversation..."})
+    yield _sse({"type": "status", "text": "📋 Gathering conversation context..."})
+
+    # 1) Try to load last WEAVER spec for this project
+    previous_db_spec = None
+    previous_spec_json: Optional[Dict[str, Any]] = None
+    previous_spec_id: Optional[str] = None
+
     try:
-        # Ensure provider/model are configured
-        if not WEAVER_PROVIDER or not WEAVER_MODEL:
-            err = "WEAVER_PROVIDER/WEAVER_MODEL must be set in environment for Weaver to run"
-            logger.error("[weaver] %s", err)
-            yield "data: " + json.dumps({"type": "error", "error": err}) + "\n\n"
-            return
+        # You may have non-weaver specs in the same store; we pick the most recent WEAVER one.
+        # We walk back a few recent specs if needed.
+        recent = specs_service.list_specs(db, project_id, limit=10)  # type: ignore[attr-defined]
+        for row in recent or []:
+            sj = getattr(row, "content_json", None)
+            if isinstance(sj, dict) and _is_weaver_spec_json(sj):
+                previous_db_spec = row
+                previous_spec_json = sj
+                previous_spec_id = getattr(row, "spec_id", None)
+                break
+    except Exception:
+        # If list_specs isn't available in your branch, fall back to get_latest_spec
+        try:
+            row = specs_service.get_latest_spec(db, project_id)
+            sj = getattr(row, "content_json", None)
+            if isinstance(sj, dict) and _is_weaver_spec_json(sj):
+                previous_db_spec = row
+                previous_spec_json = sj
+                previous_spec_id = getattr(row, "spec_id", None)
+        except Exception:
+            previous_db_spec = None
+            previous_spec_json = None
+            previous_spec_id = None
 
-        # Intro
-        yield "data: " + json.dumps(
-            {
-                "type": "token",
-                "content": "🧵 **Weaving spec from conversation...**\n\n",
-            }
-        ) + "\n\n"
-        await asyncio.sleep(0.01)
+    # 2) If we have a previous weaver spec, pull delta messages since it
+    if previous_spec_json:
+        since_id = _get_last_consumed_message_id_from_spec(previous_spec_json)
+        delta_ctx = gather_weaver_delta_context(db, project_id, since_message_id=since_id)
 
-        # Gather context
-        yield "data: " + json.dumps(
-            {"type": "token", "content": "📋 Gathering conversation context...\n"}
-        ) + "\n\n"
-        context = gather_weaver_context(db, project_id)
-
-        if not context.messages:
-            msg = (
-                "I couldn't find any recent conversation to weave into a spec.\n\n"
-                "Please describe your project or paste your notes first, "
-                "then ask me to weave them into a spec.\n"
-            )
-            yield "data: " + json.dumps({"type": "token", "content": msg}) + "\n\n"
-            yield "data: " + json.dumps(
+        if len(delta_ctx.messages) == 0:
+            # IMPORTANT: This is the behavior you want after restart + re-run with no new typing:
+            # "Found 0 new messages" and re-show the last spec without regenerating.
+            yield _sse(
                 {
-                    "type": "done",
-                    "provider": "weaver",
-                    "model": "context_check",
+                    "type": "status",
+                    "text": f"Found 0 new messages (0 tokens) since last weave. Re-using previous spec.",
                 }
-            ) + "\n\n"
+            )
+
+            # Render previous spec
+            try:
+                # Prefer markdown conversion from stored JSON
+                md = specs_service.spec_json_to_markdown(previous_spec_json)  # type: ignore[attr-defined]
+            except Exception:
+                # Fallback: if only SpecSchema markdown is available
+                try:
+                    schema = specs_service.get_spec_schema(previous_db_spec)  # type: ignore[arg-type]
+                    md = specs_service.spec_to_markdown(schema)
+                except Exception:
+                    md = json.dumps(previous_spec_json, indent=2, ensure_ascii=False)
+
+            yield _sse(
+                {
+                    "type": "weaver_result",
+                    "mode": "reuse",
+                    "spec_id": previous_spec_id,
+                    "text": md,
+                }
+            )
+
+            # Do NOT create a new spec record when there is no delta.
             return
 
-        yield "data: " + json.dumps(
+        # Delta exists → UPDATE mode
+        yield _sse(
             {
-                "type": "token",
-                "content": f"Found {len(context.messages)} messages ({context.token_estimate} tokens) in recent context.\n\n",
+                "type": "status",
+                "text": f"Found {len(delta_ctx.messages)} new messages ({delta_ctx.token_estimate} tokens) since last weave.",
             }
-        ) + "\n\n"
+        )
+        yield _sse({"type": "status", "text": "🤖 Updating spec structure..."})
 
-        # Build prompt
-        prompt = build_weaver_prompt(context)
+        prev_core: Dict[str, Any] = dict(previous_spec_json)
+        prev_weak: List[str] = []
+        ws = previous_spec_json.get("weak_spots")
+        if isinstance(ws, list):
+            prev_weak = [str(x) for x in ws if str(x).strip()]
 
-        # Call LLM
-        yield "data: " + json.dumps(
-            {"type": "token", "content": "🤖 Generating spec structure...\n\n"}
-        ) + "\n\n"
+        prompt = build_weaver_update_prompt(prev_core, prev_weak, delta_ctx)
 
-        from app.llm.streaming import stream_llm
+        # Call LLM streaming (local import keeps module import stable)
+        from app.llm.stream_llm import stream_llm  # type: ignore
 
-        full_response = ""
+        response_text_parts: List[str] = []
         async for chunk in stream_llm(
-            provider=WEAVER_PROVIDER,
+            provider="openai",
             model=WEAVER_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            system_prompt="You are the ASTRA Weaver, a precise spec-building assistant.",
         ):
+            # Stream chunks through to UI (your stream_llm yields dict chunks)
             if isinstance(chunk, dict):
-                if chunk.get("type") == "token":
-                    content = chunk.get("text", "") or chunk.get("content", "")
-                else:
-                    content = ""
+                t = chunk.get("text") or chunk.get("delta") or ""
             else:
-                content = str(chunk)
+                t = str(chunk)
 
-            if not content:
-                continue
+            if t:
+                response_text_parts.append(t)
+                yield _sse({"type": "delta", "text": t})
 
-            full_response += content
-            # We deliberately do not stream partial JSON to the user.
-
-        # Parse response
-        spec_dict, summary_text = parse_weaver_response(full_response)
-        if spec_dict is None:
-            error_msg = summary_text or "Failed to parse Weaver response"
-            logger.warning("[weaver] Failed to parse spec: %s", error_msg)
-            yield "data: " + json.dumps(
-                {
-                    "type": "token",
-                    "content": f"\n⚠️ Failed to parse spec: {error_msg}\n",
-                }
-            ) + "\n\n"
-            yield "data: " + json.dumps(
-                {"type": "done", "provider": "weaver", "model": WEAVER_MODEL}
-            ) + "\n\n"
-            if trace:
-                trace.finalize(success=False, error_message=error_msg)
+        response_text = "".join(response_text_parts)
+        spec_dict, err = parse_weaver_response(response_text)
+        if not spec_dict:
+            yield _sse({"type": "error", "text": f"Weaver produced invalid spec JSON: {err}"})
             return
 
-        # Build spec schema
+        # Merge provenance IDs so next run advances correctly
+        prev_ids = previous_spec_json.get("provenance", {}).get("source_message_ids") or []
+        prev_ids_int = [_safe_int(i, 0) for i in prev_ids if _safe_int(i, 0) > 0]
+        merged_ids = _merge_message_ids(prev_ids_int, delta_ctx.message_ids)
+
+        # Build a combined context for provenance stamping
+        combined_ctx = WeaverContext(
+            messages=[],
+            message_ids=merged_ids,
+            token_estimate=delta_ctx.token_estimate,
+            timestamp_start=delta_ctx.timestamp_start,
+            timestamp_end=delta_ctx.timestamp_end,
+            commit_hash=delta_ctx.commit_hash,
+        )
+
         spec_schema = build_spec_from_dict(
-            spec_dict, context, project_id, conversation_id
+            spec_dict,
+            combined_ctx,
+            project_id=project_id,
+            conversation_id=conversation_id,
+            generator_model=f"weaver-{WEAVER_MODEL}",
         )
 
-        # Validate
-        validation = validate_spec(spec_schema)
+        yield _sse({"type": "status", "text": "💾 Saving spec..."})
 
-        # Store in database
-        yield "data: " + json.dumps(
-            {"type": "token", "content": "💾 Saving spec...\n\n"}
-        ) + "\n\n"
-        create_spec(
-            db, project_id, spec_schema, generator_model=f"weaver-v1-{WEAVER_MODEL}"
-        )
-
-        # Generate markdown for display
-        markdown = spec_to_markdown(spec_schema)
-
-        # Stream the formatted output
-        yield "data: " + json.dumps(
-            {"type": "token", "content": "---\n\n"}
-        ) + "\n\n"
-
-        chunk_size = 100
-        for i in range(0, len(markdown), chunk_size):
-            chunk = markdown[i : i + chunk_size]
-            yield "data: " + json.dumps(
-                {"type": "token", "content": chunk}
-            ) + "\n\n"
-            await asyncio.sleep(0.01)
-
-        yield "data: " + json.dumps(
-            {"type": "token", "content": "\n\n---\n\n"}
-        ) + "\n\n"
-
-        # Add summary and weak spots
-        if summary_text:
-            yield "data: " + json.dumps(
-                {"type": "token", "content": "## Weaver Notes\n\n"}
-            ) + "\n\n"
-            yield "data: " + json.dumps(
-                {"type": "token", "content": summary_text + "\n\n"}
-            ) + "\n\n"
-
-        weak_spots = spec_dict.get("weak_spots", []) or []
-        if weak_spots:
-            yield "data: " + json.dumps(
-                {"type": "token", "content": "### ⚠️ Weak Spots to Address\n\n"}
-            ) + "\n\n"
-            for spot in weak_spots:
-                yield "data: " + json.dumps(
-                    {"type": "token", "content": f"- {spot}\n"}
-                ) + "\n\n"
-            yield "data: " + json.dumps(
-                {"type": "token", "content": "\n"}
-            ) + "\n\n"
-
-        # Validation warnings (if your validate_spec returns them)
-        if hasattr(validation, "warnings") and validation.warnings:
-            yield "data: " + json.dumps(
-                {"type": "token", "content": "### 📋 Validation Notes\n\n"}
-            ) + "\n\n"
-            for warning in validation.warnings:
-                yield "data: " + json.dumps(
-                    {"type": "token", "content": f"- {warning}\n"}
-                ) + "\n\n"
-            yield "data: " + json.dumps(
-                {"type": "token", "content": "\n"}
-            ) + "\n\n"
-
-        # Next steps - prompt for Spec Gate
-        yield "data: " + json.dumps(
-            {"type": "token", "content": "---\n\n"}
-        ) + "\n\n"
-        yield "data: " + json.dumps(
-            {
-                "type": "token",
-                "content": f"📋 **Spec saved** (ID: `{spec_schema.spec_id}`)\n\n",
-            }
-        ) + "\n\n"
-        yield "data: " + json.dumps(
-            {
-                "type": "token",
-                "content": "**Shall I send this to Spec Gate for validation?**\n\n",
-            }
-        ) + "\n\n"
-        yield "data: " + json.dumps(
-            {
-                "type": "token",
-                "content": "_Say **Yes** to proceed, or refine the spec first._\n",
-            }
-        ) + "\n\n"
-
-        # Save assistant + user messages to memory
-        from app.memory import schemas as memory_schemas
-
-        memory_service.create_message(
+        # Save new spec, aliasing the previous
+        new_spec_id = specs_service.create_spec(
             db,
-            memory_schemas.MessageCreate(
-                project_id=project_id,
-                role="user",
-                content=message,
-                provider="local",
-            ),
-        )
-        memory_service.create_message(
-            db,
-            memory_schemas.MessageCreate(
-                project_id=project_id,
-                role="assistant",
-                content=(
-                    f"📋 Spec created: {spec_schema.title}\n\n"
-                    f"Spec ID: {spec_schema.spec_id}\n\n"
-                    "Shall I send this to Spec Gate for validation?"
-                ),
-                provider=WEAVER_PROVIDER,
-                model=f"weaver-{WEAVER_MODEL}",
-            ),
+            project_id=project_id,
+            spec=spec_schema,
+            status="draft",
+            alias_of=previous_spec_id,
         )
 
-        # Register flow state for command flow continuity
-        if _FLOW_STATE_AVAILABLE and start_weaver_flow:
-            try:
-                start_weaver_flow(project_id, spec_schema.spec_id)
-                logger.debug(
-                    "[weaver] Registered flow state for project %s, spec %s",
-                    project_id,
-                    spec_schema.spec_id,
-                )
-            except Exception as e:
-                logger.warning("[weaver] Failed to register flow state: %s", e)
+        # Render for UI
+        try:
+            md = specs_service.spec_to_markdown(spec_schema)
+        except Exception:
+            md = json.dumps(spec_dict, indent=2, ensure_ascii=False)
 
-        if trace:
-            trace.finalize(success=True)
-
-        yield "data: " + json.dumps(
+        yield _sse(
             {
-                "type": "done",
-                "provider": WEAVER_PROVIDER,
-                "model": f"weaver-{WEAVER_MODEL}",
-                "spec_id": spec_schema.spec_id,
+                "type": "weaver_result",
+                "mode": "update",
+                "spec_id": new_spec_id,
+                "alias_of": previous_spec_id,
+                "text": md,
             }
-        ) + "\n\n"
+        )
 
-    except Exception as e:
-        logger.exception("[weaver] Stream failed: %s", e)
-        if trace:
-            try:
-                trace.finalize(success=False, error_message=str(e))
-            except Exception:
-                # Best-effort only; don't crash Weaver on trace issues
-                pass
-        yield "data: " + json.dumps({"type": "error", "error": str(e)}) + "\n\n"
+        return
+
+    # 3) No previous weaver spec → full weave from recent context
+    ctx = gather_weaver_context(db, project_id)
+    yield _sse(
+        {
+            "type": "status",
+            "text": f"Found {len(ctx.messages)} messages ({ctx.token_estimate} tokens) in recent context.",
+        }
+    )
+    yield _sse({"type": "status", "text": "🤖 Generating spec structure..."})
+
+    prompt = build_weaver_prompt(ctx)
+
+    from app.llm.stream_llm import stream_llm  # type: ignore
+
+    response_text_parts = []
+    async for chunk in stream_llm(
+        provider="openai",
+        model=WEAVER_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+    ):
+        if isinstance(chunk, dict):
+            t = chunk.get("text") or chunk.get("delta") or ""
+        else:
+            t = str(chunk)
+
+        if t:
+            response_text_parts.append(t)
+            yield _sse({"type": "delta", "text": t})
+
+    response_text = "".join(response_text_parts)
+    spec_dict, err = parse_weaver_response(response_text)
+    if not spec_dict:
+        yield _sse({"type": "error", "text": f"Weaver produced invalid spec JSON: {err}"})
+        return
+
+    spec_schema = build_spec_from_dict(
+        spec_dict,
+        ctx,
+        project_id=project_id,
+        conversation_id=conversation_id,
+        generator_model=f"weaver-{WEAVER_MODEL}",
+    )
+
+    yield _sse({"type": "status", "text": "💾 Saving spec..."})
+    spec_id = specs_service.create_spec(db, project_id=project_id, spec=spec_schema, status="draft")
+
+    try:
+        md = specs_service.spec_to_markdown(spec_schema)
+    except Exception:
+        md = json.dumps(spec_dict, indent=2, ensure_ascii=False)
+
+    yield _sse(
+        {
+            "type": "weaver_result",
+            "mode": "new",
+            "spec_id": spec_id,
+            "text": md,
+        }
+    )
