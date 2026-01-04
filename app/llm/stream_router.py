@@ -92,7 +92,15 @@ except ImportError:
 try:
     from app.llm.weaver_stream import generate_weaver_stream
     _WEAVER_AVAILABLE = True
-except ImportError:
+except ImportError as e:
+    import traceback
+    print(f"[WEAVER_IMPORT_ERROR] Failed to import weaver_stream: {e}")
+    traceback.print_exc()
+    _WEAVER_AVAILABLE = False
+except Exception as e:
+    import traceback
+    print(f"[WEAVER_IMPORT_ERROR] Unexpected error importing weaver_stream: {e}")
+    traceback.print_exc()
     _WEAVER_AVAILABLE = False
 
 try:

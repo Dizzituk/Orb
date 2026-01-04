@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
@@ -32,6 +33,7 @@ except Exception:
     format_conversation_for_prompt = None  # type: ignore
     _INCREMENTAL_HELPERS_AVAILABLE = False
 
+logger = logging.getLogger(__name__)
 
 # Env-driven context limits (kept consistent with weaver_stream.py defaults)
 WEAVER_MAX_OUTPUT_TOKENS = int(os.getenv("WEAVER_MAX_OUTPUT_TOKENS", "15000"))
@@ -139,6 +141,40 @@ def _is_control_message(role: str, content: str) -> bool:
     return False
 
 
+def _get_last_consumed_message_id_from_spec(db_spec: Any) -> Optional[int]:
+    """
+    Extract the last consumed message ID from a spec's stored metadata.
+    
+    Checks (in order):
+    1. content_json["metadata"]["weaver_last_consumed_message_id"]
+    2. Fallback to max(source_message_ids) if available
+    
+    Returns None if no checkpoint data exists.
+    """
+    try:
+        # Try content_json metadata first
+        if hasattr(db_spec, "content_json") and db_spec.content_json:
+            if isinstance(db_spec.content_json, dict):
+                metadata = db_spec.content_json.get("metadata", {})
+                if metadata and "weaver_last_consumed_message_id" in metadata:
+                    val = metadata["weaver_last_consumed_message_id"]
+                    if isinstance(val, int):
+                        return val
+                    if isinstance(val, str) and val.isdigit():
+                        return int(val)
+        
+        # Fallback: use max source_message_id from provenance
+        if hasattr(db_spec, "source_message_ids") and db_spec.source_message_ids:
+            ids = [int(x) for x in db_spec.source_message_ids if x]
+            if ids:
+                return max(ids)
+        
+        return None
+    except Exception as e:
+        logger.warning("[weaver_core] Failed to extract last_consumed_message_id: %s", e)
+        return None
+
+
 @dataclass
 class WeaverContext:
     messages: List[Dict[str, Any]]
@@ -211,6 +247,15 @@ def gather_weaver_context(
     commit_result = get_current_commit()
     commit_hash = commit_result.value if commit_result.success else None
 
+    logger.info("[weaver_context] Gathered %d raw messages from DB", len(messages_raw))
+    logger.info("[weaver_context] Filtered to %d non-control messages", len(messages))
+    logger.info("[weaver_context] Message IDs: %s", message_ids)
+    logger.info("[weaver_context] Total tokens: %d", total_tokens)
+    
+    if len(messages) == 0:
+        logger.warning("[weaver_context] ⚠️ NO MESSAGES after filtering! This will produce empty prompt.")
+        logger.warning("[weaver_context] Raw message count was %d - all were filtered as control messages", len(messages_raw))
+
     return WeaverContext(
         messages=messages,
         message_ids=message_ids,
@@ -240,7 +285,8 @@ def gather_weaver_delta_context(
     timestamp_end: Optional[datetime] = None
 
     for msg in messages_raw:
-        if msg.id is None or msg.id <= since_message_id:
+        # Only consider messages AFTER the checkpoint
+        if msg.id <= since_message_id:
             continue
 
         role = getattr(msg, "role", "user")
@@ -261,7 +307,8 @@ def gather_weaver_delta_context(
                 "created_at": msg.created_at.isoformat() if msg.created_at else None,
             }
         )
-        message_ids.append(msg.id)
+        if msg.id is not None:
+            message_ids.append(msg.id)
         total_tokens += tokens
 
         if msg.created_at:
@@ -272,6 +319,15 @@ def gather_weaver_delta_context(
 
     commit_result = get_current_commit()
     commit_hash = commit_result.value if commit_result.success else None
+
+    logger.info("[weaver_delta] Fetched %d raw messages from DB (limit=%d)", len(messages_raw), fetch_limit)
+    logger.info("[weaver_delta] Looking for messages AFTER message_id=%d", since_message_id)
+    logger.info("[weaver_delta] Found %d messages after filtering control messages", len(messages))
+    logger.info("[weaver_delta] Delta message IDs: %s", message_ids)
+    logger.info("[weaver_delta] Total tokens: %d", total_tokens)
+    
+    if len(messages) == 0:
+        logger.info("[weaver_delta] No new messages since checkpoint - this triggers spec reuse")
 
     return WeaverContext(
         messages=messages,
@@ -285,20 +341,11 @@ def gather_weaver_delta_context(
 
 def build_weaver_prompt(context: WeaverContext) -> str:
     instructions = """
-You are ASTRA Weaver, an expert specification-weaving assistant.
+You are ASTRA Weaver.
 
-Your job:
-- Take the recent conversation between user and assistant
-- Synthesize a structured, implementable specification JSON describing the real work to be done
+Your task: synthesize a clear, structured Point-of-Truth spec from the conversation below.
 
-CRITICAL RULES (scope + anti-drift):
-- Produce an INTENT SPEC (what/where/constraints/how-to-verify), NOT implementation scripts or OS command blocks.
-- DO NOT invent filenames, folders, OS/platform requirements, or side effects that the user did not request.
-- If the user says "file", treat it as a file. If it's ambiguous (file vs folder), DO NOT guess — put the ambiguity in weak_spots.
-- Ignore assistant meta/disclaimer text unless the USER explicitly adopts it.
-
-Output format:
-Return ONLY a single JSON object with the following shape:
+Output a JSON object with this schema:
 
 {
   "title": "...",

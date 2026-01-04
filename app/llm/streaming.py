@@ -6,6 +6,10 @@ Provides streaming interface for different LLM providers.
 All streaming providers must follow the canonical event schema.
 
 v0.16.0: Added reasoning support and metadata emission.
+v0.17.0: Debug logging
+v0.17.1: ENV-driven model selection (no hardcoded model IDs)
+v0.17.2: Added call_llm_text helper for non-stream callers (Spec Gate, etc.)
+v0.17.3: call_llm_text retry + OpenAI non-stream fallback for transient stream disconnects
 
 CANONICAL EVENT SCHEMA:
 All streaming functions must yield dict events with this structure:
@@ -32,11 +36,12 @@ Some newer OpenAI chat models (e.g. gpt-5.*) reject `max_tokens` and require
 `max_completion_tokens`. This module sets the correct param based on model.
 """
 
+from __future__ import annotations
+
 import os
+import json
 import logging
-from typing import AsyncGenerator, Dict, List, Optional
-from datetime import datetime
-import asyncio
+from typing import AsyncGenerator, Dict, List, Optional, Any
 import re
 
 logger = logging.getLogger(__name__)
@@ -60,31 +65,52 @@ try:
 except ImportError:
     HAS_GEMINI = False
 
-# Default models for each provider
-DEFAULT_MODELS = {
-    "openai": "gpt-4.1-mini",
-    "anthropic": "claude-3-5-sonnet-20240620",
-    "google": "gemini-2.0-flash",
+
+# =========================
+# ENV-driven model selection
+# =========================
+
+# Provider -> ENV var that MUST define its default model (if the provider is used without explicit model)
+DEFAULT_MODEL_ENV = {
+    "openai": "OPENAI_DEFAULT_MODEL",
+    "anthropic": "ANTHROPIC_DEFAULT_MODEL",
+    "google": "GOOGLE_DEFAULT_MODEL",  # for gemini/google routes
 }
 
-# Route-based model overrides
-ROUTE_MODELS = {
+# Provider -> Route -> ENV var that can override the model for that route.
+# If the route env var is missing, we fall back to the provider default env var.
+ROUTE_MODEL_ENV = {
     "openai": {
-        "default": "gpt-4.1-mini",
-        "high_stakes": "gpt-4.1",
-        "budget": "gpt-4.1-mini",
+        "default": "OPENAI_DEFAULT_MODEL",
+        "high_stakes": "OPENAI_HIGH_STAKES_MODEL",
+        "budget": "OPENAI_BUDGET_MODEL",
+        "spec_gate": "OPENAI_SPEC_GATE_MODEL",
     },
     "anthropic": {
-        "default": "claude-3-5-sonnet-20240620",
-        "high_stakes": "claude-3-5-sonnet-20240620",
-        "budget": "claude-3-5-haiku-20240307",
+        "default": "ANTHROPIC_DEFAULT_MODEL",
+        "high_stakes": "ANTHROPIC_HIGH_STAKES_MODEL",
+        "budget": "ANTHROPIC_BUDGET_MODEL",
+        "spec_gate": "ANTHROPIC_SPEC_GATE_MODEL",
     },
     "google": {
-        "default": "gemini-2.0-flash",
-        "high_stakes": "gemini-2.5-pro",
-        "budget": "gemini-2.0-flash",
+        "default": "GOOGLE_DEFAULT_MODEL",
+        "high_stakes": "GOOGLE_HIGH_STAKES_MODEL",
+        "budget": "GOOGLE_BUDGET_MODEL",
+        "spec_gate": "GOOGLE_SPEC_GATE_MODEL",
     },
 }
+
+
+def _provider_key(provider: str) -> str:
+    p = (provider or "").strip().lower()
+    if p in ("gemini", "google"):
+        return "google"
+    return p
+
+
+def _env_model(var_name: str) -> Optional[str]:
+    v = os.getenv(var_name, "").strip()
+    return v or None
 
 
 def enhance_system_prompt_with_reasoning(prompt: str, enable: bool = True) -> str:
@@ -105,21 +131,39 @@ Your final response to the user goes here.
 
 The THINKING section will be hidden from the user.
 """
-    return prompt + "\n\n" + reasoning_instruction
-
-
-def get_model_for_route(provider: str, route: Optional[str] = None) -> str:
-    """Get appropriate model for provider and route."""
-    if not route:
-        return DEFAULT_MODELS.get(provider, DEFAULT_MODELS["openai"])
-
-    provider_routes = ROUTE_MODELS.get(provider, {})
-    return provider_routes.get(route, provider_routes.get("default", DEFAULT_MODELS.get(provider, DEFAULT_MODELS["openai"])))
+    return (prompt or "") + "\n\n" + reasoning_instruction
 
 
 def get_default_model(provider: str) -> str:
-    """Get default model for provider."""
-    return DEFAULT_MODELS.get(provider, DEFAULT_MODELS["openai"])
+    """Get default model for provider (ENV-driven, no hardcoded IDs)."""
+    pk = _provider_key(provider)
+    env_var = DEFAULT_MODEL_ENV.get(pk)
+    if not env_var:
+        raise ValueError(f"No DEFAULT_MODEL_ENV mapping for provider '{provider}'")
+    model = _env_model(env_var)
+    if not model:
+        raise ValueError(f"{env_var} is not set (required to choose default model for provider '{provider}')")
+    return model
+
+
+def get_model_for_route(provider: str, route: Optional[str] = None) -> str:
+    """
+    Get model for provider+route using ENV.
+    Falls back to provider default ENV var if a route-specific ENV var is missing.
+    """
+    pk = _provider_key(provider)
+    if not route:
+        return get_default_model(pk)
+
+    route_map = ROUTE_MODEL_ENV.get(pk, {})
+    route_env = route_map.get(route)
+    if route_env:
+        m = _env_model(route_env)
+        if m:
+            return m
+
+    # fallback to default
+    return get_default_model(pk)
 
 
 def get_available_streaming_providers() -> Dict[str, bool]:
@@ -161,7 +205,22 @@ def _openai_needs_max_completion_tokens(model: str) -> bool:
     return m.startswith("gpt-5") or m.startswith("o1") or m.startswith("o3")
 
 
-# ============ STREAMING GENERATORS ============
+def _should_retry_stream_error(message: str) -> bool:
+    s = (message or "").lower()
+    needles = [
+        "incomplete chunked read",
+        "peer closed connection",
+        "server disconnected",
+        "connection reset",
+        "readerror",
+        "timeout",
+    ]
+    return any(n in s for n in needles)
+
+
+# =========================
+# STREAMING GENERATORS
+# =========================
 
 async def stream_openai(
     messages: List[Dict],
@@ -172,16 +231,9 @@ async def stream_openai(
 ) -> AsyncGenerator[Dict, None]:
     """
     Stream from OpenAI using async client.
-
-    Yields dict events following canonical schema:
-    - {"type": "metadata", "provider": "openai", "model": "..."}
-    - {"type": "token", "text": "..."}
-    - {"type": "error", "message": "..."}
-    - {"type": "done", "usage": {...}}  (when available)
     """
-    # v0.17: Debug logging
     print(f"[STREAM_OPENAI] Called: model={model}, route={route}")
-    
+
     if not HAS_OPENAI:
         print("[STREAM_OPENAI] ERROR: openai package not installed")
         yield {"type": "error", "message": "openai package not installed"}
@@ -200,32 +252,22 @@ async def stream_openai(
         use_model = get_model_for_route("openai", route)
     else:
         use_model = get_default_model("openai")
-    
+
     print(f"[STREAM_OPENAI] Using model: {use_model}")
 
     client = AsyncOpenAI(api_key=api_key)
 
-    # Enhance system prompt
     enhanced_prompt = enhance_system_prompt_with_reasoning(system_prompt, enable_reasoning)
 
     full_messages = [{"role": "system", "content": enhanced_prompt}]
     full_messages.extend(messages)
 
-    # Emit metadata first
     yield {"type": "metadata", "provider": "openai", "model": use_model}
-
-    def _uget(obj, key: str):
-        if obj is None:
-            return None
-        if isinstance(obj, dict):
-            return obj.get(key)
-        return getattr(obj, key, None)
 
     prompt_tokens = None
     completion_tokens = None
     total_tokens = None
 
-    # Optional token caps (env-tunable). For gpt-5.* prefer max_completion_tokens.
     max_completion_tokens = (
         _int_env("OPENAI_MAX_COMPLETION_TOKENS")
         or _int_env("OPENAI_STREAM_MAX_COMPLETION_TOKENS")
@@ -236,7 +278,7 @@ async def stream_openai(
     )
 
     try:
-        create_kwargs = {
+        create_kwargs: Dict[str, Any] = {
             "model": use_model,
             "messages": full_messages,
             "stream": True,
@@ -247,46 +289,46 @@ async def stream_openai(
         elif legacy_max_tokens is not None:
             create_kwargs["max_tokens"] = int(legacy_max_tokens)
 
-        # Prefer include_usage if supported by installed OpenAI SDK.
         try:
             stream = await client.chat.completions.create(
                 **create_kwargs,
                 stream_options={"include_usage": True},
             )
         except TypeError:
-            # Older SDKs may not accept stream_options.
             stream = await client.chat.completions.create(**create_kwargs)
 
         async for chunk in stream:
-            # Usage is typically attached to the final chunk when include_usage is enabled.
-            u = _uget(chunk, "usage")
-            if u:
-                pt = _uget(u, "prompt_tokens")
-                ct = _uget(u, "completion_tokens")
-                tt = _uget(u, "total_tokens")
-                if pt is not None:
-                    prompt_tokens = int(pt)
-                if ct is not None:
-                    completion_tokens = int(ct)
-                if tt is not None:
-                    total_tokens = int(tt)
+            if getattr(chunk, "usage", None):
+                usage = chunk.usage
+                prompt_tokens = getattr(usage, "prompt_tokens", None)
+                completion_tokens = getattr(usage, "completion_tokens", None)
+                total_tokens = getattr(usage, "total_tokens", None)
 
-            try:
-                if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
-                    yield {"type": "token", "text": chunk.choices[0].delta.content}
-            except Exception:
+            choices = getattr(chunk, "choices", None)
+            if not choices:
                 continue
 
-        # Emit done with usage if available
+            delta = getattr(choices[0], "delta", None)
+            if not delta:
+                continue
+
+            content = getattr(delta, "content", None)
+            if content:
+                yield {"type": "token", "text": content}
+
         if prompt_tokens is not None or completion_tokens is not None or total_tokens is not None:
             if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
                 total_tokens = prompt_tokens + completion_tokens
-            usage = {
-                "prompt_tokens": int(prompt_tokens or 0),
-                "completion_tokens": int(completion_tokens or 0),
-                "total_tokens": int(total_tokens or (int(prompt_tokens or 0) + int(completion_tokens or 0))),
+            yield {
+                "type": "done",
+                "provider": "openai",
+                "model": use_model,
+                "usage": {
+                    "prompt_tokens": int(prompt_tokens or 0),
+                    "completion_tokens": int(completion_tokens or 0),
+                    "total_tokens": int(total_tokens or (int(prompt_tokens or 0) + int(completion_tokens or 0))),
+                },
             }
-            yield {"type": "done", "provider": "openai", "model": use_model, "usage": usage}
         else:
             yield {"type": "done", "provider": "openai", "model": use_model}
 
@@ -301,15 +343,9 @@ async def stream_anthropic(
     enable_reasoning: bool = False,
     route: Optional[str] = None,
 ) -> AsyncGenerator[Dict, None]:
-    """
-    Stream from Anthropic using async client.
+    """Stream from Anthropic using async client."""
+    print(f"[STREAM_ANTHROPIC] Called: model={model}, route={route}")
 
-    Yields dict events following canonical schema:
-    - {"type": "metadata", "provider": "anthropic", "model": "..."}
-    - {"type": "token", "text": "..."}
-    - {"type": "error", "message": "..."}
-    - {"type": "done", "usage": {...}}  (when available)
-    """
     if not HAS_ANTHROPIC:
         yield {"type": "error", "message": "anthropic package not installed"}
         return
@@ -319,7 +355,6 @@ async def stream_anthropic(
         yield {"type": "error", "message": "ANTHROPIC_API_KEY not set"}
         return
 
-    # Use provided model, route-based model, or default
     if model:
         use_model = model
     elif route:
@@ -327,64 +362,48 @@ async def stream_anthropic(
     else:
         use_model = get_default_model("anthropic")
 
-    client = anthropic.AsyncAnthropic(api_key=api_key)
-
-    # Enhance system prompt
-    enhanced_prompt = enhance_system_prompt_with_reasoning(system_prompt, enable_reasoning)
-
-    # Emit metadata first
     yield {"type": "metadata", "provider": "anthropic", "model": use_model}
 
-    input_tokens = None
-    output_tokens = None
+    enhanced_prompt = enhance_system_prompt_with_reasoning(system_prompt, enable_reasoning)
 
-    def _uget(obj, key: str):
-        if obj is None:
-            return None
-        if isinstance(obj, dict):
-            return obj.get(key)
-        return getattr(obj, key, None)
+    client = anthropic.AsyncAnthropic(api_key=api_key)
 
-    # Configurable max tokens for Anthropic (default 16384 for complete architecture docs)
-    anthropic_max_tokens = int(os.getenv("ANTHROPIC_STREAM_MAX_TOKENS", "16384"))
+    prompt_tokens = None
+    completion_tokens = None
 
     try:
-        async with client.messages.stream(
+        resp = await client.messages.create(
             model=use_model,
-            max_tokens=anthropic_max_tokens,
+            max_tokens=_int_env("ANTHROPIC_MAX_TOKENS") or 4096,
             system=enhanced_prompt,
             messages=messages,
-        ) as stream:
-            async for text in stream.text_stream:
-                yield {"type": "token", "text": text}
+            stream=True,
+        )
 
-            final_msg = None
-            try:
-                maybe = stream.get_final_message()
-                if asyncio.iscoroutine(maybe):
-                    final_msg = await maybe
-                else:
-                    final_msg = maybe
-            except Exception:
-                final_msg = None
+        async for event in resp:
+            if event.type == "content_block_delta":
+                delta_text = getattr(event.delta, "text", None)
+                if delta_text:
+                    yield {"type": "token", "text": delta_text}
 
-            if final_msg is not None:
-                u = _uget(final_msg, "usage")
-                if u:
-                    it = _uget(u, "input_tokens")
-                    ot = _uget(u, "output_tokens")
-                    if it is not None:
-                        input_tokens = int(it)
-                    if ot is not None:
-                        output_tokens = int(ot)
+            if event.type == "message_delta":
+                usage = getattr(event, "usage", None)
+                if usage:
+                    prompt_tokens = getattr(usage, "input_tokens", None)
+                    completion_tokens = getattr(usage, "output_tokens", None)
 
-        if input_tokens is not None or output_tokens is not None:
-            usage = {
-                "prompt_tokens": int(input_tokens or 0),
-                "completion_tokens": int(output_tokens or 0),
-                "total_tokens": int((input_tokens or 0) + (output_tokens or 0)),
+        if prompt_tokens is not None or completion_tokens is not None:
+            total_tokens = (int(prompt_tokens or 0) + int(completion_tokens or 0))
+            yield {
+                "type": "done",
+                "provider": "anthropic",
+                "model": use_model,
+                "usage": {
+                    "prompt_tokens": int(prompt_tokens or 0),
+                    "completion_tokens": int(completion_tokens or 0),
+                    "total_tokens": int(total_tokens),
+                },
             }
-            yield {"type": "done", "provider": "anthropic", "model": use_model, "usage": usage}
         else:
             yield {"type": "done", "provider": "anthropic", "model": use_model}
 
@@ -399,17 +418,9 @@ async def stream_gemini(
     enable_reasoning: bool = False,
     route: Optional[str] = None,
 ) -> AsyncGenerator[Dict, None]:
-    """
-    Stream from Gemini.
-
-    Yields dict events following canonical schema:
-    - {"type": "metadata", "provider": "gemini", "model": "..."}
-    - {"type": "token", "text": "..."}
-    - {"type": "error", "message": "..."}
-    - {"type": "done", "usage": {...}}  (when available)
-    """
+    """Stream from Gemini (Google Generative AI)."""
     if not HAS_GEMINI:
-        yield {"type": "error", "message": "google-generativeai package not installed"}
+        yield {"type": "error", "message": "google.generativeai package not installed"}
         return
 
     api_key = os.getenv("GOOGLE_API_KEY")
@@ -491,7 +502,9 @@ async def stream_gemini(
         yield {"type": "error", "message": str(e)}
 
 
-# ============ MAIN STREAMING FUNCTION ============
+# =========================
+# MAIN STREAMING FUNCTION
+# =========================
 
 async def stream_llm(
     messages: List[Dict],
@@ -501,27 +514,9 @@ async def stream_llm(
     enable_reasoning: bool = False,
     route: Optional[str] = None,
 ) -> AsyncGenerator[Dict, None]:
-    """
-    Stream from specified LLM provider.
-
-    Args:
-        messages: List of message dicts with role and content
-        system_prompt: System prompt string
-        provider: Provider name ("openai", "anthropic", "gemini")
-        model: Specific model name (optional)
-        enable_reasoning: If True, instruct LLM to use THINKING/ANSWER tags
-        route: Route name for model selection (optional)
-
-    Yields:
-        Dict events following canonical schema:
-        - {"type": "metadata", "provider": "...", "model": "..."}
-        - {"type": "token", "text": "..."}
-        - {"type": "reasoning", "text": "..."} (optional)
-        - {"type": "error", "message": "..."}
-    """
-    # v0.17: Debug logging
+    """Stream from specified LLM provider."""
     print(f"[STREAM_LLM] Called: provider={provider}, model={model}, messages={len(messages)}")
-    
+
     if not provider:
         provider = get_default_provider()
         print(f"[STREAM_LLM] No provider specified, using default: {provider}")
@@ -546,3 +541,144 @@ async def stream_llm(
     else:
         print(f"[STREAM_LLM] ERROR: Unknown provider '{provider}'")
         yield {"type": "error", "message": f"Unknown provider '{provider}'"}
+
+
+# =========================
+# NON-STREAM HELPERS
+# =========================
+
+async def _openai_text_nonstream(
+    *,
+    messages: List[Dict[str, str]],
+    system_prompt: str,
+    model: str,
+) -> str:
+    """
+    Non-stream OpenAI call used as a fallback for transient stream disconnects.
+    """
+    if not HAS_OPENAI:
+        raise RuntimeError("openai package not installed")
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY not set")
+
+    client = AsyncOpenAI(api_key=api_key)
+
+    # Ensure a system message exists
+    full_messages: List[Dict[str, str]] = []
+    if messages and messages[0].get("role") == "system":
+        full_messages = messages
+    else:
+        full_messages = [{"role": "system", "content": system_prompt or ""}] + (messages or [])
+
+    max_completion_tokens = (
+        _int_env("OPENAI_MAX_COMPLETION_TOKENS")
+        or _int_env("OPENAI_STREAM_MAX_COMPLETION_TOKENS")
+        or 8192
+    )
+    legacy_max_tokens = (
+        _int_env("OPENAI_MAX_TOKENS")
+        or _int_env("OPENAI_STREAM_MAX_TOKENS")
+    )
+
+    create_kwargs: Dict[str, Any] = {
+        "model": model,
+        "messages": full_messages,
+    }
+
+    if _openai_needs_max_completion_tokens(model):
+        create_kwargs["max_completion_tokens"] = int(max_completion_tokens)
+    elif legacy_max_tokens is not None:
+        create_kwargs["max_tokens"] = int(legacy_max_tokens)
+
+    resp = await client.chat.completions.create(**create_kwargs)
+    choices = getattr(resp, "choices", None) or []
+    if not choices:
+        return ""
+    msg = getattr(choices[0], "message", None)
+    return (getattr(msg, "content", None) or "").strip()
+
+
+async def call_llm_text(
+    provider: str,
+    model: Optional[str],
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    messages: Optional[List[Dict[str, str]]] = None,
+    repo_snapshot: Optional[Dict[str, Any]] = None,
+    constraints_hint: Optional[Any] = None,
+    enable_reasoning: bool = False,
+    route: Optional[str] = None,
+) -> str:
+    """
+    Convenience helper for callers that want a single final string.
+
+    - Uses stream_llm under the hood.
+    - Collects {"type":"token"} chunks into one string.
+    - Raises RuntimeError on {"type":"error"}.
+    - Retries once for transient stream disconnects; for OpenAI it falls back to a non-stream call.
+    """
+    if not provider:
+        raise ValueError("call_llm_text: provider is required")
+
+    if not model:
+        model = get_model_for_route(provider, route)
+
+    # Build augmented system prompt (kept small-ish and structured)
+    sys = system_prompt or ""
+    if constraints_hint is not None:
+        try:
+            ch = json.dumps(constraints_hint, ensure_ascii=False, separators=(",", ":"), default=str)
+        except Exception:
+            ch = str(constraints_hint)
+        sys += "\n\n[CONSTRAINTS_HINT]\n" + ch
+
+    if repo_snapshot is not None:
+        try:
+            rs = json.dumps(repo_snapshot, ensure_ascii=False, separators=(",", ":"), default=str)
+        except Exception:
+            rs = str(repo_snapshot)
+        sys += "\n\n[REPO_SNAPSHOT]\n" + rs
+
+    enhanced_sys = enhance_system_prompt_with_reasoning(sys, enable_reasoning)
+
+    use_messages = messages if messages is not None else [{"role": "user", "content": user_prompt}]
+
+    async def _collect_via_stream() -> str:
+        out: List[str] = []
+        async for event in stream_llm(
+            use_messages,
+            system_prompt=enhanced_sys,
+            provider=provider,
+            model=model,
+            enable_reasoning=enable_reasoning,
+            route=route,
+        ):
+            et = event.get("type")
+            if et == "token":
+                t = event.get("text", "")
+                if t:
+                    out.append(t)
+            elif et == "error":
+                raise RuntimeError(event.get("message", "LLM error"))
+            else:
+                pass
+        return "".join(out).strip()
+
+    try:
+        return await _collect_via_stream()
+    except RuntimeError as e:
+        if not _should_retry_stream_error(str(e)):
+            raise
+
+        pk = _provider_key(provider)
+        logger.warning(f"[call_llm_text] transient stream error, retrying via fallback: {e}")
+
+        if pk == "openai":
+            full_messages = [{"role": "system", "content": enhanced_sys}] + use_messages
+            return await _openai_text_nonstream(messages=full_messages, system_prompt=enhanced_sys, model=model)
+
+        # For other providers: one more stream attempt
+        return await _collect_via_stream()
