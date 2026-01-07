@@ -24,6 +24,8 @@ class TranslationMode(str, Enum):
     FEEDBACK = "feedback"            # User correcting behavior
 
 
+# FILE: app/translation/schemas.py
+
 class CanonicalIntent(str, Enum):
     """Closed set of allowed intents. No free-form execution."""
     # Chat (no action)
@@ -36,6 +38,7 @@ class CanonicalIntent(str, Enum):
     
     # Sandbox control
     START_SANDBOX_ZOMBIE_SELF = "START_SANDBOX_ZOMBIE_SELF"
+    SCAN_SANDBOX_STRUCTURE = "SCAN_SANDBOX_STRUCTURE"
     
     # =========================================================================
     # SPEC GATE FLOW (v1.1)
@@ -53,6 +56,8 @@ class CanonicalIntent(str, Enum):
     
     # Pipeline control (high-stakes)
     RUN_CRITICAL_PIPELINE_FOR_JOB = "RUN_CRITICAL_PIPELINE_FOR_JOB"
+    
+    # Overwatcher (applies validated spec + pipeline result)
     OVERWATCHER_EXECUTE_CHANGES = "OVERWATCHER_EXECUTE_CHANGES"
     
     # Feedback (no action, just logging)

@@ -1,11 +1,16 @@
 # app/llm/context.py
 """
 Context utilities for LLM calls.
-Provides current datetime and other contextual information.
+Provides current datetime, capability awareness, and other contextual information.
+
+v1.1 - Added ASTRA capability layer injection
 """
 
 from datetime import datetime
 import locale
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def get_current_datetime_context() -> str:
@@ -39,11 +44,29 @@ def get_system_context() -> str:
 
 def enhance_system_prompt(base_prompt: str) -> str:
     """
-    Enhance a system prompt with current context (datetime, etc).
+    Enhance a system prompt with current context (datetime, capabilities, etc).
+    
+    Order of injection (top to bottom in final prompt):
+    1. ASTRA Capability Layer (what the system can/cannot do)
+    2. DateTime context
+    3. Base prompt
     """
+    # 1. Inject ASTRA capability layer FIRST
+    try:
+        from app.capabilities import inject_capabilities
+        prompt_with_caps = inject_capabilities(base_prompt)
+        logger.debug("Capability layer injected successfully")
+    except ImportError as e:
+        logger.warning(f"Capability layer not available: {e}")
+        prompt_with_caps = base_prompt
+    except Exception as e:
+        logger.error(f"Error injecting capabilities: {e}")
+        prompt_with_caps = base_prompt
+    
+    # 2. Add datetime context
     context = get_system_context()
     
-    if base_prompt:
-        return f"{context}\n\n{base_prompt}"
+    if prompt_with_caps:
+        return f"{context}\n\n{prompt_with_caps}"
     else:
         return context

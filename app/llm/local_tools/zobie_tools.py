@@ -5,7 +5,11 @@ Commands:
 - UPDATE ARCHITECTURE: Scan repo → store in Orb/.architecture/ (no LLM)
 - CREATE ARCHITECTURE MAP: Load .architecture/ → Claude Opus 4.5 → ARCHITECTURE_MAP.md
 - ZOBIE MAP: Raw repo scan (legacy, for debugging)
+- SCAN SANDBOX STRUCTURE: Filesystem index via arch_query_service (requires service running)
 
+v2.2 (2026-01): FIXED - Separated update_architecture from sandbox_structure_scan
+                update_architecture now runs mapper directly without arch_query dependency
+v2.1 (2026-01): Add generate_update_architecture_stream() alias for router compatibility
 v2.0 (2025-12): Split architecture update from map generation
 """
 
@@ -22,6 +26,7 @@ import contextlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from urllib import request as urllib_request, error as urllib_error
 
 from sqlalchemy.orm import Session
 
@@ -72,6 +77,13 @@ ZOBIE_CONTROLLER_URL = os.getenv("ORB_ZOBIE_CONTROLLER_URL") or default_controll
 ZOBIE_MAPPER_OUT_DIR = os.getenv("ORB_ZOBIE_MAPPER_OUT_DIR") or default_zobie_mapper_out_dir(__file__)
 ZOBIE_MAPPER_ARGS_RAW = os.getenv("ORB_ZOBIE_MAPPER_ARGS", "200000 0 60 120000").strip()
 ZOBIE_MAPPER_ARGS: List[str] = [a for a in ZOBIE_MAPPER_ARGS_RAW.split() if a]
+
+# Architecture Query Service base URL (port 8780, NOT sandbox_controller 8765)
+# This is ONLY used by generate_sandbox_structure_scan_stream when arch_query_service is running
+ARCH_QUERY_BASE_URL = (
+    os.getenv("ARCH_QUERY_BASE_URL", "http://127.0.0.1:8780").strip()
+    or "http://127.0.0.1:8780"
+)
 
 
 # =============================================================================
@@ -127,10 +139,10 @@ async def _run_mapper() -> Tuple[str, str, List[str]]:
         with contextlib.suppress(Exception):
             proc.kill()
         raise RuntimeError(f"Mapper timed out after {ZOBIE_MAPPER_TIMEOUT_SEC}s")
-    
+
     stdout = (stdout_b or b"").decode("utf-8", errors="replace")
     stderr = (stderr_b or b"").decode("utf-8", errors="replace")
-    
+
     output_paths: List[str] = []
     for line in stdout.splitlines():
         s = line.strip()
@@ -142,7 +154,7 @@ async def _run_mapper() -> Tuple[str, str, List[str]]:
         candidate = os.path.join(ZOBIE_MAPPER_OUT_DIR, s)
         if os.path.exists(candidate):
             output_paths.append(candidate)
-    
+
     return stdout, stderr, output_paths
 
 
@@ -172,18 +184,18 @@ def _find_latest_matching(out_dir: str, pattern: str) -> str:
 
 def _convert_to_architecture_format(index_data: Dict[str, Any], out_dir: str) -> Dict[str, Dict[str, Any]]:
     """Convert zobie_map INDEX output to new architecture format.
-    
+
     Transforms:
     - scanned_files[] with symbols -> files.json with classes/functions/signatures
     """
     files: Dict[str, Any] = {}
-    
+
     scanned = index_data.get("scanned_files", [])
     for sf in scanned:
         path = sf.get("path", "")
         if not path:
             continue
-        
+
         # Build file entry
         entry: Dict[str, Any] = {
             "path": path,
@@ -195,7 +207,7 @@ def _convert_to_architecture_format(index_data: Dict[str, Any], out_dir: str) ->
             "constants": [],
             "exports": [],
         }
-        
+
         # Convert imports
         raw_imports = sf.get("imports", [])
         for imp in raw_imports:
@@ -203,14 +215,14 @@ def _convert_to_architecture_format(index_data: Dict[str, Any], out_dir: str) ->
                 entry["imports"].append({"module": imp, "names": None})
             elif isinstance(imp, dict):
                 entry["imports"].append(imp)
-        
+
         # Convert symbols to classes and functions
         symbols = sf.get("symbols", [])
         for sym in symbols:
             kind = sym.get("kind", "")
             name = sym.get("name", "")
             line = sym.get("line", 0)
-            
+
             if kind == "class":
                 entry["classes"].append({
                     "name": name,
@@ -229,7 +241,7 @@ def _convert_to_architecture_format(index_data: Dict[str, Any], out_dir: str) ->
                     "docstring": "",
                     "decorators": [],
                 })
-        
+
         # Add enum info if present
         enums = sf.get("enums", [])
         for enum in enums:
@@ -241,26 +253,26 @@ def _convert_to_architecture_format(index_data: Dict[str, Any], out_dir: str) ->
                 "docstring": "",
                 "members": enum.get("members", []),
             })
-        
+
         # Add routes as metadata
         routes = sf.get("routes", [])
         if routes:
             entry["routes"] = routes
-        
+
         files[path] = entry
-    
+
     return files
 
 
 def _extract_enums_index(index_data: Dict[str, Any]) -> Dict[str, Any]:
     """Extract enum index from zobie data."""
     enums: Dict[str, Any] = {}
-    
+
     scanned = index_data.get("scanned_files", [])
     for sf in scanned:
         path = sf.get("path", "")
         file_enums = sf.get("enums", [])
-        
+
         for enum in file_enums:
             enum_name = enum.get("name", "")
             key = f"{path}::{enum_name}"
@@ -271,24 +283,24 @@ def _extract_enums_index(index_data: Dict[str, Any]) -> Dict[str, Any]:
                 "members": [{"name": m, "value": m.lower()} for m in enum.get("members", [])],
                 "member_count": enum.get("member_count", len(enum.get("members", []))),
             }
-    
+
     return enums
 
 
 def _extract_routes_index(index_data: Dict[str, Any]) -> Dict[str, Any]:
     """Extract routes index from zobie data."""
     routes: Dict[str, Any] = {}
-    
+
     scanned = index_data.get("scanned_files", [])
     for sf in scanned:
         path = sf.get("path", "")
         file_routes = sf.get("routes", [])
-        
+
         for route in file_routes:
             method = route.get("method", "GET").upper()
             route_path = route.get("path", "/")
             key = f"{method} {route_path}"
-            
+
             routes[key] = {
                 "file": path,
                 "line": route.get("line", 0),
@@ -297,29 +309,29 @@ def _extract_routes_index(index_data: Dict[str, Any]) -> Dict[str, Any]:
                 "path": route_path,
                 "decorator_target": route.get("decorator_target", ""),
             }
-    
+
     return routes
 
 
 def _extract_imports_graph(index_data: Dict[str, Any]) -> Dict[str, Any]:
     """Extract import graph from zobie data."""
     imports: Dict[str, Any] = {}
-    
+
     scanned = index_data.get("scanned_files", [])
     for sf in scanned:
         path = sf.get("path", "")
         file_imports = sf.get("imports", [])
-        
+
         imports[path] = {
             "imports_from": file_imports if isinstance(file_imports, list) else [],
             "imported_by": [],  # Would need reverse lookup
         }
-    
+
     return imports
 
 
 # =============================================================================
-# UPDATE ARCHITECTURE (Command 1)
+# UPDATE ARCHITECTURE (Command 1) - STANDALONE, NO ARCH_QUERY DEPENDENCY
 # =============================================================================
 
 async def generate_update_architecture_stream(
@@ -328,22 +340,35 @@ async def generate_update_architecture_stream(
     db: Session,
     trace: Optional[RoutingTrace] = None,
 ) -> AsyncGenerator[str, None]:
-    """Scan repo and store in .architecture/ (no LLM, no versioning)."""
+    """
+    Scan repo via zobie_mapper and save to .architecture/ directory.
     
+    This is the PRIMARY architecture update command. It:
+    1. Runs zobie_map.py against the sandbox controller
+    2. Converts output to .architecture/ format
+    3. Saves files.json, enums.json, routes.json, imports.json, manifest.json
+    
+    Does NOT require arch_query_service to be running.
+    """
     loop = asyncio.get_event_loop()
     started_ms = int(loop.time() * 1000)
-    
-    yield _sse_token("🔍 Scanning repository...\n")
-    
+
+    yield _sse_token("🔍 Scanning repository structure...\n")
+    yield _sse_token(f"📡 Controller: {ZOBIE_CONTROLLER_URL}\n")
+
     # 1) Run mapper
     try:
         stdout, stderr, output_paths = await _run_mapper()
+        
+        if stderr and "error" in stderr.lower():
+            logger.warning(f"Mapper stderr: {stderr[:500]}")
+            
     except Exception as e:
         logger.exception(f"Mapper failed: {e}")
         yield _sse_error(f"Scan failed: {e}")
         yield _sse_done(provider="local", model="architecture_scanner", success=False, error=str(e))
         return
-    
+
     # 2) Find INDEX file
     index_path = next(
         (p for p in output_paths if os.path.basename(p).startswith("INDEX_") and p.lower().endswith(".json")),
@@ -351,14 +376,14 @@ async def generate_update_architecture_stream(
     )
     if not index_path:
         index_path = _find_latest_matching(ZOBIE_MAPPER_OUT_DIR, r"^INDEX_.*\.json$")
-    
+
     if not index_path or not os.path.exists(index_path):
         yield _sse_error("Scan completed but INDEX file not found")
         yield _sse_done(provider="local", model="architecture_scanner", success=False, error="index_not_found")
         return
-    
+
     yield _sse_token("📦 Processing scan results...\n")
-    
+
     # 3) Load index
     try:
         with open(index_path, "r", encoding="utf-8") as f:
@@ -367,11 +392,11 @@ async def generate_update_architecture_stream(
         yield _sse_error(f"Failed to load index: {e}")
         yield _sse_done(provider="local", model="architecture_scanner", success=False, error=str(e))
         return
-    
+
     # 4) Convert to architecture format
     arch_dir = get_architecture_dir()
     now = datetime.now(timezone.utc).isoformat()
-    
+
     # Manifest
     manifest = {
         "version": "1.0",
@@ -381,38 +406,38 @@ async def generate_update_architecture_stream(
         "files_count": len(index_data.get("scanned_files", [])),
         "source_index": os.path.basename(index_path),
     }
-    
+
     # Files
     files = _convert_to_architecture_format(index_data, ZOBIE_MAPPER_OUT_DIR)
-    
+
     # Enums
     enums = _extract_enums_index(index_data)
-    
+
     # Routes
     routes = _extract_routes_index(index_data)
-    
+
     # Imports
     imports = _extract_imports_graph(index_data)
-    
+
     yield _sse_token("💾 Saving architecture data...\n")
-    
+
     # 5) Write files (fixed names, always overwrite)
     try:
         with open(arch_dir / "manifest.json", "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2)
-        
+
         with open(arch_dir / "files.json", "w", encoding="utf-8") as f:
             json.dump(files, f, indent=2)
-        
+
         with open(arch_dir / "enums.json", "w", encoding="utf-8") as f:
             json.dump(enums, f, indent=2)
-        
+
         with open(arch_dir / "routes.json", "w", encoding="utf-8") as f:
             json.dump(routes, f, indent=2)
-        
+
         with open(arch_dir / "imports.json", "w", encoding="utf-8") as f:
             json.dump(imports, f, indent=2)
-        
+
         # Copy additional useful files if they exist
         for pattern, dest_name in [
             (r"^CALLGRAPH_EDGES_.*\.json$", "callgraph.json"),
@@ -422,13 +447,13 @@ async def generate_update_architecture_stream(
             src = _find_latest_matching(ZOBIE_MAPPER_OUT_DIR, pattern)
             if src and os.path.exists(src):
                 shutil.copy2(src, arch_dir / dest_name)
-        
+
     except Exception as e:
         logger.exception(f"Failed to save architecture: {e}")
         yield _sse_error(f"Failed to save: {e}")
         yield _sse_done(provider="local", model="architecture_scanner", success=False, error=str(e))
         return
-    
+
     # 6) Record in memory
     try:
         memory_service.create_message(
@@ -443,14 +468,14 @@ async def generate_update_architecture_stream(
         )
     except Exception:
         pass
-    
+
     duration_ms = int(loop.time() * 1000) - started_ms
     if trace:
         trace.log_model_call(
             "local_tool", "local", "architecture_scanner", "update_architecture",
             0, 0, duration_ms, success=True, error=None,
         )
-    
+
     summary = (
         f"✅ Architecture updated.\n\n"
         f"📁 Location: {arch_dir}\n"
@@ -459,13 +484,119 @@ async def generate_update_architecture_stream(
         f"🛣️ Routes: {len(routes)}\n"
         f"⏱️ Duration: {duration_ms}ms\n"
     )
-    
+
     yield _sse_token(summary)
     yield _sse_done(
         provider="local",
         model="architecture_scanner",
         total_length=len(summary),
         meta={"arch_dir": str(arch_dir), "files": len(files), "enums": len(enums), "routes": len(routes)},
+    )
+
+
+# =============================================================================
+# SCAN SANDBOX STRUCTURE (Optional - requires arch_query_service on port 8780)
+# =============================================================================
+
+async def generate_sandbox_structure_scan_stream(
+    project_id: int,
+    message: str,
+    db: Session,
+    trace: Optional[RoutingTrace] = None,
+) -> AsyncGenerator[str, None]:
+    """
+    Trigger a read-only sandbox-wide structure scan via Architecture Query Service.
+
+    - Calls POST {ARCH_QUERY_BASE_URL}/projects/sandbox/scan (port 8780)
+    - Requires arch_query_service to be running
+    - Does NOT read or write any actual repo files from here – that all lives in the service.
+    
+    For basic architecture updates, use generate_update_architecture_stream instead.
+    """
+    loop = asyncio.get_event_loop()
+    started_ms = int(loop.time() * 1000)
+
+    yield _sse_token("🧭 Scanning sandbox structure via arch_query_service...\n")
+    yield _sse_token(f"📡 Service URL: {ARCH_QUERY_BASE_URL}\n")
+
+    url = ARCH_QUERY_BASE_URL.rstrip("/") + "/projects/sandbox/scan"
+
+    def _do_scan() -> Tuple[Optional[int], str]:
+        try:
+            payload = json.dumps({"max_scan_files": None}).encode("utf-8")
+            req = urllib_request.Request(
+                url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib_request.urlopen(req, timeout=300) as resp:
+                body = resp.read().decode("utf-8", errors="replace")
+                return resp.getcode() or 200, body
+        except urllib_error.HTTPError as e:
+            try:
+                body = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                body = str(e)
+            return e.code, body
+        except urllib_error.URLError as e:
+            return None, f"Connection failed: {e.reason}"
+        except Exception as e:
+            return None, str(e)
+
+    status, body = await loop.run_in_executor(None, _do_scan)
+
+    if status != 200:
+        logger.error(f"[sandbox_scan] Failed with status={status}, body={body!r}")
+        
+        # Provide helpful error message
+        if status == 404:
+            yield _sse_error(
+                f"arch_query_service not found at {ARCH_QUERY_BASE_URL}\n"
+                f"Either start arch_query_service on port 8780, or use 'update architecture' instead."
+            )
+        elif status is None:
+            yield _sse_error(
+                f"Could not connect to arch_query_service at {ARCH_QUERY_BASE_URL}\n"
+                f"Error: {body}\n"
+                f"Use 'update architecture' for basic repo scanning without arch_query_service."
+            )
+        else:
+            yield _sse_error(f"Sandbox structure scan failed (status={status}): {body}")
+            
+        yield _sse_done(
+            provider="local",
+            model="sandbox_structure_scanner",
+            success=False,
+            error=f"status={status}",
+        )
+        return
+
+    # Try to show a short summary
+    try:
+        data = json.loads(body)
+        if isinstance(data, dict):
+            summary = {
+                "files_indexed": data.get("files_indexed"),
+                "roots": data.get("roots"),
+                "zones": data.get("zones"),
+                "last_scan": data.get("last_scan"),
+            }
+            yield _sse_token("✅ Sandbox structure scan complete.\n")
+            yield _sse_token("Summary:\n" + json.dumps(summary, indent=2) + "\n")
+        else:
+            yield _sse_token("✅ Sandbox structure scan complete.\n")
+            yield _sse_token("Response:\n" + body + "\n")
+    except Exception:
+        yield _sse_token("✅ Sandbox structure scan complete.\n")
+        yield _sse_token("Response:\n" + body + "\n")
+
+    finished_ms = int(loop.time() * 1000)
+    yield _sse_done(
+        provider="local",
+        model="sandbox_structure_scanner",
+        total_length=finished_ms - started_ms,
+        success=True,
     )
 
 
@@ -480,50 +611,50 @@ async def generate_local_architecture_map_stream(
     trace: Optional[RoutingTrace] = None,
 ) -> AsyncGenerator[str, None]:
     """Load .architecture/ and generate human-readable map with Claude Opus 4.5."""
-    
+
     loop = asyncio.get_event_loop()
     started_ms = int(loop.time() * 1000)
-    
+
     # 1) Check architecture exists
     if not architecture_exists():
         yield _sse_token("⚠️ No architecture data found. Running scan first...\n\n")
         async for chunk in generate_update_architecture_stream(project_id, message, db, trace):
             yield chunk
         yield _sse_token("\n")
-    
+
     yield _sse_token("📖 Loading architecture data...\n")
-    
+
     # 2) Load architecture
     manifest = load_architecture_manifest()
     files = load_architecture_files()
     enums = load_architecture_enums()
     routes = load_architecture_routes()
     imports = load_architecture_imports()
-    
+
     if not files:
         yield _sse_error("Architecture data is empty. Run 'update architecture' first.")
         yield _sse_done(provider=ARCHMAP_PROVIDER, model=ARCHMAP_MODEL, success=False, error="empty_architecture")
         return
-    
+
     yield _sse_token(f"📊 Loaded {len(files)} files, {len(enums)} enums, {len(routes)} routes\n")
     yield _sse_token("🤖 Generating architecture map with Claude Opus 4.5... (this may take a minute)\n")
-    
+
     # 3) Build prompt
     user_prompt = build_archmap_prompt(manifest, files, enums, routes, imports)
-    
+
     # 4) Call LLM (collect silently, don't stream to chat)
     try:
         from app.llm.streaming import stream_llm
-        
+
         provider = ARCHMAP_PROVIDER
         model = ARCHMAP_MODEL
-        
+
         messages = [
             {"role": "user", "content": user_prompt},
         ]
-        
+
         full_response = ""
-        
+
         async for chunk in stream_llm(
             messages=messages,
             system_prompt=ARCHMAP_SYSTEM_PROMPT,
@@ -536,23 +667,23 @@ async def generate_local_architecture_map_stream(
                 content = chunk.get("text", "") or chunk.get("content", "")
             else:
                 content = str(chunk)
-            
+
             if content:
                 full_response += content
                 # Don't yield content to chat - collect silently
-        
+
     except Exception as e:
         logger.exception(f"LLM call failed: {e}")
-        
+
         # Try fallback
-        yield _sse_token(f"⚠️ Opus failed, trying fallback...\n")
-        
+        yield _sse_token("⚠️ Opus failed, trying fallback...\n")
+
         try:
             from app.llm.streaming import stream_llm
-            
+
             provider = ARCHMAP_FALLBACK_PROVIDER
             model = ARCHMAP_FALLBACK_MODEL
-            
+
             full_response = ""
             async for chunk in stream_llm(
                 messages=messages,
@@ -566,21 +697,21 @@ async def generate_local_architecture_map_stream(
                     content = chunk.get("text", "") or chunk.get("content", "")
                 else:
                     content = str(chunk)
-                
+
                 if content:
                     full_response += content
                     # Don't yield content to chat - collect silently
-                    
+
         except Exception as e2:
             yield _sse_error(f"Both providers failed: {e2}")
             yield _sse_done(provider=provider, model=model, success=False, error=str(e2))
             return
-    
+
     # 5) Save output
     output_dir = Path(ARCHMAP_OUTPUT_DIR)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / ARCHMAP_OUTPUT_FILE
-    
+
     try:
         header = (
             f"# Orb/ASTRA Architecture Map\n\n"
@@ -589,16 +720,16 @@ async def generate_local_architecture_map_stream(
             f"Source: {get_architecture_dir()}\n\n"
             f"---\n\n"
         )
-        
+
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(header + full_response)
-        
+
     except Exception as e:
         logger.exception(f"Failed to save: {e}")
         yield _sse_error(f"Failed to save file: {e}")
         yield _sse_done(provider=provider, model=model, success=False, error=str(e))
         return
-    
+
     # 6) Record in memory
     try:
         memory_service.create_message(
@@ -613,14 +744,14 @@ async def generate_local_architecture_map_stream(
         )
     except Exception:
         pass
-    
+
     duration_ms = int(loop.time() * 1000) - started_ms
     if trace:
         trace.log_model_call(
             "local_tool", provider, model, "create_architecture_map",
             0, 0, duration_ms, success=True, error=None,
         )
-    
+
     # Final status message
     yield _sse_token(
         f"✅ Architecture map generated.\n\n"
@@ -628,7 +759,7 @@ async def generate_local_architecture_map_stream(
         f"📊 Size: {len(full_response):,} characters\n"
         f"⏱️ Duration: {duration_ms}ms\n"
     )
-    
+
     yield _sse_done(
         provider=provider,
         model=model,
@@ -648,15 +779,15 @@ async def generate_local_zobie_map_stream(
     trace: Optional[RoutingTrace] = None,
 ) -> AsyncGenerator[str, None]:
     """Run raw repo scanner (legacy command for debugging)."""
-    
+
     loop = asyncio.get_event_loop()
     started_ms = int(loop.time() * 1000)
-    
+
     yield _sse_token("🧟 Running raw repo scanner...\n")
-    
+
     try:
         stdout, stderr, output_paths = await _run_mapper()
-        
+
         if trace:
             duration_ms = int(loop.time() * 1000) - started_ms
             trace.log_model_call(
@@ -669,7 +800,7 @@ async def generate_local_zobie_map_stream(
         yield _sse_error(f"ZOBIE MAP failed: {e}")
         yield _sse_done(provider="local", model="zobie_mapper", success=False, error=str(e))
         return
-    
+
     try:
         memory_service.create_message(
             db,
@@ -683,12 +814,12 @@ async def generate_local_zobie_map_stream(
         )
     except Exception:
         pass
-    
+
     if not output_paths:
         guess = _find_latest_matching(ZOBIE_MAPPER_OUT_DIR, r"^(ARCH_MAP_|INDEX_|MANIFEST_|REPO_TREE_).*\.(md|json|txt)$")
         if guess:
             output_paths = [guess]
-    
+
     summary = "Raw scan complete.\n\nOutputs:\n" + "\n".join(f"- {p}" for p in output_paths) + "\n"
     yield _sse_token(summary)
     yield _sse_done(
@@ -704,6 +835,7 @@ async def generate_local_zobie_map_stream(
 # =============================================================================
 
 __all__ = [
+    "generate_sandbox_structure_scan_stream",
     "generate_update_architecture_stream",
     "generate_local_architecture_map_stream",
     "generate_local_zobie_map_stream",

@@ -6,6 +6,7 @@ Used as fallback when translation layer is unavailable.
 These are simple string-matching triggers that predate the
 translation layer's rule-based intent classification.
 
+v1.1 (2026-01): Cleaned up (removed host filesystem scan - sandbox only rule)
 v1.0 (2026-01): Extracted from stream_router.py
 """
 
@@ -32,7 +33,7 @@ except ImportError:
     _ARCHMAP_TRIGGER_SET = {"create architecture map", "architecture map"}
     _UPDATE_ARCH_TRIGGER_SET = {"update architecture", "refresh architecture"}
     ARCHMAP_PROVIDER = "openai"
-    ARCHMAP_MODEL = "gpt-5.2-chat-latest"
+    ARCHMAP_MODEL = "gpt-4.1"
 
 # =============================================================================
 # ENVIRONMENT CONFIG

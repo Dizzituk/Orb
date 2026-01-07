@@ -3,6 +3,7 @@
 Stream utilities - helper functions for stream_router.py
 
 v3.3 (2026-01): Fixed DEFAULT_MODELS to use runtime env lookup instead of import-time frozen values.
+v3.4 (2026-01): Prevent scan/map ASTRA commands from being misclassified as ARCHITECTURE_DESIGN in fallback routing.
 """
 
 import os
@@ -32,7 +33,7 @@ _HARDCODED_FALLBACKS = {
 
 def get_default_model(provider_key: str) -> str:
     """Get default model for a provider at RUNTIME (reads env on each call).
-    
+
     This ensures env var changes take effect without restarting the server.
     """
     env_map = {
@@ -51,7 +52,7 @@ def get_default_model(provider_key: str) -> str:
 
 def get_spec_gate_model() -> str:
     """Get SpecGate model at RUNTIME with proper precedence.
-    
+
     Precedence:
     1. OPENAI_SPEC_GATE_MODEL (if set)
     2. OPENAI_DEFAULT_MODEL (if set)
@@ -75,10 +76,10 @@ def get_spec_gate_provider() -> str:
 # New code should use get_default_model() directly
 class _DefaultModelsProxy:
     """Proxy that looks up env vars at access time, not import time."""
-    
+
     def __getitem__(self, key: str) -> str:
         return get_default_model(key)
-    
+
     def get(self, key: str, default: Optional[str] = None) -> str:
         result = get_default_model(key)
         # If we got the hardcoded fallback and a different default was requested, use that
@@ -97,7 +98,7 @@ DEFAULT_MODELS = _DefaultModelsProxy()
 def chunk_text(s: str, chunk_size: int = 120) -> List[str]:
     if not s:
         return []
-    return [s[i : i + chunk_size] for i in range(0, len(s), chunk_size)]
+    return [s[i: i + chunk_size] for i in range(0, len(s), chunk_size)]
 
 
 def cap_text(label: str, text: str, max_chars: int) -> str:
@@ -226,14 +227,42 @@ def get_semantic_context(db: Session, project_id: int, query: str) -> str:
 
 
 def classify_job_type(message: str, requested_type: str) -> JobType:
+    # Respect explicit requested type unless casual_chat
     if requested_type and requested_type != "casual_chat":
         try:
             return JobType(requested_type)
         except ValueError:
             pass
 
-    msg_lower = message.lower()
-    print(f"[stream_utils] Classifying message (first 200 chars): {repr(message[:200])}")
+    # Normalize message safely
+    msg = (message or "").strip()
+    msg_lower = msg.lower()
+
+    # -------------------------------------------------------------------------
+    # v3.4: HARD GUARD — prevent scan/map ASTRA commands from being classified
+    #       as ARCHITECTURE_DESIGN in fallback routing.
+    #
+    # Why: If translation-layer command execution fails for any reason and the
+    # router falls through into normal routing, "architecture" keywords would
+    # previously escalate into ARCHITECTURE_DESIGN → high-stakes → SpecGate.
+    # These specific commands must stay non-governed.
+    # -------------------------------------------------------------------------
+    if msg_lower.startswith("astra, command:"):
+        cmd_text = msg_lower.split("astra, command:", 1)[1].strip()
+
+        # Scan-only (memory only, no out folder, no governance)
+        if cmd_text.startswith("update architecture") or cmd_text.startswith("scan system"):
+            print("[stream_utils] ASTRA scan command detected; forcing CASUAL_CHAT classification (no high-stakes).")
+            return JobType.CASUAL_CHAT
+
+        # Map builder commands (scanner + optional Opus map formatting, but NO governance)
+        # Note: We are ONLY preventing high-stakes escalation here. Actual routing to the
+        # correct local handler still happens in stream_router.py when translation resolves.
+        if cmd_text.startswith("create architecture map") or cmd_text.startswith("create architecture mapping"):
+            print("[stream_utils] ASTRA arch-map command detected; forcing CASUAL_CHAT classification (no high-stakes).")
+            return JobType.CASUAL_CHAT
+
+    print(f"[stream_utils] Classifying message (first 200 chars): {repr(msg[:200])}")
 
     security_keywords = [
         "security review", "security audit", "security assessment", "penetration test",

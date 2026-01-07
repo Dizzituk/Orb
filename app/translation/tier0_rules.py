@@ -7,11 +7,13 @@ Handles:
 - Wake phrases ("Astra, command:", "Astra, feedback:")
 - Obvious capitalised commands ("CREATE ARCHITECTURE MAP")
 - Obvious natural commands ("Start your zombie", "update architecture")
+- Scan sandbox commands ("scan sandbox", "scan filesystem")
 - Spec Gate flow commands ("How does that look all together", "Send to Spec Gate")
 - Critical Pipeline commands ("run critical pipeline")
 - Overwatcher commands ("send to overwatcher")
 - Obvious chat patterns (questions, past tense, etc.)
 
+v1.4 (2026-01): Added check_scan_sandbox_trigger, wired check_update_architecture
 v1.3 (2026-01): Added check_overwatcher_trigger, wired check_critical_pipeline_trigger
 v1.2 (2026-01): Fixed "critical architecture" -> SEND_TO_SPEC_GATE (was incorrectly in Weaver)
 v1.1 (2026-01): Added Spec Gate flow handlers (WEAVER_BUILD_SPEC, SEND_TO_SPEC_GATE)
@@ -76,7 +78,17 @@ def tier0_classify(text: str) -> Tier0RuleResult:
     if result.matched:
         return result
     
-    # 3. Check Spec Gate flow special handlers
+    # 3. Check architecture update trigger
+    result = check_update_architecture(text_stripped)
+    if result.matched:
+        return result
+    
+    # 3b. Check scan sandbox trigger
+    result = check_scan_sandbox_trigger(text_stripped)
+    if result.matched:
+        return result
+    
+    # 4. Check Spec Gate flow special handlers
     result = check_weaver_trigger(text_stripped)
     if result.matched:
         return result
@@ -273,6 +285,38 @@ def check_update_architecture(text: str) -> Tier0RuleResult:
                 confidence=1.0,
                 rule_name="update_architecture",
                 reason="Architecture update command detected",
+            )
+    
+    return Tier0RuleResult(matched=False)
+
+
+def check_scan_sandbox_trigger(text: str) -> Tier0RuleResult:
+    """
+    Special handler for sandbox scanning commands.
+    
+    Scans the sandbox filesystem structure via sandbox controller.
+    Does NOT scan host PC - only sandbox environment.
+    """
+    text_lower = text.strip().lower()
+    
+    patterns = [
+        r"^scan sandbox$",
+        r"^scan the sandbox$",
+        r"^sandbox scan$",
+        r"^scan sandbox structure$",
+        r"^scan sandbox filesystem$",
+        r"^scan filesystem$",
+        r"^filesystem scan$",
+    ]
+    
+    for pattern in patterns:
+        if re.match(pattern, text_lower):
+            return Tier0RuleResult(
+                matched=True,
+                intent=CanonicalIntent.SCAN_SANDBOX_STRUCTURE,
+                confidence=1.0,
+                rule_name="scan_sandbox",
+                reason="Sandbox scan command detected",
             )
     
     return Tier0RuleResult(matched=False)

@@ -220,7 +220,7 @@ async def generate_high_stakes_critique_stream(
             # v3.3: Use run_spec_gate_v2 with project_id for DB persistence
             print(f"[DEBUG] Calling run_spec_gate_v2 with project_id={project_id}...")
             spec_gate_result = await run_spec_gate_v2(
-                db,
+                db=db,
                 job_id=envelope.job_id,
                 user_intent=spec_gate_user_intent,
                 provider_id=spec_gate_provider,
@@ -440,7 +440,7 @@ async def generate_high_stakes_critique_stream(
 
                 # v3.3: Use run_spec_gate_v2 with project_id for reroute case too
                 reroute_result = await run_spec_gate_v2(
-                    db,
+                    db=db,
                     job_id=envelope.job_id,
                     user_intent=message,
                     provider_id=spec_gate_provider,

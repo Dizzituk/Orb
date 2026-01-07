@@ -138,30 +138,48 @@ def intent_to_routing_info(intent: "CanonicalIntent") -> Optional[dict]:
             "model": "sandbox_manager",
             "reason": "Translation layer: START SANDBOX ZOMBIE",
         },
+        CanonicalIntent.SCAN_SANDBOX_STRUCTURE: {
+            "type": "local.sandbox_structure",
+            "provider": "local",
+            "model": "sandbox_structure_scanner",
+            "reason": "Translation layer: SCAN SANDBOX STRUCTURE",
+        },
         # v1.2: Dynamic config from stage_models
         CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB: {
             "type": "high_stakes.critical_pipeline",
             "provider": critical.provider,
             "model": critical.model,
-            "reason": f"Translation layer: RUN CRITICAL PIPELINE ({critical.provider}/{critical.model})",
+            "reason": (
+                "Translation layer: RUN CRITICAL PIPELINE "
+                f"({critical.provider}/{critical.model})"
+            ),
         },
         CanonicalIntent.WEAVER_BUILD_SPEC: {
             "type": "local.weaver",
             "provider": weaver.provider,
             "model": weaver.model,
-            "reason": f"Translation layer: WEAVER BUILD SPEC ({weaver.provider}/{weaver.model})",
+            "reason": (
+                "Translation layer: WEAVER BUILD SPEC "
+                f"({weaver.provider}/{weaver.model})"
+            ),
         },
         CanonicalIntent.SEND_TO_SPEC_GATE: {
             "type": "local.spec_gate",
             "provider": spec_gate.provider,
             "model": spec_gate.model,
-            "reason": f"Translation layer: SEND TO SPEC GATE ({spec_gate.provider}/{spec_gate.model})",
+            "reason": (
+                "Translation layer: SEND TO SPEC GATE "
+                f"({spec_gate.provider}/{spec_gate.model})"
+            ),
         },
         CanonicalIntent.OVERWATCHER_EXECUTE_CHANGES: {
             "type": "local.overwatcher",
             "provider": overwatcher.provider,
             "model": overwatcher.model,
-            "reason": f"Translation layer: OVERWATCHER EXECUTE ({overwatcher.provider}/{overwatcher.model})",
+            "reason": (
+                "Translation layer: OVERWATCHER EXECUTE "
+                f"({overwatcher.provider}/{overwatcher.model})"
+            ),
         },
     }
     return mapping.get(intent, None)

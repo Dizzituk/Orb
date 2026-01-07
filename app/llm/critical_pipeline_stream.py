@@ -2,22 +2,19 @@
 """
 Critical Pipeline streaming handler for ASTRA command flow.
 
-Wires the streaming handler to the existing Block 4-6 pipeline in app/llm/pipeline/:
-- high_stakes.py: Main orchestrator (run_high_stakes_with_critique)
-- critique.py: JSON critique with blocking/non-blocking issues
-- revision.py: Spec-anchored revision loop
-- critique_schemas.py: CritiqueResult/CritiqueIssue schemas
+v2.1 (2026-01-04): Artifact Binding Support
+- Extracts artifact bindings from spec for Overwatcher
+- Includes content_verbatim, location, scope_constraints in architecture prompt
+- Generates concrete file paths for implementation
 
-v2.0 (2026-01): COMPLETE REWRITE - Now calls real pipeline orchestration
-v1.1 (2026-01): Fixed spec_id lookup (was stub returning fake output)
-v1.0 (2026-01): Initial stub implementation
+v2.0: Real pipeline integration with Block 4-6.
 """
 
 import json
 import logging
 import asyncio
 import os
-from typing import Optional, Any
+from typing import Optional, Any, List, Dict
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -112,22 +109,161 @@ except ImportError:
 # =============================================================================
 
 def _get_pipeline_model_config() -> dict:
-    """Get Critical Pipeline model configuration from env vars AT RUNTIME."""
     if _STAGE_MODELS_AVAILABLE:
         try:
             cfg = get_critical_pipeline_config()
-            return {
-                "provider": cfg.provider,
-                "model": cfg.model,
-            }
+            return {"provider": cfg.provider, "model": cfg.model}
         except Exception:
             pass
-    
-    # Fallback to env vars
     return {
         "provider": os.getenv("CRITICAL_PIPELINE_PROVIDER", "anthropic"),
         "model": os.getenv("ANTHROPIC_OPUS_MODEL", "claude-opus-4-5-20251101"),
     }
+
+
+# =============================================================================
+# Artifact Binding (v2.1)
+# =============================================================================
+
+# Path template variables for artifact binding
+PATH_VARIABLES = {
+    "{JOB_ID}": lambda ctx: ctx.get("job_id", "unknown"),
+    "{JOB_ROOT}": lambda ctx: os.getenv("ORB_JOB_ARTIFACT_ROOT", "jobs"),
+    "{SANDBOX_DESKTOP}": lambda ctx: "C:/Users/WDAGUtilityAccount/Desktop",
+    "{REPO_ROOT}": lambda ctx: ctx.get("repo_root", "."),
+}
+
+
+def _resolve_path_template(template: str, context: Dict[str, Any]) -> str:
+    """Resolve path template variables."""
+    result = template
+    for var, resolver in PATH_VARIABLES.items():
+        if var in result:
+            result = result.replace(var, str(resolver(context)))
+    return result
+
+
+def _extract_artifact_bindings(spec_data: Dict[str, Any], context: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Extract and resolve artifact bindings from spec for Overwatcher.
+    
+    Returns list of bindings with resolved paths:
+    [
+        {
+            "artifact_id": "output_1",
+            "action": "create",
+            "path": "/resolved/path/to/file.txt",
+            "content_type": "text",
+            "content_verbatim": "hello",  # if specified
+            "description": "Output file"
+        }
+    ]
+    """
+    bindings: List[Dict[str, Any]] = []
+    
+    # Get outputs from spec
+    outputs = spec_data.get("outputs", [])
+    if not outputs:
+        # Try metadata
+        metadata = spec_data.get("metadata", {}) or {}
+        outputs = metadata.get("outputs", [])
+    
+    # Get content preservation fields
+    content_verbatim = (
+        spec_data.get("content_verbatim") or
+        spec_data.get("context", {}).get("content_verbatim") or
+        spec_data.get("metadata", {}).get("content_verbatim")
+    )
+    location = (
+        spec_data.get("location") or
+        spec_data.get("context", {}).get("location") or
+        spec_data.get("metadata", {}).get("location")
+    )
+    
+    for i, output in enumerate(outputs):
+        if isinstance(output, str):
+            output = {"name": output, "path": "", "description": ""}
+        
+        name = output.get("name", f"output_{i+1}")
+        path = output.get("path", "")
+        description = output.get("description", output.get("notes", ""))
+        
+        # Resolve path
+        if path:
+            resolved_path = _resolve_path_template(path, context)
+        elif location:
+            # Use location from content preservation
+            resolved_path = _resolve_path_template(location, context)
+            if name and not resolved_path.endswith(name):
+                resolved_path = os.path.join(resolved_path, name)
+        else:
+            # Default to job artifacts directory
+            resolved_path = os.path.join(
+                context.get("job_root", "jobs"),
+                "jobs",
+                context.get("job_id", "unknown"),
+                "outputs",
+                name
+            )
+        
+        binding = {
+            "artifact_id": f"output_{i+1}",
+            "action": "create",
+            "path": resolved_path,
+            "content_type": _infer_content_type(name),
+            "description": description or name,
+        }
+        
+        # Include content_verbatim if this is the primary output
+        if i == 0 and content_verbatim:
+            binding["content_verbatim"] = content_verbatim
+        
+        bindings.append(binding)
+    
+    logger.info("[critical_pipeline] Extracted %d artifact bindings", len(bindings))
+    return bindings
+
+
+def _infer_content_type(filename: str) -> str:
+    """Infer content type from filename."""
+    ext = os.path.splitext(filename.lower())[1]
+    type_map = {
+        ".txt": "text",
+        ".md": "markdown",
+        ".json": "json",
+        ".py": "python",
+        ".js": "javascript",
+        ".html": "html",
+        ".css": "css",
+        ".yaml": "yaml",
+        ".yml": "yaml",
+    }
+    return type_map.get(ext, "text")
+
+
+def _build_artifact_binding_prompt(bindings: List[Dict[str, Any]]) -> str:
+    """Build prompt section for artifact bindings."""
+    if not bindings:
+        return ""
+    
+    lines = [
+        "\n## ARTIFACT BINDINGS (for Overwatcher)",
+        "",
+        "The following artifacts MUST be created with these EXACT paths:",
+        ""
+    ]
+    
+    for binding in bindings:
+        lines.append(f"- **{binding['artifact_id']}**: `{binding['path']}`")
+        lines.append(f"  - Action: {binding['action']}")
+        lines.append(f"  - Type: {binding['content_type']}")
+        if binding.get("content_verbatim"):
+            lines.append(f"  - Content: \"{binding['content_verbatim']}\" (EXACT)")
+        lines.append("")
+    
+    lines.append("Overwatcher will use these bindings to write files. Do NOT invent different paths.")
+    
+    return "\n".join(lines)
 
 
 # =============================================================================
@@ -145,20 +281,17 @@ async def generate_critical_pipeline_stream(
     job_id: Optional[str] = None,
 ):
     """
-    Generate SSE stream for Critical Pipeline execution.
+    Generate SSE stream for Critical Pipeline execution with artifact binding (v2.1).
     
-    This handler wires to the existing Block 4-6 pipeline:
+    Flow:
     1. Load validated spec from DB
-    2. Build JobEnvelope and LLMTask
-    3. Call run_high_stakes_with_critique() from high_stakes.py
-    4. Stream progress and final result
-    5. Real artifacts are written by the pipeline
-    
-    v2.0: Now calls real pipeline orchestration instead of returning fake output.
+    2. Extract artifact bindings with resolved paths
+    3. Build JobEnvelope and LLMTask with binding context
+    4. Call run_high_stakes_with_critique()
+    5. Stream progress and final result
     """
     response_parts = []
     
-    # Get model config from env
     model_cfg = _get_pipeline_model_config()
     pipeline_provider = model_cfg["provider"]
     pipeline_model = model_cfg["model"]
@@ -168,14 +301,13 @@ async def generate_critical_pipeline_stream(
         response_parts.append("⚙️ **Critical Pipeline**\n\n")
         
         # =====================================================================
-        # Validation: Check required modules are available
+        # Validation
         # =====================================================================
         
         if not _PIPELINE_AVAILABLE:
             error_msg = (
                 "❌ **Pipeline modules not available.**\n\n"
                 "The high-stakes pipeline modules (app.llm.pipeline.*) failed to import.\n"
-                "Check backend logs for import errors.\n"
             )
             yield "data: " + json.dumps({"type": "token", "content": error_msg}) + "\n\n"
             response_parts.append(error_msg)
@@ -191,8 +323,6 @@ async def generate_critical_pipeline_stream(
             error_msg = "❌ **Schema imports failed.** Check backend logs.\n"
             yield "data: " + json.dumps({"type": "token", "content": error_msg}) + "\n\n"
             response_parts.append(error_msg)
-            if trace:
-                trace.finalize(success=False, error_message="Schema imports failed")
             yield "data: " + json.dumps({
                 "type": "done", "provider": pipeline_provider, "model": pipeline_model,
                 "total_length": sum(len(p) for p in response_parts)
@@ -200,13 +330,12 @@ async def generate_critical_pipeline_stream(
             return
         
         # =====================================================================
-        # Step 1: Load validated spec from DB
+        # Step 1: Load validated spec
         # =====================================================================
         
-        yield "data: " + json.dumps({"type": "token", "content": "📋 **Loading validated spec from database...**\n"}) + "\n\n"
-        response_parts.append("📋 **Loading validated spec from database...**\n")
+        yield "data: " + json.dumps({"type": "token", "content": "📋 **Loading validated spec...**\n"}) + "\n\n"
+        response_parts.append("📋 **Loading validated spec...**\n")
         
-        # Try to get spec by ID first, then by project
         db_spec = None
         spec_json = None
         
@@ -233,53 +362,87 @@ async def generate_critical_pipeline_stream(
             )
             yield "data: " + json.dumps({"type": "token", "content": error_msg}) + "\n\n"
             response_parts.append(error_msg)
-            if trace:
-                trace.finalize(success=False, error_message="No validated spec")
             yield "data: " + json.dumps({
                 "type": "done", "provider": pipeline_provider, "model": pipeline_model,
                 "total_length": sum(len(p) for p in response_parts)
             }) + "\n\n"
             return
         
-        # Extract spec details
         spec_id = db_spec.spec_id
         spec_hash = db_spec.spec_hash
-        spec_json = db_spec.content_json  # This is the canonical JSON
+        spec_json = db_spec.content_json
+        
+        # Parse spec JSON
+        try:
+            spec_data = json.loads(spec_json) if isinstance(spec_json, str) else (spec_json or {})
+        except Exception:
+            spec_data = {}
         
         yield "data: " + json.dumps({"type": "token", "content": f"✅ Spec loaded: `{spec_id[:16]}...`\n"}) + "\n\n"
         response_parts.append(f"✅ Spec loaded: `{spec_id[:16]}...`\n")
-        yield "data: " + json.dumps({"type": "token", "content": f"   Hash: `{spec_hash[:16]}...`\n"}) + "\n\n"
-        response_parts.append(f"   Hash: `{spec_hash[:16]}...`\n")
-        yield "data: " + json.dumps({"type": "token", "content": f"   Status: `{db_spec.status}`\n\n"}) + "\n\n"
-        response_parts.append(f"   Status: `{db_spec.status}`\n\n")
         
         # =====================================================================
-        # Step 2: Create job ID if not provided
+        # Step 2: Create job ID and extract artifact bindings (v2.1)
         # =====================================================================
         
         if not job_id:
             job_id = f"cp-{uuid4().hex[:8]}"
         
-        yield "data: " + json.dumps({"type": "token", "content": f"📁 **Job ID:** `{job_id}`\n\n"}) + "\n\n"
-        response_parts.append(f"📁 **Job ID:** `{job_id}`\n\n")
+        # Build context for path resolution
+        binding_context = {
+            "job_id": job_id,
+            "job_root": os.getenv("ORB_JOB_ARTIFACT_ROOT", "jobs"),
+            "repo_root": os.getenv("REPO_ROOT", "."),
+        }
+        
+        # Extract artifact bindings
+        artifact_bindings = _extract_artifact_bindings(spec_data, binding_context)
+        
+        yield "data: " + json.dumps({"type": "token", "content": f"📁 **Job ID:** `{job_id}`\n"}) + "\n\n"
+        response_parts.append(f"📁 **Job ID:** `{job_id}`\n")
+        
+        if artifact_bindings:
+            binding_msg = f"📦 **Artifact Bindings:** {len(artifact_bindings)} output(s)\n"
+            for b in artifact_bindings[:3]:  # Show first 3
+                binding_msg += f"  - `{b['path']}`\n"
+            if len(artifact_bindings) > 3:
+                binding_msg += f"  - ... and {len(artifact_bindings) - 3} more\n"
+            yield "data: " + json.dumps({"type": "token", "content": binding_msg}) + "\n\n"
+            response_parts.append(binding_msg)
         
         # =====================================================================
-        # Step 3: Build JobEnvelope and LLMTask
+        # Step 3: Build prompt with content preservation and bindings
         # =====================================================================
         
-        yield "data: " + json.dumps({"type": "token", "content": "🔧 **Initializing pipeline...**\n\n"}) + "\n\n"
-        response_parts.append("🔧 **Initializing pipeline...**\n\n")
+        yield "data: " + json.dumps({"type": "token", "content": "🔧 **Building architecture prompt...**\n\n"}) + "\n\n"
+        response_parts.append("🔧 **Building architecture prompt...**\n\n")
         
-        # Extract original request from spec or message
+        # Extract content preservation fields
+        content_verbatim = (
+            spec_data.get("content_verbatim") or
+            spec_data.get("context", {}).get("content_verbatim") or
+            spec_data.get("metadata", {}).get("content_verbatim")
+        )
+        location = (
+            spec_data.get("location") or
+            spec_data.get("context", {}).get("location") or
+            spec_data.get("metadata", {}).get("location")
+        )
+        scope_constraints = (
+            spec_data.get("scope_constraints") or
+            spec_data.get("context", {}).get("scope_constraints") or
+            spec_data.get("metadata", {}).get("scope_constraints") or
+            []
+        )
+        
+        # Build artifact binding prompt section
+        binding_prompt = _build_artifact_binding_prompt(artifact_bindings)
+        
+        # Build system prompt with all context
         original_request = message
-        if spec_json:
-            try:
-                spec_data = json.loads(spec_json) if isinstance(spec_json, str) else spec_json
-                original_request = spec_data.get("goal", "") or spec_data.get("objective", "") or message
-            except:
-                pass
+        if spec_data:
+            original_request = spec_data.get("goal", "") or spec_data.get("objective", "") or message
         
-        # Build messages for the LLM
         system_prompt = f"""You are Claude Opus, generating a detailed architecture document.
 
 SPEC_ID: {spec_id}
@@ -291,11 +454,36 @@ You are working from a validated PoT Spec. Your architecture MUST:
 3. Be buildable by a solo developer on Windows 11
 4. Include the SPEC_ID and SPEC_HASH header at the top of your output
 
-Generate a complete, detailed architecture document."""
-
+## CONTENT PRESERVATION (CRITICAL)
+"""
+        
+        if content_verbatim:
+            system_prompt += f"""
+**EXACT FILE CONTENT REQUIRED:**
+The file content MUST be EXACTLY: "{content_verbatim}"
+Do NOT paraphrase, summarize, or modify this content in any way.
+"""
+        
+        if location:
+            system_prompt += f"""
+**EXACT LOCATION REQUIRED:**
+The output MUST be written to: {location}
+Use this EXACT path - do not substitute or normalize it.
+"""
+        
+        if scope_constraints:
+            system_prompt += f"""
+**SCOPE CONSTRAINTS:**
+{chr(10).join(f'- {c}' for c in scope_constraints)}
+The implementation MUST NOT operate outside these boundaries.
+"""
+        
+        system_prompt += binding_prompt
+        system_prompt += "\n\nGenerate a complete, detailed architecture document."
+        
         task_messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Generate architecture for:\n\n{original_request}\n\nSpec:\n{spec_json}"},
+            {"role": "user", "content": f"Generate architecture for:\n\n{original_request}\n\nSpec:\n{json.dumps(spec_data, indent=2)}"},
         ]
         
         # Build LLMTask
@@ -305,7 +493,7 @@ Generate a complete, detailed architecture document."""
             attachments=[],
         )
         
-        # Build JobEnvelope
+        # Build JobEnvelope with artifact bindings in metadata
         envelope = JobEnvelope(
             job_id=job_id,
             session_id=conversation_id or f"session-{uuid4().hex[:8]}",
@@ -316,8 +504,8 @@ Generate a complete, detailed architecture document."""
             modalities_in=[Modality.TEXT],
             budget=JobBudget(
                 max_tokens=16384,
-                max_cost_estimate=1.00,  # Allow higher cost for Opus
-                max_wall_time_seconds=600,  # 10 minutes for full pipeline
+                max_cost_estimate=1.00,
+                max_wall_time_seconds=600,
             ),
             output_contract=OutputContract.TEXT_RESPONSE,
             messages=task_messages,
@@ -325,43 +513,37 @@ Generate a complete, detailed architecture document."""
                 "spec_id": spec_id,
                 "spec_hash": spec_hash,
                 "pipeline": "critical",
+                # v2.1: Include artifact bindings for Overwatcher
+                "artifact_bindings": artifact_bindings,
+                "content_verbatim": content_verbatim,
+                "location": location,
+                "scope_constraints": scope_constraints,
             },
             allow_multi_model_review=True,
             needs_tools=[],
         )
         
         # =====================================================================
-        # Step 4: Run the actual pipeline
+        # Step 4: Run the pipeline
         # =====================================================================
         
         yield "data: " + json.dumps({"type": "token", "content": f"🏗️ **Starting Block 4-6 Pipeline with {pipeline_model}...**\n\n"}) + "\n\n"
         response_parts.append(f"🏗️ **Starting Block 4-6 Pipeline with {pipeline_model}...**\n\n")
         
         yield "data: " + json.dumps({"type": "token", "content": "This may take 2-5 minutes. Stages:\n"}) + "\n\n"
-        response_parts.append("This may take 2-5 minutes. Stages:\n")
-        yield "data: " + json.dumps({"type": "token", "content": "  1. 📝 Architecture generation (Opus)\n"}) + "\n\n"
-        response_parts.append("  1. 📝 Architecture generation (Opus)\n")
-        yield "data: " + json.dumps({"type": "token", "content": "  2. 🔍 Critique (Gemini)\n"}) + "\n\n"
-        response_parts.append("  2. 🔍 Critique (Gemini)\n")
-        yield "data: " + json.dumps({"type": "token", "content": "  3. ✏️ Revision loop (Opus) - up to 3 rounds\n\n"}) + "\n\n"
-        response_parts.append("  3. ✏️ Revision loop (Opus) - up to 3 rounds\n\n")
+        yield "data: " + json.dumps({"type": "token", "content": "  1. 📝 Architecture generation\n"}) + "\n\n"
+        yield "data: " + json.dumps({"type": "token", "content": "  2. 🔍 Critique\n"}) + "\n\n"
+        yield "data: " + json.dumps({"type": "token", "content": "  3. ✏️ Revision loop (up to 3 rounds)\n\n"}) + "\n\n"
         
         yield "data: " + json.dumps({
             "type": "pipeline_started",
             "stage": "critical_pipeline",
             "job_id": job_id,
             "spec_id": spec_id,
-            "provider": pipeline_provider,
-            "model": pipeline_model,
+            "artifact_bindings": len(artifact_bindings),
         }) + "\n\n"
         
-        # Emit stage trace
-        print(f"[STAGE_TRACE] ┌─ ENTER: architecture_generation")
-        print(f"[STAGE_TRACE] │  job_id={job_id}, spec_id={spec_id}")
-        print(f"[STAGE_TRACE] │  provider={pipeline_provider}, model={pipeline_model}")
-        
         try:
-            # Call the real pipeline
             result = await run_high_stakes_with_critique(
                 task=task,
                 provider_id=pipeline_provider,
@@ -376,16 +558,11 @@ Generate a complete, detailed architecture document."""
                 use_json_critique=True,
             )
             
-            print(f"[STAGE_TRACE] └─ EXIT: pipeline_complete")
-            print(f"[STAGE_TRACE]    result_length={len(result.content) if result else 0}")
-            
         except Exception as e:
             logger.exception(f"[critical_pipeline] Pipeline failed: {e}")
             error_msg = f"❌ **Pipeline failed:** {e}\n"
             yield "data: " + json.dumps({"type": "token", "content": error_msg}) + "\n\n"
             response_parts.append(error_msg)
-            if trace:
-                trace.finalize(success=False, error_message=str(e))
             yield "data: " + json.dumps({
                 "type": "done", "provider": pipeline_provider, "model": pipeline_model,
                 "total_length": sum(len(p) for p in response_parts), "error": str(e)
@@ -400,33 +577,30 @@ Generate a complete, detailed architecture document."""
             error_msg = "❌ **Pipeline returned empty result.**\n"
             yield "data: " + json.dumps({"type": "token", "content": error_msg}) + "\n\n"
             response_parts.append(error_msg)
-            if trace:
-                trace.finalize(success=False, error_message="Empty pipeline result")
             yield "data: " + json.dumps({
                 "type": "done", "provider": pipeline_provider, "model": pipeline_model,
                 "total_length": sum(len(p) for p in response_parts)
             }) + "\n\n"
             return
         
-        # Extract routing decision metadata
         routing_decision = getattr(result, 'routing_decision', {}) or {}
         arch_id = routing_decision.get('arch_id', 'unknown')
         final_version = routing_decision.get('final_version', 1)
         critique_passed = routing_decision.get('critique_passed', False)
         blocking_issues = routing_decision.get('blocking_issues', 0)
         
-        # Stream pipeline summary
         summary_header = "✅ **Pipeline Complete**\n\n"
         yield "data: " + json.dumps({"type": "token", "content": summary_header}) + "\n\n"
         response_parts.append(summary_header)
         
         summary_details = f"""**Architecture ID:** `{arch_id}`
 **Final Version:** v{final_version}
-**Critique Status:** {"✅ PASSED" if critique_passed else f"⚠️ {blocking_issues} blocking issues remain"}
+**Critique Status:** {"✅ PASSED" if critique_passed else f"⚠️ {blocking_issues} blocking issues"}
 **Provider:** {result.provider}
 **Model:** {result.model}
 **Tokens:** {result.total_tokens:,}
 **Cost:** ${result.cost_usd:.4f}
+**Artifact Bindings:** {len(artifact_bindings)}
 
 ---
 
@@ -434,7 +608,7 @@ Generate a complete, detailed architecture document."""
         yield "data: " + json.dumps({"type": "token", "content": summary_details}) + "\n\n"
         response_parts.append(summary_details)
         
-        # Stream the architecture content in chunks
+        # Stream architecture content
         yield "data: " + json.dumps({"type": "token", "content": "### Architecture Document\n\n"}) + "\n\n"
         response_parts.append("### Architecture Document\n\n")
         
@@ -447,10 +621,9 @@ Generate a complete, detailed architecture document."""
             await asyncio.sleep(0.01)
         
         # =====================================================================
-        # Step 6: Emit completion events
+        # Step 6: Emit completion events with artifact bindings
         # =====================================================================
         
-        # Emit work artifacts event
         yield "data: " + json.dumps({
             "type": "work_artifacts",
             "spec_id": spec_id,
@@ -458,23 +631,22 @@ Generate a complete, detailed architecture document."""
             "arch_id": arch_id,
             "final_version": final_version,
             "critique_passed": critique_passed,
+            "artifact_bindings": artifact_bindings,  # v2.1: Include for Overwatcher
             "artifacts": [
                 f"arch_v{final_version}.md",
                 f"critique_v{final_version}.json",
-                f"critique_v{final_version}.md",
             ],
         }) + "\n\n"
         
-        # Only suggest Overwatcher if critique passed
         if critique_passed:
-            next_step = """
+            next_step = f"""
 
 ---
 ✅ **Ready for Implementation**
 
-All blocking issues resolved. Architecture is approved.
+Architecture approved with {len(artifact_bindings)} artifact binding(s).
 
-🔧 **Next Step:** Say **'Astra, command: send to overwatcher'** to have Overwatcher implement these changes.
+🔧 **Next Step:** Say **'Astra, command: send to overwatcher'** to implement.
 """
         else:
             next_step = f"""
@@ -482,28 +654,20 @@ All blocking issues resolved. Architecture is approved.
 ---
 ⚠️ **Critique Not Fully Passed**
 
-{blocking_issues} blocking issues remain after max revision iterations.
-Review the architecture document above for outstanding issues.
+{blocking_issues} blocking issues remain. Review the architecture above.
 
 You may:
-- Re-run the pipeline with updated spec
-- Manually address blocking issues
+- Re-run with updated spec
 - Proceed to Overwatcher with caution
 """
         
         yield "data: " + json.dumps({"type": "token", "content": next_step}) + "\n\n"
         response_parts.append(next_step)
         
-        # =====================================================================
-        # Step 7: Save to memory
-        # =====================================================================
-        
+        # Save to memory
         full_response = "".join(response_parts)
         if memory_service and memory_schemas:
             try:
-                memory_service.create_message(db, memory_schemas.MessageCreate(
-                    project_id=project_id, role="user", content=message, provider="local"
-                ))
                 memory_service.create_message(db, memory_schemas.MessageCreate(
                     project_id=project_id, role="assistant", content=full_response,
                     provider=pipeline_provider, model=pipeline_model
@@ -524,6 +688,7 @@ You may:
             "arch_id": arch_id,
             "final_version": final_version,
             "critique_passed": critique_passed,
+            "artifact_bindings": len(artifact_bindings),
             "tokens": result.total_tokens,
             "cost_usd": result.cost_usd,
         }) + "\n\n"

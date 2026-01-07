@@ -1,4 +1,15 @@
 # FILE: app/llm/weaver_stream_core.py
+"""
+Weaver Stream Core - Prompt building and response parsing for ASTRA Weaver.
+
+v2.1 (2026-01-04): Content Preservation Fix
+- Added CONTENT_PRESERVATION_DIRECTIVE to prevent "Chinese whispers" content drift
+- Added content_verbatim, location, scope_constraints fields to output schema
+- Improved instructions for small/cheap LLMs (GPT-5 mini, etc.)
+- Better few-shot examples for verbatim extraction
+
+v2.0: Original implementation with incremental weaving support.
+"""
 from __future__ import annotations
 
 import json
@@ -13,9 +24,7 @@ from sqlalchemy.orm import Session
 from app.git_utils import get_current_commit
 from app.memory import service as memory_service
 
-# IMPORTANT:
-# Use direct module import paths (not package re-exports) to avoid import-time failures.
-from app.specs.schema import (  # type: ignore
+from app.specs.schema import (
     SpecConstraints,
     SpecMetadata,
     SpecProvenance,
@@ -24,18 +33,15 @@ from app.specs.schema import (  # type: ignore
     Spec as SpecSchema,
 )
 
-# Optional: incremental helpers (safe, dependency-light)
 try:
     from app.llm.weaver_incremental import format_conversation_for_prompt
-
     _INCREMENTAL_HELPERS_AVAILABLE = True
 except Exception:
-    format_conversation_for_prompt = None  # type: ignore
+    format_conversation_for_prompt = None
     _INCREMENTAL_HELPERS_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
-# Env-driven context limits (kept consistent with weaver_stream.py defaults)
 WEAVER_MAX_OUTPUT_TOKENS = int(os.getenv("WEAVER_MAX_OUTPUT_TOKENS", "15000"))
 MAX_MESSAGES_FOR_SPEC = int(os.getenv("WEAVER_MAX_MESSAGES", "50"))
 MAX_TOKENS_FOR_CONTEXT = int(os.getenv("WEAVER_MAX_CONTEXT_TOKENS", str(WEAVER_MAX_OUTPUT_TOKENS)))
@@ -43,83 +49,49 @@ WEAVER_DELTA_FETCH_MULTIPLIER = int(os.getenv("WEAVER_DELTA_FETCH_MULTIPLIER", "
 
 
 def _to_jsonable(obj: Any) -> Any:
-    """
-    Convert nested objects into JSON-serializable primitives.
-
-    Defensive: previous spec cores can include Pydantic models (e.g., SpecConstraints),
-    dataclasses, datetimes, enums, etc.
-    """
     if obj is None or isinstance(obj, (str, int, float, bool)):
         return obj
-
     if isinstance(obj, datetime):
         return obj.isoformat()
-
     if isinstance(obj, dict):
         return {str(k): _to_jsonable(v) for k, v in obj.items()}
-
     if isinstance(obj, (list, tuple, set)):
         return [_to_jsonable(v) for v in obj]
-
     if is_dataclass(obj):
         return _to_jsonable(asdict(obj))
-
-    # pydantic v2
     if hasattr(obj, "model_dump"):
         try:
-            return _to_jsonable(obj.model_dump())  # type: ignore[attr-defined]
+            return _to_jsonable(obj.model_dump())
         except Exception:
             pass
-
-    # pydantic v1
     if hasattr(obj, "dict"):
         try:
-            return _to_jsonable(obj.dict())  # type: ignore[attr-defined]
+            return _to_jsonable(obj.dict())
         except Exception:
             pass
-
-    # enum-like
     if hasattr(obj, "value"):
         try:
-            return _to_jsonable(obj.value)  # type: ignore[attr-defined]
+            return _to_jsonable(obj.value)
         except Exception:
             pass
-
-    # last resort: public __dict__
     if hasattr(obj, "__dict__"):
         try:
             data = {k: v for k, v in vars(obj).items() if not str(k).startswith("_")}
             return _to_jsonable(data)
         except Exception:
             pass
-
     return str(obj)
 
 
 def _is_control_message(role: str, content: str) -> bool:
-    """
-    Control-plane messages must NOT be woven into specs.
-
-    This is the key fix for "Found 20 messages" even when nothing new was typed:
-    every weaver trigger and weaver output is stored in memory and was being re-ingested.
-
-    We filter:
-    - the user trigger command lines
-    - weaver's own assistant "spec created/saved" outputs (common markers)
-    """
     c = (content or "").strip()
     rl = (role or "").strip().lower()
-
     if not c:
-        return True  # ignore empty noise
-
-    # user triggers
+        return True
     if rl == "user":
         lc = c.lower()
         if lc.startswith("astra, command:") or lc.startswith("astra command:") or lc.startswith("astra, cmd:"):
             return True
-
-    # assistant weaver outputs (high-signal markers; keeps real assistant chat intact)
     if rl in ("assistant", "orb"):
         markers = (
             "🧵 weaving spec from conversation",
@@ -133,26 +105,13 @@ def _is_control_message(role: str, content: str) -> bool:
         lc = c.lower()
         if any(m in lc for m in markers):
             return True
-
-    # system messages should never be part of weaving context
     if rl == "system":
         return True
-
     return False
 
 
 def _get_last_consumed_message_id_from_spec(db_spec: Any) -> Optional[int]:
-    """
-    Extract the last consumed message ID from a spec's stored metadata.
-    
-    Checks (in order):
-    1. content_json["metadata"]["weaver_last_consumed_message_id"]
-    2. Fallback to max(source_message_ids) if available
-    
-    Returns None if no checkpoint data exists.
-    """
     try:
-        # Try content_json metadata first
         if hasattr(db_spec, "content_json") and db_spec.content_json:
             if isinstance(db_spec.content_json, dict):
                 metadata = db_spec.content_json.get("metadata", {})
@@ -162,13 +121,10 @@ def _get_last_consumed_message_id_from_spec(db_spec: Any) -> Optional[int]:
                         return val
                     if isinstance(val, str) and val.isdigit():
                         return int(val)
-        
-        # Fallback: use max source_message_id from provenance
         if hasattr(db_spec, "source_message_ids") and db_spec.source_message_ids:
             ids = [int(x) for x in db_spec.source_message_ids if x]
             if ids:
                 return max(ids)
-        
         return None
     except Exception as e:
         logger.warning("[weaver_core] Failed to extract last_consumed_message_id: %s", e)
@@ -186,13 +142,11 @@ class WeaverContext:
 
 
 def estimate_tokens(text: str) -> int:
-    """Rough token estimate (~4 chars per token)."""
     if not text:
         return 0
     return max(1, len(text) // 4)
 
 
-# Backwards-compat alias (older code used _estimate_tokens)
 def _estimate_tokens(text: str) -> int:
     return estimate_tokens(text)
 
@@ -202,12 +156,11 @@ def gather_weaver_context(
     project_id: int,
     max_messages: int = MAX_MESSAGES_FOR_SPEC,
     max_tokens: int = MAX_TOKENS_FOR_CONTEXT,
-    since_spec_id: Optional[str] = None,  # backwards-compat; unused
+    since_spec_id: Optional[str] = None,
 ) -> WeaverContext:
     _ = since_spec_id
-
     messages_raw = memory_service.list_messages(db, project_id, limit=max_messages)
-    messages_raw = list(reversed(messages_raw))  # chronological
+    messages_raw = list(reversed(messages_raw))
 
     messages: List[Dict[str, Any]] = []
     message_ids: List[int] = []
@@ -218,26 +171,20 @@ def gather_weaver_context(
     for msg in messages_raw:
         role = getattr(msg, "role", "user")
         content = getattr(msg, "content", "") or ""
-
         if _is_control_message(role, content):
             continue
-
         tokens = estimate_tokens(content)
         if total_tokens + tokens > max_tokens:
             break
-
-        messages.append(
-            {
-                "role": role,
-                "content": content,
-                "id": msg.id,
-                "created_at": msg.created_at.isoformat() if msg.created_at else None,
-            }
-        )
+        messages.append({
+            "role": role,
+            "content": content,
+            "id": msg.id,
+            "created_at": msg.created_at.isoformat() if msg.created_at else None,
+        })
         if msg.id is not None:
             message_ids.append(msg.id)
         total_tokens += tokens
-
         if msg.created_at:
             if timestamp_start is None or msg.created_at < timestamp_start:
                 timestamp_start = msg.created_at
@@ -247,14 +194,8 @@ def gather_weaver_context(
     commit_result = get_current_commit()
     commit_hash = commit_result.value if commit_result.success else None
 
-    logger.info("[weaver_context] Gathered %d raw messages from DB", len(messages_raw))
-    logger.info("[weaver_context] Filtered to %d non-control messages", len(messages))
-    logger.info("[weaver_context] Message IDs: %s", message_ids)
-    logger.info("[weaver_context] Total tokens: %d", total_tokens)
-    
-    if len(messages) == 0:
-        logger.warning("[weaver_context] ⚠️ NO MESSAGES after filtering! This will produce empty prompt.")
-        logger.warning("[weaver_context] Raw message count was %d - all were filtered as control messages", len(messages_raw))
+    logger.info("[weaver_context] Gathered %d raw, filtered to %d messages, %d tokens",
+                len(messages_raw), len(messages), total_tokens)
 
     return WeaverContext(
         messages=messages,
@@ -273,10 +214,9 @@ def gather_weaver_delta_context(
     max_messages: int = MAX_MESSAGES_FOR_SPEC,
     max_tokens: int = MAX_TOKENS_FOR_CONTEXT,
 ) -> WeaverContext:
-    # Over-fetch then filter to ensure we can find enough "real" delta messages
     fetch_limit = max(max_messages, max_messages * max(1, WEAVER_DELTA_FETCH_MULTIPLIER))
     messages_raw = memory_service.list_messages(db, project_id, limit=fetch_limit)
-    messages_raw = list(reversed(messages_raw))  # chronological
+    messages_raw = list(reversed(messages_raw))
 
     messages: List[Dict[str, Any]] = []
     message_ids: List[int] = []
@@ -285,32 +225,24 @@ def gather_weaver_delta_context(
     timestamp_end: Optional[datetime] = None
 
     for msg in messages_raw:
-        # Only consider messages AFTER the checkpoint
         if msg.id <= since_message_id:
             continue
-
         role = getattr(msg, "role", "user")
         content = getattr(msg, "content", "") or ""
-
         if _is_control_message(role, content):
             continue
-
         tokens = estimate_tokens(content)
         if total_tokens + tokens > max_tokens:
             break
-
-        messages.append(
-            {
-                "role": role,
-                "content": content,
-                "id": msg.id,
-                "created_at": msg.created_at.isoformat() if msg.created_at else None,
-            }
-        )
+        messages.append({
+            "role": role,
+            "content": content,
+            "id": msg.id,
+            "created_at": msg.created_at.isoformat() if msg.created_at else None,
+        })
         if msg.id is not None:
             message_ids.append(msg.id)
         total_tokens += tokens
-
         if msg.created_at:
             if timestamp_start is None or msg.created_at < timestamp_start:
                 timestamp_start = msg.created_at
@@ -320,14 +252,7 @@ def gather_weaver_delta_context(
     commit_result = get_current_commit()
     commit_hash = commit_result.value if commit_result.success else None
 
-    logger.info("[weaver_delta] Fetched %d raw messages from DB (limit=%d)", len(messages_raw), fetch_limit)
-    logger.info("[weaver_delta] Looking for messages AFTER message_id=%d", since_message_id)
-    logger.info("[weaver_delta] Found %d messages after filtering control messages", len(messages))
-    logger.info("[weaver_delta] Delta message IDs: %s", message_ids)
-    logger.info("[weaver_delta] Total tokens: %d", total_tokens)
-    
-    if len(messages) == 0:
-        logger.info("[weaver_delta] No new messages since checkpoint - this triggers spec reuse")
+    logger.info("[weaver_delta] Found %d messages after id=%d", len(messages), since_message_id)
 
     return WeaverContext(
         messages=messages,
@@ -339,59 +264,127 @@ def gather_weaver_delta_context(
     )
 
 
+# =============================================================================
+# CONTENT PRESERVATION DIRECTIVE (v2.1 - fixes Chinese Whispers)
+# =============================================================================
+
+CONTENT_PRESERVATION_DIRECTIVE = """
+## CRITICAL: Content Preservation Rules (MUST FOLLOW)
+
+You MUST preserve EXACT content when users specify it. DO NOT summarize, paraphrase, or shorten.
+
+### Rule 1: Verbatim File Content
+When user says "write file with content X", "file should say X", "content: X", or "saying X":
+- Extract X EXACTLY as written, character-for-character
+- Put it in the "content_verbatim" field
+- DO NOT simplify, summarize, truncate, or rephrase
+
+Examples:
+- User: "write 'Hello world'" → content_verbatim: "Hello world"
+- User: "file saying hello" → content_verbatim: "hello"
+- User: "content: You cannot go out of scope" → content_verbatim: "You cannot go out of scope"
+
+### Rule 2: Exact Locations (PRESERVE TERMINOLOGY)
+When user specifies a location, preserve their EXACT words:
+- "Sandbox Desktop" → location: "Sandbox Desktop" (NOT "Desktop")
+- "the test folder" → "test" folder (NOT "test directory")
+- Include the full path exactly as user specified
+
+### Rule 3: Scope Constraints
+When user says "only inside X", "do not touch Y", or similar:
+- Put these EXACTLY in the "scope_constraints" array
+- Example: "only inside Sandbox Desktop" → scope_constraints: ["Only operate inside Sandbox Desktop"]
+"""
+
+
 def build_weaver_prompt(context: WeaverContext) -> str:
-    instructions = """
+    instructions = f"""
 You are ASTRA Weaver.
 
-Your task: synthesize a clear, structured Point-of-Truth spec from the conversation below.
+Your task: Extract a structured specification from the conversation below.
 
-Output a JSON object with this schema:
+{CONTENT_PRESERVATION_DIRECTIVE}
 
-{
-  "title": "...",
-  "summary": "...",
-  "objective": "...",
-  "requirements": {
-    "functional": ["..."],
-    "non_functional": ["..."]
-  },
-  "constraints": {
-    "budget": "... or null",
-    "latency": "... or null",
-    "platform": "... or null",
-    "integrations": ["..."],
-    "compliance": ["..."]
-  },
-  "safety": {
-    "risks": ["..."],
-    "mitigations": ["..."],
-    "runtime_guards": ["..."]
-  },
-  "acceptance_criteria": ["..."],
-  "dependencies": ["..."],
-  "non_goals": ["..."],
-  "metadata": {
-    "priority": "low|medium|high",
-    "owner": "... or null",
-    "tags": ["..."]
-  },
-  "weak_spots": ["areas that need clarification or are ambiguous"]
-}
+## Output Format (JSON)
 
-Conciseness rules (token discipline):
-- Keep each list short (prefer <= 8 bullets per list).
-- Avoid cross-platform variations unless the USER explicitly requests multi-OS support.
-- Do not include prose essays. Use crisp bullet statements.
+Return a JSON object with this schema:
 
-Quality rules:
-- Requirements MUST be concrete and testable.
-- Acceptance criteria MUST be verifiable end-to-end checks.
-- Only include information implied by the conversation.
-- If something is unclear/missing, do NOT assume; put it in weak_spots.
+{{
+  "title": "Short descriptive title (max 10 words)",
+  "summary": "One sentence describing what to do",
+  "objective": "Detailed description of the goal",
+  "content_verbatim": "EXACT file content if user specified (copy character-for-character), or null",
+  "location": "EXACT path/location as user specified, or null",
+  "scope_constraints": ["List of boundaries - what CAN and CANNOT be touched"],
+  "outputs": [
+    {{"name": "artifact name", "path": "exact/path", "description": "what it is"}}
+  ],
+  "steps": [
+    "S1: First concrete action",
+    "S2: Second concrete action",
+    "S3: Third concrete action",
+    "S4: Verification step"
+  ],
+  "requirements": {{
+    "functional": ["What the system must do"],
+    "non_functional": ["Performance, security, etc."]
+  }},
+  "constraints": {{
+    "budget": null,
+    "latency": null,
+    "platform": null,
+    "integrations": [],
+    "compliance": []
+  }},
+  "safety": {{
+    "risks": [],
+    "mitigations": [],
+    "runtime_guards": []
+  }},
+  "acceptance_criteria": ["How to verify success - must be testable"],
+  "dependencies": [],
+  "non_goals": [],
+  "metadata": {{
+    "priority": "medium",
+    "owner": null,
+    "tags": []
+  }},
+  "weak_spots": ["Areas needing clarification"]
+}}
 
-Formatting rules:
-- DO NOT wrap the JSON in backticks.
-- DO NOT add commentary before or after the JSON.
+## Few-Shot Examples
+
+### Example 1: Simple file creation
+Conversation:
+[USER] Find the test folder on Sandbox Desktop and write a file inside saying hello
+
+Correct output:
+{{
+  "title": "Write hello file to test folder on Sandbox Desktop",
+  "content_verbatim": "hello",
+  "location": "Sandbox Desktop/test",
+  "scope_constraints": ["Only operate inside Sandbox Desktop", "Only write to test folder"],
+  "outputs": [{{"name": "text file", "path": "Sandbox Desktop/test/", "description": "file containing hello"}}],
+  "steps": [
+    "S1: Locate test folder on Sandbox Desktop",
+    "S2: Create text file inside test folder",
+    "S3: Write exact content 'hello' to the file",
+    "S4: Verify file exists with correct content"
+  ],
+  "acceptance_criteria": ["File exists in Sandbox Desktop/test", "File content is exactly 'hello'"],
+  "weak_spots": ["Exact filename not specified"]
+}}
+
+## Critical Rules
+
+1. content_verbatim: EXACT words if user specified file content (HIGHEST PRIORITY)
+2. location: EXACT path/location terminology from user
+3. steps: Minimum 3-4 concrete steps numbered S1, S2, S3...
+4. outputs: At least 1 artifact if creating/modifying something
+5. acceptance_criteria: At least 1 testable criterion
+6. If unclear, add to weak_spots (do NOT guess)
+
+DO NOT wrap JSON in backticks. Return ONLY the JSON object.
 """.strip()
 
     if _INCREMENTAL_HELPERS_AVAILABLE and format_conversation_for_prompt:
@@ -406,11 +399,11 @@ Formatting rules:
 
     return f"""{instructions}
 
-Below is the recent conversation:
+## Conversation to Analyze
 
 {conversation_text}
 
-Now, produce the JSON spec as described above."""
+Now produce the JSON spec. CRITICAL: content_verbatim must be EXACTLY what user said."""
 
 
 def build_weaver_update_prompt(
@@ -418,43 +411,38 @@ def build_weaver_update_prompt(
     previous_weak_spots: List[str],
     delta_context: WeaverContext,
 ) -> str:
-    instructions = """
+    instructions = f"""
 You are ASTRA Weaver in UPDATE mode.
 
-You will be given:
-1) The PREVIOUS SPEC (JSON core fields)
-2) The PREVIOUS weak spots list
-3) Only the NEW MESSAGES since the last weave (delta)
+Given:
+1) PREVIOUS SPEC (JSON)
+2) PREVIOUS weak spots
+3) NEW MESSAGES since last weave
 
 Your job:
-- Update the spec to reflect any new information from the delta messages.
-- If the delta messages answer prior weak spots, incorporate the answers into the spec and REMOVE those weak spots.
-- Add NEW weak spots only if the delta introduces new ambiguity.
+- Update spec with new information
+- Incorporate answers to weak spots and REMOVE resolved ones
+- Add new weak spots only if delta introduces ambiguity
 
-CRITICAL RULES (scope + anti-drift):
-- Intent spec ONLY (what/where/constraints/how-to-verify). Do NOT output scripts or OS command blocks.
-- Do NOT invent filenames, directories, or side effects that are not explicitly requested.
-- If file vs folder is ambiguous, keep it as a weak spot; do not guess.
-- Ignore assistant meta/disclaimer text unless the USER explicitly adopts it.
+{CONTENT_PRESERVATION_DIRECTIVE}
 
-Conciseness rules:
-- Keep lists short (prefer <= 8 bullets per list).
-- Prefer small, incremental edits; preserve existing spec details unless contradicted or clarified.
+## UPDATE RULES
 
-Output format:
-Return ONLY the updated JSON object with the same shape as the previous spec schema.
-Do not add extra wrappers or commentary.
+1. PRESERVE content_verbatim if set (unless user changes it)
+2. PRESERVE location if set (unless user changes it)
+3. PRESERVE scope_constraints and ADD new ones
+4. UPDATE steps if user provided clarification
+5. REMOVE resolved weak_spots
+6. ADD new weak_spots if new ambiguities
+
+Intent spec ONLY. Do NOT output scripts or invent details.
+Return ONLY the updated JSON object.
 """.strip()
 
     try:
         prev_json = json.dumps(_to_jsonable(previous_spec_core), indent=2, sort_keys=True, ensure_ascii=False)
     except Exception:
-        prev_json = json.dumps(
-            {"_unserializable_previous_spec_core": str(previous_spec_core)},
-            indent=2,
-            sort_keys=True,
-            ensure_ascii=False,
-        )
+        prev_json = json.dumps({"_error": str(previous_spec_core)}, indent=2)
 
     prev_weak = "\n".join([f"- {w}" for w in (previous_weak_spots or [])]) or "(none)"
 
@@ -463,23 +451,21 @@ Do not add extra wrappers or commentary.
     else:
         lines: List[str] = []
         for msg in delta_context.messages:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            lines.append(f"[{role.upper()}] {content}")
+            lines.append(f"[{msg.get('role', 'user').upper()}] {msg.get('content', '')}")
         delta_text = "\n\n".join(lines)
 
     return f"""{instructions}
 
-PREVIOUS SPEC (core JSON fields):
+PREVIOUS SPEC:
 {prev_json}
 
 PREVIOUS WEAK SPOTS:
 {prev_weak}
 
-NEW MESSAGES SINCE LAST WEAVE:
+NEW MESSAGES:
 {delta_text}
 
-Now, output the UPDATED JSON spec (same schema)."""
+Output the UPDATED JSON spec."""
 
 
 def parse_weaver_response(response_text: str) -> Tuple[Optional[Dict[str, Any]], str]:
@@ -507,11 +493,49 @@ def parse_weaver_response(response_text: str) -> Tuple[Optional[Dict[str, Any]],
     if not isinstance(spec_dict, dict):
         return None, "Top-level JSON must be an object"
 
+    # Ensure required fields with defaults
+    spec_dict.setdefault("steps", [])
+    spec_dict.setdefault("weak_spots", [])
+    spec_dict.setdefault("scope_constraints", [])
+    spec_dict.setdefault("outputs", [])
+    spec_dict.setdefault("acceptance_criteria", [])
+    
+    # CRITICAL: Ensure output file info is in acceptance_criteria
+    # (acceptance_criteria survives DB serialization, outputs may not)
+    outputs = spec_dict.get("outputs", [])
+    content_verbatim = spec_dict.get("content_verbatim", "")
+    location = spec_dict.get("location", "")
+    
+    if outputs:
+        for out in outputs:
+            name = out.get("name", "") if isinstance(out, dict) else str(out)
+            if name:
+                # Add an acceptance criterion that describes this output
+                criterion = f"Output file '{name}'"
+                if location:
+                    criterion += f" at {location}"
+                if content_verbatim:
+                    criterion += f" contains: {content_verbatim[:100]}"
+                # Avoid duplicates
+                if criterion not in spec_dict["acceptance_criteria"]:
+                    spec_dict["acceptance_criteria"].append(criterion)
+    elif content_verbatim and location:
+        # No outputs but we have content and location - synthesize acceptance criterion
+        criterion = f"File at {location} contains exactly: {content_verbatim}"
+        if criterion not in spec_dict["acceptance_criteria"]:
+            spec_dict["acceptance_criteria"].append(criterion)
+
+    # Log content preservation for debugging
+    if spec_dict.get("content_verbatim"):
+        logger.info("[weaver_core] ✓ content_verbatim: '%s'", spec_dict["content_verbatim"][:80])
+    if spec_dict.get("location"):
+        logger.info("[weaver_core] ✓ location: '%s'", spec_dict["location"])
+
     summary_text = ""
     for marker in ("**Summary:**", "Summary:"):
         idx = response_text.find(marker)
         if idx != -1:
-            summary_text = response_text[idx + len(marker) :].strip()
+            summary_text = response_text[idx + len(marker):].strip()
             break
 
     return spec_dict, summary_text
@@ -524,13 +548,7 @@ def build_spec_from_dict(
     conversation_id: Optional[str] = None,
     generator_model: Optional[str] = None,
 ) -> SpecSchema:
-    """
-    Backwards compatible builder.
-
-    Older weaver_stream.py calls: build_spec_from_dict(spec_dict, context, project_id, conversation_id)
-    Newer callers may pass generator_model explicitly.
-    """
-    _ = project_id  # SpecSchema doesn't require project_id, but keep signature compatible.
+    _ = project_id
 
     if not generator_model:
         generator_model = os.getenv("WEAVER_MODEL") or "weaver"
@@ -568,6 +586,14 @@ def build_spec_from_dict(
     )
 
     meta_data = spec_dict.get("metadata", {}) or {}
+    # v2.1: Include content preservation fields in metadata
+    meta_data["content_verbatim"] = spec_dict.get("content_verbatim")
+    meta_data["location"] = spec_dict.get("location")
+    meta_data["scope_constraints"] = spec_dict.get("scope_constraints", [])
+    meta_data["outputs"] = spec_dict.get("outputs", [])
+    meta_data["steps"] = spec_dict.get("steps", [])
+    meta_data["weak_spots"] = spec_dict.get("weak_spots", [])
+
     metadata = SpecMetadata(
         priority=meta_data.get("priority", "medium"),
         owner=meta_data.get("owner"),

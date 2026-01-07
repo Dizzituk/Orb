@@ -122,6 +122,37 @@ INTENT_DEFINITIONS: Dict[CanonicalIntent, IntentDefinition] = {
         ),
     ),
     
+    CanonicalIntent.SCAN_SANDBOX_STRUCTURE: IntentDefinition(
+        intent=CanonicalIntent.SCAN_SANDBOX_STRUCTURE,
+        trigger_phrases=[
+            "SCAN SANDBOX STRUCTURE",
+            "Scan sandbox structure",
+        ],
+        trigger_patterns=[
+            r"^SCAN SANDBOX STRUCTURE$",
+            r"^[Ss]can sandbox structure$",
+            r"^[Ss]can the sandbox structure$",
+        ],
+        requires_context=[],
+        requires_confirmation=False,
+        description=(
+            "Trigger a read-only scan of the sandbox filesystem "
+            "(Desktop, Documents, Downloads, backend, frontend) "
+            "and build a flattened Sandbox Index."
+        ),
+        behavior=(
+            "Host should:\n"
+            "1. Call the Architecture Query Service sandbox project scan endpoint\n"
+            "2. Walk configured sandbox roots (Desktop/Documents/Downloads/backend/frontend)\n"
+            "3. Apply ignore rules (node_modules, .git, .venv, dist, build, logs, etc.)\n"
+            "4. Store a flat list of file entries (path/name/ext/zone) in memory/cache\n"
+            "5. Expose the index via /sandbox/index for later LOCATE FILE/FOLDER commands.\n"
+            "\n"
+            "STRICTLY READ-ONLY: no file writes, no deletes, no recycle-bin operations."
+        ),
+    ),
+
+    
     # -------------------------------------------------------------------------
     # SPEC GATE FLOW (v1.1)
     # -------------------------------------------------------------------------

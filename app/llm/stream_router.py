@@ -3,13 +3,15 @@
 Streaming endpoints for real-time LLM responses.
 Uses Server-Sent Events (SSE).
 
+v4.10 (2026-01): Removed host filesystem scan (sandbox only), cleaned up routing
+v4.9 (2026-01): Added ASTRA capability layer injection to system prompts
 v4.8 (2026-01): Chat mode uses stage_models, added debug logging throughout
 v4.7 (2026-01): Added stage tracing, routing failure visibility, model audit
 v4.6 (2026-01): Refactored into modules (stream_handlers, translation_routing, legacy_triggers)
 v4.5 (2026-01): DB-backed validated spec lookup (survives restarts)
 v4.4 (2026-01): Added SPEC_VALIDATED flow state check for Critical Pipeline routing
 v4.3 (2026-01): Added Spec Gate, Critical Pipeline, Overwatcher stream handlers
-v4.2 (2026-01): Added Weaver stream handler for spec building
+v4.2 (2026-01): Added Weaver stream handler for spec buildingF
 v4.1 (2026-01): CRITICAL FIX - CHAT mode returns early, bypasses job classification
 v4.0 (2026-01): ASTRA Translation Layer integration - prevents misfires
 """
@@ -77,6 +79,15 @@ from .legacy_triggers import (
 
 from .high_stakes_stream import generate_high_stakes_critique_stream
 
+# v4.9: ASTRA Capability Layer
+try:
+    from app.capabilities import get_capability_context
+    _CAPABILITIES_AVAILABLE = True
+    print("[stream_router] ASTRA capability layer loaded successfully")
+except ImportError:
+    _CAPABILITIES_AVAILABLE = False
+    get_capability_context = None
+
 # v4.7: Stage tracing
 try:
     from .stage_trace import StageTrace, log_model_resolution, get_env_model_audit
@@ -140,10 +151,15 @@ try:
         generate_local_architecture_map_stream,
         generate_local_zobie_map_stream,
         generate_update_architecture_stream,
+        generate_sandbox_structure_scan_stream,
     )
     _LOCAL_TOOLS_AVAILABLE = True
-except ImportError:
+    print("[stream_router] Local tools loaded successfully")
+except Exception as e:
+    import traceback
     _LOCAL_TOOLS_AVAILABLE = False
+    print(f"[LOCAL_TOOLS_IMPORT_ERROR] Failed to import local tools: {e}")
+    traceback.print_exc()
 
 try:
     from app.sandbox import handle_sandbox_prompt
@@ -574,11 +590,8 @@ def _handle_chat_mode(req: StreamRequest, project, db: Session, trace):
         messages = [{"role": msg.role, "content": msg.content} for msg in history]
     messages.append({"role": "user", "content": req.message})
     
-    system_prompt = f"Project: {project.name}."
-    if project.description:
-        system_prompt += f" {project.description}"
-    if full_context:
-        system_prompt += f"\n\nYou have access to the following context:\n\n{full_context}"
+    # v4.9: Use centralized _build_system_prompt (includes capability layer)
+    system_prompt = _build_system_prompt(project, full_context)
     
     # v4.8: Final logging before stream
     print(f"[CHAT_MODE] Calling generate_sse_stream: provider={provider}, model={model}, messages={len(messages)}")
@@ -637,6 +650,25 @@ def _handle_command_execution(req, translation_result, db, trace, conversation_i
             stage_trace.enter_stage("update_architecture", provider="local", model="architecture_scanner")
         return StreamingResponse(
             generate_update_architecture_stream(project_id=req.project_id, message=req.message, db=db, trace=trace),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+    
+        # Sandbox structure scan (read-only)
+    if intent == CanonicalIntent.SCAN_SANDBOX_STRUCTURE and _LOCAL_TOOLS_AVAILABLE:
+        if stage_trace:
+            stage_trace.enter_stage(
+                "sandbox_structure_scan",
+                provider="local",
+                model="sandbox_structure_scanner",
+            )
+        return StreamingResponse(
+            generate_sandbox_structure_scan_stream(
+                project_id=req.project_id,
+                message=req.message,
+                db=db,
+                trace=trace,
+            ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -864,10 +896,27 @@ def _build_messages(req, db) -> List[dict]:
 
 
 def _build_system_prompt(project, full_context: str) -> str:
-    """Build system prompt with project context."""
+    """
+    Build system prompt with project context and ASTRA capability layer.
+    
+    v4.9: Injects capability layer at the top of every system prompt.
+    """
+    # v4.9: Start with ASTRA capability layer
+    capability_layer = ""
+    if _CAPABILITIES_AVAILABLE and get_capability_context:
+        try:
+            capability_layer = get_capability_context()
+        except Exception as e:
+            print(f"[CAPABILITY_INJECTION] Error getting capability context: {e}")
+    
+    # Build project context
     system_prompt = f"Project: {project.name}."
     if project.description:
         system_prompt += f" {project.description}"
     if full_context:
         system_prompt += f"\n\nYou have access to the following context:\n\n{full_context}"
+    
+    # Combine: capabilities first, then project context
+    if capability_layer:
+        return f"{capability_layer}\n\n{system_prompt}"
     return system_prompt
