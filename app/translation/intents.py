@@ -26,9 +26,11 @@ INTENT_DEFINITIONS: Dict[CanonicalIntent, IntentDefinition] = {
         intent=CanonicalIntent.ARCHITECTURE_MAP_WITH_FILES,
         trigger_phrases=[
             "CREATE ARCHITECTURE MAP",  # ALL CAPS required
+            "Astra, command: CREATE ARCHITECTURE MAP",
+            "astra, command: CREATE ARCHITECTURE MAP",
         ],
         trigger_patterns=[
-            r"^CREATE ARCHITECTURE MAP$",  # Exact match, all caps
+            r"^(?:[Aa]stra[,:]?\s*)?(?:command[:\s]+)?CREATE ARCHITECTURE MAP$",  # ALL CAPS required
             r"^CREATE ARCHITECTURE MAP\s+for\s+",  # With target
         ],
         requires_context=[],  # Optional: repo target, job_id
@@ -49,9 +51,11 @@ INTENT_DEFINITIONS: Dict[CanonicalIntent, IntentDefinition] = {
         trigger_phrases=[
             "Create architecture map",   # Normal/lowercase
             "create architecture map",
+            "Astra, command: Create architecture map",
+            "astra, command: create architecture map",
         ],
         trigger_patterns=[
-            r"^[Cc]reate [Aa]rchitecture [Mm]ap$",  # Case-insensitive but NOT all caps
+            r"^(?:[Aa]stra[,:]?\s*)?(?:command[:\s]+)?[Cc]reate [Aa]rchitecture [Mm]ap$",  # Case-insensitive but NOT all caps
             r"^[Cc]reate [Aa]rchitecture [Mm]ap\s+for\s+",
         ],
         requires_context=[],
@@ -70,9 +74,11 @@ INTENT_DEFINITIONS: Dict[CanonicalIntent, IntentDefinition] = {
         trigger_phrases=[
             "update architecture",
             "Update architecture",
+            "Astra, command: update architecture",
+            "astra, command: update architecture",
         ],
         trigger_patterns=[
-            r"^[Uu]pdate [Aa]rchitecture$",
+            r"^(?:[Aa]stra[,:]?\s*)?(?:command[:\s]+)?[Uu]pdate [Aa]rchitecture$",
             r"^[Uu]pdate your [Aa]rchitecture$",
             r"^[Rr]efresh [Aa]rchitecture$",
         ],
@@ -125,13 +131,23 @@ INTENT_DEFINITIONS: Dict[CanonicalIntent, IntentDefinition] = {
     CanonicalIntent.SCAN_SANDBOX_STRUCTURE: IntentDefinition(
         intent=CanonicalIntent.SCAN_SANDBOX_STRUCTURE,
         trigger_phrases=[
+            # Primary triggers
+            "scan sandbox",
+            "Scan sandbox",
+            "SCAN SANDBOX",
+            # Astra command variants
+            "Astra, command: scan sandbox",
+            "astra, command: scan sandbox",
+            # Legacy full phrase
             "SCAN SANDBOX STRUCTURE",
             "Scan sandbox structure",
+            "scan sandbox structure",
         ],
         trigger_patterns=[
-            r"^SCAN SANDBOX STRUCTURE$",
+            r"^(?:[Aa]stra[,:]?\s*)?(?:command[:\s]+)?[Ss]can\s+[Ss]andbox$",
+            r"^SCAN SANDBOX(?: STRUCTURE)?$",
             r"^[Ss]can sandbox structure$",
-            r"^[Ss]can the sandbox structure$",
+            r"^[Ss]can the sandbox(?: structure)?$",
         ],
         requires_context=[],
         requires_confirmation=False,
@@ -402,6 +418,129 @@ INTENT_DEFINITIONS: Dict[CanonicalIntent, IntentDefinition] = {
             "Log structured feedback event.\n"
             "Behavior tuning occurs ONLY in sandbox.\n"
             "NEVER triggers any commands."
+        ),
+    ),
+    
+    # -------------------------------------------------------------------------
+    # RAG CODEBASE QUERY (v1.3)
+    # -------------------------------------------------------------------------
+    
+    CanonicalIntent.RAG_CODEBASE_QUERY: IntentDefinition(
+        intent=CanonicalIntent.RAG_CODEBASE_QUERY,
+        trigger_phrases=[
+            # Explicit codebase search
+            "search codebase:",
+            "Search codebase:",
+            "codebase search:",
+            "Codebase search:",
+            "ask about codebase:",
+            "Ask about codebase:",
+            # Question prefixes
+            "In the codebase,",
+            "in the codebase,",
+            "In this codebase,",
+            "in this codebase,",
+            # Index commands
+            "index the architecture",
+            "Index the architecture",
+            "index architecture",
+            "Index architecture",
+            "run RAG index",
+            "Run RAG index",
+        ],
+        trigger_patterns=[
+            r"^(?:[Ss]earch|[Aa]sk about)\s+(?:the\s+)?codebase:\s*(.+)$",
+            r"^[Cc]odebase\s+(?:search|query):\s*(.+)$",
+            r"^[Ii]n (?:the|this) codebase,?\s+(.+)$",
+            r"^[Ww]hat (?:functions?|classes?|methods?)\s+.+\?$",
+            r"^[Ww]here is\s+.+\s+(?:implemented|defined|located)\?$",
+            r"^[Hh]ow does\s+(?:the\s+)?.+\s+(?:work|function)\?$",
+            r"^[Ss]how me\s+(?:the\s+)?.+\s+(?:code|implementation|function)$",
+            r"^[Ii]ndex (?:the )?(?:architecture|codebase|RAG)$",
+            r"^[Rr]un RAG index$",
+        ],
+        requires_context=[],
+        requires_confirmation=False,
+        description="Search codebase using RAG and answer questions",
+        behavior=(
+            "RAG-powered codebase Q&A:\n"
+            "1. Parse the question from the message\n"
+            "2. Search indexed code signatures for relevant chunks\n"
+            "3. Build context from top matches\n"
+            "4. Answer using LLM with codebase context\n"
+            "\n"
+            "Trigger phrases:\n"
+            "- 'search codebase: <question>'\n"
+            "- 'In the codebase, <question>'\n"
+            "- 'What functions handle X?'\n"
+            "- 'Where is Y implemented?'\n"
+            "\n"
+            "Index commands:\n"
+            "- 'index the architecture' - triggers /rag/index\n"
+            "\n"
+            "Prerequisites: Run 'CREATE ARCHITECTURE MAP' first."
+        ),
+    ),
+    
+    # -------------------------------------------------------------------------
+    # EMBEDDING MANAGEMENT (v1.3)
+    # -------------------------------------------------------------------------
+    
+    CanonicalIntent.EMBEDDING_STATUS: IntentDefinition(
+        intent=CanonicalIntent.EMBEDDING_STATUS,
+        trigger_phrases=[
+            "embedding status",
+            "Embedding status",
+            "embeddings status",
+            "check embeddings",
+            "Astra, command: embedding status",
+            "astra, command: embedding status",
+        ],
+        trigger_patterns=[
+            r"^(?:[Aa]stra[,:]?\s*)?(?:command[:\s]+)?[Ee]mbedding[s]?\s+status$",
+            r"^[Cc]heck\s+embedding[s]?$",
+            r"^[Ee]mbedding[s]?\s+progress$",
+            r"^[Hh]ow\s+are\s+embeddings\s+doing$",
+        ],
+        requires_context=[],
+        requires_confirmation=False,
+        description="Check current embedding generation status",
+        behavior=(
+            "Display embedding status:\n"
+            "- Total chunks in DB\n"
+            "- Embedded vs pending count\n"
+            "- Current tier being processed\n"
+            "- Last run timestamp\n"
+            "- Any errors"
+        ),
+    ),
+    
+    CanonicalIntent.GENERATE_EMBEDDINGS: IntentDefinition(
+        intent=CanonicalIntent.GENERATE_EMBEDDINGS,
+        trigger_phrases=[
+            "generate embeddings",
+            "Generate embeddings",
+            "run embeddings",
+            "start embeddings",
+            "embed chunks",
+            "Astra, command: generate embeddings",
+            "astra, command: generate embeddings",
+        ],
+        trigger_patterns=[
+            r"^(?:[Aa]stra[,:]?\s*)?(?:command[:\s]+)?[Gg]enerate\s+embedding[s]?$",
+            r"^(?:[Aa]stra[,:]?\s*)?(?:command[:\s]+)?[Rr]un\s+embedding[s]?$",
+            r"^(?:[Aa]stra[,:]?\s*)?(?:command[:\s]+)?[Ss]tart\s+embedding[s]?$",
+            r"^[Ee]mbed\s+(?:the\s+)?(?:code\s+)?chunks$",
+        ],
+        requires_context=[],
+        requires_confirmation=False,
+        description="Trigger manual embedding generation",
+        behavior=(
+            "Queue background embedding job:\n"
+            "- Uses priority ordering (Tier1 first)\n"
+            "- Incremental (skips already-embedded chunks)\n"
+            "- Non-blocking (returns immediately)\n"
+            "- Use 'embedding status' to check progress"
         ),
     ),
     

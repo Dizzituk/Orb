@@ -3,6 +3,7 @@
 Streaming endpoints for real-time LLM responses.
 Uses Server-Sent Events (SSE).
 
+v4.11 (2026-01): Split architecture map: ALL CAPS → full scan, lowercase → DB only
 v4.10 (2026-01): Removed host filesystem scan (sandbox only), cleaned up routing
 v4.9 (2026-01): Added ASTRA capability layer injection to system prompts
 v4.8 (2026-01): Chat mode uses stage_models, added debug logging throughout
@@ -149,6 +150,7 @@ except ImportError:
 try:
     from app.llm.local_tools.zobie_tools import (
         generate_local_architecture_map_stream,
+        generate_full_architecture_map_stream,
         generate_local_zobie_map_stream,
         generate_update_architecture_stream,
         generate_sandbox_structure_scan_stream,
@@ -166,6 +168,25 @@ try:
     _SANDBOX_AVAILABLE = True
 except ImportError:
     _SANDBOX_AVAILABLE = False
+
+try:
+    from app.llm.rag_stream import generate_rag_query_stream
+    _RAG_STREAM_AVAILABLE = True
+    print("[stream_router] RAG stream handler loaded successfully")
+except ImportError as e:
+    _RAG_STREAM_AVAILABLE = False
+    print(f"[stream_router] WARNING: RAG stream import failed: {e}")
+
+try:
+    from app.llm.embedding_stream import (
+        generate_embedding_status_stream,
+        generate_embeddings_stream,
+    )
+    _EMBEDDING_STREAM_AVAILABLE = True
+    print("[stream_router] Embedding stream handlers loaded successfully")
+except ImportError as e:
+    _EMBEDDING_STREAM_AVAILABLE = False
+    print(f"[stream_router] WARNING: Embedding stream import failed: {e}")
 
 try:
     from app.introspection.chat_integration import detect_log_intent
@@ -234,6 +255,9 @@ def _log_handler_availability() -> None:
     print(f"[HANDLER_STATUS] Overwatcher: {_OVERWATCHER_AVAILABLE}")
     print(f"[HANDLER_STATUS] FlowState: {_FLOW_STATE_AVAILABLE}")
     print(f"[HANDLER_STATUS] SpecService: {_SPEC_SERVICE_AVAILABLE}")
+    print(f"[HANDLER_STATUS] RAGStream: {_RAG_STREAM_AVAILABLE}")
+    print(f"[HANDLER_STATUS] EmbeddingStream: {_EMBEDDING_STREAM_AVAILABLE}")
+    print(f"[HANDLER_STATUS] LocalTools: {_LOCAL_TOOLS_AVAILABLE}")
 
 
 # =============================================================================
@@ -673,8 +697,19 @@ def _handle_command_execution(req, translation_result, db, trace, conversation_i
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
     
-    # Architecture map
-    if intent in (CanonicalIntent.ARCHITECTURE_MAP_WITH_FILES, CanonicalIntent.ARCHITECTURE_MAP_STRUCTURE_ONLY):
+    # Architecture map (ALL CAPS) - Full scan + out folder
+    if intent == CanonicalIntent.ARCHITECTURE_MAP_WITH_FILES:
+        if _LOCAL_TOOLS_AVAILABLE:
+            if stage_trace:
+                stage_trace.enter_stage("full_architecture_map", provider=ARCHMAP_PROVIDER, model=ARCHMAP_MODEL)
+            return StreamingResponse(
+                generate_full_architecture_map_stream(project_id=req.project_id, message=req.message, db=db, trace=trace),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+    
+    # Architecture map (lowercase) - From DB only
+    if intent == CanonicalIntent.ARCHITECTURE_MAP_STRUCTURE_ONLY:
         if _LOCAL_TOOLS_AVAILABLE:
             if stage_trace:
                 stage_trace.enter_stage("architecture_map", provider=ARCHMAP_PROVIDER, model=ARCHMAP_MODEL)
@@ -758,6 +793,120 @@ def _handle_command_execution(req, translation_result, db, trace, conversation_i
             )
         else:
             _log_routing_failure(stage_trace, "Overwatcher handler not available", "generate_overwatcher_stream")
+    
+    # RAG Codebase Query
+    if intent == CanonicalIntent.RAG_CODEBASE_QUERY:
+        if _RAG_STREAM_AVAILABLE:
+            if stage_trace:
+                stage_trace.enter_stage("rag_query", provider="local", model="rag_answerer")
+            return StreamingResponse(
+                generate_rag_query_stream(
+                    project_id=req.project_id, message=req.message, db=db, trace=trace,
+                ),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+        else:
+            _log_routing_failure(stage_trace, "RAG stream handler not available", "generate_rag_query_stream")
+            _log_handler_availability()
+            
+            # Return error message instead of falling through
+            error_msg = (
+                "⚠️ **RAG Query Handler Not Available**\n\n"
+                "The RAG codebase query module failed to import.\n"
+                "Check server logs for details.\n\n"
+                "**Possible solutions:**\n"
+                "1. Ensure `app/llm/rag_stream.py` exists\n"
+                "2. Check for import errors in the module\n"
+                "3. Restart the backend server"
+            )
+            
+            async def _rag_unavailable_stream():
+                yield "data: " + json.dumps({'type': 'error', 'error': 'RAG handler not available'}) + "\n\n"
+                yield "data: " + json.dumps({'type': 'token', 'content': error_msg}) + "\n\n"
+                yield "data: " + json.dumps({'type': 'done', 'provider': 'system', 'model': 'command_router'}) + "\n\n"
+            
+            return StreamingResponse(
+                _rag_unavailable_stream(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+    
+    # Embedding Status (v1.3)
+    if intent == CanonicalIntent.EMBEDDING_STATUS:
+        if _EMBEDDING_STREAM_AVAILABLE:
+            if stage_trace:
+                stage_trace.enter_stage("embedding_status", provider="local", model="embedding_manager")
+            return StreamingResponse(
+                generate_embedding_status_stream(
+                    project_id=req.project_id, message=req.message, db=db, trace=trace,
+                ),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+        else:
+            _log_routing_failure(stage_trace, "Embedding stream handler not available", "generate_embedding_status_stream")
+            _log_handler_availability()
+            
+            # Return error message instead of falling through
+            error_msg = (
+                "⚠️ **Embedding Status Handler Not Available**\n\n"
+                "The embedding status module failed to import.\n"
+                "Check server logs for details.\n\n"
+                "**Possible solutions:**\n"
+                "1. Ensure `app/llm/embedding_stream.py` exists\n"
+                "2. Check for import errors in the module\n"
+                "3. Restart the backend server"
+            )
+            
+            async def _embedding_status_unavailable_stream():
+                yield "data: " + json.dumps({'type': 'error', 'error': 'Embedding status handler not available'}) + "\n\n"
+                yield "data: " + json.dumps({'type': 'token', 'content': error_msg}) + "\n\n"
+                yield "data: " + json.dumps({'type': 'done', 'provider': 'system', 'model': 'command_router'}) + "\n\n"
+            
+            return StreamingResponse(
+                _embedding_status_unavailable_stream(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+    
+    # Generate Embeddings (v1.3)
+    if intent == CanonicalIntent.GENERATE_EMBEDDINGS:
+        if _EMBEDDING_STREAM_AVAILABLE:
+            if stage_trace:
+                stage_trace.enter_stage("generate_embeddings", provider="local", model="embedding_manager")
+            return StreamingResponse(
+                generate_embeddings_stream(
+                    project_id=req.project_id, message=req.message, db=db, trace=trace,
+                ),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+        else:
+            _log_routing_failure(stage_trace, "Embedding stream handler not available", "generate_embeddings_stream")
+            _log_handler_availability()
+            
+            # Return error message instead of falling through
+            error_msg = (
+                "⚠️ **Generate Embeddings Handler Not Available**\n\n"
+                "The embedding generation module failed to import.\n"
+                "Check server logs for details.\n\n"
+                "**Possible solutions:**\n"
+                "1. Ensure `app/llm/embedding_stream.py` exists\n"
+                "2. Check for import errors in the module\n"
+                "3. Restart the backend server"
+            )
+            
+            async def _generate_embeddings_unavailable_stream():
+                yield "data: " + json.dumps({'type': 'error', 'error': 'Generate embeddings handler not available'}) + "\n\n"
+                yield "data: " + json.dumps({'type': 'token', 'content': error_msg}) + "\n\n"
+                yield "data: " + json.dumps({'type': 'done', 'provider': 'system', 'model': 'command_router'}) + "\n\n"
+            
+            return StreamingResponse(
+                _generate_embeddings_unavailable_stream(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
     
     return None
 

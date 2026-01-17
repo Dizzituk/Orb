@@ -85,6 +85,8 @@ from .tier0_rules import (
     check_weaver_trigger,
     check_spec_gate_trigger,
     check_critical_pipeline_trigger,
+    check_rag_codebase_query,
+    check_embedding_commands,
 )
 
 # Tier 1 classifier
@@ -160,6 +162,8 @@ __all__ = [
     "check_weaver_trigger",
     "check_spec_gate_trigger",
     "check_critical_pipeline_trigger",
+    "check_rag_codebase_query",
+    "check_embedding_commands",
     
     # Tier 1 classifier
     "Tier1Classifier",

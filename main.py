@@ -34,6 +34,7 @@ from app.llm.web_search_router import router as web_search_router
 from app.embeddings.router import router as embeddings_router, search_router as embeddings_search_router
 from app.introspection.router import router as introspection_router
 from app.astra_memory.router import router as astra_memory_router
+from app.rag.router import router as rag_router
 
 # Import refactored endpoints
 from app.endpoints import router as endpoints_router
@@ -140,6 +141,9 @@ app.include_router(astra_memory_router)
 
 # Refactored endpoints (chat, chat_with_attachments, direct_llm)
 app.include_router(endpoints_router)
+
+# RAG system (architecture search)
+app.include_router(rag_router)
 
 # Log introspection (read-only, requires auth)
 app.include_router(

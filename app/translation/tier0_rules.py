@@ -88,6 +88,11 @@ def tier0_classify(text: str) -> Tier0RuleResult:
     if result.matched:
         return result
     
+    # 3c. Check architecture map variants (ALL CAPS vs lowercase)
+    result = check_architecture_map_variant(text_stripped)
+    if result.matched:
+        return result
+    
     # 4. Check Spec Gate flow special handlers
     result = check_weaver_trigger(text_stripped)
     if result.matched:
@@ -105,7 +110,17 @@ def tier0_classify(text: str) -> Tier0RuleResult:
     if result.matched:
         return result
     
-    # 4. Check obvious chat patterns (short-circuit)
+    # 4b. Check RAG codebase query (v1.3)
+    result = check_rag_codebase_query(text_stripped)
+    if result.matched:
+        return result
+    
+    # 4c. Check embedding commands (v1.3)
+    result = check_embedding_commands(text_stripped)
+    if result.matched:
+        return result
+    
+    # 5. Check obvious chat patterns (short-circuit)
     is_chat, chat_reason = is_obvious_chat(text_stripped)
     if is_chat:
         return Tier0RuleResult(
@@ -116,7 +131,7 @@ def tier0_classify(text: str) -> Tier0RuleResult:
             reason=f"Obvious chat pattern: {chat_reason}",
         )
     
-    # 5. No match - needs Tier 1 classifier
+    # 6. No match - needs Tier 1 classifier
     return Tier0RuleResult(
         matched=False,
         intent=None,
@@ -548,6 +563,176 @@ def check_overwatcher_trigger(text: str) -> Tier0RuleResult:
                 confidence=1.0,
                 rule_name="overwatcher_execute",
                 reason="Overwatcher execute command detected",
+            )
+    
+    return Tier0RuleResult(matched=False)
+
+
+def check_rag_codebase_query(text: str) -> Tier0RuleResult:
+    """
+    Special handler for RAG codebase queries.
+    
+    Searches indexed codebase and answers questions.
+    v1.5: Fixed patterns to match trailing punctuation (?, !)
+    v1.4: Expanded patterns to catch architecture/codebase questions automatically.
+    v1.3: Added RAG query support.
+    """
+    text_stripped = text.strip()
+    text_lower = text_stripped.lower()
+    
+    # Remove trailing punctuation for pattern matching
+    text_clean = text_lower.rstrip('?.!')
+    
+    # Index commands
+    index_patterns = [
+        r"^index\s+(?:the\s+)?(?:architecture|codebase|rag)$",
+        r"^run\s+rag\s+index$",
+    ]
+    
+    for pattern in index_patterns:
+        if re.match(pattern, text_clean):
+            return Tier0RuleResult(
+                matched=True,
+                intent=CanonicalIntent.RAG_CODEBASE_QUERY,
+                confidence=1.0,
+                rule_name="rag_index",
+                reason="RAG index command detected",
+            )
+    
+    # Explicit search queries (highest confidence)
+    explicit_search_patterns = [
+        r"^search\s+(?:the\s+)?codebase:\s*.+",
+        r"^ask\s+about\s+(?:the\s+)?codebase:\s*.+",
+        r"^codebase\s+(?:search|query):\s*.+",
+        r"^in\s+(?:the|this)\s+codebase,?\s+.+",
+    ]
+    
+    for pattern in explicit_search_patterns:
+        if re.match(pattern, text_lower):
+            return Tier0RuleResult(
+                matched=True,
+                intent=CanonicalIntent.RAG_CODEBASE_QUERY,
+                confidence=1.0,
+                rule_name="rag_explicit_search",
+                reason="RAG codebase search detected",
+            )
+    
+    # ==========================================================================
+    # Architecture-related questions (auto-route to RAG)
+    # These patterns catch questions about the codebase structure/architecture
+    # Patterns match against text_clean (no trailing punctuation)
+    # ==========================================================================
+    
+    architecture_question_patterns = [
+        # Entry points / main flow
+        r"^what\s+(?:are|is)\s+(?:the\s+)?(?:main\s+)?entry\s*points?$",
+        r"^where\s+(?:are|is)\s+(?:the\s+)?(?:main\s+)?entry\s*points?$",
+        r"^show\s+(?:me\s+)?(?:the\s+)?entry\s*points?$",
+        r"^(?:list|find)\s+(?:the\s+)?entry\s*points?$",
+        
+        # Bottlenecks / performance
+        r"^what\s+(?:are|is)\s+(?:the\s+)?(?:potential\s+)?bottlenecks?$",
+        r"^where\s+(?:are|is)\s+(?:the\s+)?bottlenecks?$",
+        r"^(?:find|identify|show)\s+(?:the\s+)?bottlenecks?$",
+        r"^bottlenecks$",  # Single word
+        
+        # Coupling / dependencies
+        r"^(?:which|what)\s+modules?\s+(?:are|is)\s+(?:tightly\s+)?coupled",
+        r"^where\s+(?:is|are)\s+(?:the\s+)?tight\s+coupling",
+        r"^show\s+(?:me\s+)?(?:the\s+)?dependencies",
+        
+        # Where should X live / feature placement
+        r"^where\s+should\s+(?:a\s+)?(?:new\s+)?(?:feature|functionality|code|module|component)\s+.+\s+(?:live|go)",
+        r"^where\s+should\s+I\s+(?:put|add|place|implement)\s+.+",
+        r"^where\s+does\s+.+\s+(?:belong|go|fit)",
+        
+        # What functions/classes handle X
+        r"^what\s+(?:function|class|method|module|file)s?\s+(?:handle|process|manage|control)s?\s+.+",
+        r"^(?:which|what)\s+(?:function|class|method|module|file)s?\s+(?:are\s+)?responsible\s+for\s+.+",
+        r"^(?:which|what)\s+(?:function|class|method|module|file)s?\s+(?:do|does)\s+.+",
+        
+        # Where is X implemented/defined/located
+        r"^where\s+is\s+.+\s+(?:implemented|defined|located|declared|found)",
+        r"^find\s+(?:the\s+)?(?:implementation|definition|location)\s+of\s+.+",
+        r"^(?:locate|find)\s+.+\s+(?:in\s+the\s+codebase|code)",
+        
+        # How does X work / flow
+        r"^how\s+does\s+(?:the\s+)?(?:routing|streaming|pipeline|job|auth|memory|rag)\s+(?:work|function|flow)",
+        r"^explain\s+(?:the\s+)?(?:routing|streaming|pipeline|job|auth|memory|rag)\s+(?:flow|system|architecture)",
+        
+        # Optimization / improvement
+        r"^how\s+(?:would|should|could)\s+(?:you|I|we)\s+optimize\s+.+",
+        r"^(?:suggest|recommend)\s+(?:optimizations?|improvements?)\s+(?:for|to)\s+.+",
+        
+        # Code structure questions
+        r"^what\s+is\s+the\s+(?:purpose|role|responsibility)\s+of\s+.+",
+        r"^what\s+does\s+(?:the\s+)?(?:file|module|class|function)\s+.+\s+do",
+        r"^describe\s+(?:the\s+)?(?:file|module|class|function|component)\s+.+",
+        
+        # List/show components
+        r"^(?:list|show|display)\s+(?:all\s+)?(?:the\s+)?(?:modules?|components?|services?|handlers?|routers?)$",
+        r"^what\s+(?:modules?|components?|services?)\s+(?:exist|are\s+there)",
+    ]
+    
+    for pattern in architecture_question_patterns:
+        if re.match(pattern, text_clean):
+            return Tier0RuleResult(
+                matched=True,
+                intent=CanonicalIntent.RAG_CODEBASE_QUERY,
+                confidence=0.95,  # High but slightly below explicit commands
+                rule_name="rag_architecture_question",
+                reason=f"Architecture question detected: '{text_clean}'",
+            )
+    
+    return Tier0RuleResult(matched=False)
+
+
+def check_embedding_commands(text: str) -> Tier0RuleResult:
+    """
+    Special handler for embedding management commands.
+    
+    Commands:
+    - "embedding status" → Check status
+    - "generate embeddings" → Trigger job
+    
+    v1.3: Added embedding command support.
+    """
+    text_lower = text.strip().lower()
+    
+    # Status commands
+    status_patterns = [
+        r"^embedding[s]?\s+status$",
+        r"^check\s+embedding[s]?$",
+        r"^embedding[s]?\s+progress$",
+        r"^how\s+are\s+embeddings\s+doing$",
+    ]
+    
+    for pattern in status_patterns:
+        if re.match(pattern, text_lower):
+            return Tier0RuleResult(
+                matched=True,
+                intent=CanonicalIntent.EMBEDDING_STATUS,
+                confidence=1.0,
+                rule_name="embedding_status",
+                reason="Embedding status command detected",
+            )
+    
+    # Generate commands
+    generate_patterns = [
+        r"^generate\s+embedding[s]?$",
+        r"^run\s+embedding[s]?$",
+        r"^start\s+embedding[s]?$",
+        r"^embed\s+(?:the\s+)?(?:code\s+)?chunks$",
+    ]
+    
+    for pattern in generate_patterns:
+        if re.match(pattern, text_lower):
+            return Tier0RuleResult(
+                matched=True,
+                intent=CanonicalIntent.GENERATE_EMBEDDINGS,
+                confidence=1.0,
+                rule_name="generate_embeddings",
+                reason="Generate embeddings command detected",
             )
     
     return Tier0RuleResult(matched=False)

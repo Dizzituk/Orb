@@ -62,6 +62,23 @@ class CanonicalIntent(str, Enum):
     
     # Feedback (no action, just logging)
     USER_BEHAVIOR_FEEDBACK = "USER_BEHAVIOR_FEEDBACK"
+    
+    # =========================================================================
+    # RAG ARCHITECTURE QUERY (v1.2)
+    # =========================================================================
+    
+    # Search codebase and answer questions
+    RAG_CODEBASE_QUERY = "RAG_CODEBASE_QUERY"
+    
+    # =========================================================================
+    # EMBEDDING MANAGEMENT (v1.3)
+    # =========================================================================
+    
+    # Check embedding status
+    EMBEDDING_STATUS = "EMBEDDING_STATUS"
+    
+    # Trigger embedding generation
+    GENERATE_EMBEDDINGS = "GENERATE_EMBEDDINGS"
 
 
 class LatencyTier(str, Enum):

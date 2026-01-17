@@ -44,6 +44,73 @@ FEEDBACK_WAKE_PATTERN = re.compile(
 
 
 # =============================================================================
+# IMPLICIT COMMAND PATTERNS (no wake phrase needed)
+# =============================================================================
+
+# These patterns trigger COMMAND mode without needing "Astra, command:"
+# NOTE: Patterns here just enable COMMAND mode - actual intent resolution
+#       happens in tier0_rules.py (tier0_classify function)
+IMPLICIT_COMMAND_PATTERNS = [
+    # Architecture commands (exact match, case matters)
+    r"^CREATE ARCHITECTURE MAP$",  # ALL CAPS
+    r"^[Cc]reate [Aa]rchitecture [Mm]ap$",
+    r"^[Uu]pdate [Aa]rchitecture$",
+    r"^[Ss]can [Ss]andbox$",
+    r"^SCAN SANDBOX(?: STRUCTURE)?$",
+    
+    # RAG/Codebase search (v1.3)
+    r"^[Ss]earch\s+(?:the\s+)?codebase:\s*.+",
+    r"^[Aa]sk\s+about\s+(?:the\s+)?codebase:\s*.+",
+    r"^[Cc]odebase\s+(?:search|query):\s*.+",
+    r"^[Ii]n\s+(?:the|this)\s+codebase,?\s+.+",
+    r"^[Ii]ndex\s+(?:the\s+)?(?:architecture|codebase|RAG)$",
+    r"^[Rr]un\s+RAG\s+index$",
+    
+    # Architecture questions - route to RAG (v1.4)
+    # These patterns enable COMMAND mode so tier0_rules can match RAG intent
+    r"^[Ww]hat\s+(?:are|is)\s+(?:the\s+)?(?:main\s+)?entry\s*points?[?.!]?$",
+    r"^[Ww]here\s+(?:are|is)\s+(?:the\s+)?(?:main\s+)?entry\s*points?[?.!]?$",
+    r"^[Ww]hat\s+(?:are|is)\s+(?:the\s+)?(?:potential\s+)?bottlenecks?[?.!]?$",
+    r"^[Ww]here\s+(?:are|is)\s+(?:the\s+)?bottlenecks?[?.!]?$",
+    r"^[Ww]hat\s+(?:function|class|method|module|file)s?\s+(?:handle|process|manage)s?\s+.+[?.!]?$",
+    r"^[Ww]hich\s+(?:function|class|method|module|file)s?\s+(?:are\s+)?responsible\s+for\s+.+[?.!]?$",
+    r"^[Ww]here\s+is\s+.+\s+(?:implemented|defined|located)[?.!]?$",
+    r"^[Ww]here\s+should\s+(?:a\s+)?(?:new\s+)?(?:feature|functionality|code|module|component)\s+.+\s+(?:live|go)[?.!]?$",
+    r"^[Ww]here\s+should\s+[Ii]\s+(?:put|add|place|implement)\s+.+[?.!]?$",
+    r"^[Hh]ow\s+does\s+(?:the\s+)?(?:routing|streaming|pipeline|job|auth|memory|rag)\s+(?:work|function|flow)[?.!]?$",
+    r"^[Ww]hat\s+is\s+the\s+(?:purpose|role|responsibility)\s+of\s+.+[?.!]?$",
+    r"^[Ww]hat\s+does\s+(?:the\s+)?(?:file|module|class|function)\s+.+\s+do[?.!]?$",
+    r"^[Ss]how\s+(?:me\s+)?(?:the\s+)?(?:modules?|components?|services?|handlers?|routers?)[?.!]?$",
+    r"^[Ll]ist\s+(?:all\s+)?(?:the\s+)?(?:modules?|components?|services?)[?.!]?$",
+    r"^[Bb]ottlenecks?[?.!]?$",  # Single word
+    
+    # Spec Gate flow
+    r"^[Hh]ow does that look all together\??$",
+    r"^[Ss]end (?:that |this |it )?to [Ss]pec ?[Gg]ate$",
+    r"^[Rr]un (?:the )?[Cc]ritical [Pp]ipeline$",
+    r"^[Rr]un [Oo]verwatcher$",
+    
+    # Embedding commands (v1.3)
+    r"^[Ee]mbedding[s]?\s+status$",
+    r"^[Cc]heck\s+embedding[s]?$",
+    r"^[Gg]enerate\s+embedding[s]?$",
+    r"^[Rr]un\s+embedding[s]?$",
+    r"^[Ss]tart\s+embedding[s]?$",
+]
+
+# Compile patterns for efficiency
+_IMPLICIT_COMMAND_COMPILED = [re.compile(p) for p in IMPLICIT_COMMAND_PATTERNS]
+
+
+def _is_implicit_command(text: str) -> bool:
+    """Check if text matches an implicit command pattern."""
+    for pattern in _IMPLICIT_COMMAND_COMPILED:
+        if pattern.match(text.strip()):
+            return True
+    return False
+
+
+# =============================================================================
 # MODE CLASSIFICATION
 # =============================================================================
 
@@ -80,6 +147,10 @@ def classify_mode(
     
     # Check command mode via UI context
     if ui_command_context:
+        return TranslationMode.COMMAND_CAPABLE, None, text
+    
+    # Check for implicit command patterns (no wake phrase needed)
+    if _is_implicit_command(text):
         return TranslationMode.COMMAND_CAPABLE, None, text
     
     # Default to chat mode

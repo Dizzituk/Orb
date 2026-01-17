@@ -181,6 +181,25 @@ def intent_to_routing_info(intent: "CanonicalIntent") -> Optional[dict]:
                 f"({overwatcher.provider}/{overwatcher.model})"
             ),
         },
+        CanonicalIntent.RAG_CODEBASE_QUERY: {
+            "type": "local.rag_query",
+            "provider": "local",
+            "model": "rag_answerer",
+            "reason": "Translation layer: RAG CODEBASE QUERY",
+        },
+        # Embedding management (v1.3)
+        CanonicalIntent.EMBEDDING_STATUS: {
+            "type": "local.embedding_status",
+            "provider": "local",
+            "model": "embedding_manager",
+            "reason": "Translation layer: EMBEDDING STATUS",
+        },
+        CanonicalIntent.GENERATE_EMBEDDINGS: {
+            "type": "local.generate_embeddings",
+            "provider": "local",
+            "model": "embedding_manager",
+            "reason": "Translation layer: GENERATE EMBEDDINGS",
+        },
     }
     return mapping.get(intent, None)
 
