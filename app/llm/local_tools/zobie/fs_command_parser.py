@@ -1,10 +1,11 @@
 # FILE: app/llm/local_tools/zobie/fs_command_parser.py
-"""Command parsing for filesystem queries.
+"""Command parsing for filesystem queries and writes.
 
 This module handles parsing of both:
 - Explicit command mode: "Astra, command: read C:\\path"
 - Natural language: "What's in my desktop?"
 
+v5.5 (2026-01): Added Stage 1 write commands (append, overwrite, delete_area)
 v5.2 (2026-01): Extracted from fs_query.py for modularity
 """
 
@@ -27,13 +28,27 @@ def parse_command_mode(message: str) -> Optional[Dict]:
     - command: <cmd> <args>
     - <cmd> <args>  (if starts with known command)
     
-    Commands:
+    Read Commands:
     - list <path>
     - find <n> [under <path>]
     - read <path>
     - read "<path with spaces>"
     - head <path> [n]
     - lines <path> <start> <end>
+    
+    Write Commands (Stage 1):
+    - append <path> "content"
+    - append <path>
+      ```
+      multiline content
+      ```
+    - overwrite <path> "content"
+    - overwrite <path>
+      ```
+      multiline content
+      ```
+    - delete_area <path>  (uses default markers)
+    - delete_lines <path> <start> <end>
     
     Returns dict with parsed command or None if not a command.
     """
@@ -54,9 +69,14 @@ def parse_command_mode(message: str) -> Optional[Dict]:
     text_normalized = text.replace('"', '"').replace('"', '"').replace(''', "'").replace(''', "'")
     
     # Also strip hidden characters that can sneak in
-    text_normalized = text_normalized.replace('\r', '').replace('\n', '').replace('\t', '')
+    text_normalized = text_normalized.replace('\r', '')
     
-    # Initialize variables
+    # Check for write commands FIRST (they have special content parsing)
+    write_result = _parse_write_command(text_normalized)
+    if write_result:
+        return write_result
+    
+    # Initialize variables for read commands
     cmd = None
     path = ''
     extra = ''
@@ -137,6 +157,7 @@ def parse_command_mode(message: str) -> Optional[Dict]:
         "end_line": None,
         "head_lines": None,
         "search_term": None,
+        "content": None,  # For write commands
     }
     
     # Parse command-specific arguments
@@ -185,6 +206,201 @@ def parse_command_mode(message: str) -> Optional[Dict]:
     return result
 
 
+def _parse_write_command(text: str) -> Optional[Dict]:
+    """
+    Parse write commands: append, overwrite, delete_area, delete_lines.
+    
+    Supported formats:
+    1. Inline quoted: append <path> "content here"
+    2. Fenced block:
+       append <path>
+       ```
+       content here
+       ```
+    3. Delete area (markers): delete_area <path>
+    4. Delete lines: delete_lines <path> <start> <end>
+    
+    Returns parsed dict or None if not a write command.
+    """
+    # Split into lines for fenced block detection
+    lines = text.split('\n')
+    first_line = lines[0].strip()
+    first_line_lower = first_line.lower()
+    
+    # Check for write commands
+    write_commands = ['append', 'overwrite', 'delete_area', 'delete_lines']
+    
+    cmd = None
+    for wc in write_commands:
+        if first_line_lower.startswith(wc + ' ') or first_line_lower == wc:
+            cmd = wc
+            break
+    
+    if not cmd:
+        return None
+    
+    # Remove command from first line
+    rest_of_first_line = first_line[len(cmd):].strip()
+    
+    result = {
+        "command": cmd,
+        "path": "",
+        "extra": "",
+        "query_type": cmd,  # append, overwrite, delete_area, delete_lines
+        "start_line": None,
+        "end_line": None,
+        "head_lines": None,
+        "search_term": None,
+        "content": None,
+    }
+    
+    # ==========================================================================
+    # DELETE_AREA: delete_area <path>
+    # ==========================================================================
+    if cmd == "delete_area":
+        # Just needs path
+        path = _extract_path_from_text(rest_of_first_line)
+        if path:
+            result["path"] = normalize_path(path, debug=True)
+        return result
+    
+    # ==========================================================================
+    # DELETE_LINES: delete_lines <path> <start> <end>
+    # ==========================================================================
+    if cmd == "delete_lines":
+        # Parse: delete_lines <path> <start> <end>
+        # or: delete_lines "<path with spaces>" <start> <end>
+        
+        # Try quoted path first
+        quoted_match = re.match(r'^["\']([^"\']+)["\']\s+(\d+)\s+(\d+)', rest_of_first_line)
+        if quoted_match:
+            result["path"] = normalize_path(quoted_match.group(1), debug=True)
+            result["start_line"] = int(quoted_match.group(2))
+            result["end_line"] = int(quoted_match.group(3))
+            return result
+        
+        # Try unquoted path (numbers at end)
+        # Find the last two numbers
+        parts = rest_of_first_line.split()
+        if len(parts) >= 3:
+            try:
+                end_line = int(parts[-1])
+                start_line = int(parts[-2])
+                path = ' '.join(parts[:-2])
+                result["path"] = normalize_path(path, debug=True)
+                result["start_line"] = start_line
+                result["end_line"] = end_line
+                return result
+            except ValueError:
+                pass
+        
+        return result
+    
+    # ==========================================================================
+    # APPEND / OVERWRITE: Need path + content
+    # ==========================================================================
+    
+    # Check for fenced block content (```...```)
+    fenced_content = _extract_fenced_content(lines[1:]) if len(lines) > 1 else None
+    
+    if fenced_content is not None:
+        # Path is in rest_of_first_line
+        path = _extract_path_from_text(rest_of_first_line)
+        if path:
+            result["path"] = normalize_path(path, debug=True)
+        result["content"] = fenced_content
+        return result
+    
+    # Check for inline quoted content: append <path> "content"
+    # Pattern: <path> "content" or "<path>" "content"
+    
+    # Try: append "<path>" "content"
+    double_quoted = re.match(
+        r'^["\']([^"\']+)["\']\s+["\'](.*)["\']\s*$',
+        rest_of_first_line,
+        re.DOTALL
+    )
+    if double_quoted:
+        result["path"] = normalize_path(double_quoted.group(1), debug=True)
+        result["content"] = double_quoted.group(2)
+        return result
+    
+    # Try: append <path> "content" (path without quotes, content with quotes)
+    # Find the last quoted string as content
+    content_match = re.search(r'["\']([^"\']*)["\']$', rest_of_first_line)
+    if content_match:
+        content = content_match.group(1)
+        path_part = rest_of_first_line[:content_match.start()].strip()
+        # Remove trailing quote from path if any
+        path_part = path_part.rstrip('"\'').strip()
+        path = _extract_path_from_text(path_part)
+        if path:
+            result["path"] = normalize_path(path, debug=True)
+        result["content"] = content
+        return result
+    
+    # No content found - just path (error case, but let caller handle)
+    path = _extract_path_from_text(rest_of_first_line)
+    if path:
+        result["path"] = normalize_path(path, debug=True)
+    
+    return result
+
+
+def _extract_path_from_text(text: str) -> str:
+    """Extract a path from text, handling quotes."""
+    text = text.strip()
+    
+    # Remove surrounding quotes
+    if len(text) >= 2:
+        if (text.startswith('"') and text.endswith('"')) or \
+           (text.startswith("'") and text.endswith("'")):
+            text = text[1:-1]
+    
+    return text
+
+
+def _extract_fenced_content(lines: list) -> Optional[str]:
+    """
+    Extract content from a fenced code block.
+    
+    Looks for:
+    ```
+    content here
+    ```
+    
+    Returns the content between fences, or None if no valid fence found.
+    """
+    if not lines:
+        return None
+    
+    # Find opening fence
+    start_idx = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith('```'):
+            start_idx = i
+            break
+    
+    if start_idx is None:
+        return None
+    
+    # Find closing fence
+    end_idx = None
+    for i in range(start_idx + 1, len(lines)):
+        stripped = lines[i].strip()
+        if stripped == '```' or stripped.startswith('```'):
+            end_idx = i
+            break
+    
+    if end_idx is None:
+        return None
+    
+    # Extract content between fences
+    content_lines = lines[start_idx + 1:end_idx]
+    return '\n'.join(content_lines)
+
+
 def parse_natural_language(message: str) -> Dict:
     """
     Parse natural language filesystem queries.
@@ -214,6 +430,7 @@ def parse_natural_language(message: str) -> Dict:
         "start_line": None,
         "end_line": None,
         "head_lines": None,
+        "content": None,
     }
     
     # Extract Windows path if present
@@ -334,11 +551,13 @@ def parse_filesystem_query(message: str) -> Dict:
     Unified parser that handles both command mode and natural language.
     
     Returns dict with:
-    - query_type: "list", "find", "read", "head", or "lines"
+    - query_type: "list", "find", "read", "head", "lines", 
+                  "append", "overwrite", "delete_area", "delete_lines"
     - path: Target path (normalized)
     - search_term: For find queries
-    - start_line, end_line: For lines queries
+    - start_line, end_line: For lines/delete_lines queries
     - head_lines: For head queries
+    - content: For append/overwrite queries
     - source: "command" or "natural"
     """
     # Try command mode first

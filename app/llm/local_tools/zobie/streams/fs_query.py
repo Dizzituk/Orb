@@ -1,22 +1,30 @@
 # FILE: app/llm/local_tools/zobie/streams/fs_query.py
-"""FILESYSTEM QUERY stream generator (v5.4 - Remote agent fallback for OneDrive).
+"""FILESYSTEM QUERY stream generator (v5.5 - Stage 1 Write Operations).
 
-Answers filesystem listing/find/read queries using:
+Answers filesystem listing/find/read queries AND write operations using:
 1. DB index first (fast, from scan sandbox)
 2. Live surgical read fallback (if DB lacks content)
 3. Remote agent fallback via sandbox controller (if local read fails for OneDrive)
+4. Sandbox write operations (append, overwrite, delete_area)
 
 Supports BOTH natural language AND explicit command mode:
 - Natural: "What's in my desktop?", "Show me line 45-65 of router.py"
 - Command: "Astra, command: list C:\\path", "command: read \"file with spaces.txt\""
 
-Commands supported:
+Read Commands:
 - list <path>          : List files/folders in path
 - find <n> [under <path>] : Search for file/folder by name
 - read <path>          : Read entire file (with limits)
 - head <path> <n>      : Read first N lines (default 20)
 - lines <path> <start> <end> : Read specific line range
 
+Write Commands (Stage 1):
+- append <path> "content" : Append text to file
+- overwrite <path> "content" : Replace entire file
+- delete_area <path>   : Delete between ASTRA_BLOCK markers
+- delete_lines <path> <start> <end> : Delete line range
+
+v5.5 (2026-01): Added Stage 1 write operations (append, overwrite, delete_area, delete_lines)
 v5.4 (2026-01): Added remote_agent fallback via sandbox controller for OneDrive paths
 v5.3 (2026-01): Enhanced debug output in SSE stream for OneDrive diagnosis
 v5.2 (2026-01): Fixed READ for OneDrive paths, refactored into modules
@@ -66,6 +74,13 @@ from ..fs_live_ops import (
 from ..fs_command_parser import (
     parse_filesystem_query,
 )
+from ..fs_write_ops import (
+    sandbox_append_file,
+    sandbox_overwrite_file,
+    sandbox_delete_area,
+    sandbox_delete_lines,
+    WriteResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,14 +97,15 @@ async def generate_filesystem_query_stream(
 ) -> AsyncGenerator[str, None]:
     """
     Answer filesystem queries using DB-first approach with live read fallback.
+    Also handles Stage 1 write operations via sandbox.
     
-    v5.3: Enhanced debug output for OneDrive path diagnosis.
+    v5.5: Added write operations (append, overwrite, delete_area, delete_lines)
     
     Flow:
     1. Parse query (command or natural language)
     2. Validate path against allowlist
-    3. Try DB lookup first
-    4. Fall back to live surgical read if needed
+    3. For reads: Try DB lookup first, fall back to live surgical read
+    4. For writes: Execute via sandbox controller
     5. Return results with appropriate formatting
     """
     loop = asyncio.get_event_loop()
@@ -103,6 +119,7 @@ async def generate_filesystem_query_stream(
     start_line = parsed.get("start_line")
     end_line = parsed.get("end_line")
     head_lines = parsed.get("head_lines")
+    content = parsed.get("content")
     source = parsed.get("source", "natural")
     
     yield sse_token(f"📂 [FS_QUERY] Processing {source} query...\n")
@@ -115,12 +132,14 @@ async def generate_filesystem_query_stream(
         yield sse_token(f" head={head_lines}")
     if start_line and end_line:
         yield sse_token(f" lines={start_line}-{end_line}")
+    if content is not None:
+        yield sse_token(f" content_len={len(content)}")
     yield sse_token("\n\n")
     
     # Handle missing query type
     if not query_type:
         yield sse_token("❓ Could not determine query type.\n")
-        yield sse_token("Supported commands: list, find, read, head, lines\n")
+        yield sse_token("Supported commands: list, find, read, head, lines, append, overwrite, delete_area, delete_lines\n")
         yield sse_done(
             provider="local",
             model="filesystem_query",
@@ -130,7 +149,7 @@ async def generate_filesystem_query_stream(
         return
     
     # Handle missing path for path-requiring commands
-    if query_type in ("list", "read", "head", "lines") and not target_path:
+    if query_type in ("list", "read", "head", "lines", "append", "overwrite", "delete_area", "delete_lines") and not target_path:
         yield sse_token("❌ No path specified.\n")
         yield sse_token(f"Usage: {query_type} <path>\n")
         yield sse_done(
@@ -157,6 +176,42 @@ async def generate_filesystem_query_stream(
                 error="blocked_by_allowlist",
             )
             return
+    
+    # ==========================================================================
+    # WRITE OPERATIONS (Stage 1)
+    # ==========================================================================
+    
+    if query_type == "append":
+        async for chunk in _handle_append_query(
+            project_id, db, target_path, content, trace, started_ms
+        ):
+            yield chunk
+        return
+    
+    if query_type == "overwrite":
+        async for chunk in _handle_overwrite_query(
+            project_id, db, target_path, content, trace, started_ms
+        ):
+            yield chunk
+        return
+    
+    if query_type == "delete_area":
+        async for chunk in _handle_delete_area_query(
+            project_id, db, target_path, trace, started_ms
+        ):
+            yield chunk
+        return
+    
+    if query_type == "delete_lines":
+        async for chunk in _handle_delete_lines_query(
+            project_id, db, target_path, start_line, end_line, trace, started_ms
+        ):
+            yield chunk
+        return
+    
+    # ==========================================================================
+    # READ OPERATIONS
+    # ==========================================================================
     
     # Dispatch by query type
     if query_type == "find":
@@ -192,7 +247,215 @@ async def generate_filesystem_query_stream(
 
 
 # =============================================================================
-# QUERY HANDLERS
+# WRITE QUERY HANDLERS (Stage 1)
+# =============================================================================
+
+async def _handle_append_query(
+    project_id: int,
+    db: Session,
+    target_path: str,
+    content: Optional[str],
+    trace: Optional[RoutingTrace],
+    started_ms: int,
+) -> AsyncGenerator[str, None]:
+    """Handle append command."""
+    loop = asyncio.get_event_loop()
+    
+    if content is None:
+        yield sse_token("❌ No content provided for append.\n")
+        yield sse_token("Usage: append <path> \"content\" OR append <path> with fenced block\n")
+        yield sse_done(
+            provider="local",
+            model="filesystem_query",
+            success=False,
+            error="no_content",
+        )
+        return
+    
+    yield sse_token(f"📝 [APPEND] Appending {len(content)} chars to: {target_path}\n\n")
+    
+    # Execute via sandbox
+    result = sandbox_append_file(target_path, content, debug=True)
+    
+    # Output result
+    async for chunk in _format_write_result(result):
+        yield chunk
+    
+    duration_ms = int(loop.time() * 1000) - started_ms
+    
+    if trace:
+        trace.log_model_call(
+            "local_tool", "local", "filesystem_query", "append",
+            0, 0, duration_ms, success=result.status == "ok", error=result.error,
+        )
+    
+    yield sse_done(
+        provider="local",
+        model="filesystem_query",
+        total_length=result.bytes_after,
+        success=result.status == "ok",
+        error=result.error,
+        meta={"query_type": "append", "result": result.to_dict()},
+    )
+
+
+async def _handle_overwrite_query(
+    project_id: int,
+    db: Session,
+    target_path: str,
+    content: Optional[str],
+    trace: Optional[RoutingTrace],
+    started_ms: int,
+) -> AsyncGenerator[str, None]:
+    """Handle overwrite command."""
+    loop = asyncio.get_event_loop()
+    
+    if content is None:
+        yield sse_token("❌ No content provided for overwrite.\n")
+        yield sse_token("Usage: overwrite <path> \"content\" OR overwrite <path> with fenced block\n")
+        yield sse_done(
+            provider="local",
+            model="filesystem_query",
+            success=False,
+            error="no_content",
+        )
+        return
+    
+    yield sse_token(f"📝 [OVERWRITE] Replacing content of: {target_path}\n")
+    yield sse_token(f"   New content: {len(content)} chars\n\n")
+    
+    # Execute via sandbox
+    result = sandbox_overwrite_file(target_path, content, debug=True)
+    
+    # Output result
+    async for chunk in _format_write_result(result):
+        yield chunk
+    
+    duration_ms = int(loop.time() * 1000) - started_ms
+    
+    if trace:
+        trace.log_model_call(
+            "local_tool", "local", "filesystem_query", "overwrite",
+            0, 0, duration_ms, success=result.status == "ok", error=result.error,
+        )
+    
+    yield sse_done(
+        provider="local",
+        model="filesystem_query",
+        total_length=result.bytes_after,
+        success=result.status == "ok",
+        error=result.error,
+        meta={"query_type": "overwrite", "result": result.to_dict()},
+    )
+
+
+async def _handle_delete_area_query(
+    project_id: int,
+    db: Session,
+    target_path: str,
+    trace: Optional[RoutingTrace],
+    started_ms: int,
+) -> AsyncGenerator[str, None]:
+    """Handle delete_area command (marker-based deletion)."""
+    loop = asyncio.get_event_loop()
+    
+    yield sse_token(f"🗑️ [DELETE_AREA] Removing content between ASTRA_BLOCK markers\n")
+    yield sse_token(f"   Path: {target_path}\n")
+    yield sse_token(f"   Start marker: # START ASTRA_BLOCK\n")
+    yield sse_token(f"   End marker: # END ASTRA_BLOCK\n\n")
+    
+    # Execute via sandbox
+    result = sandbox_delete_area(target_path, debug=True)
+    
+    # Output result
+    async for chunk in _format_write_result(result):
+        yield chunk
+    
+    duration_ms = int(loop.time() * 1000) - started_ms
+    
+    if trace:
+        trace.log_model_call(
+            "local_tool", "local", "filesystem_query", "delete_area",
+            0, 0, duration_ms, success=result.status == "ok", error=result.error,
+        )
+    
+    yield sse_done(
+        provider="local",
+        model="filesystem_query",
+        total_length=result.bytes_after,
+        success=result.status == "ok",
+        error=result.error,
+        meta={"query_type": "delete_area", "result": result.to_dict()},
+    )
+
+
+async def _handle_delete_lines_query(
+    project_id: int,
+    db: Session,
+    target_path: str,
+    start_line: Optional[int],
+    end_line: Optional[int],
+    trace: Optional[RoutingTrace],
+    started_ms: int,
+) -> AsyncGenerator[str, None]:
+    """Handle delete_lines command (line range deletion)."""
+    loop = asyncio.get_event_loop()
+    
+    if start_line is None or end_line is None:
+        yield sse_token("❌ Missing line range for delete_lines.\n")
+        yield sse_token("Usage: delete_lines <path> <start_line> <end_line>\n")
+        yield sse_done(
+            provider="local",
+            model="filesystem_query",
+            success=False,
+            error="missing_line_range",
+        )
+        return
+    
+    yield sse_token(f"🗑️ [DELETE_LINES] Removing lines {start_line}-{end_line}\n")
+    yield sse_token(f"   Path: {target_path}\n\n")
+    
+    # Execute via sandbox
+    result = sandbox_delete_lines(target_path, start_line, end_line, debug=True)
+    
+    # Output result
+    async for chunk in _format_write_result(result):
+        yield chunk
+    
+    duration_ms = int(loop.time() * 1000) - started_ms
+    
+    if trace:
+        trace.log_model_call(
+            "local_tool", "local", "filesystem_query", "delete_lines",
+            0, 0, duration_ms, success=result.status == "ok", error=result.error,
+        )
+    
+    yield sse_done(
+        provider="local",
+        model="filesystem_query",
+        total_length=result.bytes_after,
+        success=result.status == "ok",
+        error=result.error,
+        meta={"query_type": "delete_lines", "result": result.to_dict()},
+    )
+
+
+async def _format_write_result(result: WriteResult) -> AsyncGenerator[str, None]:
+    """Format write result for SSE output."""
+    yield sse_token(f"\n{result.summary()}\n\n")
+    
+    if result.status == "ok":
+        yield sse_token("**Before:**\n```\n")
+        yield sse_token(result.preview_before or "(empty)")
+        yield sse_token("\n```\n\n")
+        
+        yield sse_token("**After:**\n```\n")
+        yield sse_token(result.preview_after or "(empty)")
+        yield sse_token("\n```\n")
+
+
+# =============================================================================
+# READ QUERY HANDLERS
 # =============================================================================
 
 async def _handle_find_query(

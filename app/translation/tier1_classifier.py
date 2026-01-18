@@ -5,6 +5,11 @@ Used only when Tier 0 rules are ambiguous or don't match.
 
 INVARIANT: Intent classification must NEVER require a frontier model.
 Tier 2 (Opus/GPT-5.2/Gemini 3 Pro) is NEVER used for routing decisions.
+
+v1.1 (2026-01): Fixed import error - get_lightweight_client doesn't exist
+  - Added LightweightLLMClient wrapper class
+  - Uses providers.registry.llm_call for actual calls
+  - Graceful fallback if registry unavailable
 """
 from __future__ import annotations
 import json
@@ -72,6 +77,84 @@ def _build_intent_list() -> str:
 
 
 # =============================================================================
+# LIGHTWEIGHT LLM CLIENT (v1.1)
+# =============================================================================
+
+class LightweightLLMClient:
+    """
+    Simple LLM client wrapper for lightweight classification tasks.
+    
+    v1.1: Created to replace missing get_lightweight_client import.
+    Uses providers.registry.llm_call for actual API calls.
+    """
+    
+    def __init__(self):
+        self._registry_available = False
+        self._llm_call = None
+        
+        # Try to import the registry
+        try:
+            from app.providers.registry import llm_call as registry_llm_call
+            self._llm_call = registry_llm_call
+            self._registry_available = True
+            logger.debug("[LightweightLLMClient] Registry loaded successfully")
+        except ImportError as e:
+            logger.warning(f"[LightweightLLMClient] Registry import failed: {e}")
+    
+    async def call_async(
+        self,
+        model: str,
+        messages: List[Dict[str, str]],
+        max_tokens: int = 100,
+        temperature: float = 0.0,
+    ) -> str:
+        """
+        Make an async LLM call.
+        
+        Returns the content string from the response.
+        """
+        if not self._registry_available or self._llm_call is None:
+            logger.warning("[LightweightLLMClient] Registry unavailable, returning empty")
+            return '{"intent": "CHAT_ONLY", "confidence": 0.5, "reasoning": "LLM unavailable"}'
+        
+        try:
+            # Determine provider from model name
+            provider = "openai"  # Default to OpenAI for lightweight models
+            if "claude" in model.lower() or "anthropic" in model.lower():
+                provider = "anthropic"
+            elif "gemini" in model.lower():
+                provider = "google"
+            
+            # Make the call
+            result = await self._llm_call(
+                provider_id=provider,
+                model_id=model,
+                messages=messages,
+            )
+            
+            # Extract content from result
+            if hasattr(result, 'content'):
+                return result.content
+            elif isinstance(result, dict) and 'content' in result:
+                return result['content']
+            else:
+                return str(result)
+                
+        except Exception as e:
+            logger.error(f"[LightweightLLMClient] Call failed: {e}")
+            return f'{{"intent": "CHAT_ONLY", "confidence": 0.5, "reasoning": "LLM call failed: {e}"}}'
+
+
+def get_lightweight_client() -> LightweightLLMClient:
+    """
+    Get a lightweight LLM client for classification tasks.
+    
+    v1.1: Added this function to fix the import error.
+    """
+    return LightweightLLMClient()
+
+
+# =============================================================================
 # CLASSIFIER CLIENT
 # =============================================================================
 
@@ -89,7 +172,7 @@ class Tier1Classifier:
         Initialize classifier.
         
         Args:
-            llm_client: Optional LLM client. If None, uses default from app.llm.
+            llm_client: Optional LLM client. If None, uses default lightweight client.
         """
         self._llm_client = llm_client
         self._system_prompt = CLASSIFIER_SYSTEM_PROMPT.format(
@@ -163,8 +246,7 @@ class Tier1Classifier:
         if self._llm_client is not None:
             return self._llm_client
         
-        # Import here to avoid circular imports
-        from app.llm.routing.core import get_lightweight_client
+        # v1.1: Use local lightweight client instead of broken import
         return get_lightweight_client()
     
     def _parse_response(self, response: str) -> ClassifierResponse:

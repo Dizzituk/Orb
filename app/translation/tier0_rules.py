@@ -13,8 +13,16 @@ Handles:
 - Overwatcher commands ("send to overwatcher")
 - Obvious chat patterns (questions, past tense, etc.)
 - Filesystem READ queries ("what's written in", "read file", "show contents of")
-- Filesystem command mode ("Astra, command: list/read/head/lines/find")
+- Filesystem command mode ("Astra, command: list/read/head/lines/find/append/overwrite/delete_area/delete_lines")
 
+v5.7 (2026-01): Fixed corrupted regex in check_filesystem_query_trigger
+  - Restored correct command mode detection regex
+  - Removed duplicated code blocks
+v5.5 (2026-01): Stage 1 deterministic file editing
+  - Routes "Astra, command: append <path> \"content\"" to FILESYSTEM_QUERY
+  - Routes "Astra, command: overwrite <path> \"content\"" to FILESYSTEM_QUERY
+  - Routes "Astra, command: delete_area <path>" to FILESYSTEM_QUERY (ASTRA_BLOCK markers)
+  - Routes "Astra, command: delete_lines <path> <start> <end>" to FILESYSTEM_QUERY
 v5.0 (2026-01): Added explicit command mode for filesystem operations
   - Routes "Astra, command: list <path>" to FILESYSTEM_QUERY
   - Routes "Astra, command: read <path>" to FILESYSTEM_QUERY (supports quoted paths)
@@ -798,7 +806,7 @@ def check_embedding_commands(text: str) -> Tier0RuleResult:
 
 
 # =============================================================================
-# FILESYSTEM QUERY HANDLER (v5.0)
+# FILESYSTEM QUERY HANDLER (v5.7 - FIXED)
 # =============================================================================
 
 # Known user folder keywords (for queries that don't have explicit paths)
@@ -846,7 +854,13 @@ def _is_within_allowed_roots(text: str) -> bool:
 
 def check_filesystem_query_trigger(text: str) -> Tier0RuleResult:
     """
-    Special handler for filesystem listing/search queries (v5.0).
+    Special handler for filesystem listing/search queries (v5.7 - FIXED).
+    
+    v5.7 (2026-01): Fixed corrupted regex, removed duplicated code blocks
+    
+    v5.6 (2026-01): Fixed to handle text with command prefix already stripped
+      - Also matches raw verbs without "command:" prefix
+      - Handles case where translator.py strips prefix before calling
     
     v5.0: Added explicit command mode support:
     - "Astra, command: list <path>"
@@ -868,8 +882,40 @@ def check_filesystem_query_trigger(text: str) -> Tier0RuleResult:
     """
     text_stripped = text.strip()
     
+    # FS command verbs - used in multiple checks below
+    fs_command_verbs = [
+        r'^list\s+',           # list <path>
+        r'^read\s+',           # read <path> or read "<path>"
+        r'^head\s+',           # head <path> [n]
+        r'^lines\s+',          # lines <path> <start> <end>
+        r'^find\s+',           # find <term> [under <path>]
+        # Stage 1 write commands (v5.5)
+        r'^append\s+',         # append <path> "content" or append <path> + fenced block
+        r'^overwrite\s+',      # overwrite <path> "content" or overwrite <path> + fenced block
+        r'^delete_area\s+',    # delete_area <path> (uses ASTRA_BLOCK markers)
+        r'^delete_lines\s+',   # delete_lines <path> <start> <end>
+    ]
+    
     # ==========================================================================
-    # v5.0: EXPLICIT COMMAND MODE DETECTION (highest priority)
+    # v5.6: DIRECT COMMAND VERB DETECTION (highest priority)
+    # When text is already stripped of "Astra, command:" prefix, it starts
+    # directly with the verb like "append path content" or "read path"
+    # ==========================================================================
+    text_lower = text_stripped.lower()
+    for pattern in fs_command_verbs:
+        if re.match(pattern, text_lower):
+            verb = text_lower.split()[0]
+            print(f"[FILESYSTEM_QUERY] Direct verb detected: {text_stripped[:80]}")
+            return Tier0RuleResult(
+                matched=True,
+                intent=CanonicalIntent.FILESYSTEM_QUERY,
+                confidence=1.0,
+                rule_name="filesystem_direct_verb",
+                reason=f"Filesystem command (direct verb): {verb}",
+            )
+    
+    # ==========================================================================
+    # v5.7: EXPLICIT COMMAND MODE DETECTION (with prefix) - FIXED REGEX
     # Patterns: "Astra, command: <cmd> <args>" or "command: <cmd> <args>"
     # ==========================================================================
     
@@ -883,16 +929,8 @@ def check_filesystem_query_trigger(text: str) -> Tier0RuleResult:
         cmd_text = command_match.group(1).strip()
         cmd_lower = cmd_text.lower()
         
-        # Check for FS commands: list, read, head, lines, find
-        fs_commands = [
-            r'^list\s+',           # list <path>
-            r'^read\s+',           # read <path> or read "<path>"
-            r'^head\s+',           # head <path> [n]
-            r'^lines\s+',          # lines <path> <start> <end>
-            r'^find\s+',           # find <term> [under <path>]
-        ]
-        
-        for pattern in fs_commands:
+        # Check for FS commands
+        for pattern in fs_command_verbs:
             if re.match(pattern, cmd_lower):
                 print(f"[FILESYSTEM_QUERY] Command mode detected: {cmd_text[:80]}")
                 return Tier0RuleResult(

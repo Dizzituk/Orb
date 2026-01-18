@@ -615,6 +615,26 @@ def reload_routing_policy() -> None:
     return None
 
 
+# =============================================================================
+# COMPATIBILITY ALIASES (v0.15.2)
+# =============================================================================
+
+def get_lightweight_client():
+    """
+    Compatibility alias for removed function.
+    
+    v0.15.2: This function was never defined in routing.core but something
+    is trying to import it. Provide a stub that returns None to prevent
+    ImportError. The actual lightweight client functionality is in
+    app.translation.tier1_classifier.LightweightLLMClient.
+    """
+    logger.warning(
+        "[COMPAT] get_lightweight_client() is deprecated. "
+        "Use app.translation.tier1_classifier.LightweightLLMClient instead."
+    )
+    return None
+
+
 __all__ = [
     # Async API
     "call_llm_async",
@@ -652,4 +672,6 @@ __all__ = [
     "disable_policy_routing",
     "reload_routing_policy",
     "synthesize_envelope_from_task",
+    # v0.15.2: Compatibility alias
+    "get_lightweight_client",
 ]

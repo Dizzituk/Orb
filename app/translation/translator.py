@@ -5,13 +5,19 @@ Converts "Tazish" (natural language) into canonical intents with safety gates.
 
 Pipeline:
 1. Mode Classification (Chat/Command-Capable/Feedback)
-2. v5.1: Filesystem Command Mode Bypass (explicit "command: list/read/...")
+2. v5.2: Filesystem Command Mode Bypass (explicit "command: list/read/append/overwrite/...")
 3. Tier 0 Rules (regex/string - no LLM)
 4. Phrase Cache Lookup
 5. Tier 1 Classifier (GPT-5 mini - only if needed)
 6. Directive vs Story Gate
 7. Context Gate
 8. Confirmation Gate (for high-stakes)
+
+v5.2 (2026-01): Added Stage 1 write commands to filesystem command mode bypass
+  - Matches "command: append/overwrite/delete_area/delete_lines ..."
+  - Routes directly to FILESYSTEM_QUERY with confidence=1.0
+  - Bypasses Tier 1 classifier confidence gate
+  - Fixes routing for deterministic file editing operations
 
 v5.1 (2026-01): Added filesystem command mode bypass in _resolve_command_intent
   - Matches "command: list/read/head/lines/find ..." (after Astra prefix stripped)
@@ -50,18 +56,25 @@ from .tier1_classifier import Tier1Classifier, CONFIDENCE_THRESHOLD
 from .phrase_cache import get_phrase_cache, PhraseCache
 from .feedback import get_feedback_logger, FeedbackLogger, parse_feedback_message
 
-# v5.1: Filesystem command mode bypass pattern
+# v5.2: Filesystem command mode bypass pattern (includes Stage 1 write commands)
 # After mode classification strips "Astra, command: " prefix,
-# remaining text is just "list C:\...", "read C:\...", etc.
-# This pattern matches verb + Windows drive path (with optional quotes).
-# Examples that should match:
+# remaining text is just "list C:\...", "read C:\...", "append path content", etc.
+#
+# READ commands require Windows drive path:
 #   "list C:\Users\dizzi\Desktop"
 #   "read D:\Orb\file.py"
 #   "read \"C:\path with spaces\file.txt\""
 #   "head C:\file.py 40"
 #   "lines D:\file.py 45 65"
+#
+# WRITE commands (v5.2) also need path but may have quoted paths:
+#   "append C:\path\file.txt \"content\""
+#   "append \"C:\path with spaces\file.txt\" \"content\""
+#   "overwrite D:\file.py \"new content\""
+#   "delete_area C:\file.py"
+#   "delete_lines D:\file.py 10 20"
 _FS_COMMAND_MODE_PATTERN = re.compile(
-    r'^(list|read|head|lines|find)\s+["\'“”‘’]?[A-Za-z]:[/\\]',
+    r'^(list|read|head|lines|find|append|overwrite|delete_area|delete_lines)\s+',
     re.IGNORECASE
 )
 
@@ -166,19 +179,20 @@ class Translator:
         Resolve intent for a command-capable message.
         Goes through Tier 0 -> Cache -> Tier 1 -> Gates
         
+        v5.2: Updated filesystem command mode bypass to include write commands.
         v5.1: Added filesystem command mode bypass at start.
         """
         # =====================================================================
-        # v5.1: FILESYSTEM COMMAND MODE BYPASS (highest priority)
-        # If message is "command: list/read/head/lines/find ...", route directly
-        # to FILESYSTEM_QUERY with confidence=1.0, bypassing classifier gate.
+        # v5.2: FILESYSTEM COMMAND MODE BYPASS (highest priority)
+        # If message is "list/read/head/lines/find/append/overwrite/delete_area/delete_lines ...",
+        # route directly to FILESYSTEM_QUERY with confidence=1.0, bypassing classifier gate.
         # This runs BEFORE Tier 0 rules to catch command mode that was stripped
-        # of "Astra, " prefix by mode classification.
+        # of "Astra, command:" prefix by mode classification.
         # =====================================================================
         fs_cmd_match = _FS_COMMAND_MODE_PATTERN.match(text)
         if fs_cmd_match:
             verb = fs_cmd_match.group(1).lower()
-            # Extract path from after the verb (text starts with "list C:\...")
+            # Extract path from after the verb (text starts with "list C:\...", "append path ...")
             path_start = len(verb) + 1  # Skip verb and space
             path_part = text[path_start:path_start + 80].strip() if len(text) > path_start else ""
             logger.info(f"[COMMAND_ROUTE] Intent: FILESYSTEM_QUERY (command mode)")
