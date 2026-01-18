@@ -10,6 +10,7 @@ v0.17.0: Debug logging
 v0.17.1: ENV-driven model selection (no hardcoded model IDs)
 v0.17.2: Added call_llm_text helper for non-stream callers (Spec Gate, etc.)
 v0.17.3: call_llm_text retry + OpenAI non-stream fallback for transient stream disconnects
+v0.18.0: Added max_tokens and timeout_seconds params to stream_llm/stream_anthropic for archmap
 
 CANONICAL EVENT SCHEMA:
 All streaming functions must yield dict events with this structure:
@@ -342,9 +343,16 @@ async def stream_anthropic(
     model: Optional[str] = None,
     enable_reasoning: bool = False,
     route: Optional[str] = None,
+    max_tokens: Optional[int] = None,
+    timeout_seconds: Optional[int] = None,
 ) -> AsyncGenerator[Dict, None]:
-    """Stream from Anthropic using async client."""
-    print(f"[STREAM_ANTHROPIC] Called: model={model}, route={route}")
+    """Stream from Anthropic using async client.
+    
+    Args:
+        max_tokens: Override max output tokens (default: ANTHROPIC_MAX_TOKENS env or 4096)
+        timeout_seconds: Request timeout (currently logged but not enforced at HTTP level)
+    """
+    print(f"[STREAM_ANTHROPIC] Called: model={model}, route={route}, max_tokens={max_tokens}, timeout={timeout_seconds}s")
 
     if not HAS_ANTHROPIC:
         yield {"type": "error", "message": "anthropic package not installed"}
@@ -371,10 +379,14 @@ async def stream_anthropic(
     prompt_tokens = None
     completion_tokens = None
 
+    # Determine max tokens: explicit param > env var > default
+    effective_max_tokens = max_tokens or _int_env("ANTHROPIC_MAX_TOKENS") or 4096
+    print(f"[STREAM_ANTHROPIC] Effective max_tokens={effective_max_tokens}")
+    
     try:
         resp = await client.messages.create(
             model=use_model,
-            max_tokens=_int_env("ANTHROPIC_MAX_TOKENS") or 4096,
+            max_tokens=effective_max_tokens,
             system=enhanced_prompt,
             messages=messages,
             stream=True,
@@ -513,9 +525,16 @@ async def stream_llm(
     model: Optional[str] = None,
     enable_reasoning: bool = False,
     route: Optional[str] = None,
+    max_tokens: Optional[int] = None,
+    timeout_seconds: Optional[int] = None,
 ) -> AsyncGenerator[Dict, None]:
-    """Stream from specified LLM provider."""
-    print(f"[STREAM_LLM] Called: provider={provider}, model={model}, messages={len(messages)}")
+    """Stream from specified LLM provider.
+    
+    Args:
+        max_tokens: Override max output tokens (provider-specific defaults otherwise)
+        timeout_seconds: Request timeout hint (implementation varies by provider)
+    """
+    print(f"[STREAM_LLM] Called: provider={provider}, model={model}, messages={len(messages)}, max_tokens={max_tokens}")
 
     if not provider:
         provider = get_default_provider()
@@ -533,7 +552,10 @@ async def stream_llm(
         async for event in stream_openai(messages, system_prompt, model, enable_reasoning, route):
             yield event
     elif provider == "anthropic":
-        async for event in stream_anthropic(messages, system_prompt, model, enable_reasoning, route):
+        async for event in stream_anthropic(
+            messages, system_prompt, model, enable_reasoning, route,
+            max_tokens=max_tokens, timeout_seconds=timeout_seconds
+        ):
             yield event
     elif provider in ("gemini", "google"):
         async for event in stream_gemini(messages, system_prompt, model, enable_reasoning, route):

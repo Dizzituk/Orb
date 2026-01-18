@@ -636,16 +636,55 @@ class EmbeddingJob:
             raise
         
         try:
-            from app.embeddings.service import store_embedding
-            print("[embedding_job] Imported store_embedding successfully")
+            from app.embeddings.service import store_embedding, embedding_exists
+            print("[embedding_job] Imported store_embedding and embedding_exists successfully")
         except ImportError as e:
             print(f"[embedding_job] Failed to import store_embedding: {e}")
             logger.error(f"[embedding_job] Failed to import store_embedding: {e}")
             raise
         
-        # Build texts for embedding
-        texts = []
+        # ======================================================================
+        # PREFILTER: Skip chunks that already have embeddings (safety net)
+        # This prevents re-embedding if chunk rows exist but weren't deduplicated
+        # ======================================================================
+        chunks_to_embed = []
+        skipped_existing = 0
+        now = datetime.utcnow()
+        
         for chunk in chunks:
+            if embedding_exists(
+                db=db,
+                project_id=0,
+                source_type="arch_code_chunk",
+                source_id=chunk.id,
+            ):
+                # Embedding already exists for this chunk.id - skip API call
+                chunk.embedded = True
+                chunk.embedding_model = EMBEDDING_MODEL
+                chunk.embedded_at = now
+                chunk.embedded_content_hash = chunk.content_hash
+                skipped_existing += 1
+                
+                # Update skipped_chunks counter (safe check for attribute existence)
+                if hasattr(_current_status, 'skipped_chunks'):
+                    _current_status.skipped_chunks += 1
+            else:
+                chunks_to_embed.append(chunk)
+        
+        if skipped_existing > 0:
+            logger.info(f"[embedding_job] Skipped {skipped_existing} chunks (embeddings already exist)")
+            print(f"[embedding_job] Skipped {skipped_existing} chunks (embeddings already exist)")
+        
+        # If all chunks already have embeddings, commit and return early
+        if not chunks_to_embed:
+            logger.info(f"[embedding_job] All {len(chunks)} chunks already embedded, no API calls needed")
+            print(f"[embedding_job] All {len(chunks)} chunks already embedded, no API calls needed")
+            db.commit()
+            return len(chunks)  # All were "processed" (skipped)
+        
+        # Build texts for embedding (only for chunks that need it)
+        texts = []
+        for chunk in chunks_to_embed:
             # Build embeddable text: name + signature + docstring
             text_parts = []
             if chunk.chunk_name:
@@ -673,10 +712,9 @@ class EmbeddingJob:
         
         # Store embeddings
         print(f"[embedding_job] Storing {len(vectors)} embeddings in DB...")
-        now = datetime.utcnow()
         success_count = 0
         
-        for i, chunk in enumerate(chunks):
+        for i, chunk in enumerate(chunks_to_embed):
             try:
                 # Store in embeddings table
                 store_embedding(
@@ -703,8 +741,9 @@ class EmbeddingJob:
                 _current_status.failed_chunks += 1
         
         db.commit()
-        print(f"[embedding_job] Batch complete: {success_count}/{len(chunks)} stored, total embedded: {_current_status.embedded_chunks}")
-        return success_count
+        total_processed = success_count + skipped_existing
+        print(f"[embedding_job] Batch complete: {success_count} newly embedded, {skipped_existing} skipped (already exist), total embedded: {_current_status.embedded_chunks}")
+        return total_processed
     
     def _embed_batch_with_retry(self, chunk_ids: List[int]) -> int:
         """

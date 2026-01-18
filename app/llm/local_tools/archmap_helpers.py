@@ -6,6 +6,7 @@ Commands:
 - CREATE ARCHITECTURE MAP: Load .architecture/ → Claude Opus 4.5 → single markdown
 
 v2.0 (2025-12): Split into two commands, Opus for map generation
+v2.1 (2026-01): Added sentinel marker, continuation prompt, auto-resume support
 """
 
 import os
@@ -120,7 +121,7 @@ def default_controller_base_url(start_file: Optional[str] = None) -> str:
 def default_zobie_mapper_out_dir(start_file: Optional[str] = None) -> str:
     """Default mapper output dir.
 
-    If legacy D:\tools\zobie_mapper\out exists, keep using it.
+    If legacy D:\\tools\\zobie_mapper\\out exists, keep using it.
     Otherwise store mapper artifacts under repo-local cache.
     """
     legacy = Path(r"D:\tools\zobie_mapper\out")
@@ -197,8 +198,23 @@ ZOBIE_MAPPER_TIMEOUT_SEC = int(os.getenv("ORB_ZOBIE_MAPPER_TIMEOUT_SEC", "180"))
 # LLM CALL CONFIGURATION
 # =============================================================================
 
+# NOTE: These are legacy defaults. Prefer using get_archmap_config() from stage_models.py
+# which reads ARCHMAP_MAX_OUTPUT_TOKENS (60000 default) and ARCHMAP_TIMEOUT_SECONDS (300 default)
 ARCHMAP_MAX_TOKENS = int(os.getenv("ORB_ARCHMAP_MAX_TOKENS", "16000"))
 ARCHMAP_TEMPERATURE = float(os.getenv("ORB_ARCHMAP_TEMPERATURE", "0.7"))
+
+# =============================================================================
+# COMPLETION SENTINEL & CONTINUATION CONFIG
+# =============================================================================
+
+# Sentinel marker - THE ground truth for output completion
+ARCHMAP_SENTINEL = "<!-- ARCHMAP_END -->"
+
+# Maximum continuation rounds before giving up
+ARCHMAP_MAX_CONTINUATION_ROUNDS = 6
+
+# Characters to include from end of partial file for continuation context
+ARCHMAP_CONTINUATION_CONTEXT_CHARS = 2000
 
 # =============================================================================
 # DENY PATTERNS (security)
@@ -368,6 +384,11 @@ OUTPUT FORMAT:
 - Show key data flows
 - List important enums and their purposes
 - Note entry points and boot sequences
+
+CRITICAL: When the architecture map is FULLY COMPLETE, you MUST end with this exact marker on its own line:
+<!-- ARCHMAP_END -->
+
+Do NOT include this marker until you have finished documenting ALL subsystems.
 """
 
 ARCHMAP_USER_PROMPT_TEMPLATE = """Create a detailed architecture map for the Orb/ASTRA system.
@@ -397,8 +418,85 @@ Key files and their symbols:
 ---
 
 Generate a comprehensive architecture map document. Be thorough and precise.
+
+REMEMBER: When fully complete, end with exactly:
+<!-- ARCHMAP_END -->
 """
 
+
+ARCHMAP_CONTINUATION_PROMPT_TEMPLATE = """You are continuing an architecture map markdown document that was cut off.
+
+The document ends at this point (last ~2000 characters):
+---BEGIN PARTIAL CONTENT---
+{partial_content}
+---END PARTIAL CONTENT---
+
+{heading_hint}
+
+INSTRUCTIONS:
+1. Continue EXACTLY from where the text ends above
+2. Do NOT repeat anything already written
+3. Do NOT restart sections or headings that have already been started
+4. Maintain consistent formatting (markdown headers, lists, code blocks)
+5. When the architecture map is FULLY COMPLETE, end with this exact marker on its own line:
+<!-- ARCHMAP_END -->
+
+Continue the document now:
+"""
+
+
+# =============================================================================
+# CONTINUATION HELPERS
+# =============================================================================
+
+def extract_last_heading(content: str) -> Optional[str]:
+    """Extract the last markdown heading (## or ###) from content.
+    
+    Helps continuation resume cleanly without duplicating structure.
+    """
+    # Match ## or ### headings
+    heading_pattern = re.compile(r'^(#{2,3})\s+(.+?)\s*$', re.MULTILINE)
+    matches = list(heading_pattern.finditer(content))
+    if matches:
+        last_match = matches[-1]
+        level = last_match.group(1)
+        text = last_match.group(2)
+        return f"{level} {text}"
+    return None
+
+
+def has_sentinel(content: str) -> bool:
+    """Check if content contains the completion sentinel."""
+    return ARCHMAP_SENTINEL in content
+
+
+def build_continuation_prompt(partial_content: str) -> str:
+    """Build a continuation prompt from partial content.
+    
+    Includes:
+    - Last ~2000 characters of content
+    - Last detected markdown heading (if any)
+    """
+    # Get last N characters
+    context_chars = min(ARCHMAP_CONTINUATION_CONTEXT_CHARS, len(partial_content))
+    tail_content = partial_content[-context_chars:] if context_chars > 0 else ""
+    
+    # Extract last heading for context
+    last_heading = extract_last_heading(partial_content)
+    if last_heading:
+        heading_hint = f"The last section heading was: {last_heading}"
+    else:
+        heading_hint = "(No section heading detected in the partial content)"
+    
+    return ARCHMAP_CONTINUATION_PROMPT_TEMPLATE.format(
+        partial_content=tail_content,
+        heading_hint=heading_hint,
+    )
+
+
+# =============================================================================
+# PROMPT BUILDERS
+# =============================================================================
 
 def build_archmap_prompt(
     manifest: Dict[str, Any],
@@ -474,6 +572,10 @@ __all__ = [
     "ARCHMAP_FALLBACK_MODEL",
     "ARCHMAP_MAX_TOKENS",
     "ARCHMAP_TEMPERATURE",
+    # Sentinel & continuation
+    "ARCHMAP_SENTINEL",
+    "ARCHMAP_MAX_CONTINUATION_ROUNDS",
+    "ARCHMAP_CONTINUATION_CONTEXT_CHARS",
     # Scan config
     "ARCHMAP_CONTROLLER_BASE_URL",
     "ZOBIE_MAPPER_SCRIPT",
@@ -488,7 +590,11 @@ __all__ = [
     "load_architecture_routes",
     "load_architecture_imports",
     "build_archmap_prompt",
+    "build_continuation_prompt",
+    "extract_last_heading",
+    "has_sentinel",
     "ARCHMAP_SYSTEM_PROMPT",
+    "ARCHMAP_CONTINUATION_PROMPT_TEMPLATE",
     "_is_denied_repo_path",
     "_safe_read_text",
     "_controller_http_json",
