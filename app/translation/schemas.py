@@ -86,6 +86,13 @@ class CanonicalIntent(str, Enum):
     
     # List/find files in scan index (no shell commands)
     FILESYSTEM_QUERY = "FILESYSTEM_QUERY"
+    
+    # =========================================================================
+    # CODEBASE REPORT (v1.5)
+    # =========================================================================
+    
+    # Generate hygiene/bloat/drift report (read-only)
+    CODEBASE_REPORT = "CODEBASE_REPORT"
 
 
 class LatencyTier(str, Enum):

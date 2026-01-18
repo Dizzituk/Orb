@@ -575,6 +575,53 @@ INTENT_DEFINITIONS: Dict[CanonicalIntent, IntentDefinition] = {
     ),
     
     # -------------------------------------------------------------------------
+    # CODEBASE REPORT (v1.5)
+    # -------------------------------------------------------------------------
+    
+    CanonicalIntent.CODEBASE_REPORT: IntentDefinition(
+        intent=CanonicalIntent.CODEBASE_REPORT,
+        trigger_phrases=[
+            "codebase report fast",
+            "Codebase report fast",
+            "CODEBASE REPORT FAST",
+            "codebase report full",
+            "Codebase report full",
+            "CODEBASE REPORT FULL",
+            "Astra, command: codebase report fast",
+            "astra, command: codebase report fast",
+            "Astra, command: codebase report full",
+            "astra, command: codebase report full",
+        ],
+        trigger_patterns=[
+            r"^(?:[Aa]stra[,:]?\s*)?(?:command[:\s]+)?[Cc]odebase\s+[Rr]eport\s+[Ff]ast$",
+            r"^(?:[Aa]stra[,:]?\s*)?(?:command[:\s]+)?[Cc]odebase\s+[Rr]eport\s+[Ff]ull$",
+        ],
+        requires_context=[],
+        requires_confirmation=False,
+        description="Generate codebase hygiene/bloat/drift report",
+        behavior=(
+            "Generate a read-only codebase report scanning D:\\Orb and D:\\orb-desktop.\n"
+            "\n"
+            "FAST mode:\n"
+            "- Metadata scan (size + mtime)\n"
+            "- Line counting for text files\n"
+            "- Bloat offenders (largest/longest files)\n"
+            "- Floating files and suspect folders\n"
+            "- Incremental changes since last report\n"
+            "\n"
+            "FULL mode:\n"
+            "- All FAST mode features\n"
+            "- Absolute path detection in content\n"
+            "- Blocked folder reference detection\n"
+            "- Duplicate filename heuristics\n"
+            "\n"
+            "Output: D:\\Orb.architecture\\CODEBASE_REPORT_<MODE>_<TIMESTAMP>.md/json\n"
+            "\n"
+            "Does NOT trigger embeddings, scans, indexing, or schema changes."
+        ),
+    ),
+    
+    # -------------------------------------------------------------------------
     # CHAT (no action)
     # -------------------------------------------------------------------------
     

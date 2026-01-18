@@ -3,6 +3,7 @@
 Streaming endpoints for real-time LLM responses.
 Uses Server-Sent Events (SSE).
 
+v4.13 (2026-01): Added CODEBASE_REPORT command routing for hygiene/bloat/drift reports
 v4.12 (2026-01): RAG fallback in _handle_normal_routing for architecture queries
 v4.11 (2026-01): Split architecture map: ALL CAPS → full scan, lowercase → DB only
 v4.10 (2026-01): Removed host filesystem scan (sandbox only), cleaned up routing
@@ -952,6 +953,51 @@ def _handle_command_execution(req, translation_result, db, trace, conversation_i
         
         return StreamingResponse(
             _filesystem_query_unavailable_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+    
+    # Codebase Report (v1.5) - Hygiene/bloat/drift report
+    if intent == CanonicalIntent.CODEBASE_REPORT:
+        if _LOCAL_TOOLS_AVAILABLE:
+            try:
+                from app.llm.local_tools.zobie_tools import generate_codebase_report_stream
+                if stage_trace:
+                    stage_trace.enter_stage("codebase_report", provider="local", model="codebase_report")
+                return StreamingResponse(
+                    generate_codebase_report_stream(
+                        project_id=req.project_id,
+                        message=req.message,
+                        db=db,
+                        trace=trace,
+                    ),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                )
+            except ImportError as e:
+                _log_routing_failure(stage_trace, f"Codebase report handler import failed: {e}", "generate_codebase_report_stream")
+        else:
+            _log_routing_failure(stage_trace, "Local tools not available for codebase report", "generate_codebase_report_stream")
+            _log_handler_availability()
+        
+        # Return error message
+        error_msg = (
+            "⚠️ **Codebase Report Handler Not Available**\n\n"
+            "The codebase report module failed to import.\n"
+            "Check server logs for details.\n\n"
+            "**Possible solutions:**\n"
+            "1. Ensure local tools are available\n"
+            "2. Check for import errors in `app/llm/local_tools/zobie_tools.py`\n"
+            "3. Restart the backend server"
+        )
+        
+        async def _codebase_report_unavailable_stream():
+            yield "data: " + json.dumps({'type': 'error', 'error': 'Codebase report handler not available'}) + "\n\n"
+            yield "data: " + json.dumps({'type': 'token', 'content': error_msg}) + "\n\n"
+            yield "data: " + json.dumps({'type': 'done', 'provider': 'system', 'model': 'command_router'}) + "\n\n"
+        
+        return StreamingResponse(
+            _codebase_report_unavailable_stream(),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )

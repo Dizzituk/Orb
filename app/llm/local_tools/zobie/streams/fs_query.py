@@ -1,11 +1,27 @@
 # FILE: app/llm/local_tools/zobie/streams/fs_query.py
-"""FILESYSTEM QUERY stream generator (v4.7).
+"""FILESYSTEM QUERY stream generator (v5.4 - Remote agent fallback for OneDrive).
 
-Answers filesystem listing/find/read queries using scan DB index.
-NEVER runs shell commands. Only reads from architecture_file_index.
+Answers filesystem listing/find/read queries using:
+1. DB index first (fast, from scan sandbox)
+2. Live surgical read fallback (if DB lacks content)
+3. Remote agent fallback via sandbox controller (if local read fails for OneDrive)
 
-Extracted from zobie_tools.py for modularity.
-No logic changes - exact same behavior and SSE output format.
+Supports BOTH natural language AND explicit command mode:
+- Natural: "What's in my desktop?", "Show me line 45-65 of router.py"
+- Command: "Astra, command: list C:\\path", "command: read \"file with spaces.txt\""
+
+Commands supported:
+- list <path>          : List files/folders in path
+- find <n> [under <path>] : Search for file/folder by name
+- read <path>          : Read entire file (with limits)
+- head <path> <n>      : Read first N lines (default 20)
+- lines <path> <start> <end> : Read specific line range
+
+v5.4 (2026-01): Added remote_agent fallback via sandbox controller for OneDrive paths
+v5.3 (2026-01): Enhanced debug output in SSE stream for OneDrive diagnosis
+v5.2 (2026-01): Fixed READ for OneDrive paths, refactored into modules
+v5.1 (2026-01): Fixed quoted path parsing for paths with spaces
+v5.0 (2026-01): Added surgical live read fallback, command parsing, line ranges
 """
 
 from __future__ import annotations
@@ -13,9 +29,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
-from typing import AsyncGenerator, Dict, List, Optional
+import sys
+from typing import AsyncGenerator, Optional
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.llm.audit_logger import RoutingTrace
@@ -27,7 +44,6 @@ from ..config import (
     FILESYSTEM_QUERY_MAX_ENTRIES,
     FILESYSTEM_READ_MAX_LINES,
     FILESYSTEM_READ_MAX_BYTES,
-    KNOWN_FOLDER_PATHS,
 )
 from ..sse import sse_token, sse_error, sse_done
 from ..db_ops import (
@@ -35,141 +51,28 @@ from ..db_ops import (
     ArchitectureFileIndex,
     get_latest_scan,
 )
+from ..fs_path_utils import (
+    normalize_path,
+    is_path_allowed,
+    get_basename,
+    get_language_from_extension,
+    looks_like_file,
+)
+from ..fs_live_ops import (
+    live_read_file,
+    live_read_file_with_remote_fallback,
+    live_list_directory,
+)
+from ..fs_command_parser import (
+    parse_filesystem_query,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def _normalize_path(path: str) -> str:
-    """
-    Normalize a Windows path: strip quotes, trim whitespace, convert / to \\.
-    
-    v4.9: Added for read file support.
-    """
-    if not path:
-        return path
-    # Strip quotes and whitespace
-    path = path.strip().strip('"').strip("'").strip()
-    # Convert forward slashes to backslashes
-    path = path.replace('/', '\\')
-    # Remove trailing backslash (unless it's a root like D:\)
-    if len(path) > 3 and path.endswith('\\'):
-        path = path.rstrip('\\')
-    return path
-
-
-def _parse_filesystem_query(message: str) -> dict:
-    """
-    Parse a filesystem query to extract:
-    - query_type: "list", "find", or "read"
-    - find_type: "folder", "file", or "any" (for find queries)
-    - target_path: The directory/file path to list/search/read
-    - search_term: For find queries, what to search for
-    - include_full_paths: Whether to include full paths (default True)
-    
-    v4.9: Added "read" query_type for reading file contents from DB.
-    
-    Returns dict with parsed info or None if invalid.
-    """
-    text = message.strip()
-    
-    # Strip "After scan sandbox, " prefix if present
-    text = re.sub(r'^[Aa]fter\s+scan\s+sandbox,?\s*', '', text).strip()
-    text_lower = text.lower()
-    
-    result = {
-        "query_type": None,
-        "find_type": "any",  # v4.8: "folder", "file", or "any"
-        "target_path": None,
-        "search_term": None,
-        "include_full_paths": "full path" in text_lower,
-    }
-    
-    # Try to extract Windows path
-    path_match = re.search(r'([A-Za-z]:[/\\][^"\',;:?!]*)', text)
-    if path_match:
-        result["target_path"] = _normalize_path(path_match.group(1))
-    else:
-        # Try to extract known folder keyword
-        for folder, path in KNOWN_FOLDER_PATHS.items():
-            if folder in text_lower:
-                result["target_path"] = path
-                break
-    
-    # v4.9: Detect READ queries first (more specific patterns)
-    # Patterns: "what's written in X", "read X", "show contents of X", 
-    #           "open X", "cat X", "what does X contain", "display X"
-    read_patterns = [
-        r"what'?s\s+(?:written|inside|in)\s+",  # "what's written in", "whats inside"
-        r"read\s+(?:the\s+)?(?:file\s+)?",      # "read", "read file", "read the file"
-        r"show\s+(?:the\s+)?contents?\s+of\s+", # "show contents of", "show content of"
-        r"(?:display|view|print|output)\s+(?:the\s+)?(?:file\s+)?",  # "display", "view file"
-        r"cat\s+",                               # "cat X" (unix style)
-        r"what\s+does\s+.+\s+(?:say|contain)",  # "what does X say/contain"
-        r"open\s+(?:the\s+)?(?:file\s+)?",      # "open", "open file" (when path looks like file)
-    ]
-    
-    for pattern in read_patterns:
-        if re.search(pattern, text_lower):
-            # Additional check: target_path should look like a file (has extension or no trailing \)
-            if result["target_path"]:
-                target = result["target_path"]
-                # If path has an extension, it's likely a file read request
-                if '.' in os.path.basename(target) or not target.endswith('\\'):
-                    result["query_type"] = "read"
-                    return result
-    
-    # Determine query type for list/find
-    if re.match(r'^(?:list|show|what|contents)', text_lower):
-        result["query_type"] = "list"
-    elif re.match(r'^find', text_lower):
-        result["query_type"] = "find"
-        
-        # v4.8: Detect if searching for folder specifically
-        # "Find folder named Jobs" / "Find folders named X" / "Find directory called X"
-        if re.search(r'find\s+(?:folder|folders|directory|directories)\s+(?:named?|called)', text_lower):
-            result["find_type"] = "folder"
-        elif re.search(r'find\s+(?:file|files)\s+(?:named?|called|with)', text_lower):
-            result["find_type"] = "file"
-        
-        # Extract search term for find queries
-        # "Find folder named Jobs under ..." -> "Jobs"
-        # "Find MBS Fitness under OneDrive" -> "MBS Fitness"
-        # "Find files with Amber in the name" -> "Amber"
-        
-        named_match = re.search(r'(?:named?|called)\s+["\']?([\w\s-]+)["\']?(?:\s+(?:under|in|on|inside)|$)', text, re.IGNORECASE)
-        if named_match:
-            result["search_term"] = named_match.group(1).strip()
-        else:
-            # "Find <term> under <path>"
-            find_match = re.search(r'^find\s+(?:folder|file|directory)?\s*([\w\s-]+?)\s+(?:under|in|on|inside)', text, re.IGNORECASE)
-            if find_match:
-                term = find_match.group(1).strip()
-                # Skip generic words
-                if term.lower() not in {"folder", "file", "directory", "all", "everything", "files"}:
-                    result["search_term"] = term
-            else:
-                # "Find files with X in the name"
-                with_match = re.search(r'with\s+([\w\s-]+?)\s+(?:in\s+(?:the\s+)?name)', text, re.IGNORECASE)
-                if with_match:
-                    result["search_term"] = with_match.group(1).strip()
-    
-    return result
-
-
-def _is_path_within_allowed_roots(path: str) -> bool:
-    """Check if a path is within allowed scan roots."""
-    path_lower = path.lower().replace('/', '\\')
-    
-    # D:\ is always allowed
-    if path_lower.startswith('d:\\'):
-        return True
-    
-    # C:\Users\dizzi is allowed
-    if path_lower.startswith('c:\\users\\dizzi'):
-        return True
-    
-    return False
-
+# =============================================================================
+# MAIN STREAM GENERATOR
+# =============================================================================
 
 async def generate_filesystem_query_stream(
     project_id: int,
@@ -178,30 +81,145 @@ async def generate_filesystem_query_stream(
     trace: Optional[RoutingTrace] = None,
 ) -> AsyncGenerator[str, None]:
     """
-    Answer filesystem listing/find queries using the scan DB index.
+    Answer filesystem queries using DB-first approach with live read fallback.
     
-    v4.7: New handler for FILESYSTEM_QUERY intent.
+    v5.3: Enhanced debug output for OneDrive path diagnosis.
     
-    Safety:
-    - ONLY reads from architecture_file_index table (from scan sandbox)
-    - NEVER runs shell commands or mentions running dir/grep
-    - Hard cap of 200 entries
-    - Only allows paths under D:\\ or C:\\Users\\dizzi
-    
-    Output format:
-    - Folders first, then files
-    - Full paths included
-    - +N more summary if truncated
+    Flow:
+    1. Parse query (command or natural language)
+    2. Validate path against allowlist
+    3. Try DB lookup first
+    4. Fall back to live surgical read if needed
+    5. Return results with appropriate formatting
     """
     loop = asyncio.get_event_loop()
     started_ms = int(loop.time() * 1000)
     
-    yield sse_token("📂 [FILESYSTEM_QUERY] Processing query...\n")
+    # Parse the query
+    parsed = parse_filesystem_query(message)
+    query_type = parsed.get("query_type")
+    target_path = parsed.get("path")
+    search_term = parsed.get("search_term")
+    start_line = parsed.get("start_line")
+    end_line = parsed.get("end_line")
+    head_lines = parsed.get("head_lines")
+    source = parsed.get("source", "natural")
     
-    # Check if architecture models available
+    yield sse_token(f"📂 [FS_QUERY] Processing {source} query...\n")
+    yield sse_token(f"   action={query_type}")
+    if target_path:
+        yield sse_token(f" path=\"{target_path}\"")
+    if search_term:
+        yield sse_token(f" search=\"{search_term}\"")
+    if head_lines:
+        yield sse_token(f" head={head_lines}")
+    if start_line and end_line:
+        yield sse_token(f" lines={start_line}-{end_line}")
+    yield sse_token("\n\n")
+    
+    # Handle missing query type
+    if not query_type:
+        yield sse_token("❓ Could not determine query type.\n")
+        yield sse_token("Supported commands: list, find, read, head, lines\n")
+        yield sse_done(
+            provider="local",
+            model="filesystem_query",
+            success=False,
+            error="unknown_query_type",
+        )
+        return
+    
+    # Handle missing path for path-requiring commands
+    if query_type in ("list", "read", "head", "lines") and not target_path:
+        yield sse_token("❌ No path specified.\n")
+        yield sse_token(f"Usage: {query_type} <path>\n")
+        yield sse_done(
+            provider="local",
+            model="filesystem_query",
+            success=False,
+            error="no_path_specified",
+        )
+        return
+    
+    # Validate path against allowlist
+    if target_path:
+        allowed, reason = is_path_allowed(target_path)
+        if not allowed:
+            yield sse_token(f"🚫 [blocked_by_allowlist] {reason}\n")
+            yield sse_token(f"   Path: {target_path}\n\n")
+            yield sse_token("Allowed roots:\n")
+            for root in FILESYSTEM_QUERY_ALLOWED_ROOTS[:5]:
+                yield sse_token(f"  ✅ {root}\n")
+            yield sse_done(
+                provider="local",
+                model="filesystem_query",
+                success=False,
+                error="blocked_by_allowlist",
+            )
+            return
+    
+    # Dispatch by query type
+    if query_type == "find":
+        async for chunk in _handle_find_query(
+            project_id, db, target_path, search_term, trace, started_ms
+        ):
+            yield chunk
+        return
+    
+    if query_type == "list":
+        async for chunk in _handle_list_query(
+            project_id, db, target_path, trace, started_ms
+        ):
+            yield chunk
+        return
+    
+    if query_type in ("read", "head", "lines"):
+        async for chunk in _handle_read_query(
+            project_id, db, target_path, query_type,
+            start_line, end_line, head_lines, trace, started_ms
+        ):
+            yield chunk
+        return
+    
+    # Fallback
+    yield sse_token(f"❓ Unknown query type: {query_type}\n")
+    yield sse_done(
+        provider="local",
+        model="filesystem_query",
+        success=False,
+        error="unknown_query_type",
+    )
+
+
+# =============================================================================
+# QUERY HANDLERS
+# =============================================================================
+
+async def _handle_find_query(
+    project_id: int,
+    db: Session,
+    target_path: Optional[str],
+    search_term: Optional[str],
+    trace: Optional[RoutingTrace],
+    started_ms: int,
+) -> AsyncGenerator[str, None]:
+    """Handle find queries using DB index."""
+    loop = asyncio.get_event_loop()
+    
+    if not search_term:
+        yield sse_token("❌ No search term specified for find.\n")
+        yield sse_done(
+            provider="local",
+            model="filesystem_query",
+            success=False,
+            error="no_search_term",
+        )
+        return
+    
+    # Check DB availability
     if not ARCH_MODELS_AVAILABLE:
         yield sse_token("⚠️ Architecture database not available.\n")
-        yield sse_token("Run `scan sandbox` first to index the filesystem.\n")
+        yield sse_token("Run `scan sandbox` first to enable find.\n")
         yield sse_done(
             provider="local",
             model="filesystem_query",
@@ -210,37 +228,9 @@ async def generate_filesystem_query_stream(
         )
         return
     
-    # Parse the query
-    parsed = _parse_filesystem_query(message)
-    query_type = parsed.get("query_type", "list")
-    target_path = parsed.get("target_path")
-    search_term = parsed.get("search_term")
-    
-    yield sse_token(f"   Query type: {query_type}\n")
-    if target_path:
-        yield sse_token(f"   Target path: {target_path}\n")
-    if search_term:
-        yield sse_token(f"   Search term: {search_term}\n")
-    yield sse_token("\n")
-    
-    # Validate path is within allowed roots
-    if target_path and not _is_path_within_allowed_roots(target_path):
-        yield sse_token(f"❌ Path `{target_path}` is outside allowed scan roots.\n")
-        yield sse_token(f"Allowed roots: D:\\ and C:\\Users\\dizzi\n")
-        yield sse_done(
-            provider="local",
-            model="filesystem_query",
-            success=False,
-            error="path_outside_allowed_roots",
-        )
-        return
-    
-    # Get latest scan
     latest_scan = get_latest_scan(db, scope="sandbox") if get_latest_scan else None
-    
     if not latest_scan:
-        yield sse_token("⚠️ No scan data found in database.\n")
-        yield sse_token("Run `scan sandbox` first to index the filesystem.\n")
+        yield sse_token("⚠️ No scan data found. Run `scan sandbox` first.\n")
         yield sse_done(
             provider="local",
             model="filesystem_query",
@@ -249,262 +239,27 @@ async def generate_filesystem_query_stream(
         )
         return
     
-    yield sse_token(f"📊 Using scan data (scan_id={latest_scan.id}, from {latest_scan.finished_at})\n\n")
+    yield sse_token(f"🔍 Searching DB for '{search_term}'...\n\n")
     
-    # =========================================================================
-    # v4.9: READ handler - fetch file content from DB
-    # =========================================================================
-    if query_type == "read":
-        if not target_path:
-            yield sse_token("❌ No file path specified for read operation.\n")
-            yield sse_done(
-                provider="local",
-                model="filesystem_query",
-                success=False,
-                error="no_path_specified",
-            )
-            return
-        
-        # Normalize the path
-        target_path = _normalize_path(target_path)
-        
-        # Check if path looks like a folder (no extension, or ends with \)
-        basename = os.path.basename(target_path)
-        if not basename or '.' not in basename:
-            yield sse_token(f"📁 `{target_path}` looks like a folder path.\n")
-            yield sse_token("💡 Use `list {path}` to see folder contents instead.\n")
-            yield sse_done(
-                provider="local",
-                model="filesystem_query",
-                success=False,
-                error="path_is_folder",
-            )
-            return
-        
-        yield sse_token(f"📖 Reading file: {target_path}\n\n")
-        
-        # Try exact path match first
-        file_entry = None
-        try:
-            file_entry = db.query(ArchitectureFileIndex).filter(
-                ArchitectureFileIndex.scan_id == latest_scan.id,
-                ArchitectureFileIndex.path == target_path
-            ).first()
-            
-            # v4.9: Case-insensitive fallback if exact match fails (Windows is case-insensitive)
-            if not file_entry:
-                # Use func.lower for case-insensitive comparison
-                from sqlalchemy import func
-                file_entry = db.query(ArchitectureFileIndex).filter(
-                    ArchitectureFileIndex.scan_id == latest_scan.id,
-                    func.lower(ArchitectureFileIndex.path) == target_path.lower()
-                ).first()
-                
-                if file_entry:
-                    yield sse_token(f"   (matched case-insensitively: {file_entry.path})\n")
-        except Exception as e:
-            logger.exception(f"[FILESYSTEM_QUERY] Read query failed: {e}")
-            yield sse_error(f"Database query failed: {e}")
-            yield sse_done(
-                provider="local",
-                model="filesystem_query",
-                success=False,
-                error=str(e),
-            )
-            return
-        
-        if not file_entry:
-            yield sse_token(f"📭 File not found in scan index: `{target_path}`\n\n")
-            yield sse_token("Possible reasons:\n")
-            yield sse_token("  • File path may be incorrect\n")
-            yield sse_token("  • File may have been excluded from scan (binary, archive, etc.)\n")
-            yield sse_token("  • File may have been added after the last scan\n\n")
-            yield sse_token("💡 Run `scan sandbox` to refresh the index.\n")
-            yield sse_done(
-                provider="local",
-                model="filesystem_query",
-                success=False,
-                error="file_not_found",
-                meta={"scan_id": latest_scan.id, "target_path": target_path},
-            )
-            return
-        
-        # File found - check if content is available
-        if not file_entry.content:
-            yield sse_token(f"📄 File exists in scan index but contents were not captured.\n\n")
-            yield sse_token(f"**Path:** {file_entry.path}\n")
-            if file_entry.size_bytes:
-                size_kb = file_entry.size_bytes / 1024
-                yield sse_token(f"**Size:** {size_kb:.1f} KB\n")
-            yield sse_token(f"**Extension:** {file_entry.ext or '(none)'}\n\n")
-            yield sse_token("This happens for files that:\n")
-            yield sse_token("  • Were added after the last content scan\n")
-            yield sse_token("  • Exceeded size limits (>500KB)\n")
-            yield sse_token("  • Had unsupported extensions\n\n")
-            yield sse_token("💡 Run `scan sandbox` to capture contents.\n")
-            yield sse_done(
-                provider="local",
-                model="filesystem_query",
-                success=True,  # Not an error - file exists, just no content
-                meta={
-                    "scan_id": latest_scan.id,
-                    "target_path": target_path,
-                    "file_exists": True,
-                    "content_available": False,
-                },
-            )
-            return
-        
-        # Content available - read and display with limits
-        content_text = file_entry.content.content_text
-        
-        # Check if content is readable as text (shouldn't have binary chars)
-        try:
-            # Quick binary check: look for null bytes or high ratio of non-printable chars
-            if '\x00' in content_text:
-                yield sse_token(f"📄 File appears to be binary and cannot be displayed as text.\n")
-                yield sse_token(f"**Path:** {file_entry.path}\n")
-                if file_entry.size_bytes:
-                    yield sse_token(f"**Size:** {file_entry.size_bytes / 1024:.1f} KB\n")
-                yield sse_done(
-                    provider="local",
-                    model="filesystem_query",
-                    success=True,
-                    meta={"scan_id": latest_scan.id, "binary": True},
-                )
-                return
-        except Exception:
-            pass  # If check fails, continue anyway
-        
-        # Apply preview limits
-        lines = content_text.splitlines()
-        total_lines = len(lines)
-        total_bytes = len(content_text.encode('utf-8', errors='replace'))
-        
-        truncated = False
-        truncation_reason = ""
-        
-        # Check line limit
-        if total_lines > FILESYSTEM_READ_MAX_LINES:
-            lines = lines[:FILESYSTEM_READ_MAX_LINES]
-            truncated = True
-            truncation_reason = f"line limit ({FILESYSTEM_READ_MAX_LINES} lines)"
-        
-        # Check byte limit on the truncated content
-        preview_text = '\n'.join(lines)
-        preview_bytes = len(preview_text.encode('utf-8', errors='replace'))
-        
-        if preview_bytes > FILESYSTEM_READ_MAX_BYTES:
-            # Truncate by bytes
-            preview_text = preview_text[:FILESYSTEM_READ_MAX_BYTES]
-            # Find last newline to avoid cutting mid-line
-            last_nl = preview_text.rfind('\n')
-            if last_nl > FILESYSTEM_READ_MAX_BYTES // 2:
-                preview_text = preview_text[:last_nl]
-            truncated = True
-            truncation_reason = f"size limit (~{FILESYSTEM_READ_MAX_BYTES // 1024}KB)"
-        
-        # Output file info
-        size_str = ""
-        if file_entry.size_bytes:
-            if file_entry.size_bytes > 1_000_000:
-                size_str = f"{file_entry.size_bytes / 1_000_000:.1f} MB"
-            elif file_entry.size_bytes > 1_000:
-                size_str = f"{file_entry.size_bytes / 1_000:.1f} KB"
-            else:
-                size_str = f"{file_entry.size_bytes} bytes"
-        
-        yield sse_token(f"📄 **{file_entry.name}**\n")
-        yield sse_token(f"**Path:** {file_entry.path}\n")
-        if size_str:
-            yield sse_token(f"**Size:** {size_str}\n")
-        yield sse_token(f"**Lines:** {total_lines}\n")
-        if file_entry.language:
-            yield sse_token(f"**Language:** {file_entry.language}\n")
-        yield sse_token("\n")
-        
-        # Output content
-        yield sse_token("--- Content ---\n")
-        yield sse_token(preview_text)
-        if not preview_text.endswith('\n'):
-            yield sse_token("\n")
-        yield sse_token("---------------\n\n")
-        
-        if truncated:
-            yield sse_token(f"⚠️ Showing first {len(preview_text.splitlines())} of {total_lines} lines (truncated due to {truncation_reason})\n")
-        else:
-            yield sse_token(f"✅ Showing full file ({total_lines} lines)\n")
-        
-        # Record in memory
-        try:
-            memory_service.create_message(
-                db,
-                memory_schemas.MessageCreate(
-                    project_id=project_id,
-                    role="assistant",
-                    content=f"[filesystem_query] read: {file_entry.path} ({total_lines} lines)",
-                    provider="local",
-                    model="filesystem_query",
-                ),
-            )
-        except Exception:
-            pass
-        
-        duration_ms = int(loop.time() * 1000) - started_ms
-        
-        if trace:
-            trace.log_model_call(
-                "local_tool", "local", "filesystem_query", "filesystem_query",
-                0, 0, duration_ms, success=True, error=None,
-            )
-        
-        yield sse_done(
-            provider="local",
-            model="filesystem_query",
-            total_length=len(preview_text),
-            meta={
-                "scan_id": latest_scan.id,
-                "query_type": "read",
-                "target_path": target_path,
-                "file_path": file_entry.path,
-                "total_lines": total_lines,
-                "total_bytes": total_bytes,
-                "truncated": truncated,
-            },
-        )
-        return  # Early exit for read queries
-    
-    # Build query against architecture_file_index
     try:
         query = db.query(ArchitectureFileIndex).filter(
-            ArchitectureFileIndex.scan_id == latest_scan.id
+            ArchitectureFileIndex.scan_id == latest_scan.id,
+            ArchitectureFileIndex.name.ilike(f"%{search_term}%")
         )
         
-        # Filter by target path if specified
         if target_path:
-            # Normalize path for LIKE query
-            path_prefix = target_path.replace('/', '\\').rstrip('\\') + '\\'
+            path_prefix = normalize_path(target_path).rstrip('\\') + '\\'
             query = query.filter(
                 ArchitectureFileIndex.path.like(f"{path_prefix}%")
             )
         
-        # Filter by search term if specified (find queries)
-        if search_term and query_type == "find":
-            search_pattern = f"%{search_term}%"
-            query = query.filter(
-                ArchitectureFileIndex.name.ilike(search_pattern)
-            )
-        
-        # Get results with limit + 1 to detect truncation
-        max_results = FILESYSTEM_QUERY_MAX_ENTRIES + 1
-        results = query.limit(max_results).all()
-        
+        results = query.limit(FILESYSTEM_QUERY_MAX_ENTRIES + 1).all()
         truncated = len(results) > FILESYSTEM_QUERY_MAX_ENTRIES
         if truncated:
             results = results[:FILESYSTEM_QUERY_MAX_ENTRIES]
         
     except Exception as e:
-        logger.exception(f"[FILESYSTEM_QUERY] DB query failed: {e}")
+        logger.exception(f"[FS_QUERY] Find query failed: {e}")
         yield sse_error(f"Database query failed: {e}")
         yield sse_done(
             provider="local",
@@ -515,187 +270,287 @@ async def generate_filesystem_query_stream(
         return
     
     if not results:
-        if target_path:
-            yield sse_token(f"📭 No entries found under `{target_path}`\n")
-        elif search_term:
-            yield sse_token(f"📭 No entries found matching '{search_term}'\n")
-        else:
-            yield sse_token("📭 No entries found in scan data.\n")
-        yield sse_done(
-            provider="local",
-            model="filesystem_query",
-            total_length=0,
-            meta={"results": 0, "query_type": query_type},
-        )
-        return
-    
-    # =========================================================================
-    # v4.8: Format results using path-based inference
-    # DB only stores files, so we infer folders from file paths
-    # =========================================================================
-    
-    find_type = parsed.get("find_type", "any")
-    
-    # For "find folder" queries: search folder segments in paths
-    if query_type == "find" and find_type == "folder" and search_term:
-        # Infer folders from paths that contain a segment matching search_term
-        inferred_folders: set = set()
-        search_lower = search_term.lower()
-        
+        yield sse_token(f"📭 No files found matching '{search_term}'\n")
+    else:
+        yield sse_token(f"**Found {len(results)} match(es):**\n\n")
         for entry in results:
-            path_normalized = entry.path.replace('/', '\\')
-            # Split path into segments and check each
-            segments = path_normalized.split('\\')
-            for i, seg in enumerate(segments[:-1]):  # Exclude filename
-                if seg.lower() == search_lower:
-                    # Build full path to this folder
-                    folder_path = '\\'.join(segments[:i+1])
-                    inferred_folders.add(folder_path)
+            size_str = _format_size(entry.size_bytes) if entry.size_bytes else ""
+            yield sse_token(f"📄 {entry.path}{size_str}\n")
         
-        # Output folder search results
-        folders_list = sorted(inferred_folders, key=str.lower)
-        total_count = len(folders_list)
-        
-        yield sse_token(f"🔍 **Folder search results for '{search_term}'**\n\n")
-        
-        if folders_list:
-            yield sse_token(f"**Folders ({len(folders_list)}):**\n")
-            for folder_path in folders_list:
-                yield sse_token(f"📁 {folder_path}\n")
-            yield sse_token("\n")
-        else:
-            yield sse_token(f"📭 No folders named '{search_term}' found.\n")
-        
-        # Summary and done (skip normal output path)
-        yield sse_token(f"---\n")
-        yield sse_token(f"**Total:** {len(folders_list)} folders\n")
-        
-        # v4.8: Add note about .zip exclusion if relevant
-        if search_lower.endswith('.zip') or 'zip' in search_lower:
-            yield sse_token("\n📝 Note: .zip files are excluded from scan metadata (archives not indexed).\n")
-        
-        # Record in memory
-        try:
-            memory_service.create_message(
-                db,
-                memory_schemas.MessageCreate(
-                    project_id=project_id,
-                    role="assistant",
-                    content=f"[filesystem_query] find folder: {len(folders_list)} results for '{search_term}'",
-                    provider="local",
-                    model="filesystem_query",
-                ),
-            )
-        except Exception:
-            pass
-        
-        duration_ms = int(loop.time() * 1000) - started_ms
-        
-        if trace:
-            trace.log_model_call(
-                "local_tool", "local", "filesystem_query", "filesystem_query",
-                0, 0, duration_ms, success=True, error=None,
-            )
-        
-        yield sse_done(
-            provider="local",
-            model="filesystem_query",
-            total_length=total_count,
-            meta={
-                "scan_id": latest_scan.id,
-                "query_type": query_type,
-                "find_type": find_type,
-                "target_path": target_path,
-                "search_term": search_term,
-                "folders": len(folders_list),
-                "files": 0,
-                "truncated": False,
-            },
+        if truncated:
+            yield sse_token(f"\n⚠️ Results truncated to {FILESYSTEM_QUERY_MAX_ENTRIES} entries\n")
+    
+    duration_ms = int(loop.time() * 1000) - started_ms
+    
+    if trace:
+        trace.log_model_call(
+            "local_tool", "local", "filesystem_query", "find",
+            0, 0, duration_ms, success=True, error=None,
         )
-        return  # Early exit for folder search
     
-    # For list queries with target_path: infer immediate children
-    # Folders are inferred from first-level subdirectories in file paths
-    # Files are only those directly in target_path (not nested)
-    inferred_folders: set = set()
-    top_level_files: list = []
+    yield sse_done(
+        provider="local",
+        model="filesystem_query",
+        total_length=len(results),
+        meta={"query_type": "find", "search_term": search_term, "results": len(results)},
+    )
+
+
+async def _handle_list_query(
+    project_id: int,
+    db: Session,
+    target_path: str,
+    trace: Optional[RoutingTrace],
+    started_ms: int,
+) -> AsyncGenerator[str, None]:
+    """Handle list queries using DB-first, live fallback."""
+    loop = asyncio.get_event_loop()
     
-    if target_path and query_type == "list":
-        target_prefix = target_path.rstrip('\\') + '\\'
-        target_prefix_lower = target_prefix.lower()
+    # Normalize path
+    target_path = normalize_path(target_path, debug=True)
+    
+    # Try DB first
+    db_success = False
+    folders_list = []
+    files_list = []
+    
+    if ARCH_MODELS_AVAILABLE:
+        latest_scan = get_latest_scan(db, scope="sandbox") if get_latest_scan else None
         
-        for entry in results:
-            path_normalized = entry.path.replace('/', '\\')
-            path_lower = path_normalized.lower()
+        if latest_scan:
+            yield sse_token(f"[FS_QUERY] db_lookup=True scan_id={latest_scan.id}\n")
             
-            # Get relative path from target
-            if path_lower.startswith(target_prefix_lower):
-                relative = path_normalized[len(target_prefix):]
+            try:
+                path_prefix = target_path.rstrip('\\') + '\\'
+                results = db.query(ArchitectureFileIndex).filter(
+                    ArchitectureFileIndex.scan_id == latest_scan.id,
+                    ArchitectureFileIndex.path.like(f"{path_prefix}%")
+                ).limit(FILESYSTEM_QUERY_MAX_ENTRIES + 1).all()
                 
-                if '\\' in relative:
-                    # Has subdirectory - extract first folder segment
-                    first_segment = relative.split('\\')[0]
-                    folder_full_path = target_prefix + first_segment
-                    inferred_folders.add(folder_full_path)
-                else:
-                    # Direct child file (no subdirectory)
-                    top_level_files.append(entry)
+                if results:
+                    db_success = True
+                    folders_list, files_list = _process_list_results(
+                        results[:FILESYSTEM_QUERY_MAX_ENTRIES], path_prefix
+                    )
+                    
+            except Exception as e:
+                logger.warning(f"[FS_QUERY] DB list failed, will try live: {e}")
+    
+    # Fall back to live read if DB didn't work
+    if not db_success:
+        yield sse_token(f"[FS_QUERY] live_read=True (DB miss)\n")
         
-        # Convert to sorted lists
-        folders_list = sorted(inferred_folders, key=str.lower)
-        files_list = sorted(top_level_files, key=lambda x: x.name.lower())
-    else:
-        # Fallback for find queries or no target_path: use old behavior
-        # (search by filename, return files that match)
-        folders_list = []
-        files_list = sorted(results, key=lambda x: x.name.lower())
+        folders, files, error = live_list_directory(target_path, debug=True)
+        if error:
+            yield sse_token(f"❌ {error}\n")
+            yield sse_done(
+                provider="local",
+                model="filesystem_query",
+                success=False,
+                error=error,
+            )
+            return
+        
+        folders_list = folders
+        files_list = [{"path": f, "name": os.path.basename(f)} for f in files]
     
-    total_count = len(folders_list) + len(files_list)
-    
-    if query_type == "list":
-        yield sse_token(f"📁 **Contents of {target_path or 'indexed filesystem'}**\n\n")
-    else:
-        yield sse_token(f"🔍 **Search results for '{search_term}'**\n\n")
+    # Output results
+    yield sse_token(f"\n📁 **Contents of {target_path}**\n\n")
     
     if folders_list:
         yield sse_token(f"**Folders ({len(folders_list)}):**\n")
-        for folder_path in folders_list:
-            # folder_path is a string (inferred path), not an entry object
-            yield sse_token(f"📁 {folder_path}\n")
+        for folder in folders_list[:50]:
+            if isinstance(folder, str):
+                yield sse_token(f"📁 {folder}\n")
+            else:
+                yield sse_token(f"📁 {folder}\n")
+        if len(folders_list) > 50:
+            yield sse_token(f"   ... and {len(folders_list) - 50} more\n")
         yield sse_token("\n")
     
     if files_list:
         yield sse_token(f"**Files ({len(files_list)}):**\n")
-        for file in files_list:
-            path_display = file.path.replace('/', '\\')
-            size_str = ""
-            if file.size_bytes:
-                if file.size_bytes > 1_000_000:
-                    size_str = f" ({file.size_bytes / 1_000_000:.1f} MB)"
-                elif file.size_bytes > 1_000:
-                    size_str = f" ({file.size_bytes / 1_000:.1f} KB)"
-            yield sse_token(f"📄 {path_display}{size_str}\n")
+        for f in files_list[:50]:
+            if isinstance(f, dict):
+                yield sse_token(f"📄 {f.get('path', f.get('name', str(f)))}\n")
+            elif hasattr(f, 'path'):
+                size_str = _format_size(f.size_bytes) if hasattr(f, 'size_bytes') and f.size_bytes else ""
+                yield sse_token(f"📄 {f.path}{size_str}\n")
+            else:
+                yield sse_token(f"📄 {f}\n")
+        if len(files_list) > 50:
+            yield sse_token(f"   ... and {len(files_list) - 50} more\n")
         yield sse_token("\n")
     
-    # Summary
-    yield sse_token(f"---\n")
-    yield sse_token(f"**Total:** {len(folders_list)} folders, {len(files_list)} files\n")
+    if not folders_list and not files_list:
+        yield sse_token("📭 Directory is empty or not found in index.\n")
     
-    # v4.8: Add note about .zip exclusion if listing and no zips found
-    if query_type == "list" and target_path:
-        # Check if user might expect to see .zip files
-        target_lower = target_path.lower()
-        if 'desktop' in target_lower or 'downloads' in target_lower or 'documents' in target_lower:
-            yield sse_token("\n📝 Note: .zip files are excluded from scan metadata (archives not indexed).\n")
+    yield sse_token(f"---\n**Total:** {len(folders_list)} folders, {len(files_list)} files\n")
+    
+    duration_ms = int(loop.time() * 1000) - started_ms
+    
+    if trace:
+        trace.log_model_call(
+            "local_tool", "local", "filesystem_query", "list",
+            0, 0, duration_ms, success=True, error=None,
+        )
+    
+    yield sse_done(
+        provider="local",
+        model="filesystem_query",
+        total_length=len(folders_list) + len(files_list),
+        meta={
+            "query_type": "list",
+            "target_path": target_path,
+            "folders": len(folders_list),
+            "files": len(files_list),
+            "db_hit": db_success,
+        },
+    )
+
+
+async def _handle_read_query(
+    project_id: int,
+    db: Session,
+    target_path: str,
+    query_type: str,
+    start_line: Optional[int],
+    end_line: Optional[int],
+    head_lines: Optional[int],
+    trace: Optional[RoutingTrace],
+    started_ms: int,
+) -> AsyncGenerator[str, None]:
+    """Handle read/head/lines queries using DB-first, live fallback."""
+    loop = asyncio.get_event_loop()
+    
+    # Normalize path (uses robust normalize_path)
+    target_path = normalize_path(target_path, debug=True)
+    basename = get_basename(target_path)
+    
+    # DEBUG: Output path diagnostics in SSE stream for visibility
+    yield sse_token(f"[DEBUG] path_repr={repr(target_path)}\n")
+    yield sse_token(f"[DEBUG] os.path.exists={os.path.exists(target_path)}\n")
+    
+    # Check if path looks like a folder
+    if not looks_like_file(target_path):
+        if os.path.isdir(target_path):
+            yield sse_token(f"📁 `{target_path}` is a folder.\n")
+            yield sse_token("💡 Use `list <path>` to see contents.\n")
+            yield sse_done(
+                provider="local",
+                model="filesystem_query",
+                success=False,
+                error="path_is_folder",
+            )
+            return
+    
+    content = None
+    total_lines = 0
+    total_bytes = 0
+    truncated = False
+    source = "unknown"
+    file_language = None
+    
+    # Try DB first
+    if ARCH_MODELS_AVAILABLE:
+        latest_scan = get_latest_scan(db, scope="sandbox") if get_latest_scan else None
+        
+        if latest_scan:
+            try:
+                # Try exact match
+                file_entry = db.query(ArchitectureFileIndex).filter(
+                    ArchitectureFileIndex.scan_id == latest_scan.id,
+                    ArchitectureFileIndex.path == target_path
+                ).first()
+                
+                # Case-insensitive fallback
+                if not file_entry:
+                    file_entry = db.query(ArchitectureFileIndex).filter(
+                        ArchitectureFileIndex.scan_id == latest_scan.id,
+                        func.lower(ArchitectureFileIndex.path) == target_path.lower()
+                    ).first()
+                
+                if file_entry and file_entry.content and file_entry.content.content_text:
+                    yield sse_token(f"[FS_QUERY] db_hit=True\n")
+                    source = "db"
+                    content = file_entry.content.content_text
+                    total_bytes = len(content.encode('utf-8', errors='replace'))
+                    file_language = file_entry.language
+                    
+                    content, total_lines, truncated = _apply_line_limits(
+                        content, start_line, end_line, head_lines
+                    )
+                else:
+                    yield sse_token(f"[FS_QUERY] db_miss=True (no content)\n")
+                    
+            except Exception as e:
+                logger.warning(f"[FS_QUERY] DB read failed: {e}")
+    
+    # Fall back to live read (with remote fallback for OneDrive paths)
+    if content is None:
+        yield sse_token(f"[FS_QUERY] live_read=True\n")
+        
+        # Call live_read_file_with_remote_fallback (tries local first, then remote)
+        content, total_lines, total_bytes, truncated, error, read_source = live_read_file_with_remote_fallback(
+            target_path, start_line, end_line, head_lines, debug=True
+        )
+        
+        # Set source from read_source (local, remote_agent, or failed)
+        source = read_source
+        
+        if error:
+            yield sse_token(f"❌ {error}\n")
+            yield sse_done(
+                provider="local",
+                model="filesystem_query",
+                success=False,
+                error=error,
+            )
+            return
+        
+        if content is None:
+            yield sse_token(f"❌ Could not read file: {target_path}\n")
+            yield sse_done(
+                provider="local",
+                model="filesystem_query",
+                success=False,
+                error="read_failed",
+            )
+            return
+        
+        # Log the source for visibility
+        yield sse_token(f"[FS_QUERY] live_read=True source={source}\n")
+    
+    # Detect language from extension
+    if not file_language:
+        file_language = get_language_from_extension(target_path)
+    
+    # Output
+    content_lines = content.splitlines() if content else []
+    shown_lines = len(content_lines)
+    
+    yield sse_token(f"\n📄 **{basename}**\n")
+    yield sse_token(f"**Path:** {target_path}\n")
+    yield sse_token(f"**Total lines:** {total_lines}\n")
+    if file_language:
+        yield sse_token(f"**Language:** {file_language}\n")
+    yield sse_token(f"**Source:** {source}\n")
+    
+    if start_line and end_line:
+        yield sse_token(f"**Showing:** lines {start_line}-{end_line}\n")
+    elif head_lines:
+        yield sse_token(f"**Showing:** first {head_lines} lines\n")
+    
+    yield sse_token("\n```" + (file_language or "") + "\n")
+    yield sse_token(content if content else "(empty)")
+    if content and not content.endswith('\n'):
+        yield sse_token("\n")
+    yield sse_token("```\n\n")
     
     if truncated:
-        # Get total count from DB for accurate "more" count
-        try:
-            total_in_db = query.count() if 'query' in dir() else total_count
-            remaining = total_in_db - FILESYSTEM_QUERY_MAX_ENTRIES
-            yield sse_token(f"⚠️ Results truncated. +{remaining} more entries (showing first {FILESYSTEM_QUERY_MAX_ENTRIES})\n")
-        except:
-            yield sse_token(f"⚠️ Results truncated to {FILESYSTEM_QUERY_MAX_ENTRIES} entries\n")
+        yield sse_token(f"⚠️ (truncated) Showing {shown_lines} of {total_lines} lines\n")
+    else:
+        yield sse_token(f"✅ Showing {shown_lines} lines\n")
     
     # Record in memory
     try:
@@ -704,7 +559,7 @@ async def generate_filesystem_query_stream(
             memory_schemas.MessageCreate(
                 project_id=project_id,
                 role="assistant",
-                content=f"[filesystem_query] {query_type}: {total_count} results for '{target_path or search_term}'",
+                content=f"[filesystem_query] {query_type}: {target_path} ({shown_lines}/{total_lines} lines, source={source})",
                 provider="local",
                 model="filesystem_query",
             ),
@@ -716,21 +571,94 @@ async def generate_filesystem_query_stream(
     
     if trace:
         trace.log_model_call(
-            "local_tool", "local", "filesystem_query", "filesystem_query",
+            "local_tool", "local", "filesystem_query", query_type,
             0, 0, duration_ms, success=True, error=None,
         )
     
     yield sse_done(
         provider="local",
         model="filesystem_query",
-        total_length=total_count,
+        total_length=len(content) if content else 0,
         meta={
-            "scan_id": latest_scan.id,
             "query_type": query_type,
             "target_path": target_path,
-            "search_term": search_term,
-            "folders": len(folders_list),
-            "files": len(files_list),
+            "total_lines": total_lines,
+            "shown_lines": shown_lines,
             "truncated": truncated,
+            "source": source,
+            "db_hit": source == "db",
+            "live_read": source in ("local", "remote_agent"),
+            "local_read": source == "local",
+            "remote_agent_read": source == "remote_agent",
         },
     )
+
+
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+
+def _format_size(size_bytes: int) -> str:
+    """Format file size for display."""
+    if not size_bytes:
+        return ""
+    if size_bytes > 1_000_000:
+        return f" ({size_bytes / 1_000_000:.1f} MB)"
+    elif size_bytes > 1_000:
+        return f" ({size_bytes / 1_000:.1f} KB)"
+    return f" ({size_bytes} bytes)"
+
+
+def _process_list_results(results, path_prefix):
+    """Process DB list results into folders and files."""
+    inferred_folders = set()
+    direct_files = []
+    target_prefix_lower = path_prefix.lower()
+    
+    for entry in results:
+        path_normalized = entry.path.replace('/', '\\')
+        path_lower = path_normalized.lower()
+        
+        if path_lower.startswith(target_prefix_lower):
+            relative = path_normalized[len(path_prefix):]
+            if '\\' in relative:
+                first_segment = relative.split('\\')[0]
+                inferred_folders.add(path_prefix + first_segment)
+            else:
+                direct_files.append(entry)
+    
+    folders_list = sorted(inferred_folders, key=str.lower)
+    return folders_list, direct_files
+
+
+def _apply_line_limits(content, start_line, end_line, head_lines):
+    """Apply line limits to content from DB."""
+    lines = content.splitlines()
+    total_lines = len(lines)
+    truncated = False
+    
+    if start_line is not None and end_line is not None:
+        start_idx = max(0, start_line - 1)
+        end_idx = min(total_lines, end_line)
+        lines = lines[start_idx:end_idx]
+        content = '\n'.join(lines)
+    elif head_lines is not None:
+        if head_lines < total_lines:
+            lines = lines[:head_lines]
+            content = '\n'.join(lines)
+            truncated = True
+    else:
+        if total_lines > FILESYSTEM_READ_MAX_LINES:
+            lines = lines[:FILESYSTEM_READ_MAX_LINES]
+            content = '\n'.join(lines)
+            truncated = True
+        
+        content_bytes = len(content.encode('utf-8', errors='replace'))
+        if content_bytes > FILESYSTEM_READ_MAX_BYTES:
+            content = content[:FILESYSTEM_READ_MAX_BYTES]
+            last_nl = content.rfind('\n')
+            if last_nl > FILESYSTEM_READ_MAX_BYTES // 2:
+                content = content[:last_nl]
+            truncated = True
+    
+    return content, total_lines, truncated

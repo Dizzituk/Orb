@@ -13,7 +13,15 @@ Handles:
 - Overwatcher commands ("send to overwatcher")
 - Obvious chat patterns (questions, past tense, etc.)
 - Filesystem READ queries ("what's written in", "read file", "show contents of")
+- Filesystem command mode ("Astra, command: list/read/head/lines/find")
 
+v5.0 (2026-01): Added explicit command mode for filesystem operations
+  - Routes "Astra, command: list <path>" to FILESYSTEM_QUERY
+  - Routes "Astra, command: read <path>" to FILESYSTEM_QUERY (supports quoted paths)
+  - Routes "Astra, command: head <path> <n>" to FILESYSTEM_QUERY
+  - Routes "Astra, command: lines <path> <start> <end>" to FILESYSTEM_QUERY
+  - Routes "Astra, command: find <term> [under <path>]" to FILESYSTEM_QUERY
+  - Added line range natural language detection ("show me line 45-65 of...")
 v1.6 (2026-01): Added READ file patterns to check_filesystem_query_trigger
   - Routes "what's written in <path>" to FILESYSTEM_QUERY
   - Routes "read file <path>" to FILESYSTEM_QUERY
@@ -128,7 +136,12 @@ def tier0_classify(text: str) -> Tier0RuleResult:
     if result.matched:
         return result
     
-    # 4d. Check filesystem query (v1.5) - MUST be before is_obvious_chat!
+    # 4d. Check codebase report (v1.5)
+    result = check_codebase_report_trigger(text_stripped)
+    if result.matched:
+        return result
+    
+    # 4e. Check filesystem query (v1.5) - MUST be before is_obvious_chat!
     result = check_filesystem_query_trigger(text)
     if result.matched:
         return result
@@ -700,6 +713,39 @@ def check_rag_codebase_query(text: str) -> Tier0RuleResult:
     return Tier0RuleResult(matched=False)
 
 
+def check_codebase_report_trigger(text: str) -> Tier0RuleResult:
+    """
+    Special handler for codebase report commands.
+    
+    Commands:
+    - "codebase report fast" → Quick metadata scan
+    - "codebase report full" → Deep content scan
+    
+    v1.5: Added codebase report support.
+    """
+    text_lower = text.strip().lower()
+    
+    # Codebase report patterns
+    codebase_report_patterns = [
+        r"^codebase\s+report\s+fast$",
+        r"^codebase\s+report\s+full$",
+        r"^generate\s+codebase\s+report$",
+        r"^run\s+codebase\s+report$",
+    ]
+    
+    for pattern in codebase_report_patterns:
+        if re.match(pattern, text_lower):
+            return Tier0RuleResult(
+                matched=True,
+                intent=CanonicalIntent.CODEBASE_REPORT,
+                confidence=1.0,
+                rule_name="codebase_report",
+                reason="Codebase report command detected",
+            )
+    
+    return Tier0RuleResult(matched=False)
+
+
 def check_embedding_commands(text: str) -> Tier0RuleResult:
     """
     Special handler for embedding management commands.
@@ -752,7 +798,7 @@ def check_embedding_commands(text: str) -> Tier0RuleResult:
 
 
 # =============================================================================
-# FILESYSTEM QUERY HANDLER (v1.5)
+# FILESYSTEM QUERY HANDLER (v5.0)
 # =============================================================================
 
 # Known user folder keywords (for queries that don't have explicit paths)
@@ -800,23 +846,88 @@ def _is_within_allowed_roots(text: str) -> bool:
 
 def check_filesystem_query_trigger(text: str) -> Tier0RuleResult:
     """
-    Special handler for filesystem listing/search queries (v1.5).
+    Special handler for filesystem listing/search queries (v5.0).
     
-    Detects queries like:
+    v5.0: Added explicit command mode support:
+    - "Astra, command: list <path>"
+    - "Astra, command: read <path>" or read "<path with spaces>"
+    - "Astra, command: head <path> <n>"
+    - "Astra, command: lines <path> <start> <end>"
+    - "Astra, command: find <term> [under <path>]"
+    
+    Natural language queries:
     - "List everything on C:\\Users\\dizzi\\Desktop"
     - "What's in C:\\Users\\dizzi\\OneDrive"
     - "Find folder named Jobs under C:\\Users\\dizzi"
-    - "Find MBS Fitness under OneDrive"
-    - "Find files with Amber in the name" (if has path or folder keyword)
-    
-    Supports optional prefix: "After scan sandbox, ..."
+    - "Show me line 45-65 of stream_router.py"
+    - "First 10 lines of main.py"
     
     Requirements:
     - Must have Windows path OR known folder keyword
-    - Must be within allowed roots (D:\\ or C:\\Users\\dizzi)
-    - NEVER triggers on generic "find files..." without path context
+    - Must be within allowed roots
     """
     text_stripped = text.strip()
+    
+    # ==========================================================================
+    # v5.0: EXPLICIT COMMAND MODE DETECTION (highest priority)
+    # Patterns: "Astra, command: <cmd> <args>" or "command: <cmd> <args>"
+    # ==========================================================================
+    
+    # Check for command mode prefix
+    command_match = re.match(
+        r'^(?:astra,?\s*)?command:?\s*(.+)$',
+        text_stripped, re.IGNORECASE
+    )
+    
+    if command_match:
+        cmd_text = command_match.group(1).strip()
+        cmd_lower = cmd_text.lower()
+        
+        # Check for FS commands: list, read, head, lines, find
+        fs_commands = [
+            r'^list\s+',           # list <path>
+            r'^read\s+',           # read <path> or read "<path>"
+            r'^head\s+',           # head <path> [n]
+            r'^lines\s+',          # lines <path> <start> <end>
+            r'^find\s+',           # find <term> [under <path>]
+        ]
+        
+        for pattern in fs_commands:
+            if re.match(pattern, cmd_lower):
+                print(f"[FILESYSTEM_QUERY] Command mode detected: {cmd_text[:80]}")
+                return Tier0RuleResult(
+                    matched=True,
+                    intent=CanonicalIntent.FILESYSTEM_QUERY,
+                    confidence=1.0,
+                    rule_name="filesystem_command_mode",
+                    reason=f"Filesystem command: {cmd_text.split()[0]}",
+                )
+    
+    # ==========================================================================
+    # v5.0: LINE RANGE QUERIES (natural language)
+    # "Show me line 45-65 of...", "What's on lines 10-20..."
+    # ==========================================================================
+    
+    line_range_patterns = [
+        r'lines?\s+\d+\s*[-\u2013\u2014to]+\s*\d+\s+(?:of|in|from)\s+',
+        r'(?:show|what\'?s)\s+(?:me\s+)?(?:on\s+)?lines?\s+\d+',
+        r'first\s+\d+\s+lines?\s+(?:of|in|from)\s+',
+        r'head\s+\d+\s+(?:of|in|from)\s+',
+    ]
+    
+    text_lower_raw = text_stripped.lower()
+    for pattern in line_range_patterns:
+        if re.search(pattern, text_lower_raw):
+            # Must have a path reference
+            if _has_windows_path(text_stripped) or _has_known_folder_keyword(text_lower_raw):
+                print(f"[FILESYSTEM_QUERY] Line range query: {text_stripped[:80]}")
+                return Tier0RuleResult(
+                    matched=True,
+                    intent=CanonicalIntent.FILESYSTEM_QUERY,
+                    confidence=1.0,
+                    rule_name="filesystem_line_range",
+                    reason="Filesystem line range query",
+                )
     
     # Strip optional "After scan sandbox, " prefix
     text_for_match = re.sub(

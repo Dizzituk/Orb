@@ -163,29 +163,56 @@ SANDBOX_SKIP_PATTERNS: Set[str] = {"secret", "credential", "password", "token", 
 
 
 # =============================================================================
-# FILESYSTEM QUERY SETTINGS (v4.7)
+# FILESYSTEM QUERY SETTINGS (v5.0 - surgical live read)
 # =============================================================================
 
-# Allowed scan roots - reject queries outside these
-FILESYSTEM_QUERY_ALLOWED_ROOTS = ["D:\\", r"C:\Users\dizzi"]
+# v5.0: Tightened allowlist - specific safe folders only
+# Allowed roots for list/read/head/lines commands
+FILESYSTEM_QUERY_ALLOWED_ROOTS = [
+    r"D:\Orb",
+    r"D:\orb-desktop",
+    r"C:\Users\dizzi\OneDrive\Desktop",
+    r"C:\Users\dizzi\OneDrive\Documents",
+    r"C:\Users\dizzi\OneDrive\Downloads",
+    r"C:\Users\dizzi\OneDrive\Pictures",
+    r"C:\Users\dizzi\OneDrive",
+    r"C:\Users\dizzi\Desktop",
+    r"C:\Users\dizzi\Documents",
+    r"C:\Users\dizzi\Downloads",
+    r"C:\Users\dizzi\Pictures",
+]
+
+# v5.0: Explicitly blocked paths (even if under allowed roots)
+FILESYSTEM_QUERY_BLOCKED_PATHS = [
+    r"C:\Users\dizzi\AppData",
+    r"C:\Users\dizzi\.vscode",
+    r"C:\Users\dizzi\.venv",
+    r"C:\Users\dizzi\Contacts",
+    r"C:\Users\dizzi\Searches",
+    r"C:\Users\dizzi\Saved Games",
+    r"C:\Windows",
+    r"C:\Program Files",
+    r"C:\Program Files (x86)",
+    r"Microsoft\Protect",
+    r"Microsoft\Credentials",
+]
 
 # Max entries to return (hard cap)
 FILESYSTEM_QUERY_MAX_ENTRIES = 200
 
-# v4.9: Read file content limits
-FILESYSTEM_READ_MAX_LINES = 200
-FILESYSTEM_READ_MAX_BYTES = 16 * 1024  # 16KB preview limit
+# v5.0: Read file content limits (increased for surgical reads)
+FILESYSTEM_READ_MAX_LINES = 400
+FILESYSTEM_READ_MAX_BYTES = 64 * 1024  # 64KB limit
 
 # Known folder mappings (for queries like "What's in my Desktop")
 KNOWN_FOLDER_PATHS = {
-    "desktop": r"C:\Users\dizzi\Desktop",
+    "desktop": r"C:\Users\dizzi\OneDrive\Desktop",
     "onedrive": r"C:\Users\dizzi\OneDrive",
-    "documents": r"C:\Users\dizzi\Documents",
-    "downloads": r"C:\Users\dizzi\Downloads",
-    "pictures": r"C:\Users\dizzi\Pictures",
+    "documents": r"C:\Users\dizzi\OneDrive\Documents",
+    "downloads": r"C:\Users\dizzi\OneDrive\Downloads",
+    "pictures": r"C:\Users\dizzi\OneDrive\Pictures",
     "videos": r"C:\Users\dizzi\Videos",
     "music": r"C:\Users\dizzi\Music",
-    "appdata": r"C:\Users\dizzi\AppData",
 }
 
 

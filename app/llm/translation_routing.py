@@ -207,6 +207,13 @@ def intent_to_routing_info(intent: "CanonicalIntent") -> Optional[dict]:
             "model": "filesystem_scanner",
             "reason": "Translation layer: FILESYSTEM QUERY (from scan index)",
         },
+        # Codebase report (v1.5)
+        CanonicalIntent.CODEBASE_REPORT: {
+            "type": "local.codebase_report",
+            "provider": "local",
+            "model": "codebase_report",
+            "reason": "Translation layer: CODEBASE REPORT",
+        },
     }
     return mapping.get(intent, None)
 

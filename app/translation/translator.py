@@ -5,17 +5,25 @@ Converts "Tazish" (natural language) into canonical intents with safety gates.
 
 Pipeline:
 1. Mode Classification (Chat/Command-Capable/Feedback)
-2. Tier 0 Rules (regex/string - no LLM)
-3. Phrase Cache Lookup
-4. Tier 1 Classifier (GPT-5 mini - only if needed)
-5. Directive vs Story Gate
-6. Context Gate
-7. Confirmation Gate (for high-stakes)
+2. v5.1: Filesystem Command Mode Bypass (explicit "command: list/read/...")
+3. Tier 0 Rules (regex/string - no LLM)
+4. Phrase Cache Lookup
+5. Tier 1 Classifier (GPT-5 mini - only if needed)
+6. Directive vs Story Gate
+7. Context Gate
+8. Confirmation Gate (for high-stakes)
+
+v5.1 (2026-01): Added filesystem command mode bypass in _resolve_command_intent
+  - Matches "command: list/read/head/lines/find ..." (after Astra prefix stripped)
+  - Routes directly to FILESYSTEM_QUERY with confidence=1.0
+  - Bypasses Tier 1 classifier confidence gate
+  - Fixes routing for explicit command mode filesystem operations
 
 INVARIANT: Intent classification NEVER requires a frontier model.
 """
 from __future__ import annotations
 import logging
+import re
 from typing import Optional, Dict, Any, Tuple
 from datetime import datetime
 from pathlib import Path
@@ -41,6 +49,21 @@ from .tier0_rules import tier0_classify, is_user_chat_pattern
 from .tier1_classifier import Tier1Classifier, CONFIDENCE_THRESHOLD
 from .phrase_cache import get_phrase_cache, PhraseCache
 from .feedback import get_feedback_logger, FeedbackLogger, parse_feedback_message
+
+# v5.1: Filesystem command mode bypass pattern
+# After mode classification strips "Astra, command: " prefix,
+# remaining text is just "list C:\...", "read C:\...", etc.
+# This pattern matches verb + Windows drive path (with optional quotes).
+# Examples that should match:
+#   "list C:\Users\dizzi\Desktop"
+#   "read D:\Orb\file.py"
+#   "read \"C:\path with spaces\file.txt\""
+#   "head C:\file.py 40"
+#   "lines D:\file.py 45 65"
+_FS_COMMAND_MODE_PATTERN = re.compile(
+    r'^(list|read|head|lines|find)\s+["\'“”‘’]?[A-Za-z]:[/\\]',
+    re.IGNORECASE
+)
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +165,33 @@ class Translator:
         """
         Resolve intent for a command-capable message.
         Goes through Tier 0 -> Cache -> Tier 1 -> Gates
+        
+        v5.1: Added filesystem command mode bypass at start.
         """
+        # =====================================================================
+        # v5.1: FILESYSTEM COMMAND MODE BYPASS (highest priority)
+        # If message is "command: list/read/head/lines/find ...", route directly
+        # to FILESYSTEM_QUERY with confidence=1.0, bypassing classifier gate.
+        # This runs BEFORE Tier 0 rules to catch command mode that was stripped
+        # of "Astra, " prefix by mode classification.
+        # =====================================================================
+        fs_cmd_match = _FS_COMMAND_MODE_PATTERN.match(text)
+        if fs_cmd_match:
+            verb = fs_cmd_match.group(1).lower()
+            # Extract path from after the verb (text starts with "list C:\...")
+            path_start = len(verb) + 1  # Skip verb and space
+            path_part = text[path_start:path_start + 80].strip() if len(text) > path_start else ""
+            logger.info(f"[COMMAND_ROUTE] Intent: FILESYSTEM_QUERY (command mode)")
+            logger.info(f"[COMMAND_ROUTE] verb={verb} path={path_part}")
+            print(f"[COMMAND_ROUTE] Intent: FILESYSTEM_QUERY (command mode)")
+            print(f"[COMMAND_ROUTE] verb={verb} path={path_part}")
+            
+            result.resolved_intent = CanonicalIntent.FILESYSTEM_QUERY
+            result.intent_confidence = 1.0
+            result.latency_tier = LatencyTier.TIER_0_RULES
+            result.should_execute = True
+            return result
+        
         # Step 3a: Tier 0 Rules (run FIRST to catch known commands)
         tier0_result = tier0_classify(text)
         if tier0_result.matched:
