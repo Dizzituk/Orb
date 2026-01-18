@@ -3,6 +3,7 @@
 Streaming endpoints for real-time LLM responses.
 Uses Server-Sent Events (SSE).
 
+v4.12 (2026-01): RAG fallback in _handle_normal_routing for architecture queries
 v4.11 (2026-01): Split architecture map: ALL CAPS → full scan, lowercase → DB only
 v4.10 (2026-01): Removed host filesystem scan (sandbox only), cleaned up routing
 v4.9 (2026-01): Added ASTRA capability layer injection to system prompts
@@ -20,6 +21,7 @@ v4.0 (2026-01): ASTRA Translation Layer integration - prevents misfires
 import json
 import logging
 import os
+import re
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -908,6 +910,52 @@ def _handle_command_execution(req, translation_result, db, trace, conversation_i
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
     
+    # Filesystem Query (v1.5) - List/find files from scan index
+    if intent == CanonicalIntent.FILESYSTEM_QUERY:
+        if _LOCAL_TOOLS_AVAILABLE:
+            # Import the handler (already imported with local_tools block)
+            try:
+                from app.llm.local_tools.zobie_tools import generate_filesystem_query_stream
+                if stage_trace:
+                    stage_trace.enter_stage("filesystem_query", provider="local", model="filesystem_scanner")
+                return StreamingResponse(
+                    generate_filesystem_query_stream(
+                        project_id=req.project_id,
+                        message=req.message,
+                        db=db,
+                        trace=trace,
+                    ),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                )
+            except ImportError as e:
+                _log_routing_failure(stage_trace, f"Filesystem query handler import failed: {e}", "generate_filesystem_query_stream")
+        else:
+            _log_routing_failure(stage_trace, "Local tools not available for filesystem query", "generate_filesystem_query_stream")
+            _log_handler_availability()
+        
+        # Return error message
+        error_msg = (
+            "⚠️ **Filesystem Query Handler Not Available**\n\n"
+            "The filesystem query module failed to import.\n"
+            "Check server logs for details.\n\n"
+            "**Possible solutions:**\n"
+            "1. Ensure local tools are available\n"
+            "2. Check for import errors in `app/llm/local_tools/zobie_tools.py`\n"
+            "3. Restart the backend server"
+        )
+        
+        async def _filesystem_query_unavailable_stream():
+            yield "data: " + json.dumps({'type': 'error', 'error': 'Filesystem query handler not available'}) + "\n\n"
+            yield "data: " + json.dumps({'type': 'token', 'content': error_msg}) + "\n\n"
+            yield "data: " + json.dumps({'type': 'done', 'provider': 'system', 'model': 'command_router'}) + "\n\n"
+        
+        return StreamingResponse(
+            _filesystem_query_unavailable_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+    
     return None
 
 
@@ -952,8 +1000,82 @@ def _handle_legacy_triggers(req, db, trace):
     return None
 
 
+# =============================================================================
+# RAG FALLBACK DETECTION (v4.12)
+# =============================================================================
+
+# High-precision patterns for architecture/codebase questions
+# These catch queries when translation layer fails/returns None
+_ARCHITECTURE_QUERY_PATTERNS = [
+    # "Where is X" patterns (broad - catches most arch questions)
+    re.compile(r"^[Ww]here\s+is\s+(?:the\s+)?(?:main\s+)?(?:\w+\s+){0,6}(?:entrypoint|entry\s*point|router|stream|handler|function|class|module|file|config|constant|routing|implementation|trigger|pipeline|gate)[s]?"),
+    
+    # "Show me where X" patterns
+    re.compile(r"^[Ss]how\s+(?:me\s+)?where\s+.+(?:is\s+)?(?:implemented|defined|located|triggered|called|used|loaded|handled|routed|processed)"),
+    
+    # "Find where X" patterns
+    re.compile(r"^[Ff]ind\s+(?:where|the\s+file\s+where)\s+.+(?:is\s+)?(?:implemented|defined|located|triggered|called|used|loaded|handled|routed|processed|routes)"),
+    
+    # "Find the file where X" patterns
+    re.compile(r"^[Ff]ind\s+(?:the\s+)?(?:file|module|class|function)\s+(?:where|that)\s+.+"),
+    
+    # "Find/List/Show call sites/callers of X" patterns
+    re.compile(r"^(?:[Ff]ind|[Ll]ist|[Ss]how)\s+(?:the\s+)?(?:call\s*sites?|callers?)\s+(?:of|for)\s+.+"),
+    
+    # "Who calls X" patterns
+    re.compile(r"^[Ww]ho\s+calls\s+.+"),
+    
+    # Codebase-specific questions with known ASTRA terms
+    re.compile(r"^(?:[Ww]here|[Hh]ow|[Ww]hat)\s+.+(?:[Ss]pec\s*[Gg]ate|[Oo]verwatcher|[Ww]eaver|[Cc]ritical\s*[Pp]ipeline|[Ss]tream\s*[Rr]outer|[Tt]ranslation\s*[Ll]ayer|[Rr][Aa][Gg]|[Ee]mbedding)\s*.+[?.!]?$"),
+]
+
+# Command prefix pattern - never route explicit commands to RAG fallback
+_COMMAND_PREFIX_PATTERN = re.compile(r"^[Aa]stra[,:]?\s*command:\s*", re.IGNORECASE)
+
+
+def _is_architecture_query(message: str) -> bool:
+    """
+    Check if a message is a plain-English architecture/codebase question.
+    
+    Used as a fallback when translation layer fails or returns None.
+    High-precision patterns only - no broad catch-alls.
+    
+    Returns False for explicit command prefixes (e.g. "Astra, command: ...").
+    """
+    text = message.strip()
+    
+    # Never trigger for explicit command prefix
+    if _COMMAND_PREFIX_PATTERN.match(text):
+        return False
+    
+    # Check against high-precision patterns
+    for pattern in _ARCHITECTURE_QUERY_PATTERNS:
+        if pattern.match(text):
+            return True
+    
+    return False
+
+
 def _handle_normal_routing(req, project, db, trace):
     """Handle normal job-type routing."""
+    
+    # =========================================================================
+    # RAG FALLBACK: Detect architecture questions when translation layer fails
+    # v4.12: Catches plain-English codebase questions that missed translation
+    # =========================================================================
+    if _RAG_STREAM_AVAILABLE and _is_architecture_query(req.message):
+        print(f"[NORMAL_ROUTING] RAG fallback: detected architecture query")
+        print(f"[NORMAL_ROUTING]   message={req.message[:80]}...")
+        return StreamingResponse(
+            generate_rag_query_stream(
+                project_id=req.project_id,
+                message=req.message,
+                db=db,
+                trace=trace,
+            ),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
     
     context_block = build_context_block(db, req.project_id)
     semantic_context = get_semantic_context(db, req.project_id, req.message) if req.use_semantic_search else ""

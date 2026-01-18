@@ -7,6 +7,34 @@ Commands:
 - CREATE ARCHITECTURE MAP (lowercase): Load from DB → Claude Opus → map (no scan)
 - CREATE ARCHITECTURE MAP (ALL CAPS): Full scan + read contents → CODEBASE.md + DB
 
+v4.9 (2026-01): Add READ capability to FILESYSTEM_QUERY
+  - Reads file contents from DB (no controller calls)
+  - Case-insensitive path matching fallback
+  - Preview limits: 200 lines / 16KB
+  - Detects folders vs files, binary content
+v4.8 (2026-01): FILESYSTEM_QUERY folder inference
+v4.7 (2026-01): FILESYSTEM_QUERY handler for list/find
+v4.6 (2026-01): Exclude Windows Store app caches from SCAN SANDBOX
+  - Added AppData\Local\Packages to exclusion patterns
+  - Added EBWebView, Cache_Data, ShaderCache, Cookies patterns
+  - Prevents constant churn from Windows app cache updates
+v4.5 (2026-01): Self-report incremental fetch file list
+  - Phase 3 now emits incremental_fetch_files + incremental_fetch_list
+  - Lists each file path, extension, and content=yes/no result
+  - Capped at 50 files to prevent log spam
+v4.4 (2026-01): FIX - Phase 3 truly incremental content fetch
+  - _save_scan_incremental_to_db now returns new_paths/updated_paths lists
+  - Phase 3 fetches ONLY intersection(changed_set, eligible_paths)
+  - Adds required logging: eligible_for_content, incremental_fetch_count, batches
+v4.3 (2026-01): FULL RAG INGEST for scan sandbox
+  - Scan sandbox now fetches file contents (incremental: only new/changed)
+  - Extracts code signatures → creates ArchCodeChunk entries
+  - Queues background embedding job automatically
+  - NO .architecture outputs (DB only)
+v4.2 (2026-01): INCREMENTAL scan + exclusion filtering for scan sandbox
+  - Added client-side exclusion patterns (from host_fs_scanner)
+  - Incremental scan: only process new/changed files via mtime+size
+  - No longer deletes all old scan data on every run
 v4.1 (2026-01): FIX - Strip line numbers before signature extraction (was empty SIGNATURES.json)
 v4.0 (2026-01): Added file content capture for CODEBASE.md and DB storage
 v3.0 (2026-01): REWRITE - All scans use sandbox_controller /fs/tree, save to DB only
@@ -44,6 +72,7 @@ try:
         ArchitectureFileIndex,
         ArchitectureFileContent,
         get_latest_scan,
+        get_file_by_path,
         count_files_by_zone,
         detect_language,
         should_capture_content,
@@ -122,8 +151,139 @@ FULL_CODEBASE_OUTPUT_FILE = "CODEBASE.md"
 # Max file size for content capture (500KB)
 MAX_CONTENT_FILE_SIZE = 500 * 1024
 
+# v4.3: Sandbox scan content fetch settings
+# Smaller batch size for sandbox (larger scale than code repos)
+SANDBOX_CONTENT_BATCH_SIZE = int(os.getenv("ORB_SANDBOX_CONTENT_BATCH", "25"))
+# Hard size cap for sandbox content fetch (1MB)
+SANDBOX_MAX_CONTENT_SIZE = int(os.getenv("ORB_SANDBOX_MAX_CONTENT_SIZE", str(1_000_000)))
+
 # Timeouts
 FS_TREE_TIMEOUT_SEC = int(os.getenv("ORB_FS_TREE_TIMEOUT_SEC", "120"))
+
+
+# =============================================================================
+# EXCLUSION PATTERNS (v4.2 - from host_fs_scanner.py)
+# =============================================================================
+
+# Directory patterns to exclude (regex, matched against full path)
+EXCLUDE_DIR_PATTERNS = [
+    r"\.git$",
+    r"\.git[/\\]",
+    r"node_modules$",
+    r"node_modules[/\\]",
+    r"dist$",
+    r"build$",
+    r"\.next$",
+    r"\.vite$",
+    r"\.venv$",
+    r"venv$",
+    r"__pycache__$",
+    r"__pycache__[/\\]",
+    r"\.pytest_cache$",
+    r"\.mypy_cache$",
+    r"\.ruff_cache$",
+    r"\.idea$",
+    r"\.vscode$",
+    r"\.tox$",
+    r"\.nox$",
+    r"\.eggs$",
+    r"\.egg-info$",
+    r"htmlcov$",
+    r"\.coverage$",
+    r"orb-electron-data$",
+    # Windows caches and temp
+    r"Code Cache$",
+    r"GPUCache$",
+    r"Cache$",
+    r"CachedData$",
+    r"CachedExtensions$",
+    r"AppData[/\\]Local[/\\]Temp",
+    r"AppData[/\\]Local[/\\]Microsoft",
+    r"AppData[/\\]Local[/\\]Google[/\\]Chrome",
+    r"AppData[/\\]Local[/\\]Mozilla",
+    r"AppData[/\\]LocalLow",
+    r"NTUSER\.DAT",
+    # v4.6: Windows Store app caches
+    r"AppData[/\\]Local[/\\]Packages",  # All Windows Store app data
+    r"EBWebView",                        # Edge WebView2 caches
+    r"Cache_Data",                       # Chromium cache folders
+    r"ShaderCache",                      # GPU shader caches
+    r"Cookies$",                         # Browser cookies folders
+    # System folders
+    r"\$Recycle\.Bin",
+    r"System Volume Information",
+]
+
+# File extensions to exclude
+EXCLUDE_FILE_EXTENSIONS = {
+    # Logs and temp
+    ".log",
+    # Archives
+    ".iso", ".vhd", ".vhdx", ".qcow2", ".img",
+    ".zip", ".7z", ".rar", ".tar", ".gz", ".bz2", ".xz",
+    # Databases (metadata ok but don't scan content)
+    ".sqlite", ".sqlite3", ".db", ".wal", ".shm",
+    # Binaries
+    ".dll", ".exe", ".msi", ".sys", ".bin", ".dat",
+    ".pdb", ".obj", ".o", ".a", ".so", ".dylib",
+    ".pyc", ".pyo", ".class", ".jar", ".war",
+    # Large media
+    ".mp4", ".mkv", ".avi", ".mov", ".wmv",
+    ".mp3", ".wav", ".flac", ".aac", ".ogg",
+    # Large images
+    ".psd", ".xcf", ".raw", ".cr2", ".nef",
+}
+
+# Compile exclusion patterns once
+_EXCLUDE_DIR_RX = [re.compile(p, re.IGNORECASE) for p in EXCLUDE_DIR_PATTERNS]
+
+
+def _is_excluded_path(path: str) -> bool:
+    """Check if path should be excluded based on directory patterns."""
+    path_norm = path.replace("\\", "/")
+    for rx in _EXCLUDE_DIR_RX:
+        if rx.search(path_norm):
+            return True
+    return False
+
+
+def _is_excluded_extension(path: str) -> bool:
+    """Check if file extension should be excluded."""
+    ext = os.path.splitext(path.lower())[1]
+    return ext in EXCLUDE_FILE_EXTENSIONS
+
+
+def _filter_scan_results(files_data: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int]:
+    """
+    Filter scan results to exclude junk directories and file types.
+    
+    Returns: (filtered_files, excluded_count)
+    """
+    filtered = []
+    excluded = 0
+    
+    for f in files_data:
+        path = f.get("path", "")
+        
+        # Check directory exclusions
+        if _is_excluded_path(path):
+            excluded += 1
+            continue
+        
+        # Check extension exclusions
+        if _is_excluded_extension(path):
+            excluded += 1
+            continue
+        
+        # Check for hidden files (except allowed ones)
+        name = os.path.basename(path)
+        if name.startswith(".") and name not in {".env.example", ".gitignore", ".gitattributes", ".dockerignore"}:
+            excluded += 1
+            continue
+        
+        filtered.append(f)
+    
+    return filtered, excluded
 
 
 # =============================================================================
@@ -326,6 +486,148 @@ def _save_scan_to_db(
     db.commit()
     
     return scan_run.id
+
+
+def _save_scan_incremental_to_db(
+    db: Session,
+    scope: str,
+    files_data: List[Dict[str, Any]],
+    roots_scanned: List[str],
+    scan_time_ms: int,
+) -> Tuple[Optional[int], Dict[str, int]]:
+    """
+    Save scan results INCREMENTALLY to database (v4.2).
+    
+    INCREMENTAL: Compares with existing scan and only:
+    - Adds new files
+    - Updates changed files (mtime or size differs)
+    - Optionally marks deleted files (not implemented yet)
+    
+    Returns: (scan_id, stats_dict) where stats_dict contains:
+        - new_files: count of newly added files
+        - updated_files: count of files with changed mtime/size
+        - unchanged_files: count of files that didn't change
+        - total_files: total files in scan
+    """
+    if not _ARCH_MODELS_AVAILABLE:
+        logger.warning("[zobie_tools] Architecture models not available, cannot save to DB")
+        return None, {"error": "models_not_available"}
+    
+    stats = {
+        "new_files": 0,
+        "updated_files": 0,
+        "unchanged_files": 0,
+        "total_files": len(files_data),
+        "new_paths": [],      # v4.4: Track paths for incremental content fetch
+        "updated_paths": [],  # v4.4: Track paths for incremental content fetch
+    }
+    
+    # Get the latest existing scan for this scope
+    existing_scan = get_latest_scan(db, scope) if get_latest_scan else None
+    
+    # Build lookup of existing files by path for fast comparison
+    existing_by_path: Dict[str, ArchitectureFileIndex] = {}
+    if existing_scan:
+        for entry in db.query(ArchitectureFileIndex).filter(
+            ArchitectureFileIndex.scan_id == existing_scan.id
+        ).all():
+            existing_by_path[entry.path] = entry
+        logger.info(f"[zobie_tools] Incremental scan: {len(existing_by_path)} existing files")
+    
+    # Create new scan run
+    scan_run = ArchitectureScanRun(
+        scope=scope,
+        status="running",
+        stats_json=json.dumps({
+            "roots": roots_scanned,
+            "scan_time_ms": scan_time_ms,
+            "incremental": True,
+            "previous_scan_id": existing_scan.id if existing_scan else None,
+        }),
+    )
+    db.add(scan_run)
+    db.flush()
+    
+    # Process files in batches
+    batch_size = 1000
+    for i in range(0, len(files_data), batch_size):
+        batch = files_data[i:i + batch_size]
+        for f in batch:
+            path = f.get("path", "")
+            name = f.get("name", "")
+            ext = f.get("ext", "")
+            size_bytes = f.get("size_bytes")
+            mtime = f.get("mtime")
+            zone = f.get("zone", "other")
+            root = f.get("root")
+            
+            # Check if file exists in previous scan
+            existing_entry = existing_by_path.get(path)
+            
+            if existing_entry:
+                # File exists - check if changed
+                changed = False
+                
+                # Compare mtime (string comparison, ISO format)
+                if mtime and existing_entry.mtime:
+                    if mtime != existing_entry.mtime:
+                        changed = True
+                
+                # Compare size
+                if size_bytes and existing_entry.size_bytes:
+                    if size_bytes != existing_entry.size_bytes:
+                        changed = True
+                
+                if changed:
+                    stats["updated_files"] += 1
+                    stats["updated_paths"].append(path)  # v4.4: Track for incremental fetch
+                else:
+                    stats["unchanged_files"] += 1
+            else:
+                # New file
+                stats["new_files"] += 1
+                stats["new_paths"].append(path)  # v4.4: Track for incremental fetch
+            
+            # Always create entry in new scan
+            entry = ArchitectureFileIndex(
+                scan_id=scan_run.id,
+                path=path,
+                name=name,
+                ext=ext,
+                size_bytes=size_bytes,
+                mtime=mtime,
+                zone=zone,
+                root=root,
+            )
+            db.add(entry)
+        db.flush()
+    
+    # Mark complete
+    scan_run.status = "completed"
+    scan_run.finished_at = datetime.utcnow()
+    scan_run.stats_json = json.dumps({
+        "roots": roots_scanned,
+        "scan_time_ms": scan_time_ms,
+        "total_files": stats["total_files"],
+        "new_files": stats["new_files"],
+        "updated_files": stats["updated_files"],
+        "unchanged_files": stats["unchanged_files"],
+        "incremental": True,
+        "previous_scan_id": existing_scan.id if existing_scan else None,
+    })
+    
+    # Delete old scan ONLY after new scan is complete
+    # This ensures we never lose data if scan fails mid-way
+    if existing_scan:
+        try:
+            db.delete(existing_scan)  # Cascade deletes ArchitectureFileIndex entries
+            logger.info(f"[zobie_tools] Deleted old scan_id={existing_scan.id} after successful incremental update")
+        except Exception as e:
+            logger.warning(f"[zobie_tools] Failed to delete old scan: {e}")
+    
+    db.commit()
+    
+    return scan_run.id, stats
 
 
 def _save_scan_with_contents_to_db(
@@ -939,8 +1241,46 @@ def _generate_codebase_md(
 
 
 # =============================================================================
-# SCAN SANDBOX (scope="sandbox") - DB only
+# SCAN SANDBOX (scope="sandbox") - DB + RAG chunks + embeddings (v4.3)
 # =============================================================================
+
+# v4.3: Content extensions for sandbox scan (same as generate_full_architecture_map_stream)
+# IMPORTANT: Do NOT broaden this - sandbox scans D:\ + C:\Users which is huge
+_SANDBOX_CONTENT_EXTENSIONS = {
+    ".py", ".pyw", ".pyi",
+    ".js", ".mjs", ".cjs", ".jsx",
+    ".ts", ".tsx", ".mts", ".cts",
+    ".json", ".jsonc",
+    ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
+    ".html", ".htm", ".css", ".scss", ".sass", ".less",
+    ".sql", ".sh", ".bash", ".zsh", ".ps1", ".psm1", ".bat", ".cmd",
+    ".md", ".markdown", ".rst", ".txt",
+    "",  # Files without extension (like Dockerfile, Makefile)
+}
+
+# v4.3: Files to NEVER capture (secrets, credentials, keys)
+_SANDBOX_SKIP_FILENAMES = {
+    ".env", ".env.local", ".env.production", ".env.development",
+    ".env.example",
+    "secrets.json", "credentials.json", "config.secret.json",
+    ".npmrc", ".pypirc",
+    "id_rsa", "id_ed25519", "id_ecdsa",
+    ".pem", ".key", ".crt", ".p12", ".pfx",
+}
+
+# v4.3: Patterns in filename to skip
+_SANDBOX_SKIP_PATTERNS = {"secret", "credential", "password", "token", "apikey", "api_key"}
+
+
+def _map_kind_to_chunk_type(kind: str) -> str:
+    """
+    Map signature 'kind' to ArchCodeChunk chunk_type.
+    
+    Expected kinds from _extract_python_signatures / _extract_js_signatures:
+    - function, async_function, class, method, async_method
+    """
+    return kind  # Direct mapping - kinds match ChunkType values
+
 
 async def generate_sandbox_structure_scan_stream(
     project_id: int,
@@ -951,13 +1291,17 @@ async def generate_sandbox_structure_scan_stream(
     """
     Scan sandbox environment (C:\\Users + D:\\ areas) and save to DB.
     
-    This is a read-only scan that indexes the sandbox filesystem.
-    Does NOT save to out folder - DB only.
+    v4.3: FULL RAG INGEST
+    - Scans file tree (incremental: mtime+size)
+    - Fetches contents for NEW/CHANGED code files only
+    - Extracts signatures → creates ArchCodeChunk entries
+    - Queues background embedding job
+    - NO .architecture outputs (DB only)
     """
     loop = asyncio.get_event_loop()
     started_ms = int(loop.time() * 1000)
     
-    yield _sse_token("🔍 Scanning sandbox environment...\n")
+    yield _sse_token("🔍 [SCAN_SANDBOX] Scanning sandbox environment...\n")
     yield _sse_token(f"📡 Controller: {SANDBOX_CONTROLLER_URL}\n")
     yield _sse_token(f"📂 Roots: {', '.join(SANDBOX_SCAN_ROOTS)}\n\n")
     
@@ -975,14 +1319,18 @@ async def generate_sandbox_structure_scan_stream(
         )
         return
     
-    # Call sandbox_controller
+    # ==========================================================================
+    # Phase 1: Scan file tree
+    # ==========================================================================
+    yield _sse_token("📊 Phase 1: Scanning file tree...\n")
+    
     status, data, error_msg = await loop.run_in_executor(
         None,
         lambda: _call_fs_tree(SANDBOX_SCAN_ROOTS, max_files=200000),
     )
     
     if status != 200 or data is None:
-        logger.error(f"[sandbox_scan] Failed: status={status}, error={error_msg}")
+        logger.error(f"[SCAN_SANDBOX] Failed: status={status}, error={error_msg}")
         
         if status == 404:
             yield _sse_error(
@@ -1007,21 +1355,31 @@ async def generate_sandbox_structure_scan_stream(
         return
     
     # Extract file data
-    files_data = data.get("files", [])
+    raw_files_data = data.get("files", [])
     roots_scanned = data.get("roots_scanned", SANDBOX_SCAN_ROOTS)
     scan_time_ms = data.get("scan_time_ms", 0)
     truncated = data.get("truncated", False)
     
-    yield _sse_token(f"📊 Found {len(files_data)} files in {scan_time_ms}ms\n")
+    yield _sse_token(f"   Found {len(raw_files_data)} files in {scan_time_ms}ms\n")
+    
+    # v4.2: Apply exclusion filtering
+    files_data, excluded_count = _filter_scan_results(raw_files_data)
+    yield _sse_token(f"   Excluded {excluded_count} junk files (caches, node_modules, binaries, etc.)\n")
+    yield _sse_token(f"   Keeping {len(files_data)} relevant files\n")
     
     if truncated:
-        yield _sse_token("⚠️ Results truncated (max files limit reached)\n")
+        yield _sse_token("   ⚠️ Results truncated (max files limit reached)\n")
     
-    # Save to DB
-    yield _sse_token("💾 Saving to database...\n")
+    # ==========================================================================
+    # Phase 2: Save file metadata to DB (incremental)
+    # ==========================================================================
+    yield _sse_token("\n💾 Phase 2: Saving metadata to DB (incremental)...\n")
+    
+    scan_id = None
+    stats = {}
     
     try:
-        scan_id = _save_scan_to_db(
+        scan_id, stats = _save_scan_incremental_to_db(
             db=db,
             scope="sandbox",
             files_data=files_data,
@@ -1030,21 +1388,26 @@ async def generate_sandbox_structure_scan_stream(
         )
         
         if scan_id:
-            # Get zone counts
             zone_counts = count_files_by_zone(db, scan_id) if count_files_by_zone else {}
             
-            yield _sse_token(f"\n✅ Sandbox scan saved (scan_id={scan_id})\n")
-            yield _sse_token(f"📁 Total files: {len(files_data)}\n")
+            yield _sse_token(f"   ✅ Metadata saved (scan_id={scan_id})\n")
+            yield _sse_token(f"   New: {stats.get('new_files', 0)} | Updated: {stats.get('updated_files', 0)} | Unchanged: {stats.get('unchanged_files', 0)}\n")
             
-            if zone_counts:
-                yield _sse_token("📊 By zone:\n")
-                for zone, count in sorted(zone_counts.items()):
-                    yield _sse_token(f"   • {zone}: {count}\n")
+            # Log to console for visibility
+            logger.info(f"[SCAN_SANDBOX] scanned_files={len(files_data)}")
+            logger.info(f"[SCAN_SANDBOX] db_upserts={scan_id}")
         else:
-            yield _sse_token("⚠️ Could not save to DB (models not available)\n")
+            yield _sse_token("   ⚠️ Could not save to DB (models not available)\n")
+            yield _sse_done(
+                provider="local",
+                model="sandbox_scanner",
+                success=False,
+                error="models_not_available",
+            )
+            return
             
     except Exception as e:
-        logger.exception(f"[sandbox_scan] DB save failed: {e}")
+        logger.exception(f"[SCAN_SANDBOX] DB save failed: {e}")
         yield _sse_error(f"Failed to save to DB: {e}")
         yield _sse_done(
             provider="local",
@@ -1054,6 +1417,264 @@ async def generate_sandbox_structure_scan_stream(
         )
         return
     
+    # ==========================================================================
+    # Phase 3: Fetch contents for NEW/CHANGED files only (incremental)
+    # ==========================================================================
+    yield _sse_token("\n📖 Phase 3: Fetching contents (incremental)...\n")
+    
+    # Build set of paths that need content fetch (only new or changed)
+    # Use incremental logic: only NEW files and UPDATED files need content fetch
+    new_count = stats.get("new_files", 0)
+    updated_count = stats.get("updated_files", 0)
+    
+    if new_count == 0 and updated_count == 0:
+        yield _sse_token("   ⏭️ No new/changed files - skipping content fetch\n")
+        paths_to_read = []
+        eligible_paths = []  # For logging
+        # Required logging for acceptance test (no changes = no fetch needed)
+        yield _sse_token(f"   [SCAN_SANDBOX] eligible_for_content=0\n")
+        yield _sse_token(f"   [SCAN_SANDBOX] incremental_fetch_count=0\n")
+    else:
+        # v4.4: TRUE INCREMENTAL content fetch
+        # Build set of changed paths from Phase 2 (new + updated files only)
+        changed_set = set(stats.get("new_paths", [])) | set(stats.get("updated_paths", []))
+        
+        yield _sse_token(f"   {new_count} new + {updated_count} changed files detected\n")
+        
+        # Build list of content-eligible files (apply size/extension/secret filters)
+        eligible_paths = []
+        for f in files_data:
+            ext = (f.get("ext") or "").lower()
+            size = f.get("size_bytes") or 0
+            name = (f.get("name") or "").lower()
+            path = f.get("path", "")
+            
+            # v4.3: Hard size cap (1MB) for safety
+            if size > SANDBOX_MAX_CONTENT_SIZE:
+                continue
+            
+            # Skip sensitive files
+            if name in _SANDBOX_SKIP_FILENAMES:
+                continue
+            
+            # Skip files with sensitive patterns in name
+            if any(p in name for p in _SANDBOX_SKIP_PATTERNS):
+                continue
+            
+            # Include by extension
+            if ext in _SANDBOX_CONTENT_EXTENSIONS:
+                eligible_paths.append(path)
+                continue
+            
+            # Include special files without matching extension
+            if name in (".gitignore", ".gitattributes", "dockerfile", "makefile"):
+                eligible_paths.append(path)
+        
+        # v4.4: INCREMENTAL - Only fetch paths that are BOTH eligible AND changed
+        paths_to_read = [p for p in eligible_paths if p in changed_set]
+        
+        # Required logging for acceptance test
+        yield _sse_token(f"   [SCAN_SANDBOX] eligible_for_content={len(eligible_paths)}\n")
+        yield _sse_token(f"   [SCAN_SANDBOX] incremental_fetch_count={len(paths_to_read)}\n")
+    
+    # Fetch contents in batches (v4.3: batch_size=25 for sandbox scale)
+    contents_data: List[Dict[str, Any]] = []
+    
+    if paths_to_read:
+        batch_size = SANDBOX_CONTENT_BATCH_SIZE  # Default 25
+        total_batches = (len(paths_to_read) + batch_size - 1) // batch_size
+        
+        # Required logging for acceptance test
+        yield _sse_token(f"   [SCAN_SANDBOX] batches={total_batches}\n")
+        
+        for i in range(0, len(paths_to_read), batch_size):
+            batch_paths = paths_to_read[i:i + batch_size]
+            batch_num = i // batch_size + 1
+            
+            status, resp, error_msg = await loop.run_in_executor(
+                None,
+                lambda bp=batch_paths: _call_fs_contents(
+                    bp, 
+                    max_file_size=SANDBOX_MAX_CONTENT_SIZE,
+                    include_line_numbers=False,  # Don't need line numbers for signatures
+                ),
+            )
+            
+            if status == 200 and resp:
+                batch_files = resp.get("files", [])
+                contents_data.extend(batch_files)
+                
+                if batch_num % 10 == 0 or batch_num == total_batches:
+                    yield _sse_token(f"   Batch {batch_num}/{total_batches}: {len(contents_data)} files fetched\n")
+            else:
+                yield _sse_token(f"   Batch {batch_num}: Failed - {error_msg}\n")
+        
+        files_with_content = sum(1 for f in contents_data if f.get("content") and not f.get("error"))
+        yield _sse_token(f"   ✅ Fetched {files_with_content} files with content\n")
+        
+        # v4.5: Self-report incremental fetch file list
+        yield _sse_token(f"   [SCAN_SANDBOX] incremental_fetch_files={len(paths_to_read)}\n")
+        # Build lookup of content fetch results
+        content_results = {c.get("path", ""): c for c in contents_data}
+        
+        yield _sse_token("   [SCAN_SANDBOX] incremental_fetch_list:\n")
+        max_to_print = 50
+        for idx, path in enumerate(paths_to_read[:max_to_print]):
+            ext = os.path.splitext(path)[1] or "(no ext)"
+            result = content_results.get(path, {})
+            has_content = "yes" if (result.get("content") and not result.get("error")) else "no"
+            yield _sse_token(f"    - {path} ({ext}) content={has_content}\n")
+        
+        if len(paths_to_read) > max_to_print:
+            yield _sse_token(f"    … ({len(paths_to_read) - max_to_print} more)\n")
+    else:
+        # No paths to fetch - log batches=0 for acceptance test
+        yield _sse_token(f"   [SCAN_SANDBOX] batches=0\n")
+        yield _sse_token(f"   [SCAN_SANDBOX] incremental_fetch_files=0\n")
+        yield _sse_token("   [SCAN_SANDBOX] incremental_fetch_list: <none>\n")
+    
+    # ==========================================================================
+    # Phase 4: Extract signatures → ArchCodeChunk entries
+    # ==========================================================================
+    yield _sse_token("\n🔗 Phase 4: Extracting signatures for RAG...\n")
+    
+    chunks_created = 0
+    rag_scan_id = None
+    
+    if contents_data:
+        try:
+            # Import RAG models
+            from app.rag.models import ArchScanRun, ArchCodeChunk
+            from app.rag.jobs.embedding_job import compute_content_hash
+            
+            # Create ArchScanRun entry for RAG pipeline tracking
+            # (This is separate from architecture_scan_runs used for file metadata)
+            rag_scan_run = ArchScanRun(
+                status="running",
+                signatures_file="",  # No file output for sandbox scan
+                index_file="",
+            )
+            db.add(rag_scan_run)
+            db.flush()  # Get the ID
+            rag_scan_id = rag_scan_run.id
+            
+            yield _sse_token(f"   Created ArchScanRun (rag_scan_id={rag_scan_id})\n")
+            
+            # Process each file with content
+            for content_info in contents_data:
+                path = content_info.get("path", "")
+                content = content_info.get("content", "")
+                
+                if not path or not content:
+                    continue
+                if content_info.get("error"):
+                    continue
+                
+                # Strip line numbers if present (safety)
+                raw_content = _strip_line_numbers(content)
+                
+                # Extract signatures based on file extension
+                ext = os.path.splitext(path)[1].lower()
+                signatures = []
+                
+                if ext in (".py", ".pyw", ".pyi"):
+                    signatures = _extract_python_signatures(raw_content, path)
+                elif ext in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"):
+                    signatures = _extract_js_signatures(raw_content, path)
+                
+                # Create ArchCodeChunk for each signature
+                for sig in signatures:
+                    chunk = ArchCodeChunk(
+                        scan_id=rag_scan_id,
+                        file_path=path,
+                        file_abs_path=path,  # Same for sandbox paths
+                        chunk_type=_map_kind_to_chunk_type(sig.get("kind", "function")),
+                        chunk_name=sig.get("name", ""),
+                        qualified_name=f"{path}::{sig.get('name', '')}",
+                        start_line=sig.get("line"),
+                        end_line=sig.get("end_line"),
+                        signature=sig.get("signature"),
+                        docstring=sig.get("docstring"),
+                        decorators_json=json.dumps(sig.get("decorators", [])) if sig.get("decorators") else None,
+                        parameters_json=json.dumps(sig.get("parameters", [])) if sig.get("parameters") else None,
+                        returns=sig.get("returns"),
+                        bases_json=json.dumps(sig.get("bases", [])) if sig.get("bases") else None,
+                        embedded=False,  # Will be embedded by background job
+                    )
+                    
+                    # Compute content hash for change detection
+                    chunk.content_hash = compute_content_hash(chunk)
+                    
+                    db.add(chunk)
+                    chunks_created += 1
+                
+                # Flush periodically to avoid memory buildup
+                if chunks_created % 500 == 0:
+                    db.flush()
+            
+            # Mark scan complete
+            rag_scan_run.status = "complete"
+            rag_scan_run.completed_at = datetime.utcnow()
+            rag_scan_run.chunks_extracted = chunks_created
+            
+            db.commit()
+            
+            yield _sse_token(f"   ✅ Created {chunks_created} ArchCodeChunk entries\n")
+            logger.info(f"[SCAN_SANDBOX] chunks_written={chunks_created}")
+            
+        except ImportError as ie:
+            logger.warning(f"[SCAN_SANDBOX] RAG models not available: {ie}")
+            yield _sse_token(f"   ⚠️ RAG models not available: {ie}\n")
+        except Exception as e:
+            logger.exception(f"[SCAN_SANDBOX] Signature extraction failed: {e}")
+            yield _sse_token(f"   ⚠️ Signature extraction failed: {e}\n")
+            # Don't fail the whole scan - continue to summary
+    else:
+        yield _sse_token("   ⏭️ No content to process - skipping signature extraction\n")
+    
+    # ==========================================================================
+    # Phase 5: Queue background embedding job
+    # ==========================================================================
+    yield _sse_token("\n🚀 Phase 5: Queueing embedding job...\n")
+    
+    embedding_queued = False
+    
+    if chunks_created > 0:
+        try:
+            from app.rag.jobs.embedding_job import queue_embedding_job, EMBEDDING_AUTO_ENABLED
+            from app.db import get_db_session
+            
+            if not EMBEDDING_AUTO_ENABLED:
+                yield _sse_token("   ⚠️ Auto-embedding disabled (ORB_EMBEDDING_AUTO=false)\n")
+            else:
+                # Queue embedding for ALL pending chunks (not filtered by scan_id)
+                # This ensures any previously unembedded chunks also get processed
+                embedding_queued = queue_embedding_job(
+                    db_session_factory=get_db_session,
+                    scan_id=None,  # Embed all pending chunks
+                )
+                
+                if embedding_queued:
+                    yield _sse_token("   ✅ Embedding job queued (background)\n")
+                    yield _sse_token("   📊 Priority: Tier1 (routers) → Tier2 (pipeline) → Tier3 (services) → ...\n")
+                else:
+                    yield _sse_token("   ⚠️ Embedding job not queued (may already be running)\n")
+                    
+        except ImportError as ie:
+            logger.warning(f"[SCAN_SANDBOX] Embedding module not available: {ie}")
+            yield _sse_token(f"   ⚠️ Embedding module not available: {ie}\n")
+        except Exception as emb_err:
+            logger.warning(f"[SCAN_SANDBOX] Failed to queue embedding job (non-fatal): {emb_err}")
+            yield _sse_token(f"   ⚠️ Embedding queue failed (non-fatal): {emb_err}\n")
+    else:
+        yield _sse_token("   ⏭️ No chunks to embed\n")
+    
+    logger.info(f"[SCAN_SANDBOX] embeddings_queued={embedding_queued}")
+    
+    # ==========================================================================
+    # Summary
+    # ==========================================================================
+    
     # Record in memory service
     try:
         memory_service.create_message(
@@ -1061,7 +1682,7 @@ async def generate_sandbox_structure_scan_stream(
             memory_schemas.MessageCreate(
                 project_id=project_id,
                 role="assistant",
-                content=f"[sandbox_scan] Indexed {len(files_data)} files (scan_id={scan_id})",
+                content=f"[SCAN_SANDBOX] Indexed {len(files_data)} files, {chunks_created} chunks (scan_id={scan_id}, rag_scan_id={rag_scan_id})",
                 provider="local",
                 model="sandbox_scanner",
             ),
@@ -1077,15 +1698,32 @@ async def generate_sandbox_structure_scan_stream(
             0, 0, duration_ms, success=True, error=None,
         )
     
+    # Final summary with required logging format
+    summary = (
+        f"\n✅ [SCAN_SANDBOX] Complete\n"
+        f"   scanned_files={len(files_data)}\n"
+        f"   db_upserts={scan_id}\n"
+        f"   chunks_written={chunks_created}\n"
+        f"   embeddings_queued={embedding_queued}\n"
+        f"   duration={duration_ms}ms\n"
+    )
+    yield _sse_token(summary)
+    
     yield _sse_done(
         provider="local",
         model="sandbox_scanner",
         total_length=len(files_data),
         meta={
             "scan_id": scan_id,
+            "rag_scan_id": rag_scan_id,
             "files": len(files_data),
+            "chunks_created": chunks_created,
+            "embeddings_queued": embedding_queued,
             "roots": roots_scanned,
             "scope": "sandbox",
+            "new_files": stats.get("new_files", 0),
+            "updated_files": stats.get("updated_files", 0),
+            "unchanged_files": stats.get("unchanged_files", 0),
         },
     )
 
@@ -2018,6 +2656,733 @@ async def generate_local_zobie_map_stream(
 
 
 # =============================================================================
+# FILESYSTEM QUERY HANDLER (v4.7)
+# =============================================================================
+# Answers filesystem listing/find queries using scan DB index.
+# NEVER runs shell commands. Only reads from architecture_file_index.
+# =============================================================================
+
+# Allowed scan roots - reject queries outside these
+FILESYSTEM_QUERY_ALLOWED_ROOTS = ["D:\\", r"C:\Users\dizzi"]
+
+# Max entries to return (hard cap)
+FILESYSTEM_QUERY_MAX_ENTRIES = 200
+
+# v4.9: Read file content limits
+FILESYSTEM_READ_MAX_LINES = 200
+FILESYSTEM_READ_MAX_BYTES = 16 * 1024  # 16KB preview limit
+
+# Known folder mappings (for queries like "What's in my Desktop")
+_KNOWN_FOLDER_PATHS = {
+    "desktop": r"C:\Users\dizzi\Desktop",
+    "onedrive": r"C:\Users\dizzi\OneDrive",
+    "documents": r"C:\Users\dizzi\Documents",
+    "downloads": r"C:\Users\dizzi\Downloads",
+    "pictures": r"C:\Users\dizzi\Pictures",
+    "videos": r"C:\Users\dizzi\Videos",
+    "music": r"C:\Users\dizzi\Music",
+    "appdata": r"C:\Users\dizzi\AppData",
+}
+
+
+def _normalize_path(path: str) -> str:
+    """
+    Normalize a Windows path: strip quotes, trim whitespace, convert / to \\.
+    
+    v4.9: Added for read file support.
+    """
+    if not path:
+        return path
+    # Strip quotes and whitespace
+    path = path.strip().strip('"').strip("'").strip()
+    # Convert forward slashes to backslashes
+    path = path.replace('/', '\\')
+    # Remove trailing backslash (unless it's a root like D:\)
+    if len(path) > 3 and path.endswith('\\'):
+        path = path.rstrip('\\')
+    return path
+
+
+def _parse_filesystem_query(message: str) -> dict:
+    """
+    Parse a filesystem query to extract:
+    - query_type: "list", "find", or "read"
+    - find_type: "folder", "file", or "any" (for find queries)
+    - target_path: The directory/file path to list/search/read
+    - search_term: For find queries, what to search for
+    - include_full_paths: Whether to include full paths (default True)
+    
+    v4.9: Added "read" query_type for reading file contents from DB.
+    
+    Returns dict with parsed info or None if invalid.
+    """
+    text = message.strip()
+    
+    # Strip "After scan sandbox, " prefix if present
+    text = re.sub(r'^[Aa]fter\s+scan\s+sandbox,?\s*', '', text).strip()
+    text_lower = text.lower()
+    
+    result = {
+        "query_type": None,
+        "find_type": "any",  # v4.8: "folder", "file", or "any"
+        "target_path": None,
+        "search_term": None,
+        "include_full_paths": "full path" in text_lower,
+    }
+    
+    # Try to extract Windows path
+    path_match = re.search(r'([A-Za-z]:[/\\][^"\',;:?!]*)', text)
+    if path_match:
+        result["target_path"] = _normalize_path(path_match.group(1))
+    else:
+        # Try to extract known folder keyword
+        for folder, path in _KNOWN_FOLDER_PATHS.items():
+            if folder in text_lower:
+                result["target_path"] = path
+                break
+    
+    # v4.9: Detect READ queries first (more specific patterns)
+    # Patterns: "what's written in X", "read X", "show contents of X", 
+    #           "open X", "cat X", "what does X contain", "display X"
+    read_patterns = [
+        r"what'?s\s+(?:written|inside|in)\s+",  # "what's written in", "whats inside"
+        r"read\s+(?:the\s+)?(?:file\s+)?",      # "read", "read file", "read the file"
+        r"show\s+(?:the\s+)?contents?\s+of\s+", # "show contents of", "show content of"
+        r"(?:display|view|print|output)\s+(?:the\s+)?(?:file\s+)?",  # "display", "view file"
+        r"cat\s+",                               # "cat X" (unix style)
+        r"what\s+does\s+.+\s+(?:say|contain)",  # "what does X say/contain"
+        r"open\s+(?:the\s+)?(?:file\s+)?",      # "open", "open file" (when path looks like file)
+    ]
+    
+    for pattern in read_patterns:
+        if re.search(pattern, text_lower):
+            # Additional check: target_path should look like a file (has extension or no trailing \)
+            if result["target_path"]:
+                target = result["target_path"]
+                # If path has an extension, it's likely a file read request
+                if '.' in os.path.basename(target) or not target.endswith('\\'):
+                    result["query_type"] = "read"
+                    return result
+    
+    # Determine query type for list/find
+    if re.match(r'^(?:list|show|what|contents)', text_lower):
+        result["query_type"] = "list"
+    elif re.match(r'^find', text_lower):
+        result["query_type"] = "find"
+        
+        # v4.8: Detect if searching for folder specifically
+        # "Find folder named Jobs" / "Find folders named X" / "Find directory called X"
+        if re.search(r'find\s+(?:folder|folders|directory|directories)\s+(?:named?|called)', text_lower):
+            result["find_type"] = "folder"
+        elif re.search(r'find\s+(?:file|files)\s+(?:named?|called|with)', text_lower):
+            result["find_type"] = "file"
+        
+        # Extract search term for find queries
+        # "Find folder named Jobs under ..." -> "Jobs"
+        # "Find MBS Fitness under OneDrive" -> "MBS Fitness"
+        # "Find files with Amber in the name" -> "Amber"
+        
+        named_match = re.search(r'(?:named?|called)\s+["\']?([\w\s-]+)["\']?(?:\s+(?:under|in|on|inside)|$)', text, re.IGNORECASE)
+        if named_match:
+            result["search_term"] = named_match.group(1).strip()
+        else:
+            # "Find <term> under <path>"
+            find_match = re.search(r'^find\s+(?:folder|file|directory)?\s*([\w\s-]+?)\s+(?:under|in|on|inside)', text, re.IGNORECASE)
+            if find_match:
+                term = find_match.group(1).strip()
+                # Skip generic words
+                if term.lower() not in {"folder", "file", "directory", "all", "everything", "files"}:
+                    result["search_term"] = term
+            else:
+                # "Find files with X in the name"
+                with_match = re.search(r'with\s+([\w\s-]+?)\s+(?:in\s+(?:the\s+)?name)', text, re.IGNORECASE)
+                if with_match:
+                    result["search_term"] = with_match.group(1).strip()
+    
+    return result
+
+
+def _is_path_within_allowed_roots(path: str) -> bool:
+    """Check if a path is within allowed scan roots."""
+    path_lower = path.lower().replace('/', '\\')
+    
+    # D:\ is always allowed
+    if path_lower.startswith('d:\\'):
+        return True
+    
+    # C:\Users\dizzi is allowed
+    if path_lower.startswith('c:\\users\\dizzi'):
+        return True
+    
+    return False
+
+
+async def generate_filesystem_query_stream(
+    project_id: int,
+    message: str,
+    db: Session,
+    trace: Optional[RoutingTrace] = None,
+) -> AsyncGenerator[str, None]:
+    """
+    Answer filesystem listing/find queries using the scan DB index.
+    
+    v4.7: New handler for FILESYSTEM_QUERY intent.
+    
+    Safety:
+    - ONLY reads from architecture_file_index table (from scan sandbox)
+    - NEVER runs shell commands or mentions running dir/grep
+    - Hard cap of 200 entries
+    - Only allows paths under D:\\ or C:\\Users\\dizzi
+    
+    Output format:
+    - Folders first, then files
+    - Full paths included
+    - +N more summary if truncated
+    """
+    loop = asyncio.get_event_loop()
+    started_ms = int(loop.time() * 1000)
+    
+    yield _sse_token("📂 [FILESYSTEM_QUERY] Processing query...\n")
+    
+    # Check if architecture models available
+    if not _ARCH_MODELS_AVAILABLE:
+        yield _sse_token("⚠️ Architecture database not available.\n")
+        yield _sse_token("Run `scan sandbox` first to index the filesystem.\n")
+        yield _sse_done(
+            provider="local",
+            model="filesystem_query",
+            success=False,
+            error="models_not_available",
+        )
+        return
+    
+    # Parse the query
+    parsed = _parse_filesystem_query(message)
+    query_type = parsed.get("query_type", "list")
+    target_path = parsed.get("target_path")
+    search_term = parsed.get("search_term")
+    
+    yield _sse_token(f"   Query type: {query_type}\n")
+    if target_path:
+        yield _sse_token(f"   Target path: {target_path}\n")
+    if search_term:
+        yield _sse_token(f"   Search term: {search_term}\n")
+    yield _sse_token("\n")
+    
+    # Validate path is within allowed roots
+    if target_path and not _is_path_within_allowed_roots(target_path):
+        yield _sse_token(f"❌ Path `{target_path}` is outside allowed scan roots.\n")
+        yield _sse_token(f"Allowed roots: D:\\ and C:\\Users\\dizzi\n")
+        yield _sse_done(
+            provider="local",
+            model="filesystem_query",
+            success=False,
+            error="path_outside_allowed_roots",
+        )
+        return
+    
+    # Get latest scan
+    latest_scan = get_latest_scan(db, scope="sandbox") if get_latest_scan else None
+    
+    if not latest_scan:
+        yield _sse_token("⚠️ No scan data found in database.\n")
+        yield _sse_token("Run `scan sandbox` first to index the filesystem.\n")
+        yield _sse_done(
+            provider="local",
+            model="filesystem_query",
+            success=False,
+            error="no_scan_data",
+        )
+        return
+    
+    yield _sse_token(f"📊 Using scan data (scan_id={latest_scan.id}, from {latest_scan.finished_at})\n\n")
+    
+    # =========================================================================
+    # v4.9: READ handler - fetch file content from DB
+    # =========================================================================
+    if query_type == "read":
+        if not target_path:
+            yield _sse_token("❌ No file path specified for read operation.\n")
+            yield _sse_done(
+                provider="local",
+                model="filesystem_query",
+                success=False,
+                error="no_path_specified",
+            )
+            return
+        
+        # Normalize the path
+        target_path = _normalize_path(target_path)
+        
+        # Check if path looks like a folder (no extension, or ends with \)
+        basename = os.path.basename(target_path)
+        if not basename or '.' not in basename:
+            yield _sse_token(f"📁 `{target_path}` looks like a folder path.\n")
+            yield _sse_token("💡 Use `list {path}` to see folder contents instead.\n")
+            yield _sse_done(
+                provider="local",
+                model="filesystem_query",
+                success=False,
+                error="path_is_folder",
+            )
+            return
+        
+        yield _sse_token(f"📖 Reading file: {target_path}\n\n")
+        
+        # Try exact path match first
+        file_entry = None
+        try:
+            file_entry = db.query(ArchitectureFileIndex).filter(
+                ArchitectureFileIndex.scan_id == latest_scan.id,
+                ArchitectureFileIndex.path == target_path
+            ).first()
+            
+            # v4.9: Case-insensitive fallback if exact match fails (Windows is case-insensitive)
+            if not file_entry:
+                # Use func.lower for case-insensitive comparison
+                from sqlalchemy import func
+                file_entry = db.query(ArchitectureFileIndex).filter(
+                    ArchitectureFileIndex.scan_id == latest_scan.id,
+                    func.lower(ArchitectureFileIndex.path) == target_path.lower()
+                ).first()
+                
+                if file_entry:
+                    yield _sse_token(f"   (matched case-insensitively: {file_entry.path})\n")
+        except Exception as e:
+            logger.exception(f"[FILESYSTEM_QUERY] Read query failed: {e}")
+            yield _sse_error(f"Database query failed: {e}")
+            yield _sse_done(
+                provider="local",
+                model="filesystem_query",
+                success=False,
+                error=str(e),
+            )
+            return
+        
+        if not file_entry:
+            yield _sse_token(f"📭 File not found in scan index: `{target_path}`\n\n")
+            yield _sse_token("Possible reasons:\n")
+            yield _sse_token("  • File path may be incorrect\n")
+            yield _sse_token("  • File may have been excluded from scan (binary, archive, etc.)\n")
+            yield _sse_token("  • File may have been added after the last scan\n\n")
+            yield _sse_token("💡 Run `scan sandbox` to refresh the index.\n")
+            yield _sse_done(
+                provider="local",
+                model="filesystem_query",
+                success=False,
+                error="file_not_found",
+                meta={"scan_id": latest_scan.id, "target_path": target_path},
+            )
+            return
+        
+        # File found - check if content is available
+        if not file_entry.content:
+            yield _sse_token(f"📄 File exists in scan index but contents were not captured.\n\n")
+            yield _sse_token(f"**Path:** {file_entry.path}\n")
+            if file_entry.size_bytes:
+                size_kb = file_entry.size_bytes / 1024
+                yield _sse_token(f"**Size:** {size_kb:.1f} KB\n")
+            yield _sse_token(f"**Extension:** {file_entry.ext or '(none)'}\n\n")
+            yield _sse_token("This happens for files that:\n")
+            yield _sse_token("  • Were added after the last content scan\n")
+            yield _sse_token("  • Exceeded size limits (>500KB)\n")
+            yield _sse_token("  • Had unsupported extensions\n\n")
+            yield _sse_token("💡 Run `scan sandbox` to capture contents.\n")
+            yield _sse_done(
+                provider="local",
+                model="filesystem_query",
+                success=True,  # Not an error - file exists, just no content
+                meta={
+                    "scan_id": latest_scan.id,
+                    "target_path": target_path,
+                    "file_exists": True,
+                    "content_available": False,
+                },
+            )
+            return
+        
+        # Content available - read and display with limits
+        content_text = file_entry.content.content_text
+        
+        # Check if content is readable as text (shouldn't have binary chars)
+        try:
+            # Quick binary check: look for null bytes or high ratio of non-printable chars
+            if '\x00' in content_text:
+                yield _sse_token(f"📄 File appears to be binary and cannot be displayed as text.\n")
+                yield _sse_token(f"**Path:** {file_entry.path}\n")
+                if file_entry.size_bytes:
+                    yield _sse_token(f"**Size:** {file_entry.size_bytes / 1024:.1f} KB\n")
+                yield _sse_done(
+                    provider="local",
+                    model="filesystem_query",
+                    success=True,
+                    meta={"scan_id": latest_scan.id, "binary": True},
+                )
+                return
+        except Exception:
+            pass  # If check fails, continue anyway
+        
+        # Apply preview limits
+        lines = content_text.splitlines()
+        total_lines = len(lines)
+        total_bytes = len(content_text.encode('utf-8', errors='replace'))
+        
+        truncated = False
+        truncation_reason = ""
+        
+        # Check line limit
+        if total_lines > FILESYSTEM_READ_MAX_LINES:
+            lines = lines[:FILESYSTEM_READ_MAX_LINES]
+            truncated = True
+            truncation_reason = f"line limit ({FILESYSTEM_READ_MAX_LINES} lines)"
+        
+        # Check byte limit on the truncated content
+        preview_text = '\n'.join(lines)
+        preview_bytes = len(preview_text.encode('utf-8', errors='replace'))
+        
+        if preview_bytes > FILESYSTEM_READ_MAX_BYTES:
+            # Truncate by bytes
+            preview_text = preview_text[:FILESYSTEM_READ_MAX_BYTES]
+            # Find last newline to avoid cutting mid-line
+            last_nl = preview_text.rfind('\n')
+            if last_nl > FILESYSTEM_READ_MAX_BYTES // 2:
+                preview_text = preview_text[:last_nl]
+            truncated = True
+            truncation_reason = f"size limit (~{FILESYSTEM_READ_MAX_BYTES // 1024}KB)"
+        
+        # Output file info
+        size_str = ""
+        if file_entry.size_bytes:
+            if file_entry.size_bytes > 1_000_000:
+                size_str = f"{file_entry.size_bytes / 1_000_000:.1f} MB"
+            elif file_entry.size_bytes > 1_000:
+                size_str = f"{file_entry.size_bytes / 1_000:.1f} KB"
+            else:
+                size_str = f"{file_entry.size_bytes} bytes"
+        
+        yield _sse_token(f"📄 **{file_entry.name}**\n")
+        yield _sse_token(f"**Path:** {file_entry.path}\n")
+        if size_str:
+            yield _sse_token(f"**Size:** {size_str}\n")
+        yield _sse_token(f"**Lines:** {total_lines}\n")
+        if file_entry.language:
+            yield _sse_token(f"**Language:** {file_entry.language}\n")
+        yield _sse_token("\n")
+        
+        # Output content
+        yield _sse_token("--- Content ---\n")
+        yield _sse_token(preview_text)
+        if not preview_text.endswith('\n'):
+            yield _sse_token("\n")
+        yield _sse_token("---------------\n\n")
+        
+        if truncated:
+            yield _sse_token(f"⚠️ Showing first {len(preview_text.splitlines())} of {total_lines} lines (truncated due to {truncation_reason})\n")
+        else:
+            yield _sse_token(f"✅ Showing full file ({total_lines} lines)\n")
+        
+        # Record in memory
+        try:
+            memory_service.create_message(
+                db,
+                memory_schemas.MessageCreate(
+                    project_id=project_id,
+                    role="assistant",
+                    content=f"[filesystem_query] read: {file_entry.path} ({total_lines} lines)",
+                    provider="local",
+                    model="filesystem_query",
+                ),
+            )
+        except Exception:
+            pass
+        
+        duration_ms = int(loop.time() * 1000) - started_ms
+        
+        if trace:
+            trace.log_model_call(
+                "local_tool", "local", "filesystem_query", "filesystem_query",
+                0, 0, duration_ms, success=True, error=None,
+            )
+        
+        yield _sse_done(
+            provider="local",
+            model="filesystem_query",
+            total_length=len(preview_text),
+            meta={
+                "scan_id": latest_scan.id,
+                "query_type": "read",
+                "target_path": target_path,
+                "file_path": file_entry.path,
+                "total_lines": total_lines,
+                "total_bytes": total_bytes,
+                "truncated": truncated,
+            },
+        )
+        return  # Early exit for read queries
+    
+    # Build query against architecture_file_index
+    try:
+        query = db.query(ArchitectureFileIndex).filter(
+            ArchitectureFileIndex.scan_id == latest_scan.id
+        )
+        
+        # Filter by target path if specified
+        if target_path:
+            # Normalize path for LIKE query
+            path_prefix = target_path.replace('/', '\\').rstrip('\\') + '\\'
+            query = query.filter(
+                ArchitectureFileIndex.path.like(f"{path_prefix}%")
+            )
+        
+        # Filter by search term if specified (find queries)
+        if search_term and query_type == "find":
+            search_pattern = f"%{search_term}%"
+            query = query.filter(
+                ArchitectureFileIndex.name.ilike(search_pattern)
+            )
+        
+        # Get results with limit + 1 to detect truncation
+        max_results = FILESYSTEM_QUERY_MAX_ENTRIES + 1
+        results = query.limit(max_results).all()
+        
+        truncated = len(results) > FILESYSTEM_QUERY_MAX_ENTRIES
+        if truncated:
+            results = results[:FILESYSTEM_QUERY_MAX_ENTRIES]
+        
+    except Exception as e:
+        logger.exception(f"[FILESYSTEM_QUERY] DB query failed: {e}")
+        yield _sse_error(f"Database query failed: {e}")
+        yield _sse_done(
+            provider="local",
+            model="filesystem_query",
+            success=False,
+            error=str(e),
+        )
+        return
+    
+    if not results:
+        if target_path:
+            yield _sse_token(f"📭 No entries found under `{target_path}`\n")
+        elif search_term:
+            yield _sse_token(f"📭 No entries found matching '{search_term}'\n")
+        else:
+            yield _sse_token("📭 No entries found in scan data.\n")
+        yield _sse_done(
+            provider="local",
+            model="filesystem_query",
+            total_length=0,
+            meta={"results": 0, "query_type": query_type},
+        )
+        return
+    
+    # =========================================================================
+    # v4.8: Format results using path-based inference
+    # DB only stores files, so we infer folders from file paths
+    # =========================================================================
+    
+    find_type = parsed.get("find_type", "any")
+    
+    # For "find folder" queries: search folder segments in paths
+    if query_type == "find" and find_type == "folder" and search_term:
+        # Infer folders from paths that contain a segment matching search_term
+        inferred_folders: set = set()
+        search_lower = search_term.lower()
+        
+        for entry in results:
+            path_normalized = entry.path.replace('/', '\\')
+            # Split path into segments and check each
+            segments = path_normalized.split('\\')
+            for i, seg in enumerate(segments[:-1]):  # Exclude filename
+                if seg.lower() == search_lower:
+                    # Build full path to this folder
+                    folder_path = '\\'.join(segments[:i+1])
+                    inferred_folders.add(folder_path)
+        
+        # Output folder search results
+        folders_list = sorted(inferred_folders, key=str.lower)
+        total_count = len(folders_list)
+        
+        yield _sse_token(f"🔍 **Folder search results for '{search_term}'**\n\n")
+        
+        if folders_list:
+            yield _sse_token(f"**Folders ({len(folders_list)}):**\n")
+            for folder_path in folders_list:
+                yield _sse_token(f"📁 {folder_path}\n")
+            yield _sse_token("\n")
+        else:
+            yield _sse_token(f"📭 No folders named '{search_term}' found.\n")
+        
+        # Summary and done (skip normal output path)
+        yield _sse_token(f"---\n")
+        yield _sse_token(f"**Total:** {len(folders_list)} folders\n")
+        
+        # v4.8: Add note about .zip exclusion if relevant
+        if search_lower.endswith('.zip') or 'zip' in search_lower:
+            yield _sse_token("\n📝 Note: .zip files are excluded from scan metadata (archives not indexed).\n")
+        
+        # Record in memory
+        try:
+            memory_service.create_message(
+                db,
+                memory_schemas.MessageCreate(
+                    project_id=project_id,
+                    role="assistant",
+                    content=f"[filesystem_query] find folder: {len(folders_list)} results for '{search_term}'",
+                    provider="local",
+                    model="filesystem_query",
+                ),
+            )
+        except Exception:
+            pass
+        
+        duration_ms = int(loop.time() * 1000) - started_ms
+        
+        if trace:
+            trace.log_model_call(
+                "local_tool", "local", "filesystem_query", "filesystem_query",
+                0, 0, duration_ms, success=True, error=None,
+            )
+        
+        yield _sse_done(
+            provider="local",
+            model="filesystem_query",
+            total_length=total_count,
+            meta={
+                "scan_id": latest_scan.id,
+                "query_type": query_type,
+                "find_type": find_type,
+                "target_path": target_path,
+                "search_term": search_term,
+                "folders": len(folders_list),
+                "files": 0,
+                "truncated": False,
+            },
+        )
+        return  # Early exit for folder search
+    
+    # For list queries with target_path: infer immediate children
+    # Folders are inferred from first-level subdirectories in file paths
+    # Files are only those directly in target_path (not nested)
+    inferred_folders: set = set()
+    top_level_files: list = []
+    
+    if target_path and query_type == "list":
+        target_prefix = target_path.rstrip('\\') + '\\'
+        target_prefix_lower = target_prefix.lower()
+        
+        for entry in results:
+            path_normalized = entry.path.replace('/', '\\')
+            path_lower = path_normalized.lower()
+            
+            # Get relative path from target
+            if path_lower.startswith(target_prefix_lower):
+                relative = path_normalized[len(target_prefix):]
+                
+                if '\\' in relative:
+                    # Has subdirectory - extract first folder segment
+                    first_segment = relative.split('\\')[0]
+                    folder_full_path = target_prefix + first_segment
+                    inferred_folders.add(folder_full_path)
+                else:
+                    # Direct child file (no subdirectory)
+                    top_level_files.append(entry)
+        
+        # Convert to sorted lists
+        folders_list = sorted(inferred_folders, key=str.lower)
+        files_list = sorted(top_level_files, key=lambda x: x.name.lower())
+    else:
+        # Fallback for find queries or no target_path: use old behavior
+        # (search by filename, return files that match)
+        folders_list = []
+        files_list = sorted(results, key=lambda x: x.name.lower())
+    
+    total_count = len(folders_list) + len(files_list)
+    
+    if query_type == "list":
+        yield _sse_token(f"📁 **Contents of {target_path or 'indexed filesystem'}**\n\n")
+    else:
+        yield _sse_token(f"🔍 **Search results for '{search_term}'**\n\n")
+    
+    if folders_list:
+        yield _sse_token(f"**Folders ({len(folders_list)}):**\n")
+        for folder_path in folders_list:
+            # folder_path is a string (inferred path), not an entry object
+            yield _sse_token(f"📁 {folder_path}\n")
+        yield _sse_token("\n")
+    
+    if files_list:
+        yield _sse_token(f"**Files ({len(files_list)}):**\n")
+        for file in files_list:
+            path_display = file.path.replace('/', '\\')
+            size_str = ""
+            if file.size_bytes:
+                if file.size_bytes > 1_000_000:
+                    size_str = f" ({file.size_bytes / 1_000_000:.1f} MB)"
+                elif file.size_bytes > 1_000:
+                    size_str = f" ({file.size_bytes / 1_000:.1f} KB)"
+            yield _sse_token(f"📄 {path_display}{size_str}\n")
+        yield _sse_token("\n")
+    
+    # Summary
+    yield _sse_token(f"---\n")
+    yield _sse_token(f"**Total:** {len(folders_list)} folders, {len(files_list)} files\n")
+    
+    # v4.8: Add note about .zip exclusion if listing and no zips found
+    if query_type == "list" and target_path:
+        # Check if user might expect to see .zip files
+        target_lower = target_path.lower()
+        if 'desktop' in target_lower or 'downloads' in target_lower or 'documents' in target_lower:
+            yield _sse_token("\n📝 Note: .zip files are excluded from scan metadata (archives not indexed).\n")
+    
+    if truncated:
+        # Get total count from DB for accurate "more" count
+        try:
+            total_in_db = query.count() if 'query' in dir() else total_count
+            remaining = total_in_db - FILESYSTEM_QUERY_MAX_ENTRIES
+            yield _sse_token(f"⚠️ Results truncated. +{remaining} more entries (showing first {FILESYSTEM_QUERY_MAX_ENTRIES})\n")
+        except:
+            yield _sse_token(f"⚠️ Results truncated to {FILESYSTEM_QUERY_MAX_ENTRIES} entries\n")
+    
+    # Record in memory
+    try:
+        memory_service.create_message(
+            db,
+            memory_schemas.MessageCreate(
+                project_id=project_id,
+                role="assistant",
+                content=f"[filesystem_query] {query_type}: {total_count} results for '{target_path or search_term}'",
+                provider="local",
+                model="filesystem_query",
+            ),
+        )
+    except Exception:
+        pass
+    
+    duration_ms = int(loop.time() * 1000) - started_ms
+    
+    if trace:
+        trace.log_model_call(
+            "local_tool", "local", "filesystem_query", "filesystem_query",
+            0, 0, duration_ms, success=True, error=None,
+        )
+    
+    yield _sse_done(
+        provider="local",
+        model="filesystem_query",
+        total_length=total_count,
+        meta={
+            "scan_id": latest_scan.id,
+            "query_type": query_type,
+            "target_path": target_path,
+            "search_term": search_term,
+            "folders": len(folders_list),
+            "files": len(files_list),
+            "truncated": truncated,
+        },
+    )
+
+
+# =============================================================================
 # EXPORTS
 # =============================================================================
 
@@ -2027,4 +3392,5 @@ __all__ = [
     "generate_local_architecture_map_stream",
     "generate_full_architecture_map_stream",
     "generate_local_zobie_map_stream",
+    "generate_filesystem_query_stream",
 ]

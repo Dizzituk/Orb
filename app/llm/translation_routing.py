@@ -200,6 +200,13 @@ def intent_to_routing_info(intent: "CanonicalIntent") -> Optional[dict]:
             "model": "embedding_manager",
             "reason": "Translation layer: GENERATE EMBEDDINGS",
         },
+        # Filesystem query (v1.5)
+        CanonicalIntent.FILESYSTEM_QUERY: {
+            "type": "local.filesystem_query",
+            "provider": "local",
+            "model": "filesystem_scanner",
+            "reason": "Translation layer: FILESYSTEM QUERY (from scan index)",
+        },
     }
     return mapping.get(intent, None)
 

@@ -12,7 +12,15 @@ Handles:
 - Critical Pipeline commands ("run critical pipeline")
 - Overwatcher commands ("send to overwatcher")
 - Obvious chat patterns (questions, past tense, etc.)
+- Filesystem READ queries ("what's written in", "read file", "show contents of")
 
+v1.6 (2026-01): Added READ file patterns to check_filesystem_query_trigger
+  - Routes "what's written in <path>" to FILESYSTEM_QUERY
+  - Routes "read file <path>" to FILESYSTEM_QUERY
+  - Routes "show contents of <path>" to FILESYSTEM_QUERY
+  - Routes "view/display/cat <path>" to FILESYSTEM_QUERY
+  - Handles apostrophe variants (straight ' and curly ')
+v1.5 (2026-01): Added check_filesystem_query_trigger for list/find
 v1.4 (2026-01): Added check_scan_sandbox_trigger, wired check_update_architecture
 v1.3 (2026-01): Added check_overwatcher_trigger, wired check_critical_pipeline_trigger
 v1.2 (2026-01): Fixed "critical architecture" -> SEND_TO_SPEC_GATE (was incorrectly in Weaver)
@@ -117,6 +125,11 @@ def tier0_classify(text: str) -> Tier0RuleResult:
     
     # 4c. Check embedding commands (v1.3)
     result = check_embedding_commands(text_stripped)
+    if result.matched:
+        return result
+    
+    # 4d. Check filesystem query (v1.5) - MUST be before is_obvious_chat!
+    result = check_filesystem_query_trigger(text)
     if result.matched:
         return result
     
@@ -734,6 +747,382 @@ def check_embedding_commands(text: str) -> Tier0RuleResult:
                 rule_name="generate_embeddings",
                 reason="Generate embeddings command detected",
             )
+    
+    return Tier0RuleResult(matched=False)
+
+
+# =============================================================================
+# FILESYSTEM QUERY HANDLER (v1.5)
+# =============================================================================
+
+# Known user folder keywords (for queries that don't have explicit paths)
+_KNOWN_FOLDER_KEYWORDS = {
+    "desktop", "onedrive", "documents", "downloads", 
+    "pictures", "videos", "music", "appdata",
+}
+
+# Allowed scan roots - reject queries outside these
+_ALLOWED_FS_ROOTS = [
+    r"D:\\",
+    r"C:\\Users\\dizzi",
+]
+
+
+def _has_windows_path(text: str) -> bool:
+    """Check if text contains a Windows path like C:\\ or D:\\."""
+    return bool(re.search(r'[A-Za-z]:[/\\]', text))
+
+
+def _has_known_folder_keyword(text: str) -> bool:
+    """Check if text contains a known user folder keyword."""
+    text_lower = text.lower()
+    return any(kw in text_lower for kw in _KNOWN_FOLDER_KEYWORDS)
+
+
+def _is_within_allowed_roots(text: str) -> bool:
+    """
+    Check if query references a path within allowed roots.
+    
+    Allowed: D:\\ and C:\\Users\\dizzi
+    Reject: C:\\Windows, C:\\Program Files, etc.
+    """
+    text_lower = text.lower()
+    
+    # If contains C:\ but NOT C:\Users\dizzi, reject
+    if re.search(r'c:[/\\]', text_lower):
+        if not re.search(r'c:[/\\]users[/\\]dizzi', text_lower):
+            return False
+    
+    # D:\ is always allowed
+    # Known folder keywords (Desktop, OneDrive) are under C:\Users\dizzi
+    return True
+
+
+def check_filesystem_query_trigger(text: str) -> Tier0RuleResult:
+    """
+    Special handler for filesystem listing/search queries (v1.5).
+    
+    Detects queries like:
+    - "List everything on C:\\Users\\dizzi\\Desktop"
+    - "What's in C:\\Users\\dizzi\\OneDrive"
+    - "Find folder named Jobs under C:\\Users\\dizzi"
+    - "Find MBS Fitness under OneDrive"
+    - "Find files with Amber in the name" (if has path or folder keyword)
+    
+    Supports optional prefix: "After scan sandbox, ..."
+    
+    Requirements:
+    - Must have Windows path OR known folder keyword
+    - Must be within allowed roots (D:\\ or C:\\Users\\dizzi)
+    - NEVER triggers on generic "find files..." without path context
+    """
+    text_stripped = text.strip()
+    
+    # Strip optional "After scan sandbox, " prefix
+    text_for_match = re.sub(
+        r'^[Aa]fter\s+scan\s+sandbox,?\s*',
+        '', text_stripped
+    ).strip()
+    
+    text_lower = text_for_match.lower()
+    
+    # ==========================================================================
+    # TIGHT PATTERNS - each requires Windows path context
+    # ==========================================================================
+    
+    # Pattern 1: "List everything/all/contents/files/folders on/in/at <path>"
+    # Requires Windows path
+    list_with_path_patterns = [
+        r"^list\s+(?:everything|all|contents?|files?(?:\s+and\s+folders?)?|folders?(?:\s+and\s+files?)?|top[- ]?level\s+folders?)\s+(?:on|in|at|under|inside)\s+[A-Za-z]:[/\\]",
+    ]
+    
+    for pattern in list_with_path_patterns:
+        if re.match(pattern, text_lower):
+            if _is_within_allowed_roots(text_lower):
+                print(f"[FILESYSTEM_QUERY] Detected list with path: {text_stripped[:80]}")
+                return Tier0RuleResult(
+                    matched=True,
+                    intent=CanonicalIntent.FILESYSTEM_QUERY,
+                    confidence=1.0,
+                    rule_name="filesystem_list_with_path",
+                    reason=f"Filesystem list query with Windows path",
+                )
+    
+    # Pattern 2: "What's in / What is in <path>"
+    # Requires Windows path
+    whats_in_patterns = [
+        r"^what(?:'s|\s+is)\s+(?:in|on|at|inside)\s+[A-Za-z]:[/\\]",
+    ]
+    
+    for pattern in whats_in_patterns:
+        if re.match(pattern, text_lower):
+            if _is_within_allowed_roots(text_lower):
+                print(f"[FILESYSTEM_QUERY] Detected what's in: {text_stripped[:80]}")
+                return Tier0RuleResult(
+                    matched=True,
+                    intent=CanonicalIntent.FILESYSTEM_QUERY,
+                    confidence=1.0,
+                    rule_name="filesystem_whats_in",
+                    reason=f"Filesystem 'what's in' query with Windows path",
+                )
+    
+    # Pattern 3: "Show me everything/contents in <path>"
+    # Requires Windows path
+    show_patterns = [
+        r"^show\s+(?:me\s+)?(?:everything|all|contents?|files?|folders?)\s+(?:in|on|at|under|inside)\s+[A-Za-z]:[/\\]",
+    ]
+    
+    for pattern in show_patterns:
+        if re.match(pattern, text_lower):
+            if _is_within_allowed_roots(text_lower):
+                print(f"[FILESYSTEM_QUERY] Detected show: {text_stripped[:80]}")
+                return Tier0RuleResult(
+                    matched=True,
+                    intent=CanonicalIntent.FILESYSTEM_QUERY,
+                    confidence=1.0,
+                    rule_name="filesystem_show",
+                    reason=f"Filesystem show query with Windows path",
+                )
+    
+    # Pattern 4: "Contents of <path>"
+    # Requires Windows path
+    contents_of_patterns = [
+        r"^contents?\s+of\s+[A-Za-z]:[/\\]",
+    ]
+    
+    for pattern in contents_of_patterns:
+        if re.match(pattern, text_lower):
+            if _is_within_allowed_roots(text_lower):
+                print(f"[FILESYSTEM_QUERY] Detected contents of: {text_stripped[:80]}")
+                return Tier0RuleResult(
+                    matched=True,
+                    intent=CanonicalIntent.FILESYSTEM_QUERY,
+                    confidence=1.0,
+                    rule_name="filesystem_contents_of",
+                    reason=f"Filesystem 'contents of' query with Windows path",
+                )
+    
+    # Pattern 5: "Find folder/file/directory named X under/in <path>"
+    # Requires Windows path
+    find_named_with_path_patterns = [
+        r"^find\s+(?:folder|file|directory)\s+(?:named?\s+)?[\w\s]+\s+(?:under|in|on|inside)\s+[A-Za-z]:[/\\]",
+    ]
+    
+    for pattern in find_named_with_path_patterns:
+        if re.match(pattern, text_lower):
+            if _is_within_allowed_roots(text_lower):
+                print(f"[FILESYSTEM_QUERY] Detected find named with path: {text_stripped[:80]}")
+                return Tier0RuleResult(
+                    matched=True,
+                    intent=CanonicalIntent.FILESYSTEM_QUERY,
+                    confidence=1.0,
+                    rule_name="filesystem_find_named_path",
+                    reason=f"Filesystem find query with Windows path",
+                )
+    
+    # Pattern 6: "Find X under/in <known folder>"
+    # Requires known folder keyword (Desktop, OneDrive, etc.)
+    find_under_folder_patterns = [
+        r"^find\s+[\w\s]+\s+(?:under|in|inside|on)\s+(?:my\s+)?(?:desktop|onedrive|documents|downloads)",
+    ]
+    
+    for pattern in find_under_folder_patterns:
+        if re.match(pattern, text_lower):
+            print(f"[FILESYSTEM_QUERY] Detected find under known folder: {text_stripped[:80]}")
+            return Tier0RuleResult(
+                matched=True,
+                intent=CanonicalIntent.FILESYSTEM_QUERY,
+                confidence=0.98,
+                rule_name="filesystem_find_under_folder",
+                reason=f"Filesystem find query with known folder keyword",
+            )
+    
+    # Pattern 7: "Find files with X in the name" 
+    # ONLY if also has Windows path OR known folder keyword
+    find_files_with_patterns = [
+        r"^find\s+files?\s+(?:with|named|containing)\s+.+\s+(?:in\s+(?:the\s+)?name|in\s+their\s+name)",
+    ]
+    
+    for pattern in find_files_with_patterns:
+        if re.match(pattern, text_lower):
+            # Must have path OR folder keyword to avoid false positives
+            if _has_windows_path(text_lower) or _has_known_folder_keyword(text_lower):
+                if _is_within_allowed_roots(text_lower):
+                    print(f"[FILESYSTEM_QUERY] Detected find files with pattern: {text_stripped[:80]}")
+                    return Tier0RuleResult(
+                        matched=True,
+                        intent=CanonicalIntent.FILESYSTEM_QUERY,
+                        confidence=0.95,
+                        rule_name="filesystem_find_files_pattern",
+                        reason=f"Filesystem find files query",
+                    )
+    
+    # Pattern 8: Generic "find files with X" - requires Windows path explicitly in query
+    generic_find_with_path = [
+        r"^find\s+(?:all\s+)?files?\s+(?:with|containing|named)\s+.+\s+(?:under|in|on|inside)\s+[A-Za-z]:[/\\]",
+    ]
+    
+    for pattern in generic_find_with_path:
+        if re.match(pattern, text_lower):
+            if _is_within_allowed_roots(text_lower):
+                print(f"[FILESYSTEM_QUERY] Detected generic find with path: {text_stripped[:80]}")
+                return Tier0RuleResult(
+                    matched=True,
+                    intent=CanonicalIntent.FILESYSTEM_QUERY,
+                    confidence=1.0,
+                    rule_name="filesystem_generic_find_path",
+                    reason=f"Filesystem find query with explicit path",
+                )
+    
+    # Pattern 9: List with known folder keyword (no explicit path)
+    # "List everything in my Desktop", "List folders in OneDrive"
+    list_with_folder_keyword = [
+        r"^list\s+(?:everything|all|contents?|files?(?:\s+and\s+folders?)?|folders?(?:\s+and\s+files?)?|top[- ]?level\s+folders?)\s+(?:on|in|at|under|inside)\s+(?:my\s+)?(?:desktop|onedrive|documents|downloads)",
+    ]
+    
+    for pattern in list_with_folder_keyword:
+        if re.match(pattern, text_lower):
+            print(f"[FILESYSTEM_QUERY] Detected list with folder keyword: {text_stripped[:80]}")
+            return Tier0RuleResult(
+                matched=True,
+                intent=CanonicalIntent.FILESYSTEM_QUERY,
+                confidence=0.98,
+                rule_name="filesystem_list_folder_keyword",
+                reason=f"Filesystem list query with known folder keyword",
+            )
+    
+    # Pattern 10: "What's in my Desktop/OneDrive" (no explicit path)
+    whats_in_folder_keyword = [
+        r"^what(?:'s|\s+is)\s+(?:in|on)\s+(?:my\s+)?(?:desktop|onedrive|documents|downloads)",
+    ]
+    
+    for pattern in whats_in_folder_keyword:
+        if re.match(pattern, text_lower):
+            print(f"[FILESYSTEM_QUERY] Detected what's in folder keyword: {text_stripped[:80]}")
+            return Tier0RuleResult(
+                matched=True,
+                intent=CanonicalIntent.FILESYSTEM_QUERY,
+                confidence=0.98,
+                rule_name="filesystem_whats_in_folder",
+                reason=f"Filesystem 'what's in' query with known folder keyword",
+            )
+    
+    # ==========================================================================
+    # v1.6: READ FILE PATTERNS (from zobie_tools.py _parse_filesystem_query)
+    # Routes file read queries to FILESYSTEM_QUERY for DB-first content lookup
+    # Handles apostrophe variants: straight ' and curly '
+    # ==========================================================================
+    
+    # Normalize curly apostrophes to straight for consistent matching
+    text_normalized = text_lower.replace("'", "'").replace("'", "'")
+    
+    # Pattern 11: "what's written in <path>" / "whats written in <path>" / "whats inside <path>"
+    # Requires Windows path
+    whats_written_patterns = [
+        r"^what'?s\s+(?:written|inside)\s+(?:in\s+)?[A-Za-z]:[/\\]",
+    ]
+    
+    for pattern in whats_written_patterns:
+        if re.match(pattern, text_normalized):
+            if _is_within_allowed_roots(text_lower):
+                print(f"[FILESYSTEM_QUERY] Detected READ (what's written): {text_stripped[:80]}")
+                return Tier0RuleResult(
+                    matched=True,
+                    intent=CanonicalIntent.FILESYSTEM_QUERY,
+                    confidence=1.0,
+                    rule_name="filesystem_read_whats_written",
+                    reason="Filesystem READ query: 'what's written in'",
+                )
+    
+    # Pattern 12: "read <path>" / "read file <path>" / "read the file <path>"
+    # Requires Windows path
+    read_file_patterns = [
+        r"^read\s+(?:the\s+)?(?:file\s+)?[A-Za-z]:[/\\]",
+    ]
+    
+    for pattern in read_file_patterns:
+        if re.match(pattern, text_normalized):
+            if _is_within_allowed_roots(text_lower):
+                print(f"[FILESYSTEM_QUERY] Detected READ (read file): {text_stripped[:80]}")
+                return Tier0RuleResult(
+                    matched=True,
+                    intent=CanonicalIntent.FILESYSTEM_QUERY,
+                    confidence=1.0,
+                    rule_name="filesystem_read_file",
+                    reason="Filesystem READ query: 'read file'",
+                )
+    
+    # Pattern 13: "show contents of <path>" / "show the contents of <path>"
+    # Requires Windows path
+    show_contents_of_patterns = [
+        r"^show\s+(?:the\s+)?contents?\s+of\s+[A-Za-z]:[/\\]",
+    ]
+    
+    for pattern in show_contents_of_patterns:
+        if re.match(pattern, text_normalized):
+            if _is_within_allowed_roots(text_lower):
+                print(f"[FILESYSTEM_QUERY] Detected READ (show contents of): {text_stripped[:80]}")
+                return Tier0RuleResult(
+                    matched=True,
+                    intent=CanonicalIntent.FILESYSTEM_QUERY,
+                    confidence=1.0,
+                    rule_name="filesystem_read_show_contents",
+                    reason="Filesystem READ query: 'show contents of'",
+                )
+    
+    # Pattern 14: "view/display/cat/open <path>" (Unix-style + generic)
+    # Requires Windows path
+    view_display_patterns = [
+        r"^(?:view|display|cat|output|print)\s+(?:the\s+)?(?:file\s+)?[A-Za-z]:[/\\]",
+    ]
+    
+    for pattern in view_display_patterns:
+        if re.match(pattern, text_normalized):
+            if _is_within_allowed_roots(text_lower):
+                print(f"[FILESYSTEM_QUERY] Detected READ (view/display/cat): {text_stripped[:80]}")
+                return Tier0RuleResult(
+                    matched=True,
+                    intent=CanonicalIntent.FILESYSTEM_QUERY,
+                    confidence=1.0,
+                    rule_name="filesystem_read_view_display",
+                    reason="Filesystem READ query: 'view/display/cat'",
+                )
+    
+    # Pattern 15: "open <path>" - only if path looks like a file (has extension)
+    # Requires Windows path with file extension
+    open_file_patterns = [
+        r"^open\s+(?:the\s+)?(?:file\s+)?[A-Za-z]:[/\\].+\.\w+",
+    ]
+    
+    for pattern in open_file_patterns:
+        if re.match(pattern, text_normalized):
+            if _is_within_allowed_roots(text_lower):
+                print(f"[FILESYSTEM_QUERY] Detected READ (open file): {text_stripped[:80]}")
+                return Tier0RuleResult(
+                    matched=True,
+                    intent=CanonicalIntent.FILESYSTEM_QUERY,
+                    confidence=0.98,
+                    rule_name="filesystem_read_open",
+                    reason="Filesystem READ query: 'open file'",
+                )
+    
+    # Pattern 16: "what does <path> say/contain" 
+    # Requires Windows path
+    what_does_say_patterns = [
+        r"^what\s+does\s+[A-Za-z]:[/\\].+\s+(?:say|contain)",
+    ]
+    
+    for pattern in what_does_say_patterns:
+        if re.match(pattern, text_normalized):
+            if _is_within_allowed_roots(text_lower):
+                print(f"[FILESYSTEM_QUERY] Detected READ (what does say/contain): {text_stripped[:80]}")
+                return Tier0RuleResult(
+                    matched=True,
+                    intent=CanonicalIntent.FILESYSTEM_QUERY,
+                    confidence=0.98,
+                    rule_name="filesystem_read_what_does",
+                    reason="Filesystem READ query: 'what does X say/contain'",
+                )
     
     return Tier0RuleResult(matched=False)
 

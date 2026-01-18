@@ -2,6 +2,13 @@
 """
 Mode classification for ASTRA Translation Layer.
 Every message must first be classified into Chat, Command-Capable, or Feedback.
+
+v1.6 (2026-01): Added READ file patterns to IMPLICIT_COMMAND_PATTERNS
+  - Routes "what's written in <path>" to COMMAND_CAPABLE mode
+  - Routes "read file <path>" to COMMAND_CAPABLE mode
+  - Routes "show contents of <path>" to COMMAND_CAPABLE mode
+  - Routes "view/display/cat <path>" to COMMAND_CAPABLE mode
+  - Without these, READ queries were falling through to CHAT mode
 """
 from __future__ import annotations
 import re
@@ -66,8 +73,43 @@ IMPLICIT_COMMAND_PATTERNS = [
     r"^[Ii]ndex\s+(?:the\s+)?(?:architecture|codebase|RAG)$",
     r"^[Rr]un\s+RAG\s+index$",
     
-    # Architecture questions - route to RAG (v1.4)
+    # =========================================================================
+    # Architecture questions - route to RAG (v1.5)
     # These patterns enable COMMAND mode so tier0_rules can match RAG intent
+    # High-precision: anchored on "where/show/find" + codebase terms
+    # =========================================================================
+    
+    # --- "Where is X" patterns (broad - catches most arch questions) ---
+    # Match: "Where is the main chat streaming entrypoint and what calls it?"
+    # Match: "Where is routing decided between local tools vs LLM providers?"
+    r"^[Ww]here\s+is\s+(?:the\s+)?(?:main\s+)?(?:\w+\s+){0,6}(?:entrypoint|entry\s*point|router|stream|handler|function|class|module|file|config|constant|routing|implementation|trigger|pipeline|gate)[s]?",
+    
+    # --- "Show me where X" patterns ---
+    # Match: "Show me where Spec Gate is implemented and how it's triggered."
+    r"^[Ss]how\s+(?:me\s+)?where\s+.+(?:is\s+)?(?:implemented|defined|located|triggered|called|used|loaded|handled|routed|processed)",
+    
+    # --- "Find where X" patterns ---
+    # Match: "Find where ARCHMAP_TIMEOUT_SECONDS is loaded/used."
+    r"^[Ff]ind\s+(?:where|the\s+file\s+where)\s+.+(?:is\s+)?(?:implemented|defined|located|triggered|called|used|loaded|handled|routed|processed|routes)",
+    
+    # --- "Find the file where X" patterns ---
+    # Match: "Find the file where stream_router routes intents to handlers."
+    r"^[Ff]ind\s+(?:the\s+)?(?:file|module|class|function)\s+(?:where|that)\s+.+",
+    
+    # --- "Find/List/Show call sites/callers of X" patterns ---
+    # Match: "Find call sites of streamChat( and list the calling files"
+    # Match: "List callers of handleRouting"
+    r"^(?:[Ff]ind|[Ll]ist|[Ss]how)\s+(?:the\s+)?(?:call\s*sites?|callers?)\s+(?:of|for)\s+.+",
+    
+    # --- "Who calls X" patterns ---
+    # Match: "Who calls streamChat?"
+    r"^[Ww]ho\s+calls\s+.+",
+    
+    # --- Codebase-specific questions with known terms ---
+    # Match questions mentioning specific ASTRA components
+    r"^(?:[Ww]here|[Hh]ow|[Ww]hat)\s+.+(?:[Ss]pec\s*[Gg]ate|[Oo]verwatcher|[Ww]eaver|[Cc]ritical\s*[Pp]ipeline|[Ss]tream\s*[Rr]outer|[Tt]ranslation\s*[Ll]ayer|[Rr][Aa][Gg]|[Ee]mbedding)\s*.+[?.!]?$",
+    
+    # --- Original specific patterns (kept for exact matches) ---
     r"^[Ww]hat\s+(?:are|is)\s+(?:the\s+)?(?:main\s+)?entry\s*points?[?.!]?$",
     r"^[Ww]here\s+(?:are|is)\s+(?:the\s+)?(?:main\s+)?entry\s*points?[?.!]?$",
     r"^[Ww]hat\s+(?:are|is)\s+(?:the\s+)?(?:potential\s+)?bottlenecks?[?.!]?$",
@@ -96,6 +138,69 @@ IMPLICIT_COMMAND_PATTERNS = [
     r"^[Gg]enerate\s+embedding[s]?$",
     r"^[Rr]un\s+embedding[s]?$",
     r"^[Ss]tart\s+embedding[s]?$",
+    
+    # =========================================================================
+    # Filesystem queries (v1.6) - route to local FILESYSTEM_QUERY handler
+    # HIGH-PRECISION: Must include Windows drive path (C:\ or D:\) to avoid
+    # false positives on generic chat like "find files with invoices"
+    # Optional prefix: "After scan sandbox, " supported
+    # =========================================================================
+    
+    # List/Show patterns with Windows path
+    # Match: "List everything on C:\Users\dizzi\Desktop"
+    # Match: "After scan sandbox, list everything on C:\Users\dizzi\Desktop"
+    r"^(?:[Aa]fter\s+scan\s+sandbox,?\s*)?[Ll]ist\s+(?:everything|all|contents?|files?(?:\s+and\s+folders?)?|folders?(?:\s+and\s+files?)?|top[- ]?level\s+folders?)\s+(?:on|in|at|under|inside)\s+[A-Za-z]:[/\\]",
+    r"^(?:[Aa]fter\s+scan\s+sandbox,?\s*)?[Ss]how\s+(?:me\s+)?(?:everything|all|contents?|files?|folders?)\s+(?:in|on|at|under|inside)\s+[A-Za-z]:[/\\]",
+    
+    # What's in patterns with Windows path
+    # Match: "What's in C:\Users\dizzi\OneDrive"
+    r"^(?:[Aa]fter\s+scan\s+sandbox,?\s*)?[Ww]hat(?:'s|\s+is)\s+(?:in|on|at|inside)\s+[A-Za-z]:[/\\]",
+    
+    # Contents of patterns with Windows path
+    # Match: "Contents of D:\Projects"
+    r"^(?:[Aa]fter\s+scan\s+sandbox,?\s*)?[Cc]ontents?\s+of\s+[A-Za-z]:[/\\]",
+    
+    # Find folder/file named X under/in path
+    # Match: "Find folder named Jobs under C:\Users\dizzi"
+    r"^(?:[Aa]fter\s+scan\s+sandbox,?\s*)?[Ff]ind\s+(?:folder|file|directory)\s+(?:named?\s+)?[\w\s]+\s+(?:under|in|on|inside)\s+[A-Za-z]:[/\\]",
+    
+    # Find X under known folder (Desktop, OneDrive, etc.) - no explicit path needed
+    # Match: "Find MBS Fitness under OneDrive"
+    r"^(?:[Aa]fter\s+scan\s+sandbox,?\s*)?[Ff]ind\s+[\w\s]+\s+(?:under|in|inside|on)\s+(?:my\s+)?(?:[Dd]esktop|[Oo]ne[Dd]rive|[Dd]ocuments|[Dd]ownloads)",
+    
+    # Generic find files with explicit Windows path
+    # Match: "Find files with Amber in the name under C:\Users\dizzi"
+    r"^(?:[Aa]fter\s+scan\s+sandbox,?\s*)?[Ff]ind\s+(?:all\s+)?files?\s+(?:with|containing|named)\s+.+\s+(?:under|in|on|inside)\s+[A-Za-z]:[/\\]",
+    
+    # =========================================================================
+    # Filesystem READ queries (v1.6) - read file contents from DB
+    # These enable COMMAND mode so tier0_rules can route to FILESYSTEM_QUERY
+    # Patterns must include Windows drive path (C:\ or D:\)
+    # =========================================================================
+    
+    # "what's written in <path>" / "whats written in <path>" / "what's inside <path>"
+    # Match: "what's written in C:\Users\dizzi\file.txt"
+    r"^[Ww]hat['']?s\s+(?:written|inside)\s+(?:in\s+)?[A-Za-z]:[/\\]",
+    
+    # "read [file] <path>" / "read the file <path>"
+    # Match: "read file C:\Users\dizzi\file.txt"
+    r"^[Rr]ead\s+(?:the\s+)?(?:file\s+)?[A-Za-z]:[/\\]",
+    
+    # "show contents of <path>" (for reading file content, not listing)
+    # Match: "show contents of C:\Users\dizzi\file.txt"
+    r"^[Ss]how\s+(?:the\s+)?contents?\s+of\s+[A-Za-z]:[/\\]",
+    
+    # "view/display/cat/output/print <path>" (Unix-style commands)
+    # Match: "cat C:\Users\dizzi\file.txt", "view C:\file.txt"
+    r"^(?:[Vv]iew|[Dd]isplay|[Cc]at|[Oo]utput|[Pp]rint)\s+(?:the\s+)?(?:file\s+)?[A-Za-z]:[/\\]",
+    
+    # "open <path>" with file extension
+    # Match: "open C:\Users\dizzi\file.txt"
+    r"^[Oo]pen\s+(?:the\s+)?(?:file\s+)?[A-Za-z]:[/\\].+\.\w+",
+    
+    # "what does <path> say/contain"
+    # Match: "what does C:\file.txt contain"
+    r"^[Ww]hat\s+does\s+[A-Za-z]:[/\\].+\s+(?:say|contain)",
 ]
 
 # Compile patterns for efficiency

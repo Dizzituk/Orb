@@ -17,6 +17,10 @@ Priority Tiers (refined v1.1):
 4. LOW: handlers, clients, utils
 5. NORMAL: everything else
 
+v1.2 (2026-01): SQLite lock contention fix
+  - Session-per-batch pattern (prevents poisoned session cascade)
+  - Retry with exponential backoff on "database is locked" errors
+  - Fresh session for each batch write
 v1.1 (2026-01): Refined priority patterns per Taz's spec
 v1.0 (2026-01): Initial implementation
 """
@@ -38,6 +42,21 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# SQLITE RETRY CONFIGURATION (v1.2)
+# =============================================================================
+
+SQLITE_LOCK_MAX_RETRIES = 10
+SQLITE_LOCK_INITIAL_BACKOFF = 0.25  # seconds
+SQLITE_LOCK_MAX_BACKOFF = 8.0  # seconds
+
+
+def _is_sqlite_lock_error(exc: Exception) -> bool:
+    """Check if exception is a SQLite database lock error."""
+    error_str = str(exc).lower()
+    return "database is locked" in error_str or "database_is_locked" in error_str
 
 
 # =============================================================================
@@ -359,6 +378,7 @@ class EmbeddingJob:
         _log("[embedding_job] " + "=" * 50)
         _current_status.save_to_file()
         
+        db = None  # v1.2: Initialize to avoid UnboundLocalError in finally
         try:
             _log("[embedding_job] Creating DB session...")
             db = self.db_session_factory()
@@ -407,6 +427,11 @@ class EmbeddingJob:
             
             _current_status.save_to_file()
             
+            # v1.2: Close the query session before processing batches
+            # Each batch will create its own fresh session
+            db.close()
+            _log("[embedding_job] Query session closed, processing batches with fresh sessions")
+            
             # Process by priority (TIER1 first, then TIER2, etc.)
             for tier in EmbeddingPriority:
                 if self._stop_requested:
@@ -417,11 +442,15 @@ class EmbeddingJob:
                 if not chunks:
                     continue
                 
+                # v1.2: Extract chunk IDs for session-per-batch pattern
+                chunk_ids = [c.id for c in chunks]
+                
                 tier_name = tier_names.get(tier, tier.name)
                 _current_status.current_tier = tier_name
-                logger.info(f"[embedding_job] Processing {tier_name} ({len(chunks)} chunks)")
+                logger.info(f"[embedding_job] Processing {tier_name} ({len(chunk_ids)} chunks)")
                 
-                self._process_chunks(db, chunks, tier, tier_name)
+                # v1.2: Pass chunk_ids, not chunk objects (session-per-batch)
+                self._process_chunks(chunk_ids, tier, tier_name)
             
             _current_status.completed_at = datetime.utcnow()
             _current_status.running = False
@@ -449,12 +478,13 @@ class EmbeddingJob:
             _current_status.completed_at = datetime.utcnow()
         
         finally:
-            # Clean up DB session if it was created
+            # v1.2: DB session is now closed before batch processing starts
+            # This finally block handles the case where we failed before closing it
             try:
-                db.close()
-                print("[embedding_job] DB session closed")
+                if db is not None:
+                    db.close()
             except Exception:
-                pass  # db might not exist if creation failed
+                pass  # db might already be closed or not exist
             
             _current_status.save_to_file()
             print(f"[embedding_job] Job finished. Status saved to {STATUS_FILE}")
@@ -539,20 +569,24 @@ class EmbeddingJob:
     
     def _process_chunks(
         self,
-        db: Session,
-        chunks: List,
+        chunk_ids: List[int],
         tier: EmbeddingPriority,
         tier_name: str,
     ):
-        """Process a list of chunks in batches."""
-        total_batches = (len(chunks) + self.batch_size - 1) // self.batch_size
+        """
+        Process a list of chunks in batches.
+        
+        v1.2: Changed to session-per-batch pattern to prevent poisoned session cascade.
+              Now takes chunk_ids instead of chunk objects, creates fresh session per batch.
+        """
+        total_batches = (len(chunk_ids) + self.batch_size - 1) // self.batch_size
         _current_status.total_batches = total_batches
         
-        for batch_idx in range(0, len(chunks), self.batch_size):
+        for batch_idx in range(0, len(chunk_ids), self.batch_size):
             if self._stop_requested:
                 break
             
-            batch = chunks[batch_idx:batch_idx + self.batch_size]
+            batch_ids = chunk_ids[batch_idx:batch_idx + self.batch_size]
             batch_num = batch_idx // self.batch_size + 1
             _current_status.current_batch = batch_num
             
@@ -560,26 +594,28 @@ class EmbeddingJob:
             total_in_tier = _current_status.tier_progress[tier_name]["total"]
             
             logger.info(
-                f"[embedding_job] {tier_name} {done_in_tier + len(batch)}/{total_in_tier} "
+                f"[embedding_job] {tier_name} {done_in_tier + len(batch_ids)}/{total_in_tier} "
                 f"(batch {batch_num}/{total_batches})"
             )
             
+            # v1.2: Fresh session per batch - prevents poisoned session cascade
             try:
-                embedded_count = self._embed_batch(db, batch)
+                embedded_count = self._embed_batch_with_retry(batch_ids)
                 _current_status.tier_progress[tier_name]["done"] += embedded_count
                 _current_status.pending_chunks -= embedded_count
                 
             except Exception as e:
-                logger.error(f"[embedding_job] Batch {batch_num} failed: {e}")
-                _current_status.failed_chunks += len(batch)
-                _current_status.tier_progress[tier_name]["failed"] += len(batch)
-                _current_status.pending_chunks -= len(batch)
+                logger.error(f"[embedding_job] Batch {batch_num} failed after retries: {e}")
+                print(f"[embedding_job] Batch {batch_num} FAILED: {e}")
+                _current_status.failed_chunks += len(batch_ids)
+                _current_status.tier_progress[tier_name]["failed"] += len(batch_ids)
+                _current_status.pending_chunks -= len(batch_ids)
                 _current_status.last_error = str(e)
             
             _current_status.save_to_file()
             
             # Rate limiting
-            if self.rate_limit_delay > 0 and batch_idx + self.batch_size < len(chunks):
+            if self.rate_limit_delay > 0 and batch_idx + self.batch_size < len(chunk_ids):
                 time.sleep(self.rate_limit_delay)
     
     def _embed_batch(self, db: Session, chunks: List) -> int:
@@ -669,6 +705,100 @@ class EmbeddingJob:
         db.commit()
         print(f"[embedding_job] Batch complete: {success_count}/{len(chunks)} stored, total embedded: {_current_status.embedded_chunks}")
         return success_count
+    
+    def _embed_batch_with_retry(self, chunk_ids: List[int]) -> int:
+        """
+        Embed a batch of chunks with SQLite lock retry and fresh session per batch.
+        
+        v1.2: Added to fix "database is locked" cascade errors.
+        
+        Key behaviors:
+        - Creates fresh session for this batch (prevents poisoned session cascade)
+        - Retries with exponential backoff on SQLite lock errors
+        - Properly closes session in all cases
+        
+        Returns: number of successfully embedded chunks
+        """
+        from sqlalchemy.exc import OperationalError
+        from app.rag.models import ArchCodeChunk
+        
+        backoff = SQLITE_LOCK_INITIAL_BACKOFF
+        last_error = None
+        
+        for attempt in range(1, SQLITE_LOCK_MAX_RETRIES + 1):
+            db = None
+            try:
+                # Fresh session for this batch
+                db = self.db_session_factory()
+                
+                # Re-fetch chunks by ID (they're detached from previous session)
+                chunks = db.query(ArchCodeChunk).filter(
+                    ArchCodeChunk.id.in_(chunk_ids)
+                ).all()
+                
+                if len(chunks) != len(chunk_ids):
+                    logger.warning(
+                        f"[embedding_job] Fetched {len(chunks)}/{len(chunk_ids)} chunks "
+                        f"(some may have been deleted)"
+                    )
+                
+                if not chunks:
+                    logger.warning("[embedding_job] No chunks found for batch, skipping")
+                    return 0
+                
+                # Delegate to existing _embed_batch logic
+                result = self._embed_batch(db, chunks)
+                return result
+                
+            except OperationalError as e:
+                if _is_sqlite_lock_error(e):
+                    last_error = e
+                    logger.warning(
+                        f"[embedding_job] SQLite lock on attempt {attempt}/{SQLITE_LOCK_MAX_RETRIES}, "
+                        f"backing off {backoff:.2f}s"
+                    )
+                    print(
+                        f"[embedding_job] SQLite lock (attempt {attempt}), "
+                        f"retrying in {backoff:.2f}s..."
+                    )
+                    
+                    # Rollback and close current session before retry
+                    if db:
+                        try:
+                            db.rollback()
+                        except Exception:
+                            pass
+                        try:
+                            db.close()
+                        except Exception:
+                            pass
+                        db = None
+                    
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, SQLITE_LOCK_MAX_BACKOFF)
+                else:
+                    # Non-lock OperationalError, re-raise
+                    raise
+                    
+            except Exception as e:
+                # Non-retryable error
+                logger.error(f"[embedding_job] Non-retryable error in batch: {e}")
+                raise
+                
+            finally:
+                # Always close session if it exists
+                if db:
+                    try:
+                        db.close()
+                    except Exception:
+                        pass
+        
+        # Exhausted retries
+        error_msg = f"SQLite lock persisted after {SQLITE_LOCK_MAX_RETRIES} retries: {last_error}"
+        logger.error(f"[embedding_job] {error_msg}")
+        print(f"[embedding_job] {error_msg}")
+        _current_status.last_error = error_msg
+        raise RuntimeError(error_msg)
 
 
 # =============================================================================

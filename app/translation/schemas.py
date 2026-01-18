@@ -79,6 +79,13 @@ class CanonicalIntent(str, Enum):
     
     # Trigger embedding generation
     GENERATE_EMBEDDINGS = "GENERATE_EMBEDDINGS"
+    
+    # =========================================================================
+    # FILESYSTEM QUERY (v1.4)
+    # =========================================================================
+    
+    # List/find files in scan index (no shell commands)
+    FILESYSTEM_QUERY = "FILESYSTEM_QUERY"
 
 
 class LatencyTier(str, Enum):

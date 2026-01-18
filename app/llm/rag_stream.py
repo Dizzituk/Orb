@@ -13,7 +13,7 @@ from typing import AsyncGenerator
 
 from sqlalchemy.orm import Session
 
-from app.rag.answerer import ask_architecture
+from app.rag.answerer import ask_architecture_async
 from app.rag.models import ArchCodeChunk
 from app.rag.pipeline import run_rag_pipeline
 
@@ -159,7 +159,7 @@ async def generate_rag_query_stream(
     
     # Search and answer
     try:
-        result = ask_architecture(db=db, question=question)
+        result = await ask_architecture_async(db=db, question=question)
         
         # Stream the answer
         yield "data: " + json.dumps({
@@ -167,11 +167,20 @@ async def generate_rag_query_stream(
             'content': result.answer
         }) + "\n\n"
         
-        # Add sources if any
+        # Add sources if any (deduplicated)
         if result.sources:
+            # Deduplicate by (file, name, line) keeping first occurrence
+            seen = set()
+            unique_sources = []
+            for src in result.sources:
+                key = (src.get('file'), src.get('name'), src.get('line'))
+                if key not in seen:
+                    seen.add(key)
+                    unique_sources.append(src)
+            
             sources_text = "\n\n---\n**Sources** (searched " + str(result.chunks_searched) + " chunks):\n"
-            for src in result.sources[:5]:  # Limit to 5
-                sources_text += f"- `{src['file']}` → `{src['name']}` ({src['type']}, line {src['line']})\n"
+            for src in unique_sources[:5]:  # Limit to 5 after dedup
+                sources_text += f"- `{src.get('file', '?')}` → `{src.get('name', '?')}` ({src.get('type', '?')}, line {src.get('line', '?')})\n"
             
             yield "data: " + json.dumps({
                 'type': 'token',

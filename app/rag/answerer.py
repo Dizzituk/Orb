@@ -261,3 +261,105 @@ Answer based on the code context above. Reference specific files and functions."
         chunks_searched=len(chunks),
         model_used=model_used,
     )
+
+
+async def ask_architecture_async(
+    db: Session,
+    question: str,
+    use_embeddings: bool = True,
+) -> ArchAnswer:
+    """
+    Async version of ask_architecture for use in async contexts (FastAPI streams).
+    
+    Uses await async_call_openai() instead of sync call_openai().
+    Logic is identical to ask_architecture() - keep them in sync.
+    
+    Args:
+        db: Database session
+        question: User's question
+        use_embeddings: Try embedding search first (falls back to keyword)
+        
+    Returns:
+        ArchAnswer with response and sources
+    """
+    # Search for relevant chunks using hybrid strategy
+    chunks: List[ArchCodeChunk] = []
+    search_mode = "none"
+    
+    # Step 1: Try semantic search if enabled
+    if use_embeddings:
+        semantic_chunks, semantic_mode = _search_chunks_embedding(db, question, limit=15)
+        
+        if semantic_chunks:
+            chunks = semantic_chunks
+            search_mode = semantic_mode
+            print(f"[rag:answerer] Semantic search returned {len(chunks)} chunks (mode={search_mode})")
+        else:
+            print(f"[rag:answerer] Semantic search returned empty (mode={semantic_mode}), trying keyword fallback")
+    
+    # Step 2: Fall back to keyword search if semantic didn't return results
+    if not chunks:
+        chunks = _search_chunks_keyword(db, question, limit=15)
+        if chunks:
+            search_mode = "keyword"
+            print(f"[rag:answerer] Keyword search returned {len(chunks)} chunks")
+        else:
+            print(f"[rag:answerer] Keyword search also returned empty")
+    
+    if not chunks:
+        return ArchAnswer(
+            question=question,
+            answer="I couldn't find any relevant code in the architecture index. Try running `Astra, command: CREATE ARCHITECTURE MAP` first, then `/rag/index` to create embeddings.",
+            sources=[],
+            chunks_searched=0,
+            model_used="none",
+        )
+    
+    # Build context
+    context, sources = _build_context_from_chunks(chunks)
+    
+    # Build prompt
+    system_prompt = """You are an expert code assistant answering questions about the Orb/ASTRA codebase.
+
+Use the provided code context to answer the user's question accurately. 
+- Reference specific files and functions when relevant
+- If the context doesn't contain enough information, say so
+- Be concise but thorough"""
+
+    user_prompt = f"""## Code Context
+
+{context}
+
+## Question
+
+{question}
+
+## Instructions
+
+Answer based on the code context above. Reference specific files and functions."""
+
+    # Call LLM using async variant (FastAPI-safe)
+    try:
+        from app.llm.clients import async_call_openai
+        
+        content, usage = await async_call_openai(
+            system_prompt=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+            temperature=0.3,
+            model=os.getenv("ORB_RAG_MODEL", "gpt-4o-mini"),
+        )
+        
+        answer_text = content if content else "Failed to generate answer"
+        model_used = os.getenv("ORB_RAG_MODEL", "gpt-4o-mini")
+        
+    except Exception as e:
+        answer_text = f"LLM call failed: {e}"
+        model_used = "error"
+    
+    return ArchAnswer(
+        question=question,
+        answer=answer_text,
+        sources=sources,
+        chunks_searched=len(chunks),
+        model_used=model_used,
+    )

@@ -18,19 +18,35 @@ DATABASE_URL = os.getenv("ORB_DATABASE_URL", "sqlite:///./data/orb_memory.db")
 
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False},  # Required for SQLite
+    connect_args={
+        "check_same_thread": False,  # Required for SQLite
+        "timeout": 30,  # v2.5: Wait up to 30s for locked DB (Python sqlite3 level)
+    },
     echo=False,  # Set True to log SQL statements for debugging
 )
 
 
-# CRITICAL: Enable foreign key enforcement for SQLite
-# Without this, FK constraints (including CASCADE deletes) are NOT enforced
+# CRITICAL: Enable foreign key enforcement and performance pragmas for SQLite
+# v2.5: Added WAL mode + busy_timeout for background job concurrency
 @event.listens_for(Engine, "connect")
 def set_sqlite_pragma(dbapi_conn, connection_record):
-    """Enable foreign key constraints for SQLite connections."""
+    """
+    Configure SQLite pragmas for every new connection.
+    
+    Sets:
+    - foreign_keys=ON: Enforce FK constraints (required for CASCADE deletes)
+    - journal_mode=WAL: Write-Ahead Logging for better concurrency
+    - busy_timeout=30000: Wait 30s for locks before failing (SQLite level)
+    - synchronous=NORMAL: Safe durability with better throughput
+    
+    v2.5: Added WAL + busy_timeout to fix embedding job lock contention
+    """
     if "sqlite" in DATABASE_URL.lower():
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=30000")  # 30 seconds in milliseconds
+        cursor.execute("PRAGMA synchronous=NORMAL")  # Safe + faster than FULL
         cursor.close()
 
 

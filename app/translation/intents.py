@@ -545,6 +545,36 @@ INTENT_DEFINITIONS: Dict[CanonicalIntent, IntentDefinition] = {
     ),
     
     # -------------------------------------------------------------------------
+    # FILESYSTEM QUERY (v1.4)
+    # -------------------------------------------------------------------------
+    
+    CanonicalIntent.FILESYSTEM_QUERY: IntentDefinition(
+        intent=CanonicalIntent.FILESYSTEM_QUERY,
+        trigger_phrases=[
+            # Patterns are used instead - see tier0_rules.py check_filesystem_query_trigger()
+        ],
+        trigger_patterns=[
+            # Detection handled by check_filesystem_query_trigger() in tier0_rules.py
+            # for more complex prefix/path validation
+        ],
+        requires_context=[],
+        requires_confirmation=False,
+        description="Query scan index for filesystem listing or search",
+        behavior=(
+            "Query the architecture_file_index DB table (from scan sandbox) to:\n"
+            "- List contents of a directory (folders first, then files)\n"
+            "- Find files/folders by name pattern\n"
+            "- Return full paths\n"
+            "\n"
+            "Constraints:\n"
+            "- Only allowed roots: D:\\ and C:\\Users\\dizzi\n"
+            "- NEVER run shell commands or mention running dir/grep\n"
+            "- Hard cap 200 entries (show '+N more' if truncated)\n"
+            "- Uses DB index first, fallback to sandbox /fs/tree if needed"
+        ),
+    ),
+    
+    # -------------------------------------------------------------------------
     # CHAT (no action)
     # -------------------------------------------------------------------------
     
