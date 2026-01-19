@@ -4,7 +4,7 @@ Tier 0: Pure rule-based intent classification.
 No LLM calls. Fastest tier.
 
 Handles:
-- Wake phrases ("Astra, command:", "Astra, feedback:")
+- Wake phrases ("Astra, command:", "Orb, command:", "Astra, feedback:")
 - Obvious capitalised commands ("CREATE ARCHITECTURE MAP")
 - Obvious natural commands ("Start your zombie", "update architecture")
 - Scan sandbox commands ("scan sandbox", "scan filesystem")
@@ -13,8 +13,11 @@ Handles:
 - Overwatcher commands ("send to overwatcher")
 - Obvious chat patterns (questions, past tense, etc.)
 - Filesystem READ queries ("what's written in", "read file", "show contents of")
-- Filesystem command mode ("Astra, command: list/read/head/lines/find/append/overwrite/delete_area/delete_lines")
+- Filesystem command mode ("Astra/Orb, command: list/read/head/lines/find/append/overwrite/delete_area/delete_lines")
 
+v5.8 (2026-01): Added "Orb, command:" prefix support alongside "Astra, command:"
+  - Updated tier0_classify() prefix stripper regex to accept orb|astra
+  - Updated check_filesystem_query_trigger() command mode regex to accept orb|astra
 v5.7 (2026-01): Fixed corrupted regex in check_filesystem_query_trigger
   - Restored correct command mode detection regex
   - Removed duplicated code blocks
@@ -86,9 +89,10 @@ def tier0_classify(text: str) -> Tier0RuleResult:
     """
     text_stripped = text.strip()
     
-    # Strip wake phrase prefix if present (e.g., "Astra, command: X" -> "X")
+    # Strip wake phrase prefix if present (e.g., "Astra, command: X" or "Orb, command: X" -> "X")
+    # v5.8: Added orb prefix support
     text_stripped = re.sub(
-        r'^(?:astra,?\s*)?(?:command:?\s*)?(?:feedback:?\s*)?',
+        r'^(?:(?:astra|orb),?\s*)?(?:command:?\s*)?(?:feedback:?\s*)?',
         '', text_stripped, flags=re.IGNORECASE
     ).strip()
     
@@ -806,7 +810,7 @@ def check_embedding_commands(text: str) -> Tier0RuleResult:
 
 
 # =============================================================================
-# FILESYSTEM QUERY HANDLER (v5.7 - FIXED)
+# FILESYSTEM QUERY HANDLER (v5.8 - ORB PREFIX SUPPORT)
 # =============================================================================
 
 # Known user folder keywords (for queries that don't have explicit paths)
@@ -854,8 +858,9 @@ def _is_within_allowed_roots(text: str) -> bool:
 
 def check_filesystem_query_trigger(text: str) -> Tier0RuleResult:
     """
-    Special handler for filesystem listing/search queries (v5.7 - FIXED).
+    Special handler for filesystem listing/search queries (v5.8 - ORB PREFIX SUPPORT).
     
+    v5.8 (2026-01): Added "Orb, command:" prefix support alongside "Astra, command:"
     v5.7 (2026-01): Fixed corrupted regex, removed duplicated code blocks
     
     v5.6 (2026-01): Fixed to handle text with command prefix already stripped
@@ -863,8 +868,8 @@ def check_filesystem_query_trigger(text: str) -> Tier0RuleResult:
       - Handles case where translator.py strips prefix before calling
     
     v5.0: Added explicit command mode support:
-    - "Astra, command: list <path>"
-    - "Astra, command: read <path>" or read "<path with spaces>"
+    - "Astra, command: list <path>" or "Orb, command: list <path>"
+    - "Astra, command: read <path>" or "Orb, command: read <path>"
     - "Astra, command: head <path> <n>"
     - "Astra, command: lines <path> <start> <end>"
     - "Astra, command: find <term> [under <path>]"
@@ -915,13 +920,13 @@ def check_filesystem_query_trigger(text: str) -> Tier0RuleResult:
             )
     
     # ==========================================================================
-    # v5.7: EXPLICIT COMMAND MODE DETECTION (with prefix) - FIXED REGEX
-    # Patterns: "Astra, command: <cmd> <args>" or "command: <cmd> <args>"
+    # v5.8: EXPLICIT COMMAND MODE DETECTION (with prefix) - SUPPORTS ORB + ASTRA
+    # Patterns: "Astra, command: <cmd> <args>" or "Orb, command: <cmd> <args>"
     # ==========================================================================
     
-    # Check for command mode prefix
+    # Check for command mode prefix (v5.8: now accepts orb|astra)
     command_match = re.match(
-        r'^(?:astra,?\s*)?command:?\s*(.+)$',
+        r'^(?:(?:astra|orb),?\s*)?command:?\s*(.+)$',
         text_stripped, re.IGNORECASE
     )
     

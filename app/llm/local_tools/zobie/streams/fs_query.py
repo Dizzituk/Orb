@@ -1,5 +1,5 @@
 # FILE: app/llm/local_tools/zobie/streams/fs_query.py
-"""FILESYSTEM QUERY stream generator (v5.5 - Stage 1 Write Operations).
+"""FILESYSTEM QUERY stream generator (v5.7 - Stage 2 Commentary Fixes).
 
 Answers filesystem listing/find/read queries AND write operations using:
 1. DB index first (fast, from scan sandbox)
@@ -24,6 +24,14 @@ Write Commands (Stage 1):
 - delete_area <path>   : Delete between ASTRA_BLOCK markers
 - delete_lines <path> <start> <end> : Delete line range
 
+v5.7 (2026-01): Stage 2 Fixes
+  - Fixed WriteResult.source crash (WriteResult has no .source attribute)
+  - Wrapped commentary rendering in try/except to prevent SSE stream crashes
+  - Commentary failures now log but don't kill the stream
+v5.6 (2026-01): Stage 2 - Added optional commentary rendering via Gemini 2.0 Flash
+  - Enabled via ORB_COMMENTARY_ENABLED=true (default OFF)
+  - Commentary provides conversational explanation of tool results
+  - Deterministic tool outputs remain the driver; LLM is renderer only
 v5.5 (2026-01): Added Stage 1 write operations (append, overwrite, delete_area, delete_lines)
 v5.4 (2026-01): Added remote_agent fallback via sandbox controller for OneDrive paths
 v5.3 (2026-01): Enhanced debug output in SSE stream for OneDrive diagnosis
@@ -81,6 +89,22 @@ from ..fs_write_ops import (
     sandbox_delete_lines,
     WriteResult,
 )
+
+# Stage 2: Commentary rendering (optional)
+try:
+    from ..tool_commentary import (
+        is_commentary_enabled,
+        render_tool_commentary,
+        create_read_result,
+        create_write_result,
+        create_list_result,
+        create_find_result,
+        ToolResult,
+    )
+    _COMMENTARY_AVAILABLE = True
+except ImportError:
+    _COMMENTARY_AVAILABLE = False
+    is_commentary_enabled = lambda: False
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +184,7 @@ async def generate_filesystem_query_stream(
         )
         return
     
-    # Validate path against allowlist
+    # Validate path against allowlist (skip for find without path - search term only)
     if target_path:
         allowed, reason = is_path_allowed(target_path)
         if not allowed:
@@ -183,28 +207,28 @@ async def generate_filesystem_query_stream(
     
     if query_type == "append":
         async for chunk in _handle_append_query(
-            project_id, db, target_path, content, trace, started_ms
+            project_id, db, target_path, content, trace, started_ms, message
         ):
             yield chunk
         return
     
     if query_type == "overwrite":
         async for chunk in _handle_overwrite_query(
-            project_id, db, target_path, content, trace, started_ms
+            project_id, db, target_path, content, trace, started_ms, message
         ):
             yield chunk
         return
     
     if query_type == "delete_area":
         async for chunk in _handle_delete_area_query(
-            project_id, db, target_path, trace, started_ms
+            project_id, db, target_path, trace, started_ms, message
         ):
             yield chunk
         return
     
     if query_type == "delete_lines":
         async for chunk in _handle_delete_lines_query(
-            project_id, db, target_path, start_line, end_line, trace, started_ms
+            project_id, db, target_path, start_line, end_line, trace, started_ms, message
         ):
             yield chunk
         return
@@ -216,14 +240,14 @@ async def generate_filesystem_query_stream(
     # Dispatch by query type
     if query_type == "find":
         async for chunk in _handle_find_query(
-            project_id, db, target_path, search_term, trace, started_ms
+            project_id, db, target_path, search_term, trace, started_ms, message
         ):
             yield chunk
         return
     
     if query_type == "list":
         async for chunk in _handle_list_query(
-            project_id, db, target_path, trace, started_ms
+            project_id, db, target_path, trace, started_ms, message
         ):
             yield chunk
         return
@@ -231,7 +255,7 @@ async def generate_filesystem_query_stream(
     if query_type in ("read", "head", "lines"):
         async for chunk in _handle_read_query(
             project_id, db, target_path, query_type,
-            start_line, end_line, head_lines, trace, started_ms
+            start_line, end_line, head_lines, trace, started_ms, message
         ):
             yield chunk
         return
@@ -257,6 +281,7 @@ async def _handle_append_query(
     content: Optional[str],
     trace: Optional[RoutingTrace],
     started_ms: int,
+    user_message: str = "",
 ) -> AsyncGenerator[str, None]:
     """Handle append command."""
     loop = asyncio.get_event_loop()
@@ -289,6 +314,33 @@ async def _handle_append_query(
             0, 0, duration_ms, success=result.status == "ok", error=result.error,
         )
     
+    # Stage 2: Optional commentary (wrapped in try/except to prevent stream crash)
+    if _COMMENTARY_AVAILABLE and is_commentary_enabled():
+        try:
+            yield sse_token("\n---\n**Commentary:**\n")
+            tool_result = create_write_result(
+                ok=result.status == "ok",
+                action="append",
+                path=target_path,
+                source="remote_agent",  # Write operations go through sandbox/remote agent
+                before_lines=result.lines_before,
+                before_bytes=result.bytes_before,
+                before_excerpt=result.preview_before or "",
+                after_lines=result.lines_after,
+                after_bytes=result.bytes_after,
+                after_excerpt=result.preview_after or "",
+                status_code=200 if result.status == "ok" else 500,
+                bytes_written=len(content) if result.status == "ok" else None,
+                error=result.error or "",
+                user_message=user_message,
+            )
+            async for commentary_chunk in render_tool_commentary(tool_result, user_message):
+                yield sse_token(commentary_chunk)
+            yield sse_token("\n")
+        except Exception as e:
+            logger.exception("[COMMENTARY] Render failed for append: %s", e)
+            # Do not raise - continue silently, deterministic output already complete
+    
     yield sse_done(
         provider="local",
         model="filesystem_query",
@@ -306,6 +358,7 @@ async def _handle_overwrite_query(
     content: Optional[str],
     trace: Optional[RoutingTrace],
     started_ms: int,
+    user_message: str = "",
 ) -> AsyncGenerator[str, None]:
     """Handle overwrite command."""
     loop = asyncio.get_event_loop()
@@ -339,6 +392,33 @@ async def _handle_overwrite_query(
             0, 0, duration_ms, success=result.status == "ok", error=result.error,
         )
     
+    # Stage 2: Optional commentary (wrapped in try/except to prevent stream crash)
+    if _COMMENTARY_AVAILABLE and is_commentary_enabled():
+        try:
+            yield sse_token("\n---\n**Commentary:**\n")
+            tool_result = create_write_result(
+                ok=result.status == "ok",
+                action="overwrite",
+                path=target_path,
+                source="remote_agent",  # Write operations go through sandbox/remote agent
+                before_lines=result.lines_before,
+                before_bytes=result.bytes_before,
+                before_excerpt=result.preview_before or "",
+                after_lines=result.lines_after,
+                after_bytes=result.bytes_after,
+                after_excerpt=result.preview_after or "",
+                status_code=200 if result.status == "ok" else 500,
+                bytes_written=len(content) if result.status == "ok" else None,
+                error=result.error or "",
+                user_message=user_message,
+            )
+            async for commentary_chunk in render_tool_commentary(tool_result, user_message):
+                yield sse_token(commentary_chunk)
+            yield sse_token("\n")
+        except Exception as e:
+            logger.exception("[COMMENTARY] Render failed for overwrite: %s", e)
+            # Do not raise - continue silently, deterministic output already complete
+    
     yield sse_done(
         provider="local",
         model="filesystem_query",
@@ -355,6 +435,7 @@ async def _handle_delete_area_query(
     target_path: str,
     trace: Optional[RoutingTrace],
     started_ms: int,
+    user_message: str = "",
 ) -> AsyncGenerator[str, None]:
     """Handle delete_area command (marker-based deletion)."""
     loop = asyncio.get_event_loop()
@@ -379,6 +460,32 @@ async def _handle_delete_area_query(
             0, 0, duration_ms, success=result.status == "ok", error=result.error,
         )
     
+    # Stage 2: Optional commentary (wrapped in try/except to prevent stream crash)
+    if _COMMENTARY_AVAILABLE and is_commentary_enabled():
+        try:
+            yield sse_token("\n---\n**Commentary:**\n")
+            tool_result = create_write_result(
+                ok=result.status == "ok",
+                action="delete_area",
+                path=target_path,
+                source="remote_agent",  # Write operations go through sandbox/remote agent
+                before_lines=result.lines_before,
+                before_bytes=result.bytes_before,
+                before_excerpt=result.preview_before or "",
+                after_lines=result.lines_after,
+                after_bytes=result.bytes_after,
+                after_excerpt=result.preview_after or "",
+                status_code=200 if result.status == "ok" else 500,
+                error=result.error or "",
+                user_message=user_message,
+            )
+            async for commentary_chunk in render_tool_commentary(tool_result, user_message):
+                yield sse_token(commentary_chunk)
+            yield sse_token("\n")
+        except Exception as e:
+            logger.exception("[COMMENTARY] Render failed for delete_area: %s", e)
+            # Do not raise - continue silently, deterministic output already complete
+    
     yield sse_done(
         provider="local",
         model="filesystem_query",
@@ -397,6 +504,7 @@ async def _handle_delete_lines_query(
     end_line: Optional[int],
     trace: Optional[RoutingTrace],
     started_ms: int,
+    user_message: str = "",
 ) -> AsyncGenerator[str, None]:
     """Handle delete_lines command (line range deletion)."""
     loop = asyncio.get_event_loop()
@@ -429,6 +537,32 @@ async def _handle_delete_lines_query(
             "local_tool", "local", "filesystem_query", "delete_lines",
             0, 0, duration_ms, success=result.status == "ok", error=result.error,
         )
+    
+    # Stage 2: Optional commentary (wrapped in try/except to prevent stream crash)
+    if _COMMENTARY_AVAILABLE and is_commentary_enabled():
+        try:
+            yield sse_token("\n---\n**Commentary:**\n")
+            tool_result = create_write_result(
+                ok=result.status == "ok",
+                action="delete_lines",
+                path=target_path,
+                source="remote_agent",  # Write operations go through sandbox/remote agent
+                before_lines=result.lines_before,
+                before_bytes=result.bytes_before,
+                before_excerpt=result.preview_before or "",
+                after_lines=result.lines_after,
+                after_bytes=result.bytes_after,
+                after_excerpt=result.preview_after or "",
+                status_code=200 if result.status == "ok" else 500,
+                error=result.error or "",
+                user_message=user_message,
+            )
+            async for commentary_chunk in render_tool_commentary(tool_result, user_message):
+                yield sse_token(commentary_chunk)
+            yield sse_token("\n")
+        except Exception as e:
+            logger.exception("[COMMENTARY] Render failed for delete_lines: %s", e)
+            # Do not raise - continue silently, deterministic output already complete
     
     yield sse_done(
         provider="local",
@@ -465,6 +599,7 @@ async def _handle_find_query(
     search_term: Optional[str],
     trace: Optional[RoutingTrace],
     started_ms: int,
+    user_message: str = "",
 ) -> AsyncGenerator[str, None]:
     """Handle find queries using DB index."""
     loop = asyncio.get_event_loop()
@@ -551,6 +686,25 @@ async def _handle_find_query(
             0, 0, duration_ms, success=True, error=None,
         )
     
+    # Stage 2: Optional commentary (wrapped in try/except to prevent stream crash)
+    if _COMMENTARY_AVAILABLE and is_commentary_enabled():
+        try:
+            yield sse_token("\n---\n**Commentary:**\n")
+            tool_result = create_find_result(
+                ok=True,
+                search_term=search_term,
+                results_count=len(results),
+                path=target_path or "",
+                source="db",
+                user_message=user_message,
+            )
+            async for commentary_chunk in render_tool_commentary(tool_result, user_message):
+                yield sse_token(commentary_chunk)
+            yield sse_token("\n")
+        except Exception as e:
+            logger.exception("[COMMENTARY] Render failed for find: %s", e)
+            # Do not raise - continue silently, deterministic output already complete
+    
     yield sse_done(
         provider="local",
         model="filesystem_query",
@@ -565,6 +719,7 @@ async def _handle_list_query(
     target_path: str,
     trace: Optional[RoutingTrace],
     started_ms: int,
+    user_message: str = "",
 ) -> AsyncGenerator[str, None]:
     """Handle list queries using DB-first, live fallback."""
     loop = asyncio.get_event_loop()
@@ -576,6 +731,7 @@ async def _handle_list_query(
     db_success = False
     folders_list = []
     files_list = []
+    source = "unknown"
     
     if ARCH_MODELS_AVAILABLE:
         latest_scan = get_latest_scan(db, scope="sandbox") if get_latest_scan else None
@@ -592,6 +748,7 @@ async def _handle_list_query(
                 
                 if results:
                     db_success = True
+                    source = "db"
                     folders_list, files_list = _process_list_results(
                         results[:FILESYSTEM_QUERY_MAX_ENTRIES], path_prefix
                     )
@@ -602,6 +759,7 @@ async def _handle_list_query(
     # Fall back to live read if DB didn't work
     if not db_success:
         yield sse_token(f"[FS_QUERY] live_read=True (DB miss)\n")
+        source = "local"
         
         folders, files, error = live_list_directory(target_path, debug=True)
         if error:
@@ -658,6 +816,25 @@ async def _handle_list_query(
             0, 0, duration_ms, success=True, error=None,
         )
     
+    # Stage 2: Optional commentary (wrapped in try/except to prevent stream crash)
+    if _COMMENTARY_AVAILABLE and is_commentary_enabled():
+        try:
+            yield sse_token("\n---\n**Commentary:**\n")
+            tool_result = create_list_result(
+                ok=True,
+                path=target_path,
+                source=source,
+                folders_count=len(folders_list),
+                files_count=len(files_list),
+                user_message=user_message,
+            )
+            async for commentary_chunk in render_tool_commentary(tool_result, user_message):
+                yield sse_token(commentary_chunk)
+            yield sse_token("\n")
+        except Exception as e:
+            logger.exception("[COMMENTARY] Render failed for list: %s", e)
+            # Do not raise - continue silently, deterministic output already complete
+    
     yield sse_done(
         provider="local",
         model="filesystem_query",
@@ -682,6 +859,7 @@ async def _handle_read_query(
     head_lines: Optional[int],
     trace: Optional[RoutingTrace],
     started_ms: int,
+    user_message: str = "",
 ) -> AsyncGenerator[str, None]:
     """Handle read/head/lines queries using DB-first, live fallback."""
     loop = asyncio.get_event_loop()
@@ -837,6 +1015,28 @@ async def _handle_read_query(
             "local_tool", "local", "filesystem_query", query_type,
             0, 0, duration_ms, success=True, error=None,
         )
+    
+    # Stage 2: Optional commentary (wrapped in try/except to prevent stream crash)
+    if _COMMENTARY_AVAILABLE and is_commentary_enabled():
+        try:
+            yield sse_token("\n---\n**Commentary:**\n")
+            content_preview = content[:200] + "..." if content and len(content) > 200 else (content or "")
+            tool_result = create_read_result(
+                ok=True,
+                path=target_path,
+                source=source,
+                total_lines=total_lines,
+                shown_lines=shown_lines,
+                truncated=truncated,
+                content_preview=content_preview,
+                user_message=user_message,
+            )
+            async for commentary_chunk in render_tool_commentary(tool_result, user_message):
+                yield sse_token(commentary_chunk)
+            yield sse_token("\n")
+        except Exception as e:
+            logger.exception("[COMMENTARY] Render failed for read: %s", e)
+            # Do not raise - continue silently, deterministic output already complete
     
     yield sse_done(
         provider="local",

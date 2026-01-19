@@ -50,7 +50,16 @@ def call_fs_tree(
         )
         with urllib_request.urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8", errors="replace")
-            return resp.getcode() or 200, json.loads(body), ""
+            status_code = resp.getcode() or 200
+            # v5.7 FIX: Handle empty body gracefully for 2xx responses
+            if body.strip():
+                return status_code, json.loads(body), ""
+            else:
+                # Empty body but successful status - return minimal success object
+                if 200 <= status_code < 300:
+                    return status_code, {"ok": True, "message": "Write succeeded (empty response body)"}, ""
+                else:
+                    return status_code, None, "Empty response body"
     except urllib_error.HTTPError as e:
         try:
             body = e.read().decode("utf-8", errors="replace")
@@ -93,7 +102,15 @@ def call_fs_contents(
         )
         with urllib_request.urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8", errors="replace")
-            return resp.getcode() or 200, json.loads(body), ""
+            status_code = resp.getcode() or 200
+            # v5.7 FIX: Handle empty body gracefully for 2xx responses
+            if body.strip():
+                return status_code, json.loads(body), ""
+            else:
+                if 200 <= status_code < 300:
+                    return status_code, {"files": [], "message": "Empty response body"}, ""
+                else:
+                    return status_code, None, "Empty response body"
     except urllib_error.HTTPError as e:
         try:
             body = e.read().decode("utf-8", errors="replace")
@@ -175,7 +192,15 @@ def call_fs_write(
         )
         with urllib_request.urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8", errors="replace")
-            return resp.getcode() or 200, json.loads(body), ""
+            status_code = resp.getcode() or 200
+            # v5.7 FIX: Handle empty body gracefully for 2xx responses
+            if body.strip():
+                return status_code, json.loads(body), ""
+            else:
+                if 200 <= status_code < 300:
+                    return status_code, {"ok": True, "path": full_path, "message": "Write succeeded (empty response body)"}, ""
+                else:
+                    return status_code, None, "Empty response body"
     except urllib_error.HTTPError as e:
         try:
             body = e.read().decode("utf-8", errors="replace")

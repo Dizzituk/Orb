@@ -5,6 +5,9 @@ This module handles parsing of both:
 - Explicit command mode: "Astra, command: read C:\\path"
 - Natural language: "What's in my desktop?"
 
+v5.6 (2026-01): Fixed find command parsing - quoted value is search_term, not path
+  - find "ME" -> search_term="ME", path=None
+  - find "ME" in "C:\\path" -> search_term="ME", path="C:\\path"
 v5.5 (2026-01): Added Stage 1 write commands (append, overwrite, delete_area)
 v5.2 (2026-01): Extracted from fs_query.py for modularity
 """
@@ -30,7 +33,8 @@ def parse_command_mode(message: str) -> Optional[Dict]:
     
     Read Commands:
     - list <path>
-    - find <n> [under <path>]
+    - find <term> [under <path>]
+    - find "<term>" [in "<path>"]
     - read <path>
     - read "<path with spaces>"
     - head <path> [n]
@@ -75,6 +79,11 @@ def parse_command_mode(message: str) -> Optional[Dict]:
     write_result = _parse_write_command(text_normalized)
     if write_result:
         return write_result
+    
+    # Check for find command with quoted search term BEFORE general quoted matching
+    find_result = _parse_find_command(text_normalized)
+    if find_result:
+        return find_result
     
     # Initialize variables for read commands
     cmd = None
@@ -204,6 +213,103 @@ def parse_command_mode(message: str) -> Optional[Dict]:
         return None
     
     return result
+
+
+def _parse_find_command(text: str) -> Optional[Dict]:
+    """
+    Parse find command with special handling for quoted search terms.
+    
+    Supported formats:
+    - find "search term"
+    - find "search term" in "C:\\path"
+    - find "search term" under "C:\\path"
+    - find "search term" inside "C:\\path"
+    - find "search term" on "C:\\path"
+    
+    For find, the first quoted value is ALWAYS the search term, NOT a path.
+    Optional second quoted value (after in/under/inside/on) is the path.
+    
+    Returns parsed dict or None if not a find command.
+    """
+    text_lower = text.lower()
+    
+    # Check if this starts with "find"
+    if not text_lower.startswith('find ') and text_lower != 'find':
+        return None
+    
+    # Remove "find " prefix
+    rest = text[5:].strip() if len(text) > 5 else ""
+    
+    if not rest:
+        return None
+    
+    result = {
+        "command": "find",
+        "path": None,
+        "extra": "",
+        "query_type": "find",
+        "start_line": None,
+        "end_line": None,
+        "head_lines": None,
+        "search_term": None,
+        "content": None,
+    }
+    
+    # Check for: find "term" [in/under/inside/on "path"]
+    # Pattern: "term" [keyword "path"]
+    
+    # Match first quoted value (search term)
+    first_quote_match = re.match(r'^["\']([^"\']+)["\'](.*)$', rest)
+    
+    if first_quote_match:
+        search_term = first_quote_match.group(1)
+        remainder = first_quote_match.group(2).strip()
+        
+        result["search_term"] = search_term
+        
+        # Check for optional path: in/under/inside/on "path" or in/under/inside/on path
+        if remainder:
+            path_keyword_match = re.match(
+                r'^(?:in|under|inside|on)\s+(.+)$',
+                remainder,
+                re.IGNORECASE
+            )
+            if path_keyword_match:
+                path_part = path_keyword_match.group(1).strip()
+                # Remove quotes if present
+                if len(path_part) >= 2:
+                    if (path_part.startswith('"') and path_part.endswith('"')) or \
+                       (path_part.startswith("'") and path_part.endswith("'")):
+                        path_part = path_part[1:-1]
+                if path_part:
+                    result["path"] = normalize_path(path_part, debug=True)
+        
+        return result
+    
+    # No quotes - check if it's a simple unquoted search term
+    # Only handle this if there's no Windows path pattern (let the main parser handle paths)
+    if not re.match(r'^[A-Za-z]:[/\\]', rest):
+        # Check for: find term [in/under/inside/on path]
+        keyword_match = re.search(r'\s+(?:in|under|inside|on)\s+', rest, re.IGNORECASE)
+        if keyword_match:
+            search_term = rest[:keyword_match.start()].strip()
+            path_part = rest[keyword_match.end():].strip()
+            result["search_term"] = search_term
+            if path_part:
+                # Remove quotes if present
+                if len(path_part) >= 2:
+                    if (path_part.startswith('"') and path_part.endswith('"')) or \
+                       (path_part.startswith("'") and path_part.endswith("'")):
+                        path_part = path_part[1:-1]
+                result["path"] = normalize_path(path_part, debug=True)
+            return result
+        else:
+            # Simple: find term (no path)
+            result["search_term"] = rest.strip()
+            return result
+    
+    # Has a Windows path pattern - let the main parser handle it
+    return None
 
 
 def _parse_write_command(text: str) -> Optional[Dict]:
