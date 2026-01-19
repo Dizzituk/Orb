@@ -3,7 +3,7 @@
 Latest Architecture + Codebase Report Resolver (Read-Only)
 
 Provides reliable resolution of the latest architecture map and codebase report
-from D:\Orb\.architecture\ by modification time (mtime).
+from D:\\Orb\\.architecture\\ by modification time (mtime).
 
 RULES:
 - Never hardcode timestamped filenames
@@ -186,7 +186,7 @@ def get_latest_architecture_map() -> ResolvedReport:
     """
     Resolve the latest ARCHITECTURE_MAP*.md file.
     
-    Searches D:\Orb\.architecture\ for:
+    Searches D:\\Orb\\.architecture\\ for:
     - ARCHITECTURE_MAP.md (non-timestamped)
     - ARCHITECTURE_MAP_*.md (timestamped variants)
     
@@ -214,7 +214,7 @@ def get_latest_codebase_report_full() -> ResolvedReport:
     """
     Resolve the latest CODEBASE_REPORT_FULL_*.md file.
     
-    Searches D:\Orb\.architecture\ for:
+    Searches D:\\Orb\\.architecture\\ for:
     - CODEBASE_REPORT_FULL.md (non-timestamped, if it ever exists)
     - CODEBASE_REPORT_FULL_*.md (timestamped variants)
     
