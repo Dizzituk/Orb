@@ -37,6 +37,18 @@ except Exception as e:
     SpecGateResult = None
     logger.warning("[spec_gate_stream] spec_gate_v2 module not available: %s", e)
 
+# Import Spec Gate Grounded (Contract v1)
+import os
+_USE_GROUNDED_SPEC_GATE = os.getenv("USE_GROUNDED_SPEC_GATE", "1") == "1"
+
+try:
+    from app.pot_spec.spec_gate_grounded import run_spec_gate_grounded
+    _SPEC_GATE_GROUNDED_AVAILABLE = True
+except Exception as e:
+    _SPEC_GATE_GROUNDED_AVAILABLE = False
+    run_spec_gate_grounded = None
+    logger.warning("[spec_gate_stream] spec_gate_grounded module not available: %s", e)
+
 # Flow state management (optional)
 try:
     from app.llm.spec_flow_state import (
@@ -89,7 +101,34 @@ def _resolve_spec_gate_model() -> tuple[str, str]:
     return (cfg.provider or "", cfg.model or "")
 
 
+def _get_weaver_job_description_from_flow(project_id: int) -> Optional[str]:
+    """Get simple Weaver job description from flow state (v3.0)."""
+    if not _FLOW_STATE_AVAILABLE or not get_active_flow:
+        return None
+    try:
+        flow = get_active_flow(project_id)
+        if flow:
+            return getattr(flow, 'weaver_job_description', None)
+    except Exception as e:
+        logger.debug("[spec_gate_stream] get_active_flow failed: %s", e)
+    return None
+
+
 def _load_latest_weaver_spec_json(db: Session, project_id: int) -> tuple[Optional[dict], dict]:
+    """Load Weaver output - checks flow state first (v3.0), then DB."""
+    
+    # v3.0: First check flow state for simple Weaver job description
+    job_description = _get_weaver_job_description_from_flow(project_id)
+    if job_description:
+        logger.info("[spec_gate_stream] Found Weaver job description in flow state (%d chars)", len(job_description))
+        # Return job description wrapped in a format Spec Gate can use
+        return {
+            "job_description": job_description,
+            "source": "weaver_simple",
+            "title": "Job Description from Weaver",
+        }, {"weaver_source": "flow_state"}
+    
+    # Fallback: Load from DB (v2.x behaviour)
     if not specs_service:
         return None, {}
 
@@ -211,24 +250,40 @@ async def generate_spec_gate_stream(
             constraints_hint["weaver_spec_json"] = weaver_spec_json
             constraints_hint.update({k: v for k, v in weaver_prov.items() if v})
             
-            # v2.1: Show content preservation info if present
-            content_verbatim = weaver_spec_json.get("content_verbatim") or weaver_spec_json.get("metadata", {}).get("content_verbatim")
-            location = weaver_spec_json.get("location") or weaver_spec_json.get("metadata", {}).get("location")
-            
-            found_msg = "✓ Found Weaver spec to validate.\n"
-            if content_verbatim:
-                found_msg += f"  Content: \"{content_verbatim[:50]}{'...' if len(str(content_verbatim)) > 50 else ''}\"\n"
-            if location:
-                found_msg += f"  Location: {location}\n"
-            found_msg += "\n"
+            # v3.0: Check if this is from simple Weaver (job_description) or v2.x (full spec)
+            if weaver_spec_json.get("source") == "weaver_simple":
+                # Simple Weaver output - job description text
+                # Add dedicated key so Spec Gate knows this is raw text, not JSON spec
+                job_desc = weaver_spec_json.get("job_description", "")
+                constraints_hint["weaver_job_description_text"] = job_desc  # Dedicated key for v3.0
+                constraints_hint["weaver_source"] = "weaver_simple"
+                
+                found_msg = f"✓ Found Weaver job description ({len(job_desc)} chars)\n"
+                found_msg += "  Source: Simple Weaver (v3.0)\n"
+                # Show preview
+                preview = job_desc[:150].replace('\n', ' ')[:100]
+                if preview:
+                    found_msg += f"  Preview: \"{preview}...\"\n"
+                found_msg += "\n"
+            else:
+                # v2.1: Show content preservation info if present (v2.x spec)
+                content_verbatim = weaver_spec_json.get("content_verbatim") or weaver_spec_json.get("metadata", {}).get("content_verbatim")
+                location = weaver_spec_json.get("location") or weaver_spec_json.get("metadata", {}).get("location")
+                
+                found_msg = "✓ Found Weaver spec to validate.\n"
+                if content_verbatim:
+                    found_msg += f"  Content: \"{content_verbatim[:50]}{'...' if len(str(content_verbatim)) > 50 else ''}\"\n"
+                if location:
+                    found_msg += f"  Location: {location}\n"
+                found_msg += "\n"
             
             yield _safe_json_event({"type": "token", "content": found_msg})
             response_parts.append(found_msg)
         else:
             warn = (
-                "⚠️ No Weaver draft spec found in DB for this project.\n"
+                "⚠️ No Weaver output found.\n"
                 "Spec Gate may drift if it must infer the job from raw chat.\n"
-                "Consider running Weaver first: `Astra, command: how does that look all together`\n\n"
+                "Consider running Weaver first: `how does that look all together`\n\n"
             )
             yield _safe_json_event({"type": "token", "content": warn})
             response_parts.append(warn)
@@ -240,17 +295,39 @@ async def generate_spec_gate_stream(
 
         user_intent = (message or "").strip()
 
+        # v3.0: Choose grounded (Contract v1) or v2 implementation
+        use_grounded = _USE_GROUNDED_SPEC_GATE and _SPEC_GATE_GROUNDED_AVAILABLE and run_spec_gate_grounded
+        
+        if use_grounded:
+            version_msg = "🔬 Using **SpecGate Contract v1** (grounded, evidence-based, read-only)\n\n"
+            yield _safe_json_event({"type": "token", "content": version_msg})
+            response_parts.append(version_msg)
+        
         try:
-            result: SpecGateResult = await run_spec_gate_v2(
-                db=db,
-                job_id=job_id,
-                user_intent=user_intent,
-                provider_id=spec_gate_provider,
-                model_id=spec_gate_model,
-                project_id=project_id,
-                constraints_hint=constraints_hint,
-                spec_version=clarification_round,
-            )
+            if use_grounded:
+                # Contract v1: Grounded, evidence-based, read-only
+                result: SpecGateResult = await run_spec_gate_grounded(
+                    db=db,
+                    job_id=job_id,
+                    user_intent=user_intent,
+                    provider_id=spec_gate_provider,
+                    model_id=spec_gate_model,
+                    project_id=project_id,
+                    constraints_hint=constraints_hint,
+                    spec_version=clarification_round,
+                )
+            else:
+                # Fallback: v2 implementation (DB writes enabled)
+                result: SpecGateResult = await run_spec_gate_v2(
+                    db=db,
+                    job_id=job_id,
+                    user_intent=user_intent,
+                    provider_id=spec_gate_provider,
+                    model_id=spec_gate_model,
+                    project_id=project_id,
+                    constraints_hint=constraints_hint,
+                    spec_version=clarification_round,
+                )
         except Exception as e:
             error_msg = f"❌ Spec Gate failed: {e}\n"
             yield _safe_json_event({"type": "token", "content": error_msg})
@@ -379,9 +456,28 @@ async def generate_spec_gate_stream(
 
         # Ready: stream SPoT markdown
         else:
-            success_header = "✅ **Spec Validated - SPoT Generated**\n\n"
-            yield _safe_json_event({"type": "token", "content": success_header})
-            response_parts.append(success_header)
+            # Check if this is Round 3 with unresolved questions
+            is_round3_with_issues = (
+                ready and 
+                validation_status == "validated_with_issues" and
+                blocking_issues
+            )
+            
+            if is_round3_with_issues:
+                success_header = "⚠️ **Spec Finalized (Round 3) - With Unresolved Items**\n\n"
+                yield _safe_json_event({"type": "token", "content": success_header})
+                response_parts.append(success_header)
+                
+                warn_msg = (
+                    "**Note:** This spec was finalized on Round 3 but contains unresolved questions.\n"
+                    "SpecGate did NOT fill in assumptions - gaps are explicitly marked.\n\n"
+                )
+                yield _safe_json_event({"type": "token", "content": warn_msg})
+                response_parts.append(warn_msg)
+            else:
+                success_header = "✅ **Spec Validated - SPoT Generated**\n\n"
+                yield _safe_json_event({"type": "token", "content": success_header})
+                response_parts.append(success_header)
 
             if getattr(result, "db_persisted", False):
                 db_msg = "💾 Spec persisted to database.\n\n"

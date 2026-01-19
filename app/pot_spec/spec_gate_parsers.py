@@ -123,24 +123,62 @@ def extract_filename_from_text(text: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 def extract_weaver_spec(constraints_hint: Optional[dict]) -> Tuple[Optional[dict], Dict[str, Any]]:
-    """Extract Weaver spec and provenance from constraints hint."""
+    """Extract Weaver spec and provenance from constraints hint.
+    
+    v3.0: Now handles both:
+      - weaver_job_description_text: Plain text from simple Weaver (v3.0)
+      - weaver_spec_json: JSON spec from v2.x Weaver
+    
+    Returns:
+        (weaver_spec_dict, provenance_dict)
+    """
     if not constraints_hint or not isinstance(constraints_hint, dict):
         return None, {}
-    weaver_spec = constraints_hint.get("weaver_spec_json")
+    
     prov: Dict[str, Any] = {}
-    for k in ("weaver_spec_id", "weaver_spec_hash", "weaver_spec_version", "weaver_model", "weaver_provider"):
+    
+    # Collect provenance keys
+    for k in ("weaver_spec_id", "weaver_spec_hash", "weaver_spec_version", 
+              "weaver_model", "weaver_provider", "weaver_source"):
         if k in constraints_hint and constraints_hint.get(k) is not None:
             prov[k] = constraints_hint.get(k)
-    return (weaver_spec if isinstance(weaver_spec, dict) else None), prov
+    
+    # v3.0: Check for simple Weaver job description text first
+    job_desc_text = constraints_hint.get("weaver_job_description_text")
+    if job_desc_text and isinstance(job_desc_text, str) and job_desc_text.strip():
+        logger.info("[spec_gate_parsers] Using v3.0 weaver_job_description_text (%d chars)", len(job_desc_text))
+        prov["weaver_source"] = prov.get("weaver_source") or "weaver_simple"
+        # Wrap in dict format for downstream compatibility
+        return {
+            "job_description": job_desc_text.strip(),
+            "source": "weaver_simple",
+            "title": "Job Description from Weaver",
+        }, prov
+    
+    # v2.x: Fall back to weaver_spec_json
+    weaver_spec = constraints_hint.get("weaver_spec_json")
+    if weaver_spec and isinstance(weaver_spec, dict):
+        return weaver_spec, prov
+    
+    return None, prov
 
 
 def best_effort_title_and_objective(weaver_spec: Optional[dict], user_text: str) -> Tuple[str, str]:
-    """Extract title and objective from Weaver spec or user text."""
+    """Extract title and objective from Weaver spec or user text.
+    
+    v3.0: Now also checks for 'job_description' field (simple Weaver output).
+    """
     title = ""
     objective = ""
     if isinstance(weaver_spec, dict):
         title = str(weaver_spec.get("title") or weaver_spec.get("name") or "").strip()
-        objective = str(weaver_spec.get("objective") or weaver_spec.get("summary") or "").strip()
+        # v3.0: Check job_description before falling back to objective/summary
+        objective = str(
+            weaver_spec.get("job_description") or 
+            weaver_spec.get("objective") or 
+            weaver_spec.get("summary") or 
+            ""
+        ).strip()
 
     if not title:
         for line in (user_text or "").splitlines():

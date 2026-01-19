@@ -57,8 +57,9 @@ class SpecFlowState:
     # Job tracking
     job_id: Optional[str] = None
     
-    # Weaver output
+    # Weaver output (v3.0 - simple text, not spec)
     weaver_spec_id: Optional[str] = None
+    weaver_job_description: Optional[str] = None  # v3.0: Simple organized text from Weaver
     
     # Spec Gate output (SPoT - Singular Point of Truth)
     spec_id: Optional[str] = None
@@ -83,6 +84,7 @@ class SpecFlowState:
             "stage": self.stage.value,
             "job_id": self.job_id,
             "weaver_spec_id": self.weaver_spec_id,
+            "weaver_job_description": self.weaver_job_description,
             "spec_id": self.spec_id,
             "spec_hash": self.spec_hash,
             "spec_version": self.spec_version,
@@ -101,6 +103,7 @@ class SpecFlowState:
             stage=SpecFlowStage(data["stage"]),
             job_id=data.get("job_id"),
             weaver_spec_id=data.get("weaver_spec_id"),
+            weaver_job_description=data.get("weaver_job_description"),
             spec_id=data.get("spec_id"),
             spec_hash=data.get("spec_hash"),
             spec_version=data.get("spec_version", 1),
@@ -142,12 +145,20 @@ def clear_flow_state(project_id: int) -> None:
         logger.debug(f"[spec_flow] Cleared state for project {project_id}")
 
 
-def start_weaver_flow(project_id: int, weaver_spec_id: str) -> SpecFlowState:
-    """Start a new flow after Weaver generates a spec."""
+def start_weaver_flow(
+    project_id: int,
+    weaver_spec_id: str,
+    weaver_job_description: Optional[str] = None,
+) -> SpecFlowState:
+    """Start a new flow after Weaver generates a spec/job description.
+    
+    v3.0: Now accepts weaver_job_description for simple Weaver output.
+    """
     state = SpecFlowState(
         project_id=project_id,
         stage=SpecFlowStage.AWAITING_SPEC_GATE_CONFIRM,
         weaver_spec_id=weaver_spec_id,
+        weaver_job_description=weaver_job_description,
     )
     set_flow_state(state)
     return state
