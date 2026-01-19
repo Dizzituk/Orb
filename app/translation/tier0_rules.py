@@ -15,6 +15,9 @@ Handles:
 - Filesystem READ queries ("what's written in", "read file", "show contents of")
 - Filesystem command mode ("Astra/Orb, command: list/read/head/lines/find/append/overwrite/delete_area/delete_lines")
 
+v5.9 (2026-01): Added check_latest_report_trigger for latest architecture map / codebase report commands
+  - Routes "latest architecture map" to LATEST_ARCHITECTURE_MAP
+  - Routes "latest codebase report full" to LATEST_CODEBASE_REPORT_FULL
 v5.8 (2026-01): Added "Orb, command:" prefix support alongside "Astra, command:"
   - Updated tier0_classify() prefix stripper regex to accept orb|astra
   - Updated check_filesystem_query_trigger() command mode regex to accept orb|astra
@@ -155,6 +158,11 @@ def tier0_classify(text: str) -> Tier0RuleResult:
     
     # 4e. Check filesystem query (v1.5) - MUST be before is_obvious_chat!
     result = check_filesystem_query_trigger(text)
+    if result.matched:
+        return result
+    
+    # 4f. Check latest report commands (v5.9)
+    result = check_latest_report_trigger(text_stripped)
     if result.matched:
         return result
     
@@ -753,6 +761,51 @@ def check_codebase_report_trigger(text: str) -> Tier0RuleResult:
                 confidence=1.0,
                 rule_name="codebase_report",
                 reason="Codebase report command detected",
+            )
+    
+    return Tier0RuleResult(matched=False)
+
+
+def check_latest_report_trigger(text: str) -> Tier0RuleResult:
+    """
+    Special handler for latest report resolver commands.
+    
+    Commands:
+    - "latest architecture map" → Resolve and display latest ARCHITECTURE_MAP*.md
+    - "latest codebase report full" → Resolve and display latest CODEBASE_REPORT_FULL_*.md
+    
+    v5.9 (2026-01): Added latest report resolver support.
+    """
+    text_lower = text.strip().lower()
+    
+    # Latest architecture map
+    archmap_patterns = [
+        r"^latest\s+architecture\s+map$",
+    ]
+    
+    for pattern in archmap_patterns:
+        if re.match(pattern, text_lower):
+            return Tier0RuleResult(
+                matched=True,
+                intent=CanonicalIntent.LATEST_ARCHITECTURE_MAP,
+                confidence=1.0,
+                rule_name="latest_architecture_map",
+                reason="Latest architecture map command detected",
+            )
+    
+    # Latest codebase report full (also match short form "latest codebase report")
+    codebase_patterns = [
+        r"^latest\s+codebase\s+report(?:\s+full)?$",
+    ]
+    
+    for pattern in codebase_patterns:
+        if re.match(pattern, text_lower):
+            return Tier0RuleResult(
+                matched=True,
+                intent=CanonicalIntent.LATEST_CODEBASE_REPORT_FULL,
+                confidence=1.0,
+                rule_name="latest_codebase_report_full",
+                reason="Latest codebase report (FULL) command detected",
             )
     
     return Tier0RuleResult(matched=False)

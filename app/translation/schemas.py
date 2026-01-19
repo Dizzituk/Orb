@@ -93,6 +93,16 @@ class CanonicalIntent(str, Enum):
     
     # Generate hygiene/bloat/drift report (read-only)
     CODEBASE_REPORT = "CODEBASE_REPORT"
+    
+    # =========================================================================
+    # LATEST REPORT RESOLVER (v1.6)
+    # =========================================================================
+    
+    # Resolve and display latest architecture map
+    LATEST_ARCHITECTURE_MAP = "LATEST_ARCHITECTURE_MAP"
+    
+    # Resolve and display latest codebase report (FULL only)
+    LATEST_CODEBASE_REPORT_FULL = "LATEST_CODEBASE_REPORT_FULL"
 
 
 class LatencyTier(str, Enum):

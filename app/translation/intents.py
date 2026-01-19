@@ -3,6 +3,7 @@
 Canonical intent definitions for ASTRA Translation Layer.
 This is the CLOSED SET of allowed intents. No free-form execution.
 
+v1.3 (2026-01): Added LATEST_ARCHITECTURE_MAP and LATEST_CODEBASE_REPORT_FULL intents
 v1.2 (2026-01): Fixed Overwatcher gating - removed change_set_id requirement,
                 added proper trigger patterns for "run overwatcher"
 v1.1 (2026-01): Added Spec Gate flow intents (WEAVER_BUILD_SPEC, SEND_TO_SPEC_GATE)
@@ -618,6 +619,78 @@ INTENT_DEFINITIONS: Dict[CanonicalIntent, IntentDefinition] = {
             "Output: D:\\Orb.architecture\\CODEBASE_REPORT_<MODE>_<TIMESTAMP>.md/json\n"
             "\n"
             "Does NOT trigger embeddings, scans, indexing, or schema changes."
+        ),
+    ),
+    
+    # -------------------------------------------------------------------------
+    # LATEST REPORT RESOLVER (v1.3)
+    # -------------------------------------------------------------------------
+    
+    CanonicalIntent.LATEST_ARCHITECTURE_MAP: IntentDefinition(
+        intent=CanonicalIntent.LATEST_ARCHITECTURE_MAP,
+        trigger_phrases=[
+            "latest architecture map",
+            "Latest architecture map",
+            "Astra, command: latest architecture map",
+            "astra, command: latest architecture map",
+            "Orb, command: latest architecture map",
+            "orb, command: latest architecture map",
+        ],
+        trigger_patterns=[
+            r"^(?:[Aa]stra[,:]?\s*)?(?:command[:\s]+)?[Ll]atest\s+[Aa]rchitecture\s+[Mm]ap$",
+            r"^(?:[Oo]rb[,:]?\s*)?(?:command[:\s]+)?[Ll]atest\s+[Aa]rchitecture\s+[Mm]ap$",
+        ],
+        requires_context=[],
+        requires_confirmation=False,
+        description="Resolve and display the latest architecture map from D:\\Orb\\.architecture\\",
+        behavior=(
+            "Resolve the latest ARCHITECTURE_MAP*.md file by mtime.\n"
+            "\n"
+            "Location: D:\\Orb\\.architecture\\\n"
+            "Patterns: ARCHITECTURE_MAP.md, ARCHITECTURE_MAP_*.md\n"
+            "\n"
+            "Returns:\n"
+            "- File path and metadata (mtime, size)\n"
+            "- Content preview (first 100 lines)\n"
+            "\n"
+            "Read-only operation. Never hardcodes timestamped filenames."
+        ),
+    ),
+    
+    CanonicalIntent.LATEST_CODEBASE_REPORT_FULL: IntentDefinition(
+        intent=CanonicalIntent.LATEST_CODEBASE_REPORT_FULL,
+        trigger_phrases=[
+            "latest codebase report full",
+            "Latest codebase report full",
+            "Astra, command: latest codebase report full",
+            "astra, command: latest codebase report full",
+            "Orb, command: latest codebase report full",
+            "orb, command: latest codebase report full",
+            # Short forms
+            "latest codebase report",
+            "Latest codebase report",
+        ],
+        trigger_patterns=[
+            r"^(?:[Aa]stra[,:]?\s*)?(?:command[:\s]+)?[Ll]atest\s+[Cc]odebase\s+[Rr]eport(?:\s+[Ff]ull)?$",
+            r"^(?:[Oo]rb[,:]?\s*)?(?:command[:\s]+)?[Ll]atest\s+[Cc]odebase\s+[Rr]eport(?:\s+[Ff]ull)?$",
+        ],
+        requires_context=[],
+        requires_confirmation=False,
+        description="Resolve and display the latest FULL codebase report from D:\\Orb\\.architecture\\",
+        behavior=(
+            "Resolve the latest CODEBASE_REPORT_FULL_*.md file by mtime.\n"
+            "\n"
+            "Location: D:\\Orb\\.architecture\\\n"
+            "Patterns: CODEBASE_REPORT_FULL.md, CODEBASE_REPORT_FULL_*.md\n"
+            "\n"
+            "IMPORTANT: Only matches FULL reports (not FAST).\n"
+            "MD-first: ignores JSON files.\n"
+            "\n"
+            "Returns:\n"
+            "- File path and metadata (mtime, size)\n"
+            "- Content preview (first 100 lines)\n"
+            "\n"
+            "Read-only operation. Never hardcodes timestamped filenames."
         ),
     ),
     

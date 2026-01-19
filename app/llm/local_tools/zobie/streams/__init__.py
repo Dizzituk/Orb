@@ -11,6 +11,10 @@ from .archmap_full import generate_full_architecture_map_stream
 from .zobie_legacy import generate_local_zobie_map_stream
 from .fs_query import generate_filesystem_query_stream
 from .codebase_report import generate_codebase_report_stream
+from .latest_reports import (
+    generate_latest_architecture_map_stream,
+    generate_latest_codebase_report_full_stream,
+)
 
 __all__ = [
     "generate_sandbox_structure_scan_stream",
@@ -20,4 +24,6 @@ __all__ = [
     "generate_local_zobie_map_stream",
     "generate_filesystem_query_stream",
     "generate_codebase_report_stream",
+    "generate_latest_architecture_map_stream",
+    "generate_latest_codebase_report_full_stream",
 ]

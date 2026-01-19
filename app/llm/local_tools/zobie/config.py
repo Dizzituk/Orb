@@ -166,10 +166,12 @@ SANDBOX_SKIP_PATTERNS: Set[str] = {"secret", "credential", "password", "token", 
 # FILESYSTEM QUERY SETTINGS (v5.0 - surgical live read)
 # =============================================================================
 
-# v5.0: Tightened allowlist - specific safe folders only
-# Allowed roots for list/read/head/lines commands
+# v5.8: Expanded allowlist for full sandbox D: drive access
+# Allowed roots for list/read/head/lines/write commands
+# NOTE: D:\ allows ALL of D: drive - safe because this runs in sandbox only
 FILESYSTEM_QUERY_ALLOWED_ROOTS = [
-    r"D:\Orb",
+    "D:\\",           # Full D: drive (sandbox root) - can't use raw string here
+    r"D:\Orb",        # Legacy: still explicit for clarity
     r"D:\orb-desktop",
     r"C:\Users\dizzi\OneDrive\Desktop",
     r"C:\Users\dizzi\OneDrive\Documents",

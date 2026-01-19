@@ -5,6 +5,11 @@ This module handles parsing of both:
 - Explicit command mode: "Astra, command: read C:\\path"
 - Natural language: "What's in my desktop?"
 
+v5.7 (2026-01): Fixed multi-line quoted content parsing for overwrite/append
+  - Now properly handles quoted strings that span multiple lines
+  - Added _extract_quoted_arguments() tokenizer that respects quotes across newlines
+  - Better error messages showing what was parsed
+  - Fenced block support unchanged (already worked)
 v5.6 (2026-01): Fixed find command parsing - quoted value is search_term, not path
   - find "ME" -> search_term="ME", path=None
   - find "ME" in "C:\\path" -> search_term="ME", path="C:\\path"
@@ -16,7 +21,8 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Dict, Optional
+import sys
+from typing import Dict, List, Optional, Tuple
 
 from .config import KNOWN_FOLDER_PATHS
 from .fs_path_utils import normalize_path
@@ -72,7 +78,7 @@ def parse_command_mode(message: str) -> Optional[Dict]:
     # Normalize curly quotes to straight quotes for easier parsing
     text_normalized = text.replace('"', '"').replace('"', '"').replace(''', "'").replace(''', "'")
     
-    # Also strip hidden characters that can sneak in
+    # Also strip carriage returns (but NOT newlines - we need those for multi-line content!)
     text_normalized = text_normalized.replace('\r', '')
     
     # Check for write commands FIRST (they have special content parsing)
@@ -312,25 +318,120 @@ def _parse_find_command(text: str) -> Optional[Dict]:
     return None
 
 
+def _extract_quoted_arguments(text: str, debug: bool = False) -> List[str]:
+    """
+    Extract quoted arguments from text, handling multi-line strings.
+    
+    Tokenizes the text respecting quoted strings that may span multiple lines.
+    Returns list of extracted quoted/unquoted arguments.
+    
+    Examples:
+        '"path" "content"' -> ['path', 'content']
+        '"path" "multi\\nline"' -> ['path', 'multi\\nline']
+        'unquoted_path "content"' -> ['unquoted_path', 'content']
+        '"D:\\path\\file.py" "# comment\\ndef foo():\\n    pass"' 
+            -> ['D:\\path\\file.py', '# comment\\ndef foo():\\n    pass']
+    
+    v5.7: New function to properly handle multi-line quoted content.
+    """
+    args = []
+    pos = 0
+    text_len = len(text)
+    
+    if debug:
+        print(f"[TOKENIZER] input_len={text_len} preview={repr(text[:80])}{'...' if len(text) > 80 else ''}", file=sys.stderr)
+    
+    while pos < text_len:
+        # Skip whitespace (spaces, tabs, newlines between arguments)
+        while pos < text_len and text[pos] in ' \t\n':
+            pos += 1
+        
+        if pos >= text_len:
+            break
+        
+        char = text[pos]
+        
+        # Quoted argument - handles multi-line content within quotes
+        if char in '"\'':
+            quote_char = char
+            pos += 1  # Skip opening quote
+            arg_start = pos
+            
+            # Find closing quote (can span multiple lines!)
+            # We do NOT stop at newlines - the quote must be closed
+            while pos < text_len:
+                if text[pos] == quote_char:
+                    # Found closing quote (not escaped)
+                    # Check if previous char was backslash (escape)
+                    # But be careful about \\\" (escaped backslash + quote)
+                    num_backslashes = 0
+                    check_pos = pos - 1
+                    while check_pos >= arg_start and text[check_pos] == '\\':
+                        num_backslashes += 1
+                        check_pos -= 1
+                    
+                    # If odd number of backslashes, the quote is escaped
+                    if num_backslashes % 2 == 0:
+                        # Even backslashes (or zero) = real closing quote
+                        arg_content = text[arg_start:pos]
+                        args.append(arg_content)
+                        pos += 1  # Skip closing quote
+                        if debug:
+                            print(f"[TOKENIZER] found quoted arg: {repr(arg_content[:50])}{'...' if len(arg_content) > 50 else ''}", file=sys.stderr)
+                        break
+                    else:
+                        # Escaped quote - continue
+                        pos += 1
+                else:
+                    pos += 1
+            else:
+                # No closing quote found - take rest as partial arg
+                arg_content = text[arg_start:]
+                args.append(arg_content)
+                if debug:
+                    print(f"[TOKENIZER] unclosed quote, took rest: {repr(arg_content[:50])}...", file=sys.stderr)
+        else:
+            # Unquoted argument - read until whitespace or quote
+            arg_start = pos
+            while pos < text_len and text[pos] not in ' \t\n"\'':
+                pos += 1
+            if pos > arg_start:
+                arg_content = text[arg_start:pos]
+                args.append(arg_content)
+                if debug:
+                    print(f"[TOKENIZER] found unquoted arg: {repr(arg_content)}", file=sys.stderr)
+    
+    if debug:
+        print(f"[TOKENIZER] result: {len(args)} args", file=sys.stderr)
+    
+    return args
+
+
 def _parse_write_command(text: str) -> Optional[Dict]:
     """
     Parse write commands: append, overwrite, delete_area, delete_lines.
     
     Supported formats:
-    1. Inline quoted: append <path> "content here"
-    2. Fenced block:
+    1. Inline quoted (single-line): append <path> "content here"
+    2. Inline quoted (multi-line): append "<path>" "multi
+       line content here"
+    3. Fenced block:
        append <path>
        ```
        content here
        ```
-    3. Delete area (markers): delete_area <path>
-    4. Delete lines: delete_lines <path> <start> <end>
+    4. Delete area (markers): delete_area <path>
+    5. Delete lines: delete_lines <path> <start> <end>
     
     Returns parsed dict or None if not a write command.
+    
+    v5.7: Fixed multi-line quoted content by using proper tokenizer.
+    Previously split on newlines first which broke multi-line quoted strings.
     """
-    # Split into lines for fenced block detection
-    lines = text.split('\n')
-    first_line = lines[0].strip()
+    # Get first line to determine command type
+    first_newline = text.find('\n')
+    first_line = text[:first_newline] if first_newline != -1 else text
+    first_line = first_line.strip()
     first_line_lower = first_line.lower()
     
     # Check for write commands
@@ -345,9 +446,6 @@ def _parse_write_command(text: str) -> Optional[Dict]:
     if not cmd:
         return None
     
-    # Remove command from first line
-    rest_of_first_line = first_line[len(cmd):].strip()
-    
     result = {
         "command": cmd,
         "path": "",
@@ -360,11 +458,14 @@ def _parse_write_command(text: str) -> Optional[Dict]:
         "content": None,
     }
     
+    # Get everything after the command name on the first line
+    rest_of_first_line = first_line[len(cmd):].strip()
+    
     # ==========================================================================
     # DELETE_AREA: delete_area <path>
     # ==========================================================================
     if cmd == "delete_area":
-        # Just needs path
+        # Just needs path (on first line only)
         path = _extract_path_from_text(rest_of_first_line)
         if path:
             result["path"] = normalize_path(path, debug=True)
@@ -386,7 +487,6 @@ def _parse_write_command(text: str) -> Optional[Dict]:
             return result
         
         # Try unquoted path (numbers at end)
-        # Find the last two numbers
         parts = rest_of_first_line.split()
         if len(parts) >= 3:
             try:
@@ -406,50 +506,57 @@ def _parse_write_command(text: str) -> Optional[Dict]:
     # APPEND / OVERWRITE: Need path + content
     # ==========================================================================
     
-    # Check for fenced block content (```...```)
+    # Split full text into lines for fenced block detection
+    lines = text.split('\n')
+    
+    # Check for fenced block content FIRST (```...```)
+    # Fenced blocks start on line 2 or later
     fenced_content = _extract_fenced_content(lines[1:]) if len(lines) > 1 else None
     
     if fenced_content is not None:
-        # Path is in rest_of_first_line
+        # Path is on first line after command
         path = _extract_path_from_text(rest_of_first_line)
         if path:
             result["path"] = normalize_path(path, debug=True)
         result["content"] = fenced_content
         return result
     
-    # Check for inline quoted content: append <path> "content"
-    # Pattern: <path> "content" or "<path>" "content"
+    # ==========================================================================
+    # MULTI-LINE QUOTED CONTENT HANDLING (v5.7 fix)
+    # ==========================================================================
+    # For append/overwrite with quoted content, we need the FULL text
+    # (not just first line) to handle multi-line quoted strings.
     
-    # Try: append "<path>" "content"
-    double_quoted = re.match(
-        r'^["\']([^"\']+)["\']\s+["\'](.*)["\']\s*$',
-        rest_of_first_line,
-        re.DOTALL
-    )
-    if double_quoted:
-        result["path"] = normalize_path(double_quoted.group(1), debug=True)
-        result["content"] = double_quoted.group(2)
+    # Get everything after the command name in the FULL text
+    # Find where the command starts and skip past it
+    cmd_match = re.match(r'^' + re.escape(cmd) + r'\s*', text, re.IGNORECASE)
+    if cmd_match:
+        full_args = text[cmd_match.end():]
+    else:
+        full_args = text[len(cmd):].strip()
+    
+    # Use tokenizer to extract arguments (respects quotes across newlines)
+    args = _extract_quoted_arguments(full_args, debug=True)
+    
+    if len(args) >= 2:
+        # First arg is path, second arg is content
+        result["path"] = normalize_path(args[0], debug=True)
+        result["content"] = args[1]
+        return result
+    elif len(args) == 1:
+        # Only one argument - is it path or content?
+        arg = args[0]
+        # If it looks like a path (has drive letter or is clearly a file path)
+        if re.match(r'^[A-Za-z]:[/\\]', arg) or '\\' in arg or '/' in arg:
+            result["path"] = normalize_path(arg, debug=True)
+            # Content is None - caller will see "no content" error
+        else:
+            # Doesn't look like a path - could be path without drive letter
+            # or could be content without path (which is an error anyway)
+            result["path"] = normalize_path(arg, debug=True)
         return result
     
-    # Try: append <path> "content" (path without quotes, content with quotes)
-    # Find the last quoted string as content
-    content_match = re.search(r'["\']([^"\']*)["\']$', rest_of_first_line)
-    if content_match:
-        content = content_match.group(1)
-        path_part = rest_of_first_line[:content_match.start()].strip()
-        # Remove trailing quote from path if any
-        path_part = path_part.rstrip('"\'').strip()
-        path = _extract_path_from_text(path_part)
-        if path:
-            result["path"] = normalize_path(path, debug=True)
-        result["content"] = content
-        return result
-    
-    # No content found - just path (error case, but let caller handle)
-    path = _extract_path_from_text(rest_of_first_line)
-    if path:
-        result["path"] = normalize_path(path, debug=True)
-    
+    # No arguments found
     return result
 
 

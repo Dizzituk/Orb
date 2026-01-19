@@ -3,6 +3,7 @@
 Streaming endpoints for real-time LLM responses.
 Uses Server-Sent Events (SSE).
 
+v4.14 (2026-01): Added LATEST_ARCHITECTURE_MAP and LATEST_CODEBASE_REPORT_FULL routing
 v4.13 (2026-01): Added CODEBASE_REPORT command routing for hygiene/bloat/drift reports
 v4.12 (2026-01): RAG fallback in _handle_normal_routing for architecture queries
 v4.11 (2026-01): Split architecture map: ALL CAPS → full scan, lowercase → DB only
@@ -157,6 +158,8 @@ try:
         generate_local_zobie_map_stream,
         generate_update_architecture_stream,
         generate_sandbox_structure_scan_stream,
+        generate_latest_architecture_map_stream,
+        generate_latest_codebase_report_full_stream,
     )
     _LOCAL_TOOLS_AVAILABLE = True
     print("[stream_router] Local tools loaded successfully")
@@ -998,6 +1001,88 @@ def _handle_command_execution(req, translation_result, db, trace, conversation_i
         
         return StreamingResponse(
             _codebase_report_unavailable_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+    
+    # Latest Architecture Map (v4.14) - Resolve and display latest ARCHITECTURE_MAP*.md
+    if intent == CanonicalIntent.LATEST_ARCHITECTURE_MAP:
+        if _LOCAL_TOOLS_AVAILABLE:
+            if stage_trace:
+                stage_trace.enter_stage("latest_architecture_map", provider="local", model="latest_report_resolver")
+            return StreamingResponse(
+                generate_latest_architecture_map_stream(
+                    project_id=req.project_id,
+                    message=req.message,
+                    db=db,
+                    trace=trace,
+                ),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+        else:
+            _log_routing_failure(stage_trace, "Local tools not available for latest architecture map", "generate_latest_architecture_map_stream")
+            _log_handler_availability()
+        
+        # Return error message
+        error_msg = (
+            "⚠️ **Latest Architecture Map Handler Not Available**\n\n"
+            "The latest report resolver module failed to import.\n"
+            "Check server logs for details.\n\n"
+            "**Possible solutions:**\n"
+            "1. Ensure local tools are available\n"
+            "2. Check for import errors in `app/llm/local_tools/zobie_tools.py`\n"
+            "3. Restart the backend server"
+        )
+        
+        async def _latest_archmap_unavailable_stream():
+            yield "data: " + json.dumps({'type': 'error', 'error': 'Latest architecture map handler not available'}) + "\n\n"
+            yield "data: " + json.dumps({'type': 'token', 'content': error_msg}) + "\n\n"
+            yield "data: " + json.dumps({'type': 'done', 'provider': 'system', 'model': 'command_router'}) + "\n\n"
+        
+        return StreamingResponse(
+            _latest_archmap_unavailable_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+    
+    # Latest Codebase Report Full (v4.14) - Resolve and display latest CODEBASE_REPORT_FULL_*.md
+    if intent == CanonicalIntent.LATEST_CODEBASE_REPORT_FULL:
+        if _LOCAL_TOOLS_AVAILABLE:
+            if stage_trace:
+                stage_trace.enter_stage("latest_codebase_report_full", provider="local", model="latest_report_resolver")
+            return StreamingResponse(
+                generate_latest_codebase_report_full_stream(
+                    project_id=req.project_id,
+                    message=req.message,
+                    db=db,
+                    trace=trace,
+                ),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+        else:
+            _log_routing_failure(stage_trace, "Local tools not available for latest codebase report full", "generate_latest_codebase_report_full_stream")
+            _log_handler_availability()
+        
+        # Return error message
+        error_msg = (
+            "⚠️ **Latest Codebase Report Handler Not Available**\n\n"
+            "The latest report resolver module failed to import.\n"
+            "Check server logs for details.\n\n"
+            "**Possible solutions:**\n"
+            "1. Ensure local tools are available\n"
+            "2. Check for import errors in `app/llm/local_tools/zobie_tools.py`\n"
+            "3. Restart the backend server"
+        )
+        
+        async def _latest_codebase_report_unavailable_stream():
+            yield "data: " + json.dumps({'type': 'error', 'error': 'Latest codebase report handler not available'}) + "\n\n"
+            yield "data: " + json.dumps({'type': 'token', 'content': error_msg}) + "\n\n"
+            yield "data: " + json.dumps({'type': 'done', 'provider': 'system', 'model': 'command_router'}) + "\n\n"
+        
+        return StreamingResponse(
+            _latest_codebase_report_unavailable_stream(),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )

@@ -13,6 +13,8 @@ from app.llm.local_tools.zobie.streams import (
     generate_local_zobie_map_stream,
     generate_filesystem_query_stream,
     generate_codebase_report_stream,
+    generate_latest_architecture_map_stream,
+    generate_latest_codebase_report_full_stream,
 )
 
 __all__ = [
@@ -23,4 +25,6 @@ __all__ = [
     "generate_local_zobie_map_stream",
     "generate_filesystem_query_stream",
     "generate_codebase_report_stream",
+    "generate_latest_architecture_map_stream",
+    "generate_latest_codebase_report_full_stream",
 ]
