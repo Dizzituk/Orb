@@ -25,8 +25,8 @@ from sqlalchemy.orm import Session
 from app.llm.audit_logger import RoutingTrace
 from ..sse import sse_token, sse_error, sse_done
 
-# Import resolver
-from ..latest_report_resolver import (
+# Import resolver (three dots: streams/ -> zobie/ -> local_tools/)
+from ...latest_report_resolver import (
     get_latest_architecture_map,
     get_latest_codebase_report_full,
     read_report_content,
@@ -60,7 +60,7 @@ async def generate_latest_architecture_map_stream(
     Stream generator for latest architecture map command.
     
     Resolves and displays the latest ARCHITECTURE_MAP*.md file
-    from D:\Orb\.architecture\.
+    from D:\\Orb\\.architecture\\.
     """
     loop = asyncio.get_event_loop()
     started_ms = int(loop.time() * 1000)
@@ -140,7 +140,7 @@ async def generate_latest_codebase_report_full_stream(
     Stream generator for latest codebase report (FULL) command.
     
     Resolves and displays the latest CODEBASE_REPORT_FULL_*.md file
-    from D:\Orb\.architecture\.
+    from D:\\Orb\\.architecture\\.
     
     IMPORTANT: Only returns FULL reports (not FAST).
     """
