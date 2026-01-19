@@ -19,6 +19,15 @@ from typing import Dict, Any
 
 
 # =============================================================================
+# AnyIO Backend Configuration (use asyncio only, no trio dependency)
+# =============================================================================
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+# =============================================================================
 # Test: Evidence Collector Module
 # =============================================================================
 
@@ -366,7 +375,7 @@ class TestReadOnlyRuntime:
         )
         assert result.db_persisted is False
     
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_grounded_returns_no_persistence(self):
         """Test that run_spec_gate_grounded never persists to DB."""
         try:

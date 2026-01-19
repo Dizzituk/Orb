@@ -383,7 +383,7 @@ def verify_no_downstream_persistence():
             "app", "llm", "spec_gate_stream.py"
         )
         
-        with open(stream_file, 'r') as f:
+        with open(stream_file, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
         
         # Check for persistence imports
