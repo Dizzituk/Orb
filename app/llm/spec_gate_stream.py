@@ -2,6 +2,11 @@
 """
 Spec Gate streaming handler for ASTRA command flow.
 
+v2.2 (2026-01-20): Caller-side persistence (v1.5 SpecGate support)
+- Persist spec to DB after validation (caller responsibility, not SpecGate)
+- SpecGate remains read-only in runtime
+- Actual persistence status reflected in events
+
 v2.1 (2026-01-04): Blocking Validation Support
 - Shows blocking issues prominently when validation fails
 - Clear distinction between blocking vs informational questions
@@ -48,6 +53,25 @@ except Exception as e:
     _SPEC_GATE_GROUNDED_AVAILABLE = False
     run_spec_gate_grounded = None
     logger.warning("[spec_gate_stream] spec_gate_grounded module not available: %s", e)
+
+# Import Spec Gate Persistence (v1.5 - persist after validation)
+try:
+    from app.pot_spec.spec_gate_persistence import (
+        persist_spec,
+        build_spec_schema,
+        safe_summary_from_objective,
+        write_spec_artifacts,
+        compute_spec_hash,
+    )
+    _SPEC_PERSISTENCE_AVAILABLE = True
+except Exception as e:
+    _SPEC_PERSISTENCE_AVAILABLE = False
+    persist_spec = None
+    build_spec_schema = None
+    safe_summary_from_objective = None
+    write_spec_artifacts = None
+    compute_spec_hash = None
+    logger.warning("[spec_gate_stream] spec_gate_persistence module not available: %s", e)
 
 # Flow state management (optional)
 try:
@@ -479,10 +503,67 @@ async def generate_spec_gate_stream(
                 yield _safe_json_event({"type": "token", "content": success_header})
                 response_parts.append(success_header)
 
-            if getattr(result, "db_persisted", False):
+            # v1.5: Persist spec after validation (caller responsibility)
+            db_persisted = getattr(result, "db_persisted", False)
+            persist_error = None
+            
+            if not db_persisted and _SPEC_PERSISTENCE_AVAILABLE and persist_spec and build_spec_schema:
+                try:
+                    # Build spec schema for persistence
+                    spot_md = getattr(result, "spot_markdown", "") or ""
+                    spec_id = getattr(result, "spec_id", "") or ""
+                    spec_hash = getattr(result, "spec_hash", "") or ""
+                    
+                    # Extract info from spot_markdown for schema
+                    goal = ""
+                    if "## Goal" in spot_md:
+                        goal_start = spot_md.index("## Goal") + len("## Goal")
+                        goal_end = spot_md.find("##", goal_start)
+                        if goal_end == -1:
+                            goal_end = len(spot_md)
+                        goal = spot_md[goal_start:goal_end].strip()
+                    
+                    summary = safe_summary_from_objective(goal) if safe_summary_from_objective else goal[:180]
+                    
+                    spec_schema = build_spec_schema(
+                        spec_id=spec_id,
+                        title="SPoT Spec (SpecGate Contract v1)",
+                        summary=summary,
+                        objective=goal,
+                        outputs=[],  # Extracted from spec if needed
+                        steps=[],    # Extracted from spec if needed
+                        acceptance=[],  # Extracted from spec if needed
+                        context={"source": "spec_gate_grounded", "round": clarification_round},
+                        job_id=job_id,
+                        provider_id=spec_gate_provider,
+                        model_id=spec_gate_model,
+                    )
+                    
+                    if spec_schema:
+                        success, db_spec_id, db_spec_hash, error = persist_spec(
+                            db=db,
+                            project_id=project_id,
+                            spec_schema=spec_schema,
+                            provider_id=spec_gate_provider,
+                            model_id=spec_gate_model,
+                        )
+                        if success:
+                            db_persisted = True
+                            logger.info("[spec_gate_stream] v1.5: Spec persisted to DB: %s", db_spec_id)
+                        else:
+                            persist_error = error
+                            logger.warning("[spec_gate_stream] v1.5: Spec persistence failed: %s", error)
+                except Exception as e:
+                    persist_error = str(e)
+                    logger.exception("[spec_gate_stream] v1.5: Spec persistence exception: %s", e)
+            
+            if db_persisted:
                 db_msg = "💾 Spec persisted to database.\n\n"
             else:
-                db_msg = "⚠️ Spec NOT persisted to database - may not survive restart.\n\n"
+                db_msg = "⚠️ Spec NOT persisted to database - may not survive restart.\n"
+                if persist_error:
+                    db_msg += f"   Reason: {persist_error}\n"
+                db_msg += "\n"
             yield _safe_json_event({"type": "token", "content": db_msg})
             response_parts.append(db_msg)
 
@@ -524,7 +605,7 @@ async def generate_spec_gate_stream(
                 "spec_id": getattr(result, "spec_id", None),
                 "spec_hash": getattr(result, "spec_hash", None),
                 "job_id": job_id,
-                "db_persisted": bool(getattr(result, "db_persisted", False)),
+                "db_persisted": db_persisted,  # v1.5: Use actual persistence result
                 "validation_status": validation_status,
             })
 
@@ -547,7 +628,7 @@ async def generate_spec_gate_stream(
             "model": spec_gate_model,
             "total_length": sum(len(p) for p in response_parts),
             "spec_id": getattr(result, "spec_id", None) if "result" in locals() else None,
-            "db_persisted": bool(getattr(result, "db_persisted", False)) if "result" in locals() else False,
+            "db_persisted": db_persisted if "db_persisted" in locals() else False,  # v1.5: Use actual persistence result
             "validation_status": validation_status if "validation_status" in locals() else "unknown",
         })
 

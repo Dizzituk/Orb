@@ -37,6 +37,50 @@ v1.2 (2026-01): Decision forks replace lazy questions (Contract v1.2 compliance)
               - Round 1 asks bounded A/B/C product decisions, not "tell me steps/tests"
               - Round 2 derives steps/tests from domain + answered forks
               - Added domain detection and fork question bank
+v1.3 (2026-01): Content-aware sandbox discovery wired (JOB 2 complete)
+              - Sandbox jobs now auto-discover input file by content, not filename
+              - Output path locked to same folder as input (reply.txt)
+              - Ambiguity triggers question (same-type files with close scores)
+              - Progressive reads: snippet for classification, full read for winner
+v1.4 (2026-01): Question discipline upgrade (blocker-only gating)
+              - Questions only asked if they change architecture/data model/acceptance
+              - Non-blocking forks get safe defaults + recorded as assumptions
+              - Early exit when spec is complete (no question-hunting)
+              - Added GroundedAssumption dataclass for tracking defaults
+v1.5 (2026-01): Decision tracking + conditional steps/tests
+              - Added spec.decisions dict for resolved blocking forks
+              - Assumptions populate every round (not just Round 1)
+              - Steps/tests conditional on decisions (no "if selected" when decided)
+              - OCR test references "Successfully Completed Parcels" correctly
+              - Added "Resolved Decisions" section to markdown output
+v1.6 (2026-01): Sandbox discovery fixes (MUST NOT silently skip)
+              - Added "sandbox_file" domain detection for file tasks
+              - Added explicit logging for sandbox discovery flow
+              - BLOCKING: If sandbox hints detected but tools unavailable, return error
+              - BLOCKING: If discovery runs but finds no file, return error
+              - BLOCKING: If discovery returns empty or raises exception, return error
+              - Added sandbox-specific steps and tests for sandbox_file domain
+              - Added sandbox_discovery_status and sandbox_skip_reason tracking
+              - Never silently validate a generic spec for sandbox tasks
+v1.7 (2026-01): Read-only reply output fix
+              - SpecGate is STRICTLY READ-ONLY: never claims to write files
+              - Removed "Write reply to..." and "Verify output created" from steps/tests
+              - Added sandbox_generated_reply field to include reply IN the SPoT output
+              - Added "Reply (Read-Only)" section to markdown output
+              - Changed constraint wording: "Planned output path (for later stages)" not "must be written"
+              - Reply is dynamically generated from file content, not hardcoded
+v1.8 (2026-01): LLM-powered intelligent reply generation + stopword parsing fix
+              - _generate_reply_from_content() now uses LLM (via llm_call) for intelligent answers
+              - Actually ANSWERS questions in files instead of generic acknowledgements
+              - Explains code when file contains code snippets
+              - Fallback to heuristics if LLM unavailable
+              - Uses provider_id/model_id passed to run_spec_gate_grounded()
+              - CRITICAL FIX: _extract_sandbox_hints() stopword filtering
+                  - Added comprehensive SUBFOLDER_STOPWORDS set (on, in, at, to, of, for, etc.)
+                  - Prevents "desktop/on" from ever being generated
+                  - Improved pattern order (most specific first)
+                  - Strips meta-instructions ("reply ok", "say ok when you understand")
+                  - Better logging for debugging hint extraction
 """
 
 from __future__ import annotations
@@ -96,6 +140,29 @@ except ImportError:
         blocking_issues: List[str] = field(default_factory=list)
         validation_status: str = "pending"
 
+# Sandbox inspection (read-only discovery) - v1.3
+try:
+    from app.llm.local_tools.zobie.sandbox_inspector import (
+        run_sandbox_discovery_chain,
+        file_exists_in_sandbox,
+        read_sandbox_file,
+        SANDBOX_ROOTS,
+    )
+    _SANDBOX_INSPECTOR_AVAILABLE = True
+except ImportError as e:
+    logger.warning("[spec_gate_grounded] sandbox_inspector not available: %s", e)
+    _SANDBOX_INSPECTOR_AVAILABLE = False
+    run_sandbox_discovery_chain = None
+
+# LLM call for intelligent reply generation - v1.8
+try:
+    from app.providers.registry import llm_call, LlmCallResult
+    _LLM_CALL_AVAILABLE = True
+except ImportError as e:
+    logger.warning("[spec_gate_grounded] llm_call not available: %s", e)
+    _LLM_CALL_AVAILABLE = False
+    llm_call = None
+
 
 # =============================================================================
 # CONSTANTS
@@ -132,12 +199,32 @@ DOMAIN_KEYWORDS = {
         "encryption", "encrypted", "trusted wi-fi", "trusted wifi",
         "in-van", "in van", "delivery", "parcels", "shift",
     ],
+    # v1.6: Sandbox file tasks (read file, reply, find by discovery)
+    "sandbox_file": [
+        "sandbox", "sandbox desktop", "sandbox task",
+        "find the file", "find by discovery", "discovery",
+        "read the file", "read the question", "read the message",
+        "reply", "include the reply", "include reply",
+        "desktop folder", "folder called", "folder named",
+        "text file", ".txt", "test.txt",
+    ],
     # Future domains can be added here (e.g., "web_app", "cli_tool", "api_service")
 }
 
 # Fork question bank - templates for bounded A/B/C questions
 # Each fork has: question, why_it_matters, options (A/B/C)
 # Evidence is dynamically populated from Weaver text
+#
+# v1.4 BLOCKING CRITERIA:
+# A question is BLOCKING only if the answer changes:
+#   - Architecture/platform choice
+#   - Required tooling (OCR vs manual)
+#   - Data model / persistence approach  
+#   - Acceptance criteria / definition of done
+#   - Integration boundaries required for v1 correctness
+#
+# Non-blocking forks get safe defaults and are recorded as assumptions.
+#
 MOBILE_APP_FORK_BANK = [
     {
         "id": "platform_v1",
@@ -145,6 +232,9 @@ MOBILE_APP_FORK_BANK = [
         "why_it_matters": "Determines SDK choice, build tooling, and timeline. iOS adds ~40% development time.",
         "options": ["Android-only first", "Android + iOS from day 1"],
         "triggers": ["android", "ios", "iphone", "mobile", "phone"],
+        "blocking": True,  # Changes architecture fundamentally
+        "default_value": None,
+        "default_reason": None,
     },
     {
         "id": "offline_storage",
@@ -155,6 +245,9 @@ MOBILE_APP_FORK_BANK = [
             "Encrypted file store (JSON + crypto, simpler but less queryable)",
         ],
         "triggers": ["offline", "encryption", "encrypted", "storage", "local"],
+        "blocking": False,  # v1.4: Can default to simpler option for v1
+        "default_value": "Local encrypted storage (SQLite + encryption for v1)",
+        "default_reason": "Standard v1 approach; can upgrade to SQLCipher later if needed",
     },
     {
         "id": "input_mode_v1",
@@ -166,6 +259,9 @@ MOBILE_APP_FORK_BANK = [
             "Manual-only (voice deferred to v2)",
         ],
         "triggers": ["voice", "push-to-talk", "push to talk", "manual", "input", "talk"],
+        "blocking": True,  # Changes tooling (speech-to-text integration)
+        "default_value": None,
+        "default_reason": None,
     },
     {
         "id": "ocr_scope_v1",
@@ -176,6 +272,9 @@ MOBILE_APP_FORK_BANK = [
             "Multiple screen formats (Finish Tour + route summary + others)",
         ],
         "triggers": ["ocr", "screenshot", "parse", "finish tour", "scan"],
+        "blocking": True,  # Changes tooling (OCR templates needed)
+        "default_value": None,
+        "default_reason": None,
     },
     {
         "id": "sync_behaviour",
@@ -187,6 +286,9 @@ MOBILE_APP_FORK_BANK = [
             "Both (manual + optional auto on trusted Wi-Fi)",
         ],
         "triggers": ["sync", "wi-fi", "wifi", "upload", "background"],
+        "blocking": False,  # v1.4: NOT blocking - v1 is local-only by default
+        "default_value": "Local-only for v1 (no cloud sync)",
+        "default_reason": "v1 focus is local capture; sync deferred or via export",
     },
     {
         "id": "sync_target",
@@ -197,6 +299,9 @@ MOBILE_APP_FORK_BANK = [
             "Export/import file only (no live endpoint yet)",
         ],
         "triggers": ["astra", "endpoint", "server", "export", "private", "lan", "vpn"],
+        "blocking": False,  # v1.4: NOT blocking - can be export-only placeholder
+        "default_value": "Export file for ASTRA integration (no live endpoint for v1)",
+        "default_reason": "ASTRA integration via file export/import; live endpoint deferred",
     },
     {
         "id": "knockon_tracking",
@@ -207,6 +312,9 @@ MOBILE_APP_FORK_BANK = [
             "Inferred from Tue/Thu pattern (auto-detected)",
         ],
         "triggers": ["knock-on", "knockon", "knock on", "tuesday", "thursday", "reschedule"],
+        "blocking": False,  # v1.4: NOT blocking - manual toggle is safe default
+        "default_value": "Manual toggle per day",
+        "default_reason": "Simpler for v1; pattern detection can be added later",
     },
     {
         "id": "pay_variation",
@@ -217,6 +325,9 @@ MOBILE_APP_FORK_BANK = [
             "Forced daily confirmation before shift start",
         ],
         "triggers": ["pay", "rate", "parcel", "1.85", "2.00", "variation", "override"],
+        "blocking": False,  # v1.4: NOT blocking - default rate is safe
+        "default_value": "Default rate (£1.85) with optional override in settings",
+        "default_reason": "Use provided rate as default; override in settings if needed",
     },
 ]
 
@@ -282,12 +393,17 @@ def extract_decision_forks(
     weaver_text: str,
     detected_domains: List[str],
     max_questions: int = 7,
-) -> List[GroundedQuestion]:
+) -> Tuple[List[GroundedQuestion], List[GroundedAssumption]]:
     """
     Extract bounded decision fork questions from Weaver text.
     
     v1.2: This replaces the lazy "tell me steps/tests" questions.
     Only asks for genuine product decisions that SpecGate cannot derive.
+    
+    v1.4: BLOCKER-ONLY GATING
+    - Only returns questions where blocking=True
+    - Non-blocking forks get safe defaults and are returned as assumptions
+    - This prevents "question-hunting" (asking for the sake of asking)
     
     Args:
         weaver_text: Full Weaver job description text
@@ -295,17 +411,17 @@ def extract_decision_forks(
         max_questions: Maximum questions to return (default 7)
         
     Returns:
-        List of GroundedQuestion with bounded A/B/C options
+        Tuple of (blocking_questions, assumptions)
     """
     if not weaver_text:
-        return []
+        return [], []
     
-    questions = []
+    questions: List[GroundedQuestion] = []
+    assumptions: List[GroundedAssumption] = []
     text_lower = weaver_text.lower()
     
     # Get unresolved ambiguities for evidence citation
     ambiguities = extract_unresolved_ambiguities(weaver_text)
-    ambiguity_text = " | ".join(ambiguities) if ambiguities else ""
     
     # Process mobile app domain
     if "mobile_app" in detected_domains:
@@ -313,8 +429,14 @@ def extract_decision_forks(
             # Check if any trigger keywords are present
             triggered = any(trigger in text_lower for trigger in fork["triggers"])
             
-            if triggered:
-                # Find relevant ambiguity for evidence citation
+            if not triggered:
+                continue
+            
+            # v1.4: Check if this fork is blocking or can be defaulted
+            is_blocking = fork.get("blocking", True)  # Default to blocking if not specified
+            
+            if is_blocking:
+                # This question changes architecture/tooling/acceptance - MUST ASK
                 evidence = "Detected from Weaver intent"
                 for amb in ambiguities:
                     amb_lower = amb.lower()
@@ -329,13 +451,439 @@ def extract_decision_forks(
                     evidence_found=evidence,
                     options=fork["options"],
                 ))
+                
+                logger.info(
+                    "[spec_gate_grounded] v1.4 BLOCKING question: %s",
+                    fork["question"]
+                )
+            else:
+                # v1.4: Non-blocking - apply safe default and record as assumption
+                default_value = fork.get("default_value")
+                default_reason = fork.get("default_reason")
+                
+                if default_value and default_reason:
+                    assumptions.append(GroundedAssumption(
+                        topic=fork["id"],
+                        assumed_value=default_value,
+                        reason=default_reason,
+                        can_override=True,
+                    ))
+                    
+                    logger.info(
+                        "[spec_gate_grounded] v1.4 ASSUMED (not blocking): %s -> %s",
+                        fork["id"], default_value
+                    )
             
             if len(questions) >= max_questions:
                 break
     
     # Future: Add other domain fork banks here
     
-    return questions[:max_questions]
+    return questions[:max_questions], assumptions
+
+
+# =============================================================================
+# SANDBOX DISCOVERY HELPERS (v1.3)
+# =============================================================================
+
+def _extract_sandbox_hints(text: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Extract anchor and subfolder from Weaver/user text.
+    
+    v1.8: Fixed stopword filtering - "on", "in", etc. must not become subfolder names.
+    
+    Returns:
+        (anchor, subfolder) or (None, None) if no sandbox hints found
+        
+    Examples:
+        "Desktop folder called test" → ("desktop", "test")
+        "file on the desktop" → ("desktop", None)
+        "Documents/reports" → ("documents", "reports")
+        "text file in my test folder on the desktop" → ("desktop", "test")
+    """
+    if not text:
+        return None, None
+    
+    text_lower = text.lower()
+    
+    # v1.8: Comprehensive stopword list - these must NEVER be captured as subfolder names
+    SUBFOLDER_STOPWORDS = {
+        # Prepositions
+        "on", "in", "at", "to", "of", "for", "from", "with", "by",
+        # Articles/determiners
+        "the", "a", "an", "my", "your", "this", "that", "it",
+        # Generic words
+        "folder", "file", "files", "directory", "dir",
+        # Conversational
+        "ok", "okay", "yes", "no", "please", "thanks",
+    }
+    
+    # Detect anchor
+    anchor = None
+    if "desktop" in text_lower:
+        anchor = "desktop"
+    elif "documents" in text_lower or "document" in text_lower:
+        anchor = "documents"
+    
+    if not anchor:
+        return None, None
+    
+    # v1.8: Strip meta-instructions before extracting subfolder
+    # These contaminate intent parsing: "reply ok", "say ok when you understand", etc.
+    meta_patterns = [
+        r'reply\s+(?:with\s+)?ok\b[^.]*',
+        r'say\s+(?:with\s+)?ok\b[^.]*',
+        r'just\s+say\s+ok\b[^.]*',
+        r'when\s+you\s+understand[^.]*',
+    ]
+    cleaned_text = text_lower
+    for meta_pat in meta_patterns:
+        cleaned_text = re.sub(meta_pat, '', cleaned_text)
+    
+    # Extract subfolder - v1.8: improved patterns and order
+    # The patterns are ordered from most specific to least specific
+    patterns = [
+        # v1.8 FIX: "folder on the desktop called X" - words between folder and called
+        r'folder\s+(?:on|in)\s+(?:the\s+)?(?:desktop|documents)\s+(?:called|named)\s+["\']?(\w+)["\']?',
+        # "desktop folder called X" or "documents folder called X"
+        r'(?:desktop|documents)\s+folder\s+(?:called|named)\s+["\']?(\w+)["\']?',
+        # Most specific: "folder called/named X" (adjacent)
+        r'folder\s+(?:called|named)\s+["\']?(\w+)["\']?',
+        # "in X folder" or "in my X folder" (X must come before "folder")
+        r'in\s+(?:my\s+|the\s+|a\s+)?([\w]+)\s+folder',
+        # "X folder on/in the desktop" (folder name before "folder on")
+        r'([\w]+)\s+folder\s+(?:on|in)\s+(?:the\s+)?(?:desktop|documents)',
+        # "my X folder" pattern (possessive)
+        r'my\s+([\w]+)\s+folder',
+        # "called X" or "named X" (anywhere in text, last resort)
+        r'(?:called|named)\s+["\']?(\w+)["\']?',
+        # Path separators: "desktop/X" or "desktop\X"
+        r'desktop[/\\\\]+(\w+)',
+        r'documents[/\\\\]+(\w+)',
+    ]
+    
+    subfolder = None
+    for pattern in patterns:
+        match = re.search(pattern, cleaned_text)
+        if match:
+            candidate = match.group(1)
+            # v1.8: Strict stopword filtering
+            if candidate not in SUBFOLDER_STOPWORDS and len(candidate) > 1:
+                subfolder = candidate
+                logger.info(
+                    "[spec_gate_grounded] v1.8 Extracted subfolder '%s' using pattern: %s",
+                    subfolder, pattern
+                )
+                break
+            else:
+                logger.debug(
+                    "[spec_gate_grounded] v1.8 Rejected stopword candidate '%s' from pattern: %s",
+                    candidate, pattern
+                )
+    
+    # v1.8: Extra validation - log warning if we couldn't extract a subfolder
+    # but the text mentions folder names
+    if not subfolder:
+        # Check for folder mentions we might have missed
+        folder_mention = re.search(r'([\w]+)\s+folder', cleaned_text)
+        if folder_mention:
+            candidate = folder_mention.group(1)
+            if candidate not in SUBFOLDER_STOPWORDS and len(candidate) > 1:
+                subfolder = candidate
+                logger.info(
+                    "[spec_gate_grounded] v1.8 Fallback extracted subfolder '%s' from 'X folder' pattern",
+                    subfolder
+                )
+    
+    # v1.8: Final validation - NEVER return empty string as subfolder
+    if subfolder is not None:
+        subfolder = subfolder.strip()
+        if not subfolder or subfolder in SUBFOLDER_STOPWORDS:
+            logger.warning(
+                "[spec_gate_grounded] v1.8 Discarding invalid subfolder: '%s'",
+                subfolder
+            )
+            subfolder = None
+    
+    logger.info(
+        "[spec_gate_grounded] v1.8 _extract_sandbox_hints result: anchor='%s', subfolder='%s'",
+        anchor, subfolder
+    )
+    
+    return anchor, subfolder
+
+
+def _classify_job_size(weaver_output: str) -> str:
+    """
+    Classify job size for evidence loading decisions.
+    
+    Returns: "tiny", "normal", or "critical"
+    """
+    if not weaver_output:
+        return "normal"
+    
+    text = weaver_output.lower()
+    word_count = len(text.split())
+    
+    # Tiny indicators (simple sandbox file tasks)
+    tiny_indicators = [
+        "reply to", "read the message", "write a reply",
+        "find the file", "simple test", "message file",
+        "respond to", "answer the"
+    ]
+    if any(w in text for w in tiny_indicators) and word_count < 100:
+        return "tiny"
+    
+    # Critical indicators (complex/risky tasks)
+    critical_words = [
+        "refactor", "security", "encrypt", "migration",
+        "schema", "all files", "entire codebase", "complete rewrite",
+        "breaking change", "backwards compat"
+    ]
+    if any(w in text for w in critical_words) or word_count > 500:
+        return "critical"
+    
+    return "normal"
+
+
+# Evidence loading config by job size
+EVIDENCE_CONFIG = {
+    "tiny": {
+        "include_arch_map": False,
+        "include_codebase_report": False,
+    },
+    "normal": {
+        "include_arch_map": True,
+        "include_codebase_report": True,
+        "arch_map_max_lines": 300,
+        "codebase_report_max_lines": 200,
+    },
+    "critical": {
+        "include_arch_map": True,
+        "include_codebase_report": True,
+        "arch_map_max_lines": 500,
+        "codebase_report_max_lines": 300,
+    },
+}
+
+
+# =============================================================================
+# REPLY GENERATION (v1.8 - Read-Only, LLM-Powered)
+# =============================================================================
+
+async def _generate_reply_from_content(
+    content: str,
+    content_type: Optional[str] = None,
+    provider_id: str = "openai",
+    model_id: str = "gpt-5-mini",
+) -> str:
+    """
+    v1.8: Generate an intelligent reply based on the file content using LLM.
+    
+    This uses LLM intelligence to actually ANSWER questions in the file.
+    The reply is included IN the SPoT output (SpecGate is read-only).
+    
+    Args:
+        content: The full text content of the input file
+        content_type: Classification type (MESSAGE, CODE, etc.) if known
+        provider_id: LLM provider to use
+        model_id: LLM model to use
+        
+    Returns:
+        Generated reply text (actual answer, not placeholder)
+    """
+    if not content:
+        return "(No content to reply to - file was empty)"
+    
+    content = content.strip()
+    
+    # Check for simple instructions first (no LLM needed)
+    simple_reply = _detect_simple_instruction(content)
+    if simple_reply:
+        logger.info("[spec_gate_grounded] v1.8 Simple instruction detected, returning: %s", simple_reply[:50])
+        return simple_reply
+    
+    # Use LLM for intelligent reply
+    if _LLM_CALL_AVAILABLE and llm_call:
+        try:
+            # Build prompt for the LLM
+            system_prompt = """You are a helpful assistant answering questions found in files.
+Your job is to provide clear, concise, accurate answers.
+If the file contains code, explain what it does.
+If the file contains a question, answer it directly.
+Keep your response brief and to the point (1-3 sentences for simple questions).
+Do NOT include any preamble like "The answer is" - just give the answer directly."""
+
+            user_prompt = f"""The following content was found in a file. Please provide an appropriate response:
+
+---
+{content}
+---
+
+Your response:"""
+
+            logger.info(
+                "[spec_gate_grounded] v1.8 Making LLM call for intelligent reply (provider=%s, model=%s)",
+                provider_id, model_id
+            )
+            
+            result = await llm_call(
+                provider_id=provider_id,
+                model_id=model_id,
+                messages=[{"role": "user", "content": user_prompt}],
+                system_prompt=system_prompt,
+                temperature=0.3,
+                max_tokens=500,
+                timeout_seconds=30,
+            )
+            
+            if result.is_success() and result.content:
+                reply = result.content.strip()
+                logger.info(
+                    "[spec_gate_grounded] v1.8 LLM reply generated successfully: %s",
+                    reply[:100] if reply else "(empty)"
+                )
+                return reply
+            else:
+                logger.warning(
+                    "[spec_gate_grounded] v1.8 LLM call failed: status=%s, error=%s",
+                    result.status, result.error_message
+                )
+                # Fall through to fallback
+                
+        except Exception as e:
+            logger.warning("[spec_gate_grounded] v1.8 LLM reply generation exception: %s", e)
+            # Fall through to fallback
+    else:
+        logger.warning("[spec_gate_grounded] v1.8 LLM call not available, using fallback")
+    
+    # Fallback: use simple heuristics (v1.7 behavior)
+    return _generate_reply_fallback(content, content_type)
+
+
+def _generate_reply_fallback(content: str, content_type: Optional[str] = None) -> str:
+    """
+    v1.8: Fallback reply generation when LLM is unavailable.
+    
+    Uses simple heuristics - kept for backward compatibility and error recovery.
+    """
+    if not content:
+        return "(No content to reply to - file was empty)"
+    
+    content = content.strip()
+    content_lower = content.lower()
+    
+    # Simple question detection
+    is_question = (
+        content.endswith("?") or
+        content_lower.startswith(("what", "who", "where", "when", "why", "how", "is ", "are ", "do ", "does ", "can ", "could", "would", "should"))
+    )
+    
+    # Simple greeting/instruction detection
+    is_greeting = content_lower.startswith(("hello", "hi ", "hi,", "hey", "greetings", "say "))
+    
+    if is_greeting:
+        if "say " in content_lower:
+            parts = content.split(" ", 1)
+            if len(parts) > 1:
+                return parts[1].strip()
+        return "Hello!"
+    
+    if is_question:
+        if "hello" in content_lower or "hi" in content_lower:
+            return "Hello! How can I help you?"
+        elif "name" in content_lower:
+            return "I am SpecGate, the specification builder component of ASTRA."
+        elif "time" in content_lower or "date" in content_lower:
+            return f"The current time is {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}."
+        else:
+            return f"(LLM unavailable) Question detected: '{content[:80]}{'...' if len(content) > 80 else ''}'"
+    
+    # Default acknowledgement
+    if len(content) < 50:
+        return content
+    else:
+        return f"(LLM unavailable) Content received ({len(content)} characters). Manual review required."
+
+
+def _detect_simple_instruction(content: str) -> Optional[str]:
+    """
+    v1.8: Detect if content is a simple instruction like "Say Hello".
+    
+    Returns the expected response, or None if not a simple instruction.
+    """
+    if not content:
+        return None
+    
+    content = content.strip()
+    content_lower = content.lower()
+    
+    # Pattern: "Say X" -> return "X"
+    if content_lower.startswith("say "):
+        response = content[4:].strip()
+        # Capitalize first letter if it's a single word
+        if " " not in response and response:
+            response = response.capitalize()
+        return response
+    
+    # Pattern: "Reply with X" or "Respond with X"
+    for prefix in ["reply with ", "respond with ", "answer with "]:
+        if content_lower.startswith(prefix):
+            return content[len(prefix):].strip()
+    
+    return None
+
+
+# =============================================================================
+# SPEC COMPLETENESS CHECK (v1.4 - Early Exit)
+# =============================================================================
+
+def _is_spec_complete_enough(
+    spec: "GroundedPOTSpec",
+    intent: Dict[str, Any],
+    blocking_questions: List["GroundedQuestion"],
+) -> Tuple[bool, str]:
+    """
+    v1.4: Check if spec is complete enough to proceed without more questions.
+    
+    This prevents "question-hunting" by allowing early exit when:
+    - No blocking questions remain
+    - Enough information exists to build a valid POT spec
+    
+    Returns:
+        (is_complete, reason_string)
+    """
+    # If there are blocking questions, spec is not complete
+    if blocking_questions:
+        return False, f"{len(blocking_questions)} blocking question(s) remain"
+    
+    # Check minimum requirements for a valid POT spec
+    checks = []
+    
+    # 1. Goal must be defined
+    if not spec.goal or spec.goal.strip() == "":
+        checks.append("goal is missing")
+    
+    # 2. For mobile app domain, check domain-specific requirements
+    weaver_text = intent.get("raw_text", "") or ""
+    detected_domains = detect_domains(weaver_text)
+    
+    if "mobile_app" in detected_domains:
+        # Mobile app needs at minimum:
+        # - Goal (checked above)
+        # - Input mode (can be assumed or asked - if asked, it's blocking)
+        # - Output format (daily summary is default)
+        # - Storage (local-only is default)
+        # All these can be safely defaulted if not blocking
+        pass  # Defaults are handled by assumptions
+    
+    # 3. Check if we have enough structure
+    # Note: steps/tests are derived, not required from user
+    
+    if checks:
+        return False, f"Missing: {', '.join(checks)}"
+    
+    return True, "Spec is complete enough - no blocking questions remain"
 
 
 # =============================================================================
@@ -349,6 +897,20 @@ class GroundedFact:
     source: str  # Which evidence confirmed this
     path: Optional[str] = None
     confidence: str = "confirmed"  # confirmed, inferred, unverified
+
+
+@dataclass
+class GroundedAssumption:
+    """
+    v1.4: A safe default applied instead of asking a non-blocking question.
+    
+    These are recorded in the spec so the user can override if needed,
+    but they don't block spec completion.
+    """
+    topic: str              # e.g., "sync_behaviour", "pay_variation"
+    assumed_value: str      # The default we applied
+    reason: str             # Why this is safe for v1
+    can_override: bool = True  # User can change this later
 
 
 @dataclass
@@ -403,6 +965,12 @@ class GroundedPOTSpec:
     # Questions (human decisions only)
     open_questions: List[GroundedQuestion] = field(default_factory=list)
     
+    # v1.4: Assumptions (safe defaults applied instead of asking)
+    assumptions: List[GroundedAssumption] = field(default_factory=list)
+    
+    # v1.5: Resolved decisions (explicit answers to blocking forks)
+    decisions: Dict[str, str] = field(default_factory=dict)
+    
     # Metadata
     spec_id: Optional[str] = None
     spec_hash: Optional[str] = None
@@ -416,6 +984,22 @@ class GroundedPOTSpec:
     # Evidence completeness tracking (v1.1)
     evidence_complete: bool = True
     evidence_gaps: List[str] = field(default_factory=list)
+    
+    # Sandbox resolution (v1.3 - for sandbox file jobs)
+    sandbox_input_path: Optional[str] = None       # Full path to input file in sandbox
+    sandbox_output_path: Optional[str] = None      # Full path for output (same folder as input)
+    sandbox_folder_path: Optional[str] = None      # Folder containing input
+    sandbox_anchor: Optional[str] = None           # "desktop", "documents", etc.
+    sandbox_subfolder: Optional[str] = None        # Subfolder name if specified
+    sandbox_selected_type: Optional[str] = None    # MESSAGE, CODE, etc.
+    sandbox_selection_confidence: float = 0.0      # Classification confidence
+    sandbox_input_excerpt: Optional[str] = None    # First ~500 chars of input
+    sandbox_input_full_content: Optional[str] = None  # v1.7: Full content of input file
+    sandbox_generated_reply: Optional[str] = None  # v1.7: Generated reply (read-only, included in SPoT)
+    sandbox_discovery_used: bool = False           # True if sandbox discovery was run
+    sandbox_ambiguity: Optional[str] = None        # Ambiguity reason if any
+    sandbox_discovery_status: Optional[str] = None # v1.6: not_attempted, attempted, success, no_match, error
+    sandbox_skip_reason: Optional[str] = None      # v1.6: Why discovery was skipped
 
 
 # =============================================================================
@@ -452,6 +1036,43 @@ def build_pot_spec_markdown(spec: GroundedPOTSpec) -> str:
     # Current Reality
     lines.append("## Current Reality (Grounded Facts)")
     lines.append("")
+    
+    # Sandbox Resolution (if sandbox job) - v1.3
+    # v1.7: Updated wording - SpecGate is READ-ONLY
+    if spec.sandbox_discovery_used and spec.sandbox_input_path:
+        lines.append("### Sandbox File Resolution")
+        lines.append(f"- **Input file:** `{spec.sandbox_input_path}`")
+        lines.append(f"- **Planned output path (for later stages):** `{spec.sandbox_output_path}`")
+        lines.append(f"- **Content type:** {spec.sandbox_selected_type}")
+        lines.append(f"- **Selection confidence:** {spec.sandbox_selection_confidence:.2f}")
+        if spec.sandbox_input_excerpt:
+            excerpt_lines = spec.sandbox_input_excerpt.split('\n')[:5]
+            lines.append("")
+            lines.append("**Input excerpt:**")
+            lines.append("```")
+            for el in excerpt_lines:
+                lines.append(el)
+            lines.append("```")
+        lines.append("")
+        
+        # v1.7: Add Reply (Read-Only) section - this is the key addition
+        if spec.sandbox_generated_reply:
+            lines.append("### 📝 Reply (Read-Only)")
+            lines.append("")
+            lines.append("*This reply was generated by SpecGate based on the file content.*")
+            lines.append("*SpecGate is READ-ONLY and does not write files. Later pipeline stages may write this to the planned output path.*")
+            lines.append("")
+            lines.append("```")
+            lines.append(spec.sandbox_generated_reply)
+            lines.append("```")
+            lines.append("")
+    elif spec.sandbox_discovery_status and spec.sandbox_discovery_status != "not_attempted":
+        # v1.6: Show sandbox discovery status even when failed
+        lines.append("### ⚠️ Sandbox Discovery Status")
+        lines.append(f"- **Status:** {spec.sandbox_discovery_status}")
+        if spec.sandbox_skip_reason:
+            lines.append(f"- **Reason:** {spec.sandbox_skip_reason}")
+        lines.append("")
     
     if spec.confirmed_components:
         lines.append("### Confirmed Components/Files/Modules")
@@ -594,10 +1215,34 @@ def build_pot_spec_markdown(spec: GroundedPOTSpec) -> str:
     else:
         # v1.1 FIX: Only claim "all grounded" if evidence is truly complete
         if spec.evidence_complete and not spec.evidence_gaps:
-            lines.append("✅ No questions - all information grounded from evidence.")
+            lines.append("✅ No blocking questions - all information grounded from evidence.")
         else:
             lines.append("⚠️ No questions generated, but evidence was incomplete (see Evidence Gaps above).")
     lines.append("")
+    
+    # v1.5: Resolved Decisions (explicit answers to blocking forks)
+    if spec.decisions:
+        lines.append("## Resolved Decisions")
+        lines.append("")
+        lines.append("*These were explicitly answered by the user.*")
+        lines.append("")
+        for key, value in spec.decisions.items():
+            # Format key nicely (platform_v1 -> Platform v1)
+            nice_key = key.replace("_", " ").title()
+            lines.append(f"- **{nice_key}:** {value}")
+        lines.append("")
+    
+    # v1.4: Assumptions (safe defaults applied instead of asking)
+    if spec.assumptions:
+        lines.append("## Assumptions (v1 Safe Defaults)")
+        lines.append("")
+        lines.append("*These were applied automatically instead of asking non-blocking questions.*")
+        lines.append("*Override in spec if needed.*")
+        lines.append("")
+        for assumption in spec.assumptions:
+            lines.append(f"- **{assumption.topic}:** {assumption.assumed_value}")
+            lines.append(f"  - *Reason:* {assumption.reason}")
+        lines.append("")
     
     # Blocking Issues
     if spec.blocking_issues:
@@ -655,15 +1300,26 @@ def parse_weaver_intent(constraints_hint: Optional[Dict]) -> Dict[str, Any]:
     - v2.x full spec JSON (weaver_spec_json)
     """
     if not constraints_hint:
+        logger.warning("[spec_gate_grounded] parse_weaver_intent: constraints_hint is empty/None")
         return {}
     
     result = {}
+    
+    # v1.6: Log what keys are available
+    logger.info(
+        "[spec_gate_grounded] parse_weaver_intent: constraints_hint keys=%s",
+        list(constraints_hint.keys())
+    )
     
     # v3.0: Simple Weaver text
     job_desc_text = constraints_hint.get("weaver_job_description_text")
     if job_desc_text:
         result["raw_text"] = job_desc_text
         result["source"] = "weaver_simple"
+        logger.info(
+            "[spec_gate_grounded] parse_weaver_intent: set raw_text from weaver_job_description_text (%d chars)",
+            len(job_desc_text)
+        )
         
         # Extract goal from text
         lines = job_desc_text.strip().split("\n")
@@ -688,6 +1344,8 @@ def parse_weaver_intent(constraints_hint: Optional[Dict]) -> Dict[str, Any]:
                 result["scope_in"].append(line.strip())
             if "out of scope" in line_lower or "should not" in line_lower or "don't" in line_lower:
                 result["scope_out"].append(line.strip())
+    else:
+        logger.warning("[spec_gate_grounded] parse_weaver_intent: weaver_job_description_text not found in constraints_hint")
     
     # v2.x: Full spec JSON
     weaver_spec = constraints_hint.get("weaver_spec_json")
@@ -919,6 +1577,27 @@ def generate_grounded_questions(
     weaver_text = intent.get("raw_text", "") or ""
     
     # =================================================================
+    # v1.5: ALWAYS extract forks to populate assumptions (every round)
+    # =================================================================
+    detected_domains = detect_domains(weaver_text)
+    fork_questions = []
+    fork_assumptions = []
+    
+    if detected_domains:
+        fork_questions, fork_assumptions = extract_decision_forks(
+            weaver_text=weaver_text,
+            detected_domains=detected_domains,
+            max_questions=MAX_QUESTIONS,
+        )
+        # Always populate assumptions (even on Round 2+)
+        spec.assumptions.extend(fork_assumptions)
+        
+        logger.info(
+            "[spec_gate_grounded] v1.5: Detected domains %s, blocking questions=%d, assumptions=%d (round=%d)",
+            detected_domains, len(fork_questions), len(fork_assumptions), round_number
+        )
+    
+    # =================================================================
     # ROUND 2+: Derive steps/tests from fork answers, don't ask more
     # =================================================================
     if round_number >= 2:
@@ -958,22 +1637,9 @@ def generate_grounded_questions(
             evidence_found="No goal found in Weaver output",
         ))
     
-    # v1.2: Detect domain and extract decision forks
-    detected_domains = detect_domains(weaver_text)
-    
-    if detected_domains:
-        # Extract bounded A/B/C fork questions from domain templates
-        fork_questions = extract_decision_forks(
-            weaver_text=weaver_text,
-            detected_domains=detected_domains,
-            max_questions=MAX_QUESTIONS - len(questions),  # Reserve room for other questions
-        )
+    # v1.5: Fork questions were already extracted above, now add them to questions list
+    if fork_questions:
         questions.extend(fork_questions)
-        
-        logger.info(
-            "[spec_gate_grounded] v1.2: Detected domains %s, generated %d fork questions",
-            detected_domains, len(fork_questions)
-        )
     
     # v1.2 REMOVED: Do NOT ask lazy "steps/tests" questions
     # These are SpecGate's job to DERIVE after forks are answered:
@@ -1014,30 +1680,124 @@ def generate_grounded_questions(
 
 def _derive_steps_from_domain(intent: Dict[str, Any], spec: GroundedPOTSpec) -> List[str]:
     """
-    v1.2: Derive implementation steps from domain + answered forks.
+    v1.5: Derive implementation steps from domain + resolved decisions + assumptions.
     
     This is SpecGate's job, NOT the user's. Once product decisions are made,
     the steps can be derived automatically.
+    
+    Rules:
+    - Check spec.decisions first (explicit user answers)
+    - Check spec.assumptions second (safe defaults)
+    - Only include steps that match resolved decisions
+    - No "(if selected)" wording when already decided
     """
     weaver_text = intent.get("raw_text", "") or ""
     detected_domains = detect_domains(weaver_text)
     
+    # v1.6: Diagnostic logging
+    logger.info(
+        "[spec_gate_grounded] _derive_steps_from_domain: raw_text_len=%d, detected_domains=%s",
+        len(weaver_text), detected_domains
+    )
+    if not detected_domains:
+        logger.warning(
+            "[spec_gate_grounded] _derive_steps_from_domain: No domains detected! raw_text preview: %s",
+            weaver_text[:200] if weaver_text else "(empty)"
+        )
+    
+    # Build lookup of resolved values: decisions override assumptions
+    resolved = {}
+    for assumption in spec.assumptions:
+        resolved[assumption.topic] = assumption.assumed_value
+    for key, value in spec.decisions.items():
+        resolved[key] = value
+    
     steps = []
     
+    # v1.6: Sandbox file domain - specific steps for file discovery/read/reply tasks
+    # v1.7: UPDATED - SpecGate is READ-ONLY, never claims to write files
+    if "sandbox_file" in detected_domains:
+        # Check if sandbox discovery was used
+        if spec.sandbox_discovery_used and spec.sandbox_input_path:
+            steps = [
+                f"Read input file from sandbox: `{spec.sandbox_input_path}`",
+                "Parse and understand the question/content in the file",
+                "Generate reply based on file content (included in SPoT output)",
+            ]
+            # v1.7: Add note about planned output (for later stages, not SpecGate)
+            if spec.sandbox_output_path:
+                steps.append(f"[For later stages] Planned output path: `{spec.sandbox_output_path}`")
+        else:
+            # Discovery didn't run or failed - generic sandbox steps
+            steps = [
+                "Discover target file in sandbox (Desktop or Documents)",
+                "Read and parse the file content",
+                "Generate reply based on file content (included in SPoT output)",
+                "[For later stages] Planned output path: reply.txt in same folder as input",
+            ]
+        return steps
+    
     if "mobile_app" in detected_domains:
-        # Mobile app domain - standard implementation steps
-        steps = [
-            "Set up mobile project structure (platform-specific tooling)",
-            "Implement local encrypted data storage layer",
-            "Build core UI screens (shift start/stop, data entry)",
-            "Implement voice input handler (if selected) or manual input forms",
-            "Implement screenshot OCR parser (if selected)",
-            "Build sync mechanism (manual/auto per selected option)",
-            "Implement end-of-week summary calculations",
-            "Add ASTRA integration endpoint (if selected)",
-            "Integration testing across all input modes",
-            "Security audit (encryption, data handling)",
-        ]
+        # Mobile app domain - conditional implementation steps
+        
+        # 1. Platform setup (always needed)
+        platform = resolved.get("platform_v1", "")
+        if "android" in platform.lower():
+            steps.append("Set up Android project (Android Studio, Gradle)")
+        elif "ios" in platform.lower() or "both" in platform.lower():
+            steps.append("Set up mobile project structure (Android + iOS)")
+        else:
+            steps.append("Set up mobile project structure")
+        
+        # 2. Storage (always needed for mobile app)
+        steps.append("Implement local encrypted data storage layer")
+        
+        # 3. Core UI (always needed)
+        steps.append("Build core UI screens (shift start/stop, daily summary)")
+        
+        # 4. Input mode - based on decision
+        input_mode = resolved.get("input_mode_v1", "")
+        if "voice" in input_mode.lower() and "manual" in input_mode.lower():
+            steps.append("Implement push-to-talk voice input with manual fallback")
+        elif "voice" in input_mode.lower():
+            steps.append("Implement voice input handler")
+        elif "manual" in input_mode.lower() or "screenshot" in input_mode.lower():
+            steps.append("Implement manual input forms (screenshot import + manual entry)")
+        # If not selected (deferred), don't add step
+        
+        # 5. OCR - based on decision
+        ocr_scope = resolved.get("ocr_scope_v1", "")
+        if ocr_scope:
+            if "finish tour" in ocr_scope.lower() or "completed parcels" in ocr_scope.lower():
+                steps.append("Implement screenshot OCR parser for Finish Tour screen (Successfully Completed Parcels)")
+            elif "multiple" in ocr_scope.lower():
+                steps.append("Implement screenshot OCR parser for multiple screen formats")
+        # If not selected, don't add OCR step
+        
+        # 6. Calculations (always needed)
+        steps.append("Implement pay/cost/net calculations (parcel rate, fuel, wear & tear)")
+        
+        # 7. Weekly summary (always needed)
+        steps.append("Implement end-of-week summary calculations")
+        
+        # 8. Sync - based on decision/assumption
+        sync_behaviour = resolved.get("sync_behaviour", "")
+        sync_target = resolved.get("sync_target", "")
+        if "local-only" in sync_behaviour.lower() or "local only" in sync_behaviour.lower():
+            # No sync step needed - local only
+            pass
+        elif "export" in sync_target.lower() or "file" in sync_target.lower():
+            steps.append("Add export functionality for ASTRA integration (file-based)")
+        elif "endpoint" in sync_target.lower() or "live" in sync_target.lower():
+            steps.append("Build sync mechanism and ASTRA integration endpoint")
+        # Default: no sync step if not specified (local-only assumption)
+        
+        # 9. Testing (always needed)
+        steps.append("Integration testing")
+        
+        # 10. Security (always needed)
+        steps.append("Security audit (encryption, data handling)")
+        
     else:
         # Generic steps for unknown domains
         steps = [
@@ -1055,29 +1815,113 @@ def _derive_steps_from_domain(intent: Dict[str, Any], spec: GroundedPOTSpec) -> 
 
 def _derive_tests_from_domain(intent: Dict[str, Any], spec: GroundedPOTSpec) -> List[str]:
     """
-    v1.2: Derive acceptance tests from domain + answered forks.
+    v1.5: Derive acceptance tests from domain + resolved decisions + assumptions.
     
     This is SpecGate's job, NOT the user's. Once product decisions are made,
     the acceptance criteria can be derived automatically.
+    
+    Rules:
+    - Check spec.decisions first (explicit user answers)
+    - Check spec.assumptions second (safe defaults)
+    - Only include tests that match resolved decisions
+    - No "(if enabled)" wording when already decided
+    - OCR test MUST reference "Successfully Completed Parcels" (not "stop count")
     """
     weaver_text = intent.get("raw_text", "") or ""
     detected_domains = detect_domains(weaver_text)
     
+    # Build lookup of resolved values: decisions override assumptions
+    resolved = {}
+    for assumption in spec.assumptions:
+        resolved[assumption.topic] = assumption.assumed_value
+    for key, value in spec.decisions.items():
+        resolved[key] = value
+    
     tests = []
     
+    # v1.6: Sandbox file domain - specific tests for file discovery/read/reply tasks
+    # v1.7: UPDATED - SpecGate is READ-ONLY, tests verify reading not writing
+    if "sandbox_file" in detected_domains:
+        # Check if sandbox discovery was used
+        if spec.sandbox_discovery_used and spec.sandbox_input_path:
+            tests = [
+                f"Input file `{spec.sandbox_input_path}` was found and read successfully",
+                "File content was correctly parsed and understood",
+                "Reply was generated based on file content",
+                "Reply is included in SPoT output (read-only stage)",
+            ]
+            # Add excerpt verification if available
+            if spec.sandbox_input_excerpt:
+                tests.insert(1, f"Input content type identified: {spec.sandbox_selected_type or 'detected'}")
+            # v1.7: Note planned output path (for later stages to verify)
+            if spec.sandbox_output_path:
+                tests.append(f"[For later stages] Planned output path recorded: `{spec.sandbox_output_path}`")
+        else:
+            # Discovery didn't run or failed - generic sandbox tests
+            tests = [
+                "Target file was discovered in sandbox",
+                "File content was read and parsed correctly",
+                "Reply was generated based on file content",
+                "Reply is included in SPoT output (read-only stage)",
+                "[For later stages] Planned output path: reply.txt",
+            ]
+        return tests
+    
     if "mobile_app" in detected_domains:
-        # Mobile app domain - standard acceptance tests
-        tests = [
-            "App starts and displays main screen within 2 seconds",
-            "Shift start/stop logs timestamp correctly to local storage",
-            "Voice input (if enabled) correctly transcribes test phrases",
-            "Screenshot OCR (if enabled) extracts stop count from test image",
-            "Data persists across app restart (encrypted storage verified)",
-            "Manual sync successfully transfers data to target (endpoint or file)",
-            "End-of-week summary shows correct totals for hours, parcels, pay",
-            "App functions fully offline (no network required for core features)",
-            "No sensitive data exposed in logs or debug output",
-        ]
+        # Mobile app domain - conditional acceptance tests
+        
+        # 1. App startup (always needed)
+        tests.append("App starts and displays main screen within 2 seconds")
+        
+        # 2. Shift logging (always needed)
+        tests.append("Shift start/stop logs timestamp correctly to local storage")
+        
+        # 3. Input mode tests - based on decision
+        input_mode = resolved.get("input_mode_v1", "")
+        if "voice" in input_mode.lower():
+            tests.append("Voice input correctly transcribes test phrases")
+        if "manual" in input_mode.lower() or "screenshot" in input_mode.lower():
+            tests.append("Manual entry form accepts and validates input correctly")
+        # If voice deferred, no voice test
+        
+        # 4. OCR test - based on decision, with CORRECT target field
+        ocr_scope = resolved.get("ocr_scope_v1", "")
+        if ocr_scope:
+            # BUG FIX: Must reference "Successfully Completed Parcels", NOT "stop count"
+            if "finish tour" in ocr_scope.lower() or "completed parcels" in ocr_scope.lower():
+                tests.append("Screenshot OCR extracts 'Successfully Completed Parcels' from test Finish Tour screenshot")
+            elif "multiple" in ocr_scope.lower():
+                tests.append("Screenshot OCR extracts parcel counts from multiple screen format test images")
+        # If OCR not selected, no OCR test
+        
+        # 5. Data persistence (always needed)
+        tests.append("Data persists across app restart (encrypted storage verified)")
+        
+        # 6. Sync test - based on decision/assumption
+        sync_behaviour = resolved.get("sync_behaviour", "")
+        sync_target = resolved.get("sync_target", "")
+        if "local-only" in sync_behaviour.lower() or "local only" in sync_behaviour.lower():
+            # No sync test - local only
+            pass
+        elif "export" in sync_target.lower() or "file" in sync_target.lower():
+            tests.append("Export functionality produces valid file for ASTRA import")
+        elif "endpoint" in sync_target.lower() or "live" in sync_target.lower():
+            tests.append("Sync successfully transfers data to ASTRA endpoint")
+        # Default: no sync test if local-only assumed
+        
+        # 7. Calculations (always needed)
+        tests.append("Pay calculation correctly computes gross from parcel count (rate × parcels)")
+        tests.append("Net profit calculation correctly subtracts fuel and wear & tear")
+        
+        # 8. Weekly summary (always needed)
+        tests.append("End-of-week summary shows correct totals for parcels and pay")
+        
+        # 9. Offline (always needed for mobile app)
+        tests.append("App functions fully offline (no network required for core features)")
+        
+        # 10. Security (always needed)
+        tests.append("No sensitive data exposed in logs or debug output")
+        
     else:
         # Generic tests for unknown domains
         tests = [
@@ -1162,6 +2006,153 @@ async def run_spec_gate_grounded(
         )
         
         # =================================================================
+        # STEP 1.5: Sandbox Discovery (if sandbox job detected)
+        # v1.6: Added explicit logging for why discovery is skipped
+        # =================================================================
+        
+        sandbox_discovery_result = None
+        sandbox_discovery_status = "not_attempted"  # Track what happened
+        sandbox_skip_reason = None
+        
+        weaver_job_text = (constraints_hint or {}).get('weaver_job_description_text', '')
+        combined_text = f"{user_intent or ''} {weaver_job_text}"
+        anchor, subfolder = _extract_sandbox_hints(combined_text)
+        
+        # v1.6: Diagnostic logging for sandbox discovery debugging
+        logger.info(
+            "[spec_gate_grounded] v1.6 Sandbox hint extraction: anchor=%s, subfolder=%s, text_len=%d, weaver_len=%d",
+            anchor, subfolder, len(combined_text), len(weaver_job_text)
+        )
+        logger.info(
+            "[spec_gate_grounded] v1.6 combined_text preview (first 300 chars): %s",
+            combined_text[:300] if combined_text else "(empty)"
+        )
+        
+        # v1.6: Check if sandbox keywords are present but anchor wasn't detected
+        text_lower = combined_text.lower()
+        sandbox_keywords_found = [kw for kw in DOMAIN_KEYWORDS.get("sandbox_file", []) if kw in text_lower]
+        if sandbox_keywords_found and not anchor:
+            logger.warning(
+                "[spec_gate_grounded] v1.6 BUG: sandbox keywords found %s but anchor=%s - check _extract_sandbox_hints",
+                sandbox_keywords_found[:5], anchor
+            )
+        
+        # v1.6: Explicit logging for each condition
+        if not anchor:
+            sandbox_skip_reason = "No sandbox anchor detected (no 'desktop' or 'documents' in text)"
+            logger.info("[spec_gate_grounded] Sandbox discovery skipped: %s", sandbox_skip_reason)
+        elif not _SANDBOX_INSPECTOR_AVAILABLE:
+            sandbox_skip_reason = "sandbox_inspector module not available (import failed)"
+            logger.warning("[spec_gate_grounded] Sandbox discovery skipped: %s", sandbox_skip_reason)
+            
+            # v1.6: BLOCKING - if sandbox hints detected but tools unavailable, return error
+            # Do NOT silently validate a generic spec
+            return SpecGateResult(
+                ready_for_pipeline=False,
+                open_questions=["Sandbox discovery tools unavailable. Cannot locate file in sandbox."],
+                spec_version=round_n,
+                validation_status="blocked",
+                blocking_issues=[sandbox_skip_reason],
+                notes="Sandbox task detected but sandbox_inspector module failed to import",
+            )
+        elif not run_sandbox_discovery_chain:
+            sandbox_skip_reason = "run_sandbox_discovery_chain function not available"
+            logger.warning("[spec_gate_grounded] Sandbox discovery skipped: %s", sandbox_skip_reason)
+            
+            # v1.6: BLOCKING - if sandbox hints detected but tools unavailable, return error
+            return SpecGateResult(
+                ready_for_pipeline=False,
+                open_questions=["Sandbox discovery function unavailable. Cannot locate file in sandbox."],
+                spec_version=round_n,
+                validation_status="blocked",
+                blocking_issues=[sandbox_skip_reason],
+                notes="Sandbox task detected but run_sandbox_discovery_chain not available",
+            )
+        else:
+            # All conditions met - run discovery
+            logger.info("[spec_gate_grounded] Running sandbox discovery: anchor=%s, subfolder=%s", anchor, subfolder)
+            sandbox_discovery_status = "attempted"
+            
+            try:
+                sandbox_discovery_result = run_sandbox_discovery_chain(
+                    anchor=anchor,
+                    subfolder=subfolder,
+                    job_intent=combined_text,
+                )
+                
+                if sandbox_discovery_result:
+                    if sandbox_discovery_result.get("selected_file"):
+                        sandbox_discovery_status = "success"
+                        logger.info(
+                            "[spec_gate_grounded] Sandbox discovery SUCCESS: selected=%s",
+                            sandbox_discovery_result["selected_file"].get("path", "unknown")
+                        )
+                    elif sandbox_discovery_result.get("ambiguous"):
+                        sandbox_discovery_status = "ambiguous"
+                        logger.info(
+                            "[spec_gate_grounded] Sandbox discovery AMBIGUOUS: candidates=%s",
+                            sandbox_discovery_result.get("ambiguous_candidates", [])
+                        )
+                    else:
+                        sandbox_discovery_status = "no_match"
+                        sandbox_skip_reason = "Discovery ran but found no matching file"
+                        logger.warning(
+                            "[spec_gate_grounded] Sandbox discovery NO MATCH: found=%s, files=%s",
+                            sandbox_discovery_result.get("found"),
+                            sandbox_discovery_result.get("files", [])
+                        )
+                        
+                        # v1.6: BLOCKING - if sandbox task but no file found, return error
+                        return SpecGateResult(
+                            ready_for_pipeline=False,
+                            open_questions=[f"Could not find target file in sandbox {anchor}/{subfolder or ''}. Please check the folder exists and contains the file."],
+                            spec_version=round_n,
+                            validation_status="blocked",
+                            blocking_issues=[sandbox_skip_reason],
+                            notes=f"Sandbox discovery found={sandbox_discovery_result.get('found')}, files={sandbox_discovery_result.get('files', [])}",
+                        )
+                else:
+                    sandbox_discovery_status = "empty_result"
+                    sandbox_skip_reason = "Discovery returned None/empty"
+                    logger.warning("[spec_gate_grounded] Sandbox discovery returned empty result")
+                    
+                    # v1.6: BLOCKING - if sandbox task but discovery failed, return error
+                    return SpecGateResult(
+                        ready_for_pipeline=False,
+                        open_questions=[f"Sandbox discovery returned no results for {anchor}/{subfolder or ''}. Please verify the sandbox folder exists."],
+                        spec_version=round_n,
+                        validation_status="blocked",
+                        blocking_issues=[sandbox_skip_reason],
+                        notes="Sandbox discovery returned None or empty result",
+                    )
+                    
+            except Exception as e:
+                sandbox_discovery_status = "error"
+                sandbox_skip_reason = f"Discovery raised exception: {e}"
+                logger.exception("[spec_gate_grounded] Sandbox discovery exception: %s", e)
+                
+                # v1.6: BLOCKING - if sandbox task but discovery crashed, return error
+                return SpecGateResult(
+                    ready_for_pipeline=False,
+                    open_questions=[f"Sandbox discovery failed with error: {e}"],
+                    spec_version=round_n,
+                    validation_status="blocked",
+                    blocking_issues=[sandbox_skip_reason],
+                    notes=f"Sandbox discovery exception for {anchor}/{subfolder or ''}",
+                )
+            
+            # Handle ambiguity - return early with question
+            if sandbox_discovery_result and sandbox_discovery_result.get("ambiguous") and sandbox_discovery_result.get("question"):
+                if not sandbox_discovery_result.get("selected_file"):
+                    return SpecGateResult(
+                        ready_for_pipeline=False,
+                        open_questions=[sandbox_discovery_result["question"]],
+                        spec_version=round_n,
+                        validation_status="needs_clarification",
+                        notes=f"Sandbox ambiguity: {sandbox_discovery_result.get('ambiguous_candidates', [])}",
+                    )
+        
+        # =================================================================
         # STEP 2: Parse Weaver Intent
         # =================================================================
         
@@ -1188,18 +2179,122 @@ async def run_spec_gate_grounded(
         spec = ground_intent_with_evidence(intent, evidence)
         
         # =================================================================
+        # STEP 3.5: Populate sandbox resolution into spec
+        # =================================================================
+        
+        if sandbox_discovery_result and sandbox_discovery_result.get("selected_file"):
+            import os
+            selected = sandbox_discovery_result["selected_file"]
+            folder_path = sandbox_discovery_result["path"]
+            output_path = os.path.join(folder_path, "reply.txt")
+            
+            spec.sandbox_discovery_used = True
+            spec.sandbox_anchor = anchor
+            spec.sandbox_subfolder = subfolder
+            spec.sandbox_folder_path = folder_path
+            spec.sandbox_input_path = selected["path"]
+            spec.sandbox_output_path = output_path
+            spec.sandbox_selected_type = selected["content_type"]
+            spec.sandbox_selection_confidence = selected.get("confidence", 0.0)
+            
+            content = selected.get("content", "")
+            if content:
+                spec.sandbox_input_excerpt = content[:500] + ("..." if len(content) > 500 else "")
+            
+            spec.what_exists.append(f"Sandbox input: `{selected['path']}` ({selected['content_type']})")
+            spec.confirmed_components.append(GroundedFact(
+                description=f"Selected sandbox file: {selected['name']}",
+                source="sandbox_inspector",
+                path=selected["path"],
+                confidence="confirmed",
+            ))
+            # v1.7: Read-only wording - we don't write files, just record planned output for later stages
+            spec.constraints_from_repo.append(f"Planned output path (for later stages): `{output_path}`")
+            
+            # v1.8: Store full content and generate intelligent reply using LLM
+            full_content = selected.get("content", "")
+            if full_content:
+                spec.sandbox_input_full_content = full_content
+                # Generate reply using LLM intelligence (v1.8)
+                spec.sandbox_generated_reply = await _generate_reply_from_content(
+                    full_content, 
+                    selected.get("content_type"),
+                    provider_id=provider_id,
+                    model_id=model_id,
+                )
+                logger.info(
+                    "[spec_gate_grounded] v1.8 Generated LLM reply for sandbox content: %s",
+                    spec.sandbox_generated_reply[:100] if spec.sandbox_generated_reply else "(empty)"
+                )
+            
+            logger.info(
+                "[spec_gate_grounded] Sandbox resolved: input=%s, output=%s, type=%s",
+                selected["path"], output_path, selected["content_type"]
+            )
+        
+        # v1.6: Track sandbox discovery status even if no file was selected
+        spec.sandbox_discovery_status = sandbox_discovery_status
+        spec.sandbox_skip_reason = sandbox_skip_reason
+        
+        # v1.6: If sandbox was detected but discovery failed, add warning
+        if anchor and sandbox_discovery_status not in ("success", "not_attempted"):
+            warning_msg = f"Sandbox file task detected but discovery {sandbox_discovery_status}"
+            if sandbox_skip_reason:
+                warning_msg += f": {sandbox_skip_reason}"
+            spec.evidence_gaps.append(warning_msg)
+            logger.warning("[spec_gate_grounded] %s", warning_msg)
+        
+        # v1.6: CRITICAL FIX - If sandbox_file domain detected but discovery wasn't used,
+        # something is wrong (either anchor extraction failed or discovery was skipped).
+        # This catches the case where domain keywords are found but anchor wasn't.
+        weaver_text_for_domain = intent.get("raw_text", "") or ""
+        detected_domains_check = detect_domains(weaver_text_for_domain)
+        if "sandbox_file" in detected_domains_check and not spec.sandbox_discovery_used:
+            logger.warning(
+                "[spec_gate_grounded] v1.6 MISMATCH: sandbox_file domain detected but discovery not used! "
+                "anchor=%s, weaver_text_len=%d",
+                anchor, len(weaver_text_for_domain)
+            )
+            if not anchor:
+                # Domain detected but anchor extraction failed - this is a bug
+                spec.evidence_gaps.append(
+                    "INTERNAL: sandbox_file domain detected but anchor extraction failed - check _extract_sandbox_hints()"
+                )
+        
+        # =================================================================
         # STEP 4: Apply User Answers (if round 2+)
         # =================================================================
         
         if user_answers and round_n >= 2:
-            # Integrate answers into spec
+            # v1.5: Parse answers into spec.decisions for blocking forks
             for key, answer in user_answers.items():
-                if "scope" in key.lower():
+                key_lower = key.lower()
+                answer_lower = answer.lower() if answer else ""
+                
+                # Map common answer patterns to decision keys
+                if "platform" in key_lower or "android" in answer_lower or "ios" in answer_lower:
+                    spec.decisions["platform_v1"] = answer
+                elif "input" in key_lower or "voice" in answer_lower or "screenshot" in answer_lower or "manual" in answer_lower:
+                    spec.decisions["input_mode_v1"] = answer
+                elif "ocr" in key_lower or "completed parcels" in answer_lower or "finish tour" in answer_lower:
+                    spec.decisions["ocr_scope_v1"] = answer
+                elif "sync" in key_lower:
+                    if "target" in key_lower or "endpoint" in answer_lower or "export" in answer_lower:
+                        spec.decisions["sync_target"] = answer
+                    else:
+                        spec.decisions["sync_behaviour"] = answer
+                # Legacy handling for other answer types
+                elif "scope" in key_lower:
                     spec.out_of_scope.append(answer)
-                elif "step" in key.lower():
+                elif "step" in key_lower:
                     spec.proposed_steps.append(answer)
-                elif "path" in key.lower() or "file" in key.lower():
+                elif "path" in key_lower or "file" in key_lower:
                     spec.what_exists.append(f"User confirmed: {answer}")
+            
+            logger.info(
+                "[spec_gate_grounded] v1.5: Parsed user_answers into decisions: %s",
+                spec.decisions
+            )
         
         # =================================================================
         # STEP 5: Generate Questions (if needed)
@@ -1209,8 +2304,18 @@ async def run_spec_gate_grounded(
         spec.open_questions = questions
         
         # =================================================================
-        # STEP 6: Determine Completion Status (v1.1 FIX)
+        # STEP 6: Determine Completion Status (v1.4: Early Exit)
         # =================================================================
+        
+        # v1.4: Check if spec is complete enough for early exit
+        is_complete_enough, completion_reason = _is_spec_complete_enough(
+            spec, intent, questions
+        )
+        
+        logger.info(
+            "[spec_gate_grounded] v1.4 Completion check: complete_enough=%s, reason='%s'",
+            is_complete_enough, completion_reason
+        )
         
         # Round 3 always finalizes (even with gaps)
         # IMPORTANT: We do NOT fill gaps - we just mark them as unresolved
@@ -1221,6 +2326,20 @@ async def run_spec_gate_grounded(
                     f"Finalized with {len(questions)} unanswered question(s) - NOT guessed"
                 )
             # Questions are preserved in spec.open_questions for the markdown output
+        elif is_complete_enough:
+            # v1.4: EARLY EXIT - spec is complete, no more rounds needed
+            spec.is_complete = True
+            
+            # Derive steps/tests now since we're completing early
+            if not spec.proposed_steps:
+                spec.proposed_steps = _derive_steps_from_domain(intent, spec)
+            if not spec.acceptance_tests or all('(To be determined)' in str(t) for t in spec.acceptance_tests):
+                spec.acceptance_tests = _derive_tests_from_domain(intent, spec)
+            
+            logger.info(
+                "[spec_gate_grounded] v1.4 EARLY EXIT: %s (round %d)",
+                completion_reason, round_n
+            )
         else:
             # v1.1 FIX: is_complete only when:
             # - No questions AND
@@ -1321,6 +2440,7 @@ __all__ = [
     "GroundedPOTSpec",
     "GroundedQuestion",
     "GroundedFact",
+    "GroundedAssumption",  # v1.4
     "QuestionCategory",
     "build_pot_spec_markdown",
     "load_evidence",
