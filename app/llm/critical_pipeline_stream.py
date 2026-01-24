@@ -513,6 +513,11 @@ def _generate_micro_execution_plan(spec_data: Dict[str, Any], job_id: str) -> st
     # Get summary/goal from spec
     summary = spec_data.get("goal", spec_data.get("summary", spec_data.get("objective", "Execute task per spec")))
     
+    # Build content type line only if meaningful (suppress "unknown")
+    content_type_line = ""
+    if content_type and content_type.lower() != "unknown":
+        content_type_line = f"- **Content Type:** {content_type}\n"
+    
     # Build the plan
     plan = f"""# Micro-Execution Plan
 
@@ -525,7 +530,7 @@ def _generate_micro_execution_plan(spec_data: Dict[str, Any], job_id: str) -> st
 ## Resolved Paths (by SpecGate)
 - **Input:** `{input_path}`
 - **Output:** `{output_path}`
-- **Content Type:** {content_type}
+{content_type_line}
 
 ## Execution Steps
 

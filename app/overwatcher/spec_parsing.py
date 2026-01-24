@@ -80,6 +80,45 @@ def parse_spec_content(content: str) -> Optional[ParsedDeliverable]:
 
 def _parse_json_spec(spec: Dict[str, Any]) -> Optional[ParsedDeliverable]:
     """Parse JSON spec to extract deliverable."""
+    
+    # =========================================================================
+    # v1.1: SANDBOX MICRO-EXECUTION FALLBACK (SpecGate schema compatibility)
+    # =========================================================================
+    # SpecGate micro-execution specs use sandbox_* prefixed fields.
+    # Map these to ParsedDeliverable for Overwatcher compatibility.
+    #
+    # SpecGate fields used:
+    #   - sandbox_output_path → target file
+    #   - sandbox_input_path → fallback target file
+    #   - sandbox_generated_reply → content to write
+    # =========================================================================
+    
+    sandbox_output_path = spec.get("sandbox_output_path")
+    sandbox_input_path = spec.get("sandbox_input_path")
+    sandbox_generated_reply = spec.get("sandbox_generated_reply")
+    
+    # Determine target file: output_path preferred, input_path as fallback
+    target_file = sandbox_output_path or sandbox_input_path
+    
+    if target_file:
+        logger.info(
+            "[parse_spec] Sandbox micro-execution: file=%s, content=%d chars",
+            target_file,
+            len(sandbox_generated_reply) if sandbox_generated_reply else 0,
+        )
+        
+        return ParsedDeliverable(
+            filename=target_file,
+            content=sandbox_generated_reply or "",
+            action="modify",
+            target=DEFAULT_TARGET,
+            must_exist=True,
+        )
+    
+    # =========================================================================
+    # EXISTING PARSING LOGIC (unchanged below this line)
+    # =========================================================================
+    
     # Check for explicit deliverables array
     deliverables = spec.get("deliverables", [])
     if deliverables and len(deliverables) > 0:

@@ -10,9 +10,10 @@ Handles:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from app.overwatcher.overwatcher import OverwatcherOutput, Decision
 from app.overwatcher.sandbox_client import (
@@ -24,6 +25,85 @@ from app.overwatcher.sandbox_client import (
 from .spec_resolution import ResolvedSpec, SpecMissingDeliverableError
 
 logger = logging.getLogger(__name__)
+
+
+def _is_absolute_windows_path(path: str) -> bool:
+    """Check if path is an absolute Windows path (e.g., C:\\..., D:\\...)."""
+    if len(path) >= 3:
+        return path[1] == ':' and path[2] in ('\\', '/')
+    return False
+
+
+def _escape_powershell_string(s: str) -> str:
+    """Escape a string for use in PowerShell double-quoted strings."""
+    # Escape backticks first, then quotes, then dollar signs
+    return s.replace('`', '``').replace('"', '`"').replace('$', '`$')
+
+
+def _generate_sandbox_path_candidates(path: str) -> List[str]:
+    """Generate candidate paths for sandbox resolution.
+    
+    For Desktop paths, tries:
+    1. Original path as-is
+    2. Same user, non-OneDrive Desktop (if original has OneDrive)
+    3. WDAGUtilityAccount OneDrive Desktop (if original has OneDrive)
+    4. WDAGUtilityAccount Desktop
+    
+    Args:
+        path: Original absolute Windows path
+        
+    Returns:
+        List of candidate paths to try (in priority order)
+    """
+    candidates = [path]
+    
+    # Match: C:\Users\<username>\OneDrive\Desktop\<rest>
+    onedrive_match = re.match(
+        r'^([A-Za-z]):\\Users\\([^\\]+)\\OneDrive\\Desktop\\(.*)$',
+        path,
+        re.IGNORECASE
+    )
+    if onedrive_match:
+        drive = onedrive_match.group(1)
+        username = onedrive_match.group(2)
+        rest = onedrive_match.group(3)
+        
+        # Candidate 2: Same user, non-OneDrive Desktop
+        non_onedrive = f"{drive}:\\Users\\{username}\\Desktop\\{rest}"
+        if non_onedrive not in candidates:
+            candidates.append(non_onedrive)
+        
+        # Candidate 3: WDAGUtilityAccount OneDrive Desktop
+        wdag_onedrive = f"{drive}:\\Users\\WDAGUtilityAccount\\OneDrive\\Desktop\\{rest}"
+        if wdag_onedrive not in candidates:
+            candidates.append(wdag_onedrive)
+        
+        # Candidate 4: WDAGUtilityAccount Desktop
+        wdag = f"{drive}:\\Users\\WDAGUtilityAccount\\Desktop\\{rest}"
+        if wdag not in candidates:
+            candidates.append(wdag)
+        
+        return candidates
+    
+    # Match: C:\Users\<username>\Desktop\<rest> (non-OneDrive)
+    desktop_match = re.match(
+        r'^([A-Za-z]):\\Users\\([^\\]+)\\Desktop\\(.*)$',
+        path,
+        re.IGNORECASE
+    )
+    if desktop_match:
+        drive = desktop_match.group(1)
+        username = desktop_match.group(2)
+        rest = desktop_match.group(3)
+        
+        # Candidate 2: WDAGUtilityAccount Desktop
+        wdag = f"{drive}:\\Users\\WDAGUtilityAccount\\Desktop\\{rest}"
+        if wdag not in candidates:
+            candidates.append(wdag)
+        
+        return candidates
+    
+    return candidates
 
 
 @dataclass
@@ -138,63 +218,136 @@ async def run_implementer(
             )
         
         # Build expected path
-        if target == "DESKTOP":
-            expected_path = f"C:\\Users\\WDAGUtilityAccount\\Desktop\\{filename}"
+        # If filename is already absolute (from SpecGate sandbox paths), use as-is
+        if _is_absolute_windows_path(filename):
+            expected_path = filename
+            base_filename = Path(filename).name
+            is_absolute = True
+            logger.info(f"[implementer] Using absolute path as-is: {expected_path}")
         else:
-            expected_path = f"{target}\\{filename}"
+            base_filename = filename
+            is_absolute = False
+            if target == "DESKTOP":
+                expected_path = f"C:\\Users\\WDAGUtilityAccount\\Desktop\\{base_filename}"
+            else:
+                expected_path = f"{target}\\{base_filename}"
         
         # For "modify" action with must_exist: verify file exists first
+        # Try multiple candidate paths (original + sandbox remapped)
         if action == "modify" and must_exist:
-            logger.info(f"[implementer] Checking existence: {expected_path}")
+            # Log sandbox environment for debugging
+            sandbox_whoami = "<unknown>"
+            sandbox_userprofile = "<unknown>"
+            try:
+                whoami_result = client.shell_run("whoami", timeout_seconds=5)
+                sandbox_whoami = whoami_result.stdout.strip() if whoami_result.stdout else f"<error: {whoami_result.stderr}>"
+                userprofile_result = client.shell_run("echo $env:USERPROFILE", timeout_seconds=5)
+                sandbox_userprofile = userprofile_result.stdout.strip() if userprofile_result.stdout else f"<error: {userprofile_result.stderr}>"
+                logger.info(f"[implementer] Sandbox env: whoami={sandbox_whoami}")
+                logger.info(f"[implementer] Sandbox env: USERPROFILE={sandbox_userprofile}")
+            except Exception as e:
+                logger.warning(f"[implementer] Could not log sandbox env: {e}")
             
-            exists_cmd = f'Test-Path -Path "{expected_path}"'
-            exists_result = client.shell_run(exists_cmd, timeout_seconds=10)
+            candidates = _generate_sandbox_path_candidates(expected_path)
             
-            file_exists = exists_result.ok and "True" in exists_result.stdout
-            logger.info(f"[implementer] File exists check: {file_exists}")
+            resolved_path = None
+            candidate_results = []  # Track results for diagnostics
+            for candidate in candidates:
+                logger.info(f"[implementer] Checking existence: {candidate}")
+                exists_cmd = f'Test-Path -Path "{candidate}"'
+                exists_result = client.shell_run(exists_cmd, timeout_seconds=10)
+                
+                file_exists = "True" in exists_result.stdout
+                candidate_results.append((candidate, file_exists))
+                logger.info(f"[implementer] Exists? {candidate} -> {file_exists}")
+                
+                if file_exists:
+                    resolved_path = candidate
+                    break
             
-            if not file_exists:
+            if resolved_path is None:
+                # Build detailed diagnostic error message
+                candidate_lines = "\n".join(f"  - {c} -> {r}" for c, r in candidate_results)
+                error_msg = (
+                    f"SPEC VIOLATION: File '{filename}' does not exist at any candidate path.\n"
+                    f"Tried:\n{candidate_lines}\n"
+                    f"Sandbox env:\n"
+                    f"  - whoami: {sandbox_whoami}\n"
+                    f"  - USERPROFILE: {sandbox_userprofile}\n"
+                    f"Spec requires modifying an existing file (action=modify, must_exist=True). "
+                    f"Cannot create a new file."
+                )
                 return ImplementerResult(
                     success=False,
-                    error=f"SPEC VIOLATION: File '{filename}' does not exist at {expected_path}. "
-                          f"Spec requires modifying an existing file (action=modify, must_exist=True). "
-                          f"Cannot create a new file.",
+                    error=error_msg,
                     duration_ms=elapsed(),
                     sandbox_used=True,
                     filename=filename,
                     action_taken="existence_check_failed",
                 )
             
-            logger.info(f"[implementer] File exists, proceeding with modify")
+            # Use resolved path for subsequent operations
+            expected_path = resolved_path
+            logger.info(f"[implementer] File exists at: {expected_path}, proceeding with modify")
         
         # Write file via sandbox
-        logger.info(f"[implementer] Writing to sandbox: {filename} -> {target}")
-        result = client.write_file(
-            target=target,
-            filename=filename,
-            content=content,
-            overwrite=True,
-        )
-        
-        if result.ok:
-            logger.info(f"[implementer] SUCCESS: {result.path}")
-            return ImplementerResult(
-                success=True,
-                output_path=result.path,
-                sha256=result.sha256,
-                duration_ms=elapsed(),
-                sandbox_used=True,
-                filename=filename,
-                content_written=content,
-                action_taken=action,
-            )
+        # For absolute paths, use PowerShell Set-Content directly
+        # For relative paths, use the sandbox write_file API
+        if is_absolute:
+            logger.info(f"[implementer] Writing via PowerShell to absolute path: {expected_path}")
+            escaped_content = _escape_powershell_string(content)
+            write_cmd = f'Set-Content -Path "{expected_path}" -Value "{escaped_content}" -NoNewline'
+            write_result = client.shell_run(write_cmd, timeout_seconds=30)
+            
+            # Check success: no stderr means success for Set-Content
+            write_success = not write_result.stderr or write_result.stderr.strip() == ""
+            if write_success:
+                logger.info(f"[implementer] SUCCESS: {expected_path}")
+                return ImplementerResult(
+                    success=True,
+                    output_path=expected_path,
+                    sha256=None,  # Not computed for direct writes
+                    duration_ms=elapsed(),
+                    sandbox_used=True,
+                    filename=filename,
+                    content_written=content,
+                    action_taken=action,
+                )
+            else:
+                return ImplementerResult(
+                    success=False,
+                    error=f"PowerShell write failed: {write_result.stderr or write_result.stdout}",
+                    duration_ms=elapsed(),
+                    sandbox_used=True,
+                )
         else:
-            return ImplementerResult(
-                success=False,
-                error=f"Sandbox write failed: {getattr(result, 'error', 'unknown')}",
-                duration_ms=elapsed(),
-                sandbox_used=True,
+            logger.info(f"[implementer] Writing via sandbox API: {base_filename} -> {target}")
+            result = client.write_file(
+                target=target,
+                filename=base_filename,
+                content=content,
+                overwrite=True,
             )
+            
+            if result.ok:
+                logger.info(f"[implementer] SUCCESS: {result.path}")
+                return ImplementerResult(
+                    success=True,
+                    output_path=result.path,
+                    sha256=result.sha256,
+                    duration_ms=elapsed(),
+                    sandbox_used=True,
+                    filename=filename,
+                    content_written=content,
+                    action_taken=action,
+                )
+            else:
+                return ImplementerResult(
+                    success=False,
+                    error=f"Sandbox write failed: {getattr(result, 'error', 'unknown')}",
+                    duration_ms=elapsed(),
+                    sandbox_used=True,
+                )
             
     except SandboxError as e:
         return ImplementerResult(
@@ -256,7 +409,13 @@ async def run_verification(
     
     # Check filename matches spec (CRITICAL: catch wrong file like hello.txt)
     actual_filename = Path(impl_result.output_path).name
-    filename_matches = actual_filename == expected_filename
+    
+    # For absolute paths, compare basenames; otherwise compare full filename
+    if _is_absolute_windows_path(expected_filename):
+        expected_basename = Path(expected_filename).name
+        filename_matches = actual_filename == expected_basename
+    else:
+        filename_matches = actual_filename == expected_filename
     
     logger.info(f"[verification] Actual filename: {actual_filename}")
     logger.info(f"[verification] Filename matches: {filename_matches}")
@@ -290,7 +449,7 @@ async def run_verification(
         
         # Check exists
         exists_result = client.shell_run(f'Test-Path -Path "{ps_path}"', timeout_seconds=10)
-        file_exists = exists_result.ok and "True" in exists_result.stdout
+        file_exists = "True" in exists_result.stdout
         
         if not file_exists:
             return VerificationResult(
@@ -305,7 +464,7 @@ async def run_verification(
         # Read content
         read_result = client.shell_run(f'Get-Content -Path "{ps_path}" -Raw', timeout_seconds=10)
         
-        if not read_result.ok:
+        if read_result.stderr and read_result.stderr.strip():
             return VerificationResult(
                 passed=False,
                 file_exists=True,

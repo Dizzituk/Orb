@@ -191,6 +191,8 @@ class SandboxClient:
         
         req = Request(url, data=data, headers=headers, method=method)
         
+        print(f"[SANDBOX_DEBUG] HTTP {method} {url}")  # Force print
+        
         try:
             with urlopen(req, timeout=timeout or self.timeout) as resp:
                 body = resp.read().decode("utf-8")
@@ -355,26 +357,55 @@ class SandboxClient:
             SandboxError: If command blocked or execution fails
         """
         body = {
-            "command": command,
+            "cmd": ["powershell", "-NoProfile", "-Command", command],
             "cwd_target": cwd_target,
             "timeout_seconds": min(timeout_seconds, 300),
         }
         
-        # Use longer timeout for shell commands
-        data = self._request(
-            "POST",
-            "/shell/run",
-            json_body=body,
-            timeout=timeout_seconds + 10,
-        )
+        logger.info(f"[sandbox] shell_run request: cmd={body['cmd']}, cwd_target={cwd_target}")
+        print(f"[SANDBOX_DEBUG] shell_run request: cmd={body['cmd']}, cwd_target={cwd_target}")  # Force print
         
-        return ShellResult(
-            ok=data.get("ok", False),
-            exit_code=data.get("exit_code", -1),
-            duration_ms=data.get("duration_ms", 0),
-            stdout=data.get("stdout", ""),
-            stderr=data.get("stderr", ""),
-        )
+        try:
+            # Use longer timeout for shell commands
+            data = self._request(
+                "POST",
+                "/shell/run",
+                json_body=body,
+                timeout=timeout_seconds + 10,
+            )
+            
+            logger.info(
+                f"[sandbox] shell_run response: ok={data.get('ok')}, "
+                f"exit_code={data.get('exit_code')}, "
+                f"stdout={repr(data.get('stdout', '')[:100])}, "
+                f"stderr={repr(data.get('stderr', '')[:100])}"
+            )
+            print(
+                f"[SANDBOX_DEBUG] shell_run response: ok={data.get('ok')}, "
+                f"exit_code={data.get('exit_code')}, "
+                f"stdout={repr(data.get('stdout', '')[:100])}, "
+                f"stderr={repr(data.get('stderr', '')[:100])}"
+            )  # Force print
+            
+            return ShellResult(
+                ok=data.get("ok", False),
+                exit_code=data.get("exit_code", -1),
+                duration_ms=data.get("duration_ms", 0),
+                stdout=data.get("stdout", ""),
+                stderr=data.get("stderr", ""),
+            )
+        except SandboxError as e:
+            logger.error(
+                f"[sandbox] shell_run FAILED: {e}, "
+                f"status={e.status_code}, "
+                f"body={e.response_body[:200] if e.response_body else None}"
+            )
+            print(
+                f"[SANDBOX_DEBUG] shell_run FAILED: {e}, "
+                f"status={e.status_code}, "
+                f"body={e.response_body[:200] if e.response_body else None}"
+            )  # Force print
+            raise
     
     # -------------------------------------------------------------------------
     # Convenience Methods
