@@ -7,6 +7,19 @@ Block 4: Architecture generation as versioned artifact with spec traceability
 Block 5: Structured JSON critique with blocking/non-blocking issues (critique.py)
 Block 6: Revision loop until critique passes (revision.py)
 
+v4.3 (2026-01-22): CRITICAL FIX - Phantom ENVIRONMENT_CONSTRAINTS Bug
+- get_environment_context() now extracts tech_stack FROM SPEC, not hardcoded defaults
+- Removed hardcoded React/Electron/FastAPI/SQLite constraints that were causing
+  critique to reject valid architectures for phantom requirements
+- If spec has no implementation_stack, NO tech_stack constraints are applied
+- See PHANTOM_CONSTRAINT_BUG_FIX.md for full details
+
+v4.2 (2026-01-22): CRITICAL FIX - Spec Injection into Architecture Prompt
+- Architecture prompt now receives FULL spec content (goal, requirements, constraints)
+- implementation_stack field injected with STACK LOCKED warnings when applicable
+- Prevents architecture from ignoring user-discussed tech stack
+- See CRITICAL_PIPELINE_FAILURE_REPORT.md for why this is needed
+
 v4.1 (2026-01):
 - Uses stage_models for provider/model configuration (env-driven)
 - ARCHITECTURE_PROVIDER/ARCHITECTURE_MODEL from env controls draft generation
@@ -246,9 +259,23 @@ def _trace_error(trace, step: str, message: str) -> None:
 # Environment Context
 # =============================================================================
 
-def get_environment_context() -> Dict[str, Any]:
-    """Get environment context for architecture/infrastructure prompts."""
-    return {
+def get_environment_context(spec_json: Optional[str] = None) -> Dict[str, Any]:
+    """Get environment context from spec, NOT hardcoded defaults.
+    
+    v1.1 (2026-01-22): CRITICAL FIX - Phantom Constraint Bug
+    - Tech stack constraints MUST come from the spec, not hardcoded defaults
+    - If spec has implementation_stack, use that
+    - If spec has no implementation_stack, DO NOT inject default tech_stack
+    - This prevents critique from rejecting architectures for phantom requirements
+    
+    Args:
+        spec_json: The SpecGate JSON spec (contains implementation_stack if user specified)
+    
+    Returns:
+        Environment context dict with deployment info and spec-derived constraints
+    """
+    # Base deployment context (platform-specific, always included)
+    context = {
         "deployment": {
             "type": "single_host",
             "os": "Windows 11",
@@ -262,13 +289,59 @@ def get_environment_context() -> Dict[str, Any]:
             "multi_user": False,
             "scale": "personal_project",
         },
-        "tech_stack": {
-            "backend": "Python/FastAPI",
-            "frontend": "React/Electron",
-            "database": "SQLite",
-            "llm_providers": ["anthropic", "openai", "google"],
-        },
     }
+    
+    # ==========================================================================
+    # v1.1 CRITICAL FIX: Extract tech_stack FROM SPEC, not hardcoded defaults
+    # ==========================================================================
+    # The old code had hardcoded React/Electron/FastAPI/SQLite as defaults.
+    # This caused critique to reject architectures for not meeting phantom
+    # requirements that the user never specified.
+    #
+    # Now we ONLY include tech_stack if the spec explicitly provides it.
+    
+    if spec_json:
+        try:
+            spec_data = json.loads(spec_json) if isinstance(spec_json, str) else spec_json
+            impl_stack = spec_data.get("implementation_stack")
+            
+            if impl_stack and isinstance(impl_stack, dict):
+                # Build tech_stack from spec's implementation_stack
+                stack_info = {}
+                
+                if impl_stack.get("language"):
+                    stack_info["language"] = impl_stack["language"]
+                if impl_stack.get("framework"):
+                    stack_info["framework"] = impl_stack["framework"]
+                if impl_stack.get("runtime"):
+                    stack_info["runtime"] = impl_stack["runtime"]
+                
+                # Include lock status so critique knows how strict to be
+                stack_info["stack_locked"] = impl_stack.get("stack_locked", False)
+                stack_info["source"] = impl_stack.get("source", "spec")
+                
+                if stack_info.get("language") or stack_info.get("framework"):
+                    context["tech_stack"] = stack_info
+                    logger.info(
+                        "[get_environment_context] v1.1 Using spec-defined tech_stack: %s (locked=%s)",
+                        stack_info, stack_info.get("stack_locked")
+                    )
+                    print(f"[DEBUG] [env_context] v1.1 Spec tech_stack: {stack_info}")
+                else:
+                    logger.info("[get_environment_context] v1.1 Spec has implementation_stack but no language/framework - skipping tech_stack")
+            else:
+                logger.info("[get_environment_context] v1.1 No implementation_stack in spec - NO tech_stack constraints")
+                print("[DEBUG] [env_context] v1.1 No implementation_stack in spec - critique will NOT check tech stack")
+        except Exception as e:
+            logger.warning("[get_environment_context] v1.1 Failed to parse spec_json: %s", e)
+    else:
+        logger.info("[get_environment_context] v1.1 No spec_json provided - NO tech_stack constraints")
+    
+    # NOTE: We do NOT add a default tech_stack!
+    # If the user didn't specify a tech stack, critique should NOT enforce one.
+    # This is the FIX for the phantom constraint bug.
+    
+    return context
 
 
 # =============================================================================
@@ -465,6 +538,90 @@ async def run_high_stakes_with_critique(
     # Step 1: Generate draft
     draft_messages = list(envelope.messages)
     
+    # =========================================================================
+    # v4.2 CRITICAL FIX: Inject spec content into architecture prompt
+    # =========================================================================
+    # The architecture LLM MUST see the spec constraints BEFORE generating.
+    # Without this, the LLM may propose a different tech stack than what was
+    # discussed with the user. See CRITICAL_PIPELINE_FAILURE_REPORT.md.
+    
+    if spec_json:
+        try:
+            spec_data = json.loads(spec_json) if isinstance(spec_json, str) else spec_json
+            
+            # Build spec anchoring instruction
+            spec_anchoring_parts = []
+            spec_anchoring_parts.append("="*60)
+            spec_anchoring_parts.append("AUTHORITATIVE SPEC (PoT) - YOU MUST HONOR THESE CONSTRAINTS")
+            spec_anchoring_parts.append("="*60)
+            
+            # Goal
+            if spec_data.get("goal"):
+                spec_anchoring_parts.append(f"\nGOAL: {spec_data.get('goal')}")
+            
+            # Implementation Stack (v1.1 - CRITICAL for preventing stack drift)
+            impl_stack = spec_data.get("implementation_stack")
+            if impl_stack and isinstance(impl_stack, dict):
+                stack_locked = impl_stack.get("stack_locked", False)
+                language = impl_stack.get("language", "")
+                framework = impl_stack.get("framework", "")
+                runtime = impl_stack.get("runtime", "")
+                source = impl_stack.get("source", "user discussion")
+                
+                spec_anchoring_parts.append("\nIMPLEMENTATION STACK:")
+                if language:
+                    spec_anchoring_parts.append(f"  Language: {language}")
+                if framework:
+                    spec_anchoring_parts.append(f"  Framework/Library: {framework}")
+                if runtime:
+                    spec_anchoring_parts.append(f"  Runtime: {runtime}")
+                spec_anchoring_parts.append(f"  Source: {source}")
+                
+                if stack_locked:
+                    spec_anchoring_parts.append("  ⚠️  STACK LOCKED: User explicitly confirmed this stack choice.")
+                    spec_anchoring_parts.append("      You MUST use this exact technology stack.")
+                    spec_anchoring_parts.append("      Do NOT substitute with alternatives (e.g., don't use Electron for Python+Pygame).")
+                else:
+                    spec_anchoring_parts.append("  Stack discussed but not locked. Prefer this stack unless there's a strong reason not to.")
+                
+                print(f"[DEBUG] [high_stakes] v4.2 Injecting implementation_stack: {language}+{framework} (locked={stack_locked})")
+            
+            # Requirements (MUST/SHOULD/CAN)
+            requirements = spec_data.get("requirements", {})
+            if requirements:
+                must_reqs = requirements.get("must", [])
+                should_reqs = requirements.get("should", [])
+                if must_reqs:
+                    spec_anchoring_parts.append("\nMUST REQUIREMENTS (non-negotiable):")
+                    for i, req in enumerate(must_reqs[:10], 1):
+                        spec_anchoring_parts.append(f"  {i}. {req}")
+                if should_reqs:
+                    spec_anchoring_parts.append("\nSHOULD REQUIREMENTS (preferred):")
+                    for i, req in enumerate(should_reqs[:5], 1):
+                        spec_anchoring_parts.append(f"  {i}. {req}")
+            
+            # Constraints
+            constraints = spec_data.get("constraints", {})
+            if constraints:
+                spec_anchoring_parts.append("\nCONSTRAINTS:")
+                for key, value in list(constraints.items())[:10]:
+                    spec_anchoring_parts.append(f"  {key}: {value}")
+            
+            spec_anchoring_parts.append("\n" + "="*60)
+            spec_anchoring_parts.append("YOUR ARCHITECTURE MUST ALIGN WITH THE ABOVE SPEC.")
+            spec_anchoring_parts.append("Do NOT add requirements or change stack without explicit user approval.")
+            spec_anchoring_parts.append("="*60)
+            
+            spec_instruction = "\n".join(spec_anchoring_parts)
+            draft_messages.append({"role": "system", "content": spec_instruction})
+            
+            logger.info("[high_stakes] v4.2 Injected spec anchoring into architecture prompt")
+            print(f"[DEBUG] [high_stakes] v4.2 Spec anchoring injected ({len(spec_instruction)} chars)")
+            
+        except Exception as e:
+            logger.warning(f"[high_stakes] v4.2 Failed to inject spec: {e}")
+            print(f"[DEBUG] [high_stakes] v4.2 Spec injection failed: {e}")
+    
     # Inject spec echo instruction for Stage 3 verification
     if spec_id and spec_hash and STAGE3_AVAILABLE:
         spec_echo_instruction = build_spec_echo_instruction(spec_id, spec_hash)
@@ -475,6 +632,9 @@ async def run_high_stakes_with_critique(
     
     if file_map:
         draft_messages.append({"role": "system", "content": f"{file_map}\n\nRefer to files using [FILE_X] identifiers."})
+    
+    # v4.2: Log full draft messages for debugging
+    print(f"[DEBUG] [high_stakes] v4.2 Draft messages: {len(draft_messages)} messages")
     
     if trace:
         _trace_step(trace, 'draft')
@@ -555,7 +715,8 @@ async def run_high_stakes_with_critique(
             _trace_step(trace, 'arch_stored', arch_id=arch_id)
         
         # Run revision loop (Block 5 + 6)
-        env_context = get_environment_context() if job_type_str in HIGH_STAKES_JOB_TYPES else None
+        # v1.1 FIX: Pass spec_json to get_environment_context() to avoid phantom constraints
+        env_context = get_environment_context(spec_json=spec_json) if job_type_str in HIGH_STAKES_JOB_TYPES else None
         
         final_content, final_version, passed, final_critique = await run_revision_loop(
             db=db,
@@ -607,7 +768,8 @@ async def run_high_stakes_with_critique(
     logger.info("[critic] Using legacy prose critique pipeline")
     
     # Step 2: Critique
-    env_context = get_environment_context() if job_type_str in HIGH_STAKES_JOB_TYPES else None
+    # v1.1 FIX: Pass spec_json to get_environment_context() to avoid phantom constraints
+    env_context = get_environment_context(spec_json=spec_json) if job_type_str in HIGH_STAKES_JOB_TYPES else None
     critique = await call_gemini_critic(
         original_task=task,
         draft_result=draft,

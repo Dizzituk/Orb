@@ -81,6 +81,52 @@ v1.8 (2026-01): LLM-powered intelligent reply generation + stopword parsing fix
                   - Improved pattern order (most specific first)
                   - Strips meta-instructions ("reply ok", "say ok when you understand")
                   - Better logging for debugging hint extraction
+v1.10 (2026-01-22): GREENFIELD BUILD FIX (CREATE_NEW vs MODIFY_EXISTING)
+              - CRITICAL FIX: "Target platform: Desktop" no longer triggers sandbox discovery
+              - Added greenfield_build domain detection for CREATE_NEW jobs
+              - Stricter sandbox_file domain patterns - require explicit file context
+              - _extract_sandbox_hints() now distinguishes platform vs file location
+              - Jobs like "build Tetris for desktop" skip sandbox discovery entirely
+              - Only triggers sandbox discovery when clear file operations detected
+              - Platform context patterns: "for desktop", "desktop app", "Target platform: Desktop"
+              - File context patterns: "desktop folder", "file on desktop", "sandbox desktop"
+v1.11 (2026-01-22): TECH STACK ANCHORING (upstream capture)
+              - CRITICAL FIX: implementation_stack field is now populated from Weaver/conversation
+              - Added _detect_implementation_stack() to extract tech stack from messages
+              - Detects user explicit statements: "use Python", "I want Pygame", "let's use React"
+              - Detects assistant proposals + user confirmations (sets stack_locked=True)
+              - Added ImplementationStack import from schemas.py
+              - Added implementation_stack to GroundedPOTSpec dataclass
+              - Wired into grounding_data for Critical Pipeline job classification
+              - Added "Implementation Stack" section to markdown output
+              - See CRITICAL_PIPELINE_FAILURE_REPORT.md and tech_stack_anchoring_handover.md
+v1.12 (2026-01-22): DOMAIN DRIFT FIX (Tetris generates courier app steps)
+              - CRITICAL FIX: Domain detection was matching on QUESTION text, not job description
+              - Example: Weaver asks "What platform? (web/Android/iOS)" - Android/iOS triggered mobile_app domain
+              - Added _extract_job_description_only() to strip Questions/Unresolved ambiguities sections
+              - detect_domains() now excludes question text by default (exclude_questions=True)
+              - Added "game" domain with keywords: tetris, snake, game, playfield, score, etc.
+              - Game domain takes PRIORITY over mobile_app in step/test derivation
+              - Added game-specific steps and tests for game-building jobs
+              - Prevents courier shift logging app steps/tests being generated for Tetris jobs
+              - See specgate_domain_drift_fix.md for full details
+v1.13 (2026-01-23): MICRO_FILE_TASK output mode + reduced clutter
+              - Added OutputMode enum (APPEND_IN_PLACE, SEPARATE_REPLY_FILE, CHAT_ONLY)
+              - Added _detect_output_mode() to determine where reply should go based on user intent
+              - OutputMode detection keywords:
+                  - CHAT_ONLY: "just answer here", "don't change the file", "chat only"
+                  - SEPARATE_REPLY_FILE: "save to reply.txt", "create a reply file"
+                  - APPEND_IN_PLACE: "write under", "append", "add below", "beneath the question"
+              - Output path now varies based on detected mode:
+                  - APPEND_IN_PLACE: output_path = input_path (same file)
+                  - SEPARATE_REPLY_FILE: output_path = reply.txt
+                  - CHAT_ONLY: output_path = None
+              - Added sandbox_output_mode and sandbox_insertion_format to GroundedPOTSpec
+              - Steps/tests vary based on output_mode (append vs write vs chat-only)
+              - Reduced clutter in markdown output for micro tasks:
+                  - Removed "Selection confidence" (not useful for micro tasks)
+                  - Only show content_type if not "unknown"
+              - Added sandbox_output_mode and sandbox_insertion_format to grounding_data
 """
 
 from __future__ import annotations
@@ -122,7 +168,7 @@ except ImportError as e:
 
 # Types from spec_gate_types
 try:
-    from .spec_gate_types import SpecGateResult
+    from .spec_gate_types import SpecGateResult, OutputMode
 except ImportError:
     # Define minimal result type
     @dataclass
@@ -139,6 +185,21 @@ except ImportError:
         notes: Optional[str] = None
         blocking_issues: List[str] = field(default_factory=list)
         validation_status: str = "pending"
+    
+    # Fallback OutputMode enum
+    class OutputMode(str, Enum):
+        APPEND_IN_PLACE = "append_in_place"
+        SEPARATE_REPLY_FILE = "separate_reply_file"
+        CHAT_ONLY = "chat_only"
+
+# ImplementationStack schema (v1.11 - tech stack anchoring)
+try:
+    from .schemas import ImplementationStack
+    _IMPL_STACK_AVAILABLE = True
+except ImportError as e:
+    logger.warning("[spec_gate_grounded] ImplementationStack not available: %s", e)
+    _IMPL_STACK_AVAILABLE = False
+    ImplementationStack = None
 
 # Sandbox inspection (read-only discovery) - v1.3
 try:
@@ -191,6 +252,9 @@ class QuestionCategory(str, Enum):
 #
 
 # Domain detection keywords (case-insensitive)
+# v1.10: CRITICAL - These detect the job DOMAIN, not intent
+# "desktop" by itself is ambiguous (platform vs file location)
+# Use more specific patterns to avoid false positives
 DOMAIN_KEYWORDS = {
     "mobile_app": [
         "mobile app", "phone app", "android", "ios", "iphone",
@@ -199,14 +263,49 @@ DOMAIN_KEYWORDS = {
         "encryption", "encrypted", "trusted wi-fi", "trusted wifi",
         "in-van", "in van", "delivery", "parcels", "shift",
     ],
-    # v1.6: Sandbox file tasks (read file, reply, find by discovery)
+    # v1.10: GREENFIELD BUILD (CREATE_NEW intent)
+    # These indicate building something new, not modifying existing
+    "greenfield_build": [
+        "build me", "make me", "create a", "build a", "make a",
+        "i want a", "i need a", "i'd like a", "i would like a",
+        "new app", "new project", "new game", "new tool",
+        "tetris", "snake", "pong", "game", "clone", "prototype",
+        "from scratch", "brand new", "greenfield",
+    ],
+    # v1.12: GAME DOMAIN - For game-building jobs
+    # Takes priority over mobile_app to prevent courier app steps
+    "game": [
+        "tetris", "snake", "pong", "breakout", "asteroids",
+        "game", "gameplay", "playfield", "playable",
+        "tetrominoes", "tetromino", "grid", "board",
+        "score", "level", "high score", "game over",
+        "player", "controls", "line clear", "line clearing",
+        "gravity", "drop", "hard drop", "soft drop",
+        "rotation", "rotate", "spawn", "next piece",
+        "arcade", "puzzle game", "casual game",
+        "classic game", "retro game", "web game",
+    ],
+    # v1.6/v1.10: Sandbox file tasks (read file, reply, find by discovery)
+    # v1.10: STRICTER PATTERNS - must be clearly about file operations
+    # "desktop" alone is NOT enough - could be platform choice
     "sandbox_file": [
-        "sandbox", "sandbox desktop", "sandbox task",
-        "find the file", "find by discovery", "discovery",
-        "read the file", "read the question", "read the message",
-        "reply", "include the reply", "include reply",
-        "desktop folder", "folder called", "folder named",
-        "text file", ".txt", "test.txt",
+        # Explicit sandbox references
+        "sandbox desktop", "sandbox task", "sandbox folder",
+        "in the sandbox", "from sandbox",
+        # File discovery patterns (must include action verb)
+        "find the file", "find file", "find by discovery", "discovery",
+        "read the file", "read file", "read the question", "read the message",
+        "open the file", "open file",
+        # Reply/respond patterns
+        "reply to file", "reply to the", "include the reply", "include reply",
+        "respond to file", "answer the file",
+        # Folder patterns (must be specific about location)
+        "desktop folder", "folder on desktop", "folder called", "folder named",
+        "documents folder", "folder in documents",
+        # Specific file mentions
+        "text file in", "file on the desktop", "file in desktop",
+        "file on desktop", "file in documents",
+        ".txt file", "test.txt", "message.txt",
     ],
     # Future domains can be added here (e.g., "web_app", "cli_tool", "api_service")
 }
@@ -332,15 +431,29 @@ MOBILE_APP_FORK_BANK = [
 ]
 
 
-def detect_domains(text: str) -> List[str]:
+def detect_domains(text: str, exclude_questions: bool = True) -> List[str]:
     """
     Detect which domains are mentioned in the text.
     Returns list of domain keys (e.g., ["mobile_app"]).
+    
+    v1.12: CRITICAL FIX - By default, excludes question/ambiguity sections from detection.
+    This prevents false positives where Weaver questions contain domain keywords
+    (e.g., "What platform? (web/Android/iOS)" shouldn't trigger mobile_app domain
+    when the actual job is building a Tetris game).
+    
+    Args:
+        text: The text to analyze
+        exclude_questions: If True, strips out Questions and Unresolved ambiguities sections
     """
     if not text:
         return []
     
-    text_lower = text.lower()
+    # v1.12: Strip out question/ambiguity sections to avoid false domain detection
+    analysis_text = text
+    if exclude_questions:
+        analysis_text = _extract_job_description_only(text)
+    
+    text_lower = analysis_text.lower()
     detected = []
     
     for domain, keywords in DOMAIN_KEYWORDS.items():
@@ -350,6 +463,79 @@ def detect_domains(text: str) -> List[str]:
                 break  # One match is enough for this domain
     
     return detected
+
+
+def _extract_job_description_only(text: str) -> str:
+    """
+    v1.12: Extract only the job description parts of Weaver output,
+    excluding Questions and Unresolved ambiguities sections.
+    
+    This prevents domain detection from matching on keywords in questions
+    like "What platform? (web/Android/iOS)" when the actual job is Tetris.
+    """
+    if not text:
+        return ""
+    
+    lines = text.split("\n")
+    result_lines = []
+    in_excluded_section = False
+    
+    # Sections to exclude (case-insensitive)
+    excluded_headers = [
+        "questions",
+        "unresolved ambiguities",
+        "unresolved ambigu",  # partial match
+    ]
+    
+    # Sections to include (case-insensitive)
+    included_headers = [
+        "what is being built",
+        "intended outcome",
+        "target platform:",  # Filled slot, not a question
+        "color scheme:",
+        "scope:",
+        "layout:",
+        "platform:",  # Filled slot value
+    ]
+    
+    for line in lines:
+        line_lower = line.lower().strip()
+        
+        # Check if entering an excluded section
+        if any(header in line_lower for header in excluded_headers):
+            in_excluded_section = True
+            continue
+        
+        # Check if entering an included section (exits excluded mode)
+        if any(header in line_lower for header in included_headers):
+            in_excluded_section = False
+            result_lines.append(line)
+            continue
+        
+        # Check for new major section (markdown headers) - reset exclusion
+        if line.strip().startswith("#") or (line.strip().startswith("**") and line.strip().endswith("**")):
+            # Check if this is an excluded header
+            if any(header in line_lower for header in excluded_headers):
+                in_excluded_section = True
+                continue
+            else:
+                in_excluded_section = False
+        
+        # Include line if not in excluded section
+        if not in_excluded_section:
+            result_lines.append(line)
+    
+    result = "\n".join(result_lines)
+    
+    # Log what was extracted vs excluded for debugging
+    if len(result) != len(text):
+        logger.info(
+            "[spec_gate_grounded] v1.12 _extract_job_description_only: "
+            "Excluded %d chars of question/ambiguity text (kept %d of %d chars)",
+            len(text) - len(result), len(result), len(text)
+        )
+    
+    return result
 
 
 def extract_unresolved_ambiguities(weaver_text: str) -> List[str]:
@@ -483,6 +669,170 @@ def extract_decision_forks(
 
 
 # =============================================================================
+# JOB KIND CLASSIFIER (v1.9) - Deterministic, NO LLM
+# =============================================================================
+
+def classify_job_kind(
+    spec: GroundedPOTSpec,
+    intent: Dict[str, Any],
+) -> Tuple[str, float, str]:
+    """
+    v1.9: Classify job as micro_execution, repo_change, architecture, or unknown.
+    v1.10: Added greenfield_build detection.
+    
+    This is DETERMINISTIC - NO LLM calls. Critical Pipeline MUST obey this.
+    
+    MICRO_EXECUTION (seconds):
+    - sandbox_discovery_used=True AND sandbox_input_path exists
+    - Simple read/write/answer with ≤5 steps
+    - Already has resolved file paths from SpecGate
+    
+    REPO_CHANGE (minutes):
+    - Edit existing code files
+    - Add new files to existing module
+    - Bug fixes, updates
+    
+    ARCHITECTURE (2-5 minutes):
+    - Design new subsystem/module
+    - Multi-module refactoring
+    - Database migrations
+    - API design
+    - v1.10: Greenfield builds (create new app/game/project)
+    
+    UNKNOWN:
+    - Too ambiguous → escalate to architecture (fail-closed)
+    
+    Returns:
+        (job_kind, confidence, reason)
+    """
+    # ==========================================================================
+    # v1.10 RULE 0: Greenfield builds are ALWAYS architecture jobs
+    # ==========================================================================
+    
+    raw_text = (intent.get("raw_text", "") or "").lower()
+    goal_text = (spec.goal or "").lower()
+    all_text = f"{raw_text} {goal_text}"
+    
+    # Check for greenfield domain
+    detected_domains = detect_domains(all_text)
+    if "greenfield_build" in detected_domains:
+        matched_keywords = [kw for kw in DOMAIN_KEYWORDS.get("greenfield_build", []) if kw in all_text][:3]
+        reason = f"greenfield_build domain detected (CREATE_NEW): matched {matched_keywords}"
+        logger.info("[spec_gate_grounded] v1.10 classify_job_kind: ARCHITECTURE (greenfield) - %s", reason)
+        return ("architecture", 0.90, reason)
+    
+    # ==========================================================================
+    # RULE 1: Sandbox discovery with resolved paths → MICRO_EXECUTION
+    # ==========================================================================
+    
+    if spec.sandbox_discovery_used and spec.sandbox_input_path:
+        reason = (
+            f"sandbox_discovery_used=True with input={spec.sandbox_input_path}, "
+            f"output={spec.sandbox_output_path or 'pending'}"
+        )
+        logger.info("[spec_gate_grounded] v1.9 classify_job_kind: MICRO_EXECUTION - %s", reason)
+        return ("micro_execution", 0.95, reason)
+    
+    # ==========================================================================
+    # RULE 2: Check step count (simple heuristic)
+    # ==========================================================================
+    
+    step_count = len(spec.proposed_steps)
+    
+    # ==========================================================================
+    # RULE 3: Keyword-based classification (deterministic rules)
+    # ==========================================================================
+    
+    # MICRO indicators (simple file/read/write operations)
+    micro_keywords = [
+        "read the", "read file", "find the file", "find file",
+        "answer the question", "answer question", "reply to",
+        "write reply", "write answer", "print answer",
+        "summarize", "summarise", "extract", "copy",
+        "find document", "what does", "what is", "tell me",
+        "sandbox", "desktop", "test folder", "message file",
+    ]
+    
+    # REPO_CHANGE indicators (code edits, file changes)
+    repo_change_keywords = [
+        "edit", "update", "fix bug", "fix the", "modify",
+        "change the", "add to", "append", "patch",
+        "update file", "edit file", "change file",
+    ]
+    
+    # ARCHITECTURE indicators (design/build work)
+    arch_keywords = [
+        "design", "architect", "build system", "create system",
+        "implement feature", "add feature", "new module",
+        "refactor", "restructure", "redesign",
+        "api endpoint", "database schema", "migration",
+        "integration", "pipeline", "service layer",
+        "authentication", "authorization",
+        "full implementation", "complete implementation",
+        "specgate", "spec gate", "overwatcher",
+        "new subsystem", "multi-module", "architecture",
+        # v1.10: Greenfield indicators (backup for domain detection)
+        "build me", "make me", "create a", "build a", "make a",
+        "new app", "new project", "new game", "from scratch",
+    ]
+    
+    # Count keyword matches
+    micro_score = sum(1 for kw in micro_keywords if kw in all_text)
+    repo_score = sum(1 for kw in repo_change_keywords if kw in all_text)
+    arch_score = sum(1 for kw in arch_keywords if kw in all_text)
+    
+    # Boost micro score if we have ANY sandbox resolution
+    if spec.sandbox_input_path or spec.sandbox_output_path:
+        micro_score += 5
+    if spec.sandbox_generated_reply:
+        micro_score += 3
+    
+    # Boost arch score for complex jobs
+    if step_count > 10:
+        arch_score += 3
+    elif step_count > 5:
+        arch_score += 1
+        repo_score += 1
+    elif step_count <= 3:
+        micro_score += 2
+    
+    # Log scores
+    logger.info(
+        "[spec_gate_grounded] v1.9 classify_job_kind scores: micro=%d, repo=%d, arch=%d, steps=%d",
+        micro_score, repo_score, arch_score, step_count
+    )
+    
+    # ==========================================================================
+    # DECISION LOGIC
+    # ==========================================================================
+    
+    total_score = micro_score + repo_score + arch_score
+    
+    if total_score == 0:
+        # No keywords matched → unknown → escalate to architecture
+        return ("unknown", 0.3, "No classification keywords matched - escalating to architecture")
+    
+    # Pick highest score
+    if micro_score >= repo_score and micro_score >= arch_score:
+        confidence = min(0.9, 0.5 + (micro_score / 10))
+        reason = f"micro keywords ({micro_score}) >= repo ({repo_score}) and arch ({arch_score})"
+        return ("micro_execution", confidence, reason)
+    
+    if repo_score > micro_score and repo_score >= arch_score:
+        confidence = min(0.85, 0.5 + (repo_score / 10))
+        reason = f"repo_change keywords ({repo_score}) > micro ({micro_score}) and >= arch ({arch_score})"
+        return ("repo_change", confidence, reason)
+    
+    if arch_score > micro_score and arch_score > repo_score:
+        confidence = min(0.9, 0.5 + (arch_score / 10))
+        reason = f"architecture keywords ({arch_score}) > micro ({micro_score}) and repo ({repo_score})"
+        return ("architecture", confidence, reason)
+    
+    # Tie or ambiguous → default to architecture (fail-closed)
+    return ("unknown", 0.4, "Ambiguous classification - escalating to architecture")
+
+
+# =============================================================================
 # SANDBOX DISCOVERY HELPERS (v1.3)
 # =============================================================================
 
@@ -491,6 +841,9 @@ def _extract_sandbox_hints(text: str) -> Tuple[Optional[str], Optional[str]]:
     Extract anchor and subfolder from Weaver/user text.
     
     v1.8: Fixed stopword filtering - "on", "in", etc. must not become subfolder names.
+    v1.10: CRITICAL FIX - Distinguish between:
+           - "Target platform: Desktop" (platform choice, NOT a file location)
+           - "Desktop folder" / "file on the desktop" (actual file location)
     
     Returns:
         (anchor, subfolder) or (None, None) if no sandbox hints found
@@ -500,11 +853,51 @@ def _extract_sandbox_hints(text: str) -> Tuple[Optional[str], Optional[str]]:
         "file on the desktop" → ("desktop", None)
         "Documents/reports" → ("documents", "reports")
         "text file in my test folder on the desktop" → ("desktop", "test")
+        "Target platform: Desktop" → (None, None)  # v1.10: This is NOT a file location
+        "Build me a game for desktop" → (None, None)  # v1.10: Platform choice
     """
     if not text:
         return None, None
     
     text_lower = text.lower()
+    
+    # v1.10: CRITICAL - Check if this is a PLATFORM context, not a FILE context
+    # These patterns indicate "desktop" is a platform choice, not a file location
+    platform_context_patterns = [
+        r"target\s+platform[:\s]+desktop",
+        r"platform[:\s]+desktop",
+        r"for\s+desktop",
+        r"on\s+desktop[\s,]",  # "on desktop," as in "runs on desktop"
+        r"desktop\s+app",
+        r"desktop\s+game",
+        r"desktop\s+version",
+        r"desktop\s+platform",
+        r"build.*for.*desktop",
+        r"create.*for.*desktop",
+        r"make.*for.*desktop",
+    ]
+    
+    is_platform_context = any(re.search(p, text_lower) for p in platform_context_patterns)
+    
+    # v1.10: FILE context patterns - these clearly indicate file operations
+    file_context_patterns = [
+        r"desktop\s+folder",
+        r"folder\s+(?:on|in)\s+(?:the\s+)?desktop",
+        r"file\s+(?:on|in)\s+(?:the\s+)?desktop",
+        r"(?:read|find|open)\s+.*desktop",
+        r"sandbox\s+desktop",
+        r"in\s+the\s+desktop",
+        r"from\s+(?:the\s+)?desktop",
+    ]
+    
+    is_file_context = any(re.search(p, text_lower) for p in file_context_patterns)
+    
+    # v1.10: If platform context detected but NO file context, skip sandbox discovery
+    if is_platform_context and not is_file_context:
+        logger.info(
+            "[spec_gate_grounded] v1.10 _extract_sandbox_hints: 'desktop' is PLATFORM context, not file location"
+        )
+        return None, None
     
     # v1.8: Comprehensive stopword list - these must NEVER be captured as subfolder names
     SUBFOLDER_STOPWORDS = {
@@ -518,18 +911,20 @@ def _extract_sandbox_hints(text: str) -> Tuple[Optional[str], Optional[str]]:
         "ok", "okay", "yes", "no", "please", "thanks",
     }
     
-    # Detect anchor
+    # Detect anchor - but only if we're in file context
     anchor = None
-    if "desktop" in text_lower:
-        anchor = "desktop"
-    elif "documents" in text_lower or "document" in text_lower:
-        anchor = "documents"
+    if is_file_context or not is_platform_context:
+        # Only extract anchor if there's a clear file context indication
+        if any(re.search(p, text_lower) for p in file_context_patterns):
+            if "desktop" in text_lower:
+                anchor = "desktop"
+            elif "documents" in text_lower or "document" in text_lower:
+                anchor = "documents"
     
     if not anchor:
         return None, None
     
     # v1.8: Strip meta-instructions before extracting subfolder
-    # These contaminate intent parsing: "reply ok", "say ok when you understand", etc.
     meta_patterns = [
         r'reply\s+(?:with\s+)?ok\b[^.]*',
         r'say\s+(?:with\s+)?ok\b[^.]*',
@@ -540,24 +935,15 @@ def _extract_sandbox_hints(text: str) -> Tuple[Optional[str], Optional[str]]:
     for meta_pat in meta_patterns:
         cleaned_text = re.sub(meta_pat, '', cleaned_text)
     
-    # Extract subfolder - v1.8: improved patterns and order
-    # The patterns are ordered from most specific to least specific
+    # Extract subfolder
     patterns = [
-        # v1.8 FIX: "folder on the desktop called X" - words between folder and called
         r'folder\s+(?:on|in)\s+(?:the\s+)?(?:desktop|documents)\s+(?:called|named)\s+["\']?(\w+)["\']?',
-        # "desktop folder called X" or "documents folder called X"
         r'(?:desktop|documents)\s+folder\s+(?:called|named)\s+["\']?(\w+)["\']?',
-        # Most specific: "folder called/named X" (adjacent)
         r'folder\s+(?:called|named)\s+["\']?(\w+)["\']?',
-        # "in X folder" or "in my X folder" (X must come before "folder")
         r'in\s+(?:my\s+|the\s+|a\s+)?([\w]+)\s+folder',
-        # "X folder on/in the desktop" (folder name before "folder on")
         r'([\w]+)\s+folder\s+(?:on|in)\s+(?:the\s+)?(?:desktop|documents)',
-        # "my X folder" pattern (possessive)
         r'my\s+([\w]+)\s+folder',
-        # "called X" or "named X" (anywhere in text, last resort)
         r'(?:called|named)\s+["\']?(\w+)["\']?',
-        # Path separators: "desktop/X" or "desktop\X"
         r'desktop[/\\\\]+(\w+)',
         r'documents[/\\\\]+(\w+)',
     ]
@@ -567,50 +953,440 @@ def _extract_sandbox_hints(text: str) -> Tuple[Optional[str], Optional[str]]:
         match = re.search(pattern, cleaned_text)
         if match:
             candidate = match.group(1)
-            # v1.8: Strict stopword filtering
             if candidate not in SUBFOLDER_STOPWORDS and len(candidate) > 1:
                 subfolder = candidate
                 logger.info(
-                    "[spec_gate_grounded] v1.8 Extracted subfolder '%s' using pattern: %s",
+                    "[spec_gate_grounded] v1.10 Extracted subfolder '%s' using pattern: %s",
                     subfolder, pattern
                 )
                 break
-            else:
-                logger.debug(
-                    "[spec_gate_grounded] v1.8 Rejected stopword candidate '%s' from pattern: %s",
-                    candidate, pattern
-                )
     
-    # v1.8: Extra validation - log warning if we couldn't extract a subfolder
-    # but the text mentions folder names
+    # Fallback subfolder extraction
     if not subfolder:
-        # Check for folder mentions we might have missed
         folder_mention = re.search(r'([\w]+)\s+folder', cleaned_text)
         if folder_mention:
             candidate = folder_mention.group(1)
             if candidate not in SUBFOLDER_STOPWORDS and len(candidate) > 1:
                 subfolder = candidate
                 logger.info(
-                    "[spec_gate_grounded] v1.8 Fallback extracted subfolder '%s' from 'X folder' pattern",
+                    "[spec_gate_grounded] v1.10 Fallback extracted subfolder '%s'",
                     subfolder
                 )
     
-    # v1.8: Final validation - NEVER return empty string as subfolder
+    # Final validation
     if subfolder is not None:
         subfolder = subfolder.strip()
         if not subfolder or subfolder in SUBFOLDER_STOPWORDS:
             logger.warning(
-                "[spec_gate_grounded] v1.8 Discarding invalid subfolder: '%s'",
+                "[spec_gate_grounded] v1.10 Discarding invalid subfolder: '%s'",
                 subfolder
             )
             subfolder = None
     
     logger.info(
-        "[spec_gate_grounded] v1.8 _extract_sandbox_hints result: anchor='%s', subfolder='%s'",
+        "[spec_gate_grounded] v1.10 _extract_sandbox_hints result: anchor='%s', subfolder='%s'",
         anchor, subfolder
     )
     
     return anchor, subfolder
+
+
+# =============================================================================
+# OUTPUT MODE DETECTION (v1.13 - MICRO_FILE_TASK output targeting)
+# =============================================================================
+
+def _detect_output_mode(text: str) -> OutputMode:
+    """
+    v1.13: Detect the intended output mode for MICRO_FILE_TASK jobs.
+    
+    Examines user intent to determine where the reply should go:
+    - CHAT_ONLY: User wants reply in chat, no file modification
+    - SEPARATE_REPLY_FILE: User wants reply in a separate file (reply.txt)
+    - APPEND_IN_PLACE: User wants reply written into the same file (under the question)
+    
+    Priority order (first match wins):
+    1. CHAT_ONLY triggers (explicit "don't modify", "chat only")
+    2. SEPARATE_REPLY_FILE triggers (explicit "save to reply.txt", "new file")
+    3. APPEND_IN_PLACE triggers (write/append/under/beneath)
+    4. Default: CHAT_ONLY (safest - no file modification)
+    
+    Args:
+        text: Combined user intent + weaver text
+        
+    Returns:
+        OutputMode enum value
+    """
+    if not text:
+        return OutputMode.CHAT_ONLY
+    
+    text_lower = text.lower()
+    
+    # ==========================================================================
+    # Priority 1: CHAT_ONLY triggers (most restrictive - user explicitly wants no file change)
+    # ==========================================================================
+    chat_only_patterns = [
+        "just answer here",
+        "answer here in chat",
+        "reply here in chat",
+        "don't change the file",
+        "don't modify the file",
+        "don't write to the file",
+        "don't touch the file",
+        "do not change the file",
+        "do not modify the file",
+        "do not write",
+        "chat only",
+        "reply in chat only",
+        "answer in chat",
+        "no file output",
+        "no file changes",
+    ]
+    
+    if any(pattern in text_lower for pattern in chat_only_patterns):
+        logger.info(
+            "[spec_gate_grounded] v1.13 _detect_output_mode: CHAT_ONLY (explicit trigger found)"
+        )
+        return OutputMode.CHAT_ONLY
+    
+    # ==========================================================================
+    # Priority 2: SEPARATE_REPLY_FILE triggers (explicit separate file request)
+    # ==========================================================================
+    separate_file_patterns = [
+        "save to reply.txt",
+        "save as reply.txt",
+        "write to reply.txt",
+        "create reply.txt",
+        "write to a new file",
+        "write to new file",
+        "create a new file",
+        "create a reply file",
+        "separate file",
+        "save as a new file",
+        "save to a new file",
+        "put reply in reply.txt",
+        "output to reply.txt",
+    ]
+    
+    if any(pattern in text_lower for pattern in separate_file_patterns):
+        logger.info(
+            "[spec_gate_grounded] v1.13 _detect_output_mode: SEPARATE_REPLY_FILE (explicit trigger found)"
+        )
+        return OutputMode.SEPARATE_REPLY_FILE
+    
+    # ==========================================================================
+    # Priority 3: APPEND_IN_PLACE triggers (write into the same file)
+    # ==========================================================================
+    append_patterns = [
+        "write under",
+        "write below",
+        "write beneath",
+        "write it under",
+        "write the reply under",
+        "write reply under",
+        "put under",
+        "put below",
+        "put beneath",
+        "put reply under",
+        "put the reply under",
+        "append",
+        "add below",
+        "add under",
+        "add beneath",
+        "underneath the question",
+        "beneath the question",
+        "under the question",
+        "below the question",
+        "write it in the file",
+        "write in the file",
+        "write reply in the file",
+        "write the reply in",
+        "put it in the file",
+        "add it to the file",
+        "add to the file",
+        "modify the file",
+        "update the file",
+        "edit the file",
+        "in-place",
+        "in place",
+    ]
+    
+    if any(pattern in text_lower for pattern in append_patterns):
+        logger.info(
+            "[spec_gate_grounded] v1.13 _detect_output_mode: APPEND_IN_PLACE (write/append trigger found)"
+        )
+        return OutputMode.APPEND_IN_PLACE
+    
+    # ==========================================================================
+    # Priority 4: Default - CHAT_ONLY (safest default, no file modification)
+    # ==========================================================================
+    logger.info(
+        "[spec_gate_grounded] v1.13 _detect_output_mode: CHAT_ONLY (default - no triggers matched)"
+    )
+    return OutputMode.CHAT_ONLY
+
+
+# =============================================================================
+# TECH STACK DETECTION (v1.11 - Upstream Stack Capture)
+# =============================================================================
+#
+# This function detects tech stack choices from conversation messages and
+# Weaver output. It populates the implementation_stack field which is used
+# by Critique v1.4 to enforce stack anchoring.
+#
+# See: CRITICAL_PIPELINE_FAILURE_REPORT.md and tech_stack_anchoring_handover.md
+#
+
+# Stack detection keywords - maps keywords to canonical (language, framework) pairs
+_STACK_DETECTION_PATTERNS = {
+    # Python ecosystem
+    "python": ("Python", None),
+    "pygame": ("Python", "Pygame"),
+    "tkinter": ("Python", "Tkinter"),
+    "pyqt": ("Python", "PyQt"),
+    "flask": ("Python", "Flask"),
+    "fastapi": ("Python", "FastAPI"),
+    "django": ("Python", "Django"),
+    "kivy": ("Python", "Kivy"),
+    "pyside": ("Python", "PySide"),
+    
+    # JavaScript/TypeScript ecosystem
+    "javascript": ("JavaScript", None),
+    "typescript": ("TypeScript", None),
+    "react": ("TypeScript", "React"),
+    "electron": ("TypeScript", "Electron"),
+    "node.js": ("JavaScript", "Node.js"),
+    "nodejs": ("JavaScript", "Node.js"),
+    "next.js": ("TypeScript", "Next.js"),
+    "nextjs": ("TypeScript", "Next.js"),
+    "vue": ("TypeScript", "Vue"),
+    "angular": ("TypeScript", "Angular"),
+    
+    # Game engines
+    "unity": ("C#", "Unity"),
+    "godot": ("GDScript", "Godot"),
+    "unreal": ("C++", "Unreal"),
+    
+    # Other stacks
+    "rust": ("Rust", None),
+    "go": ("Go", None),
+    "golang": ("Go", None),
+    "c++": ("C++", None),
+    "cpp": ("C++", None),
+    "c#": ("C#", None),
+    "csharp": ("C#", None),
+    "java": ("Java", None),
+    "kotlin": ("Kotlin", None),
+    "swift": ("Swift", None),
+}
+
+# Keywords that indicate user is CHOOSING a stack (not just mentioning)
+_STACK_CHOICE_INDICATORS = [
+    "use ", "using ", "let's use ", "lets use ", "i want ", "i'd like ",
+    "prefer ", "go with ", "choose ", "pick ", "selected ", "decided on ",
+    "will use ", "gonna use ", "going to use ", "want to use ",
+    "build with ", "make with ", "create with ", "develop with ",
+    "in python", "in javascript", "in typescript", "in rust",
+    "with python", "with pygame", "with react", "with electron",
+]
+
+# Keywords that indicate assistant proposed and user confirmed
+_CONFIRMATION_PATTERNS = [
+    # Affirmative responses
+    r"\b(yes|yeah|yep|sure|ok|okay|sounds good|that works|perfect|great)\b",
+    r"\b(go ahead|do it|proceed|confirmed|correct|exactly)\b",
+    r"\b(that's right|that is right|that's correct|that is correct)\b",
+    # Implicit confirmations (user continues with follow-up, accepting proposal)
+    r"\b(also|and|additionally|plus|what about|how about)\b",
+]
+
+
+def _detect_implementation_stack(
+    messages: List[Dict[str, Any]],
+    weaver_text: str,
+    intent: Dict[str, Any],
+) -> Optional[ImplementationStack]:
+    """
+    v1.11: Detect tech stack from conversation messages and Weaver output.
+    
+    This is the UPSTREAM capture that populates implementation_stack field.
+    Critique v1.4 uses this field to enforce stack anchoring.
+    
+    Detection Priority:
+    1. Explicit user statement: "use Python", "I want Pygame", "let's use React"
+    2. Assistant proposal + user confirmation (sets stack_locked=True)
+    3. Strong implication from goal/requirements text
+    4. Weaver captured stack hints
+    
+    Args:
+        messages: Conversation messages (list of {role, content})
+        weaver_text: Full Weaver job description text
+        intent: Parsed intent dict from parse_weaver_intent()
+    
+    Returns:
+        ImplementationStack if detected, None otherwise
+    """
+    if not _IMPL_STACK_AVAILABLE or ImplementationStack is None:
+        logger.warning("[spec_gate_grounded] v1.11 ImplementationStack not available, skipping stack detection")
+        return None
+    
+    detected_language = None
+    detected_framework = None
+    detected_runtime = None
+    stack_locked = False
+    source = None
+    notes = None
+    
+    all_text = f"{weaver_text or ''} {intent.get('goal', '')} {intent.get('raw_text', '')}"
+    all_text_lower = all_text.lower()
+    
+    # =========================================================================
+    # Pass 1: Check for explicit user stack choice in messages
+    # =========================================================================
+    
+    user_messages = [m.get("content", "") for m in (messages or []) if m.get("role") == "user"]
+    assistant_messages = [m.get("content", "") for m in (messages or []) if m.get("role") == "assistant"]
+    
+    for user_msg in user_messages:
+        if not user_msg:
+            continue
+        user_msg_lower = user_msg.lower()
+        
+        # Check for explicit stack choice indicators
+        has_choice_indicator = any(ind in user_msg_lower for ind in _STACK_CHOICE_INDICATORS)
+        
+        for keyword, (lang, framework) in _STACK_DETECTION_PATTERNS.items():
+            if keyword in user_msg_lower:
+                # User mentioned a stack
+                if has_choice_indicator:
+                    # User is CHOOSING this stack (explicit)
+                    detected_language = lang
+                    if framework:
+                        detected_framework = framework
+                    stack_locked = True
+                    source = "user_explicit_choice"
+                    notes = f"User explicitly chose: '{keyword}' in message"
+                    logger.info(
+                        "[spec_gate_grounded] v1.11 EXPLICIT user stack choice: %s+%s (locked=True)",
+                        detected_language, detected_framework
+                    )
+                    print(f"[DEBUG] [spec_gate] v1.11 EXPLICIT stack choice: {detected_language}+{detected_framework}")
+                    break
+                elif not detected_language:
+                    # User mentioned but didn't explicitly choose - record as hint
+                    detected_language = lang
+                    if framework:
+                        detected_framework = framework
+                    source = "user_message"
+                    notes = f"Stack mentioned in user message: '{keyword}'"
+        
+        if stack_locked:
+            break  # Found explicit choice, stop searching
+    
+    # =========================================================================
+    # Pass 2: Check for assistant proposal + user confirmation
+    # =========================================================================
+    
+    if not stack_locked and len(assistant_messages) > 0 and len(user_messages) > 1:
+        # Look for pattern: assistant proposes stack -> user confirms
+        for i, assistant_msg in enumerate(assistant_messages):
+            if not assistant_msg:
+                continue
+            assistant_msg_lower = assistant_msg.lower()
+            
+            # Check if assistant proposed a stack
+            proposed_lang = None
+            proposed_framework = None
+            
+            proposal_indicators = [
+                "i suggest", "i recommend", "i'd recommend", "i would suggest",
+                "we could use", "we can use", "let's use", "how about",
+                "i'll use", "i will use", "using", "built with",
+            ]
+            
+            has_proposal = any(ind in assistant_msg_lower for ind in proposal_indicators)
+            
+            if has_proposal:
+                for keyword, (lang, framework) in _STACK_DETECTION_PATTERNS.items():
+                    if keyword in assistant_msg_lower:
+                        proposed_lang = lang
+                        if framework:
+                            proposed_framework = framework
+                        break
+            
+            if proposed_lang:
+                # Check if the NEXT user message is a confirmation
+                if i < len(user_messages) - 1:
+                    next_user_msg = user_messages[i + 1] if i + 1 < len(user_messages) else ""
+                    next_user_lower = (next_user_msg or "").lower()
+                    
+                    # Check for confirmation patterns
+                    is_confirmation = any(
+                        re.search(pattern, next_user_lower)
+                        for pattern in _CONFIRMATION_PATTERNS
+                    )
+                    
+                    # Also consider it confirmed if user continues with details
+                    # (implicit acceptance of the proposal)
+                    continues_with_details = len(next_user_lower) > 10 and not any(
+                        neg in next_user_lower for neg in ["no", "don't", "not", "instead", "rather"]
+                    )
+                    
+                    if is_confirmation or continues_with_details:
+                        detected_language = proposed_lang
+                        detected_framework = proposed_framework
+                        stack_locked = True
+                        source = "assistant_proposal_confirmed"
+                        notes = f"Assistant proposed {proposed_lang}+{proposed_framework or 'N/A'}, user confirmed"
+                        logger.info(
+                            "[spec_gate_grounded] v1.11 Assistant proposal CONFIRMED: %s+%s (locked=True)",
+                            detected_language, detected_framework
+                        )
+                        print(f"[DEBUG] [spec_gate] v1.11 CONFIRMED proposal: {detected_language}+{detected_framework}")
+                        break
+    
+    # =========================================================================
+    # Pass 3: Check Weaver text for stack hints (not locked, just detected)
+    # =========================================================================
+    
+    if not detected_language:
+        for keyword, (lang, framework) in _STACK_DETECTION_PATTERNS.items():
+            if keyword in all_text_lower:
+                detected_language = lang
+                if framework:
+                    detected_framework = framework
+                source = "weaver_text"
+                notes = f"Stack detected in Weaver/intent: '{keyword}'"
+                logger.info(
+                    "[spec_gate_grounded] v1.11 Stack detected from Weaver text: %s+%s (locked=%s)",
+                    detected_language, detected_framework, stack_locked
+                )
+                print(f"[DEBUG] [spec_gate] v1.11 Weaver stack hint: {detected_language}+{detected_framework} (locked={stack_locked})")
+                break
+    
+    # =========================================================================
+    # Pass 4: Build and return ImplementationStack if detected
+    # =========================================================================
+    
+    if detected_language:
+        impl_stack = ImplementationStack(
+            language=detected_language,
+            framework=detected_framework,
+            runtime=detected_runtime,
+            stack_locked=stack_locked,
+            source=source,
+            notes=notes,
+        )
+        
+        logger.info(
+            "[spec_gate_grounded] v1.11 Detected implementation_stack: %s+%s (locked=%s, source=%s)",
+            detected_language, detected_framework or "N/A", stack_locked, source
+        )
+        print(f"[DEBUG] [spec_gate] v1.11 implementation_stack: {detected_language}+{detected_framework} (locked={stack_locked})")
+        
+        return impl_stack
+    
+    logger.info("[spec_gate_grounded] v1.11 No implementation_stack detected")
+    return None
 
 
 def _classify_job_size(weaver_output: str) -> str:
@@ -943,6 +1719,9 @@ class GroundedPOTSpec:
     what_exists: List[str] = field(default_factory=list)
     what_missing: List[str] = field(default_factory=list)
     
+    # v1.11: Tech stack anchoring (prevents architecture drift)
+    implementation_stack: Optional["ImplementationStack"] = None
+    
     # Scope
     in_scope: List[str] = field(default_factory=list)
     out_of_scope: List[str] = field(default_factory=list)
@@ -1000,6 +1779,8 @@ class GroundedPOTSpec:
     sandbox_ambiguity: Optional[str] = None        # Ambiguity reason if any
     sandbox_discovery_status: Optional[str] = None # v1.6: not_attempted, attempted, success, no_match, error
     sandbox_skip_reason: Optional[str] = None      # v1.6: Why discovery was skipped
+    sandbox_output_mode: Optional[str] = None      # v1.13: append_in_place, separate_reply_file, chat_only
+    sandbox_insertion_format: Optional[str] = None # v1.13: Planned insertion format for APPEND_IN_PLACE
 
 
 # =============================================================================
@@ -1039,12 +1820,29 @@ def build_pot_spec_markdown(spec: GroundedPOTSpec) -> str:
     
     # Sandbox Resolution (if sandbox job) - v1.3
     # v1.7: Updated wording - SpecGate is READ-ONLY
+    # v1.13: Reduced clutter for micro tasks, added output_mode display
     if spec.sandbox_discovery_used and spec.sandbox_input_path:
         lines.append("### Sandbox File Resolution")
         lines.append(f"- **Input file:** `{spec.sandbox_input_path}`")
-        lines.append(f"- **Planned output path (for later stages):** `{spec.sandbox_output_path}`")
-        lines.append(f"- **Content type:** {spec.sandbox_selected_type}")
-        lines.append(f"- **Selection confidence:** {spec.sandbox_selection_confidence:.2f}")
+        
+        # v1.13: Show output mode and target
+        output_mode = spec.sandbox_output_mode
+        if output_mode == "append_in_place":
+            lines.append(f"- **Output mode:** APPEND_IN_PLACE (write into same file)")
+            lines.append(f"- **Output target:** `{spec.sandbox_input_path}`")
+            if spec.sandbox_insertion_format:
+                lines.append(f"- **Insertion format:** `{repr(spec.sandbox_insertion_format)}`")
+        elif output_mode == "separate_reply_file":
+            lines.append(f"- **Output mode:** SEPARATE_REPLY_FILE")
+            lines.append(f"- **Output target:** `{spec.sandbox_output_path}`")
+        else:  # chat_only or None
+            lines.append("- **Output mode:** CHAT_ONLY (no file modification)")
+        
+        # v1.13: Only show content type, remove selection confidence for micro tasks (clutter)
+        if spec.sandbox_selected_type and spec.sandbox_selected_type.lower() != "unknown":
+            lines.append(f"- **Content type:** {spec.sandbox_selected_type}")
+        
+        # v1.13: Show input excerpt (useful context)
         if spec.sandbox_input_excerpt:
             excerpt_lines = spec.sandbox_input_excerpt.split('\n')[:5]
             lines.append("")
@@ -1060,7 +1858,12 @@ def build_pot_spec_markdown(spec: GroundedPOTSpec) -> str:
             lines.append("### 📝 Reply (Read-Only)")
             lines.append("")
             lines.append("*This reply was generated by SpecGate based on the file content.*")
-            lines.append("*SpecGate is READ-ONLY and does not write files. Later pipeline stages may write this to the planned output path.*")
+            if output_mode == "append_in_place":
+                lines.append("*Later stages will append this reply to the input file.*")
+            elif output_mode == "separate_reply_file":
+                lines.append("*Later stages will write this to reply.txt.*")
+            else:
+                lines.append("*This reply will be shown in chat only (no file modification).*")
             lines.append("")
             lines.append("```")
             lines.append(spec.sandbox_generated_reply)
@@ -1101,6 +1904,15 @@ def build_pot_spec_markdown(spec: GroundedPOTSpec) -> str:
     if spec.in_scope:
         for item in spec.in_scope:
             lines.append(f"- {item}")
+    elif spec.sandbox_discovery_used and spec.sandbox_input_path:
+        # v1.13: Auto-derive scope for micro tasks based on output_mode
+        output_mode = spec.sandbox_output_mode
+        if output_mode == "append_in_place":
+            lines.append("- Read file → generate reply → append in place")
+        elif output_mode == "separate_reply_file":
+            lines.append("- Read file → generate reply → write to reply.txt")
+        else:  # chat_only or None
+            lines.append("- Read file → generate reply → present in chat")
     else:
         lines.append("- (To be determined)")
     lines.append("")
@@ -1232,6 +2044,27 @@ def build_pot_spec_markdown(spec: GroundedPOTSpec) -> str:
             lines.append(f"- **{nice_key}:** {value}")
         lines.append("")
     
+    # v1.11: Implementation Stack (tech stack anchoring)
+    if spec.implementation_stack:
+        lines.append("## 🔧 Implementation Stack")
+        lines.append("")
+        if spec.implementation_stack.stack_locked:
+            lines.append("⚠️ **STACK LOCKED** - Architecture MUST use this stack (user confirmed)")
+        else:
+            lines.append("*Stack detected from conversation - not explicitly locked*")
+        lines.append("")
+        if spec.implementation_stack.language:
+            lines.append(f"- **Language:** {spec.implementation_stack.language}")
+        if spec.implementation_stack.framework:
+            lines.append(f"- **Framework:** {spec.implementation_stack.framework}")
+        if spec.implementation_stack.runtime:
+            lines.append(f"- **Runtime:** {spec.implementation_stack.runtime}")
+        if spec.implementation_stack.source:
+            lines.append(f"- **Source:** {spec.implementation_stack.source}")
+        if spec.implementation_stack.notes:
+            lines.append(f"- **Notes:** {spec.implementation_stack.notes}")
+        lines.append("")
+    
     # v1.4: Assumptions (safe defaults applied instead of asking)
     if spec.assumptions:
         lines.append("## Assumptions (v1 Safe Defaults)")
@@ -1321,15 +2154,46 @@ def parse_weaver_intent(constraints_hint: Optional[Dict]) -> Dict[str, Any]:
             len(job_desc_text)
         )
         
-        # Extract goal from text
+        # v1.12: Extract goal from "What is being built" section, not just first line
         lines = job_desc_text.strip().split("\n")
-        if lines:
-            # First non-empty line is usually the goal
+        goal_found = False
+        
+        # First, try to find "What is being built" section
+        for i, line in enumerate(lines):
+            line_lower = line.lower().strip()
+            if "what is being built" in line_lower:
+                # Check if goal is on same line (after colon/dash)
+                if ":" in line or "-" in line:
+                    parts = re.split(r'[:\-]', line, 1)
+                    if len(parts) > 1 and parts[1].strip():
+                        result["goal"] = parts[1].strip()
+                        goal_found = True
+                        logger.info(
+                            "[spec_gate_grounded] v1.12 Extracted goal from 'What is being built' line: %s",
+                            result["goal"][:100]
+                        )
+                        break
+                # Otherwise, goal might be on next line
+                if i + 1 < len(lines):
+                    next_line = lines[i + 1].strip()
+                    if next_line and not next_line.lower().startswith(("intended", "unresolved", "questions", "-", "*")):
+                        result["goal"] = next_line.lstrip("- ").strip()
+                        goal_found = True
+                        logger.info(
+                            "[spec_gate_grounded] v1.12 Extracted goal from line after 'What is being built': %s",
+                            result["goal"][:100]
+                        )
+                        break
+        
+        # Fallback: first non-header line (old behavior)
+        if not goal_found and lines:
             for line in lines:
                 line = line.strip()
-                if line and not line.startswith("#"):
-                    result["goal"] = line
-                    break
+                if line and not line.startswith("#") and not line.lower().startswith("what is being built"):
+                    # Skip generic headers
+                    if line.lower() not in ("job description", "job description from weaver"):
+                        result["goal"] = line
+                        break
         
         # Look for constraints/scope markers
         result["constraints"] = []
@@ -1387,6 +2251,7 @@ def parse_weaver_intent(constraints_hint: Optional[Dict]) -> Dict[str, Any]:
 def ground_intent_with_evidence(
     intent: Dict[str, Any],
     evidence: EvidenceBundle,
+    is_micro_task: bool = False,
 ) -> GroundedPOTSpec:
     """
     Ground Weaver intent against repo evidence.
@@ -1458,7 +2323,8 @@ def ground_intent_with_evidence(
         spec.out_of_scope.extend(intent["scope_out"])
     
     # Try to find relevant patterns in evidence
-    if evidence.arch_map_content:
+    # v1.13: Skip arch map inference for micro tasks (clutter reduction)
+    if evidence.arch_map_content and not is_micro_task:
         # Look for related modules
         goal_keywords = _extract_keywords(intent.get("goal", ""))
         for keyword in goal_keywords[:5]:  # Top 5 keywords
@@ -1716,6 +2582,7 @@ def _derive_steps_from_domain(intent: Dict[str, Any], spec: GroundedPOTSpec) -> 
     
     # v1.6: Sandbox file domain - specific steps for file discovery/read/reply tasks
     # v1.7: UPDATED - SpecGate is READ-ONLY, never claims to write files
+    # v1.13: UPDATED - Steps vary based on output_mode
     if "sandbox_file" in detected_domains:
         # Check if sandbox discovery was used
         if spec.sandbox_discovery_used and spec.sandbox_input_path:
@@ -1724,17 +2591,41 @@ def _derive_steps_from_domain(intent: Dict[str, Any], spec: GroundedPOTSpec) -> 
                 "Parse and understand the question/content in the file",
                 "Generate reply based on file content (included in SPoT output)",
             ]
-            # v1.7: Add note about planned output (for later stages, not SpecGate)
-            if spec.sandbox_output_path:
-                steps.append(f"[For later stages] Planned output path: `{spec.sandbox_output_path}`")
+            # v1.13: Steps vary based on output_mode
+            output_mode = spec.sandbox_output_mode
+            if output_mode == OutputMode.APPEND_IN_PLACE.value:
+                steps.append("Append reply beneath question in same file")
+                steps.append(f"Verify file updated: `{spec.sandbox_input_path}`")
+            elif output_mode == OutputMode.SEPARATE_REPLY_FILE.value:
+                steps.append(f"Write reply to: `{spec.sandbox_output_path}`")
+                steps.append("Verify reply.txt file exists")
+            else:  # CHAT_ONLY or None
+                steps.append("[Chat only - no file modification]")
         else:
             # Discovery didn't run or failed - generic sandbox steps
             steps = [
                 "Discover target file in sandbox (Desktop or Documents)",
                 "Read and parse the file content",
                 "Generate reply based on file content (included in SPoT output)",
-                "[For later stages] Planned output path: reply.txt in same folder as input",
+                "[For later stages] Output based on detected mode",
             ]
+        return steps
+    
+    # v1.12: GAME DOMAIN - Takes priority over mobile_app to prevent courier app steps
+    if "game" in detected_domains:
+        logger.info("[spec_gate_grounded] v1.12 _derive_steps_from_domain: GAME domain detected - using game steps")
+        steps = [
+            "Analyze game requirements and create technical design",
+            "Set up project structure (HTML/CSS/JS or chosen framework)",
+            "Implement game board/playfield rendering",
+            "Implement game piece/entity logic",
+            "Implement player input handling (keyboard/touch controls)",
+            "Implement core game mechanics (movement, collision, scoring)",
+            "Add game state management (start, pause, game over)",
+            "Implement scoring and level progression",
+            "Add visual polish (animations, transitions)",
+            "Testing and bug fixes",
+        ]
         return steps
     
     if "mobile_app" in detected_domains:
@@ -1841,6 +2732,7 @@ def _derive_tests_from_domain(intent: Dict[str, Any], spec: GroundedPOTSpec) -> 
     
     # v1.6: Sandbox file domain - specific tests for file discovery/read/reply tasks
     # v1.7: UPDATED - SpecGate is READ-ONLY, tests verify reading not writing
+    # v1.13: UPDATED - Tests vary based on output_mode
     if "sandbox_file" in detected_domains:
         # Check if sandbox discovery was used
         if spec.sandbox_discovery_used and spec.sandbox_input_path:
@@ -1848,23 +2740,45 @@ def _derive_tests_from_domain(intent: Dict[str, Any], spec: GroundedPOTSpec) -> 
                 f"Input file `{spec.sandbox_input_path}` was found and read successfully",
                 "File content was correctly parsed and understood",
                 "Reply was generated based on file content",
-                "Reply is included in SPoT output (read-only stage)",
             ]
-            # Add excerpt verification if available
-            if spec.sandbox_input_excerpt:
-                tests.insert(1, f"Input content type identified: {spec.sandbox_selected_type or 'detected'}")
-            # v1.7: Note planned output path (for later stages to verify)
-            if spec.sandbox_output_path:
-                tests.append(f"[For later stages] Planned output path recorded: `{spec.sandbox_output_path}`")
+            # v1.13: Add content type verification only if it's meaningful (not "unknown")
+            if spec.sandbox_input_excerpt and spec.sandbox_selected_type and spec.sandbox_selected_type.lower() != "unknown":
+                tests.insert(1, f"Input content type identified: {spec.sandbox_selected_type}")
+            # v1.13: Tests vary based on output_mode
+            output_mode = spec.sandbox_output_mode
+            if output_mode == OutputMode.APPEND_IN_PLACE.value:
+                tests.append(f"Reply appended to `{spec.sandbox_input_path}` beneath original question")
+                tests.append("File contains both question and answer")
+            elif output_mode == OutputMode.SEPARATE_REPLY_FILE.value:
+                tests.append(f"Reply written to `{spec.sandbox_output_path}`")
+                tests.append("reply.txt file exists and contains expected content")
+            else:  # CHAT_ONLY or None
+                tests.append("Reply presented in chat (no file modification)")
         else:
             # Discovery didn't run or failed - generic sandbox tests
             tests = [
                 "Target file was discovered in sandbox",
                 "File content was read and parsed correctly",
                 "Reply was generated based on file content",
-                "Reply is included in SPoT output (read-only stage)",
-                "[For later stages] Planned output path: reply.txt",
+                "Output delivered per detected mode (chat/file)",
             ]
+        return tests
+    
+    # v1.12: GAME DOMAIN - Takes priority over mobile_app to prevent courier app tests
+    if "game" in detected_domains:
+        logger.info("[spec_gate_grounded] v1.12 _derive_tests_from_domain: GAME domain detected - using game tests")
+        tests = [
+            "Game starts and displays initial state correctly",
+            "Game board/playfield renders with correct dimensions",
+            "Player input controls respond correctly (keyboard/touch)",
+            "Game pieces/entities move and behave as expected",
+            "Collision detection works correctly",
+            "Scoring updates correctly on valid actions",
+            "Game over condition triggers at correct time",
+            "Level progression works (if applicable)",
+            "Pause/resume functionality works",
+            "Game is playable and fun to use",
+        ]
         return tests
     
     if "mobile_app" in detected_domains:
@@ -2028,6 +2942,20 @@ async def run_spec_gate_grounded(
             combined_text[:300] if combined_text else "(empty)"
         )
         
+        # v1.10: GREENFIELD BUILD CHECK - Skip sandbox discovery for CREATE_NEW jobs
+        detected_domains = detect_domains(combined_text)
+        is_greenfield = "greenfield_build" in detected_domains
+        
+        if is_greenfield:
+            logger.info(
+                "[spec_gate_grounded] v1.10 GREENFIELD BUILD detected - skipping sandbox discovery. "
+                "Keywords matched: %s",
+                [kw for kw in DOMAIN_KEYWORDS.get("greenfield_build", []) if kw in combined_text.lower()][:5]
+            )
+            # Force anchor to None for greenfield builds
+            anchor = None
+            sandbox_skip_reason = "Greenfield build detected (CREATE_NEW job type) - no target file expected"
+        
         # v1.6: Check if sandbox keywords are present but anchor wasn't detected
         text_lower = combined_text.lower()
         sandbox_keywords_found = [kw for kw in DOMAIN_KEYWORDS.get("sandbox_file", []) if kw in text_lower]
@@ -2176,7 +3104,9 @@ async def run_spec_gate_grounded(
         # STEP 3: Ground Intent with Evidence
         # =================================================================
         
-        spec = ground_intent_with_evidence(intent, evidence)
+        # v1.13: Determine if this is a micro task to skip arch map inference
+        is_micro_task = "sandbox_file" in detected_domains
+        spec = ground_intent_with_evidence(intent, evidence, is_micro_task=is_micro_task)
         
         # =================================================================
         # STEP 3.5: Populate sandbox resolution into spec
@@ -2186,7 +3116,32 @@ async def run_spec_gate_grounded(
             import os
             selected = sandbox_discovery_result["selected_file"]
             folder_path = sandbox_discovery_result["path"]
-            output_path = os.path.join(folder_path, "reply.txt")
+            
+            # v1.13: Detect output mode from user intent
+            output_mode = _detect_output_mode(combined_text)
+            spec.sandbox_output_mode = output_mode.value
+            
+            # v1.13: Set output path based on detected output mode
+            if output_mode == OutputMode.APPEND_IN_PLACE:
+                output_path = selected["path"]  # Same as input file
+                spec.sandbox_insertion_format = "\n\nAnswer:\n{reply}\n"
+                logger.info(
+                    "[spec_gate_grounded] v1.13 APPEND_IN_PLACE mode: output_path=%s (same as input)",
+                    output_path
+                )
+            elif output_mode == OutputMode.SEPARATE_REPLY_FILE:
+                output_path = os.path.join(folder_path, "reply.txt")
+                spec.sandbox_insertion_format = None
+                logger.info(
+                    "[spec_gate_grounded] v1.13 SEPARATE_REPLY_FILE mode: output_path=%s",
+                    output_path
+                )
+            else:  # CHAT_ONLY
+                output_path = None  # No file output
+                spec.sandbox_insertion_format = None
+                logger.info(
+                    "[spec_gate_grounded] v1.13 CHAT_ONLY mode: no output_path (reply in chat only)"
+                )
             
             spec.sandbox_discovery_used = True
             spec.sandbox_anchor = anchor
@@ -2201,15 +3156,24 @@ async def run_spec_gate_grounded(
             if content:
                 spec.sandbox_input_excerpt = content[:500] + ("..." if len(content) > 500 else "")
             
-            spec.what_exists.append(f"Sandbox input: `{selected['path']}` ({selected['content_type']})")
+            # v1.13: Only show content_type if not "unknown" (clutter reduction)
+            if selected['content_type'].lower() != "unknown":
+                spec.what_exists.append(f"Sandbox input: `{selected['path']}` ({selected['content_type']})")
+            else:
+                spec.what_exists.append(f"Sandbox input: `{selected['path']}`")
             spec.confirmed_components.append(GroundedFact(
                 description=f"Selected sandbox file: {selected['name']}",
                 source="sandbox_inspector",
                 path=selected["path"],
                 confidence="confirmed",
             ))
-            # v1.7: Read-only wording - we don't write files, just record planned output for later stages
-            spec.constraints_from_repo.append(f"Planned output path (for later stages): `{output_path}`")
+            # v1.13: Constraint wording depends on output mode
+            if output_mode == OutputMode.APPEND_IN_PLACE:
+                spec.constraints_from_repo.append(f"Planned output mode: APPEND_IN_PLACE (write into `{output_path}`)")
+            elif output_mode == OutputMode.SEPARATE_REPLY_FILE:
+                spec.constraints_from_repo.append(f"Planned output path (for later stages): `{output_path}`")
+            else:
+                spec.constraints_from_repo.append("Output mode: CHAT_ONLY (no file modification)")
             
             # v1.8: Store full content and generate intelligent reply using LLM
             full_content = selected.get("content", "")
@@ -2235,6 +3199,47 @@ async def run_spec_gate_grounded(
         # v1.6: Track sandbox discovery status even if no file was selected
         spec.sandbox_discovery_status = sandbox_discovery_status
         spec.sandbox_skip_reason = sandbox_skip_reason
+        
+        # v1.13: Auto-derive scope for micro tasks
+        if spec.sandbox_discovery_used and spec.sandbox_output_mode:
+            mode_desc = {
+                "append_in_place": "append in place",
+                "separate_reply_file": "write to reply.txt",
+                "chat_only": "chat only (no file modification)",
+            }.get(spec.sandbox_output_mode, spec.sandbox_output_mode)
+            spec.in_scope = [f"Read file → generate reply → {mode_desc}"]
+        
+        # =================================================================
+        # STEP 3.6: Detect Implementation Stack (v1.11)
+        # =================================================================
+        
+        # Extract conversation messages from constraints_hint (Weaver passes these)
+        conversation_messages = []
+        if constraints_hint:
+            # Weaver stores conversation in 'messages' or 'conversation' key
+            conversation_messages = constraints_hint.get("messages", [])
+            if not conversation_messages:
+                conversation_messages = constraints_hint.get("conversation", [])
+        
+        # Detect tech stack from conversation
+        detected_stack = _detect_implementation_stack(conversation_messages, weaver_job_text, intent)
+        if detected_stack:
+            spec.implementation_stack = detected_stack
+            logger.info(
+                "[spec_gate_grounded] v1.11 Detected implementation stack: %s/%s (locked=%s, source=%s)",
+                detected_stack.language,
+                detected_stack.framework,
+                detected_stack.stack_locked,
+                detected_stack.source,
+            )
+            
+            # Add to constraints if stack is locked
+            if detected_stack.stack_locked:
+                lock_msg = f"⚠️ LOCKED STACK: {detected_stack.language}"
+                if detected_stack.framework:
+                    lock_msg += f" + {detected_stack.framework}"
+                lock_msg += f" (source: {detected_stack.source})"
+                spec.constraints_from_intent.append(lock_msg)
         
         # v1.6: If sandbox was detected but discovery failed, add warning
         if anchor and sandbox_discovery_status not in ("success", "not_attempted"):
@@ -2397,6 +3402,56 @@ async def run_spec_gate_grounded(
         # Include questions in output - even if complete (Round 3), so they're visible as unresolved
         open_q_text = [q.question for q in spec.open_questions]
         
+        # =================================================================
+        # STEP 9a: Classify Job Kind (v1.9 - DETERMINISTIC, NO LLM)
+        # =================================================================
+        
+        job_kind, job_kind_confidence, job_kind_reason = classify_job_kind(spec, intent)
+        
+        logger.info(
+            "[spec_gate_grounded] v1.9 Job classification: kind=%s, confidence=%.2f, reason='%s'",
+            job_kind, job_kind_confidence, job_kind_reason
+        )
+        
+        # v2.2: Build grounding_data for Critical Pipeline job classification
+        # This is CRITICAL for micro vs architecture routing
+        grounding_data = {
+            # v1.9: Job classification (Critical Pipeline MUST obey these)
+            "job_kind": job_kind,
+            "job_kind_confidence": job_kind_confidence,
+            "job_kind_reason": job_kind_reason,
+            # Sandbox resolution fields
+            "sandbox_input_path": spec.sandbox_input_path,
+            "sandbox_output_path": spec.sandbox_output_path,
+            "sandbox_generated_reply": spec.sandbox_generated_reply,
+            "sandbox_discovery_used": spec.sandbox_discovery_used,
+            "sandbox_input_excerpt": spec.sandbox_input_excerpt,
+            "sandbox_selected_type": spec.sandbox_selected_type,
+            "sandbox_folder_path": spec.sandbox_folder_path,
+            "sandbox_discovery_status": spec.sandbox_discovery_status,
+            # v1.13: Output mode for MICRO_FILE_TASK jobs
+            "sandbox_output_mode": spec.sandbox_output_mode,
+            "sandbox_insertion_format": spec.sandbox_insertion_format,
+            # v1.11: Implementation stack for downstream enforcement
+            "implementation_stack": spec.implementation_stack.dict() if spec.implementation_stack else None,
+            # Grounding metadata
+            "goal": spec.goal,
+            "what_exists": spec.what_exists,
+            "what_missing": spec.what_missing,
+            "constraints_from_repo": spec.constraints_from_repo,
+            "constraints_from_intent": spec.constraints_from_intent,
+            "proposed_steps": spec.proposed_steps,
+            "acceptance_tests": spec.acceptance_tests,
+        }
+        
+        logger.info(
+            "[spec_gate_grounded] v2.2 Built grounding_data: job_kind=%s, sandbox_discovery=%s, input=%s, output=%s",
+            job_kind,
+            spec.sandbox_discovery_used,
+            bool(spec.sandbox_input_path),
+            bool(spec.sandbox_output_path),
+        )
+        
         logger.info(
             "[spec_gate_grounded] Result: complete=%s, questions=%d, round=%d",
             spec.is_complete, len(open_q_text), round_n
@@ -2418,6 +3473,7 @@ async def run_spec_gate_grounded(
             ),
             blocking_issues=[str(i) for i in spec.blocking_issues],
             validation_status=validation_status,
+            grounding_data=grounding_data,  # v2.2: For Critical Pipeline classification
         )
         
     except Exception as e:
@@ -2442,6 +3498,7 @@ __all__ = [
     "GroundedFact",
     "GroundedAssumption",  # v1.4
     "QuestionCategory",
+    "OutputMode",  # v1.13
     "build_pot_spec_markdown",
     "load_evidence",
     "WRITE_REFUSED_ERROR",
@@ -2451,4 +3508,8 @@ __all__ = [
     "extract_unresolved_ambiguities",
     "DOMAIN_KEYWORDS",
     "MOBILE_APP_FORK_BANK",
+    # v1.9 additions
+    "classify_job_kind",
+    # v1.13 additions
+    "_detect_output_mode",
 ]

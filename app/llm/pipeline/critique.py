@@ -5,6 +5,35 @@ Block 5 of the PoT (Proof of Thought) system:
 - JSON critique with structured blocking/non-blocking issues
 - Spec-anchored critique (verifies architecture against spec)
 - Legacy prose-based critique for backward compatibility
+- v1.2: Blocker filtering - only approved blocker types can block
+- v1.3: DETERMINISTIC spec-compliance check (catches stack/scope/platform mismatch)
+- v1.4: Uses explicit implementation_stack field from spec (stack_locked anchoring)
+
+v1.5 (2026-01-22): CRITICAL FIX - Phantom Constraint Bug
+- Fixed _detect_stack_from_text() to use word-boundary matching
+- Prevents false positives like "go" matching "going", "goal"
+- Changed "go" keyword to "golang" to avoid ambiguity
+- Added word boundary matching for "rust", "java", "vue"
+- See PHANTOM_CONSTRAINT_BUG_FIX.md for full details
+
+v1.4 (2026-01-22): Implementation Stack Anchoring
+- _extract_spec_constraints() now checks implementation_stack field FIRST
+- If implementation_stack.stack_locked == True, stack mismatch is a HARD blocker
+- Falls back to heuristic detection from goal/summary if no explicit stack
+- See pot_spec/schemas.py ImplementationStack for field structure
+
+v1.3 (2026-01-22): CRITICAL FIX - Spec-Anchored Architecture Validation
+- Added run_deterministic_spec_compliance_check() - runs BEFORE LLM critique
+- Catches stack mismatch (e.g., Python discussed but TS/JS proposed)
+- Catches scope inflation (minimal spec but full-product architecture)
+- Catches platform mismatch (Desktop spec but Mobile architecture)
+- Wired into call_json_critic() - blocks BEFORE LLM call if violations found
+- See CRITICAL_PIPELINE_FAILURE_REPORT.md for context on why this is needed
+
+v1.2 (2026-01):
+- Added filter_blocking_issues() - enforces approved blocker types only
+- Evidence-backed blocking: requires BOTH spec_ref AND arch_ref
+- Blocker filtering wired into call_json_critic()
 
 v1.1 (2026-01):
 - Uses stage_models for provider/model configuration (env-driven)
@@ -18,11 +47,12 @@ v1.0 (2025-12):
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import textwrap
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from app.llm.schemas import LLMResult, LLMTask
@@ -43,6 +73,7 @@ from app.llm.pipeline.critique_schemas import (
     CritiqueIssue,
     parse_critique_output,
     build_json_critique_prompt,
+    APPROVED_ARCHITECTURE_BLOCKER_TYPES,
 )
 
 # Ledger events
@@ -96,6 +127,566 @@ def _get_critique_model_config() -> tuple[str, str, int]:
 # For truly dynamic lookup, use _get_critique_model_config() directly
 GEMINI_CRITIC_MODEL = os.getenv("CRITIQUE_MODEL") or os.getenv("GEMINI_CRITIC_MODEL", "gemini-2.0-flash")
 GEMINI_CRITIC_MAX_TOKENS = int(os.getenv("CRITIQUE_MAX_OUTPUT_TOKENS") or os.getenv("GEMINI_CRITIC_MAX_TOKENS", "60000"))
+
+
+# =============================================================================
+# Block 5: Blocker Filtering (v1.2)
+# =============================================================================
+
+def filter_blocking_issues(
+    issues: List[CritiqueIssue],
+    require_evidence: bool = True,
+) -> Tuple[List[CritiqueIssue], List[CritiqueIssue]]:
+    """
+    Filter blocking issues to only approved blocker types.
+    
+    v1.2: Implements the "Critique Contract" rules:
+    1. Only approved blocker types can block (security, correctness, spec_mismatch, etc.)
+    2. Blocking issues MUST have BOTH spec_ref AND arch_ref (evidence requirement)
+    3. If category unknown BUT has perfect evidence AND description mentions drift/hallucination → allow
+    
+    Args:
+        issues: List of CritiqueIssue objects marked as blocking
+        require_evidence: If True, blocking issues need BOTH spec_ref AND arch_ref
+    
+    Returns:
+        (real_blocking, downgraded_to_non_blocking)
+    """
+    real_blocking: List[CritiqueIssue] = []
+    downgraded: List[CritiqueIssue] = []
+    
+    # Keywords that indicate a real blocker even if category is weird
+    drift_keywords = [
+        "contradict", "contradiction", "drift", "hallucination", "invented",
+        "does not exist", "doesn't exist", "mismatch", "violate", "violation",
+        "missing required", "spec says", "spec requires",
+    ]
+    
+    for issue in issues:
+        # Normalize category for matching
+        category = (issue.category or "").lower().replace(" ", "_").replace("-", "_")
+        
+        # Check evidence: BOTH spec_ref AND arch_ref required (AND rule)
+        has_spec_ref = bool(issue.spec_ref and issue.spec_ref.strip())
+        has_arch_ref = bool(issue.arch_ref and issue.arch_ref.strip())
+        has_full_evidence = has_spec_ref and has_arch_ref
+        
+        # Check if category is in approved blocker types
+        is_approved_category = category in APPROVED_ARCHITECTURE_BLOCKER_TYPES
+        
+        # Check for drift keywords in description (fallback for unknown categories)
+        description_lower = (issue.description or "").lower()
+        has_drift_keywords = any(kw in description_lower for kw in drift_keywords)
+        
+        # Decision logic:
+        # 1. If approved category AND has evidence → real blocker
+        # 2. If unknown category BUT has full evidence AND drift keywords → real blocker
+        # 3. Otherwise → downgrade
+        
+        should_block = False
+        reason = ""
+        
+        if is_approved_category:
+            if require_evidence and not has_full_evidence:
+                # Approved category but missing evidence → downgrade
+                reason = f"category={category} approved, but missing evidence (spec_ref={has_spec_ref}, arch_ref={has_arch_ref})"
+            else:
+                # Approved category with evidence → real blocker
+                should_block = True
+                reason = f"category={category} approved, evidence present"
+        else:
+            # Unknown category - check for drift keywords AND full evidence
+            if has_full_evidence and has_drift_keywords:
+                should_block = True
+                reason = f"category={category} unknown but has drift keywords and full evidence"
+            else:
+                reason = f"category={category} not approved, no drift keywords or missing evidence"
+        
+        if should_block:
+            real_blocking.append(issue)
+            logger.debug(
+                "[critique] KEPT blocker %s: %s",
+                issue.id, reason
+            )
+        else:
+            # Downgrade to non-blocking
+            issue.severity = "non_blocking"
+            downgraded.append(issue)
+            logger.info(
+                "[critique] DOWNGRADED issue %s to non_blocking: %s",
+                issue.id, reason
+            )
+    
+    # Summary log
+    if downgraded:
+        print(f"[DEBUG] [critique] Filtered blockers: kept={len(real_blocking)}, downgraded={len(downgraded)}")
+        logger.info(
+            "[critique] Blocker filtering: %d kept, %d downgraded",
+            len(real_blocking), len(downgraded)
+        )
+    
+    return real_blocking, downgraded
+
+
+# =============================================================================
+# Block 5: DETERMINISTIC Spec-Compliance Check (v1.3 - CRITICAL FIX)
+# =============================================================================
+#
+# This function runs BEFORE the LLM critique and catches obvious spec violations
+# deterministically. It is the primary line of defense against architecture drift.
+#
+# See: CRITICAL_PIPELINE_FAILURE_REPORT.md (2026-01-22) for why this is needed.
+#
+
+import re as _re
+
+# Stack detection keywords - maps keywords to canonical stack names
+# v1.1 FIX: Use word-boundary aware patterns to prevent false matches
+# e.g., "go" should not match "going", "goal", etc.
+_STACK_KEYWORDS = {
+    # Python ecosystem
+    "python": "Python",
+    "pygame": "Python+Pygame",
+    "tkinter": "Python+Tkinter",
+    "pyqt": "Python+PyQt",
+    "flask": "Python+Flask",
+    "fastapi": "Python+FastAPI",
+    "django": "Python+Django",
+    
+    # JavaScript/TypeScript ecosystem
+    "javascript": "JavaScript",
+    "typescript": "TypeScript",
+    "react": "TypeScript/React",
+    "electron": "TypeScript/Electron",
+    "node.js": "Node.js",  # v1.1: More specific to avoid false matches
+    "nodejs": "Node.js",   # v1.1: Alternative spelling
+    "next.js": "TypeScript/Next.js",
+    "vue": "TypeScript/Vue",
+    
+    # Other stacks - NOTE: Some keywords need word-boundary checking
+    "rust": "Rust",
+    "golang": "Go",        # v1.1: Prefer "golang" to avoid "going/goal" false matches
+    "c++": "C++",
+    "c#": "C#",
+    "java": "Java",         # v1.1: Use word boundary matching to avoid "javascript" false match
+}
+
+# Scope inflation keywords - things that indicate feature creep
+_SCOPE_INFLATION_KEYWORDS = [
+    "electron-builder", "packaging", "installer", ".exe", ".msi",
+    "telemetry", "analytics", "crash-report", "remote",
+    "vite", "webpack", "bundler",
+    "playwright", "e2e", "end-to-end",
+    "authentication", "auth", "oauth",
+    "database", "sqlite", "persistence",
+    "%appdata%", "local storage",
+    "settings ui", "menus", "overlays",
+]
+
+
+def _detect_stack_from_text(text: str) -> List[str]:
+    """Detect mentioned technology stacks from text (case-insensitive).
+    
+    v1.1 FIX: Use word-boundary matching to prevent false positives.
+    e.g., "go" should not match "going", "goal", "algorithm".
+    """
+    if not text:
+        return []
+    
+    text_lower = text.lower()
+    detected = []
+    
+    # Keywords that need exact word boundary matching
+    # (to avoid false positives from partial matches)
+    _WORD_BOUNDARY_KEYWORDS = {"rust", "java", "vue"}
+    
+    for keyword, stack_name in _STACK_KEYWORDS.items():
+        # v1.1: Use word boundary for ambiguous keywords
+        if keyword.strip() in _WORD_BOUNDARY_KEYWORDS:
+            # Use regex word boundary to avoid partial matches
+            pattern = r'\b' + _re.escape(keyword.strip()) + r'\b'
+            if _re.search(pattern, text_lower):
+                detected.append(stack_name)
+        else:
+            # Direct substring match for unambiguous keywords
+            if keyword in text_lower:
+                detected.append(stack_name)
+    
+    return list(set(detected))
+
+
+def _extract_spec_constraints(spec_json: Optional[str]) -> Dict[str, Any]:
+    """
+    Extract key constraints from SpecGate JSON.
+    
+    v1.4 (2026-01-22): Now checks implementation_stack field FIRST
+    - If implementation_stack is present and stack_locked=True, that's authoritative
+    - Falls back to heuristic detection from goal/summary text
+    
+    Returns dict with:
+    - platform: e.g., "Desktop"
+    - scope: e.g., "bare minimum playable"
+    - known_requirements: list of user-specified requirements
+    - discussed_stack: list of tech stack hints from Weaver
+    - implementation_stack: dict with explicit stack choice (if present)
+    - stack_locked: bool indicating if stack was explicitly confirmed
+    """
+    if not spec_json:
+        return {}
+    
+    try:
+        spec_data = json.loads(spec_json) if isinstance(spec_json, str) else spec_json
+    except Exception:
+        return {}
+    
+    constraints = {
+        "platform": None,
+        "scope": None,
+        "known_requirements": [],
+        "discussed_stack": [],
+        "implementation_stack": None,  # v1.4: Explicit stack choice
+        "stack_locked": False,          # v1.4: Whether stack was explicitly confirmed
+        "raw_goal": spec_data.get("goal", ""),
+        "raw_summary": spec_data.get("summary", ""),
+    }
+    
+    # =========================================================================
+    # v1.4: Check for EXPLICIT implementation_stack field FIRST
+    # =========================================================================
+    impl_stack = spec_data.get("implementation_stack")
+    if impl_stack and isinstance(impl_stack, dict):
+        constraints["implementation_stack"] = impl_stack
+        constraints["stack_locked"] = impl_stack.get("stack_locked", False)
+        
+        # Build discussed_stack from explicit field
+        explicit_stack = []
+        if impl_stack.get("language"):
+            explicit_stack.append(impl_stack["language"])
+        if impl_stack.get("framework"):
+            lang = impl_stack.get("language", "")
+            framework = impl_stack["framework"]
+            explicit_stack.append(f"{lang}+{framework}" if lang else framework)
+        if impl_stack.get("runtime"):
+            explicit_stack.append(impl_stack["runtime"])
+        
+        if explicit_stack:
+            constraints["discussed_stack"] = explicit_stack
+            logger.info(
+                "[critique] v1.4 Using EXPLICIT implementation_stack: %s (locked=%s)",
+                explicit_stack, constraints["stack_locked"]
+            )
+            print(f"[DEBUG] [critique] v1.4 EXPLICIT stack from spec: {explicit_stack} (locked={constraints['stack_locked']})")
+    
+    # Extract from known requirements (Weaver's output)
+    goal = spec_data.get("goal", "").lower()
+    summary = spec_data.get("summary", "").lower()
+    all_text = f"{goal} {summary}"
+    
+    # Detect platform
+    if "desktop" in all_text:
+        constraints["platform"] = "Desktop"
+    elif "web" in all_text or "browser" in all_text:
+        constraints["platform"] = "Web"
+    elif "mobile" in all_text or "android" in all_text or "ios" in all_text:
+        constraints["platform"] = "Mobile"
+    
+    # Detect scope keywords
+    scope_keywords = [
+        "minimal", "minimum", "bare", "simple", "basic",
+        "playable", "prototype", "mvp", "first version",
+    ]
+    for kw in scope_keywords:
+        if kw in all_text:
+            constraints["scope"] = "minimal"
+            break
+    
+    # =========================================================================
+    # v1.4: Only use heuristic detection if no explicit stack was provided
+    # =========================================================================
+    if not constraints["discussed_stack"]:
+        heuristic_stack = _detect_stack_from_text(all_text)
+        if heuristic_stack:
+            constraints["discussed_stack"] = heuristic_stack
+            logger.info(
+                "[critique] v1.4 Using HEURISTIC stack detection: %s",
+                heuristic_stack
+            )
+            print(f"[DEBUG] [critique] v1.4 HEURISTIC stack from text: {heuristic_stack}")
+    
+    # Extract known requirements list
+    known_reqs = spec_data.get("known_requirements", []) or spec_data.get("constraints_from_weaver", [])
+    if isinstance(known_reqs, list):
+        constraints["known_requirements"] = known_reqs
+    
+    return constraints
+
+
+def run_deterministic_spec_compliance_check(
+    arch_content: str,
+    spec_json: Optional[str] = None,
+    original_request: str = "",
+) -> List[CritiqueIssue]:
+    """
+    v1.3 CRITICAL FIX: Deterministic spec-compliance check.
+    v1.4: Now uses implementation_stack.stack_locked for stricter enforcement.
+    
+    Runs BEFORE the LLM critique to catch obvious spec violations:
+    1. Platform mismatch (Desktop spec but Web architecture)
+    2. Stack mismatch (Python discussed but TypeScript proposed)
+    3. Scope inflation (minimal spec but full product architecture)
+    
+    This is a deterministic check - NO LLM calls. It catches issues the LLM
+    might miss due to being distracted by "best practices" suggestions.
+    
+    v1.4 Enhancement:
+    - If implementation_stack.stack_locked == True, stack mismatch is a HARD blocker
+    - The spec_ref will indicate "LOCKED" to show this was explicitly confirmed
+    
+    Args:
+        arch_content: The architecture document to check
+        spec_json: The SpecGate JSON spec
+        original_request: The original user request (for context)
+    
+    Returns:
+        List of CritiqueIssue objects (all blocking if found)
+    """
+    issues: List[CritiqueIssue] = []
+    issue_counter = 0
+    
+    if not arch_content:
+        return issues
+    
+    arch_lower = arch_content.lower()
+    
+    # Extract spec constraints
+    constraints = _extract_spec_constraints(spec_json)
+    spec_platform = constraints.get("platform")
+    spec_scope = constraints.get("scope")
+    spec_stack = constraints.get("discussed_stack", [])
+    stack_locked = constraints.get("stack_locked", False)  # v1.4: Explicit lock flag
+    impl_stack = constraints.get("implementation_stack")   # v1.4: Full stack object
+    
+    # Also check original request for context (only if no explicit stack)
+    if not stack_locked:
+        request_stack = _detect_stack_from_text(original_request)
+        all_discussed_stack = list(set(spec_stack + request_stack))
+    else:
+        # If stack is locked, ONLY use the explicit stack (no heuristics)
+        all_discussed_stack = spec_stack
+    
+    # Detect architecture stack
+    arch_stack = _detect_stack_from_text(arch_content)
+    
+    logger.info(
+        "[critique] v1.4 Deterministic check: spec_platform=%s, spec_scope=%s, "
+        "discussed_stack=%s, arch_stack=%s, stack_locked=%s",
+        spec_platform, spec_scope, all_discussed_stack, arch_stack, stack_locked
+    )
+    print(f"[DEBUG] [critique] v1.4 Deterministic spec check:")
+    print(f"[DEBUG] [critique]   spec_platform={spec_platform}")
+    print(f"[DEBUG] [critique]   spec_scope={spec_scope}")
+    print(f"[DEBUG] [critique]   discussed_stack={all_discussed_stack}")
+    print(f"[DEBUG] [critique]   arch_stack={arch_stack}")
+    print(f"[DEBUG] [critique]   stack_locked={stack_locked}")
+    
+    # =========================================================================
+    # Check 1: STACK MISMATCH
+    # =========================================================================
+    # If user discussed Python+Pygame but architecture proposes Electron+React,
+    # that's a BLOCKING issue.
+    
+    # Check for Python discussion but JS/TS architecture
+    python_discussed = any("Python" in s for s in all_discussed_stack)
+    ts_js_in_arch = any(
+        s for s in arch_stack 
+        if "TypeScript" in s or "JavaScript" in s or "Node" in s or "Electron" in s or "React" in s
+    )
+    
+    if python_discussed and ts_js_in_arch and not any("Python" in s for s in arch_stack):
+        issue_counter += 1
+        # v1.4: Indicate if stack was explicitly locked
+        lock_indicator = " [LOCKED]" if stack_locked else ""
+        spec_ref = f"Discussed stack: Python-based implementation{lock_indicator}"
+        
+        issues.append(CritiqueIssue(
+            id=f"SPEC-COMPLIANCE-{issue_counter:03d}",
+            spec_ref=spec_ref,
+            arch_ref="Architecture proposes: JavaScript/TypeScript stack",
+            category="stack_mismatch",
+            severity="blocking",
+            description=(
+                f"STACK MISMATCH: The user {'EXPLICITLY CONFIRMED' if stack_locked else 'discussed'} a Python-based implementation "
+                f"(detected: {[s for s in all_discussed_stack if 'Python' in s]}), "
+                f"but the architecture proposes a JavaScript/TypeScript stack "
+                f"(detected: {[s for s in arch_stack if 'TypeScript' in s or 'JavaScript' in s or 'Electron' in s or 'React' in s]}). "
+                f"{'This stack choice was LOCKED by user confirmation and CANNOT be changed.' if stack_locked else 'Architecture must use the stack discussed with the user unless explicitly changed.'}"
+            ),
+            fix_suggestion=(
+                "Rewrite architecture to use Python + the libraries discussed with the user. "
+                f"{'The user explicitly confirmed this stack choice - it is non-negotiable.' if stack_locked else 'Do not substitute tech stacks without explicit user approval.'}"
+            ),
+        ))
+        print(f"[DEBUG] [critique] v1.4 BLOCKER: Stack mismatch (Python discussed, TS/JS proposed, locked={stack_locked})")
+    
+    # Check for Pygame discussed but Electron in architecture
+    pygame_discussed = any("Pygame" in s for s in all_discussed_stack)
+    electron_in_arch = "electron" in arch_lower
+    
+    if pygame_discussed and electron_in_arch:
+        issue_counter += 1
+        # v1.4: Indicate if stack was explicitly locked
+        lock_indicator = " [LOCKED]" if stack_locked else ""
+        spec_ref = f"Discussed stack: Python + Pygame{lock_indicator}"
+        
+        issues.append(CritiqueIssue(
+            id=f"SPEC-COMPLIANCE-{issue_counter:03d}",
+            spec_ref=spec_ref,
+            arch_ref="Architecture proposes: Electron framework",
+            category="stack_mismatch",
+            severity="blocking",
+            description=(
+                f"STACK MISMATCH: User {'EXPLICITLY CONFIRMED' if stack_locked else 'discussed'} Python + Pygame for the implementation, "
+                "but architecture proposes Electron (JavaScript/TypeScript). "
+                f"{'This stack choice was LOCKED by user confirmation - the architecture MUST use Python + Pygame.' if stack_locked else 'This is a completely different technology stack that ignores the user\'s intent.'}"
+            ),
+            fix_suggestion=(
+                "Rewrite architecture to use Python + Pygame as discussed. "
+                f"{'This is a LOCKED requirement from user confirmation.' if stack_locked else 'Pygame is a Python library for making games and is what the user chose.'}"
+            ),
+        ))
+        print(f"[DEBUG] [critique] v1.4 BLOCKER: Pygame discussed but Electron proposed (locked={stack_locked})")
+    
+    # =========================================================================
+    # v1.4: NEW CHECK - Explicit stack_locked violation (any stack mismatch)
+    # =========================================================================
+    # If stack is explicitly locked and architecture uses ANY different stack,
+    # that's a blocker even if our specific checks above didn't catch it.
+    
+    if stack_locked and impl_stack:
+        locked_language = (impl_stack.get("language") or "").lower()
+        locked_framework = (impl_stack.get("framework") or "").lower()
+        
+        # Check if architecture uses the locked language
+        if locked_language:
+            arch_uses_locked_language = any(
+                locked_language in s.lower() for s in arch_stack
+            )
+            if not arch_uses_locked_language and arch_stack:
+                issue_counter += 1
+                issues.append(CritiqueIssue(
+                    id=f"SPEC-COMPLIANCE-{issue_counter:03d}",
+                    spec_ref=f"LOCKED implementation_stack.language: {impl_stack.get('language')}",
+                    arch_ref=f"Architecture uses: {arch_stack}",
+                    category="stack_mismatch",
+                    severity="blocking",
+                    description=(
+                        f"LOCKED STACK VIOLATION: The spec explicitly requires '{impl_stack.get('language')}' "
+                        f"(stack_locked=True), but the architecture proposes different technology: {arch_stack}. "
+                        f"This stack choice was confirmed by the user and CANNOT be overridden."
+                    ),
+                    fix_suggestion=(
+                        f"Rewrite architecture to use {impl_stack.get('language')} as explicitly required. "
+                        f"Source: {impl_stack.get('source', 'user confirmation')}"
+                    ),
+                ))
+                print(f"[DEBUG] [critique] v1.4 BLOCKER: LOCKED stack violation (required={impl_stack.get('language')}, found={arch_stack})")
+        
+        # Check if architecture uses the locked framework
+        if locked_framework:
+            arch_uses_locked_framework = any(
+                locked_framework in s.lower() for s in arch_stack
+            ) or locked_framework in arch_lower
+            if not arch_uses_locked_framework and arch_stack:
+                issue_counter += 1
+                issues.append(CritiqueIssue(
+                    id=f"SPEC-COMPLIANCE-{issue_counter:03d}",
+                    spec_ref=f"LOCKED implementation_stack.framework: {impl_stack.get('framework')}",
+                    arch_ref=f"Architecture content does not include: {impl_stack.get('framework')}",
+                    category="stack_mismatch",
+                    severity="blocking",
+                    description=(
+                        f"LOCKED FRAMEWORK VIOLATION: The spec explicitly requires '{impl_stack.get('framework')}' "
+                        f"(stack_locked=True), but this framework is not mentioned in the architecture. "
+                        f"This choice was confirmed by the user and CANNOT be overridden."
+                    ),
+                    fix_suggestion=(
+                        f"Rewrite architecture to use {impl_stack.get('framework')} as explicitly required. "
+                        f"Source: {impl_stack.get('source', 'user confirmation')}"
+                    ),
+                ))
+                print(f"[DEBUG] [critique] v1.4 BLOCKER: LOCKED framework violation (required={impl_stack.get('framework')})")
+    
+    # =========================================================================
+    # Check 2: SCOPE INFLATION
+    # =========================================================================
+    # If spec says "minimal" or "bare minimum" but architecture has packaging,
+    # installers, telemetry, etc., that's scope creep.
+    
+    if spec_scope == "minimal":
+        inflation_found = []
+        
+        for keyword in _SCOPE_INFLATION_KEYWORDS:
+            if keyword in arch_lower:
+                inflation_found.append(keyword)
+        
+        # Only flag if multiple inflation indicators found (avoid false positives)
+        if len(inflation_found) >= 3:
+            issue_counter += 1
+            issues.append(CritiqueIssue(
+                id=f"SPEC-COMPLIANCE-{issue_counter:03d}",
+                spec_ref="Scope: minimal / bare minimum playable",
+                arch_ref=f"Architecture includes: {inflation_found[:5]}",
+                category="scope_inflation",
+                severity="blocking",
+                description=(
+                    f"SCOPE INFLATION: Spec requires 'minimal' or 'bare minimum' implementation, "
+                    f"but architecture includes scope-inflating features: {inflation_found[:5]}. "
+                    f"A minimal implementation should not include packaging, installers, "
+                    f"telemetry, or other production features."
+                ),
+                fix_suggestion=(
+                    "Remove scope-inflating features. Focus on core functionality only. "
+                    "Packaging, installers, persistence, and telemetry can be added later "
+                    "if/when the user requests them."
+                ),
+            ))
+            print(f"[DEBUG] [critique] v1.3 BLOCKER: Scope inflation ({len(inflation_found)} indicators: {inflation_found[:5]})")
+    
+    # =========================================================================
+    # Check 3: PLATFORM CONTEXT (less strict, just warn if significant mismatch)
+    # =========================================================================
+    # This is informational - platform choices are often flexible.
+    # But if spec says "Desktop" and arch says "Mobile", that's wrong.
+    
+    if spec_platform == "Desktop":
+        if "mobile" in arch_lower or "android" in arch_lower or "ios" in arch_lower:
+            issue_counter += 1
+            issues.append(CritiqueIssue(
+                id=f"SPEC-COMPLIANCE-{issue_counter:03d}",
+                spec_ref=f"Platform: {spec_platform}",
+                arch_ref="Architecture targets: Mobile platform",
+                category="platform_mismatch",
+                severity="blocking",
+                description=(
+                    f"PLATFORM MISMATCH: Spec requires Desktop platform, "
+                    f"but architecture targets Mobile (Android/iOS)."
+                ),
+                fix_suggestion="Rewrite architecture to target Desktop platform as specified.",
+            ))
+            print(f"[DEBUG] [critique] v1.3 BLOCKER: Platform mismatch (Desktop spec, Mobile arch)")
+    
+    # Summary
+    if issues:
+        print(f"[DEBUG] [critique] v1.3 Deterministic check found {len(issues)} BLOCKING issue(s)")
+        logger.warning(
+            "[critique] v1.3 Deterministic spec-compliance check: %d blocking issues",
+            len(issues)
+        )
+    else:
+        print(f"[DEBUG] [critique] v1.3 Deterministic check: No obvious spec violations")
+        logger.info("[critique] v1.3 Deterministic spec-compliance check: PASSED (no obvious violations)")
+    
+    return issues
 
 
 # =============================================================================
@@ -184,6 +775,9 @@ async def call_json_critic(
     
     Returns structured CritiqueResult.
     Uses CRITIQUE_PROVIDER/CRITIQUE_MODEL from env via stage_models.
+    
+    v1.2: Now applies blocker filtering to ensure only real blockers block.
+    v1.3: Added run_deterministic_spec_compliance_check() - runs BEFORE LLM critique.
     """
     # Get config from stage_models (runtime lookup)
     critique_provider, critique_model, critique_max_tokens = _get_critique_model_config()
@@ -191,6 +785,40 @@ async def call_json_critic(
     # DEBUG: Log critique start
     print(f"[DEBUG] [critique] Starting JSON critic: provider={critique_provider}, model={critique_model}")
     logger.info(f"[critique] Calling JSON critic: {critique_provider}/{critique_model}")
+    
+    # =========================================================================
+    # v1.3 CRITICAL FIX: Run DETERMINISTIC spec-compliance check FIRST
+    # =========================================================================
+    # This catches obvious spec violations (stack mismatch, scope inflation, etc.)
+    # BEFORE the LLM critique. The LLM may be distracted by "best practices"
+    # and miss these critical issues.
+    
+    deterministic_issues = run_deterministic_spec_compliance_check(
+        arch_content=arch_content,
+        spec_json=spec_json,
+        original_request=original_request,
+    )
+    
+    # If deterministic check found blocking issues, FAIL IMMEDIATELY
+    # Don't even bother calling the LLM - the architecture is fundamentally wrong.
+    if deterministic_issues:
+        print(f"[DEBUG] [critique] v1.3 EARLY FAIL: {len(deterministic_issues)} deterministic blocker(s) found")
+        logger.warning(
+            "[critique] v1.3 Deterministic check BLOCKED architecture: %d issue(s)",
+            len(deterministic_issues)
+        )
+        
+        return CritiqueResult(
+            summary=f"Architecture BLOCKED by deterministic spec-compliance check: {len(deterministic_issues)} issue(s) found",
+            critique_model="deterministic_check_v1.3",
+            critique_failed=False,  # Not a failure - we successfully detected issues
+            critique_mode="deep+deterministic",
+            blocking_issues=deterministic_issues,
+            non_blocking_issues=[],
+        )
+    
+    # Deterministic check passed - proceed with LLM critique
+    print(f"[DEBUG] [critique] v1.3 Deterministic check PASSED - proceeding to LLM critique")
     
     critique_prompt = build_json_critique_prompt(
         draft_text=arch_content,
@@ -208,6 +836,12 @@ SPEC VERIFICATION PROTOCOL:
 - Do NOT suggest adding features/requirements that aren't in the spec
 - Only flag as "blocking" if the architecture FAILS to meet spec requirements
 - Non-blocking issues are style/optimization suggestions that don't violate the spec
+
+EVIDENCE REQUIREMENT FOR BLOCKING ISSUES:
+- Every blocking issue MUST include both spec_ref AND arch_ref
+- spec_ref: Which spec requirement is violated
+- arch_ref: Which architecture section shows the violation
+- If you cannot cite both, make the issue non_blocking
 
 Your suggestions must align with the spec. Do not expand scope."""
 
@@ -249,13 +883,48 @@ Your suggestions must align with the spec. Do not expand scope."""
         if not result or not result.content:
             logger.warning("[critic] Empty response from critic")
             print(f"[DEBUG] [critique] ERROR: Empty response from {critique_provider}")
+            # FAIL-CLOSED: Empty/timeout response = critique failed, NOT passed
             return CritiqueResult(
-                summary="Critique failed: empty response",
+                summary="Critique failed: empty response / timeout",
                 critique_model=critique_model,
+                critique_failed=True,  # CRITICAL: Mark as failed so overall_pass=False
+                critique_mode="deep",
+                blocking_issues=[CritiqueIssue(
+                    id="CRITIQUE-FAIL-001",
+                    spec_ref=None,
+                    arch_ref=None,
+                    category="system",
+                    severity="blocking",
+                    description="Critique could not be completed due to timeout or empty response from critic model",
+                    fix_suggestion="Retry critique with different provider or increase timeout",
+                )],
             )
         
         print(f"[DEBUG] [critique] Received response: {len(result.content)} chars")
         critique = parse_critique_output(result.content, model=critique_model)
+        critique.critique_mode = "deep"
+        
+        # =====================================================================
+        # v1.2: Apply blocker filtering
+        # =====================================================================
+        
+        original_blocking_count = len(critique.blocking_issues)
+        
+        if critique.blocking_issues:
+            real_blocking, downgraded = filter_blocking_issues(
+                critique.blocking_issues,
+                require_evidence=True,  # Enforce AND rule: spec_ref AND arch_ref
+            )
+            
+            # Update critique with filtered results
+            critique.blocking_issues = real_blocking
+            critique.non_blocking_issues.extend(downgraded)
+            
+            # Recalculate overall_pass (only passes if no blocking AND critique succeeded)
+            critique.overall_pass = len(critique.blocking_issues) == 0 and not critique.critique_failed
+            
+            if downgraded:
+                print(f"[DEBUG] [critique] Blocker filtering: {original_blocking_count} → {len(real_blocking)} (downgraded {len(downgraded)})")
         
         # DEBUG: Log critique result
         print(f"[DEBUG] [critique] Result: overall_pass={critique.overall_pass}, blocking={len(critique.blocking_issues)}, non_blocking={len(critique.non_blocking_issues)}")
@@ -263,21 +932,22 @@ Your suggestions must align with the spec. Do not expand scope."""
         
         # Log full details of blocking issues for visibility
         if critique.blocking_issues:
-            print(f"[DEBUG] [critique] === BLOCKING ISSUES ===")
+            print(f"[DEBUG] [critique] === BLOCKING ISSUES (after filtering) ===")
             for issue in critique.blocking_issues:
                 issue_id = getattr(issue, 'id', 'N/A')
                 title = getattr(issue, 'title', 'Untitled')
                 desc = getattr(issue, 'description', '')[:200]  # Truncate for logs
                 category = getattr(issue, 'category', 'unknown')
                 spec_ref = getattr(issue, 'spec_ref', 'N/A')
+                arch_ref = getattr(issue, 'arch_ref', 'N/A')
                 print(f"[DEBUG] [critique]   {issue_id}: [{category}] {title}")
                 print(f"[DEBUG] [critique]     → {desc}")
-                print(f"[DEBUG] [critique]     spec_ref: {spec_ref}")
+                print(f"[DEBUG] [critique]     spec_ref: {spec_ref}, arch_ref: {arch_ref}")
             print(f"[DEBUG] [critique] === END BLOCKING ===")
         
         # Log summary of non-blocking issues
         if critique.non_blocking_issues:
-            print(f"[DEBUG] [critique] Non-blocking ({len(critique.non_blocking_issues)}): {[getattr(i, 'id', 'N/A') for i in critique.non_blocking_issues]}")
+            print(f"[DEBUG] [critique] Non-blocking ({len(critique.non_blocking_issues)}): {[getattr(i, 'id', 'N/A') for i in critique.non_blocking_issues[:5]]}...")
         
         return critique
         
@@ -286,9 +956,21 @@ Your suggestions must align with the spec. Do not expand scope."""
         print(f"[DEBUG] [critique] EXCEPTION: {exc}")
         # Get model for error response
         _, model_for_error, _ = _get_critique_model_config()
+        # FAIL-CLOSED: Exception = critique failed, NOT passed
         return CritiqueResult(
             summary=f"Critique failed: {exc}",
             critique_model=model_for_error,
+            critique_failed=True,  # CRITICAL: Mark as failed so overall_pass=False
+            critique_mode="deep",
+            blocking_issues=[CritiqueIssue(
+                id="CRITIQUE-FAIL-002",
+                spec_ref=None,
+                arch_ref=None,
+                category="system",
+                severity="blocking",
+                description=f"Critique could not be completed due to exception: {exc}",
+                fix_suggestion="Check critic provider configuration and retry",
+            )],
         )
 
 
@@ -486,6 +1168,10 @@ __all__ = [
     # Configuration
     "GEMINI_CRITIC_MODEL",
     "GEMINI_CRITIC_MAX_TOKENS",
+    # Block 5: Blocker filtering (v1.2)
+    "filter_blocking_issues",
+    # Block 5: Deterministic spec-compliance check (v1.3 - CRITICAL FIX)
+    "run_deterministic_spec_compliance_check",
     # Block 5: JSON critique
     "store_critique_artifact",
     "call_json_critic",

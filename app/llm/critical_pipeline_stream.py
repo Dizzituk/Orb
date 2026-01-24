@@ -2,6 +2,11 @@
 """
 Critical Pipeline streaming handler for ASTRA command flow.
 
+v2.2 (2026-01): Quickcheck Validation for Micro Jobs
+- Added MicroQuickcheckResult and micro_quickcheck() for deterministic validation
+- Micro jobs now get fast tick-box checks before "Ready for Overwatcher"
+- No LLM critique for micro jobs - pure deterministic validation
+
 v2.1 (2026-01-04): Artifact Binding Support
 - Extracts artifact bindings from spec for Overwatcher
 - Includes content_verbatim, location, scope_constraints in architecture prompt
@@ -14,6 +19,7 @@ import json
 import logging
 import asyncio
 import os
+from dataclasses import dataclass, field
 from typing import Optional, Any, List, Dict
 from uuid import uuid4
 
@@ -76,6 +82,19 @@ except ImportError:
     get_spec_schema = None
 
 # =============================================================================
+# Evidence Collector Import (for grounding Critical Pipeline)
+# =============================================================================
+
+try:
+    from app.pot_spec.evidence_collector import load_evidence, EvidenceBundle
+    _EVIDENCE_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"[critical_pipeline] Evidence collector not available: {e}")
+    _EVIDENCE_AVAILABLE = False
+    load_evidence = None
+    EvidenceBundle = None
+
+# =============================================================================
 # Memory Service Imports
 # =============================================================================
 
@@ -119,6 +138,451 @@ def _get_pipeline_model_config() -> dict:
         "provider": os.getenv("CRITICAL_PIPELINE_PROVIDER", "anthropic"),
         "model": os.getenv("ANTHROPIC_OPUS_MODEL", "claude-opus-4-5-20251101"),
     }
+
+
+# =============================================================================
+# Job Type Classification (v2.2)
+# =============================================================================
+
+class JobKind:
+    """Job classification for pipeline routing."""
+    MICRO_EXECUTION = "micro_execution"  # Simple read/write/answer tasks
+    ARCHITECTURE = "architecture"         # Design/build/refactor tasks
+
+
+def _classify_job_kind(spec_data: Dict[str, Any], message: str) -> str:
+    """
+    Classify job as MICRO_EXECUTION or ARCHITECTURE.
+    
+    v2.3 FIX: Now checks spec_data.get("job_kind") FIRST.
+    SpecGate's deterministic classification takes priority.
+    Only falls back to keyword matching if job_kind is missing.
+    
+    Returns: JobKind.MICRO_EXECUTION or JobKind.ARCHITECTURE
+    """
+    # ========================================================================
+    # v2.3 FIX: Check for pre-classified job_kind from SpecGate FIRST
+    # ========================================================================
+    
+    spec_job_kind = spec_data.get("job_kind", "")
+    spec_job_kind_confidence = spec_data.get("job_kind_confidence", 0.0)
+    spec_job_kind_reason = spec_data.get("job_kind_reason", "")
+    
+    if spec_job_kind and spec_job_kind != "unknown":
+        # SpecGate already classified this - OBEY IT
+        logger.info(
+            "[critical_pipeline] v2.3 USING SPEC JOB_KIND: %s (confidence=%.2f, reason='%s')",
+            spec_job_kind, spec_job_kind_confidence, spec_job_kind_reason
+        )
+        
+        if spec_job_kind == "micro_execution":
+            return JobKind.MICRO_EXECUTION
+        elif spec_job_kind == "repo_change":
+            # repo_change is faster than architecture but not as fast as micro
+            # For now, treat as architecture (needs some design work)
+            return JobKind.ARCHITECTURE
+        elif spec_job_kind == "architecture":
+            return JobKind.ARCHITECTURE
+        else:
+            # Unknown or unexpected value - escalate to architecture
+            logger.warning(
+                "[critical_pipeline] v2.3 Unknown job_kind '%s' - escalating to architecture",
+                spec_job_kind
+            )
+            return JobKind.ARCHITECTURE
+    
+    # ========================================================================
+    # FALLBACK: SpecGate didn't classify (or returned "unknown")
+    # Use local classification logic
+    # ========================================================================
+    
+    logger.warning(
+        "[critical_pipeline] v2.3 job_kind not set by SpecGate (found='%s') - using fallback classification",
+        spec_job_kind
+    )
+    
+    # Combine all text for analysis
+    summary = spec_data.get("summary", "").lower()
+    objective = spec_data.get("objective", "").lower()
+    title = spec_data.get("title", "").lower()
+    goal = spec_data.get("goal", "").lower()
+    msg_lower = message.lower()
+    
+    all_text = f"{summary} {objective} {title} {goal} {msg_lower}"
+    
+    # ========================================================================
+    # Check for sandbox/file paths resolved by SpecGate (STRONGEST signal)
+    # ========================================================================
+    
+    # Primary fields from GroundedPOTSpec
+    has_sandbox_input = bool(spec_data.get("sandbox_input_path"))
+    has_sandbox_output = bool(spec_data.get("sandbox_output_path"))
+    has_sandbox_reply = bool(spec_data.get("sandbox_generated_reply"))
+    sandbox_discovery_used = spec_data.get("sandbox_discovery_used", False)
+    
+    # Also check for nested fields or alternate names
+    if not has_sandbox_input:
+        has_sandbox_input = bool(spec_data.get("input_file_path"))
+    if not has_sandbox_output:
+        has_sandbox_output = bool(spec_data.get("output_file_path") or spec_data.get("planned_output_path"))
+    
+    # Check constraints for file paths (SpecGate adds these)
+    constraints_from_repo = spec_data.get("constraints_from_repo", [])
+    for constraint in constraints_from_repo:
+        if isinstance(constraint, str):
+            if "planned output path" in constraint.lower() or "reply.txt" in constraint.lower():
+                has_sandbox_output = True
+    
+    # Check what_exists for sandbox input
+    what_exists = spec_data.get("what_exists", [])
+    for item in what_exists:
+        if isinstance(item, str) and "sandbox input" in item.lower():
+            has_sandbox_input = True
+    
+    # ========================================================================
+    # MICRO FAST PATH: If sandbox discovery resolved files, it's micro
+    # ========================================================================
+    
+    if sandbox_discovery_used and has_sandbox_input:
+        logger.info(
+            "[critical_pipeline] v2.3 FALLBACK MICRO: sandbox_discovery_used=True, input=%s, output=%s",
+            has_sandbox_input, has_sandbox_output
+        )
+        return JobKind.MICRO_EXECUTION
+    
+    if has_sandbox_input and has_sandbox_output and has_sandbox_reply:
+        logger.info(
+            "[critical_pipeline] v2.3 FALLBACK MICRO: Full sandbox resolution found (input+output+reply)"
+        )
+        return JobKind.MICRO_EXECUTION
+    
+    # ========================================================================
+    # Keyword-based classification (last resort fallback)
+    # ========================================================================
+    
+    # MICRO indicators (simple file operations)
+    micro_indicators = [
+        "read the", "read file", "open file", "find the file",
+        "answer the question", "answer question", "reply to",
+        "write reply", "write answer", "print answer",
+        "summarize", "summarise", "extract", "copy",
+        "find document", "find the document",
+        "what does", "what is", "tell me",
+        "underneath", "below", "same folder",
+        "sandbox", "desktop", "test folder",
+        "read-only", "reply (read-only)",
+    ]
+    
+    # ARCHITECTURE indicators (design/build work)
+    arch_indicators = [
+        "design", "architect", "build system", "create system",
+        "implement feature", "add feature", "new module",
+        "refactor", "restructure", "redesign",
+        "api endpoint", "database schema", "migration",
+        "integration", "pipeline", "service",
+        "authentication", "authorization",
+        "full implementation", "complete implementation",
+        "specgate", "spec gate", "overwatcher",  # Orb system design
+    ]
+    
+    # Count matches
+    micro_score = sum(1 for ind in micro_indicators if ind in all_text)
+    arch_score = sum(1 for ind in arch_indicators if ind in all_text)
+    
+    # Boost micro score if we have resolved file paths
+    if has_sandbox_input and has_sandbox_output:
+        micro_score += 5  # Strong signal - SpecGate already resolved paths
+    elif has_sandbox_input:
+        micro_score += 3
+    elif has_sandbox_output:
+        micro_score += 2
+    
+    # Check step count from spec (micro jobs typically have ≤5 steps)
+    steps = spec_data.get("proposed_steps", spec_data.get("steps", []))
+    if isinstance(steps, list):
+        if len(steps) <= 5:
+            micro_score += 1
+        elif len(steps) > 10:
+            arch_score += 2
+    
+    # Log classification
+    logger.info(
+        "[critical_pipeline] v2.3 FALLBACK classification: micro_score=%d, arch_score=%d, "
+        "sandbox_discovery=%s, has_paths=%s/%s",
+        micro_score, arch_score, sandbox_discovery_used, has_sandbox_input, has_sandbox_output
+    )
+    
+    # Decision: prefer MICRO if scores are close and paths are resolved
+    if micro_score > arch_score:
+        return JobKind.MICRO_EXECUTION
+    elif arch_score > micro_score:
+        return JobKind.ARCHITECTURE
+    elif has_sandbox_input or has_sandbox_output:
+        # Tie-breaker: if any paths are resolved, it's micro
+        return JobKind.MICRO_EXECUTION
+    else:
+        # Default to architecture for safety
+        return JobKind.ARCHITECTURE
+
+
+# =============================================================================
+# Micro Quickcheck Validation (v2.2)
+# =============================================================================
+
+@dataclass
+class MicroQuickcheckResult:
+    """Result of micro-execution quickcheck validation.
+    
+    This is a fast, deterministic validation - NO LLM calls.
+    Pure tick-box checks to verify spec/plan alignment.
+    """
+    passed: bool
+    issues: List[Dict[str, str]] = field(default_factory=list)
+    summary: str = ""
+
+
+def micro_quickcheck(spec_data: Dict[str, Any], plan_text: str) -> MicroQuickcheckResult:
+    """
+    Fast deterministic validation for micro-execution jobs.
+    NO LLM calls - pure tick-box checks.
+    
+    v2.2 Checks:
+    1. sandbox_input_path exists in spec
+    2. sandbox_output_path is resolved
+    3. Plan paths match spec paths
+    4. Plan has only safe operations (no destructive commands)
+    5. If plan says "write output" but no generated_reply exists → fail
+    
+    Returns:
+        MicroQuickcheckResult with pass/fail and any issues found
+    """
+    issues: List[Dict[str, str]] = []
+    
+    # =========================================================================
+    # Check 1: Input path resolved
+    # =========================================================================
+    
+    input_path = (
+        spec_data.get("sandbox_input_path") or
+        spec_data.get("input_file_path") or
+        ""
+    )
+    
+    if not input_path:
+        issues.append({
+            "id": "MICRO-CHECK-001",
+            "description": "sandbox_input_path not resolved in spec - cannot verify input source",
+            "severity": "blocking",
+        })
+    
+    # =========================================================================
+    # Check 2: Output path resolved
+    # =========================================================================
+    
+    output_path = (
+        spec_data.get("sandbox_output_path") or
+        spec_data.get("output_file_path") or
+        spec_data.get("planned_output_path") or
+        ""
+    )
+    
+    if not output_path:
+        issues.append({
+            "id": "MICRO-CHECK-002",
+            "description": "sandbox_output_path not resolved in spec - cannot verify output destination",
+            "severity": "blocking",
+        })
+    
+    # =========================================================================
+    # Check 3: Plan references correct paths
+    # =========================================================================
+    
+    if input_path and input_path not in plan_text:
+        # Check for path variations (forward/back slashes, case)
+        input_normalized = input_path.replace("\\", "/").lower()
+        plan_normalized = plan_text.replace("\\", "/").lower()
+        
+        if input_normalized not in plan_normalized:
+            issues.append({
+                "id": "MICRO-CHECK-003",
+                "description": f"Plan does not reference spec input path: {input_path}",
+                "severity": "blocking",
+            })
+    
+    if output_path and output_path not in plan_text:
+        # Check for path variations
+        output_normalized = output_path.replace("\\", "/").lower()
+        plan_normalized = plan_text.replace("\\", "/").lower()
+        
+        if output_normalized not in plan_normalized:
+            issues.append({
+                "id": "MICRO-CHECK-004",
+                "description": f"Plan does not reference spec output path: {output_path}",
+                "severity": "blocking",
+            })
+    
+    # =========================================================================
+    # Check 4: Unsafe operations
+    # =========================================================================
+    
+    unsafe_patterns = [
+        "rm -rf", "rmdir /s", "del /f /q",
+        "format c:", "format d:",
+        "DROP TABLE", "DROP DATABASE", "DELETE FROM",
+        "TRUNCATE TABLE",
+        ":(){:|:&};:",  # Fork bomb
+        "shutdown", "reboot",
+        "reg delete", "regedit",
+    ]
+    
+    plan_lower = plan_text.lower()
+    for pattern in unsafe_patterns:
+        if pattern.lower() in plan_lower:
+            issues.append({
+                "id": "MICRO-CHECK-005",
+                "description": f"Plan contains potentially unsafe operation: '{pattern}'",
+                "severity": "blocking",
+            })
+    
+    # =========================================================================
+    # Check 5: Reply existence (v2.2 addition per feedback)
+    # If plan says "write output" but spec has no generated_reply → problem
+    # =========================================================================
+    
+    reply_content = spec_data.get("sandbox_generated_reply", "")
+    
+    # Check if plan includes write step but no reply exists
+    write_keywords = ["write output", "write reply", "write file", "create output", "save reply"]
+    plan_has_write = any(kw in plan_lower for kw in write_keywords)
+    
+    if plan_has_write and not reply_content:
+        issues.append({
+            "id": "MICRO-CHECK-006",
+            "description": "Plan includes write step but spec has no sandbox_generated_reply - nothing to write",
+            "severity": "blocking",
+        })
+    
+    # =========================================================================
+    # Build result
+    # =========================================================================
+    
+    passed = len(issues) == 0
+    
+    if passed:
+        summary = "✅ All quickchecks passed"
+    else:
+        blocking_count = sum(1 for i in issues if i.get("severity") == "blocking")
+        summary = f"❌ {blocking_count} blocking issue(s) found"
+    
+    logger.info(
+        "[micro_quickcheck] Result: passed=%s, issues=%d, input=%s, output=%s, reply=%s",
+        passed, len(issues),
+        bool(input_path), bool(output_path), bool(reply_content)
+    )
+    
+    return MicroQuickcheckResult(passed=passed, issues=issues, summary=summary)
+
+
+def _generate_micro_execution_plan(spec_data: Dict[str, Any], job_id: str) -> str:
+    """
+    Generate a minimal execution plan for MICRO jobs.
+    
+    No architecture design needed - just a simple step-by-step plan
+    that Overwatcher can execute directly.
+    
+    Uses the sandbox fields populated by SpecGate.
+    """
+    # Get paths from SpecGate's sandbox resolution
+    input_path = (
+        spec_data.get("sandbox_input_path") or
+        spec_data.get("input_file_path") or
+        "(input path not resolved)"
+    )
+    output_path = (
+        spec_data.get("sandbox_output_path") or
+        spec_data.get("output_file_path") or
+        spec_data.get("planned_output_path") or
+        "(output path not resolved)"
+    )
+    
+    # Get content from SpecGate's sandbox discovery
+    input_excerpt = spec_data.get("sandbox_input_excerpt", "")
+    reply_content = spec_data.get("sandbox_generated_reply", "")
+    content_type = spec_data.get("sandbox_selected_type", "unknown")
+    
+    # Get summary/goal from spec
+    summary = spec_data.get("goal", spec_data.get("summary", spec_data.get("objective", "Execute task per spec")))
+    
+    # Build the plan
+    plan = f"""# Micro-Execution Plan
+
+**Job ID:** {job_id}
+**Type:** MICRO_EXECUTION (no architecture required)
+
+## Task Summary
+{summary}
+
+## Resolved Paths (by SpecGate)
+- **Input:** `{input_path}`
+- **Output:** `{output_path}`
+- **Content Type:** {content_type}
+
+## Execution Steps
+
+1. **Read Input File**
+   - Path: `{input_path}`
+   - Action: Read file contents
+
+2. **Process Content**
+   - Parse the content
+   - Generate response based on file content
+
+3. **Write Output File**
+   - Path: `{output_path}`
+   - Action: Write generated reply
+
+4. **Verify**
+   - Confirm output file exists
+   - Validate content is correct
+"""
+    
+    # Add input preview if available
+    if input_excerpt:
+        plan += f"""
+## Input Preview
+```
+{input_excerpt[:500] if input_excerpt else '(content will be read at execution time)'}
+```
+"""
+    
+    # Add expected output if SpecGate already generated the reply
+    if reply_content:
+        plan += f"""
+## Generated Reply (from SpecGate)
+```
+{reply_content}
+```
+
+**Note:** SpecGate has already generated this reply. Overwatcher just needs to write it.
+"""
+    else:
+        plan += """
+## Expected Output
+(to be generated by Overwatcher based on input content)
+"""
+    
+    plan += """
+## Notes
+- This is a simple file operation task
+- No architectural changes required
+- All paths are pre-resolved by SpecGate
+- Overwatcher can execute directly
+
+---
+✅ **Ready for Overwatcher** - Say 'Astra, command: send to overwatcher' to execute.
+"""
+    
+    return plan
 
 
 # =============================================================================
@@ -283,12 +747,13 @@ async def generate_critical_pipeline_stream(
     """
     Generate SSE stream for Critical Pipeline execution with artifact binding (v2.1).
     
+    v2.2: Added micro_quickcheck validation before "Ready for Overwatcher"
+    
     Flow:
     1. Load validated spec from DB
-    2. Extract artifact bindings with resolved paths
-    3. Build JobEnvelope and LLMTask with binding context
-    4. Call run_high_stakes_with_critique()
-    5. Stream progress and final result
+    2. Classify job type (MICRO vs ARCHITECTURE)
+    3a. MICRO: Generate plan → quickcheck validation → ready for Overwatcher
+    3b. ARCHITECTURE: Extract bindings → run Block 4-6 pipeline → stream result
     """
     response_parts = []
     
@@ -382,6 +847,163 @@ async def generate_critical_pipeline_stream(
         response_parts.append(f"✅ Spec loaded: `{spec_id[:16]}...`\n")
         
         # =====================================================================
+        # Step 1b: Classify Job Type (v2.2)
+        # =====================================================================
+        
+        job_kind = _classify_job_kind(spec_data, message)
+        
+        yield "data: " + json.dumps({"type": "token", "content": f"🏷️ **Job Type:** `{job_kind}`\n"}) + "\n\n"
+        response_parts.append(f"🏷️ **Job Type:** `{job_kind}`\n")
+        
+        # =====================================================================
+        # MICRO_EXECUTION PATH: Skip architecture, generate minimal plan + quickcheck
+        # =====================================================================
+        
+        if job_kind == JobKind.MICRO_EXECUTION:
+            yield "data: " + json.dumps({"type": "token", "content": "\n⚡ **Fast Path:** This is a micro-execution job.\n"}) + "\n\n"
+            response_parts.append("\n⚡ **Fast Path:** This is a micro-execution job.\n")
+            yield "data: " + json.dumps({"type": "token", "content": "No architecture design required - generating execution plan...\n\n"}) + "\n\n"
+            response_parts.append("No architecture design required - generating execution plan...\n\n")
+            
+            # Create job ID
+            if not job_id:
+                job_id = f"micro-{uuid4().hex[:8]}"
+            
+            # Generate minimal execution plan (no LLM call needed)
+            micro_plan = _generate_micro_execution_plan(spec_data, job_id)
+            
+            # =================================================================
+            # v2.2: Run quickcheck validation BEFORE showing plan
+            # =================================================================
+            
+            yield "data: " + json.dumps({"type": "token", "content": "🧪 **Running Quickcheck...**\n"}) + "\n\n"
+            response_parts.append("🧪 **Running Quickcheck...**\n")
+            
+            quickcheck_result = micro_quickcheck(spec_data, micro_plan)
+            
+            if quickcheck_result.passed:
+                # Quickcheck PASSED - show plan and mark ready
+                yield "data: " + json.dumps({"type": "token", "content": f"{quickcheck_result.summary}\n\n"}) + "\n\n"
+                response_parts.append(f"{quickcheck_result.summary}\n\n")
+                
+                yield "data: " + json.dumps({"type": "token", "content": micro_plan}) + "\n\n"
+                response_parts.append(micro_plan)
+                
+                # Extract artifact bindings for Overwatcher
+                binding_context = {
+                    "job_id": job_id,
+                    "job_root": os.getenv("ORB_JOB_ARTIFACT_ROOT", "jobs"),
+                    "repo_root": os.getenv("REPO_ROOT", "."),
+                }
+                artifact_bindings = _extract_artifact_bindings(spec_data, binding_context)
+                
+                # Emit completion event
+                yield "data: " + json.dumps({
+                    "type": "work_artifacts",
+                    "spec_id": spec_id,
+                    "job_id": job_id,
+                    "job_kind": job_kind,
+                    "critique_mode": "quickcheck",
+                    "critique_passed": True,
+                    "artifact_bindings": artifact_bindings,
+                }) + "\n\n"
+                
+                # Save to memory
+                full_response = "".join(response_parts)
+                if memory_service and memory_schemas:
+                    try:
+                        memory_service.create_message(db, memory_schemas.MessageCreate(
+                            project_id=project_id, role="assistant", content=full_response,
+                            provider="local", model="micro-execution"
+                        ))
+                    except Exception as e:
+                        logger.warning(f"[critical_pipeline] Failed to save to memory: {e}")
+                
+                if trace:
+                    trace.finalize(success=True)
+                
+                yield "data: " + json.dumps({
+                    "type": "done",
+                    "provider": "local",
+                    "model": "micro-execution",
+                    "total_length": len(full_response),
+                    "spec_id": spec_id,
+                    "job_id": job_id,
+                    "job_kind": job_kind,
+                    "critique_mode": "quickcheck",
+                    "critique_passed": True,
+                    "artifact_bindings": len(artifact_bindings),
+                }) + "\n\n"
+                return  # Exit early - micro job complete
+            
+            else:
+                # Quickcheck FAILED - show issues and do NOT mark ready
+                yield "data: " + json.dumps({"type": "token", "content": f"{quickcheck_result.summary}\n\n"}) + "\n\n"
+                response_parts.append(f"{quickcheck_result.summary}\n\n")
+                
+                # List the issues
+                for issue in quickcheck_result.issues:
+                    issue_msg = f"❌ **{issue['id']}:** {issue['description']}\n"
+                    yield "data: " + json.dumps({"type": "token", "content": issue_msg}) + "\n\n"
+                    response_parts.append(issue_msg)
+                
+                # Show the plan anyway for debugging
+                yield "data: " + json.dumps({"type": "token", "content": "\n### Generated Plan (for review):\n"}) + "\n\n"
+                response_parts.append("\n### Generated Plan (for review):\n")
+                yield "data: " + json.dumps({"type": "token", "content": micro_plan}) + "\n\n"
+                response_parts.append(micro_plan)
+                
+                # Show next steps
+                fail_msg = """
+---
+⚠️ **Quickcheck Failed** - Job NOT ready for Overwatcher.
+
+Please check:
+1. Did SpecGate resolve the input/output paths correctly?
+2. Is the spec complete with sandbox_input_path and sandbox_output_path?
+3. If the plan needs to write output, does the spec have a sandbox_generated_reply?
+
+You may need to re-run Spec Gate with more details about the file locations.
+"""
+                yield "data: " + json.dumps({"type": "token", "content": fail_msg}) + "\n\n"
+                response_parts.append(fail_msg)
+                
+                # Save to memory (even on failure)
+                full_response = "".join(response_parts)
+                if memory_service and memory_schemas:
+                    try:
+                        memory_service.create_message(db, memory_schemas.MessageCreate(
+                            project_id=project_id, role="assistant", content=full_response,
+                            provider="local", model="micro-execution"
+                        ))
+                    except Exception as e:
+                        logger.warning(f"[critical_pipeline] Failed to save to memory: {e}")
+                
+                if trace:
+                    trace.finalize(success=False, error_message="Quickcheck failed")
+                
+                yield "data: " + json.dumps({
+                    "type": "done",
+                    "provider": "local",
+                    "model": "micro-execution",
+                    "total_length": len(full_response),
+                    "spec_id": spec_id,
+                    "job_id": job_id,
+                    "job_kind": job_kind,
+                    "critique_mode": "quickcheck",
+                    "critique_passed": False,
+                    "quickcheck_issues": len(quickcheck_result.issues),
+                }) + "\n\n"
+                return  # Exit - quickcheck failed
+        
+        # =====================================================================
+        # ARCHITECTURE PATH: Full pipeline (continues below)
+        # =====================================================================
+        
+        yield "data: " + json.dumps({"type": "token", "content": "\n🏗️ **Architecture Mode:** Full design pipeline required.\n\n"}) + "\n\n"
+        response_parts.append("\n🏗️ **Architecture Mode:** Full design pipeline required.\n\n")
+        
+        # =====================================================================
         # Step 2: Create job ID and extract artifact bindings (v2.1)
         # =====================================================================
         
@@ -409,6 +1031,29 @@ async def generate_critical_pipeline_stream(
                 binding_msg += f"  - ... and {len(artifact_bindings) - 3} more\n"
             yield "data: " + json.dumps({"type": "token", "content": binding_msg}) + "\n\n"
             response_parts.append(binding_msg)
+        
+        # =====================================================================
+        # Step 2b: Load evidence for grounded architecture generation
+        # =====================================================================
+        
+        evidence_excerpt = ""
+        if _EVIDENCE_AVAILABLE and load_evidence:
+            try:
+                evidence = load_evidence(
+                    include_arch_map=True,
+                    include_codebase_report=False,  # Spec already has details
+                    arch_map_max_lines=200,
+                )
+                
+                if evidence.arch_map_content:
+                    evidence_excerpt = evidence.arch_map_content[:8000]  # Cap at 8k chars
+                    yield "data: " + json.dumps({"type": "token", "content": "📚 **Evidence loaded:** Architecture map\n"}) + "\n\n"
+                    response_parts.append("📚 **Evidence loaded:** Architecture map\n")
+                    logger.info("[critical_pipeline] Loaded architecture map evidence (%d chars)", len(evidence_excerpt))
+                else:
+                    logger.warning("[critical_pipeline] No architecture map content available")
+            except Exception as e:
+                logger.warning(f"[critical_pipeline] Failed to load evidence: {e}")
         
         # =====================================================================
         # Step 3: Build prompt with content preservation and bindings
@@ -439,9 +1084,51 @@ async def generate_critical_pipeline_stream(
         binding_prompt = _build_artifact_binding_prompt(artifact_bindings)
         
         # Build system prompt with all context
+        # FIXED: Extract actual task description, not generic titles
         original_request = message
         if spec_data:
-            original_request = spec_data.get("goal", "") or spec_data.get("objective", "") or message
+            # Priority order for finding the actual task:
+            # 1. summary - often contains the real task description
+            # 2. objective - if it's not generic
+            # 3. First input's content/example if it looks like a task
+            # 4. Fall back to message
+            
+            summary = spec_data.get("summary", "")
+            objective = spec_data.get("objective", "")
+            
+            # Check if objective is generic/placeholder
+            generic_objectives = [
+                "job description", "weaver", "build spec", "create spec",
+                "draft", "generated", "placeholder"
+            ]
+            objective_is_generic = any(
+                g in (objective or "").lower() for g in generic_objectives
+            ) or len(objective or "") < 20
+            
+            # Use summary if it's more descriptive
+            if summary and len(summary) > len(objective or ""):
+                original_request = summary
+            elif objective and not objective_is_generic:
+                original_request = objective
+            elif summary:
+                original_request = summary
+            else:
+                # Try to get from inputs or fall back to message
+                inputs = spec_data.get("inputs", [])
+                if inputs and isinstance(inputs, list) and len(inputs) > 0:
+                    first_input = inputs[0]
+                    if isinstance(first_input, dict):
+                        input_example = first_input.get("example", "")
+                        if input_example and len(input_example) > 20:
+                            original_request = f"Task: {input_example}"
+                        else:
+                            original_request = message
+                    else:
+                        original_request = message
+                else:
+                    original_request = message
+            
+            logger.info(f"[critical_pipeline] Extracted objective: {original_request[:100]}...")
         
         system_prompt = f"""You are Claude Opus, generating a detailed architecture document.
 
@@ -479,6 +1166,11 @@ The implementation MUST NOT operate outside these boundaries.
 """
         
         system_prompt += binding_prompt
+        
+        # Add evidence excerpt if available (for grounded architecture generation)
+        if evidence_excerpt:
+            system_prompt += f"""\n\n## ARCHITECTURE MAP (excerpts for context)\n\nThis is an excerpt from the existing codebase architecture. Use this to understand:\n- Existing code structure and patterns\n- Available modules and services\n- Integration points\n\n```\n{evidence_excerpt[:6000]}\n```\n\nReference these patterns when designing the architecture.\n"""
+        
         system_prompt += "\n\nGenerate a complete, detailed architecture document."
         
         task_messages = [
@@ -532,14 +1224,15 @@ The implementation MUST NOT operate outside these boundaries.
         
         yield "data: " + json.dumps({"type": "token", "content": "This may take 2-5 minutes. Stages:\n"}) + "\n\n"
         yield "data: " + json.dumps({"type": "token", "content": "  1. 📝 Architecture generation\n"}) + "\n\n"
-        yield "data: " + json.dumps({"type": "token", "content": "  2. 🔍 Critique\n"}) + "\n\n"
-        yield "data: " + json.dumps({"type": "token", "content": "  3. ✏️ Revision loop (up to 3 rounds)\n\n"}) + "\n\n"
+        yield "data: " + json.dumps({"type": "token", "content": "  2. 🔍 Critique (real blockers only)\n"}) + "\n\n"
+        yield "data: " + json.dumps({"type": "token", "content": "  3. ✏️ Revision loop (stops early if clean)\n\n"}) + "\n\n"
         
         yield "data: " + json.dumps({
             "type": "pipeline_started",
             "stage": "critical_pipeline",
             "job_id": job_id,
             "spec_id": spec_id,
+            "critique_mode": "deep",
             "artifact_bindings": len(artifact_bindings),
         }) + "\n\n"
         
@@ -595,6 +1288,7 @@ The implementation MUST NOT operate outside these boundaries.
         
         summary_details = f"""**Architecture ID:** `{arch_id}`
 **Final Version:** v{final_version}
+**Critique Mode:** deep (blocker filtering enabled)
 **Critique Status:** {"✅ PASSED" if critique_passed else f"⚠️ {blocking_issues} blocking issues"}
 **Provider:** {result.provider}
 **Model:** {result.model}
@@ -630,6 +1324,7 @@ The implementation MUST NOT operate outside these boundaries.
             "job_id": job_id,
             "arch_id": arch_id,
             "final_version": final_version,
+            "critique_mode": "deep",
             "critique_passed": critique_passed,
             "artifact_bindings": artifact_bindings,  # v2.1: Include for Overwatcher
             "artifacts": [
@@ -645,6 +1340,7 @@ The implementation MUST NOT operate outside these boundaries.
 ✅ **Ready for Implementation**
 
 Architecture approved with {len(artifact_bindings)} artifact binding(s).
+Critique mode: deep (blocker filtering enabled, stops early when clean)
 
 🔧 **Next Step:** Say **'Astra, command: send to overwatcher'** to implement.
 """
@@ -654,7 +1350,7 @@ Architecture approved with {len(artifact_bindings)} artifact binding(s).
 ---
 ⚠️ **Critique Not Fully Passed**
 
-{blocking_issues} blocking issues remain. Review the architecture above.
+{blocking_issues} blocking issues remain (after filtering for real blockers only).
 
 You may:
 - Re-run with updated spec
@@ -687,6 +1383,7 @@ You may:
             "job_id": job_id,
             "arch_id": arch_id,
             "final_version": final_version,
+            "critique_mode": "deep",
             "critique_passed": critique_passed,
             "artifact_bindings": len(artifact_bindings),
             "tokens": result.total_tokens,
@@ -700,4 +1397,9 @@ You may:
         yield "data: " + json.dumps({"type": "error", "error": str(e)}) + "\n\n"
 
 
-__all__ = ["generate_critical_pipeline_stream"]
+__all__ = [
+    "generate_critical_pipeline_stream",
+    "JobKind",
+    "MicroQuickcheckResult",
+    "micro_quickcheck",
+]

@@ -4,7 +4,11 @@
 The critique output is strict JSON for deterministic pass/fail decisioning.
 A parallel markdown artifact is generated for human readability.
 
-v1 (2025-12):
+v1.1 (2026-01):
+- Added critique_mode field: "quickcheck" or "deep"
+- Added blocker type constants for filtering
+
+v1.0 (2025-12):
 - CritiqueIssue: Single blocking or non-blocking issue
 - CritiqueResult: Full critique output with pass/fail
 - Parsing helpers for LLM JSON output
@@ -19,6 +23,42 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Approved Blocker Types (v1.1)
+# =============================================================================
+
+# These are the ONLY categories that can block an architecture job.
+# Any blocking issue with a category NOT in this set will be downgraded.
+APPROVED_ARCHITECTURE_BLOCKER_TYPES = {
+    # Core blocker types (match spec contract)
+    "spec_mismatch",           # Contradicts PoT spec
+    "missing_required",        # Missing component required by spec  
+    "broken_flow",             # End-to-end flow has magic steps
+    "unsafe_boundary",         # Trust boundary violation
+    "repo_mismatch",           # Invented modules/endpoints that don't exist
+    "operational_gap",         # Locking/migration/timeout ignored
+    "internal_contradiction",  # Architecture contradicts itself
+    
+    # v1.2 (2026-01-22): Spec-Anchored Compliance Types (CRITICAL FIX)
+    # These catch architecture drift from SPoT requirements
+    "platform_mismatch",       # Architecture platform differs from spec (desktop vs web vs mobile)
+    "stack_mismatch",          # Tech stack differs from user-discussed choices (Python vs TS/JS)
+    "scope_inflation",         # Architecture adds features/complexity not in spec
+    "spec_compliance",         # General spec compliance failure
+    
+    # Standard critic categories (from LLM output)
+    "security",                # Security vulnerabilities
+    "correctness",             # Correctness errors / calculations wrong
+    "completeness",            # Missing required component (if spec says it's needed)
+    
+    # Aliases (LLM may output these)
+    "drift",                   # Spec drift
+    "hallucination",           # Invented requirements
+    "contradiction",           # Internal contradiction
+    "boundary_violation",      # Trust boundary
+}
 
 
 # =============================================================================
@@ -69,11 +109,13 @@ class CritiqueResult:
     Attributes:
         blocking_issues: List of issues that MUST be fixed before approval
         non_blocking_issues: List of issues that SHOULD be fixed but don't block
-        overall_pass: True iff blocking_issues is empty
+        overall_pass: True iff blocking_issues is empty AND critique didn't fail
         summary: Brief human-readable summary
         spec_coverage: Dict mapping spec requirements to coverage status
         critique_model: Model that generated this critique
         critique_version: Schema version
+        critique_failed: True if critique could not be completed (timeout, empty response, etc.)
+        critique_mode: "quickcheck" or "deep" - type of critique performed
     """
     blocking_issues: List[CritiqueIssue] = field(default_factory=list)
     non_blocking_issues: List[CritiqueIssue] = field(default_factory=list)
@@ -82,10 +124,13 @@ class CritiqueResult:
     spec_coverage: Dict[str, str] = field(default_factory=dict)
     critique_model: str = ""
     critique_version: str = "v2"
+    critique_failed: bool = False  # FAIL-CLOSED: True if critique could not complete
+    critique_mode: str = "deep"    # v1.1: "quickcheck" or "deep"
     
     def __post_init__(self):
-        # Enforce: overall_pass is True iff no blocking issues
-        self.overall_pass = len(self.blocking_issues) == 0
+        # FAIL-CLOSED: overall_pass is True iff no blocking issues AND critique succeeded
+        # If critique_failed=True, overall_pass is ALWAYS False (fail-closed behavior)
+        self.overall_pass = (not self.critique_failed) and len(self.blocking_issues) == 0
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -96,6 +141,8 @@ class CritiqueResult:
             "spec_coverage": self.spec_coverage,
             "critique_model": self.critique_model,
             "critique_version": self.critique_version,
+            "critique_failed": self.critique_failed,
+            "critique_mode": self.critique_mode,
         }
     
     def to_json(self, indent: int = 2) -> str:
@@ -109,6 +156,7 @@ class CritiqueResult:
         status = "✅ PASSED" if self.overall_pass else "❌ FAILED (blocking issues)"
         lines.append(f"**Status:** {status}")
         lines.append(f"**Model:** {self.critique_model}")
+        lines.append(f"**Mode:** {self.critique_mode}")
         lines.append("")
         
         if self.summary:
@@ -168,6 +216,8 @@ class CritiqueResult:
             spec_coverage=data.get("spec_coverage", {}),
             critique_model=data.get("critique_model", ""),
             critique_version=data.get("critique_version", "v2"),
+            critique_failed=data.get("critique_failed", False),
+            critique_mode=data.get("critique_mode", "deep"),
         )
         # overall_pass is computed in __post_init__
         return result
@@ -387,12 +437,20 @@ KEY CHECKS:
 ASK YOURSELF: "Would building this produce the CORRECT system per the spec?"
 If values contradict or are inconsistent, that's BLOCKING even if technically buildable.
 
+EVIDENCE REQUIREMENT:
+=====================
+For a blocking issue to be valid, you MUST provide BOTH:
+- spec_ref: Which spec requirement is violated
+- arch_ref: Which part of the architecture shows the problem
+
+If you cannot cite both, make it non_blocking.
+
 RULES:
 1. blocking_issues: Issues that would result in incorrect or broken implementation
 2. non_blocking_issues: Style, optimization, and enhancement suggestions
 3. Each issue MUST have a unique id (ISSUE-001, ISSUE-002, etc.)
-4. Each issue SHOULD reference spec_ref (which spec requirement) and arch_ref (which section)
-5. category must be one of: security, correctness, completeness, clarity, performance
+4. Each blocking issue MUST reference spec_ref AND arch_ref (evidence required)
+5. category must be one of: security, correctness, completeness, spec_mismatch, broken_flow
 6. overall_pass is derived: true if blocking_issues is empty, false otherwise
 7. spec_coverage maps each spec requirement to: covered, partial, missing, or not_applicable
 
@@ -468,6 +526,8 @@ Output the complete revised architecture document. Do not include meta-commentar
 
 
 __all__ = [
+    # Blocker types
+    "APPROVED_ARCHITECTURE_BLOCKER_TYPES",
     # Data classes
     "CritiqueIssue",
     "CritiqueResult",

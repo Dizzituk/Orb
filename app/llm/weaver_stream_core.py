@@ -2,6 +2,11 @@
 """
 Weaver Stream Core - Prompt building and response parsing for ASTRA Weaver.
 
+v2.2 (2026-01-22): WEAVER HARDENING - Bug 4 Fix
+- Added execution_mode field to schema (backward compatible)
+- Supports "discussion only", "planning phase", "no code yet" modes
+- Field is optional - downstream won't break if missing
+
 v2.1 (2026-01-04): Content Preservation Fix
 - Added CONTENT_PRESERVATION_DIRECTIVE to prevent "Chinese whispers" content drift
 - Added content_verbatim, location, scope_constraints fields to output schema
@@ -313,6 +318,7 @@ Return a JSON object with this schema:
   "title": "Short descriptive title (max 10 words)",
   "summary": "One sentence describing what to do",
   "objective": "Detailed description of the goal",
+  "execution_mode": "Pipeline control mode if specified (e.g., 'Discussion only', 'No coding yet', 'Planning phase'), or null",
   "content_verbatim": "EXACT file content if user specified (copy character-for-character), or null",
   "location": "EXACT path/location as user specified, or null",
   "scope_constraints": ["List of boundaries - what CAN and CANNOT be touched"],
@@ -499,6 +505,7 @@ def parse_weaver_response(response_text: str) -> Tuple[Optional[Dict[str, Any]],
     spec_dict.setdefault("scope_constraints", [])
     spec_dict.setdefault("outputs", [])
     spec_dict.setdefault("acceptance_criteria", [])
+    spec_dict.setdefault("execution_mode", None)  # v2.2: Bug 4 fix - backward compatible
     
     # CRITICAL: Ensure output file info is in acceptance_criteria
     # (acceptance_criteria survives DB serialization, outputs may not)
@@ -530,6 +537,9 @@ def parse_weaver_response(response_text: str) -> Tuple[Optional[Dict[str, Any]],
         logger.info("[weaver_core] ✓ content_verbatim: '%s'", spec_dict["content_verbatim"][:80])
     if spec_dict.get("location"):
         logger.info("[weaver_core] ✓ location: '%s'", spec_dict["location"])
+    # v2.2: Log execution_mode for debugging
+    if spec_dict.get("execution_mode"):
+        logger.info("[weaver_core] ✓ execution_mode: '%s'", spec_dict["execution_mode"])
 
     summary_text = ""
     for marker in ("**Summary:**", "Summary:"):
@@ -593,6 +603,8 @@ def build_spec_from_dict(
     meta_data["outputs"] = spec_dict.get("outputs", [])
     meta_data["steps"] = spec_dict.get("steps", [])
     meta_data["weak_spots"] = spec_dict.get("weak_spots", [])
+    # v2.2: Bug 4 fix - execution_mode for pipeline control
+    meta_data["execution_mode"] = spec_dict.get("execution_mode")
 
     metadata = SpecMetadata(
         priority=meta_data.get("priority", "medium"),

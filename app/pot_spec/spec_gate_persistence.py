@@ -202,8 +202,16 @@ def build_spec_schema(
     job_id: str,
     provider_id: str,
     model_id: str,
+    # v2.2: Grounding data for Critical Pipeline classification
+    grounding_data: Optional[Dict[str, Any]] = None,
 ) -> Any:
-    """Build SpecSchema for database persistence."""
+    """
+    Build SpecSchema for database persistence.
+    
+    v2.2: Added grounding_data parameter to include sandbox fields
+    (sandbox_input_path, sandbox_output_path, sandbox_generated_reply, etc.)
+    so Critical Pipeline can properly classify micro vs architecture jobs.
+    """
     if SpecSchema is None:
         logger.warning("[spec_gate_persistence] SpecSchema not available")
         return None
@@ -234,6 +242,40 @@ def build_spec_schema(
                 for i, s in enumerate(steps)
             ],
         }
+        
+        # v2.2: Include grounding data for Critical Pipeline job classification
+        # This is CRITICAL for micro vs architecture routing
+        if grounding_data:
+            spec_data.update({
+                # v1.9: Job classification (Critical Pipeline MUST obey these)
+                "job_kind": grounding_data.get("job_kind", "unknown"),
+                "job_kind_confidence": grounding_data.get("job_kind_confidence", 0.0),
+                "job_kind_reason": grounding_data.get("job_kind_reason", ""),
+                # Sandbox resolution fields
+                "sandbox_input_path": grounding_data.get("sandbox_input_path"),
+                "sandbox_output_path": grounding_data.get("sandbox_output_path"),
+                "sandbox_generated_reply": grounding_data.get("sandbox_generated_reply"),
+                "sandbox_discovery_used": grounding_data.get("sandbox_discovery_used", False),
+                "sandbox_input_excerpt": grounding_data.get("sandbox_input_excerpt"),
+                "sandbox_selected_type": grounding_data.get("sandbox_selected_type"),
+                "sandbox_folder_path": grounding_data.get("sandbox_folder_path"),
+                "sandbox_discovery_status": grounding_data.get("sandbox_discovery_status"),
+                # Grounding metadata
+                "goal": grounding_data.get("goal"),
+                "what_exists": grounding_data.get("what_exists", []),
+                "what_missing": grounding_data.get("what_missing", []),
+                "constraints_from_repo": grounding_data.get("constraints_from_repo", []),
+                "constraints_from_intent": grounding_data.get("constraints_from_intent", []),
+                "proposed_steps": grounding_data.get("proposed_steps", []),
+                "acceptance_tests": grounding_data.get("acceptance_tests", []),
+            })
+            logger.info(
+                "[spec_gate_persistence] v2.2 Including grounding data: job_kind=%s, sandbox_discovery=%s, input=%s, output=%s",
+                grounding_data.get("job_kind"),
+                grounding_data.get("sandbox_discovery_used"),
+                bool(grounding_data.get("sandbox_input_path")),
+                bool(grounding_data.get("sandbox_output_path")),
+            )
 
         try:
             spec_schema = SpecSchema.from_dict(spec_data)
@@ -248,6 +290,13 @@ def build_spec_schema(
 
         if provenance is not None and hasattr(spec_schema, 'provenance'):
             spec_schema.provenance = provenance
+        
+        # v2.2: Attach grounding data to schema for JSON serialization
+        # This ensures content_json includes all grounding fields
+        if grounding_data and hasattr(spec_schema, '__dict__'):
+            for key, value in grounding_data.items():
+                if value is not None and not hasattr(spec_schema, key):
+                    setattr(spec_schema, key, value)
 
         return spec_schema
 
@@ -264,7 +313,14 @@ def persist_spec(
     provider_id: str,
     model_id: str,
 ) -> Tuple[bool, Optional[str], Optional[str], Optional[str]]:
-    """Persist spec to database."""
+    """
+    Persist spec to database AND update status to validated.
+    
+    v1.6 (2026-01-21): CRITICAL FIX - Now calls update_spec_status() to set
+    status to 'validated' after creation. Previously, specs were created with
+    DRAFT status and never updated, causing Critical Pipeline to fail with
+    "No validated specification found".
+    """
     if specs_service is None or not hasattr(specs_service, "create_spec"):
         return False, None, None, "specs_service.create_spec not available"
 
@@ -274,6 +330,12 @@ def persist_spec(
     try:
         generator_model = f"{provider_id}/{model_id}"
         
+        logger.info(
+            "[spec_gate_persistence] persist_spec START project_id=%s, provider=%s, model=%s",
+            project_id, provider_id, model_id
+        )
+        
+        # Step 1: Create spec (initially with DRAFT status)
         db_spec = specs_service.create_spec(
             db=db,
             project_id=project_id,
@@ -284,11 +346,64 @@ def persist_spec(
         spec_id = getattr(db_spec, "spec_id", None)
         spec_hash = getattr(db_spec, "spec_hash", None)
 
-        if spec_id:
-            logger.info("[spec_gate_persistence] Persisted spec: spec_id=%s", spec_id)
-            return True, str(spec_id), str(spec_hash) if spec_hash else None, None
-        else:
+        if not spec_id:
+            logger.error("[spec_gate_persistence] create_spec returned without spec_id")
             return False, None, None, "create_spec returned without spec_id"
+        
+        logger.info(
+            "[spec_gate_persistence] Spec created with DRAFT status: spec_id=%s, hash=%s",
+            spec_id, spec_hash[:16] if spec_hash else "None"
+        )
+        
+        # Step 2: CRITICAL - Update status to VALIDATED
+        # This was missing before, causing Critical Pipeline to fail
+        status_updated, status_error = update_spec_status(
+            db=db,
+            spec_id=spec_id,
+            provider_id=provider_id,
+            model_id=model_id,
+        )
+        
+        if not status_updated:
+            logger.error(
+                "[spec_gate_persistence] Failed to update spec status to validated: %s",
+                status_error
+            )
+            # Spec exists but not validated - return partial success
+            return False, str(spec_id), str(spec_hash) if spec_hash else None, f"status update failed: {status_error}"
+        
+        logger.info(
+            "[spec_gate_persistence] Spec status updated to VALIDATED: spec_id=%s",
+            spec_id
+        )
+        
+        # Step 3: Post-persist readback verification
+        if hasattr(specs_service, "get_latest_validated_spec"):
+            readback = specs_service.get_latest_validated_spec(db, project_id)
+            if readback and getattr(readback, "spec_id", None) == spec_id:
+                logger.info(
+                    "[spec_gate_persistence] POST-PERSIST VERIFIED: spec_id=%s found in validated specs",
+                    spec_id
+                )
+            else:
+                logger.warning(
+                    "[spec_gate_persistence] POST-PERSIST WARNING: spec_id=%s NOT found in validated specs readback",
+                    spec_id
+                )
+                # Log what was found for debugging
+                if readback:
+                    logger.warning(
+                        "[spec_gate_persistence]   Readback found different spec: %s",
+                        getattr(readback, "spec_id", "unknown")
+                    )
+                else:
+                    logger.warning("[spec_gate_persistence]   Readback returned None")
+        
+        logger.info(
+            "[spec_gate_persistence] persist_spec COMPLETE: spec_id=%s, status=validated",
+            spec_id
+        )
+        return True, str(spec_id), str(spec_hash) if spec_hash else None, None
 
     except Exception as e:
         logger.exception("[spec_gate_persistence] DB persistence failed: %s", e)

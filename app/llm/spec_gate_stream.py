@@ -514,6 +514,9 @@ async def generate_spec_gate_stream(
                     spec_id = getattr(result, "spec_id", "") or ""
                     spec_hash = getattr(result, "spec_hash", "") or ""
                     
+                    # v2.2: Extract grounding data from result for Critical Pipeline classification
+                    grounding_data = getattr(result, "grounding_data", None)
+                    
                     # Extract info from spot_markdown for schema
                     goal = ""
                     if "## Goal" in spot_md:
@@ -523,7 +526,19 @@ async def generate_spec_gate_stream(
                             goal_end = len(spot_md)
                         goal = spot_md[goal_start:goal_end].strip()
                     
+                    # v2.2: If grounding_data has goal, prefer it (more reliable)
+                    if grounding_data and grounding_data.get("goal"):
+                        goal = grounding_data["goal"]
+                    
                     summary = safe_summary_from_objective(goal) if safe_summary_from_objective else goal[:180]
+                    
+                    # v2.2: Log grounding data status for debugging
+                    logger.info(
+                        "[spec_gate_stream] v2.2 Persistence with grounding_data: sandbox_discovery=%s, has_input=%s, has_output=%s",
+                        grounding_data.get("sandbox_discovery_used") if grounding_data else None,
+                        bool(grounding_data.get("sandbox_input_path")) if grounding_data else False,
+                        bool(grounding_data.get("sandbox_output_path")) if grounding_data else False,
+                    )
                     
                     spec_schema = build_spec_schema(
                         spec_id=spec_id,
@@ -537,6 +552,7 @@ async def generate_spec_gate_stream(
                         job_id=job_id,
                         provider_id=spec_gate_provider,
                         model_id=spec_gate_model,
+                        grounding_data=grounding_data,  # v2.2: CRITICAL for micro vs arch routing
                     )
                     
                     if spec_schema:

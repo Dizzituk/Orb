@@ -12,7 +12,37 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, List, Optional, Tuple
+
+
+# ---------------------------------------------------------------------------
+# OUTPUT MODE ENUM (v1.13 - MICRO_FILE_TASK output mode)
+# ---------------------------------------------------------------------------
+
+class OutputMode(str, Enum):
+    """
+    v1.13: Output mode for MICRO_FILE_TASK jobs (sandbox file discovery jobs).
+    
+    Determines where the reply should be written:
+    - APPEND_IN_PLACE: Write reply into the same file (under the question)
+    - SEPARATE_REPLY_FILE: Write to a separate reply.txt file
+    - CHAT_ONLY: No file output, reply in chat only
+    
+    Detection is based on user intent keywords:
+    - APPEND_IN_PLACE: "write under", "append", "add below", "put reply underneath", 
+                       "beneath the question", "write it in the file", "write reply in"
+    - SEPARATE_REPLY_FILE: "save to reply.txt", "write to a new file", "create a reply file",
+                           "separate file", "save as"
+    - CHAT_ONLY: "just answer here", "don't change the file", "reply here in chat only",
+                 "chat only", "don't write"
+    
+    Default: If user intent implies writing into the file → APPEND_IN_PLACE
+    Safe default (no write indicators): CHAT_ONLY
+    """
+    APPEND_IN_PLACE = "append_in_place"
+    SEPARATE_REPLY_FILE = "separate_reply_file"
+    CHAT_ONLY = "chat_only"
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +76,12 @@ PLACEHOLDER_RE = re.compile("|".join(PLACEHOLDER_PATTERNS), re.IGNORECASE)
 
 @dataclass
 class SpecGateResult:
-    """Result from Spec Gate v2 processing."""
+    """
+    Result from Spec Gate v2 processing.
+    
+    v2.2 (2026-01-21): Added grounding_data field for Critical Pipeline job classification.
+    This enables micro vs architecture routing by persisting sandbox discovery results.
+    """
     ready_for_pipeline: bool = False
     open_questions: List[str] = field(default_factory=list)
     spot_markdown: Optional[str] = None
@@ -59,6 +94,10 @@ class SpecGateResult:
     notes: Optional[str] = None
     blocking_issues: List[str] = field(default_factory=list)
     validation_status: str = "pending"  # pending, needs_clarification, validated, blocked
+    
+    # v2.2: Grounding data for Critical Pipeline job classification
+    # Contains sandbox resolution fields needed for micro vs architecture routing
+    grounding_data: Optional[dict] = None
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +180,7 @@ __all__ = [
     "BLOCKING_FIELDS",
     "PLACEHOLDER_RE",
     "SpecGateResult",
+    "OutputMode",  # v1.13: MICRO_FILE_TASK output mode
     "is_placeholder",
     "count_real_items",
     "validate_blocking_fields",
