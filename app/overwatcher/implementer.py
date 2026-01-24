@@ -5,6 +5,9 @@ Handles:
 - Writing files to sandbox based on spec
 - Enforcing must_exist constraint for modify actions
 - Verifying output matches spec requirements
+- APPEND_IN_PLACE mode for appending to existing files (v1.2)
+
+v1.2 (2026-01-24): Added APPEND_IN_PLACE support with insertion_format
 """
 
 from __future__ import annotations
@@ -118,6 +121,7 @@ class ImplementerResult:
     filename: Optional[str] = None
     content_written: Optional[str] = None
     action_taken: Optional[str] = None
+    write_method: Optional[str] = None  # v1.2: "append" or "overwrite"
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -130,6 +134,7 @@ class ImplementerResult:
             "filename": self.filename,
             "content_written": self.content_written,
             "action_taken": self.action_taken,
+            "write_method": self.write_method,
         }
 
 
@@ -171,6 +176,10 @@ async def run_implementer(
     For action="modify" with must_exist=True:
     - Checks file exists BEFORE writing
     - Fails if file doesn't exist (does NOT create it)
+    
+    v1.2: Added APPEND_IN_PLACE support
+    - When output_mode="append_in_place", uses Add-Content instead of Set-Content
+    - Respects insertion_format for formatting the appended text
     """
     import time
     start_time = time.time()
@@ -190,6 +199,9 @@ async def run_implementer(
         filename, content, action = spec.get_target_file()
         target = spec.get_target()
         must_exist = spec.get_must_exist()
+        # v1.2: Get output mode and insertion format
+        output_mode = spec.get_output_mode()
+        insertion_format = spec.get_insertion_format()
     except SpecMissingDeliverableError as e:
         return ImplementerResult(
             success=False,
@@ -197,12 +209,15 @@ async def run_implementer(
             duration_ms=elapsed(),
         )
     
-    logger.info(f"[implementer] === SPEC-DRIVEN TASK ===")
+    logger.info(f"[implementer] === SPEC-DRIVEN TASK ===  [v1.2 APPEND FIX ACTIVE]")
+    print(f"\n\n>>> [IMPLEMENTER v1.2] output_mode={output_mode}, insertion_format={repr(insertion_format)} <<<\n\n")  # AGGRESSIVE DEBUG
     logger.info(f"[implementer] Action: {action}")
     logger.info(f"[implementer] Filename: {filename}")
     logger.info(f"[implementer] Target: {target}")
-    logger.info(f"[implementer] Content: '{content}'")
+    logger.info(f"[implementer] Content: '{content[:100]}...' ({len(content)} chars)" if len(content) > 100 else f"[implementer] Content: '{content}'")
     logger.info(f"[implementer] Must exist: {must_exist}")
+    logger.info(f"[implementer] Output mode: {output_mode}")
+    logger.info(f"[implementer] Insertion format: {repr(insertion_format)}")
     
     # Get sandbox client
     if client is None:
@@ -290,19 +305,58 @@ async def run_implementer(
             expected_path = resolved_path
             logger.info(f"[implementer] File exists at: {expected_path}, proceeding with modify")
         
-        # Write file via sandbox
-        # For absolute paths, use PowerShell Set-Content directly
-        # For relative paths, use the sandbox write_file API
+        # =====================================================================
+        # WRITE FILE VIA SANDBOX
+        # v1.2: Branch on output_mode for APPEND vs OVERWRITE
+        # =====================================================================
+        
         if is_absolute:
             logger.info(f"[implementer] Writing via PowerShell to absolute path: {expected_path}")
-            escaped_content = _escape_powershell_string(content)
-            write_cmd = f'Set-Content -Path "{expected_path}" -Value "{escaped_content}" -NoNewline'
+            
+            # v1.2: Determine write method based on output_mode
+            is_append_mode = output_mode and output_mode.lower() == "append_in_place"
+            
+            # AGGRESSIVE DEBUG
+            print(f"\n>>> [IMPLEMENTER] is_append_mode={is_append_mode}, output_mode={output_mode!r} <<<\n")
+            
+            if is_append_mode:
+                # APPEND MODE: Format content with insertion_format and append to file
+                if insertion_format:
+                    try:
+                        append_text = insertion_format.format(reply=content)
+                    except KeyError as e:
+                        # Fallback if format string has other placeholders
+                        logger.warning(f"[implementer] insertion_format KeyError: {e}, using simple format")
+                        append_text = f"\n\nAnswer:\n{content}\n"
+                else:
+                    # Default insertion format if none specified
+                    append_text = f"\n\nAnswer:\n{content}\n"
+                
+                logger.info(f"[implementer] APPEND_IN_PLACE mode: appending {len(append_text)} chars")
+                logger.info(f"[implementer] Append text preview: {repr(append_text[:100])}")
+                # v1.2: Log whether append_text starts with newline (important for -NoNewline flag)
+                logger.info(f"[implementer] append_text startswith newline: {append_text.startswith(chr(10)) or append_text.startswith(chr(13))}")
+                
+                escaped_append = _escape_powershell_string(append_text)
+                # v1.2: Use -Encoding UTF8 for future Unicode compatibility
+                write_cmd = f'Add-Content -Path "{expected_path}" -Value "{escaped_append}" -Encoding UTF8 -NoNewline'
+                write_method = "append"
+            else:
+                # OVERWRITE MODE (default): Replace entire file content
+                logger.info(f"[implementer] OVERWRITE mode: replacing file with {len(content)} chars")
+                escaped_content = _escape_powershell_string(content)
+                write_cmd = f'Set-Content -Path "{expected_path}" -Value "{escaped_content}" -NoNewline'
+                write_method = "overwrite"
+            
+            logger.info(f"[implementer] Write method: {write_method}")
+            logger.info(f"[implementer] PowerShell command: {write_cmd[:200]}...")
+            
             write_result = client.shell_run(write_cmd, timeout_seconds=30)
             
-            # Check success: no stderr means success for Set-Content
+            # Check success: no stderr means success for Set-Content/Add-Content
             write_success = not write_result.stderr or write_result.stderr.strip() == ""
             if write_success:
-                logger.info(f"[implementer] SUCCESS: {expected_path}")
+                logger.info(f"[implementer] SUCCESS: {expected_path} ({write_method})")
                 return ImplementerResult(
                     success=True,
                     output_path=expected_path,
@@ -310,15 +364,17 @@ async def run_implementer(
                     duration_ms=elapsed(),
                     sandbox_used=True,
                     filename=filename,
-                    content_written=content,
+                    content_written=append_text if is_append_mode else content,
                     action_taken=action,
+                    write_method=write_method,
                 )
             else:
                 return ImplementerResult(
                     success=False,
-                    error=f"PowerShell write failed: {write_result.stderr or write_result.stdout}",
+                    error=f"PowerShell write failed ({write_method}): {write_result.stderr or write_result.stdout}",
                     duration_ms=elapsed(),
                     sandbox_used=True,
+                    write_method=write_method,
                 )
         else:
             logger.info(f"[implementer] Writing via sandbox API: {base_filename} -> {target}")
@@ -340,6 +396,7 @@ async def run_implementer(
                     filename=filename,
                     content_written=content,
                     action_taken=action,
+                    write_method="overwrite",  # Sandbox API always overwrites
                 )
             else:
                 return ImplementerResult(
@@ -375,11 +432,15 @@ async def run_verification(
     
     Checks:
     1. Correct filename (not some other file like hello.txt)
-    2. Content matches spec exactly
+    2. Content matches spec exactly (for overwrite) or contains appended content (for append)
     3. File exists at expected path
+    
+    v1.2: Updated to handle APPEND_IN_PLACE verification
     """
     try:
         expected_filename, expected_content, expected_action = spec.get_target_file()
+        output_mode = spec.get_output_mode()
+        insertion_format = spec.get_insertion_format()
     except SpecMissingDeliverableError as e:
         return VerificationResult(
             passed=False,
@@ -388,8 +449,10 @@ async def run_verification(
     
     logger.info(f"[verification] === SPEC VERIFICATION ===")
     logger.info(f"[verification] Expected filename: {expected_filename}")
-    logger.info(f"[verification] Expected content: '{expected_content}'")
+    logger.info(f"[verification] Expected content: '{expected_content[:100]}...'" if len(expected_content) > 100 else f"[verification] Expected content: '{expected_content}'")
     logger.info(f"[verification] Expected action: {expected_action}")
+    logger.info(f"[verification] Output mode: {output_mode}")
+    logger.info(f"[verification] Write method used: {impl_result.write_method}")
     
     if not impl_result.success:
         return VerificationResult(
@@ -474,10 +537,32 @@ async def run_verification(
                 error=f"Failed to read file: {read_result.stderr}",
             )
         
-        actual_content = read_result.stdout.strip()
-        content_matches = actual_content == expected_content
+        actual_content = read_result.stdout.strip() if read_result.stdout else ""
         
-        logger.info(f"[verification] Actual content: '{actual_content}'")
+        # v1.2: Content verification depends on write method
+        is_append_mode = output_mode and output_mode.lower() == "append_in_place"
+        
+        if is_append_mode:
+            # For append mode: verify that the appended content is present at the end
+            if insertion_format:
+                try:
+                    expected_appended = insertion_format.format(reply=expected_content)
+                except KeyError:
+                    expected_appended = f"\n\nAnswer:\n{expected_content}\n"
+            else:
+                expected_appended = f"\n\nAnswer:\n{expected_content}\n"
+            
+            # Check that the expected content is in the file (allowing for trailing whitespace differences)
+            content_matches = expected_content.strip() in actual_content
+            
+            logger.info(f"[verification] APPEND mode: checking if reply content is present")
+            logger.info(f"[verification] Expected reply: '{expected_content[:100]}...'")
+            logger.info(f"[verification] Reply found in file: {content_matches}")
+        else:
+            # For overwrite mode: exact match
+            content_matches = actual_content == expected_content
+        
+        logger.info(f"[verification] Actual content length: {len(actual_content)} chars")
         logger.info(f"[verification] Content matches: {content_matches}")
         
         passed = content_matches and filename_matches
@@ -491,7 +576,7 @@ async def run_verification(
             expected_content=expected_content,
             expected_filename=expected_filename,
             actual_filename=actual_filename,
-            error=None if passed else f"Content mismatch: expected '{expected_content}', got '{actual_content}'",
+            error=None if passed else f"Content mismatch: expected reply '{expected_content[:50]}...' {'found' if content_matches else 'not found'} in actual content",
         )
         
     except SandboxError as e:

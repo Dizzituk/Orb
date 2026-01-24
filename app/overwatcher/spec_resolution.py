@@ -5,6 +5,8 @@ Handles:
 - Loading validated specs from DB via specs.service
 - Parsing content_json to extract deliverables
 - Creating smoke test specs for explicit testing
+
+v1.2 (2026-01-24): Added get_output_mode() and get_insertion_format() accessors
 """
 
 from __future__ import annotations
@@ -33,7 +35,10 @@ class SpecMissingDeliverableError(Exception):
 
 @dataclass
 class ResolvedSpec:
-    """Resolved spec context from database."""
+    """Resolved spec context from database.
+    
+    v1.2: Added get_output_mode() and get_insertion_format() accessor methods.
+    """
     spec_id: str
     spec_hash: str
     project_id: int
@@ -97,6 +102,33 @@ class ResolvedSpec:
         if self.deliverable:
             return self.deliverable.must_exist
         return False
+    
+    def get_output_mode(self) -> Optional[str]:
+        """Get output mode for file write operations.
+        
+        v1.2: Added for APPEND_IN_PLACE support.
+        
+        Returns:
+            Output mode string: "append_in_place", "separate_reply_file", "chat_only", or None
+        """
+        result = None
+        if self.deliverable:
+            result = self.deliverable.output_mode
+        # AGGRESSIVE DEBUG
+        print(f">>> [SPEC_RESOLUTION] get_output_mode() -> {result!r} (deliverable.output_mode={self.deliverable.output_mode if self.deliverable else 'NO_DELIVERABLE'})")
+        return result
+    
+    def get_insertion_format(self) -> Optional[str]:
+        """Get insertion format string for append operations.
+        
+        v1.2: Added for APPEND_IN_PLACE support.
+        
+        Returns:
+            Insertion format string (e.g., "\\n\\nAnswer:\\n{reply}\\n") or None
+        """
+        if self.deliverable:
+            return self.deliverable.insertion_format
+        return None
     
     def get_task_description(self) -> str:
         """Generate task description from spec content."""

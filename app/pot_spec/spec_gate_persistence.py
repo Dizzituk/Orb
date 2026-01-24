@@ -268,13 +268,17 @@ def build_spec_schema(
                 "constraints_from_intent": grounding_data.get("constraints_from_intent", []),
                 "proposed_steps": grounding_data.get("proposed_steps", []),
                 "acceptance_tests": grounding_data.get("acceptance_tests", []),
+                # v1.2.1: CRITICAL for APPEND_IN_PLACE write mode (was missing!)
+                "sandbox_output_mode": grounding_data.get("sandbox_output_mode"),
+                "sandbox_insertion_format": grounding_data.get("sandbox_insertion_format"),
             })
             logger.info(
-                "[spec_gate_persistence] v2.2 Including grounding data: job_kind=%s, sandbox_discovery=%s, input=%s, output=%s",
+                "[spec_gate_persistence] v2.2 Including grounding data: job_kind=%s, sandbox_discovery=%s, input=%s, output=%s, output_mode=%s",
                 grounding_data.get("job_kind"),
                 grounding_data.get("sandbox_discovery_used"),
                 bool(grounding_data.get("sandbox_input_path")),
                 bool(grounding_data.get("sandbox_output_path")),
+                grounding_data.get("sandbox_output_mode"),  # v1.2.1: Log output mode
             )
 
         try:

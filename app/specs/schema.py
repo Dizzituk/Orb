@@ -191,6 +191,8 @@ class Spec:
     sandbox_folder_path: Optional[str] = None      # Parent folder path
     sandbox_input_excerpt: Optional[str] = None    # First 500 chars of input file
     sandbox_discovery_status: Optional[str] = None # success, failed, not_attempted
+    sandbox_output_mode: Optional[str] = None      # v1.2: append_in_place, separate_reply_file, chat_only
+    sandbox_insertion_format: Optional[str] = None # v1.2: e.g., '\n\nAnswer:\n{reply}\n'
     
     # Grounding metadata (what exists in the environment)
     goal: str = ""
@@ -251,6 +253,8 @@ class Spec:
             "sandbox_folder_path": self.sandbox_folder_path,
             "sandbox_input_excerpt": self.sandbox_input_excerpt,
             "sandbox_discovery_status": self.sandbox_discovery_status,
+            "sandbox_output_mode": self.sandbox_output_mode,
+            "sandbox_insertion_format": self.sandbox_insertion_format,
             
             # v1.1: Grounding metadata
             "goal": self.goal,
@@ -318,6 +322,8 @@ class Spec:
         spec.sandbox_folder_path = data.get("sandbox_folder_path")
         spec.sandbox_input_excerpt = data.get("sandbox_input_excerpt")
         spec.sandbox_discovery_status = data.get("sandbox_discovery_status")
+        spec.sandbox_output_mode = data.get("sandbox_output_mode")
+        spec.sandbox_insertion_format = data.get("sandbox_insertion_format")
         
         # v1.1: Grounding metadata
         spec.goal = data.get("goal", "")

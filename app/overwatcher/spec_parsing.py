@@ -7,6 +7,10 @@ Parses spec content to extract:
 - Action (add/modify/delete)
 - Target location (DESKTOP, etc.)
 - Must-exist constraint
+- Output mode (append_in_place, separate_reply_file, chat_only) [v1.2]
+- Insertion format for append operations [v1.2]
+
+v1.2 (2026-01-24): Added output_mode and insertion_format for APPEND_IN_PLACE support
 """
 
 from __future__ import annotations
@@ -24,12 +28,18 @@ DEFAULT_TARGET = "DESKTOP"
 
 @dataclass
 class ParsedDeliverable:
-    """Parsed deliverable from spec content."""
+    """Parsed deliverable from spec content.
+    
+    v1.2: Added output_mode and insertion_format fields for APPEND_IN_PLACE support.
+    """
     filename: str
     content: str
     action: str  # "add" | "modify" | "delete"
     target: str  # "DESKTOP" | path
     must_exist: bool = False  # If True, file must exist before operation
+    # v1.2: Output mode and insertion format for sandbox micro-execution
+    output_mode: Optional[str] = None  # "append_in_place" | "separate_reply_file" | "chat_only"
+    insertion_format: Optional[str] = None  # e.g., "\n\nAnswer:\n{reply}\n"
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -38,6 +48,8 @@ class ParsedDeliverable:
             "action": self.action,
             "target": self.target,
             "must_exist": self.must_exist,
+            "output_mode": self.output_mode,
+            "insertion_format": self.insertion_format,
         }
 
 
@@ -83,6 +95,7 @@ def _parse_json_spec(spec: Dict[str, Any]) -> Optional[ParsedDeliverable]:
     
     # =========================================================================
     # v1.1: SANDBOX MICRO-EXECUTION FALLBACK (SpecGate schema compatibility)
+    # v1.2: Added output_mode and insertion_format extraction
     # =========================================================================
     # SpecGate micro-execution specs use sandbox_* prefixed fields.
     # Map these to ParsedDeliverable for Overwatcher compatibility.
@@ -91,20 +104,49 @@ def _parse_json_spec(spec: Dict[str, Any]) -> Optional[ParsedDeliverable]:
     #   - sandbox_output_path → target file
     #   - sandbox_input_path → fallback target file
     #   - sandbox_generated_reply → content to write
+    #   - sandbox_output_mode → output_mode (v1.2)
+    #   - sandbox_insertion_format → insertion_format (v1.2)
     # =========================================================================
     
     sandbox_output_path = spec.get("sandbox_output_path")
     sandbox_input_path = spec.get("sandbox_input_path")
     sandbox_generated_reply = spec.get("sandbox_generated_reply")
     
+    # v1.2: Extract output mode and insertion format from SpecGate
+    # These may be at top-level OR nested in grounding_data
+    sandbox_output_mode = spec.get("sandbox_output_mode")
+    sandbox_insertion_format = spec.get("sandbox_insertion_format")
+    
+    # AGGRESSIVE DEBUG - show what's in the spec
+    print(f"\n>>> [SPEC_PARSING] Top-level sandbox_output_mode: {sandbox_output_mode}")
+    print(f">>> [SPEC_PARSING] Top-level sandbox_insertion_format: {sandbox_insertion_format}")
+    print(f">>> [SPEC_PARSING] Spec keys: {list(spec.keys())}")
+    if 'grounding_data' in spec:
+        gd = spec['grounding_data']
+        print(f">>> [SPEC_PARSING] grounding_data keys: {list(gd.keys()) if isinstance(gd, dict) else type(gd)}")
+        print(f">>> [SPEC_PARSING] grounding_data.sandbox_output_mode: {gd.get('sandbox_output_mode') if isinstance(gd, dict) else 'N/A'}")
+    else:
+        print(f">>> [SPEC_PARSING] NO grounding_data in spec!")
+    print("")
+    
+    # v1.2.1: Fallback to nested grounding_data location
+    if not sandbox_output_mode or not sandbox_insertion_format:
+        grounding = spec.get("grounding_data") or {}
+        sandbox_output_mode = sandbox_output_mode or grounding.get("sandbox_output_mode")
+        sandbox_insertion_format = sandbox_insertion_format or grounding.get("sandbox_insertion_format")
+    
     # Determine target file: output_path preferred, input_path as fallback
     target_file = sandbox_output_path or sandbox_input_path
     
     if target_file:
         logger.info(
-            "[parse_spec] Sandbox micro-execution: file=%s, content=%d chars",
+            "[parse_spec] Sandbox micro-execution: file=%s, content=%d chars, "
+            "output_mode=%s, insertion_format=%s (from grounding_data fallback: %s)",
             target_file,
             len(sandbox_generated_reply) if sandbox_generated_reply else 0,
+            sandbox_output_mode,
+            repr(sandbox_insertion_format) if sandbox_insertion_format else None,
+            bool((spec.get("grounding_data") or {}).get("sandbox_output_mode")),
         )
         
         return ParsedDeliverable(
@@ -113,6 +155,8 @@ def _parse_json_spec(spec: Dict[str, Any]) -> Optional[ParsedDeliverable]:
             action="modify",
             target=DEFAULT_TARGET,
             must_exist=True,
+            output_mode=sandbox_output_mode,
+            insertion_format=sandbox_insertion_format,
         )
     
     # =========================================================================
@@ -136,6 +180,8 @@ def _parse_json_spec(spec: Dict[str, Any]) -> Optional[ParsedDeliverable]:
             action=action,
             target=d.get("target", DEFAULT_TARGET),
             must_exist=must_exist,
+            output_mode=d.get("output_mode"),
+            insertion_format=d.get("insertion_format"),
         )
     
     # Parse from requirements
@@ -183,6 +229,8 @@ def _parse_json_spec(spec: Dict[str, Any]) -> Optional[ParsedDeliverable]:
                         action=output.get("action", "add"),
                         target=output.get("target", DEFAULT_TARGET),
                         must_exist=output.get("must_exist", False),
+                        output_mode=output.get("output_mode"),
+                        insertion_format=output.get("insertion_format"),
                     )
             desc = output.get("description", "")
             if desc:
