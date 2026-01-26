@@ -127,6 +127,112 @@ v1.13 (2026-01-23): MICRO_FILE_TASK output mode + reduced clutter
                   - Removed "Selection confidence" (not useful for micro tasks)
                   - Only show content_type if not "unknown"
               - Added sandbox_output_mode and sandbox_insertion_format to grounding_data
+v1.14 (2026-01-24): ANCHOR EXTRACTION REGRESSION FIX
+              - CRITICAL FIX: _extract_sandbox_hints() was too strict in v1.10
+              - v1.10 required file_context_patterns to match TWICE (is_file_context + anchor extraction)
+              - This broke prompts like "On the desktop, there is a folder called Test"
+              - Fix: If sandbox_file domain detected but anchor=None, fall back to Desktop discovery
+              - Added fallback_anchor_for_sandbox_domain() helper
+              - Anchor extraction now tries:
+                1. Strict file_context_patterns (v1.10 behavior)
+                2. Fallback: "desktop" or "documents" mention + file operation keywords
+              - Ensures prompts like "read the file in Test folder on desktop" still work
+              - Fixes regression where spec was "Complete" but had no grounded file data
+v1.15 (2026-01-25): SANDBOX_FILE DOMAIN OVERRIDE FIX
+              - CRITICAL FIX: _extract_sandbox_hints() v1.10 platform context check was too aggressive
+              - When Weaver summarizes "On the desktop, there is a folder called Test" to
+                "Target platform: Desktop" + "read the file", v1.10 would return (None, None)
+              - Symptom: sandbox_file keywords detected but anchor=None (logged as BUG)
+              - Fix: If sandbox_file domain keywords detected ("read the file", "test.txt", etc.),
+                force is_file_context=True even when platform context patterns match
+              - New logic flow:
+                1. Check for sandbox_file domain keywords FIRST
+                2. If found, override the platform context early-return
+                3. Force anchor extraction using fallback patterns
+              - Added has_sandbox_file_signals detection at function start
+              - Added basic_file_indicators fallback for is_file_context override
+              - Ensures micro file tasks work even when Weaver output includes "Target platform: Desktop"
+v1.16 (2026-01-25): Q&A FILE INTELLIGENCE + OUTPUT MODE SAFETY FIX
+              - Added _analyze_qa_file() to detect Question/Answer structure in files
+              - Added _process_question_block() helper for parsing Q&A blocks
+              - _generate_reply_from_content() now detects answered vs unanswered questions
+              - Only generates answers for UNANSWERED questions
+              - LLM prompt explicitly instructs to EXPLAIN code, not just output result
+              - Prevents "0 1 2" bug where LLM outputs raw code execution
+              - Increased excerpt display from 5 to 15 lines in build_pot_spec_markdown()
+              - CRITICAL FIX: _detect_output_mode() now uses simple string matching FIRST
+              - Simple phrases like "do not change" match within longer sentences
+              - Catches "Do not change anything that is in that file" → CHAT_ONLY
+              - Safety phrases checked BEFORE append/write triggers (absolute override)
+              - Added "question in chat" regex to catch "answer the question in chat"
+v1.17 (2026-01-25): REWRITE_IN_PLACE TRIGGER EXPANSION
+              - Added explicit "fill in" triggers to REWRITE_IN_PLACE (not APPEND_IN_PLACE):
+                  - "fill in the missing", "fill the missing", "fill in the answer"
+                  - "fill blank", "fill empty", "populate answers", "complete answers"
+                  - "under answer:", "into the file under", "preserve everything else"
+              - REWRITE_IN_PLACE = intelligent Q&A block-aware insertion
+              - APPEND_IN_PLACE = simple append at end of file
+              - Example prompt: "Fill the missing answers into the file under Answer: headings"
+                triggers REWRITE_IN_PLACE (reads file, finds blank Answer blocks, inserts)
+v1.18 (2026-01-25): SCAN_ONLY JOB TYPE SUPPORT
+              - Added "scan_only" domain to DOMAIN_KEYWORDS for read-only filesystem scans
+              - Added scan_only detection to classify_job_kind() (priority before greenfield_build)
+              - SCAN_ONLY jobs: No sandbox_input_path/output_path required, CHAT_ONLY output
+              - Keywords: scan the, scan all, find all occurrences, search for, enumerate, etc.
+              - Example: "Scan D:\\Orb for references to orb/Orb/ORB" triggers scan_only
+              - Grounding_data passes job_kind=scan_only to Critical Pipeline
+              - Critical Pipeline v2.5 handles SCAN_ONLY path with scan_quickcheck()
+v1.19 (2026-01-25): SCAN_ONLY PARAMETER EXTRACTION (Complete Feature)
+              - CRITICAL FIX: SpecGate now extracts scan parameters for SCAN_ONLY jobs
+              - Added _extract_scan_params() to parse user intent into scan fields
+              - Extracts scan_roots from drive letters ("D drive") and explicit paths ("D:\\Orb")
+              - Extracts scan_terms from slash-separated variants (Orb/ORB/orb), quoted strings, descriptive patterns
+              - Extracts scan_targets from keywords ("names" for filenames, "contents" for code)
+              - Detects scan_case_mode from explicit keywords or multiple case variants
+              - Added scan fields to GroundedPOTSpec dataclass
+              - Added scan fields to grounding_data for Critical Pipeline:
+                  - scan_roots, scan_terms, scan_targets, scan_case_mode, scan_exclusions
+                  - output_mode="chat_only", write_policy="read_only"
+              - Critical Pipeline scan_quickcheck() will now pass for valid scan prompts
+              - Example: "Scan D: for Orb/ORB/orb" produces:
+                  scan_roots=["D:\\"], scan_terms=["Orb", "ORB", "orb"], scan_targets=["names", "contents"]
+v1.21 (2026-01-25): SCAN_ONLY SECURITY FIX (CRITICAL - HOST PC PROTECTION)
+              - CRITICAL SECURITY FIX: SCAN_ONLY was incorrectly allowing bare drive roots (D:\\, C:\\)
+              - This would have scanned the HOST PC filesystem - NOT ALLOWED
+              - NEW BEHAVIOR: Scans are ALWAYS constrained to sandbox workspace only
+              - "Entire D drive" is now interpreted as "entire allowed workspace", NOT literal D:\\
+              - Added SAFE_DEFAULT_SCAN_ROOTS constant: ["D:\\Orb", "D:\\orb-desktop"]
+              - Added FORBIDDEN_SCAN_ROOTS constant: bare drive letters are NEVER allowed
+              - Added _is_path_within_allowed_roots() security validation function
+              - Added validate_scan_roots() HARD SECURITY GATE function
+              - _extract_scan_params() now validates ALL paths through security gate
+              - Belt-and-suspenders: Final check rejects any path with length <= 3 chars
+              - Security logging at WARNING/ERROR level for all rejected paths
+              - Example: "Scan the entire D drive and find Orb/ORB/orb" now produces:
+                  scan_roots=["D:\\Orb", "D:\\orb-desktop"] (NOT "D:\\")
+              - All scan operations are now guaranteed to stay within sandbox workspace
+v1.22 (2026-01-26): LLM Q&A DEBUG + HARD-FAIL (BUG: "LLM unavailable" returned instead of answers)
+              - CRITICAL BUG FIX: Q&A files with unanswered questions now HARD-FAIL if LLM fails
+              - Replaced generic "(LLM unavailable)" fallback with differentiated failure reasons
+              - Added 4 distinct hard-fail branches for Q&A files:
+                  BRANCH 1: [SPECGATE_LLM_IMPORT_FAILED] - llm_call import failed at module load
+                  BRANCH 2: [SPECGATE_LLM_FUNCTION_NULL] - _LLM_CALL_AVAILABLE=True but llm_call=None
+                  BRANCH 3: [SPECGATE_LLM_CALL_FAILED] - LLM call returned but status != SUCCESS
+                  BRANCH 4: [SPECGATE_LLM_EXCEPTION] - LLM call raised an exception
+              - Added extensive debug logging BEFORE and AFTER LLM calls:
+                  - PRE-CHECK: _LLM_CALL_AVAILABLE, llm_call callable, provider_id, model_id
+                  - RESULT: is_success, has_content, status, error_message
+                  - SUCCESS/FAIL: reply length, preview, or sanitized error
+              - All error messages sanitized (credentials redacted if detected)
+              - Non-Q&A files still use fallback heuristics (not hard-fail)
+              - After capturing the real failure mode, verbosity can be reduced
+v1.23 (2026-01-26): LLM MAX_TOKENS FIX (ROOT CAUSE: 500 tokens too low for 20 questions)
+              - CRITICAL FIX: Dynamic max_tokens calculation based on question count
+              - Formula: max(500, question_count * 150 + 200), capped at 4000
+              - 20 questions now gets ~3200 tokens instead of 500
+              - Increased timeout from 30s to 60s for multi-question responses
+              - Added raw_response preview logging for empty content debugging
+              - Added max_tokens_used to error messages for visibility
 """
 
 from __future__ import annotations
@@ -143,6 +249,16 @@ from enum import Enum
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# v1.19 RUNTIME DIAGNOSTIC - Confirms correct module is loaded
+# =============================================================================
+import os as _os_for_diag
+_SPECGATE_VERSION = "v1.23"
+_SPECGATE_FILE = _os_for_diag.path.abspath(__file__)
+print(f"[SPECGATE_LOAD] {_SPECGATE_VERSION} loaded from: {_SPECGATE_FILE}")
+print(f"[SPECGATE_LOAD] v1.23 LLM MAX_TOKENS FIX: Dynamic tokens based on question count")
+logger.info("[spec_gate_grounded] %s module loaded from: %s", _SPECGATE_VERSION, _SPECGATE_FILE)
 
 # =============================================================================
 # IMPORTS
@@ -284,6 +400,30 @@ DOMAIN_KEYWORDS = {
         "rotation", "rotate", "spawn", "next piece",
         "arcade", "puzzle game", "casual game",
         "classic game", "retro game", "web game",
+    ],
+    # v1.18: SCAN_ONLY - Read-only filesystem scan/search/enumerate jobs
+    # No writes, no sandbox_input_path/output_path needed
+    # Results returned in chat only (CHAT_ONLY output mode)
+    "scan_only": [
+        # Scan verbs
+        "scan the", "scan all", "scan for", "scan folder", "scan folders",
+        "scan drive", "scan d:", "scan c:", "scan directory", "scan directories",
+        "scan entire", "scan whole", "scan project", "scan codebase",
+        # Find all patterns
+        "find all occurrences", "find all references", "find all files",
+        "find all folders", "find all instances", "find all mentions",
+        # Search patterns
+        "search for", "search the", "search entire", "search across",
+        "search all", "search whole", "search project",
+        # List/enumerate patterns
+        "list all", "list references", "list files", "list folders",
+        "enumerate", "report full paths", "report all",
+        # Locate patterns
+        "where is", "locate all", "show me all",
+        # Reference patterns
+        "references to", "mentions of", "occurrences of",
+        # Multi-path scanning
+        "and d:", "and c:", "both d:", "both c:",
     ],
     # v1.6/v1.10: Sandbox file tasks (read file, reply, find by discovery)
     # v1.10: STRICTER PATTERNS - must be clearly about file operations
@@ -715,6 +855,17 @@ def classify_job_kind(
     
     # Check for greenfield domain
     detected_domains = detect_domains(all_text)
+    
+    # ==========================================================================
+    # v1.18 RULE 0a: SCAN_ONLY jobs (read-only filesystem scans)
+    # ==========================================================================
+    
+    if "scan_only" in detected_domains:
+        matched_keywords = [kw for kw in DOMAIN_KEYWORDS.get("scan_only", []) if kw in all_text][:3]
+        reason = f"scan_only domain detected (READ_ONLY scan): matched {matched_keywords}"
+        logger.info("[spec_gate_grounded] v1.18 classify_job_kind: SCAN_ONLY - %s", reason)
+        return ("scan_only", 0.92, reason)
+    
     if "greenfield_build" in detected_domains:
         matched_keywords = [kw for kw in DOMAIN_KEYWORDS.get("greenfield_build", []) if kw in all_text][:3]
         reason = f"greenfield_build domain detected (CREATE_NEW): matched {matched_keywords}"
@@ -833,6 +984,540 @@ def classify_job_kind(
 
 
 # =============================================================================
+# SCAN PARAMETER EXTRACTION (v1.19 - SCAN_ONLY jobs)
+# =============================================================================
+
+# Default exclusions for filesystem scans
+DEFAULT_SCAN_EXCLUSIONS = [
+    ".git", "node_modules", "__pycache__", ".venv", "venv", 
+    "dist", "build", ".next", ".nuxt", "target",
+    ".idea", ".vscode", ".vs", "*.pyc", "*.pyo",
+    ".mypy_cache", ".pytest_cache", ".tox", "egg-info",
+]
+
+# =============================================================================
+# SCAN SAFETY CONSTANTS (v1.21 - CRITICAL SECURITY)
+# =============================================================================
+# These are the ONLY allowed roots for SCAN_ONLY jobs.
+# NEVER allow bare drive letters like "D:\" or "C:\" - this would scan the host PC!
+# Scans must ALWAYS be constrained to the sandbox/workspace directories.
+
+# SAFE_DEFAULT_SCAN_ROOTS: The ONLY directories that SCAN_ONLY jobs can target.
+# "Entire D drive" MUST be interpreted as "entire allowed workspace", NOT literal D:\
+SAFE_DEFAULT_SCAN_ROOTS = ["D:\\Orb", "D:\\orb-desktop"]
+
+# FORBIDDEN_SCAN_ROOTS: Patterns that MUST NEVER be used as scan roots.
+# These would scan the host filesystem which is NOT allowed.
+FORBIDDEN_SCAN_ROOTS = [
+    "C:\\",
+    "D:\\",
+    "E:\\",
+    "F:\\",
+    # Catch any bare drive letter
+]
+
+
+def _is_path_within_allowed_roots(path: str, allowed_roots: List[str] = None) -> bool:
+    """
+    v1.21 SECURITY GATE: Check if a path is within allowed scan roots.
+    
+    Args:
+        path: The path to validate
+        allowed_roots: List of allowed root paths (defaults to SAFE_DEFAULT_SCAN_ROOTS)
+    
+    Returns:
+        True if path is within an allowed root, False otherwise
+    """
+    if allowed_roots is None:
+        allowed_roots = SAFE_DEFAULT_SCAN_ROOTS
+    
+    # Normalize the path for comparison
+    path_normalized = path.replace('/', '\\').rstrip('\\').lower()
+    
+    # Check if it's a bare drive letter (FORBIDDEN)
+    if len(path_normalized) <= 3 and path_normalized.endswith(':'):
+        logger.warning(
+            "[spec_gate_grounded] v1.21 SECURITY: Rejected bare drive root: %s",
+            path
+        )
+        return False
+    if len(path_normalized) <= 3 and path_normalized.endswith(':\\'):
+        logger.warning(
+            "[spec_gate_grounded] v1.21 SECURITY: Rejected bare drive root: %s",
+            path
+        )
+        return False
+    
+    # Check if path is within any allowed root
+    for allowed_root in allowed_roots:
+        allowed_normalized = allowed_root.replace('/', '\\').rstrip('\\').lower()
+        
+        # Path matches allowed root exactly
+        if path_normalized == allowed_normalized:
+            return True
+        
+        # Path is a subdirectory of allowed root
+        if path_normalized.startswith(allowed_normalized + '\\'):
+            return True
+    
+    logger.warning(
+        "[spec_gate_grounded] v1.21 SECURITY: Path '%s' is NOT within allowed roots %s",
+        path, allowed_roots
+    )
+    return False
+
+
+def validate_scan_roots(scan_roots: List[str]) -> Tuple[List[str], List[str]]:
+    """
+    v1.21 SECURITY GATE: Validate and filter scan roots to only allowed paths.
+    
+    This is a HARD security gate that ensures scan operations can ONLY target
+    the allowed workspace directories (D:\\Orb, D:\\orb-desktop), never the
+    host filesystem root.
+    
+    Args:
+        scan_roots: List of proposed scan root paths
+    
+    Returns:
+        Tuple of (valid_roots, rejected_roots)
+        - valid_roots: Paths that passed validation (within allowed roots)
+        - rejected_roots: Paths that were rejected (outside allowed roots)
+    
+    Security rules:
+        - Bare drive letters (D:\\, C:\\) are ALWAYS rejected
+        - Paths outside SAFE_DEFAULT_SCAN_ROOTS are ALWAYS rejected
+        - If no valid roots remain, returns SAFE_DEFAULT_SCAN_ROOTS as fallback
+    """
+    valid_roots = []
+    rejected_roots = []
+    
+    for root in scan_roots:
+        if _is_path_within_allowed_roots(root):
+            # Normalize path format
+            normalized = root.replace('/', '\\').rstrip('\\')
+            if normalized not in valid_roots:
+                valid_roots.append(normalized)
+        else:
+            rejected_roots.append(root)
+    
+    # Log security decisions
+    if rejected_roots:
+        logger.warning(
+            "[spec_gate_grounded] v1.21 SECURITY GATE: Rejected %d scan root(s): %s",
+            len(rejected_roots), rejected_roots
+        )
+    
+    if valid_roots:
+        logger.info(
+            "[spec_gate_grounded] v1.21 SECURITY GATE: Accepted %d scan root(s): %s",
+            len(valid_roots), valid_roots
+        )
+    else:
+        # No valid roots - fallback to safe defaults
+        logger.warning(
+            "[spec_gate_grounded] v1.21 SECURITY GATE: No valid roots, falling back to SAFE_DEFAULT_SCAN_ROOTS: %s",
+            SAFE_DEFAULT_SCAN_ROOTS
+        )
+        valid_roots = SAFE_DEFAULT_SCAN_ROOTS.copy()
+    
+    return valid_roots, rejected_roots
+
+
+def _extract_scan_params(
+    combined_text: str,
+    intent: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """
+    v1.19: Extract scan parameters from user request text.
+    v1.20: CRITICAL FIX - Handle Weaver summary format properly:
+           - "D:" alone (not just "D drive")
+           - Comma-separated quoted terms: "Orb", "ORB", or "orb"
+           - "references of" (not just "references to")
+    
+    Called when job_kind="scan_only" is detected. Parses user intent to extract:
+    - scan_roots: Directories/drives to scan
+    - scan_terms: Strings/patterns to search for
+    - scan_targets: What to search ("names" for filenames, "contents" for file contents)
+    - scan_case_mode: "case_sensitive" or "case_insensitive"
+    - scan_exclusions: Directories/patterns to skip
+    
+    Args:
+        combined_text: Full text combining user input and Weaver output
+        intent: Parsed intent dict from parse_weaver_intent()
+    
+    Returns:
+        Dict with scan parameters, or None if extraction fails
+        
+    Examples:
+        "Scan the entire D drive and find all names/references of Orb/ORB/orb"
+        → scan_roots=["D:\\"], scan_terms=["Orb", "ORB", "orb"], scan_targets=["names", "contents"]
+        
+        "Find all files/folders on D: with names or contents containing \"Orb\", \"ORB\", or \"orb\""
+        → scan_roots=["D:\\"], scan_terms=["Orb", "ORB", "orb"], scan_targets=["names", "contents"]
+    """
+    if not combined_text:
+        logger.warning("[spec_gate_grounded] v1.20 _extract_scan_params: combined_text is EMPTY")
+        return None
+    
+    # v1.20: DEBUG LOG - Show what text we're parsing
+    logger.info(
+        "[spec_gate_grounded] v1.20 _extract_scan_params CALLED: text_len=%d, preview='%s'",
+        len(combined_text), combined_text[:300].replace('\n', ' ')
+    )
+    
+    text = combined_text
+    text_lower = combined_text.lower()
+    
+    scan_roots: List[str] = []
+    scan_terms: List[str] = []
+    scan_targets: List[str] = []
+    scan_case_mode: str = "case_insensitive"  # Default
+    scan_exclusions: List[str] = DEFAULT_SCAN_EXCLUSIONS.copy()
+    
+    # =========================================================================
+    # 1. SCAN ROOTS EXTRACTION (v1.21 - SECURITY HARDENED)
+    # =========================================================================
+    # 
+    # CRITICAL SECURITY RULE (non-negotiable):
+    # - Scans can ONLY target the sandbox workspace (D:\Orb, D:\orb-desktop)
+    # - NEVER return bare drive letters like "D:\" or "C:\"
+    # - "Entire D drive" MUST be interpreted as "entire allowed workspace"
+    # - All paths are validated through the security gate
+    #
+    
+    candidate_paths: List[str] = []
+    user_wants_full_workspace = False
+    
+    # -------------------------------------------------------------------------
+    # Step 1a: Detect "entire drive" / "whole drive" requests
+    # These are interpreted as "entire ALLOWED workspace", NOT literal drive root
+    # -------------------------------------------------------------------------
+    full_workspace_patterns = [
+        r'entire\s+([a-z])\s*drive',       # "entire D drive"
+        r'whole\s+([a-z])\s*drive',        # "whole D drive"
+        r'\b([a-z])\s+drive\b',            # "D drive"
+        r'scan\s+([a-z]):\s*(?![\\\w])',  # "scan D:" but NOT "scan D:\Orb"
+        r'\bon\s+([a-z]):',                # "on D:" (Weaver format)
+        r'\bfiles/folders\s+on\s+([a-z]):', # "files/folders on D:"
+        r'\bfolders\s+on\s+([a-z]):',      # "folders on D:"
+        r'\bfiles\s+on\s+([a-z]):',        # "files on D:"
+    ]
+    
+    for pattern in full_workspace_patterns:
+        if re.search(pattern, text_lower):
+            user_wants_full_workspace = True
+            logger.info(
+                "[spec_gate_grounded] v1.21 SECURITY: 'Full drive' request detected (pattern: %s). "
+                "Interpreting as 'entire allowed workspace', NOT bare drive root.",
+                pattern
+            )
+            break
+    
+    # -------------------------------------------------------------------------
+    # Step 1b: Extract explicit paths from text (D:\Orb, D:\orb-desktop, etc.)
+    # These will be validated against allowed roots
+    # -------------------------------------------------------------------------
+    path_patterns = [
+        r'([A-Za-z]:\\[\w\-\\]+)',         # "D:\Orb", "D:\orb-desktop\src"
+        r'([A-Za-z]:/[\w\-/]+)',             # "D:/Orb" (forward slash variant)
+    ]
+    
+    for pattern in path_patterns:
+        matches = re.findall(pattern, text)
+        for match in matches:
+            # Normalize path separators
+            normalized = match.replace('/', '\\').rstrip('\\')
+            if normalized not in candidate_paths:
+                candidate_paths.append(normalized)
+                logger.info("[spec_gate_grounded] v1.21 Extracted candidate path: %s", normalized)
+    
+    # -------------------------------------------------------------------------
+    # Step 1c: SECURITY GATE - Validate all candidate paths
+    # Only paths within SAFE_DEFAULT_SCAN_ROOTS are allowed
+    # -------------------------------------------------------------------------
+    if candidate_paths:
+        valid_roots, rejected_roots = validate_scan_roots(candidate_paths)
+        scan_roots = valid_roots
+        
+        if rejected_roots:
+            logger.warning(
+                "[spec_gate_grounded] v1.21 SECURITY: Rejected paths outside allowed workspace: %s",
+                rejected_roots
+            )
+    
+    # -------------------------------------------------------------------------
+    # Step 1d: Handle "full workspace" request or no valid paths
+    # ALWAYS use SAFE_DEFAULT_SCAN_ROOTS for full workspace scans
+    # -------------------------------------------------------------------------
+    if user_wants_full_workspace:
+        # User said "entire D drive" - give them the entire ALLOWED workspace
+        scan_roots = SAFE_DEFAULT_SCAN_ROOTS.copy()
+        logger.info(
+            "[spec_gate_grounded] v1.21 SECURITY: 'Full workspace' scan requested. "
+            "Using SAFE_DEFAULT_SCAN_ROOTS: %s (NOT bare drive root)",
+            scan_roots
+        )
+    elif not scan_roots:
+        # No valid paths extracted - use safe defaults
+        scan_roots = SAFE_DEFAULT_SCAN_ROOTS.copy()
+        logger.info(
+            "[spec_gate_grounded] v1.21 No valid scan roots extracted, using SAFE_DEFAULT_SCAN_ROOTS: %s",
+            scan_roots
+        )
+    
+    # -------------------------------------------------------------------------
+    # Step 1e: FINAL SECURITY CHECK - Ensure NO bare drive letters slipped through
+    # This is a belt-and-suspenders check
+    # -------------------------------------------------------------------------
+    final_roots = []
+    for root in scan_roots:
+        normalized = root.replace('/', '\\').rstrip('\\')
+        # Reject bare drive letters (D:, C:, D:\, C:\)
+        if len(normalized) <= 3:
+            logger.error(
+                "[spec_gate_grounded] v1.21 SECURITY VIOLATION: Bare drive letter '%s' rejected in final check!",
+                root
+            )
+            continue
+        final_roots.append(normalized)
+    
+    if not final_roots:
+        # Safety fallback - should never happen but just in case
+        final_roots = SAFE_DEFAULT_SCAN_ROOTS.copy()
+        logger.warning(
+            "[spec_gate_grounded] v1.21 SECURITY: Final check removed all roots, using safe defaults: %s",
+            final_roots
+        )
+    
+    scan_roots = final_roots
+    
+    logger.info(
+        "[spec_gate_grounded] v1.21 FINAL scan_roots (security validated): %s",
+        scan_roots
+    )
+    
+    # =========================================================================
+    # 2. SCAN TERMS EXTRACTION
+    # =========================================================================
+    
+    # Generic slash-groups to ignore (not search terms)
+    ignored_slash_groups = {
+        "file/folder", "folder/file", "files/folders", "folders/files",
+        "and/or", "yes/no", "true/false", "on/off",
+        "input/output", "read/write", "start/stop",
+    }
+    
+    # Pattern 1: Slash-separated variants ("Orb/ORB/orb")
+    # v1.19 FIX: Only accept slash-groups that look like case variants of the same word
+    slash_pattern = r'([\w]+(?:/[\w]+)+)'
+    slash_matches = re.findall(slash_pattern, text)
+    for match in slash_matches:
+        # Skip if it's a known generic pair
+        if match.lower() in ignored_slash_groups:
+            logger.info("[spec_gate_grounded] v1.19 Skipping ignored slash group: %s", match)
+            continue
+        
+        # Skip obvious path separators or long chains
+        if '\\' in match or len(match.split('/')) > 5:
+            continue
+        
+        terms = match.split('/')
+        
+        # v1.19 FIX: Check if this looks like case variants of the same base word
+        # (e.g., Orb/ORB/orb all have the same lowercase form)
+        lower_terms = [t.lower() for t in terms]
+        unique_lower = set(lower_terms)
+        
+        # If all terms reduce to the same lowercase word, these are case variants
+        is_case_variant_group = len(unique_lower) == 1 and len(terms) > 1
+        
+        if is_case_variant_group:
+            # These are case variants - add all of them
+            for term in terms:
+                term = term.strip()
+                if term and term not in scan_terms and len(term) >= 2:
+                    scan_terms.append(term)
+                    logger.info("[spec_gate_grounded] v1.19 Extracted case variant term: %s", term)
+        else:
+            # Not case variants - skip this group (likely generic words like file/folder)
+            logger.info("[spec_gate_grounded] v1.19 Skipping non-variant slash group: %s", match)
+    
+    # v1.20: Pattern 2a: COMMA-SEPARATED QUOTED STRINGS (Weaver format)
+    # Matches: "Orb", "ORB", or "orb" OR "Orb", "ORB", and "orb"
+    # This is the PRIMARY format Weaver uses!
+    comma_quoted_pattern = r'"([\w\-\.]+)"(?:\s*,\s*"([\w\-\.]+)")*(?:\s*(?:,|and|or)\s*"([\w\-\.]+)")?'
+    # Simpler approach: just find ALL quoted strings
+    all_quoted_matches = re.findall(r'"([\w\-\.]+)"', text)
+    for match in all_quoted_matches:
+        term = match.strip()
+        if term and term not in scan_terms and len(term) >= 2:
+            scan_terms.append(term)
+            logger.info("[spec_gate_grounded] v1.20 Extracted quoted term (Weaver format): %s", term)
+    
+    # Pattern 2b: Single-quoted strings ('orb', 'Orb')
+    single_quoted_matches = re.findall(r"'([\w\-\.]+)'", text)
+    for match in single_quoted_matches:
+        term = match.strip()
+        if term and term not in scan_terms and len(term) >= 2:
+            scan_terms.append(term)
+            logger.info("[spec_gate_grounded] v1.20 Extracted single-quoted term: %s", term)
+    
+    # Pattern 2c: Backtick-quoted strings (`orb`)
+    backtick_matches = re.findall(r'`([\w\-\.]+)`', text)
+    for match in backtick_matches:
+        term = match.strip()
+        if term and term not in scan_terms and len(term) >= 2:
+            scan_terms.append(term)
+            logger.info("[spec_gate_grounded] v1.20 Extracted backtick term: %s", term)
+    
+    # v1.20: Pattern 3: Descriptive patterns - EXPANDED to include "references of" and "containing"
+    # Stopwords to exclude from term extraction
+    term_stopwords = {
+        # Articles and pronouns
+        "the", "a", "an", "all", "any", "every", "each", "some", "this", "that",
+        # Prepositions
+        "in", "on", "at", "to", "of", "for", "from", "with", "by", "into",
+        # Generic filesystem terms
+        "files", "file", "folders", "folder", "directories", "directory",
+        "names", "name", "references", "reference", "mentions", "mention",
+        "paths", "path", "contents", "content", "code", "structure",
+        # Scan-related terms
+        "drive", "entire", "whole", "project", "codebase", "scan",
+        "find", "search", "report", "show", "list", "full",
+        "look", "inside", "why", "explain", "there",
+        # Conjunctions
+        "and", "or", "but", "also",
+    }
+    
+    descriptive_patterns = [
+        # High-confidence patterns (strong signal of search term)
+        r'references?\s+to\s+([\w\-\.]+)',        # "references to orb"
+        r'references?\s+of\s+([\w\-\.]+)',        # v1.20: "references of orb"
+        r'mentions?\s+of\s+([\w\-\.]+)',          # "mentions of orb"
+        r'occurrences?\s+of\s+([\w\-\.]+)',       # "occurrences of orb"
+        r'instances?\s+of\s+([\w\-\.]+)',         # "instances of orb"
+        r'containing\s+([\w\-\.]+)',              # v1.20: "containing Orb"
+        r'(?:named|called)\s+["\']?([\w\-\.]+)["\']?',  # "named orb" or "called 'orb'"
+        r'\bfor\s+([\w\-\.]+)\s+in\s+file',      # "for orb in file"
+        r'search(?:ing)?\s+for\s+([\w\-\.]+)',   # "searching for orb"
+        r'find(?:ing)?\s+([\w\-\.]+)\s+(?:in|on|anywhere)', # "find orb in"
+        r'looking\s+for\s+([\w\-\.]+)',          # "looking for orb"
+    ]
+    
+    for pattern in descriptive_patterns:
+        matches = re.findall(pattern, text_lower)
+        for match in matches:
+            term = match.strip()
+            if term and term not in term_stopwords and term not in [t.lower() for t in scan_terms] and len(term) >= 2:
+                # Use original case from text if possible
+                original_match = re.search(re.escape(term), text, re.IGNORECASE)
+                if original_match:
+                    term = original_match.group(0)
+                if term not in scan_terms:
+                    scan_terms.append(term)
+                    logger.info("[spec_gate_grounded] v1.20 Extracted descriptive term: %s", term)
+    
+    # v1.20: Pattern 4: Comma-separated without quotes ("Orb, ORB and orb")
+    # Look for patterns like "X, Y and Z" or "X, Y or Z" where X/Y/Z are case variants
+    comma_and_pattern = r'\b([A-Za-z]+)\s*,\s*([A-Za-z]+)\s+(?:and|or)\s+([A-Za-z]+)\b'
+    comma_and_matches = re.findall(comma_and_pattern, text)
+    for match_tuple in comma_and_matches:
+        terms_group = list(match_tuple)
+        # Check if these are case variants
+        lower_terms = [t.lower() for t in terms_group]
+        unique_lower = set(lower_terms)
+        if len(unique_lower) == 1 and len(terms_group) > 1:
+            # These are case variants - add all
+            for term in terms_group:
+                term = term.strip()
+                if term and term not in scan_terms and len(term) >= 2:
+                    scan_terms.append(term)
+                    logger.info("[spec_gate_grounded] v1.20 Extracted comma-and term: %s", term)
+    
+    # v1.20: DEBUG LOG - Show what terms were extracted
+    logger.info(
+        "[spec_gate_grounded] v1.20 After term extraction: scan_terms=%s",
+        scan_terms
+    )
+    
+    # =========================================================================
+    # 3. SCAN TARGETS EXTRACTION
+    # =========================================================================
+    
+    # Keywords indicating filename/folder name search
+    names_keywords = [
+        "file name", "filename", "folder name", "directory name",
+        "named", "called", "names", "in file/folder structure",
+        "file/folder", "in file and folder",
+    ]
+    
+    # Keywords indicating content search
+    contents_keywords = [
+        "inside code", "in code", "code reference", "within files",
+        "file content", "contents", "inside files", "in files",
+        "source code", "import", "references in code",
+        "within any code",  # v1.20: User's phrasing
+    ]
+    
+    has_names = any(kw in text_lower for kw in names_keywords)
+    has_contents = any(kw in text_lower for kw in contents_keywords)
+    
+    if has_names:
+        scan_targets.append("names")
+    if has_contents:
+        scan_targets.append("contents")
+    
+    # Default: If neither specified or text says "all references", search both
+    if not scan_targets or "all references" in text_lower or "references" in text_lower:
+        if "names" not in scan_targets:
+            scan_targets.append("names")
+        if "contents" not in scan_targets:
+            scan_targets.append("contents")
+    
+    logger.info("[spec_gate_grounded] v1.20 Scan targets: %s (names_kw=%s, contents_kw=%s)",
+                scan_targets, has_names, has_contents)
+    
+    # =========================================================================
+    # 4. CASE MODE EXTRACTION
+    # =========================================================================
+    
+    # Explicit case-insensitive request
+    if "case insensitive" in text_lower or "case-insensitive" in text_lower:
+        scan_case_mode = "case_insensitive"
+        logger.info("[spec_gate_grounded] v1.20 Case mode: case_insensitive (explicit)")
+    # Explicit case-sensitive request OR multiple case variants provided
+    elif "case sensitive" in text_lower or "case-sensitive" in text_lower:
+        scan_case_mode = "case_sensitive"
+        logger.info("[spec_gate_grounded] v1.20 Case mode: case_sensitive (explicit)")
+    elif len(scan_terms) > 1:
+        # Check if terms are case variants of each other (e.g., Orb/ORB/orb)
+        lower_terms = set(t.lower() for t in scan_terms)
+        if len(lower_terms) < len(scan_terms):
+            # Multiple case variants → user wants case-sensitive matching
+            scan_case_mode = "case_sensitive"
+            logger.info("[spec_gate_grounded] v1.20 Case mode: case_sensitive (variants detected: %s)", scan_terms)
+    
+    # =========================================================================
+    # 5. BUILD RESULT
+    # =========================================================================
+    
+    result = {
+        "scan_roots": scan_roots,
+        "scan_terms": scan_terms,
+        "scan_targets": scan_targets,
+        "scan_case_mode": scan_case_mode,
+        "scan_exclusions": scan_exclusions,
+    }
+    
+    logger.info(
+        "[spec_gate_grounded] v1.20 _extract_scan_params RESULT: roots=%s, terms=%s, targets=%s, case=%s",
+        scan_roots, scan_terms, scan_targets, scan_case_mode
+    )
+    
+    return result
+
+
+# =============================================================================
 # SANDBOX DISCOVERY HELPERS (v1.3)
 # =============================================================================
 
@@ -844,6 +1529,9 @@ def _extract_sandbox_hints(text: str) -> Tuple[Optional[str], Optional[str]]:
     v1.10: CRITICAL FIX - Distinguish between:
            - "Target platform: Desktop" (platform choice, NOT a file location)
            - "Desktop folder" / "file on the desktop" (actual file location)
+    v1.15: CRITICAL FIX (2026-01-25) - sandbox_file domain override
+           - If sandbox_file domain keywords detected, FORCE file context
+           - Prevents regression where Weaver summarizes away explicit file patterns
     
     Returns:
         (anchor, subfolder) or (None, None) if no sandbox hints found
@@ -855,11 +1543,25 @@ def _extract_sandbox_hints(text: str) -> Tuple[Optional[str], Optional[str]]:
         "text file in my test folder on the desktop" → ("desktop", "test")
         "Target platform: Desktop" → (None, None)  # v1.10: This is NOT a file location
         "Build me a game for desktop" → (None, None)  # v1.10: Platform choice
+        "Read the file, answer question, Target platform: Desktop" → ("desktop", None)  # v1.15: sandbox_file detected
     """
     if not text:
         return None, None
     
     text_lower = text.lower()
+    
+    # v1.15: FIRST - Check if sandbox_file domain keywords are present
+    # If so, we MUST try to extract anchor even if platform context is detected
+    # This prevents regression when Weaver summarizes away explicit file patterns
+    sandbox_file_keywords = DOMAIN_KEYWORDS.get("sandbox_file", [])
+    sandbox_keywords_found = [kw for kw in sandbox_file_keywords if kw in text_lower]
+    has_sandbox_file_signals = len(sandbox_keywords_found) > 0
+    
+    if has_sandbox_file_signals:
+        logger.info(
+            "[spec_gate_grounded] v1.15 _extract_sandbox_hints: sandbox_file keywords detected: %s",
+            sandbox_keywords_found[:5]
+        )
     
     # v1.10: CRITICAL - Check if this is a PLATFORM context, not a FILE context
     # These patterns indicate "desktop" is a platform choice, not a file location
@@ -880,6 +1582,7 @@ def _extract_sandbox_hints(text: str) -> Tuple[Optional[str], Optional[str]]:
     is_platform_context = any(re.search(p, text_lower) for p in platform_context_patterns)
     
     # v1.10: FILE context patterns - these clearly indicate file operations
+    # v1.14: Added more patterns to catch common phrasings
     file_context_patterns = [
         r"desktop\s+folder",
         r"folder\s+(?:on|in)\s+(?:the\s+)?desktop",
@@ -888,16 +1591,54 @@ def _extract_sandbox_hints(text: str) -> Tuple[Optional[str], Optional[str]]:
         r"sandbox\s+desktop",
         r"in\s+the\s+desktop",
         r"from\s+(?:the\s+)?desktop",
+        # v1.14: Added patterns for "on the desktop, there is a folder"
+        r"on\s+(?:the\s+)?desktop[,.]?\s+(?:there\s+)?(?:is|are)\s+(?:a\s+)?(?:folder|file)",
+        r"(?:there\s+)?(?:is|are)\s+(?:a\s+)?(?:folder|file)\s+(?:on|in)\s+(?:the\s+)?desktop",
+        r"desktop.*folder\s+(?:called|named)",
     ]
     
     is_file_context = any(re.search(p, text_lower) for p in file_context_patterns)
     
+    # v1.15: If sandbox_file keywords detected but is_file_context is False,
+    # check for basic file operation keywords + location mentions
+    # This catches cases where Weaver summarizes away the explicit patterns
+    if has_sandbox_file_signals and not is_file_context:
+        # Basic file operation indicators (broader than file_context_patterns)
+        basic_file_indicators = [
+            "folder", "file", "read", ".txt", ".md", ".py",
+            "answer the question", "answer question", "missing question",
+            "find the", "open the", "called", "named",
+        ]
+        has_basic_file_indicator = any(ind in text_lower for ind in basic_file_indicators)
+        
+        # Location mentions
+        has_desktop_mention = "desktop" in text_lower
+        has_documents_mention = "documents" in text_lower or "document" in text_lower
+        
+        if has_basic_file_indicator and (has_desktop_mention or has_documents_mention):
+            is_file_context = True
+            logger.info(
+                "[spec_gate_grounded] v1.15 OVERRIDE: sandbox_file keywords + basic indicators "
+                "-> forcing is_file_context=True (desktop=%s, documents=%s)",
+                has_desktop_mention, has_documents_mention
+            )
+    
     # v1.10: If platform context detected but NO file context, skip sandbox discovery
+    # v1.15: But only if sandbox_file keywords were NOT detected
     if is_platform_context and not is_file_context:
-        logger.info(
-            "[spec_gate_grounded] v1.10 _extract_sandbox_hints: 'desktop' is PLATFORM context, not file location"
-        )
-        return None, None
+        if not has_sandbox_file_signals:
+            logger.info(
+                "[spec_gate_grounded] v1.10 _extract_sandbox_hints: 'desktop' is PLATFORM context, not file location"
+            )
+            return None, None
+        else:
+            # v1.15: sandbox_file keywords detected but we couldn't find file context
+            # Force anchor extraction anyway - the user clearly wants a file operation
+            logger.warning(
+                "[spec_gate_grounded] v1.15 FORCING anchor extraction: sandbox_file keywords %s detected "
+                "but is_file_context=False and is_platform_context=True. Will try fallback.",
+                sandbox_keywords_found[:3]
+            )
     
     # v1.8: Comprehensive stopword list - these must NEVER be captured as subfolder names
     SUBFOLDER_STOPWORDS = {
@@ -911,17 +1652,51 @@ def _extract_sandbox_hints(text: str) -> Tuple[Optional[str], Optional[str]]:
         "ok", "okay", "yes", "no", "please", "thanks",
     }
     
-    # Detect anchor - but only if we're in file context
+    # Detect anchor - but only if we're in file context OR sandbox_file keywords detected
     anchor = None
-    if is_file_context or not is_platform_context:
-        # Only extract anchor if there's a clear file context indication
+    should_extract_anchor = is_file_context or has_sandbox_file_signals or not is_platform_context
+    
+    if should_extract_anchor:
+        # v1.14: Try strict file_context_patterns first (v1.10 behavior)
         if any(re.search(p, text_lower) for p in file_context_patterns):
             if "desktop" in text_lower:
                 anchor = "desktop"
             elif "documents" in text_lower or "document" in text_lower:
                 anchor = "documents"
+        
+        # v1.14/v1.15: FALLBACK - If strict patterns failed, try looser detection
+        # This catches prompts like "On the desktop, there is a folder called Test"
+        # where "desktop" is mentioned + file operation keywords exist
+        if not anchor:
+            file_operation_keywords = [
+                "folder", "file", "read", "find", "open", "document",
+                "called", "named", "test", ".txt", ".md", ".py",
+                "answer", "question",  # v1.15: Added for micro file tasks
+            ]
+            has_file_operation = any(kw in text_lower for kw in file_operation_keywords)
+            
+            if has_file_operation or has_sandbox_file_signals:
+                # Check for desktop/documents mention WITHOUT platform context being the blocker
+                if "desktop" in text_lower:
+                    anchor = "desktop"
+                    logger.info(
+                        "[spec_gate_grounded] v1.15 FALLBACK anchor extraction: 'desktop' + %s",
+                        "sandbox_file keywords" if has_sandbox_file_signals else "file operation keywords"
+                    )
+                elif "documents" in text_lower or "document" in text_lower:
+                    anchor = "documents"
+                    logger.info(
+                        "[spec_gate_grounded] v1.15 FALLBACK anchor extraction: 'documents' + %s",
+                        "sandbox_file keywords" if has_sandbox_file_signals else "file operation keywords"
+                    )
     
     if not anchor:
+        if has_sandbox_file_signals:
+            logger.warning(
+                "[spec_gate_grounded] v1.15 FAILED: sandbox_file keywords %s detected but no anchor found. "
+                "Text may be missing 'desktop' or 'documents' location.",
+                sandbox_keywords_found[:3]
+            )
         return None, None
     
     # v1.8: Strip meta-instructions before extracting subfolder
@@ -956,7 +1731,7 @@ def _extract_sandbox_hints(text: str) -> Tuple[Optional[str], Optional[str]]:
             if candidate not in SUBFOLDER_STOPWORDS and len(candidate) > 1:
                 subfolder = candidate
                 logger.info(
-                    "[spec_gate_grounded] v1.10 Extracted subfolder '%s' using pattern: %s",
+                    "[spec_gate_grounded] v1.15 Extracted subfolder '%s' using pattern: %s",
                     subfolder, pattern
                 )
                 break
@@ -969,7 +1744,7 @@ def _extract_sandbox_hints(text: str) -> Tuple[Optional[str], Optional[str]]:
             if candidate not in SUBFOLDER_STOPWORDS and len(candidate) > 1:
                 subfolder = candidate
                 logger.info(
-                    "[spec_gate_grounded] v1.10 Fallback extracted subfolder '%s'",
+                    "[spec_gate_grounded] v1.15 Fallback extracted subfolder '%s'",
                     subfolder
                 )
     
@@ -978,13 +1753,13 @@ def _extract_sandbox_hints(text: str) -> Tuple[Optional[str], Optional[str]]:
         subfolder = subfolder.strip()
         if not subfolder or subfolder in SUBFOLDER_STOPWORDS:
             logger.warning(
-                "[spec_gate_grounded] v1.10 Discarding invalid subfolder: '%s'",
+                "[spec_gate_grounded] v1.15 Discarding invalid subfolder: '%s'",
                 subfolder
             )
             subfolder = None
     
     logger.info(
-        "[spec_gate_grounded] v1.10 _extract_sandbox_hints result: anchor='%s', subfolder='%s'",
+        "[spec_gate_grounded] v1.15 _extract_sandbox_hints result: anchor='%s', subfolder='%s'",
         anchor, subfolder
     )
     
@@ -998,6 +1773,7 @@ def _extract_sandbox_hints(text: str) -> Tuple[Optional[str], Optional[str]]:
 def _detect_output_mode(text: str) -> OutputMode:
     """
     v1.13: Detect the intended output mode for MICRO_FILE_TASK jobs.
+    v1.16: SAFETY OVERRIDE - "do not change" signals ALWAYS force CHAT_ONLY.
     
     Examines user intent to determine where the reply should go:
     - CHAT_ONLY: User wants reply in chat, no file modification
@@ -1005,7 +1781,7 @@ def _detect_output_mode(text: str) -> OutputMode:
     - APPEND_IN_PLACE: User wants reply written into the same file (under the question)
     
     Priority order (first match wins):
-    1. CHAT_ONLY triggers (explicit "don't modify", "chat only")
+    1. CHAT_ONLY triggers (explicit "don't modify", "chat only") - ABSOLUTE OVERRIDE
     2. SEPARATE_REPLY_FILE triggers (explicit "save to reply.txt", "new file")
     3. APPEND_IN_PLACE triggers (write/append/under/beneath)
     4. Default: CHAT_ONLY (safest - no file modification)
@@ -1022,7 +1798,70 @@ def _detect_output_mode(text: str) -> OutputMode:
     text_lower = text.lower()
     
     # ==========================================================================
-    # Priority 1: CHAT_ONLY triggers (most restrictive - user explicitly wants no file change)
+    # v1.16 SAFETY OVERRIDE: "Do not change" signals MUST force CHAT_ONLY
+    # This check uses regex for flexible matching and runs FIRST
+    # ==========================================================================
+    
+    # v1.16: SIMPLE STRING PATTERNS - check these FIRST (most reliable)
+    # These are short core phrases that will match within longer sentences
+    simple_chat_only_phrases = [
+        "do not change",        # Matches "do not change anything that is in that file"
+        "don't change",         # Matches "don't change anything"
+        "do not modify",        # Matches "do not modify the file"
+        "don't modify",         # Matches "don't modify anything"
+        "do not alter",         # Matches "do not alter the file"
+        "don't alter",          # Matches "don't alter anything"
+        "do not touch",         # Matches "do not touch the file"
+        "don't touch",          # Matches "don't touch the file"
+        "leave it alone",       # Matches "leave it alone"
+        "leave the file",       # Matches "leave the file alone/unchanged"
+        "leave unchanged",      # Matches "leave unchanged"
+        "no file modif",        # Matches "no file modification(s)"
+        "no file change",       # Matches "no file change(s)"
+        "without modifying",    # Matches "without modifying"
+        "without changing",     # Matches "without changing"
+        "chat only",            # Matches "chat only"
+        "in chat only",         # Matches "in chat only"
+        "answer in chat",       # Matches "answer in chat"
+        "reply in chat",        # Matches "reply in chat"
+    ]
+    
+    for phrase in simple_chat_only_phrases:
+        if phrase in text_lower:
+            logger.info(
+                "[spec_gate_grounded] v1.16 _detect_output_mode: CHAT_ONLY (SAFETY phrase matched: '%s')",
+                phrase
+            )
+            return OutputMode.CHAT_ONLY
+    
+    # Regex patterns as backup for more complex patterns
+    # These are ABSOLUTE OVERRIDES - if ANY match, return CHAT_ONLY immediately
+    safety_override_patterns = [
+        r"do\s+not\s+change",                     # "do not change" with flexible spacing
+        r"don't\s+change",                        # "don't change" 
+        r"do\s+not\s+modify",                     # "do not modify"
+        r"don't\s+modify",                        # "don't modify"
+        r"do\s+not\s+alter",                      # "do not alter"
+        r"don't\s+alter",                         # "don't alter"
+        r"do\s+not\s+touch",                      # "do not touch"
+        r"don't\s+touch",                         # "don't touch"
+        r"do\s+not\s+write\s+to",                 # "do not write to"
+        r"don't\s+write\s+to",                    # "don't write to"
+        r"leave\s+the\s+file\s+alone",            # "leave the file alone"
+        r"leave\s+it\s+alone",                    # "leave it alone"
+        r"question\s+in\s+chat",                  # "answer the question in chat"
+    ]
+    
+    for pattern in safety_override_patterns:
+        if re.search(pattern, text_lower):
+            logger.info(
+                "[spec_gate_grounded] v1.16 _detect_output_mode: CHAT_ONLY (SAFETY OVERRIDE matched: %s)",
+                pattern
+            )
+            return OutputMode.CHAT_ONLY
+    
+    # ==========================================================================
+    # Priority 1: Additional CHAT_ONLY exact-match triggers (backup)
     # ==========================================================================
     chat_only_patterns = [
         "just answer here",
@@ -1035,6 +1874,9 @@ def _detect_output_mode(text: str) -> OutputMode:
         "do not change the file",
         "do not modify the file",
         "do not write",
+        "do not change anything",
+        "don't change anything",
+        "leave the file alone",
         "chat only",
         "reply in chat only",
         "answer in chat",
@@ -1049,7 +1891,57 @@ def _detect_output_mode(text: str) -> OutputMode:
         return OutputMode.CHAT_ONLY
     
     # ==========================================================================
-    # Priority 2: SEPARATE_REPLY_FILE triggers (explicit separate file request)
+    # Priority 2: REWRITE_IN_PLACE triggers (multi-question file edits - v1.14)
+    # v1.17: Expanded with "fill in" patterns for Q&A file tasks
+    # REWRITE_IN_PLACE = intelligent Q&A block-aware insertion (reads file, finds
+    # blank Answer: blocks, inserts answers, writes back entire file)
+    # ==========================================================================
+    rewrite_patterns = [
+        # Original v1.14 patterns
+        "answer every question",
+        "answer each question",
+        "answer all questions",
+        "answer all the questions",
+        "under each question",
+        "beneath each question",
+        "below each question",
+        "directly under each question",
+        "put answer under each",
+        "put the answer under each",
+        "write answer under each",
+        "write the answer under each",
+        "insert answer under each",
+        "multi-question",
+        "multiple questions",
+        # v1.17: New explicit "fill in" triggers for Q&A file tasks
+        # These should trigger REWRITE_IN_PLACE (intelligent block-aware insertion)
+        "fill in the missing",      # "fill in the missing answers"
+        "fill the missing",         # "fill the missing answers"
+        "fill in the answer",       # "fill in the answers"
+        "fill in answers",          # "fill in answers"
+        "fill missing answer",      # "fill missing answers"
+        "fill blank answer",        # "fill blank Answer blocks"
+        "fill blank",               # "fill blank Answer blocks"
+        "fill empty answer",        # "fill empty answers"
+        "fill empty",               # "fill empty answers"
+        "populate the answer",      # "populate the answers"
+        "populate answers",         # "populate answers"
+        "complete the answer",      # "complete the answers in the file"
+        "complete answers",         # "complete answers"
+        "under answer:",            # "write under Answer:"
+        "under the answer",         # "put it under the answer heading"
+        "into the file under",      # "fill ... into the file under Answer:"
+        "preserve everything else", # "preserve everything else" (implies careful insertion)
+    ]
+    
+    if any(pattern in text_lower for pattern in rewrite_patterns):
+        logger.info(
+            "[spec_gate_grounded] v1.17 _detect_output_mode: REWRITE_IN_PLACE (multi-question/fill-in trigger found)"
+        )
+        return OutputMode.REWRITE_IN_PLACE
+    
+    # ==========================================================================
+    # Priority 3: SEPARATE_REPLY_FILE triggers (explicit separate file request)
     # ==========================================================================
     separate_file_patterns = [
         "save to reply.txt",
@@ -1074,9 +1966,13 @@ def _detect_output_mode(text: str) -> OutputMode:
         return OutputMode.SEPARATE_REPLY_FILE
     
     # ==========================================================================
-    # Priority 3: APPEND_IN_PLACE triggers (write into the same file)
+    # Priority 4: APPEND_IN_PLACE triggers (simple append at end of file)
+    # v1.17: Note - "fill in" patterns moved to REWRITE_IN_PLACE (Priority 2)
+    # APPEND_IN_PLACE = simple append at end of file (Add-Content)
+    # Use case: Single answer, append to end, no Q&A block parsing
     # ==========================================================================
     append_patterns = [
+        # Simple append patterns (content goes at END of file)
         "write under",
         "write below",
         "write beneath",
@@ -1108,6 +2004,11 @@ def _detect_output_mode(text: str) -> OutputMode:
         "edit the file",
         "in-place",
         "in place",
+        # v1.17: Added write patterns for single-answer cases
+        "write the answer",         # "write the answer into the file" (single answer)
+        "insert the answer",        # "insert the answer"
+        "write answers",            # "write answers into the file" (single context)
+        "insert answers",           # "insert answers"
     ]
     
     if any(pattern in text_lower for pattern in append_patterns):
@@ -1117,7 +2018,7 @@ def _detect_output_mode(text: str) -> OutputMode:
         return OutputMode.APPEND_IN_PLACE
     
     # ==========================================================================
-    # Priority 4: Default - CHAT_ONLY (safest default, no file modification)
+    # Priority 5: Default - CHAT_ONLY (safest default, no file modification)
     # ==========================================================================
     logger.info(
         "[spec_gate_grounded] v1.13 _detect_output_mode: CHAT_ONLY (default - no triggers matched)"
@@ -1444,6 +2345,105 @@ EVIDENCE_CONFIG = {
 
 
 # =============================================================================
+# Q&A FILE ANALYSIS (v1.16 - Structured Question Detection)
+# =============================================================================
+
+def _analyze_qa_file(content: str) -> Dict[str, Any]:
+    """
+    v1.16: Analyze Q&A file structure to detect answered vs unanswered questions.
+    
+    Returns:
+        Dict with is_qa_file, questions list, answered_indices, unanswered_indices
+    """
+    if not content:
+        return {"is_qa_file": False, "questions": [], "answered_indices": [], "unanswered_indices": [], "total_questions": 0}
+    
+    # Check if this looks like a Q&A file
+    if not re.search(r'Question\s*\d+', content, re.IGNORECASE):
+        return {"is_qa_file": False, "questions": [], "answered_indices": [], "unanswered_indices": [], "total_questions": 0}
+    
+    questions = []
+    answered_indices = []
+    unanswered_indices = []
+    
+    # Split by "Question N:" pattern
+    parts = re.split(r'(Question\s*\d+\s*[:\-]?)', content, flags=re.IGNORECASE)
+    
+    current_q_num = None
+    current_q_content = ""
+    
+    for i, part in enumerate(parts):
+        q_match = re.match(r'Question\s*(\d+)', part, re.IGNORECASE)
+        if q_match:
+            # Process previous question if exists
+            if current_q_num is not None:
+                q_info = _process_question_block(current_q_num, current_q_content)
+                questions.append(q_info)
+                if q_info["has_answer"]:
+                    answered_indices.append(current_q_num)
+                else:
+                    unanswered_indices.append(current_q_num)
+            current_q_num = int(q_match.group(1))
+            current_q_content = ""
+        elif current_q_num is not None:
+            current_q_content += part
+    
+    # Process last question
+    if current_q_num is not None:
+        q_info = _process_question_block(current_q_num, current_q_content)
+        questions.append(q_info)
+        if q_info["has_answer"]:
+            answered_indices.append(current_q_num)
+        else:
+            unanswered_indices.append(current_q_num)
+    
+    result = {
+        "is_qa_file": len(questions) > 0,
+        "questions": questions,
+        "answered_indices": answered_indices,
+        "unanswered_indices": unanswered_indices,
+        "total_questions": len(questions),
+    }
+    
+    logger.info(
+        "[spec_gate_grounded] v1.16 _analyze_qa_file: is_qa=%s, total=%d, answered=%s, unanswered=%s",
+        result["is_qa_file"], result["total_questions"], answered_indices, unanswered_indices
+    )
+    
+    return result
+
+
+def _process_question_block(q_num: int, content: str) -> Dict[str, Any]:
+    """
+    v1.16: Process a single question block to extract text, code, and answer status.
+    """
+    content = content.strip()
+    
+    # Split on "Answer:" marker
+    answer_split = re.split(r'\n\s*Answer\s*[:\-]?\s*\n?', content, flags=re.IGNORECASE)
+    
+    question_part = answer_split[0].strip() if answer_split else content
+    answer_part = answer_split[1].strip() if len(answer_split) > 1 else ""
+    
+    # Answer exists if there's non-whitespace content after "Answer:"
+    has_answer = bool(answer_part and answer_part.strip())
+    
+    # Extract question text (first line) and code (rest)
+    lines = question_part.split('\n')
+    question_text = lines[0].strip() if lines else ""
+    code_part = '\n'.join(lines[1:]).strip() if len(lines) > 1 else ""
+    
+    return {
+        "number": q_num,
+        "text": question_text,
+        "code": code_part,
+        "has_answer": has_answer,
+        "answer": answer_part if has_answer else None,
+        "full_content": content,
+    }
+
+
+# =============================================================================
 # REPLY GENERATION (v1.8 - Read-Only, LLM-Powered)
 # =============================================================================
 
@@ -1455,6 +2455,7 @@ async def _generate_reply_from_content(
 ) -> str:
     """
     v1.8: Generate an intelligent reply based on the file content using LLM.
+    v1.16: Added Q&A file structure detection for targeted answers.
     
     This uses LLM intelligence to actually ANSWER questions in the file.
     The reply is included IN the SPoT output (SpecGate is read-only).
@@ -1473,11 +2474,238 @@ async def _generate_reply_from_content(
     
     content = content.strip()
     
+    # =========================================================================
+    # v1.16: FIRST - Detect Q&A structure before any other processing
+    # v1.22: DEBUG + HARD-FAIL - Differentiated failure reasons, no fake replies
+    # =========================================================================
+    qa_analysis = _analyze_qa_file(content)
+    
+    if qa_analysis["is_qa_file"]:
+        unanswered = qa_analysis["unanswered_indices"]
+        
+        logger.info(
+            "[spec_gate_grounded] v1.16 Q&A file detected: %d questions, answered=%s, unanswered=%s",
+            qa_analysis["total_questions"],
+            qa_analysis["answered_indices"],
+            unanswered
+        )
+        
+        if not unanswered:
+            return "(All questions in this file already have answers - no action needed)"
+        
+        # =====================================================================
+        # v1.22 DEBUG: Log LLM availability state BEFORE attempting call
+        # =====================================================================
+        logger.info(
+            "[spec_gate_grounded] v1.22 Q&A LLM PRE-CHECK: "
+            "_LLM_CALL_AVAILABLE=%s, llm_call_is_callable=%s, provider_id=%s, model_id=%s",
+            _LLM_CALL_AVAILABLE,
+            callable(llm_call) if llm_call else False,
+            provider_id,
+            model_id
+        )
+        
+        # =====================================================================
+        # v1.22 HARD-FAIL BRANCH 1: Import failed at module load
+        # =====================================================================
+        if not _LLM_CALL_AVAILABLE:
+            error_msg = (
+                f"[SPECGATE_LLM_IMPORT_FAILED] Cannot answer {len(unanswered)} question(s). "
+                f"llm_call import failed at module load. Check app.providers.registry import."
+            )
+            logger.error("[spec_gate_grounded] v1.22 HARD-FAIL: %s", error_msg)
+            raise RuntimeError(error_msg)
+        
+        # =====================================================================
+        # v1.22 HARD-FAIL BRANCH 2: llm_call is None (import succeeded but function is None)
+        # =====================================================================
+        if not llm_call or not callable(llm_call):
+            error_msg = (
+                f"[SPECGATE_LLM_FUNCTION_NULL] Cannot answer {len(unanswered)} question(s). "
+                f"_LLM_CALL_AVAILABLE=True but llm_call={llm_call}. Check registry.py exports."
+            )
+            logger.error("[spec_gate_grounded] v1.22 HARD-FAIL: %s", error_msg)
+            raise RuntimeError(error_msg)
+        
+        # Build targeted prompt for unanswered questions only
+        unanswered_questions = [q for q in qa_analysis["questions"] if q["number"] in unanswered]
+        
+        questions_context = ""
+        for q in unanswered_questions:
+            questions_context += f"\n\nQuestion {q['number']}: {q['text']}"
+            if q['code']:
+                questions_context += f"\nCode:\n```\n{q['code']}\n```"
+        
+        system_prompt = f"""You are answering questions in a structured Q&A file.
+
+CONTEXT:
+- Total questions in file: {qa_analysis["total_questions"]}
+- Already answered: {qa_analysis["answered_indices"]}
+- Needs your answer: {unanswered}
+
+CRITICAL RULES:
+1. ONLY answer Question(s) {unanswered}
+2. For code questions: EXPLAIN what the code does and WHY, not just the raw output
+3. Format your answer as: "Question N: <your explanation>"
+4. Be concise but complete (2-4 sentences per question)
+
+EXAMPLE OF GOOD VS BAD:
+- BAD: "0 1 2" (just the output)
+- GOOD: "The code prints 0, 1, and 2 on separate lines. The range(3) function generates the sequence [0, 1, 2], and the for loop iterates through each value, calling print(i) for each one."
+
+Remember: Explain the code behavior, don't just state the output."""
+
+        user_prompt = f"""Here are the unanswered question(s) from the file:
+{questions_context}
+
+Please provide clear explanations for each unanswered question."""
+
+        # =====================================================================
+        # v1.22 LLM CALL with differentiated failure handling
+        # v1.23 FIX: Dynamic max_tokens based on question count (500 was too low!)
+        # =====================================================================
+        
+        # Calculate appropriate max_tokens: ~100 tokens per question + buffer
+        question_count = len(unanswered)
+        calculated_max_tokens = max(500, question_count * 150 + 200)
+        # Cap at reasonable limit to avoid excessive costs
+        max_tokens_to_use = min(calculated_max_tokens, 4000)
+        
+        logger.info(
+            "[spec_gate_grounded] v1.23 Q&A LLM CALL STARTING: provider=%s, model=%s, questions=%d, max_tokens=%d",
+            provider_id, model_id, question_count, max_tokens_to_use
+        )
+        
+        try:
+            result = await llm_call(
+                provider_id=provider_id,
+                model_id=model_id,
+                messages=[{"role": "user", "content": user_prompt}],
+                system_prompt=system_prompt,
+                temperature=0.3,
+                max_tokens=max_tokens_to_use,  # v1.23: Dynamic based on question count
+                timeout_seconds=60,  # v1.23: Increased from 30s for more questions
+            )
+            
+            # v1.22 DEBUG: Log full result state
+            is_success_result = result.is_success() if hasattr(result, 'is_success') else 'N/A'
+            has_content = bool(result.content) if hasattr(result, 'content') else 'N/A'
+            status_val = getattr(result, 'status', 'N/A')
+            error_msg_val = getattr(result, 'error_message', 'N/A')
+            
+            logger.info(
+                "[spec_gate_grounded] v1.22 Q&A LLM RESULT: "
+                "is_success=%s, has_content=%s, status=%s (type=%s), error_message=%s",
+                is_success_result,
+                has_content,
+                status_val,
+                type(status_val).__name__,
+                error_msg_val
+            )
+            
+            # v1.22 DIAGNOSTIC: Check for enum vs string mismatch
+            if status_val is not None:
+                from app.providers.registry import LlmCallStatus as LCS
+                logger.info(
+                    "[spec_gate_grounded] v1.22 STATUS DIAGNOSTIC: "
+                    "status_val=%r, LCS.SUCCESS=%r, equal=%s, str_equal=%s",
+                    status_val,
+                    LCS.SUCCESS,
+                    status_val == LCS.SUCCESS,
+                    str(status_val) == str(LCS.SUCCESS)
+                )
+            
+            if result.is_success() and result.content:
+                reply = result.content.strip()
+                logger.info(
+                    "[spec_gate_grounded] v1.22 Q&A LLM SUCCESS: reply_len=%d, preview='%s'",
+                    len(reply), reply[:100] if reply else '(empty)'
+                )
+                return reply
+            
+            # =====================================================================
+            # v1.22 HARD-FAIL BRANCH 3a: SUCCESS status but empty content
+            # This is a distinct failure mode - the call "worked" but returned nothing
+            # =====================================================================
+            if result.is_success():
+                # Status is SUCCESS but content is empty/None
+                # v1.23: Log raw response for debugging
+                raw_resp = getattr(result, 'raw_response', None)
+                raw_preview = str(raw_resp)[:500] if raw_resp else 'None'
+                
+                error_msg = (
+                    f"[SPECGATE_LLM_EMPTY_RESPONSE] Cannot answer {len(unanswered)} question(s). "
+                    f"provider={provider_id}, model={model_id}, status=SUCCESS but content is empty/None. "
+                    f"max_tokens_used={max_tokens_to_use}. Check if model returned empty response."
+                )
+                logger.error("[spec_gate_grounded] v1.23 HARD-FAIL: %s", error_msg)
+                logger.error(
+                    "[spec_gate_grounded] v1.23 DEBUG result object: content=%r, type=%s, raw_preview=%s",
+                    result.content, type(result.content).__name__, raw_preview
+                )
+                raise RuntimeError(error_msg)
+            
+            # =====================================================================
+            # v1.22 HARD-FAIL BRANCH 3b: LLM call returned but failed (non-SUCCESS status)
+            # =====================================================================
+            status_str = str(getattr(result, 'status', 'UNKNOWN'))
+            error_str = getattr(result, 'error_message', None) or 'No error message'
+            
+            # Sanitize error message (remove any potential secrets)
+            sanitized_error = error_str[:200] if error_str else 'None'
+            if 'key' in sanitized_error.lower() or 'token' in sanitized_error.lower():
+                sanitized_error = '[REDACTED - may contain credentials]'
+            
+            error_msg = (
+                f"[SPECGATE_LLM_CALL_FAILED] Cannot answer {len(unanswered)} question(s). "
+                f"provider={provider_id}, model={model_id}, status={status_str}, error={sanitized_error}"
+            )
+            logger.error("[spec_gate_grounded] v1.22 HARD-FAIL: %s", error_msg)
+            raise RuntimeError(error_msg)
+            
+        except RuntimeError:
+            # Re-raise our own RuntimeErrors (hard-fails)
+            raise
+        except Exception as e:
+            # =====================================================================
+            # v1.22 HARD-FAIL BRANCH 4: LLM call raised exception
+            # =====================================================================
+            exc_type = type(e).__name__
+            exc_msg = str(e)[:200]
+            
+            # Sanitize exception message
+            if 'key' in exc_msg.lower() or 'token' in exc_msg.lower():
+                exc_msg = '[REDACTED - may contain credentials]'
+            
+            error_msg = (
+                f"[SPECGATE_LLM_EXCEPTION] Cannot answer {len(unanswered)} question(s). "
+                f"provider={provider_id}, model={model_id}, exception={exc_type}: {exc_msg}"
+            )
+            logger.error("[spec_gate_grounded] v1.22 HARD-FAIL: %s", error_msg)
+            raise RuntimeError(error_msg) from e
+    
+    # =========================================================================
+    # EXISTING CODE CONTINUES FROM HERE (for non-Q&A files)
+    # =========================================================================
+    
     # Check for simple instructions first (no LLM needed)
     simple_reply = _detect_simple_instruction(content)
     if simple_reply:
         logger.info("[spec_gate_grounded] v1.8 Simple instruction detected, returning: %s", simple_reply[:50])
         return simple_reply
+    
+    # =========================================================================
+    # v1.22 DEBUG: Log LLM availability for non-Q&A files
+    # Note: Non-Q&A files use fallback heuristics if LLM fails (not hard-fail)
+    # =========================================================================
+    logger.info(
+        "[spec_gate_grounded] v1.22 Non-Q&A LLM PRE-CHECK: "
+        "_LLM_CALL_AVAILABLE=%s, llm_call_is_callable=%s, provider_id=%s, model_id=%s",
+        _LLM_CALL_AVAILABLE,
+        callable(llm_call) if llm_call else False,
+        provider_id,
+        model_id
+    )
     
     # Use LLM for intelligent reply
     if _LLM_CALL_AVAILABLE and llm_call:
@@ -1499,8 +2727,8 @@ Do NOT include any preamble like "The answer is" - just give the answer directly
 Your response:"""
 
             logger.info(
-                "[spec_gate_grounded] v1.8 Making LLM call for intelligent reply (provider=%s, model=%s)",
-                provider_id, model_id
+                "[spec_gate_grounded] v1.22 Non-Q&A LLM CALL STARTING: provider=%s, model=%s, content_len=%d",
+                provider_id, model_id, len(content)
             )
             
             result = await llm_call(
@@ -1513,27 +2741,62 @@ Your response:"""
                 timeout_seconds=30,
             )
             
+            # v1.22 DEBUG: Log full result state
+            logger.info(
+                "[spec_gate_grounded] v1.22 Non-Q&A LLM RESULT: "
+                "is_success=%s, has_content=%s, status=%s, error_message=%s",
+                result.is_success() if hasattr(result, 'is_success') else 'N/A',
+                bool(result.content) if hasattr(result, 'content') else 'N/A',
+                getattr(result, 'status', 'N/A'),
+                getattr(result, 'error_message', 'N/A')
+            )
+            
             if result.is_success() and result.content:
                 reply = result.content.strip()
                 logger.info(
-                    "[spec_gate_grounded] v1.8 LLM reply generated successfully: %s",
-                    reply[:100] if reply else "(empty)"
+                    "[spec_gate_grounded] v1.22 Non-Q&A LLM SUCCESS: reply_len=%d, preview='%s'",
+                    len(reply), reply[:100] if reply else "(empty)"
                 )
                 return reply
             else:
+                # v1.22: Detailed failure logging (non-Q&A uses fallback, not hard-fail)
+                status_str = str(getattr(result, 'status', 'UNKNOWN'))
+                error_str = getattr(result, 'error_message', None) or 'No error message'
+                sanitized_error = error_str[:200] if error_str else 'None'
+                if 'key' in sanitized_error.lower() or 'token' in sanitized_error.lower():
+                    sanitized_error = '[REDACTED - may contain credentials]'
+                
                 logger.warning(
-                    "[spec_gate_grounded] v1.8 LLM call failed: status=%s, error=%s",
-                    result.status, result.error_message
+                    "[spec_gate_grounded] v1.22 Non-Q&A LLM FAILED (using fallback): "
+                    "provider=%s, model=%s, status=%s, error=%s",
+                    provider_id, model_id, status_str, sanitized_error
                 )
                 # Fall through to fallback
                 
         except Exception as e:
-            logger.warning("[spec_gate_grounded] v1.8 LLM reply generation exception: %s", e)
+            # v1.22: Detailed exception logging (non-Q&A uses fallback, not hard-fail)
+            exc_type = type(e).__name__
+            exc_msg = str(e)[:200]
+            if 'key' in exc_msg.lower() or 'token' in exc_msg.lower():
+                exc_msg = '[REDACTED - may contain credentials]'
+            
+            logger.warning(
+                "[spec_gate_grounded] v1.22 Non-Q&A LLM EXCEPTION (using fallback): "
+                "provider=%s, model=%s, exception=%s: %s",
+                provider_id, model_id, exc_type, exc_msg
+            )
             # Fall through to fallback
     else:
-        logger.warning("[spec_gate_grounded] v1.8 LLM call not available, using fallback")
+        # v1.22: Detailed logging for LLM unavailable
+        logger.warning(
+            "[spec_gate_grounded] v1.22 Non-Q&A LLM UNAVAILABLE (using fallback): "
+            "_LLM_CALL_AVAILABLE=%s, llm_call=%s",
+            _LLM_CALL_AVAILABLE, 'callable' if callable(llm_call) else llm_call
+        )
     
     # Fallback: use simple heuristics (v1.7 behavior)
+    # Note: Only non-Q&A files use this fallback. Q&A files with unanswered questions hard-fail.
+    logger.info("[spec_gate_grounded] v1.22 Using heuristic fallback for non-Q&A content")
     return _generate_reply_fallback(content, content_type)
 
 
@@ -1764,6 +3027,13 @@ class GroundedPOTSpec:
     evidence_complete: bool = True
     evidence_gaps: List[str] = field(default_factory=list)
     
+    # v1.19: SCAN_ONLY job parameters
+    scan_roots: List[str] = field(default_factory=list)       # Paths to scan, e.g. ["D:\\"]
+    scan_terms: List[str] = field(default_factory=list)       # Search terms, e.g. ["Orb", "ORB", "orb"]
+    scan_targets: List[str] = field(default_factory=list)     # What to search: ["names"], ["contents"], or both
+    scan_case_mode: Optional[str] = None                       # "case_sensitive" or "case_insensitive"
+    scan_exclusions: List[str] = field(default_factory=list)  # Patterns to skip, e.g. [".git", "node_modules"]
+    
     # Sandbox resolution (v1.3 - for sandbox file jobs)
     sandbox_input_path: Optional[str] = None       # Full path to input file in sandbox
     sandbox_output_path: Optional[str] = None      # Full path for output (same folder as input)
@@ -1818,6 +3088,27 @@ def build_pot_spec_markdown(spec: GroundedPOTSpec) -> str:
     lines.append("## Current Reality (Grounded Facts)")
     lines.append("")
     
+    # v1.19: SCAN_ONLY job parameters
+    if spec.scan_roots or spec.scan_terms:
+        lines.append("### 🔍 Scan Parameters (SCAN_ONLY Job)")
+        lines.append("")
+        if spec.scan_roots:
+            lines.append(f"- **Scan roots:** {', '.join(f'`{r}`' for r in spec.scan_roots)}")
+        if spec.scan_terms:
+            lines.append(f"- **Search terms:** {', '.join(f'`{t}`' for t in spec.scan_terms)}")
+        if spec.scan_targets:
+            lines.append(f"- **Search targets:** {', '.join(spec.scan_targets)}")
+        if spec.scan_case_mode:
+            lines.append(f"- **Case mode:** {spec.scan_case_mode}")
+        if spec.scan_exclusions:
+            exclusions_display = spec.scan_exclusions[:5]
+            if len(spec.scan_exclusions) > 5:
+                exclusions_display.append(f"... and {len(spec.scan_exclusions) - 5} more")
+            lines.append(f"- **Exclusions:** {', '.join(exclusions_display)}")
+        lines.append("")
+        lines.append("*Output: CHAT_ONLY (read-only scan, no file modification)*")
+        lines.append("")
+    
     # Sandbox Resolution (if sandbox job) - v1.3
     # v1.7: Updated wording - SpecGate is READ-ONLY
     # v1.13: Reduced clutter for micro tasks, added output_mode display
@@ -1825,9 +3116,14 @@ def build_pot_spec_markdown(spec: GroundedPOTSpec) -> str:
         lines.append("### Sandbox File Resolution")
         lines.append(f"- **Input file:** `{spec.sandbox_input_path}`")
         
-        # v1.13: Show output mode and target
+        # v1.13/v1.14: Show output mode and target
         output_mode = spec.sandbox_output_mode
-        if output_mode == "append_in_place":
+        if output_mode == "rewrite_in_place":
+            lines.append(f"- **Output mode:** REWRITE_IN_PLACE (multi-question insert)")
+            lines.append(f"- **Output target:** `{spec.sandbox_input_path}`")
+            if spec.sandbox_insertion_format:
+                lines.append(f"- **Insertion format:** `{repr(spec.sandbox_insertion_format)}`")
+        elif output_mode == "append_in_place":
             lines.append(f"- **Output mode:** APPEND_IN_PLACE (write into same file)")
             lines.append(f"- **Output target:** `{spec.sandbox_input_path}`")
             if spec.sandbox_insertion_format:
@@ -1842,14 +3138,16 @@ def build_pot_spec_markdown(spec: GroundedPOTSpec) -> str:
         if spec.sandbox_selected_type and spec.sandbox_selected_type.lower() != "unknown":
             lines.append(f"- **Content type:** {spec.sandbox_selected_type}")
         
-        # v1.13: Show input excerpt (useful context)
+        # v1.13/v1.16: Show input excerpt (useful context) - increased from 5 to 15 lines
         if spec.sandbox_input_excerpt:
-            excerpt_lines = spec.sandbox_input_excerpt.split('\n')[:5]
+            excerpt_lines = spec.sandbox_input_excerpt.split('\n')[:15]
             lines.append("")
             lines.append("**Input excerpt:**")
             lines.append("```")
             for el in excerpt_lines:
                 lines.append(el)
+            if len(spec.sandbox_input_excerpt.split('\n')) > 15:
+                lines.append("... (truncated)")
             lines.append("```")
         lines.append("")
         
@@ -1858,7 +3156,9 @@ def build_pot_spec_markdown(spec: GroundedPOTSpec) -> str:
             lines.append("### 📝 Reply (Read-Only)")
             lines.append("")
             lines.append("*This reply was generated by SpecGate based on the file content.*")
-            if output_mode == "append_in_place":
+            if output_mode == "rewrite_in_place":
+                lines.append("*Later stages will insert answers under each question in the input file.*")
+            elif output_mode == "append_in_place":
                 lines.append("*Later stages will append this reply to the input file.*")
             elif output_mode == "separate_reply_file":
                 lines.append("*Later stages will write this to reply.txt.*")
@@ -1905,9 +3205,11 @@ def build_pot_spec_markdown(spec: GroundedPOTSpec) -> str:
         for item in spec.in_scope:
             lines.append(f"- {item}")
     elif spec.sandbox_discovery_used and spec.sandbox_input_path:
-        # v1.13: Auto-derive scope for micro tasks based on output_mode
+        # v1.13/v1.14: Auto-derive scope for micro tasks based on output_mode
         output_mode = spec.sandbox_output_mode
-        if output_mode == "append_in_place":
+        if output_mode == "rewrite_in_place":
+            lines.append("- Read file → parse questions → generate answers → insert under each question")
+        elif output_mode == "append_in_place":
             lines.append("- Read file → generate reply → append in place")
         elif output_mode == "separate_reply_file":
             lines.append("- Read file → generate reply → write to reply.txt")
@@ -3121,8 +4423,15 @@ async def run_spec_gate_grounded(
             output_mode = _detect_output_mode(combined_text)
             spec.sandbox_output_mode = output_mode.value
             
-            # v1.13: Set output path based on detected output mode
-            if output_mode == OutputMode.APPEND_IN_PLACE:
+            # v1.13/v1.14: Set output path based on detected output mode
+            if output_mode == OutputMode.REWRITE_IN_PLACE:
+                output_path = selected["path"]  # Same as input file (multi-question rewrite)
+                spec.sandbox_insertion_format = "\n\nAnswer:\n{reply}\n"
+                logger.info(
+                    "[spec_gate_grounded] v1.14 REWRITE_IN_PLACE mode: output_path=%s (same as input, multi-question)",
+                    output_path
+                )
+            elif output_mode == OutputMode.APPEND_IN_PLACE:
                 output_path = selected["path"]  # Same as input file
                 spec.sandbox_insertion_format = "\n\nAnswer:\n{reply}\n"
                 logger.info(
@@ -3240,6 +4549,28 @@ async def run_spec_gate_grounded(
                     lock_msg += f" + {detected_stack.framework}"
                 lock_msg += f" (source: {detected_stack.source})"
                 spec.constraints_from_intent.append(lock_msg)
+        
+        # =========================================================================
+        # STEP 3.7: Extract SCAN_ONLY parameters (v1.20)
+        # =========================================================================
+        # v1.20 FIX: Extract scan params EARLY using detected_domains (computed at STEP 1.5)
+        # This ensures scan params are populated BEFORE grounding_data is built.
+        # The STEP 9b extraction is kept as a fallback but this is the primary path.
+        
+        if "scan_only" in detected_domains:
+            scan_params = _extract_scan_params(combined_text, intent)
+            if scan_params:
+                spec.scan_roots = scan_params.get("scan_roots", [])
+                spec.scan_terms = scan_params.get("scan_terms", [])
+                spec.scan_targets = scan_params.get("scan_targets", [])
+                spec.scan_case_mode = scan_params.get("scan_case_mode", "case_insensitive")
+                spec.scan_exclusions = scan_params.get("scan_exclusions", DEFAULT_SCAN_EXCLUSIONS)
+                logger.info(
+                    "[spec_gate_grounded] v1.20 STEP 3.7 SCAN_ONLY params extracted: roots=%s, terms=%s, targets=%s",
+                    spec.scan_roots, spec.scan_terms, spec.scan_targets
+                )
+            else:
+                logger.warning("[spec_gate_grounded] v1.20 STEP 3.7 SCAN_ONLY domain detected but no params extracted")
         
         # v1.6: If sandbox was detected but discovery failed, add warning
         if anchor and sandbox_discovery_status not in ("success", "not_attempted"):
@@ -3413,6 +4744,39 @@ async def run_spec_gate_grounded(
             job_kind, job_kind_confidence, job_kind_reason
         )
         
+        # =================================================================
+        # STEP 9b: Extract Scan Parameters (v1.19 - SCAN_ONLY jobs)
+        # =================================================================
+        
+        if job_kind == "scan_only":
+            scan_params = _extract_scan_params(combined_text, intent)
+            if scan_params:
+                spec.scan_roots = scan_params.get("scan_roots", [])
+                spec.scan_terms = scan_params.get("scan_terms", [])
+                spec.scan_targets = scan_params.get("scan_targets", [])
+                spec.scan_case_mode = scan_params.get("scan_case_mode", "case_insensitive")
+                spec.scan_exclusions = scan_params.get("scan_exclusions", [])
+                
+                logger.info(
+                    "[spec_gate_grounded] v1.19 SCAN_ONLY params extracted: roots=%s, terms=%s, targets=%s",
+                    spec.scan_roots, spec.scan_terms, spec.scan_targets
+                )
+                
+                # v1.19: Add scan-specific info to the spec for markdown output
+                spec.in_scope = [f"Scan {', '.join(spec.scan_roots)} for {', '.join(spec.scan_terms) if spec.scan_terms else 'specified patterns'}"]
+                spec.constraints_from_intent.append("Output mode: CHAT_ONLY (read-only scan, no file modification)")
+                spec.constraints_from_intent.append(f"Write policy: READ_ONLY (scan operation)")
+                
+                if spec.scan_terms:
+                    spec.what_exists.append(f"Search terms: {', '.join(spec.scan_terms)}")
+                if spec.scan_targets:
+                    spec.what_exists.append(f"Search targets: {', '.join(spec.scan_targets)}")
+            else:
+                logger.warning(
+                    "[spec_gate_grounded] v1.19 SCAN_ONLY job detected but no scan params extracted from: %s",
+                    combined_text[:200]
+                )
+        
         # v2.2: Build grounding_data for Critical Pipeline job classification
         # This is CRITICAL for micro vs architecture routing
         grounding_data = {
@@ -3432,6 +4796,15 @@ async def run_spec_gate_grounded(
             # v1.13: Output mode for MICRO_FILE_TASK jobs
             "sandbox_output_mode": spec.sandbox_output_mode,
             "sandbox_insertion_format": spec.sandbox_insertion_format,
+            # v1.19: SCAN_ONLY job parameters
+            "scan_roots": spec.scan_roots,
+            "scan_terms": spec.scan_terms,
+            "scan_targets": spec.scan_targets,
+            "scan_case_mode": spec.scan_case_mode,
+            "scan_exclusions": spec.scan_exclusions,
+            # v1.19: SCAN_ONLY output and write policy (always read-only for scan jobs)
+            "output_mode": "chat_only" if job_kind == "scan_only" else (spec.sandbox_output_mode or None),
+            "write_policy": "read_only" if job_kind == "scan_only" else None,
             # v1.11: Implementation stack for downstream enforcement
             "implementation_stack": spec.implementation_stack.dict() if spec.implementation_stack else None,
             # Grounding metadata
@@ -3512,4 +4885,12 @@ __all__ = [
     "classify_job_kind",
     # v1.13 additions
     "_detect_output_mode",
+    # v1.19 additions (SCAN_ONLY)
+    "_extract_scan_params",
+    "DEFAULT_SCAN_EXCLUSIONS",
+    "SAFE_DEFAULT_SCAN_ROOTS",
+    # v1.21 additions (SCAN_ONLY SECURITY)
+    "FORBIDDEN_SCAN_ROOTS",
+    "_is_path_within_allowed_roots",
+    "validate_scan_roots",
 ]

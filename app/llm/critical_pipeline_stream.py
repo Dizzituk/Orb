@@ -2,6 +2,36 @@
 """
 Critical Pipeline streaming handler for ASTRA command flow.
 
+v2.6 (2026-01-25): SCAN_ONLY SECURITY HARDENING (CRITICAL)
+- Added HARD SECURITY GATE to scan_quickcheck() - blocks bare drive letters
+- scan_roots MUST be within SAFE_DEFAULT_SCAN_ROOTS (D:\\Orb, D:\\orb-desktop)
+- Bare drive letters (D:\\, C:\\) are ALWAYS rejected as scan targets
+- This prevents scanning the host PC filesystem (ONLY sandbox allowed)
+- Added validate_scan_roots import from spec_gate_grounded
+- Added fallback validation function if import fails
+
+v2.5 (2026-01-25): SCAN_ONLY Job Type Support
+- Added JobKind.SCAN_ONLY for read-only filesystem scan/search/enumerate jobs
+- Added ScanQuickcheckResult and scan_quickcheck() for scan validation
+- Added _generate_scan_execution_plan() for scan job plans
+- Added SCAN_ONLY path to generate_critical_pipeline_stream()
+- SCAN_ONLY jobs: No sandbox_input_path/output_path required, CHAT_ONLY output
+- Falls back to keyword classification if SpecGate doesn't set job_kind
+
+v2.4 (2026-01-25): Mode-Aware Plan Generation - CRITICAL SAFETY FIX
+- _generate_micro_execution_plan() now respects sandbox_output_mode
+- CHAT_ONLY: NO "Write Output File" step, NO "Verify output file exists"
+- REWRITE_IN_PLACE / APPEND_IN_PLACE: Write to same file
+- SEPARATE_REPLY_FILE: Write to output path
+- Plans now clearly indicate output mode and whether files will be modified
+
+v2.3 (2026-01): Mode-Aware Quickcheck Validation
+- micro_quickcheck() now reads sandbox_output_mode from spec
+- CHAT_ONLY: Skips output path checks (MICRO-CHECK-002, 004, 006)
+- REWRITE_IN_PLACE: Requires output_path == input_path
+- APPEND_IN_PLACE: Requires output_path == input_path
+- SEPARATE_REPLY_FILE: Requires output_path exists
+
 v2.2 (2026-01): Quickcheck Validation for Micro Jobs
 - Added MicroQuickcheckResult and micro_quickcheck() for deterministic validation
 - Micro jobs now get fast tick-box checks before "Ready for Overwatcher"
@@ -95,6 +125,48 @@ except ImportError as e:
     EvidenceBundle = None
 
 # =============================================================================
+# v2.6: Scan Security Imports (HARD SECURITY GATE)
+# =============================================================================
+
+try:
+    from app.pot_spec.spec_gate_grounded import (
+        validate_scan_roots,
+        SAFE_DEFAULT_SCAN_ROOTS,
+    )
+    _SCAN_SECURITY_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"[critical_pipeline] Scan security functions not available: {e}")
+    _SCAN_SECURITY_AVAILABLE = False
+    # Fallback definitions for safety
+    SAFE_DEFAULT_SCAN_ROOTS = ["D:\\Orb", "D:\\orb-desktop"]
+    
+    def validate_scan_roots(scan_roots):
+        """Fallback validation - only allow SAFE_DEFAULT_SCAN_ROOTS."""
+        valid = []
+        rejected = []
+        for root in scan_roots:
+            normalized = root.replace('/', '\\').rstrip('\\')
+            # Reject bare drive letters
+            if len(normalized) <= 3:
+                rejected.append(root)
+                continue
+            # Check if within allowed roots
+            is_allowed = False
+            for allowed in SAFE_DEFAULT_SCAN_ROOTS:
+                allowed_norm = allowed.replace('/', '\\').rstrip('\\').lower()
+                root_norm = normalized.lower()
+                if root_norm == allowed_norm or root_norm.startswith(allowed_norm + '\\'):
+                    is_allowed = True
+                    break
+            if is_allowed:
+                valid.append(normalized)
+            else:
+                rejected.append(root)
+        if not valid:
+            valid = SAFE_DEFAULT_SCAN_ROOTS.copy()
+        return valid, rejected
+
+# =============================================================================
 # Memory Service Imports
 # =============================================================================
 
@@ -145,9 +217,13 @@ def _get_pipeline_model_config() -> dict:
 # =============================================================================
 
 class JobKind:
-    """Job classification for pipeline routing."""
+    """Job classification for pipeline routing.
+    
+    v2.5 (2026-01-25): Added SCAN_ONLY for read-only filesystem scan jobs.
+    """
     MICRO_EXECUTION = "micro_execution"  # Simple read/write/answer tasks
     ARCHITECTURE = "architecture"         # Design/build/refactor tasks
+    SCAN_ONLY = "scan_only"              # v2.5: Read-only scan/search/enumerate jobs
 
 
 def _classify_job_kind(spec_data: Dict[str, Any], message: str) -> str:
@@ -171,12 +247,15 @@ def _classify_job_kind(spec_data: Dict[str, Any], message: str) -> str:
     if spec_job_kind and spec_job_kind != "unknown":
         # SpecGate already classified this - OBEY IT
         logger.info(
-            "[critical_pipeline] v2.3 USING SPEC JOB_KIND: %s (confidence=%.2f, reason='%s')",
+            "[critical_pipeline] v2.5 USING SPEC JOB_KIND: %s (confidence=%.2f, reason='%s')",
             spec_job_kind, spec_job_kind_confidence, spec_job_kind_reason
         )
         
         if spec_job_kind == "micro_execution":
             return JobKind.MICRO_EXECUTION
+        elif spec_job_kind == "scan_only":
+            # v2.5: SCAN_ONLY jobs are read-only scan/search/enumerate operations
+            return JobKind.SCAN_ONLY
         elif spec_job_kind == "repo_change":
             # repo_change is faster than architecture but not as fast as micro
             # For now, treat as architecture (needs some design work)
@@ -186,7 +265,7 @@ def _classify_job_kind(spec_data: Dict[str, Any], message: str) -> str:
         else:
             # Unknown or unexpected value - escalate to architecture
             logger.warning(
-                "[critical_pipeline] v2.3 Unknown job_kind '%s' - escalating to architecture",
+                "[critical_pipeline] v2.5 Unknown job_kind '%s' - escalating to architecture",
                 spec_job_kind
             )
             return JobKind.ARCHITECTURE
@@ -285,9 +364,23 @@ def _classify_job_kind(spec_data: Dict[str, Any], message: str) -> str:
         "specgate", "spec gate", "overwatcher",  # Orb system design
     ]
     
+    # v2.5: SCAN_ONLY indicators (read-only scan/search/enumerate)
+    scan_indicators = [
+        "scan the", "scan all", "scan for", "scan folder", "scan folders",
+        "scan drive", "scan d:", "scan c:", "scan directory",
+        "find all occurrences", "find all references", "find all files",
+        "find all folders", "search for", "search the",
+        "search entire", "search across", "search all",
+        "list all", "list references", "list files",
+        "enumerate", "report full paths", "report all",
+        "where is", "locate all", "show me all",
+        "references to", "mentions of", "occurrences of",
+    ]
+    
     # Count matches
     micro_score = sum(1 for ind in micro_indicators if ind in all_text)
     arch_score = sum(1 for ind in arch_indicators if ind in all_text)
+    scan_score = sum(1 for ind in scan_indicators if ind in all_text)
     
     # Boost micro score if we have resolved file paths
     if has_sandbox_input and has_sandbox_output:
@@ -305,12 +398,28 @@ def _classify_job_kind(spec_data: Dict[str, Any], message: str) -> str:
         elif len(steps) > 10:
             arch_score += 2
     
+    # v2.5: Check for scan_roots in spec (from SpecGate scan discovery)
+    has_scan_roots = bool(spec_data.get("scan_roots"))
+    has_scan_terms = bool(spec_data.get("scan_terms"))
+    
+    # Boost scan score if SpecGate resolved scan parameters
+    if has_scan_roots:
+        scan_score += 5
+    if has_scan_terms:
+        scan_score += 3
+    
     # Log classification
     logger.info(
-        "[critical_pipeline] v2.3 FALLBACK classification: micro_score=%d, arch_score=%d, "
-        "sandbox_discovery=%s, has_paths=%s/%s",
-        micro_score, arch_score, sandbox_discovery_used, has_sandbox_input, has_sandbox_output
+        "[critical_pipeline] v2.5 FALLBACK classification: micro_score=%d, arch_score=%d, scan_score=%d, "
+        "sandbox_discovery=%s, has_paths=%s/%s, has_scan_roots=%s",
+        micro_score, arch_score, scan_score, sandbox_discovery_used, 
+        has_sandbox_input, has_sandbox_output, has_scan_roots
     )
+    
+    # v2.5: Check for SCAN_ONLY first (highest priority for scan jobs)
+    if scan_score > micro_score and scan_score > arch_score:
+        logger.info("[critical_pipeline] v2.5 FALLBACK SCAN_ONLY: scan_score=%d wins", scan_score)
+        return JobKind.SCAN_ONLY
     
     # Decision: prefer MICRO if scores are close and paths are resolved
     if micro_score > arch_score:
@@ -346,17 +455,28 @@ def micro_quickcheck(spec_data: Dict[str, Any], plan_text: str) -> MicroQuickche
     Fast deterministic validation for micro-execution jobs.
     NO LLM calls - pure tick-box checks.
     
-    v2.2 Checks:
+    v2.3 Checks (mode-aware):
     1. sandbox_input_path exists in spec
-    2. sandbox_output_path is resolved
-    3. Plan paths match spec paths
+    2. sandbox_output_path validation (mode-dependent):
+       - CHAT_ONLY: skip (no output file required)
+       - REWRITE_IN_PLACE: require output_path == input_path
+       - APPEND_IN_PLACE: require output_path == input_path
+       - SEPARATE_REPLY_FILE: require output_path exists
+    3. Plan paths match spec paths (skip output check for CHAT_ONLY)
     4. Plan has only safe operations (no destructive commands)
-    5. If plan says "write output" but no generated_reply exists → fail
+    5. If plan says "write output" but no generated_reply exists → fail (skip for CHAT_ONLY)
     
     Returns:
         MicroQuickcheckResult with pass/fail and any issues found
     """
     issues: List[Dict[str, str]] = []
+    
+    # =========================================================================
+    # v2.3: Extract output_mode for mode-aware validation
+    # =========================================================================
+    
+    output_mode = (spec_data.get("sandbox_output_mode") or "").lower()
+    logger.info("[micro_quickcheck] v2.3 output_mode=%s", output_mode)
     
     # =========================================================================
     # Check 1: Input path resolved
@@ -376,7 +496,7 @@ def micro_quickcheck(spec_data: Dict[str, Any], plan_text: str) -> MicroQuickche
         })
     
     # =========================================================================
-    # Check 2: Output path resolved
+    # Check 2: Output path resolved (v2.3: mode-aware)
     # =========================================================================
     
     output_path = (
@@ -386,12 +506,51 @@ def micro_quickcheck(spec_data: Dict[str, Any], plan_text: str) -> MicroQuickche
         ""
     )
     
-    if not output_path:
-        issues.append({
-            "id": "MICRO-CHECK-002",
-            "description": "sandbox_output_path not resolved in spec - cannot verify output destination",
-            "severity": "blocking",
-        })
+    # v2.3: Mode-aware output path validation
+    if output_mode == "chat_only":
+        # CHAT_ONLY: No output file required - skip this check
+        logger.info("[micro_quickcheck] CHAT_ONLY mode - skipping output path check")
+    elif output_mode == "rewrite_in_place":
+        if not output_path:
+            issues.append({
+                "id": "MICRO-CHECK-002",
+                "description": "REWRITE_IN_PLACE requires sandbox_output_path",
+                "severity": "blocking",
+            })
+        elif output_path != input_path:
+            issues.append({
+                "id": "MICRO-CHECK-002",
+                "description": f"REWRITE_IN_PLACE requires output_path == input_path (got '{output_path}' vs '{input_path}')",
+                "severity": "blocking",
+            })
+    elif output_mode == "append_in_place":
+        if not output_path:
+            issues.append({
+                "id": "MICRO-CHECK-002",
+                "description": "APPEND_IN_PLACE requires sandbox_output_path",
+                "severity": "blocking",
+            })
+        elif output_path != input_path:
+            issues.append({
+                "id": "MICRO-CHECK-002",
+                "description": f"APPEND_IN_PLACE requires output_path == input_path (got '{output_path}' vs '{input_path}')",
+                "severity": "blocking",
+            })
+    elif output_mode == "separate_reply_file":
+        if not output_path:
+            issues.append({
+                "id": "MICRO-CHECK-002",
+                "description": "SEPARATE_REPLY_FILE requires sandbox_output_path",
+                "severity": "blocking",
+            })
+    else:
+        # Unknown or empty mode - use original behavior (require output_path)
+        if not output_path:
+            issues.append({
+                "id": "MICRO-CHECK-002",
+                "description": "sandbox_output_path not resolved in spec - cannot verify output destination",
+                "severity": "blocking",
+            })
     
     # =========================================================================
     # Check 3: Plan references correct paths
@@ -409,7 +568,8 @@ def micro_quickcheck(spec_data: Dict[str, Any], plan_text: str) -> MicroQuickche
                 "severity": "blocking",
             })
     
-    if output_path and output_path not in plan_text:
+    # v2.3: Skip output path check for CHAT_ONLY mode
+    if output_mode != "chat_only" and output_path and output_path not in plan_text:
         # Check for path variations
         output_normalized = output_path.replace("\\", "/").lower()
         plan_normalized = plan_text.replace("\\", "/").lower()
@@ -445,17 +605,18 @@ def micro_quickcheck(spec_data: Dict[str, Any], plan_text: str) -> MicroQuickche
             })
     
     # =========================================================================
-    # Check 5: Reply existence (v2.2 addition per feedback)
+    # Check 5: Reply existence (v2.3: skip for CHAT_ONLY)
     # If plan says "write output" but spec has no generated_reply → problem
     # =========================================================================
     
     reply_content = spec_data.get("sandbox_generated_reply", "")
     
     # Check if plan includes write step but no reply exists
+    # v2.3: Skip for CHAT_ONLY mode (no output file expected)
     write_keywords = ["write output", "write reply", "write file", "create output", "save reply"]
     plan_has_write = any(kw in plan_lower for kw in write_keywords)
     
-    if plan_has_write and not reply_content:
+    if output_mode != "chat_only" and plan_has_write and not reply_content:
         issues.append({
             "id": "MICRO-CHECK-006",
             "description": "Plan includes write step but spec has no sandbox_generated_reply - nothing to write",
@@ -487,11 +648,21 @@ def _generate_micro_execution_plan(spec_data: Dict[str, Any], job_id: str) -> st
     """
     Generate a minimal execution plan for MICRO jobs.
     
+    v2.4 (2026-01-25): MODE-AWARE PLAN GENERATION
+    - CHAT_ONLY: NO write steps, NO output verification
+    - REWRITE_IN_PLACE / APPEND_IN_PLACE: Write to same file
+    - SEPARATE_REPLY_FILE: Write to output path
+    
     No architecture design needed - just a simple step-by-step plan
     that Overwatcher can execute directly.
     
     Uses the sandbox fields populated by SpecGate.
     """
+    # v2.4: Get output mode FIRST - this determines plan structure
+    output_mode = (spec_data.get("sandbox_output_mode") or "").strip().lower()
+    
+    logger.info(f"[_generate_micro_execution_plan] v2.4 output_mode={repr(output_mode)}")
+    
     # Get paths from SpecGate's sandbox resolution
     input_path = (
         spec_data.get("sandbox_input_path") or
@@ -518,11 +689,166 @@ def _generate_micro_execution_plan(spec_data: Dict[str, Any], job_id: str) -> st
     if content_type and content_type.lower() != "unknown":
         content_type_line = f"- **Content Type:** {content_type}\n"
     
-    # Build the plan
-    plan = f"""# Micro-Execution Plan
+    # =========================================================================
+    # v2.4: MODE-AWARE PLAN GENERATION
+    # =========================================================================
+    
+    if output_mode == "chat_only":
+        # =====================================================================
+        # CHAT_ONLY: NO file writes, response returned in chat only
+        # =====================================================================
+        plan = f"""# Micro-Execution Plan
 
 **Job ID:** {job_id}
 **Type:** MICRO_EXECUTION (no architecture required)
+**Output Mode:** CHAT_ONLY ⚠️ NO FILE WRITES
+
+## Task Summary
+{summary}
+
+## Resolved Paths (by SpecGate)
+- **Input:** `{input_path}`
+- **Output:** (none - CHAT_ONLY mode)
+{content_type_line}
+
+## Execution Steps
+
+1. **Read Input File**
+   - Path: `{input_path}`
+   - Action: Read file contents
+
+2. **Generate Response**
+   - Parse the content
+   - Generate response based on file content
+
+3. **Return Response in Chat**
+   - ⚠️ **NO FILE WRITE** - Response is returned in chat only
+   - The input file will NOT be modified
+   - No output file will be created
+
+## Verification
+- ✅ Input file was read
+- ✅ Response was generated
+- ⚠️ **NO OUTPUT FILE** (CHAT_ONLY mode - this is intentional)
+"""
+        
+        # Add input preview if available
+        if input_excerpt:
+            plan += f"""
+## Input Preview
+```
+{input_excerpt[:500] if input_excerpt else '(content will be read at execution time)'}
+```
+"""
+        
+        # Add generated reply
+        if reply_content:
+            plan += f"""
+## Generated Reply (from SpecGate) - WILL BE RETURNED IN CHAT
+```
+{reply_content}
+```
+
+**Note:** This reply will be displayed in chat. NO file will be modified.
+"""
+        
+        plan += """
+## Notes
+- ⚠️ **CHAT_ONLY MODE ACTIVE**
+- The user explicitly requested NO file modifications
+- Response will be returned in chat only
+- Input file remains unchanged
+- No output file will be created
+
+---
+✅ **Ready for Overwatcher** - CHAT_ONLY mode: Response will be returned in chat, NO file will be modified.
+"""
+    
+    elif output_mode in ("rewrite_in_place", "append_in_place"):
+        # =====================================================================
+        # REWRITE/APPEND: Write to same file as input
+        # =====================================================================
+        mode_desc = "rewrite content" if output_mode == "rewrite_in_place" else "append to file"
+        
+        plan = f"""# Micro-Execution Plan
+
+**Job ID:** {job_id}
+**Type:** MICRO_EXECUTION (no architecture required)
+**Output Mode:** {output_mode.upper()}
+
+## Task Summary
+{summary}
+
+## Resolved Paths (by SpecGate)
+- **Input:** `{input_path}`
+- **Output:** `{input_path}` (same file - {output_mode})
+{content_type_line}
+
+## Execution Steps
+
+1. **Read Input File**
+   - Path: `{input_path}`
+   - Action: Read file contents
+
+2. **Process Content**
+   - Parse the content
+   - Generate response based on file content
+
+3. **Write to Same File ({output_mode.upper()})**
+   - Path: `{input_path}`
+   - Mode: {output_mode}
+   - Action: {mode_desc}
+
+4. **Verify**
+   - Confirm file was updated
+   - Validate content is correct
+"""
+        
+        # Add input preview if available
+        if input_excerpt:
+            plan += f"""
+## Input Preview
+```
+{input_excerpt[:500] if input_excerpt else '(content will be read at execution time)'}
+```
+"""
+        
+        # Add expected output if SpecGate already generated the reply
+        if reply_content:
+            plan += f"""
+## Generated Reply (from SpecGate)
+```
+{reply_content}
+```
+
+**Note:** SpecGate has already generated this reply. Overwatcher will {mode_desc}.
+"""
+        else:
+            plan += """
+## Expected Output
+(to be generated by Overwatcher based on input content)
+"""
+        
+        plan += f"""
+## Notes
+- This is a simple file operation task
+- Mode: {output_mode.upper()} - writing to same file
+- All paths are pre-resolved by SpecGate
+- Overwatcher can execute directly
+
+---
+✅ **Ready for Overwatcher** - Say 'Astra, command: send to overwatcher' to execute.
+"""
+    
+    else:
+        # =====================================================================
+        # SEPARATE_REPLY_FILE or default: Write to output path
+        # =====================================================================
+        plan = f"""# Micro-Execution Plan
+
+**Job ID:** {job_id}
+**Type:** MICRO_EXECUTION (no architecture required)
+**Output Mode:** {output_mode.upper() if output_mode else 'SEPARATE_REPLY_FILE'}
 
 ## Task Summary
 {summary}
@@ -550,19 +876,19 @@ def _generate_micro_execution_plan(spec_data: Dict[str, Any], job_id: str) -> st
    - Confirm output file exists
    - Validate content is correct
 """
-    
-    # Add input preview if available
-    if input_excerpt:
-        plan += f"""
+        
+        # Add input preview if available
+        if input_excerpt:
+            plan += f"""
 ## Input Preview
 ```
 {input_excerpt[:500] if input_excerpt else '(content will be read at execution time)'}
 ```
 """
-    
-    # Add expected output if SpecGate already generated the reply
-    if reply_content:
-        plan += f"""
+        
+        # Add expected output if SpecGate already generated the reply
+        if reply_content:
+            plan += f"""
 ## Generated Reply (from SpecGate)
 ```
 {reply_content}
@@ -570,13 +896,13 @@ def _generate_micro_execution_plan(spec_data: Dict[str, Any], job_id: str) -> st
 
 **Note:** SpecGate has already generated this reply. Overwatcher just needs to write it.
 """
-    else:
-        plan += """
+        else:
+            plan += """
 ## Expected Output
 (to be generated by Overwatcher based on input content)
 """
-    
-    plan += """
+        
+        plan += """
 ## Notes
 - This is a simple file operation task
 - No architectural changes required
@@ -585,6 +911,320 @@ def _generate_micro_execution_plan(spec_data: Dict[str, Any], job_id: str) -> st
 
 ---
 ✅ **Ready for Overwatcher** - Say 'Astra, command: send to overwatcher' to execute.
+"""
+    
+    return plan
+
+
+# =============================================================================
+# v2.5: SCAN_ONLY Quickcheck and Plan Generation
+# =============================================================================
+
+@dataclass
+class ScanQuickcheckResult:
+    """Result of scan-only quickcheck validation.
+    
+    v2.5: This is a fast, deterministic validation for SCAN_ONLY jobs.
+    NO LLM calls - pure tick-box checks to verify scan spec is valid.
+    """
+    passed: bool
+    issues: List[Dict[str, str]] = field(default_factory=list)
+    summary: str = ""
+
+
+def scan_quickcheck(spec_data: Dict[str, Any], plan_text: str) -> ScanQuickcheckResult:
+    """
+    Fast deterministic validation for SCAN_ONLY jobs.
+    NO LLM calls - pure tick-box checks.
+    
+    v2.6 HARD SECURITY GATE:
+    0. scan_roots MUST be within SAFE_DEFAULT_SCAN_ROOTS (D:\\Orb, D:\\orb-desktop)
+       Bare drive letters (D:\\, C:\\) are ALWAYS rejected
+       This is a non-negotiable security requirement
+    
+    v2.5 Checks:
+    1. scan_roots exists and is non-empty
+    2. scan_terms exists OR scan_targets exists (at least one search criterion)
+    3. output_mode is CHAT_ONLY (scan results are reported, not written)
+    4. No write operations in plan
+    5. write_policy is READ_ONLY (if present)
+    
+    Returns:
+        ScanQuickcheckResult with pass/fail and any issues found
+    """
+    issues: List[Dict[str, str]] = []
+    
+    # =========================================================================
+    # v2.6 HARD SECURITY GATE - scan_roots MUST be within allowed paths
+    # This check runs FIRST and is NON-NEGOTIABLE
+    # =========================================================================
+    
+    scan_roots = spec_data.get("scan_roots", [])
+    
+    if scan_roots:
+        # Validate all scan roots against allowlist
+        valid_roots, rejected_roots = validate_scan_roots(scan_roots)
+        
+        if rejected_roots:
+            # BLOCKING: We rejected some paths
+            logger.error(
+                "[scan_quickcheck] v2.6 SECURITY GATE: Rejected %d scan root(s): %s",
+                len(rejected_roots), rejected_roots
+            )
+            issues.append({
+                "id": "SCAN-SECURITY-001",
+                "description": (
+                    f"SECURITY VIOLATION: The following scan roots are NOT allowed: {rejected_roots}. "
+                    f"Scans can ONLY target the sandbox workspace: {SAFE_DEFAULT_SCAN_ROOTS}"
+                ),
+                "severity": "blocking",
+            })
+        
+        # Check for bare drive letters specifically (belt and suspenders)
+        for root in scan_roots:
+            normalized = root.replace('/', '\\').rstrip('\\')
+            if len(normalized) <= 3:  # "D:", "D:\\", "C:"
+                logger.error(
+                    "[scan_quickcheck] v2.6 SECURITY GATE: Bare drive letter '%s' BLOCKED",
+                    root
+                )
+                if not any(issue["id"] == "SCAN-SECURITY-002" for issue in issues):
+                    issues.append({
+                        "id": "SCAN-SECURITY-002",
+                        "description": (
+                            f"SECURITY VIOLATION: Bare drive letter '{root}' is NOT allowed. "
+                            f"This would scan the host PC filesystem. "
+                            f"Use specific paths within {SAFE_DEFAULT_SCAN_ROOTS} instead."
+                        ),
+                        "severity": "blocking",
+                    })
+        
+        logger.info(
+            "[scan_quickcheck] v2.6 SECURITY GATE: valid_roots=%s, rejected=%s",
+            valid_roots, rejected_roots
+        )
+    
+    # =========================================================================
+    # Check 1: scan_roots exists and is non-empty
+    # =========================================================================
+    if not scan_roots:
+        issues.append({
+            "id": "SCAN-CHECK-001",
+            "description": "scan_roots not specified in spec - no scan target defined",
+            "severity": "blocking",
+        })
+    
+    # =========================================================================
+    # Check 2: scan_terms or scan_targets exists
+    # =========================================================================
+    
+    scan_terms = spec_data.get("scan_terms", [])
+    scan_targets = spec_data.get("scan_targets", [])
+    
+    if not scan_terms and not scan_targets:
+        issues.append({
+            "id": "SCAN-CHECK-002",
+            "description": "No scan_terms or scan_targets specified - what are we scanning for?",
+            "severity": "blocking",
+        })
+    
+    # =========================================================================
+    # Check 3: output_mode should be CHAT_ONLY for scan jobs
+    # =========================================================================
+    
+    output_mode = (spec_data.get("sandbox_output_mode") or 
+                   spec_data.get("output_mode") or "").lower()
+    
+    if output_mode and output_mode != "chat_only":
+        issues.append({
+            "id": "SCAN-CHECK-003",
+            "description": f"SCAN_ONLY jobs should use CHAT_ONLY output mode (found: {output_mode})",
+            "severity": "warning",
+        })
+    
+    # =========================================================================
+    # Check 4: No write operations in plan
+    # =========================================================================
+    
+    plan_lower = plan_text.lower()
+    write_patterns = [
+        "write file", "create file", "save to", "output to",
+        "modify file", "edit file", "update file",
+        "sandbox_output_path", "sandbox_generated_reply",
+    ]
+    
+    for pattern in write_patterns:
+        if pattern in plan_lower:
+            issues.append({
+                "id": "SCAN-CHECK-004",
+                "description": f"SCAN_ONLY plan should not contain write operations (found: '{pattern}')",
+                "severity": "warning",
+            })
+            break
+    
+    # =========================================================================
+    # Check 5: write_policy should be READ_ONLY if present
+    # =========================================================================
+    
+    write_policy = (spec_data.get("write_policy") or "").lower()
+    if write_policy and write_policy != "read_only":
+        issues.append({
+            "id": "SCAN-CHECK-005",
+            "description": f"SCAN_ONLY jobs should have write_policy=READ_ONLY (found: {write_policy})",
+            "severity": "warning",
+        })
+    
+    # =========================================================================
+    # Build result
+    # =========================================================================
+    
+    blocking_count = sum(1 for i in issues if i.get("severity") == "blocking")
+    passed = blocking_count == 0
+    
+    if passed:
+        if issues:
+            summary = f"✅ Scan quickcheck passed with {len(issues)} warning(s)"
+        else:
+            summary = "✅ All scan quickchecks passed"
+    else:
+        summary = f"❌ {blocking_count} blocking issue(s) found"
+    
+    logger.info(
+        "[scan_quickcheck] Result: passed=%s, issues=%d, scan_roots=%d, scan_terms=%d",
+        passed, len(issues), len(scan_roots) if scan_roots else 0, len(scan_terms) if scan_terms else 0
+    )
+    
+    return ScanQuickcheckResult(passed=passed, issues=issues, summary=summary)
+
+
+def _generate_scan_execution_plan(spec_data: Dict[str, Any], job_id: str) -> str:
+    """
+    Generate a minimal execution plan for SCAN_ONLY jobs.
+    
+    v2.5: SCAN_ONLY jobs:
+    - Do NOT write any files
+    - Do NOT require sandbox_input_path / sandbox_output_path
+    - Produce results in chat (CHAT_ONLY output)
+    - Enumerate folders/files/code matching specified criteria
+    
+    Uses the scan fields populated by SpecGate:
+    - scan_roots: array of root paths to scan
+    - scan_terms: array of search terms
+    - scan_targets: what to search ("names", "contents")
+    - scan_case_mode: case sensitivity
+    - scan_exclusions: directories/patterns to skip
+    """
+    # Extract scan parameters from spec
+    scan_roots = spec_data.get("scan_roots", [])
+    scan_terms = spec_data.get("scan_terms", [])
+    scan_targets = spec_data.get("scan_targets", ["names", "contents"])  # Default: both
+    scan_case_mode = spec_data.get("scan_case_mode", "case_insensitive")
+    scan_exclusions = spec_data.get("scan_exclusions", [
+        ".git", "node_modules", "dist", "build", ".venv", "__pycache__"
+    ])
+    scan_content_mode = spec_data.get("scan_content_mode", "text_only")
+    
+    # Get goal/summary from spec
+    goal = spec_data.get("goal", spec_data.get("summary", spec_data.get("objective", "Scan and enumerate matching items")))
+    
+    # Format scan roots for display
+    roots_display = "\n".join([f"  - `{r}`" for r in scan_roots]) if scan_roots else "  - (none specified)"
+    
+    # Format search terms for display  
+    terms_display = ", ".join([f"`{t}`" for t in scan_terms]) if scan_terms else "(none specified)"
+    
+    # Format targets for display
+    targets_display = ", ".join(scan_targets) if scan_targets else "names, contents"
+    
+    # Format exclusions for display
+    exclusions_display = ", ".join([f"`{e}`" for e in scan_exclusions[:5]]) if scan_exclusions else "(none)"
+    if len(scan_exclusions) > 5:
+        exclusions_display += f" + {len(scan_exclusions) - 5} more"
+    
+    plan = f"""# Scan Execution Plan
+
+**Job ID:** {job_id}
+**Type:** SCAN_ONLY (read-only, no file writes)
+**Output Mode:** CHAT_ONLY ⚠️ NO FILE WRITES
+
+## Task Summary
+{goal}
+
+## Scan Parameters (from SpecGate)
+
+### Scan Roots
+{roots_display}
+
+### Search Terms
+{terms_display}
+
+### Search Targets
+{targets_display}
+
+### Case Mode
+{scan_case_mode}
+
+### Content Mode
+{scan_content_mode}
+
+### Exclusions
+{exclusions_display}
+
+## Execution Steps
+
+1. **Enumerate Directories**
+   - Walk directory tree from each scan root
+   - Skip excluded directories ({exclusions_display})
+   - Collect folder and file names
+
+2. **Match Folder/File Names**
+   - Check each folder/file name against search terms
+   - Mode: {scan_case_mode}
+   - Record name hits with full path
+
+3. **Scan File Contents** (if "contents" in targets)
+   - Read text/code files only (skip binaries)
+   - Search for term occurrences
+   - Record content hits with path, line number, snippet
+
+4. **Compile Results**
+   - Group hits by type (name vs content)
+   - Group by path/folder
+   - Include context for each hit
+
+5. **Return Report in Chat**
+   - ⚠️ **NO FILE WRITE** - Results returned in chat only
+   - Format as structured report with full paths
+   - Explain why each hit exists
+
+## Expected Output Shape
+
+```
+SCAN_REPORT:
+├── Name Hits:
+│   ├── D:\\path\\to\\folder\\orb-file.txt  (matched: "orb" in filename)
+│   └── ...
+├── Content Hits:
+│   ├── D:\\path\\to\\file.py:42  (snippet: "import orb...")
+│   └── ...
+└── Summary: X name hits, Y content hits across Z files
+```
+
+## Verification
+- ✅ All scan roots were traversed
+- ✅ Search terms were applied
+- ✅ Results were compiled
+- ⚠️ **NO OUTPUT FILE** (SCAN_ONLY mode - results in chat only)
+
+## Notes
+- ⚠️ **SCAN_ONLY MODE ACTIVE**
+- This is a read-only operation
+- No files will be created or modified
+- Results will be returned in chat only
+- Scan does NOT require Overwatcher for execution
+
+---
+✅ **Ready for Execution** - This scan job can be executed directly without Overwatcher.
 """
     
     return plan
@@ -1002,6 +1642,138 @@ You may need to re-run Spec Gate with more details about the file locations.
                 return  # Exit - quickcheck failed
         
         # =====================================================================
+        # SCAN_ONLY PATH: Generate scan plan + quickcheck (v2.5)
+        # =====================================================================
+        
+        if job_kind == JobKind.SCAN_ONLY:
+            yield "data: " + json.dumps({"type": "token", "content": "\n🔍 **Scan Mode:** Read-only filesystem scan.\n"}) + "\n\n"
+            response_parts.append("\n🔍 **Scan Mode:** Read-only filesystem scan.\n")
+            yield "data: " + json.dumps({"type": "token", "content": "No architecture design required - generating scan execution plan...\n\n"}) + "\n\n"
+            response_parts.append("No architecture design required - generating scan execution plan...\n\n")
+            
+            # Create job ID
+            if not job_id:
+                job_id = f"scan-{uuid4().hex[:8]}"
+            
+            # Generate scan execution plan (no LLM call needed)
+            scan_plan = _generate_scan_execution_plan(spec_data, job_id)
+            
+            # =================================================================
+            # v2.5: Run scan quickcheck validation BEFORE showing plan
+            # =================================================================
+            
+            yield "data: " + json.dumps({"type": "token", "content": "🧪 **Running Scan Quickcheck...**\n"}) + "\n\n"
+            response_parts.append("🧪 **Running Scan Quickcheck...**\n")
+            
+            scan_quickcheck_result = scan_quickcheck(spec_data, scan_plan)
+            
+            if scan_quickcheck_result.passed:
+                # Quickcheck PASSED - show plan and mark ready
+                yield "data: " + json.dumps({"type": "token", "content": f"{scan_quickcheck_result.summary}\n\n"}) + "\n\n"
+                response_parts.append(f"{scan_quickcheck_result.summary}\n\n")
+                
+                # Show any warnings
+                for issue in scan_quickcheck_result.issues:
+                    if issue.get("severity") == "warning":
+                        warn_msg = f"⚠️ **{issue['id']}:** {issue['description']}\n"
+                        yield "data: " + json.dumps({"type": "token", "content": warn_msg}) + "\n\n"
+                        response_parts.append(warn_msg)
+                
+                yield "data: " + json.dumps({"type": "token", "content": scan_plan}) + "\n\n"
+                response_parts.append(scan_plan)
+                
+                # Emit completion event
+                yield "data: " + json.dumps({
+                    "type": "work_artifacts",
+                    "spec_id": spec_id,
+                    "job_id": job_id,
+                    "job_kind": job_kind,
+                    "critique_mode": "quickcheck",
+                    "critique_passed": True,
+                    "scan_roots": spec_data.get("scan_roots", []),
+                    "scan_terms": spec_data.get("scan_terms", []),
+                    "artifact_bindings": [],  # SCAN_ONLY has no artifacts
+                }) + "\n\n"
+                
+                # Save to memory
+                full_response = "".join(response_parts)
+                if memory_service and memory_schemas:
+                    try:
+                        memory_service.create_message(db, memory_schemas.MessageCreate(
+                            project_id=project_id, role="assistant", content=full_response,
+                            provider="local", model="scan-only"
+                        ))
+                    except Exception as e:
+                        logger.warning(f"[critical_pipeline] Failed to save to memory: {e}")
+                
+                if trace:
+                    trace.finalize(success=True)
+                
+                yield "data: " + json.dumps({
+                    "type": "done",
+                    "provider": "local",
+                    "model": "scan-only",
+                    "total_length": len(full_response),
+                    "spec_id": spec_id,
+                    "job_id": job_id,
+                    "job_kind": job_kind,
+                    "critique_mode": "quickcheck",
+                    "critique_passed": True,
+                }) + "\n\n"
+                return  # Exit early - scan job ready for execution
+            
+            else:
+                # Quickcheck FAILED - show issues and do NOT mark ready
+                yield "data: " + json.dumps({"type": "token", "content": f"{scan_quickcheck_result.summary}\n\n"}) + "\n\n"
+                response_parts.append(f"{scan_quickcheck_result.summary}\n\n")
+                
+                # List the issues
+                for issue in scan_quickcheck_result.issues:
+                    severity_icon = "❌" if issue.get("severity") == "blocking" else "⚠️"
+                    issue_msg = f"{severity_icon} **{issue['id']}:** {issue['description']}\n"
+                    yield "data: " + json.dumps({"type": "token", "content": issue_msg}) + "\n\n"
+                    response_parts.append(issue_msg)
+                
+                # Show the plan anyway for debugging
+                yield "data: " + json.dumps({"type": "token", "content": "\n### Generated Plan (for review):\n"}) + "\n\n"
+                response_parts.append("\n### Generated Plan (for review):\n")
+                yield "data: " + json.dumps({"type": "token", "content": scan_plan}) + "\n\n"
+                response_parts.append(scan_plan)
+                
+                # Show next steps
+                fail_msg = """\n---\n⚠️ **Scan Quickcheck Failed** - Job NOT ready for execution.\n\nPlease check:\n1. Did SpecGate resolve the scan_roots correctly?\n2. Did SpecGate extract the scan_terms from your request?\n3. Is the output_mode set to CHAT_ONLY?\n\nYou may need to re-run Spec Gate with more details about what to scan.\n"""
+                yield "data: " + json.dumps({"type": "token", "content": fail_msg}) + "\n\n"
+                response_parts.append(fail_msg)
+                
+                # Save to memory (even on failure)
+                full_response = "".join(response_parts)
+                if memory_service and memory_schemas:
+                    try:
+                        memory_service.create_message(db, memory_schemas.MessageCreate(
+                            project_id=project_id, role="assistant", content=full_response,
+                            provider="local", model="scan-only"
+                        ))
+                    except Exception as e:
+                        logger.warning(f"[critical_pipeline] Failed to save to memory: {e}")
+                
+                if trace:
+                    trace.finalize(success=False, error_message="Scan quickcheck failed")
+                
+                yield "data: " + json.dumps({
+                    "type": "done",
+                    "provider": "local",
+                    "model": "scan-only",
+                    "total_length": len(full_response),
+                    "spec_id": spec_id,
+                    "job_id": job_id,
+                    "job_kind": job_kind,
+                    "critique_mode": "quickcheck",
+                    "critique_passed": False,
+                    "quickcheck_issues": len(scan_quickcheck_result.issues),
+                }) + "\n\n"
+                return  # Exit - scan quickcheck failed
+        
+        # =====================================================================
         # ARCHITECTURE PATH: Full pipeline (continues below)
         # =====================================================================
         
@@ -1407,4 +2179,6 @@ __all__ = [
     "JobKind",
     "MicroQuickcheckResult",
     "micro_quickcheck",
+    "ScanQuickcheckResult",
+    "scan_quickcheck",
 ]

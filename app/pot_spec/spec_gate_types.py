@@ -6,6 +6,8 @@ Contains:
 - Result dataclass
 - Blocking validation config
 - Placeholder patterns and detection
+
+v1.14 (2026-01-24): Added REWRITE_IN_PLACE output mode for multi-question file edits
 """
 
 from __future__ import annotations
@@ -17,30 +19,49 @@ from typing import Any, List, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
-# OUTPUT MODE ENUM (v1.13 - MICRO_FILE_TASK output mode)
+# OUTPUT MODE ENUM (v1.14 - REWRITE_IN_PLACE for multi-question edits)
 # ---------------------------------------------------------------------------
 
 class OutputMode(str, Enum):
     """
-    v1.13: Output mode for MICRO_FILE_TASK jobs (sandbox file discovery jobs).
+    v1.14: Output mode for MICRO_FILE_TASK jobs (sandbox file discovery jobs).
     
-    Determines where the reply should be written:
-    - APPEND_IN_PLACE: Write reply into the same file (under the question)
+    Determines where and how the reply should be written:
+    
+    - APPEND_IN_PLACE: Append reply to END of file (Add-Content)
+      Use for: Single-question files, "write reply at the end"
+      
+    - REWRITE_IN_PLACE: Read file, insert answers under each question, write back entire file
+      Use for: Multi-question files, "answer every question", "under each question"
+      Requires: sandbox_output_path == sandbox_input_path
+      
     - SEPARATE_REPLY_FILE: Write to a separate reply.txt file
+      Use for: "save to reply.txt", "create a reply file"
+      
     - CHAT_ONLY: No file output, reply in chat only
+      Use for: "just answer here", "don't change the file"
     
-    Detection is based on user intent keywords:
-    - APPEND_IN_PLACE: "write under", "append", "add below", "put reply underneath", 
-                       "beneath the question", "write it in the file", "write reply in"
-    - SEPARATE_REPLY_FILE: "save to reply.txt", "write to a new file", "create a reply file",
-                           "separate file", "save as"
-    - CHAT_ONLY: "just answer here", "don't change the file", "reply here in chat only",
-                 "chat only", "don't write"
+    Detection keywords (v1.14 priority order):
     
-    Default: If user intent implies writing into the file → APPEND_IN_PLACE
-    Safe default (no write indicators): CHAT_ONLY
+    1. CHAT_ONLY (explicit no-file-change request):
+       "just answer here", "don't change the file", "chat only"
+       
+    2. REWRITE_IN_PLACE (multi-question file edits - v1.14):
+       "answer every question", "answer each question", "answer all questions",
+       "under each question", "beneath each question", "below each question",
+       "directly under each question", "put answer under each"
+       
+    3. SEPARATE_REPLY_FILE:
+       "save to reply.txt", "write to a new file", "create a reply file"
+       
+    4. APPEND_IN_PLACE (single insertion at EOF):
+       "write under", "append", "add below", "beneath the question"
+       (only when NOT multi-question context)
+    
+    Default: CHAT_ONLY (safest - no file modification)
     """
     APPEND_IN_PLACE = "append_in_place"
+    REWRITE_IN_PLACE = "rewrite_in_place"  # v1.14: Multi-question insert
     SEPARATE_REPLY_FILE = "separate_reply_file"
     CHAT_ONLY = "chat_only"
 
@@ -180,7 +201,7 @@ __all__ = [
     "BLOCKING_FIELDS",
     "PLACEHOLDER_RE",
     "SpecGateResult",
-    "OutputMode",  # v1.13: MICRO_FILE_TASK output mode
+    "OutputMode",  # v1.14: Now includes REWRITE_IN_PLACE
     "is_placeholder",
     "count_real_items",
     "validate_blocking_fields",

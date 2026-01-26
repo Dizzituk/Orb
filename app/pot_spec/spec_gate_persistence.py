@@ -272,6 +272,20 @@ def build_spec_schema(
                 "sandbox_output_mode": grounding_data.get("sandbox_output_mode"),
                 "sandbox_insertion_format": grounding_data.get("sandbox_insertion_format"),
             })
+            # v1.19: SCAN_ONLY job parameters (Critical Pipeline scan_quickcheck needs these)
+            # These fields MUST be persisted for scan jobs to work
+            if grounding_data.get("job_kind") == "scan_only":
+                spec_data.update({
+                    "scan_roots": grounding_data.get("scan_roots", []),
+                    "scan_terms": grounding_data.get("scan_terms", []),
+                    "scan_targets": grounding_data.get("scan_targets", []),
+                    "scan_case_mode": grounding_data.get("scan_case_mode", "case_insensitive"),
+                    "scan_exclusions": grounding_data.get("scan_exclusions", []),
+                    # v1.19: Output and write policy for SCAN_ONLY jobs
+                    "output_mode": grounding_data.get("output_mode", "chat_only"),
+                    "write_policy": grounding_data.get("write_policy", "read_only"),
+                })
+            
             logger.info(
                 "[spec_gate_persistence] v2.2 Including grounding data: job_kind=%s, sandbox_discovery=%s, input=%s, output=%s, output_mode=%s",
                 grounding_data.get("job_kind"),
@@ -280,6 +294,15 @@ def build_spec_schema(
                 bool(grounding_data.get("sandbox_output_path")),
                 grounding_data.get("sandbox_output_mode"),  # v1.2.1: Log output mode
             )
+            
+            # v1.19: Log scan parameters if present
+            if grounding_data.get("job_kind") == "scan_only":
+                logger.info(
+                    "[spec_gate_persistence] v1.19 SCAN_ONLY params: roots=%s, terms=%s, targets=%s",
+                    grounding_data.get("scan_roots"),
+                    grounding_data.get("scan_terms"),
+                    grounding_data.get("scan_targets"),
+                )
 
         try:
             spec_schema = SpecSchema.from_dict(spec_data)
