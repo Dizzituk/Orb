@@ -695,6 +695,66 @@ INTENT_DEFINITIONS: Dict[CanonicalIntent, IntentDefinition] = {
     ),
     
     # -------------------------------------------------------------------------
+    # MULTI-FILE OPERATIONS (v1.4 - Level 3)
+    # -------------------------------------------------------------------------
+    
+    CanonicalIntent.MULTI_FILE_SEARCH: IntentDefinition(
+        intent=CanonicalIntent.MULTI_FILE_SEARCH,
+        trigger_phrases=[],  # Patterns handled by check_multi_file_trigger in tier0_rules.py
+        trigger_patterns=[],
+        requires_context=[],
+        requires_confirmation=False,
+        description="Search across multiple files for patterns or content",
+        behavior=(
+            "Read-only multi-file search operation.\n"
+            "\n"
+            "Triggers:\n"
+            "- 'find all X in the codebase'\n"
+            "- 'list files containing X'\n"
+            "- 'search codebase for X'\n"
+            "\n"
+            "Returns:\n"
+            "- List of matching files\n"
+            "- Preview of matches\n"
+            "- Total count of occurrences\n"
+            "\n"
+            "Does NOT modify any files."
+        ),
+    ),
+    
+    CanonicalIntent.MULTI_FILE_REFACTOR: IntentDefinition(
+        intent=CanonicalIntent.MULTI_FILE_REFACTOR,
+        trigger_phrases=[],  # Patterns handled by check_multi_file_trigger in tier0_rules.py
+        trigger_patterns=[],
+        requires_context=[],
+        requires_confirmation=True,  # Write operation requires confirmation
+        confirmation_prompt=(
+            "⚠️ MULTI-FILE REFACTOR\n"
+            "You are about to replace '{search_pattern}' with '{replacement_pattern}' "
+            "in {total_files} files.\n"
+            "\n"
+            "Type 'Yes' to confirm."
+        ),
+        description="Search and replace across multiple files",
+        behavior=(
+            "Multi-file search and replace operation.\n"
+            "\n"
+            "Triggers:\n"
+            "- 'replace X with Y everywhere'\n"
+            "- 'change all X to Y'\n"
+            "- 'rename X to Y across the codebase'\n"
+            "\n"
+            "REQUIRES CONFIRMATION before execution.\n"
+            "\n"
+            "Process:\n"
+            "1. Discovery phase finds all matching files\n"
+            "2. Shows preview and asks for confirmation\n"
+            "3. On confirmation, processes each file\n"
+            "4. Reports results with success/failure counts"
+        ),
+    ),
+    
+    # -------------------------------------------------------------------------
     # CHAT (no action)
     # -------------------------------------------------------------------------
     

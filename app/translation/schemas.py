@@ -3,6 +3,7 @@
 Pydantic models for the ASTRA Translation Layer.
 Defines canonical intents, modes, gate results, and feedback structures.
 
+v1.2 (2026-01-28): Added multi-file operation intents (MULTI_FILE_SEARCH, MULTI_FILE_REFACTOR)
 v1.1 (2026-01): Added Spec Gate flow intents (WEAVER_BUILD_SPEC, SEND_TO_SPEC_GATE)
 """
 from __future__ import annotations
@@ -103,6 +104,16 @@ class CanonicalIntent(str, Enum):
     
     # Resolve and display latest codebase report (FULL only)
     LATEST_CODEBASE_REPORT_FULL = "LATEST_CODEBASE_REPORT_FULL"
+    
+    # =========================================================================
+    # MULTI-FILE OPERATIONS (v1.7 - Level 3)
+    # =========================================================================
+    
+    # Search across multiple files (read-only): "find all TODO", "list files containing X"
+    MULTI_FILE_SEARCH = "MULTI_FILE_SEARCH"
+    
+    # Refactor across multiple files (write): "replace X with Y everywhere"
+    MULTI_FILE_REFACTOR = "MULTI_FILE_REFACTOR"
 
 
 class LatencyTier(str, Enum):

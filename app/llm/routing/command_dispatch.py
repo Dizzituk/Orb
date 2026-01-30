@@ -2,6 +2,7 @@
 """
 Command dispatch for stream routing - routes intents to stream handlers.
 
+v1.1 (2026-01-28): Added MULTI_FILE_SEARCH and MULTI_FILE_REFACTOR handlers (Level 3)
 v1.0 (2026-01-20): Extracted from stream_router.py for modularity.
 
 This module provides:
@@ -478,6 +479,66 @@ def handle_command_execution(
             error_msg = _make_unavailable_error("Latest Codebase Report Handler", "app/llm/local_tools/zobie_tools.py")
             return StreamingResponse(
                 create_error_stream("Latest codebase report handler not available", error_msg),
+                media_type="text/event-stream",
+                headers=sse_headers,
+            )
+    
+    # --- Multi-File Search (v1.1 - Level 3) ---
+    if intent == CanonicalIntent.MULTI_FILE_SEARCH:
+        # Multi-file search goes through Weaver → SpecGate flow
+        # SpecGate will detect multi-file intent and run file discovery
+        if _WEAVER_AVAILABLE:
+            print(f"[MULTI_FILE_ROUTE] MULTI_FILE_SEARCH -> Weaver/SpecGate flow")
+            if stage_trace:
+                stage_trace.enter_stage("multi_file_search", provider=routing_info["provider"], model=routing_info["model"])
+            return StreamingResponse(
+                generate_weaver_stream(
+                    project_id=req.project_id,
+                    message=req.message,
+                    db=db,
+                    trace=trace,
+                    conversation_id=str(req.project_id),
+                ),
+                media_type="text/event-stream",
+                headers=sse_headers,
+            )
+        else:
+            log_routing_failure(stage_trace, "Weaver handler not available for multi-file search", "generate_weaver_stream")
+            log_handler_availability()
+            
+            error_msg = _make_unavailable_error("Multi-File Search Handler", "app/llm/weaver_stream.py")
+            return StreamingResponse(
+                create_error_stream("Multi-file search handler not available", error_msg),
+                media_type="text/event-stream",
+                headers=sse_headers,
+            )
+    
+    # --- Multi-File Refactor (v1.1 - Level 3) ---
+    if intent == CanonicalIntent.MULTI_FILE_REFACTOR:
+        # Multi-file refactor goes through Weaver → SpecGate flow
+        # SpecGate will detect multi-file intent, run discovery, and request confirmation
+        if _WEAVER_AVAILABLE:
+            print(f"[MULTI_FILE_ROUTE] MULTI_FILE_REFACTOR -> Weaver/SpecGate flow")
+            if stage_trace:
+                stage_trace.enter_stage("multi_file_refactor", provider=routing_info["provider"], model=routing_info["model"])
+            return StreamingResponse(
+                generate_weaver_stream(
+                    project_id=req.project_id,
+                    message=req.message,
+                    db=db,
+                    trace=trace,
+                    conversation_id=str(req.project_id),
+                ),
+                media_type="text/event-stream",
+                headers=sse_headers,
+            )
+        else:
+            log_routing_failure(stage_trace, "Weaver handler not available for multi-file refactor", "generate_weaver_stream")
+            log_handler_availability()
+            
+            error_msg = _make_unavailable_error("Multi-File Refactor Handler", "app/llm/weaver_stream.py")
+            return StreamingResponse(
+                create_error_stream("Multi-file refactor handler not available", error_msg),
                 media_type="text/event-stream",
                 headers=sse_headers,
             )

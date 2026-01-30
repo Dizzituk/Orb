@@ -2,6 +2,8 @@
 """Stream generators for zobie tools.
 
 Re-exports all stream generator functions.
+
+v1.1 (2026-01-28): Added batch_ops for multi-file operation streaming (Phase 6)
 """
 
 from .scan_sandbox import generate_sandbox_structure_scan_stream
@@ -16,6 +18,17 @@ from .latest_reports import (
     generate_latest_codebase_report_full_stream,
 )
 
+# v1.1: Multi-file batch operations streaming (Phase 6)
+from .batch_ops import (
+    BatchProgressMessage,
+    BatchProgressStream,
+    create_progress_callback,
+    create_sync_callback,
+    format_completion_summary,
+    format_progress_line,
+    generate_batch_operation_stream,
+)
+
 __all__ = [
     "generate_sandbox_structure_scan_stream",
     "generate_update_architecture_stream",
@@ -26,4 +39,12 @@ __all__ = [
     "generate_codebase_report_stream",
     "generate_latest_architecture_map_stream",
     "generate_latest_codebase_report_full_stream",
+    # v1.1: Batch operations
+    "BatchProgressMessage",
+    "BatchProgressStream",
+    "create_progress_callback",
+    "create_sync_callback",
+    "format_completion_summary",
+    "format_progress_line",
+    "generate_batch_operation_stream",
 ]

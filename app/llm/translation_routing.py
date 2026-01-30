@@ -7,6 +7,7 @@ Provides:
 - Intent to routing info mapping
 - Canonical intent handlers
 
+v1.6 (2026-01): Added MULTI_FILE_SEARCH and MULTI_FILE_REFACTOR routing (Level 3)
 v1.2 (2026-01): Uses centralized stage_models for dynamic provider/model config
 v1.1 (2026-01): FIXED - Models now read from env vars at RUNTIME (not hardcoded)
 v1.0 (2026-01): Extracted from stream_router.py
@@ -213,6 +214,25 @@ def intent_to_routing_info(intent: "CanonicalIntent") -> Optional[dict]:
             "provider": "local",
             "model": "codebase_report",
             "reason": "Translation layer: CODEBASE REPORT",
+        },
+        # Multi-file operations (v1.6 - Level 3)
+        CanonicalIntent.MULTI_FILE_SEARCH: {
+            "type": "local.multi_file_search",
+            "provider": weaver.provider,
+            "model": weaver.model,
+            "reason": (
+                "Translation layer: MULTI-FILE SEARCH "
+                f"({weaver.provider}/{weaver.model})"
+            ),
+        },
+        CanonicalIntent.MULTI_FILE_REFACTOR: {
+            "type": "local.multi_file_refactor",
+            "provider": weaver.provider,
+            "model": weaver.model,
+            "reason": (
+                "Translation layer: MULTI-FILE REFACTOR "
+                f"({weaver.provider}/{weaver.model})"
+            ),
         },
     }
     return mapping.get(intent, None)

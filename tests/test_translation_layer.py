@@ -269,6 +269,152 @@ class TestTier0Rules:
 
 
 # =============================================================================
+# MULTI-FILE TRIGGER TESTS (v5.10 - Level 3)
+# =============================================================================
+
+
+class TestMultiFileTrigger:
+    """Tests for multi-file operation detection (Level 3)."""
+    
+    # Import the specific function for testing
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from app.translation.tier0_rules import check_multi_file_trigger
+        self.check_multi_file_trigger = check_multi_file_trigger
+    
+    # =========================================================================
+    # SEARCH PATTERNS (MULTI_FILE_SEARCH)
+    # =========================================================================
+    
+    def test_find_all_todos(self):
+        """'find all TODO' should trigger MULTI_FILE_SEARCH."""
+        result = self.check_multi_file_trigger("find all TODO comments")
+        assert result.matched
+        assert result.intent == CanonicalIntent.MULTI_FILE_SEARCH
+        assert "TODO" in result.reason.lower() or "todo" in result.reason
+    
+    def test_find_all_in_codebase(self):
+        """'find all X in the codebase' should trigger MULTI_FILE_SEARCH."""
+        result = self.check_multi_file_trigger("find all deprecated functions in the codebase")
+        assert result.matched
+        assert result.intent == CanonicalIntent.MULTI_FILE_SEARCH
+    
+    def test_list_files_containing(self):
+        """'list files containing X' should trigger MULTI_FILE_SEARCH."""
+        result = self.check_multi_file_trigger("list all files containing import os")
+        assert result.matched
+        assert result.intent == CanonicalIntent.MULTI_FILE_SEARCH
+    
+    def test_search_codebase_for(self):
+        """'search codebase for X' should trigger MULTI_FILE_SEARCH."""
+        result = self.check_multi_file_trigger("search the codebase for async def")
+        assert result.matched
+        assert result.intent == CanonicalIntent.MULTI_FILE_SEARCH
+    
+    def test_count_occurrences(self):
+        """'count occurrences of X' should trigger MULTI_FILE_SEARCH."""
+        result = self.check_multi_file_trigger("count all occurrences of DEBUG")
+        assert result.matched
+        assert result.intent == CanonicalIntent.MULTI_FILE_SEARCH
+    
+    # =========================================================================
+    # REFACTOR PATTERNS (MULTI_FILE_REFACTOR)
+    # =========================================================================
+    
+    def test_replace_everywhere(self):
+        """'replace X with Y everywhere' should trigger MULTI_FILE_REFACTOR."""
+        result = self.check_multi_file_trigger("replace Orb with Astra everywhere")
+        assert result.matched
+        assert result.intent == CanonicalIntent.MULTI_FILE_REFACTOR
+        assert "Orb" in result.reason or "orb" in result.reason.lower()
+    
+    def test_replace_in_all_files(self):
+        """'replace X with Y in all files' should trigger MULTI_FILE_REFACTOR."""
+        result = self.check_multi_file_trigger("replace DEBUG = True with DEBUG = False in all files")
+        assert result.matched
+        assert result.intent == CanonicalIntent.MULTI_FILE_REFACTOR
+    
+    def test_change_all_to(self):
+        """'change all X to Y' should trigger MULTI_FILE_REFACTOR."""
+        result = self.check_multi_file_trigger("change all print statements to logging")
+        assert result.matched
+        assert result.intent == CanonicalIntent.MULTI_FILE_REFACTOR
+    
+    def test_rename_across_codebase(self):
+        """'rename X to Y across the codebase' should trigger MULTI_FILE_REFACTOR."""
+        result = self.check_multi_file_trigger("rename old_function to new_function across the codebase")
+        assert result.matched
+        assert result.intent == CanonicalIntent.MULTI_FILE_REFACTOR
+    
+    def test_remove_from_codebase(self):
+        """'remove X from codebase' should trigger MULTI_FILE_REFACTOR."""
+        result = self.check_multi_file_trigger("remove all console.log from the codebase")
+        assert result.matched
+        assert result.intent == CanonicalIntent.MULTI_FILE_REFACTOR
+    
+    # =========================================================================
+    # NEGATIVE CASES (should NOT trigger)
+    # =========================================================================
+    
+    def test_no_match_regular_chat(self):
+        """Regular chat should not trigger multi-file."""
+        result = self.check_multi_file_trigger("what is a TODO comment?")
+        assert not result.matched
+    
+    def test_no_match_single_file_find(self):
+        """'find X' without scope keyword should not trigger."""
+        result = self.check_multi_file_trigger("find the config file")
+        assert not result.matched
+    
+    def test_no_match_simple_replace(self):
+        """'replace X with Y' without scope should not trigger."""
+        result = self.check_multi_file_trigger("replace this text")
+        assert not result.matched
+    
+    def test_no_match_short_text(self):
+        """Very short text should not trigger."""
+        result = self.check_multi_file_trigger("hi")
+        assert not result.matched
+    
+    def test_no_match_question_about_finding(self):
+        """Questions about finding should not trigger."""
+        result = self.check_multi_file_trigger("how do I find all TODO comments?")
+        assert not result.matched
+    
+    # =========================================================================
+    # CASE INSENSITIVITY
+    # =========================================================================
+    
+    def test_case_insensitive_search(self):
+        """Search patterns should be case-insensitive."""
+        result = self.check_multi_file_trigger("FIND ALL ERRORS IN THE CODEBASE")
+        assert result.matched
+        assert result.intent == CanonicalIntent.MULTI_FILE_SEARCH
+    
+    def test_case_insensitive_refactor(self):
+        """Refactor patterns should be case-insensitive."""
+        result = self.check_multi_file_trigger("REPLACE foo WITH bar EVERYWHERE")
+        assert result.matched
+        assert result.intent == CanonicalIntent.MULTI_FILE_REFACTOR
+    
+    # =========================================================================
+    # EDGE CASES
+    # =========================================================================
+    
+    def test_pattern_with_special_chars(self):
+        """Patterns with special characters should work."""
+        result = self.check_multi_file_trigger("find all # TODO: in the codebase")
+        assert result.matched
+        assert result.intent == CanonicalIntent.MULTI_FILE_SEARCH
+    
+    def test_multi_word_pattern(self):
+        """Multi-word patterns should be captured."""
+        result = self.check_multi_file_trigger("find all raise ValueError in the codebase")
+        assert result.matched
+        assert result.intent == CanonicalIntent.MULTI_FILE_SEARCH
+
+
+# =============================================================================
 # PHRASE CACHE TESTS
 # =============================================================================
 
