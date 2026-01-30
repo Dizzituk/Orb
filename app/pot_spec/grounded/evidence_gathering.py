@@ -1,6 +1,6 @@
 # FILE: app/pot_spec/grounded/evidence_gathering.py
 """
-Evidence-First Filesystem Validation (v1.27)
+Evidence-First Filesystem Validation (v1.33)
 
 Core principle: Evidence gathered BEFORE LLM call, not discovered by LLM.
 
@@ -11,6 +11,12 @@ Access control (non-negotiable):
 
 Version Notes:
 -------------
+v1.33 (2026-01-30): CRITICAL FIX - Exclude CREATE targets from system scan
+    - Added import for extract_create_targets from sandbox_discovery
+    - Modified gather_system_wide_scan_evidence() to exclude CREATE targets
+    - CREATE targets (files to be created) are no longer searched for
+    - Fixes "reply: Not found" error when user wants to CREATE a reply file
+    - Stores create_targets in package.metadata for downstream use
 v1.29 (2026-01-29): CRITICAL FIX - format_multi_target_reply() now generates LLM responses
     - Made format_multi_target_reply() async and call generate_reply_from_content() for EACH file
     - Now generates conversational LLM replies for each file's content, not just raw dumps
@@ -59,7 +65,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # v1.29 BUILD VERIFICATION
 # =============================================================================
-EVIDENCE_GATHERING_BUILD_ID = "2026-01-30-v1.32-scan-roots-fix"
+EVIDENCE_GATHERING_BUILD_ID = "2026-01-30-v1.33-exclude-create-targets"
 print(f"[EVIDENCE_GATHERING_LOADED] BUILD_ID={EVIDENCE_GATHERING_BUILD_ID}")
 logger.info(f"[evidence_gathering] Module loaded: BUILD_ID={EVIDENCE_GATHERING_BUILD_ID}")
 
@@ -93,20 +99,24 @@ try:
         is_system_wide_scan_request,
         get_system_scan_targets,
         extract_scan_file_names,
+        extract_create_targets,  # v1.33: CREATE target detection
         SYSTEM_SCAN_ROOTS,
     )
     _MULTI_TARGET_AVAILABLE = True
     _SYSTEM_SCAN_AVAILABLE = True
-    logger.info("[evidence_gathering] v1.31 Multi-target + system scan extraction loaded")
+    _CREATE_TARGET_AVAILABLE = True
+    logger.info("[evidence_gathering] v1.33 Multi-target + system scan + CREATE target extraction loaded")
 except ImportError as e:
     _MULTI_TARGET_AVAILABLE = False
     _SYSTEM_SCAN_AVAILABLE = False
-    logger.warning("[evidence_gathering] v1.31 Multi-target/system scan extraction not available: %s", e)
+    _CREATE_TARGET_AVAILABLE = False
+    logger.warning("[evidence_gathering] v1.33 Multi-target/system scan/CREATE target extraction not available: %s", e)
     extract_file_targets = None
     is_multi_target_request = None
     is_system_wide_scan_request = None
     get_system_scan_targets = None
     extract_scan_file_names = None
+    extract_create_targets = None
     SYSTEM_SCAN_ROOTS = []
 
 
@@ -1091,10 +1101,12 @@ def gather_system_wide_scan_evidence(
     rag_hints: Optional[List[dict]] = None,
 ) -> EvidencePackage:
     """
-    v1.31: Gather evidence by scanning the entire system for named files.
+    v1.33: Gather evidence by scanning the entire system for named files.
     
     Handles patterns like "Find all files called test1, test2, test3, test4 on my system".
     Scans USER_SCAN_ROOTS for each target file.
+    
+    v1.33 FIX: Now excludes CREATE targets from scan list.
     
     Args:
         combined_text: User request text  
@@ -1103,7 +1115,7 @@ def gather_system_wide_scan_evidence(
     Returns:
         EvidencePackage with files found across the system
     """
-    logger.info("[evidence_gathering] v1.31 gather_system_wide_scan_evidence: starting")
+    logger.info("[evidence_gathering] v1.33 gather_system_wide_scan_evidence: starting")
     
     package = EvidencePackage(
         task_type="unresolved",
@@ -1117,11 +1129,34 @@ def gather_system_wide_scan_evidence(
     # Check if system scan extraction is available
     if not _SYSTEM_SCAN_AVAILABLE or not extract_scan_file_names:
         package.validation_errors.append("System scan extraction not available")
-        logger.error("[evidence_gathering] v1.31 extract_scan_file_names not available")
+        logger.error("[evidence_gathering] v1.33 extract_scan_file_names not available")
         return package
     
     # Extract file names to search for
     file_names = extract_scan_file_names(combined_text)
+    
+    # v1.33 NEW: Extract CREATE targets and exclude them from scan list
+    # These are files the user wants to CREATE, not FIND
+    create_names = set()
+    if _CREATE_TARGET_AVAILABLE and extract_create_targets:
+        create_targets = extract_create_targets(combined_text)
+        create_names = {t["name"].lower() for t in create_targets}
+        
+        if create_names:
+            original_count = len(file_names)
+            file_names = [f for f in file_names if f.lower() not in create_names]
+            excluded_count = original_count - len(file_names)
+            
+            if excluded_count > 0:
+                logger.info(
+                    "[evidence_gathering] v1.33 Excluded %d CREATE targets from scan: %s",
+                    excluded_count, list(create_names)
+                )
+                # Store create targets in package metadata for downstream use
+                package.metadata = package.metadata if hasattr(package, 'metadata') else {}
+                if not hasattr(package, 'metadata') or package.metadata is None:
+                    package.metadata = {}
+                package.metadata["create_targets"] = create_targets
     
     if not file_names:
         package.validation_errors.append("No file names found to scan for")

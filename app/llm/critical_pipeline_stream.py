@@ -2,6 +2,27 @@
 """
 Critical Pipeline streaming handler for ASTRA command flow.
 
+v2.9 (2026-01-30): FULL EVIDENCE ACCESS
+- Critical Pipeline now has the SAME evidence gathering powers as SpecGate
+- Can load architecture maps, codebase reports, and read any file
+- Added CriticalPipelineEvidence dataclass for evidence bundling
+- Added gather_critical_pipeline_evidence() for comprehensive evidence loading
+- Added read_file_for_critical_pipeline() for single file reads
+- Added list_directory_for_critical_pipeline() for directory listing
+- Evidence is now injected into LLM prompts for informed decision-making
+- This allows Critical Pipeline to build architecture maps, not just read them
+
+v2.8 (2026-01-30): MULTI-TARGET READ FALLBACK
+- If multi_target_files has entries but is_multi_target_read flag is missing,
+  automatically treat as multi-target (handles persistence chain issues)
+- Fixes MICRO-CHECK-001 when flag doesn't persist but file data does
+
+v2.7 (2026-01-30): MULTI-TARGET READ SUPPORT
+- micro_quickcheck() Check 1 now handles is_multi_target_read=True
+- For multi-target: validates multi_target_files has entries (not sandbox_input_path)
+- For single file: validates sandbox_input_path exists (original behavior)
+- Check 3 automatically skips input path validation for multi-target reads
+
 v2.6 (2026-01-25): SCAN_ONLY SECURITY HARDENING (CRITICAL)
 - Added HARD SECURITY GATE to scan_quickcheck() - blocks bare drive letters
 - scan_roots MUST be within SAFE_DEFAULT_SCAN_ROOTS (D:\\Orb, D:\\orb-desktop)
@@ -56,6 +77,13 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# v2.8 BUILD VERIFICATION
+# =============================================================================
+CRITICAL_PIPELINE_BUILD_ID = "2026-01-30-v2.9.1-multi-location-multi-target"
+print(f"[CRITICAL_PIPELINE_LOADED] BUILD_ID={CRITICAL_PIPELINE_BUILD_ID}")
+logger.info(f"[critical_pipeline] Module loaded: BUILD_ID={CRITICAL_PIPELINE_BUILD_ID}")
 
 # =============================================================================
 # Pipeline Imports (Block 4-6)
@@ -123,6 +151,53 @@ except ImportError as e:
     _EVIDENCE_AVAILABLE = False
     load_evidence = None
     EvidenceBundle = None
+
+# =============================================================================
+# v2.9: Full Evidence Gathering (same as SpecGate)
+# =============================================================================
+
+try:
+    from app.pot_spec.grounded.evidence_gathering import (
+        gather_filesystem_evidence,
+        gather_multi_target_evidence,
+        gather_system_wide_scan_evidence,
+        EvidencePackage,
+        FileEvidence,
+        format_evidence_for_prompt,
+        sandbox_path_exists,
+        sandbox_read_file,
+        sandbox_list_directory,
+    )
+    _FULL_EVIDENCE_AVAILABLE = True
+    logger.info("[critical_pipeline] v2.9 Full evidence gathering loaded successfully")
+except ImportError as e:
+    logger.warning(f"[critical_pipeline] v2.9 Full evidence gathering not available: {e}")
+    _FULL_EVIDENCE_AVAILABLE = False
+    gather_filesystem_evidence = None
+    gather_multi_target_evidence = None
+    gather_system_wide_scan_evidence = None
+    EvidencePackage = None
+    FileEvidence = None
+    format_evidence_for_prompt = None
+    sandbox_path_exists = None
+    sandbox_read_file = None
+    sandbox_list_directory = None
+
+# v2.9: Architecture map and codebase report loaders
+try:
+    from app.llm.local_tools.latest_report_resolver import (
+        get_latest_architecture_map,
+        get_latest_codebase_report_full,
+        read_report_content,
+    )
+    _REPORT_RESOLVER_AVAILABLE = True
+    logger.info("[critical_pipeline] v2.9 Report resolver loaded successfully")
+except ImportError as e:
+    logger.warning(f"[critical_pipeline] v2.9 Report resolver not available: {e}")
+    _REPORT_RESOLVER_AVAILABLE = False
+    get_latest_architecture_map = None
+    get_latest_codebase_report_full = None
+    read_report_content = None
 
 # =============================================================================
 # v2.6: Scan Security Imports (HARD SECURITY GATE)
@@ -210,6 +285,324 @@ def _get_pipeline_model_config() -> dict:
         "provider": os.getenv("CRITICAL_PIPELINE_PROVIDER", "anthropic"),
         "model": os.getenv("ANTHROPIC_OPUS_MODEL", "claude-opus-4-5-20251101"),
     }
+
+
+# =============================================================================
+# v2.9: Comprehensive Evidence Gathering for Critical Pipeline
+# =============================================================================
+
+@dataclass
+class CriticalPipelineEvidence:
+    """
+    v2.9: Evidence bundle for Critical Pipeline decision-making.
+    
+    Critical Pipeline needs full visibility to make informed "how to" decisions.
+    This gives it the same evidence-gathering powers as SpecGate.
+    """
+    # Architecture understanding
+    arch_map_content: Optional[str] = None
+    arch_map_filename: Optional[str] = None
+    arch_map_mtime: Optional[str] = None
+    
+    # Codebase understanding
+    codebase_report_content: Optional[str] = None
+    codebase_report_filename: Optional[str] = None
+    codebase_report_mtime: Optional[str] = None
+    
+    # Job-specific file evidence (from spec or gathered)
+    file_evidence: Optional[Any] = None  # EvidencePackage
+    
+    # Multi-target file contents
+    multi_target_files: List[Dict[str, Any]] = field(default_factory=list)
+    
+    # Evidence loading status
+    arch_map_loaded: bool = False
+    codebase_report_loaded: bool = False
+    file_evidence_loaded: bool = False
+    
+    # Errors encountered
+    errors: List[str] = field(default_factory=list)
+    
+    def to_context_string(self, max_arch_chars: int = 15000, max_codebase_chars: int = 10000) -> str:
+        """
+        Format evidence as context string for LLM prompt.
+        
+        Args:
+            max_arch_chars: Max chars for architecture map excerpt
+            max_codebase_chars: Max chars for codebase report excerpt
+        """
+        sections = []
+        
+        if self.arch_map_content:
+            arch_excerpt = self.arch_map_content[:max_arch_chars]
+            if len(self.arch_map_content) > max_arch_chars:
+                arch_excerpt += f"\n... [truncated, {len(self.arch_map_content) - max_arch_chars} more chars]"
+            sections.append(f"""## Architecture Map
+Source: {self.arch_map_filename} (mtime: {self.arch_map_mtime})
+
+{arch_excerpt}
+""")
+        
+        if self.codebase_report_content:
+            codebase_excerpt = self.codebase_report_content[:max_codebase_chars]
+            if len(self.codebase_report_content) > max_codebase_chars:
+                codebase_excerpt += f"\n... [truncated, {len(self.codebase_report_content) - max_codebase_chars} more chars]"
+            sections.append(f"""## Codebase Report
+Source: {self.codebase_report_filename} (mtime: {self.codebase_report_mtime})
+
+{codebase_excerpt}
+""")
+        
+        if self.multi_target_files:
+            file_section = ["## Target Files (Content)"]
+            for f in self.multi_target_files:
+                file_section.append(f"\n### {f.get('name', 'Unknown')}")
+                file_section.append(f"Path: {f.get('path', 'Unknown')}")
+                content = f.get('content', '')
+                if len(content) > 2000:
+                    content = content[:2000] + f"\n... [truncated, {len(f.get('content', '')) - 2000} more chars]"
+                file_section.append(f"```\n{content}\n```")
+            sections.append("\n".join(file_section))
+        
+        if self.file_evidence and _FULL_EVIDENCE_AVAILABLE and format_evidence_for_prompt:
+            try:
+                sections.append(format_evidence_for_prompt(self.file_evidence))
+            except Exception as e:
+                logger.warning(f"[critical_pipeline] v2.9 Failed to format file evidence: {e}")
+        
+        if self.errors:
+            sections.append(f"## Evidence Gathering Errors\n" + "\n".join(f"- {e}" for e in self.errors))
+        
+        return "\n\n".join(sections) if sections else "(No evidence gathered)"
+
+
+def gather_critical_pipeline_evidence(
+    spec_data: Dict[str, Any],
+    message: str,
+    include_arch_map: bool = True,
+    include_codebase_report: bool = False,
+    include_file_evidence: bool = True,
+    arch_map_max_lines: int = 500,
+    codebase_max_lines: int = 300,
+) -> CriticalPipelineEvidence:
+    """
+    v2.9: Gather comprehensive evidence for Critical Pipeline.
+    
+    This gives Critical Pipeline the same visibility as SpecGate:
+    - Architecture map (system structure)
+    - Codebase report (file contents and patterns)
+    - File-specific evidence (for the job at hand)
+    
+    Critical Pipeline is READ-ONLY - no writes ever.
+    
+    Args:
+        spec_data: The validated spec from SpecGate
+        message: The user's original message
+        include_arch_map: Load architecture map (default True)
+        include_codebase_report: Load codebase report (default False - heavy)
+        include_file_evidence: Gather file evidence from spec (default True)
+        arch_map_max_lines: Max lines to load from arch map
+        codebase_max_lines: Max lines to load from codebase report
+        
+    Returns:
+        CriticalPipelineEvidence with all gathered evidence
+    """
+    evidence = CriticalPipelineEvidence()
+    
+    logger.info(
+        "[critical_pipeline] v2.9 gather_critical_pipeline_evidence: "
+        "arch=%s, codebase=%s, files=%s",
+        include_arch_map, include_codebase_report, include_file_evidence
+    )
+    
+    # =========================================================================
+    # Load Architecture Map
+    # =========================================================================
+    
+    if include_arch_map and _REPORT_RESOLVER_AVAILABLE and get_latest_architecture_map:
+        try:
+            resolved = get_latest_architecture_map()
+            if resolved and resolved.found:
+                content, truncated = read_report_content(resolved, max_lines=arch_map_max_lines)
+                if content:
+                    evidence.arch_map_content = content
+                    evidence.arch_map_filename = resolved.filename
+                    evidence.arch_map_mtime = resolved.mtime.strftime("%Y-%m-%d %H:%M:%S") if resolved.mtime else None
+                    evidence.arch_map_loaded = True
+                    logger.info(
+                        "[critical_pipeline] v2.9 Loaded architecture map: %s (%d chars)",
+                        resolved.filename, len(content)
+                    )
+            else:
+                evidence.errors.append("Architecture map not found")
+        except Exception as e:
+            logger.warning(f"[critical_pipeline] v2.9 Failed to load architecture map: {e}")
+            evidence.errors.append(f"Architecture map load failed: {str(e)[:100]}")
+    
+    # =========================================================================
+    # Load Codebase Report (optional - can be heavy)
+    # =========================================================================
+    
+    if include_codebase_report and _REPORT_RESOLVER_AVAILABLE and get_latest_codebase_report_full:
+        try:
+            resolved = get_latest_codebase_report_full()
+            if resolved and resolved.found:
+                content, truncated = read_report_content(resolved, max_lines=codebase_max_lines)
+                if content:
+                    evidence.codebase_report_content = content
+                    evidence.codebase_report_filename = resolved.filename
+                    evidence.codebase_report_mtime = resolved.mtime.strftime("%Y-%m-%d %H:%M:%S") if resolved.mtime else None
+                    evidence.codebase_report_loaded = True
+                    logger.info(
+                        "[critical_pipeline] v2.9 Loaded codebase report: %s (%d chars)",
+                        resolved.filename, len(content)
+                    )
+            else:
+                evidence.errors.append("Codebase report not found")
+        except Exception as e:
+            logger.warning(f"[critical_pipeline] v2.9 Failed to load codebase report: {e}")
+            evidence.errors.append(f"Codebase report load failed: {str(e)[:100]}")
+    
+    # =========================================================================
+    # Extract File Evidence from Spec (multi-target files)
+    # =========================================================================
+    
+    if include_file_evidence:
+        # First, check if spec already has multi_target_files from SpecGate
+        multi_target_files = spec_data.get("multi_target_files", [])
+        
+        if multi_target_files:
+            logger.info(
+                "[critical_pipeline] v2.9 Using %d multi_target_files from spec",
+                len(multi_target_files)
+            )
+            
+            for mtf in multi_target_files:
+                file_entry = {
+                    "name": mtf.get("name", "Unknown"),
+                    "path": mtf.get("path", mtf.get("resolved_path", "Unknown")),
+                    "content": mtf.get("content", mtf.get("full_content", "")),
+                    "found": mtf.get("found", True),
+                }
+                evidence.multi_target_files.append(file_entry)
+            
+            evidence.file_evidence_loaded = True
+        
+        # Also check for single-file evidence
+        elif spec_data.get("sandbox_input_path") or spec_data.get("sandbox_input_excerpt"):
+            input_path = spec_data.get("sandbox_input_path", "Unknown")
+            input_excerpt = spec_data.get("sandbox_input_excerpt", "")
+            
+            if input_excerpt:
+                evidence.multi_target_files.append({
+                    "name": os.path.basename(input_path) if input_path else "input",
+                    "path": input_path,
+                    "content": input_excerpt,
+                    "found": True,
+                })
+                evidence.file_evidence_loaded = True
+        
+        # If we still don't have file evidence, try gathering it ourselves
+        if not evidence.file_evidence_loaded and _FULL_EVIDENCE_AVAILABLE and gather_filesystem_evidence:
+            try:
+                # Gather evidence from the message + spec context
+                combined_text = f"{message}\n{spec_data.get('goal', '')}\n{spec_data.get('summary', '')}"
+                
+                file_pkg = gather_filesystem_evidence(combined_text)
+                
+                if file_pkg and file_pkg.has_valid_targets():
+                    evidence.file_evidence = file_pkg
+                    evidence.file_evidence_loaded = True
+                    
+                    # Also extract file contents for easy access
+                    for fe in file_pkg.get_all_valid_targets():
+                        evidence.multi_target_files.append({
+                            "name": os.path.basename(fe.resolved_path) if fe.resolved_path else fe.original_reference,
+                            "path": fe.resolved_path or fe.original_reference,
+                            "content": fe.full_content or fe.content_preview or "",
+                            "found": fe.exists and fe.readable,
+                        })
+                    
+                    logger.info(
+                        "[critical_pipeline] v2.9 Gathered file evidence: %s",
+                        file_pkg.to_summary()
+                    )
+            except Exception as e:
+                logger.warning(f"[critical_pipeline] v2.9 Failed to gather file evidence: {e}")
+                evidence.errors.append(f"File evidence gathering failed: {str(e)[:100]}")
+    
+    logger.info(
+        "[critical_pipeline] v2.9 Evidence gathering complete: "
+        "arch=%s, codebase=%s, files=%d, errors=%d",
+        evidence.arch_map_loaded,
+        evidence.codebase_report_loaded,
+        len(evidence.multi_target_files),
+        len(evidence.errors)
+    )
+    
+    return evidence
+
+
+def read_file_for_critical_pipeline(path: str, max_chars: int = 50000) -> Optional[str]:
+    """
+    v2.9: Read a single file for Critical Pipeline.
+    
+    Uses sandbox client if available, falls back to direct read.
+    This gives Critical Pipeline the ability to read any file it needs.
+    
+    Args:
+        path: File path to read
+        max_chars: Maximum characters to read
+        
+    Returns:
+        File content or None if read failed
+    """
+    if _FULL_EVIDENCE_AVAILABLE and sandbox_read_file:
+        success, content = sandbox_read_file(path, max_chars=max_chars)
+        if success:
+            return content
+    
+    # Fallback to direct read
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            return f.read(max_chars)
+    except Exception as e:
+        logger.warning(f"[critical_pipeline] v2.9 read_file_for_critical_pipeline failed for {path}: {e}")
+        return None
+
+
+def list_directory_for_critical_pipeline(path: str) -> List[Dict[str, Any]]:
+    """
+    v2.9: List directory contents for Critical Pipeline.
+    
+    Uses sandbox client if available, falls back to os.listdir.
+    
+    Args:
+        path: Directory path to list
+        
+    Returns:
+        List of file/directory info dicts
+    """
+    if _FULL_EVIDENCE_AVAILABLE and sandbox_list_directory:
+        success, files = sandbox_list_directory(path)
+        if success:
+            return files
+    
+    # Fallback to direct listing
+    try:
+        result = []
+        for item in os.listdir(path):
+            item_path = os.path.join(path, item)
+            result.append({
+                "path": item_path,
+                "name": item,
+                "is_dir": os.path.isdir(item_path),
+                "size": os.path.getsize(item_path) if os.path.isfile(item_path) else None,
+            })
+        return result
+    except Exception as e:
+        logger.warning(f"[critical_pipeline] v2.9 list_directory_for_critical_pipeline failed for {path}: {e}")
+        return []
 
 
 # =============================================================================
@@ -455,8 +848,18 @@ def micro_quickcheck(spec_data: Dict[str, Any], plan_text: str) -> MicroQuickche
     Fast deterministic validation for micro-execution jobs.
     NO LLM calls - pure tick-box checks.
     
+    v2.8 (2026-01-30): MULTI-TARGET READ FALLBACK
+    - If multi_target_files has entries but is_multi_target_read=False,
+      automatically treat as multi-target (handles persistence chain issues)
+    
+    v2.7 (2026-01-30): MULTI-TARGET READ SUPPORT
+    - Check 1 now handles is_multi_target_read=True
+    - For multi-target: validates multi_target_files has entries
+    - For single file: validates sandbox_input_path exists
+    - Check 3 skips input path validation for multi-target reads
+    
     v2.3 Checks (mode-aware):
-    1. sandbox_input_path exists in spec
+    1. sandbox_input_path exists in spec (OR multi_target_files for multi-read)
     2. sandbox_output_path validation (mode-dependent):
        - CHAT_ONLY: skip (no output file required)
        - REWRITE_IN_PLACE: require output_path == input_path
@@ -471,29 +874,125 @@ def micro_quickcheck(spec_data: Dict[str, Any], plan_text: str) -> MicroQuickche
     """
     issues: List[Dict[str, str]] = []
     
+    # v2.9.1 DIAGNOSTIC: Log spec_data keys for debugging
+    logger.info(
+        "[micro_quickcheck] v2.9.1 DIAGNOSTIC spec_data keys: %s",
+        list(spec_data.keys())[:20]  # First 20 keys
+    )
+    
+    # Log specific fields we're looking for
+    logger.info(
+        "[micro_quickcheck] v2.9.1 DIAGNOSTIC key checks: "
+        "is_multi_target_read=%s, multi_target_files=%s, grounding_data=%s, "
+        "sandbox_input_path=%s",
+        spec_data.get("is_multi_target_read"),
+        bool(spec_data.get("multi_target_files")),
+        bool(spec_data.get("grounding_data")),
+        bool(spec_data.get("sandbox_input_path"))
+    )
+    
     # =========================================================================
     # v2.3: Extract output_mode for mode-aware validation
     # =========================================================================
     
     output_mode = (spec_data.get("sandbox_output_mode") or "").lower()
-    logger.info("[micro_quickcheck] v2.3 output_mode=%s", output_mode)
+    logger.info("[micro_quickcheck] v2.7 output_mode=%s", output_mode)
     
     # =========================================================================
-    # Check 1: Input path resolved
+    # v2.8: Check for multi-target read mode (with FALLBACK detection)
+    # v2.9.1: Also check grounding_data for multi_target_files
     # =========================================================================
     
-    input_path = (
-        spec_data.get("sandbox_input_path") or
-        spec_data.get("input_file_path") or
-        ""
+    is_multi_target_read = spec_data.get("is_multi_target_read", False)
+    
+    # v2.9.1: Also check grounding_data for is_multi_target_read flag
+    if not is_multi_target_read:
+        grounding_data_check = spec_data.get("grounding_data", {})
+        is_multi_target_read = grounding_data_check.get("is_multi_target_read", False)
+        if is_multi_target_read:
+            logger.info("[micro_quickcheck] v2.9.1 Found is_multi_target_read=True in grounding_data")
+    
+    # v2.9.1: Check multiple locations for multi_target_files
+    multi_target_files = spec_data.get("multi_target_files", [])
+    
+    # If not at root, check grounding_data (where SpecGate v1.40 stores it)
+    if not multi_target_files:
+        grounding_data = spec_data.get("grounding_data", {})
+        multi_target_files = grounding_data.get("multi_target_files", [])
+        if multi_target_files:
+            logger.info(
+                "[micro_quickcheck] v2.9.1 Found multi_target_files in grounding_data: %d entries",
+                len(multi_target_files)
+            )
+    
+    # Also check evidence_package if present
+    if not multi_target_files:
+        evidence_pkg = spec_data.get("evidence_package", {})
+        multi_target_files = evidence_pkg.get("multi_target_files", [])
+        if multi_target_files:
+            logger.info(
+                "[micro_quickcheck] v2.9.1 Found multi_target_files in evidence_package: %d entries",
+                len(multi_target_files)
+            )
+    
+    # Also check sandbox_discovery_result
+    if not multi_target_files:
+        sandbox_result = spec_data.get("sandbox_discovery_result", {})
+        multi_target_files = sandbox_result.get("multi_target_files", [])
+        if multi_target_files:
+            logger.info(
+                "[micro_quickcheck] v2.9.1 Found multi_target_files in sandbox_discovery_result: %d entries",
+                len(multi_target_files)
+            )
+    
+    # v2.8 FALLBACK: If multi_target_files has entries but flag is missing, 
+    # treat as multi-target anyway. This handles persistence chain issues.
+    if not is_multi_target_read and multi_target_files and len(multi_target_files) > 0:
+        logger.warning(
+            "[micro_quickcheck] v2.8 FALLBACK: is_multi_target_read=False but multi_target_files has %d entries - treating as multi-target",
+            len(multi_target_files)
+        )
+        is_multi_target_read = True
+    
+    logger.info(
+        "[micro_quickcheck] v2.8 is_multi_target_read=%s, multi_target_files_count=%d",
+        is_multi_target_read, len(multi_target_files) if multi_target_files else 0
     )
     
-    if not input_path:
-        issues.append({
-            "id": "MICRO-CHECK-001",
-            "description": "sandbox_input_path not resolved in spec - cannot verify input source",
-            "severity": "blocking",
-        })
+    # =========================================================================
+    # Check 1: Input path resolved (v2.7: supports multi-target read)
+    # =========================================================================
+    
+    input_path = ""  # Will be set for single-file mode
+    
+    if is_multi_target_read:
+        # v2.7: Multi-target read - check for multi_target_files instead of single path
+        if not multi_target_files or len(multi_target_files) == 0:
+            issues.append({
+                "id": "MICRO-CHECK-001",
+                "description": "is_multi_target_read=True but multi_target_files is empty - no input sources",
+                "severity": "blocking",
+            })
+        else:
+            # Multi-target has inputs - CHECK PASSED
+            logger.info(
+                "[micro_quickcheck] v2.7 MULTI-TARGET READ: %d input files found - CHECK 1 PASSED",
+                len(multi_target_files)
+            )
+    else:
+        # Single input file mode - original behavior
+        input_path = (
+            spec_data.get("sandbox_input_path") or
+            spec_data.get("input_file_path") or
+            ""
+        )
+        
+        if not input_path:
+            issues.append({
+                "id": "MICRO-CHECK-001",
+                "description": "sandbox_input_path not resolved in spec - cannot verify input source",
+                "severity": "blocking",
+            })
     
     # =========================================================================
     # Check 2: Output path resolved (v2.3: mode-aware)
@@ -648,6 +1147,11 @@ def _generate_micro_execution_plan(spec_data: Dict[str, Any], job_id: str) -> st
     """
     Generate a minimal execution plan for MICRO jobs.
     
+    v2.7 (2026-01-30): MULTI-TARGET READ SUPPORT
+    - Handles is_multi_target_read=True for multi-file read operations
+    - Displays multi_target_files list instead of single input_path
+    - Works with SpecGate's multi-target synthesis
+    
     v2.4 (2026-01-25): MODE-AWARE PLAN GENERATION
     - CHAT_ONLY: NO write steps, NO output verification
     - REWRITE_IN_PLACE / APPEND_IN_PLACE: Write to same file
@@ -661,14 +1165,27 @@ def _generate_micro_execution_plan(spec_data: Dict[str, Any], job_id: str) -> st
     # v2.4: Get output mode FIRST - this determines plan structure
     output_mode = (spec_data.get("sandbox_output_mode") or "").strip().lower()
     
-    logger.info(f"[_generate_micro_execution_plan] v2.4 output_mode={repr(output_mode)}")
+    # v2.7: Check for multi-target read mode
+    is_multi_target_read = spec_data.get("is_multi_target_read", False)
+    multi_target_files = spec_data.get("multi_target_files", [])
     
-    # Get paths from SpecGate's sandbox resolution
-    input_path = (
-        spec_data.get("sandbox_input_path") or
-        spec_data.get("input_file_path") or
-        "(input path not resolved)"
+    logger.info(
+        f"[_generate_micro_execution_plan] v2.7 output_mode={repr(output_mode)}, "
+        f"is_multi_target_read={is_multi_target_read}, multi_target_count={len(multi_target_files)}"
     )
+    
+    # v2.7: Get input path - handle multi-target read differently
+    if is_multi_target_read and multi_target_files:
+        # Multi-target: format as list of files
+        input_path = f"(multi-target read: {len(multi_target_files)} files)"
+    else:
+        # Single file: original behavior
+        input_path = (
+            spec_data.get("sandbox_input_path") or
+            spec_data.get("input_file_path") or
+            "(input path not resolved)"
+        )
+    
     output_path = (
         spec_data.get("sandbox_output_path") or
         spec_data.get("output_file_path") or
@@ -1514,6 +2031,27 @@ async def generate_critical_pipeline_stream(
             if not job_id:
                 job_id = f"micro-{uuid4().hex[:8]}"
             
+            # =================================================================
+            # v2.9: Gather evidence for MICRO jobs too (informed plan generation)
+            # =================================================================
+            
+            micro_evidence = gather_critical_pipeline_evidence(
+                spec_data=spec_data,
+                message=message,
+                include_arch_map=False,  # Micro jobs don't need full arch map
+                include_codebase_report=False,  # Keep it light
+                include_file_evidence=True,  # DO gather file evidence
+            )
+            
+            if micro_evidence.file_evidence_loaded:
+                evidence_msg = f"📚 **File evidence loaded:** {len(micro_evidence.multi_target_files)} file(s)\n"
+                yield "data: " + json.dumps({"type": "token", "content": evidence_msg}) + "\n\n"
+                response_parts.append(evidence_msg)
+                logger.info(
+                    "[critical_pipeline] v2.9 MICRO evidence: %d files",
+                    len(micro_evidence.multi_target_files)
+                )
+            
             # Generate minimal execution plan (no LLM call needed)
             micro_plan = _generate_micro_execution_plan(spec_data, job_id)
             
@@ -1654,6 +2192,28 @@ You may need to re-run Spec Gate with more details about the file locations.
             # Create job ID
             if not job_id:
                 job_id = f"scan-{uuid4().hex[:8]}"
+            
+            # =================================================================
+            # v2.9: Gather evidence for SCAN jobs (filesystem context)
+            # =================================================================
+            
+            scan_evidence = gather_critical_pipeline_evidence(
+                spec_data=spec_data,
+                message=message,
+                include_arch_map=True,  # Scan jobs benefit from arch understanding
+                include_codebase_report=False,
+                include_file_evidence=False,  # Scan finds files, doesn't need existing evidence
+                arch_map_max_lines=300,
+            )
+            
+            if scan_evidence.arch_map_loaded:
+                evidence_msg = f"📚 **Architecture context loaded:** {len(scan_evidence.arch_map_content or '')} chars\n"
+                yield "data: " + json.dumps({"type": "token", "content": evidence_msg}) + "\n\n"
+                response_parts.append(evidence_msg)
+                logger.info(
+                    "[critical_pipeline] v2.9 SCAN evidence: arch_map=%d chars",
+                    len(scan_evidence.arch_map_content or '')
+                )
             
             # Generate scan execution plan (no LLM call needed)
             scan_plan = _generate_scan_execution_plan(spec_data, job_id)
@@ -1810,27 +2370,58 @@ You may need to re-run Spec Gate with more details about the file locations.
             response_parts.append(binding_msg)
         
         # =====================================================================
-        # Step 2b: Load evidence for grounded architecture generation
+        # Step 2b: v2.9 Load COMPREHENSIVE evidence for grounded architecture
         # =====================================================================
         
-        evidence_excerpt = ""
-        if _EVIDENCE_AVAILABLE and load_evidence:
-            try:
-                evidence = load_evidence(
-                    include_arch_map=True,
-                    include_codebase_report=False,  # Spec already has details
-                    arch_map_max_lines=200,
-                )
-                
-                if evidence.arch_map_content:
-                    evidence_excerpt = evidence.arch_map_content[:8000]  # Cap at 8k chars
-                    yield "data: " + json.dumps({"type": "token", "content": "📚 **Evidence loaded:** Architecture map\n"}) + "\n\n"
-                    response_parts.append("📚 **Evidence loaded:** Architecture map\n")
-                    logger.info("[critical_pipeline] Loaded architecture map evidence (%d chars)", len(evidence_excerpt))
-                else:
-                    logger.warning("[critical_pipeline] No architecture map content available")
-            except Exception as e:
-                logger.warning(f"[critical_pipeline] Failed to load evidence: {e}")
+        yield "data: " + json.dumps({"type": "token", "content": "📚 **Gathering evidence...**\n"}) + "\n\n"
+        response_parts.append("📚 **Gathering evidence...**\n")
+        
+        # v2.9: Use new comprehensive evidence gathering (same powers as SpecGate)
+        cp_evidence = gather_critical_pipeline_evidence(
+            spec_data=spec_data,
+            message=message,
+            include_arch_map=True,
+            include_codebase_report=True,  # v2.9: Now load codebase report too
+            include_file_evidence=True,
+            arch_map_max_lines=800,  # v2.9: More context
+            codebase_max_lines=500,
+        )
+        
+        evidence_status = []
+        if cp_evidence.arch_map_loaded:
+            evidence_status.append(f"Architecture map ({len(cp_evidence.arch_map_content or '')} chars)")
+        if cp_evidence.codebase_report_loaded:
+            evidence_status.append(f"Codebase report ({len(cp_evidence.codebase_report_content or '')} chars)")
+        if cp_evidence.file_evidence_loaded:
+            evidence_status.append(f"File evidence ({len(cp_evidence.multi_target_files)} files)")
+        
+        if evidence_status:
+            evidence_msg = "✅ **Evidence loaded:** " + ", ".join(evidence_status) + "\n"
+            yield "data: " + json.dumps({"type": "token", "content": evidence_msg}) + "\n\n"
+            response_parts.append(evidence_msg)
+        else:
+            yield "data: " + json.dumps({"type": "token", "content": "⚠️ **Limited evidence available**\n"}) + "\n\n"
+            response_parts.append("⚠️ **Limited evidence available**\n")
+        
+        if cp_evidence.errors:
+            for err in cp_evidence.errors[:3]:  # Show first 3 errors
+                err_msg = f"  ⚠️ {err}\n"
+                yield "data: " + json.dumps({"type": "token", "content": err_msg}) + "\n\n"
+                response_parts.append(err_msg)
+        
+        # Format evidence for LLM prompt
+        evidence_context = cp_evidence.to_context_string(
+            max_arch_chars=12000,  # v2.9: More context for architecture
+            max_codebase_chars=8000,
+        )
+        
+        logger.info(
+            "[critical_pipeline] v2.9 Evidence gathered: arch=%s, codebase=%s, files=%d, context_len=%d",
+            cp_evidence.arch_map_loaded,
+            cp_evidence.codebase_report_loaded,
+            len(cp_evidence.multi_target_files),
+            len(evidence_context)
+        )
         
         # =====================================================================
         # Step 3: Build prompt with content preservation and bindings
@@ -1944,9 +2535,9 @@ The implementation MUST NOT operate outside these boundaries.
         
         system_prompt += binding_prompt
         
-        # Add evidence excerpt if available (for grounded architecture generation)
-        if evidence_excerpt:
-            system_prompt += f"""\n\n## ARCHITECTURE MAP (excerpts for context)\n\nThis is an excerpt from the existing codebase architecture. Use this to understand:\n- Existing code structure and patterns\n- Available modules and services\n- Integration points\n\n```\n{evidence_excerpt[:6000]}\n```\n\nReference these patterns when designing the architecture.\n"""
+        # v2.9: Add comprehensive evidence context (architecture + codebase + files)
+        if evidence_context and len(evidence_context) > 50:
+            system_prompt += f"""\n\n## CODEBASE EVIDENCE (v2.9 - Comprehensive)\n\nThis is comprehensive evidence gathered from the codebase. Use this to understand:\n- Existing code structure and patterns\n- Available modules and services\n- Integration points\n- Actual file contents for context\n\n{evidence_context}\n\nReference these patterns when designing the architecture.\n"""
         
         system_prompt += "\n\nGenerate a complete, detailed architecture document."
         
@@ -2181,4 +2772,9 @@ __all__ = [
     "micro_quickcheck",
     "ScanQuickcheckResult",
     "scan_quickcheck",
+    # v2.9: Evidence gathering exports
+    "CriticalPipelineEvidence",
+    "gather_critical_pipeline_evidence",
+    "read_file_for_critical_pipeline",
+    "list_directory_for_critical_pipeline",
 ]

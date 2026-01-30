@@ -1,14 +1,30 @@
 # FILE: app/pot_spec/grounded/spec_generation.py
 """
-SpecGate Spec Generation Module (v1.35)
+SpecGate Spec Generation Module (v1.40)
 
 Core specification generation logic including:
 - POT spec markdown builder
 - Step/test derivation from domains
 - Intent parsing and grounding
 - Main async entry point
-- v1.35: Multi-target file read - CRITICAL FIX for reply generation
+- v1.40: CRITICAL FIX - Export multi-target read fields to grounding_data
 
+v1.40 (2026-01-30): CRITICAL FIX - Export multi-target fields to grounding_data
+    - Added is_multi_target_read to grounding_data for Critical Pipeline
+    - Added multi_target_files (serialized) to grounding_data for Critical Pipeline
+    - Fixes MICRO-CHECK-001 failure where quickcheck couldn't see multi-target read
+v1.39 (2026-01-30): CRITICAL FIX - Multi-target read handling
+    - Fixed Step 3.5 overwriting multi-target data from Step 3.1
+    - Multi-target reads now skip single-file sandbox resolution
+    - Fixed goal extraction to handle "Astra, command: send to spec gate What is being built: ..."
+    - Multi-target reads now properly detect output mode (SEPARATE_REPLY_FILE vs CHAT_ONLY)
+    - Combined excerpt now shows content from ALL files, not just first
+    - Output path for reply.txt now set correctly for multi-target with SEPARATE_REPLY_FILE
+v1.38 (2026-01-30): CRITICAL FIX - CREATE target detection
+    - Added import for extract_create_targets from sandbox_discovery
+    - CREATE targets are now excluded from system-wide file scans
+    - Fixes bug where "reply" file was searched for instead of created
+    - Works with v1.33 evidence_gathering.py for full chain support
 v1.35 (2026-01-29): CRITICAL FIX - Multi-target reply generation (Level 2.5)
     - Fixed format_multi_target_reply() call to properly await async function
     - Now passes provider_id, model_id, llm_call_func parameters
@@ -82,7 +98,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # v1.35 BUILD VERIFICATION
 # =============================================================================
-SPEC_GENERATION_BUILD_ID = "2026-01-30-v1.37-system-wide-scan"
+SPEC_GENERATION_BUILD_ID = "2026-01-30-v1.40-export-multi-target-to-grounding-data"
 print(f"[SPEC_GENERATION_LOADED] BUILD_ID={SPEC_GENERATION_BUILD_ID}")
 logger.info(f"[spec_generation] Module loaded: BUILD_ID={SPEC_GENERATION_BUILD_ID}")
 
@@ -127,6 +143,7 @@ from .sandbox_discovery import (
     extract_file_targets,
     is_multi_target_request,
     is_system_wide_scan_request,  # v1.37: System-wide scan detection
+    extract_create_targets,  # v1.38: CREATE target detection
 )
 
 from .tech_stack_detection import (
@@ -506,36 +523,56 @@ def parse_weaver_intent(constraints_hint: Optional[Dict]) -> Dict[str, Any]:
             len(job_desc_text)
         )
         
-        # v1.12: Extract goal from "What is being built" section, not just first line
+        # v1.39: Extract goal from "What is being built" section
+        # CRITICAL FIX: Handle text like "Astra, command: send to spec gate What is being built: Multi-file reader..."
+        # We need to find "What is being built:" specifically, not just split on first colon
         lines = job_desc_text.strip().split("\n")
         goal_found = False
         
-        # First, try to find "What is being built" section
-        for i, line in enumerate(lines):
-            line_lower = line.lower().strip()
-            if "what is being built" in line_lower:
-                # Check if goal is on same line (after colon/dash)
-                if ":" in line or "-" in line:
-                    parts = re.split(r'[:\-]', line, 1)
-                    if len(parts) > 1 and parts[1].strip():
-                        result["goal"] = parts[1].strip()
+        # v1.39: First try direct regex extraction (handles inline format)
+        what_is_being_built_match = re.search(
+            r'what\s+is\s+being\s+built\s*[:\-]\s*(.+?)(?:\n|$)',
+            job_desc_text,
+            re.IGNORECASE
+        )
+        if what_is_being_built_match:
+            goal_text = what_is_being_built_match.group(1).strip()
+            # Clean up: remove trailing section markers
+            goal_text = re.split(r'\*\*|\n', goal_text)[0].strip()
+            if goal_text:
+                result["goal"] = goal_text
+                goal_found = True
+                logger.info(
+                    "[spec_generation] v1.39 Extracted goal via regex: %s",
+                    result["goal"][:100]
+                )
+        
+        # Fallback: line-by-line parsing (v1.12 behavior)
+        if not goal_found:
+            for i, line in enumerate(lines):
+                line_lower = line.lower().strip()
+                if "what is being built" in line_lower:
+                    # Check if goal is on same line (after the phrase)
+                    match = re.search(r'what\s+is\s+being\s+built\s*[:\-]\s*(.+)', line, re.IGNORECASE)
+                    if match and match.group(1).strip():
+                        result["goal"] = match.group(1).strip()
                         goal_found = True
                         logger.info(
-                            "[spec_generation] v1.12 Extracted goal from 'What is being built' line: %s",
+                            "[spec_generation] v1.39 Extracted goal from 'What is being built' line: %s",
                             result["goal"][:100]
                         )
                         break
-                # Otherwise, goal might be on next line
-                if i + 1 < len(lines):
-                    next_line = lines[i + 1].strip()
-                    if next_line and not next_line.lower().startswith(("intended", "unresolved", "questions", "-", "*")):
-                        result["goal"] = next_line.lstrip("- ").strip()
-                        goal_found = True
-                        logger.info(
-                            "[spec_generation] v1.12 Extracted goal from line after 'What is being built': %s",
-                            result["goal"][:100]
-                        )
-                        break
+                    # Otherwise, goal might be on next line
+                    if i + 1 < len(lines):
+                        next_line = lines[i + 1].strip()
+                        if next_line and not next_line.lower().startswith(("intended", "unresolved", "questions", "-", "*", "**")):
+                            result["goal"] = next_line.lstrip("- ").strip()
+                            goal_found = True
+                            logger.info(
+                                "[spec_generation] v1.39 Extracted goal from line after 'What is being built': %s",
+                                result["goal"][:100]
+                            )
+                            break
         
         # Fallback: first non-header line (old behavior)
         if not goal_found and lines:
@@ -861,7 +898,26 @@ def _derive_steps_from_domain(intent: Dict[str, Any], spec: GroundedPOTSpec) -> 
     
     # v1.6: Sandbox file domain - specific steps for file discovery/read/reply tasks
     if "sandbox_file" in detected_domains:
-        if spec.sandbox_discovery_used and spec.sandbox_input_path:
+        # v1.39: Multi-target read has different steps
+        if spec.is_multi_target_read and spec.multi_target_files:
+            valid_count = sum(1 for ft in spec.multi_target_files if ft.found)
+            file_names = [ft.name for ft in spec.multi_target_files if ft.found][:4]
+            files_display = ", ".join(file_names) + ("..." if len(file_names) > 4 else "")
+            steps = [
+                f"Read {valid_count} files: {files_display}",
+                "Parse and understand content from each file",
+                "Synthesize combined understanding of all file contents",
+            ]
+            output_mode = spec.sandbox_output_mode
+            if output_mode == OutputMode.SEPARATE_REPLY_FILE.value:
+                steps.append(f"Write synthesized reply to: `{spec.sandbox_output_path}`")
+                steps.append("Verify reply.txt file exists")
+            elif output_mode == OutputMode.REWRITE_IN_PLACE.value:
+                steps.append("Insert answers under each question in source files")
+            else:  # CHAT_ONLY or None
+                steps.append("[Present synthesized reply in chat - no file modification]")
+            return steps
+        elif spec.sandbox_discovery_used and spec.sandbox_input_path:
             steps = [
                 f"Read input file from sandbox: `{spec.sandbox_input_path}`",
                 "Parse and understand the question/content in the file",
@@ -981,7 +1037,25 @@ def _derive_tests_from_domain(intent: Dict[str, Any], spec: GroundedPOTSpec) -> 
     
     # v1.6: Sandbox file domain
     if "sandbox_file" in detected_domains:
-        if spec.sandbox_discovery_used and spec.sandbox_input_path:
+        # v1.39: Multi-target read has different tests
+        if spec.is_multi_target_read and spec.multi_target_files:
+            valid_count = sum(1 for ft in spec.multi_target_files if ft.found)
+            total_count = len(spec.multi_target_files)
+            tests = [
+                f"{valid_count}/{total_count} target files were found and read successfully",
+                "Content from all files was correctly parsed",
+                "Combined/synthesized understanding was generated",
+            ]
+            output_mode = spec.sandbox_output_mode
+            if output_mode == OutputMode.SEPARATE_REPLY_FILE.value:
+                tests.append(f"Synthesized reply written to `{spec.sandbox_output_path}`")
+                tests.append("reply.txt file exists and contains coherent synthesis")
+            elif output_mode == OutputMode.REWRITE_IN_PLACE.value:
+                tests.append("Answers inserted in each source file")
+            else:  # CHAT_ONLY
+                tests.append("Synthesized reply presented in chat")
+            return tests
+        elif spec.sandbox_discovery_used and spec.sandbox_input_path:
             tests = [
                 f"Input file `{spec.sandbox_input_path}` was found and read successfully",
                 "File content was correctly parsed and understood",
@@ -1974,11 +2048,30 @@ async def run_spec_gate_grounded(
                     dir(fs_evidence)
                 )
             
-            # Set output mode to CHAT_ONLY for multi-target reads
-            spec.sandbox_output_mode = OutputMode.CHAT_ONLY.value
-            spec.constraints_from_repo.append(
-                f"Output mode: CHAT_ONLY (multi-target read: {len(file_targets)} files)"
-            )
+            # v1.39 FIX: Detect output mode for multi-target reads
+            # Don't assume CHAT_ONLY - user might want to create a reply file
+            multi_output_mode = detect_output_mode(combined_text)
+            spec.sandbox_output_mode = multi_output_mode.value
+            
+            if multi_output_mode == OutputMode.SEPARATE_REPLY_FILE:
+                # Set output path for reply file creation
+                # Try to find where the user wants the reply - default to first file's folder
+                first_valid = next((ft for ft in file_targets if ft.found and ft.resolved_path), None)
+                if first_valid and first_valid.resolved_path:
+                    folder_path = os.path.dirname(first_valid.resolved_path)
+                    spec.sandbox_output_path = os.path.join(folder_path, "reply.txt")
+                    spec.sandbox_folder_path = folder_path
+                spec.constraints_from_repo.append(
+                    f"Output mode: SEPARATE_REPLY_FILE (multi-target read: {len(file_targets)} files -> reply.txt)"
+                )
+                logger.info(
+                    "[spec_generation] v1.39 Multi-target with SEPARATE_REPLY_FILE: output=%s",
+                    spec.sandbox_output_path
+                )
+            else:
+                spec.constraints_from_repo.append(
+                    f"Output mode: {multi_output_mode.value.upper()} (multi-target read: {len(file_targets)} files)"
+                )
             
             # Add to what_exists
             valid_count = sum(1 for ft in file_targets if ft.found)
@@ -1986,17 +2079,50 @@ async def run_spec_gate_grounded(
                 f"Multi-target read: {valid_count}/{len(file_targets)} files found"
             )
             
+            # v1.39: Set in_scope based on multi-target mode
+            mode_desc = {
+                "overwrite_full": "overwrite file (destructive)",
+                "append_in_place": "append in place",
+                "rewrite_in_place": "rewrite in place (Q&A insertion)",
+                "separate_reply_file": "write to reply.txt",
+                "chat_only": "present in chat (no file modification)",
+            }.get(spec.sandbox_output_mode, spec.sandbox_output_mode)
+            spec.in_scope = [f"Read {valid_count} files → synthesize content → {mode_desc}"]
+            
             # Log success
             logger.info(
-                "[spec_generation] v1.34 Multi-target read populated: %d/%d files found",
-                valid_count, len(file_targets)
+                "[spec_generation] v1.39 Multi-target read populated: %d/%d files found, output_mode=%s",
+                valid_count, len(file_targets), spec.sandbox_output_mode
             )
         
         # =================================================================
         # STEP 3.5: Populate sandbox resolution into spec
         # =================================================================
+        # v1.39 FIX: Skip single-file processing if multi-target was already handled
+        # This prevents Step 3.5 from overwriting the combined content from Step 3.1
         
-        if sandbox_discovery_result and sandbox_discovery_result.get("selected_file"):
+        if spec.is_multi_target_read:
+            logger.info(
+                "[spec_generation] v1.39 SKIPPING Step 3.5 (single-file sandbox resolution) - multi-target read already handled in Step 3.1"
+            )
+            # Still set some metadata for multi-target
+            spec.sandbox_discovery_used = True
+            spec.sandbox_discovery_status = sandbox_discovery_status or "multi_target_read"
+            # Build combined excerpt from all files
+            if spec.multi_target_files:
+                combined_excerpt_parts = []
+                for ft in spec.multi_target_files:
+                    if ft.found and ft.content:
+                        name = ft.name or os.path.basename(ft.resolved_path or "")
+                        preview = ft.content[:200] + "..." if len(ft.content) > 200 else ft.content
+                        combined_excerpt_parts.append(f"--- {name} ---\n{preview}")
+                if combined_excerpt_parts:
+                    spec.sandbox_input_excerpt = "\n\n".join(combined_excerpt_parts)
+                    logger.info(
+                        "[spec_generation] v1.39 Built combined excerpt from %d files",
+                        len(combined_excerpt_parts)
+                    )
+        elif sandbox_discovery_result and sandbox_discovery_result.get("selected_file"):
             selected = sandbox_discovery_result["selected_file"]
             folder_path = sandbox_discovery_result["path"]
             
@@ -2380,10 +2506,27 @@ async def run_spec_gate_grounded(
                 spec.constraints_from_intent.append(f"Write policy: READ_ONLY (scan operation)")
         
         # Build grounding_data
+        # v1.40: Include is_multi_target_read and multi_target_files for Critical Pipeline
         grounding_data = {
             "job_kind": job_kind,
             "job_kind_confidence": job_kind_confidence,
             "job_kind_reason": job_kind_reason,
+            # v1.40: Multi-target read fields for Critical Pipeline quickcheck
+            "is_multi_target_read": spec.is_multi_target_read,
+            "multi_target_files": [
+                {
+                    "name": ft.name,
+                    "anchor": ft.anchor,
+                    "subfolder": ft.subfolder,
+                    "resolved_path": ft.resolved_path,
+                    "found": ft.found,
+                    "error": ft.error,
+                    # v1.41: CRITICAL FIX - Include content for Critical Pipeline
+                    "content": ft.content if hasattr(ft, 'content') else "",
+                    "path": ft.resolved_path,  # Alias for easier access
+                }
+                for ft in (spec.multi_target_files or [])
+            ],
             # v1.33: Multi-file operation data
             "multi_file": (
                 multi_file_op.to_dict() if multi_file_op and hasattr(multi_file_op, 'to_dict') else

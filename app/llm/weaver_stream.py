@@ -2,6 +2,16 @@
 r"""
 Weaver Stream Handler for ASTRA - SIMPLIFIED VERSION
 
+v3.6.1 (2026-01-30): CRITICAL FIX - Context-aware micro-task detection
+- FIXED: "create a file" was falsely triggering "build verb + non-micro"
+- FIXED: "on my system" was falsely matching "system" as software system
+- Removed "system" and "platform" from NON_MICRO_INDICATORS (they're location context, not software)
+- Added explicit file creation patterns: "create a file", "make a file", etc.
+- File indicators now take priority over build verb detection
+- Strengthened MICRO_TASK_SYSTEM_PROMPT to forbid ALL discovery questions
+- Questions section now always says "none" except DELETE/MOVE blockers
+- SpecGate handles all file discovery - Weaver should never ask about paths/locations/extensions
+
 v3.6.0 (2026-01-23): TIGHTEN WEAVER - Blocker-Only Questions + Micro-Task Classifier
 - Added MICRO_FILE_TASK classification for simple file operations (read/write/find)
 - Micro tasks skip all unnecessary questions (OS, platform, desktop, exact filename)
@@ -1084,12 +1094,13 @@ MICRO_FILE_INDICATORS = [
 ]
 
 # Indicators AGAINST micro-task (only when paired with build verbs)
+# v3.6.1: REMOVED "system" - "on my system" is file context, not software system
+# v3.6.1: REMOVED "platform" - "on desktop" is a location, not software platform
 NON_MICRO_INDICATORS = [
     "app", "application", "website", "page", "component", "feature",
     "game", "dashboard", "ui", "interface", "api", "endpoint", "service",
-    "database", "system", "platform", "design", "develop", "implement",
-    "prototype", "demo", "all files", "every file", "entire", "batch",
-    "multiple files", "refactor", "restructure", "migrate",
+    "database", "design", "develop", "implement",
+    "prototype", "demo", "refactor", "restructure", "migrate",
 ]
 
 # Build verbs that make NON_MICRO_INDICATORS decisive
@@ -1122,16 +1133,25 @@ TYPO_NORMALIZATIONS = [
     (r"\bwrtie\b", "write"),
 ]
 
-# Micro-task system prompt (v3.6.0)
+# Micro-task system prompt (v3.6.1 - STRICTER, no unnecessary questions)
 MICRO_TASK_SYSTEM_PROMPT = """You are Weaver for MICRO FILE TASKS.
 
 Your job: Produce a SHORT, minimal job outline (10-20 lines max) for simple file operations.
 
-## RULES FOR MICRO FILE TASKS:
-1. NO questions about OS, platform, desktop, or exact filenames
-2. NO questions about paths - the system will search and find
-3. Output is MINIMAL - just enough for downstream to execute
-4. Steps are simple and direct
+## ABSOLUTE RULES FOR MICRO FILE TASKS:
+1. NO questions about OS/platform - it's always Windows
+2. NO questions about desktop location - there's only one accessible
+3. NO questions about file extensions - the system will search
+4. NO questions about paths - the system will find them
+5. NO questions about file format - default is plain text (.txt)
+6. NO questions about overwriting - default is overwrite if exists
+7. NO questions about exact filenames - the system searches
+8. Questions section should say "none" unless execution would truly FAIL
+
+## THE ONLY BLOCKING QUESTIONS (rare):
+- DELETE operations need confirmation ("Should I really delete X?")
+- MOVE without destination needs clarification ("Where to?")
+- NOTHING ELSE is a blocker
 
 ## OUTPUT FORMAT (keep it short!):
 
@@ -1142,25 +1162,28 @@ Planned steps:
 - [Step 1: Locate]
 - [Step 2: Action]
 - [Step 3: Output/Return]
-Questions: [only if true blockers exist, otherwise "none"]
+Questions: none
 
-That's the entire output. No more.
+That's the entire output. No ambiguities section. No extra sections.
 
 ## EXAMPLES:
 
-Input: "Go to desktop, find folder test, read txt, answer question"
+Input: "Find test1, test2, test3, test4 on my system, read them, create reply file on desktop, write a reply"
 Output:
-What is being built: Desktop question responder (micro file task)
-Intent: Find Desktop/test/*.txt, read question, produce reply
+What is being built: Multi-file reader with reply synthesis (micro file task)
+Intent: Find test1-test4 anywhere on system, read content, create Desktop/reply.txt with response
 Execution type: MICRO_FILE_TASK
 Planned steps:
-- Locate Desktop/test folder
-- Read .txt file (prefer test.txt, else first .txt found)
-- Generate reply from file content
-- Return reply in chat
+- System-wide search for test1, test2, test3, test4
+- Read all found files
+- Synthesize content into a reply
+- Create Desktop/reply.txt with synthesized response
 Questions: none
 
-CRITICAL: Keep output under 20 lines. No framework/architecture discussion."""
+CRITICAL: 
+- Keep output under 15 lines
+- Questions section must say "none" unless DELETE or unclear MOVE destination
+- SpecGate handles all file discovery - don't ask about paths/filenames/locations"""
 
 
 def _normalize_typos(text: str) -> str:
@@ -1186,28 +1209,49 @@ def _normalize_typos(text: str) -> str:
 def _is_micro_file_task(text: str) -> bool:
     """
     Detect simple file operations that need no questions (v3.6.0).
+    v3.6.1: Context-aware detection - "create a file" is micro, "create an app" is not.
     
     Logic:
-    - If BUILD_VERB + NON_MICRO_INDICATOR → NOT micro (it's a build job)
+    - If BUILD_VERB in app/software context → NOT micro (it's a build job)
+    - If "create" + "file" → IS micro (simple file creation)
     - If any MICRO_FILE_INDICATOR present → IS micro
     - Otherwise → NOT micro
     
-    CRITICAL: NON_MICRO only decisive when paired with a build verb!
-    This prevents false negatives like "Open the app folder on desktop".
+    CRITICAL: Context matters!
+    - "create a file" → micro task
+    - "create an app" → NOT micro task
+    - "build a game" → NOT micro task
+    - "find file on my system" → micro task
     """
     text_lower = text.lower()
     
-    # Check for BUILD VERB + NON_MICRO combo (NOT micro)
-    has_build_verb = any(v in text_lower for v in BUILD_VERBS)
-    has_non_micro = any(ind in text_lower for ind in NON_MICRO_INDICATORS)
+    # v3.6.1: First check for explicit file creation context
+    # "create a file", "create new file", "make a file" are MICRO tasks
+    file_creation_patterns = [
+        r"create\s+(?:a\s+)?(?:new\s+)?file",
+        r"make\s+(?:a\s+)?(?:new\s+)?file",
+        r"write\s+(?:a\s+)?(?:new\s+)?file",
+        r"create\s+(?:a\s+)?(?:text|txt|reply|response)\s+file",
+    ]
+    for pattern in file_creation_patterns:
+        if re.search(pattern, text_lower):
+            print("[WEAVER] Classified as MICRO_FILE_TASK (file creation pattern)")
+            return True
     
-    if has_build_verb and has_non_micro:
-        print(f"[WEAVER] NOT micro-task (build verb + non-micro indicator)")
-        return False
-    
-    # Check for file operation indicators
+    # Check for file operation indicators FIRST (high priority)
     has_file_indicator = any(ind in text_lower for ind in MICRO_FILE_INDICATORS)
     
+    # v3.6.1: Check for BUILD VERB + NON_MICRO combo (NOT micro)
+    # But ONLY if there's no strong file indicator
+    if not has_file_indicator:
+        has_build_verb = any(v in text_lower for v in BUILD_VERBS)
+        has_non_micro = any(ind in text_lower for ind in NON_MICRO_INDICATORS)
+        
+        if has_build_verb and has_non_micro:
+            print(f"[WEAVER] NOT micro-task (build verb + non-micro indicator, no file indicators)")
+            return False
+    
+    # If file indicators present, it's a micro task
     if has_file_indicator:
         print("[WEAVER] Classified as MICRO_FILE_TASK")
         return True

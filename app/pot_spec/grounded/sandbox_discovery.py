@@ -1,11 +1,19 @@
 # FILE: app/pot_spec/grounded/sandbox_discovery.py
 r"""
-Sandbox Discovery and Output Mode Detection (v1.35)
+Sandbox Discovery and Output Mode Detection (v1.42)
 
 Handles sandbox file discovery, output mode detection, and replacement text extraction.
 
 Version Notes:
 -------------
+v1.42 (2026-01-30): CRITICAL FIX - CREATE vs READ target distinction
+    - Added extract_create_targets() to identify files that should be CREATED, not searched for
+    - Expanded SEPARATE_REPLY_FILE patterns in detect_output_mode() for natural language:
+      - "create a new file on desktop and call it reply"
+      - "in the reply file i want you to write"
+      - "then create", "and create a", "make a file called"
+    - Added regex patterns for complex file creation phrases
+    - Fixes bug where "reply" file was being searched for instead of created
 v1.39 (2026-01-30): CRITICAL FIX - Added quoted pattern without colon requirement
     - Weaver produces: "test2" file on D drive (quoted, but NO colon before "drive")
     - Previous v1.36 pattern required colon: "test2" on D: drive
@@ -93,7 +101,7 @@ logger = logging.getLogger(__name__)
 # v1.35 BUILD VERIFICATION - Proves correct code is running
 # v1.35: CRITICAL FIX - Removed overly broad unquoted Weaver patterns
 # =============================================================================
-SANDBOX_DISCOVERY_BUILD_ID = "2026-01-30-v1.41-scan-fix"
+SANDBOX_DISCOVERY_BUILD_ID = "2026-01-30-v1.43-weaver-output-format"
 print(f"[SANDBOX_DISCOVERY_LOADED] BUILD_ID={SANDBOX_DISCOVERY_BUILD_ID}")
 logger.info(f"[sandbox_discovery] Module loaded: BUILD_ID={SANDBOX_DISCOVERY_BUILD_ID}")
 
@@ -932,10 +940,11 @@ def detect_output_mode(text: str) -> OutputMode:
         return OutputMode.REWRITE_IN_PLACE
     
     # ==========================================================================
-    # SEPARATE_REPLY_FILE triggers
+    # SEPARATE_REPLY_FILE triggers (v1.43: EXPANDED for Weaver output format)
     # ==========================================================================
     
     separate_file_patterns = [
+        # Original patterns
         "save to reply.txt",
         "save as reply.txt",
         "write to reply.txt",
@@ -949,11 +958,57 @@ def detect_output_mode(text: str) -> OutputMode:
         "save to a new file",
         "put reply in reply.txt",
         "output to reply.txt",
+        # v1.42 NEW: Expanded patterns for natural language file creation
+        "create a new file on",       # "create a new file on desktop"
+        "create a file on",           # "create a file on desktop"
+        "create a file called",       # "create a file called reply"
+        "create file called",         # "create file called reply"
+        "make a new file",            # "make a new file"
+        "make a file called",         # "make a file called X"
+        "make a file on",             # "make a file on desktop"
+        "make file called",           # "make file called X"
+        "in the reply file",          # "in the reply file write"
+        "in a file called",           # "in a file called reply"
+        "then create",                # "read X then create Y"
+        "and create a",               # "read X and create a new file"
+        "write a reply to",           # signals output expectation
+        "and call it",                # "create file and call it reply"
+        # v1.43 NEW: Weaver output format patterns
+        "create desktop/",            # Weaver: "create Desktop/reply.txt"
+        "create/overwrite",           # Weaver: "Create/overwrite Desktop/reply.txt"
+        "/reply.txt",                 # Weaver: "Desktop/reply.txt"
+        "/reply",                     # Weaver: "Desktop/reply"
+        "synthesize",                 # Weaver: "Synthesize a coherent reply"
+        "synthesized reply",          # Weaver: "write the synthesized reply"
+        "composed reply",             # Weaver: "write a composed reply"
+        "reply synthesis",            # Weaver: "reply synthesis (micro file task)"
+        "write reply",                # Weaver: "write reply to Desktop"
+        "with a composed reply",
+        "with synthesized",
     ]
     
     if any(pattern in text_lower for pattern in separate_file_patterns):
-        logger.info("[sandbox_discovery] v1.13 detect_output_mode: SEPARATE_REPLY_FILE (explicit trigger)")
+        print(f"[DEBUG detect_output_mode] -> SEPARATE_REPLY_FILE (simple pattern match)")
+        logger.info("[sandbox_discovery] v1.42 detect_output_mode: SEPARATE_REPLY_FILE (explicit trigger)")
         return OutputMode.SEPARATE_REPLY_FILE
+    
+    # v1.42 NEW: Regex patterns for complex file creation phrases
+    create_file_regex_patterns = [
+        # "create a [new] file [on location] [and] call it X"
+        r"create\s+(?:a\s+)?(?:new\s+)?file\s+(?:on\s+\w+\s+)?(?:and\s+)?call\s+it\s+\w+",
+        # "create a [new] file called/named X"
+        r"create\s+(?:a\s+)?(?:new\s+)?file\s+(?:called|named)\s+\w+",
+        # "in the X file i want [you] to write"
+        r"in\s+the\s+\w+\s+file\s+(?:i\s+)?want\s+(?:you\s+)?to\s+write",
+        # "make a file [called] X [on location]"
+        r"make\s+(?:a\s+)?(?:new\s+)?file\s+(?:called\s+)?\w+\s+(?:on|in)\s+",
+    ]
+    
+    for pattern in create_file_regex_patterns:
+        if re.search(pattern, text_lower):
+            print(f"[DEBUG detect_output_mode] -> SEPARATE_REPLY_FILE (regex match: {pattern[:50]})")
+            logger.info("[sandbox_discovery] v1.42 detect_output_mode: SEPARATE_REPLY_FILE (regex pattern)")
+            return OutputMode.SEPARATE_REPLY_FILE
     
     # ==========================================================================
     # APPEND_IN_PLACE triggers
@@ -1340,6 +1395,172 @@ def extract_scan_file_names(text: str) -> List[str]:
     )
     
     return file_names
+
+
+def extract_create_targets(text: str) -> List[dict]:
+    """
+    v1.43: Extract file targets that should be CREATED (not searched for).
+    
+    CRITICAL: These targets should NOT be passed to file scanning/searching.
+    They represent output files that the user wants created.
+    
+    Patterns detected:
+    - User format: "create a new file called X"
+    - User format: "create X on desktop"
+    - User format: "make a file named X"
+    - Weaver format: "create Desktop/reply.txt"
+    - Weaver format: "Create/overwrite Desktop/X"
+    
+    Returns:
+        List of dicts with keys: name, anchor, is_create=True
+    """
+    if not text:
+        return []
+    
+    text_lower = text.lower()
+    create_targets = []
+    
+    logger.info("[sandbox_discovery] v1.43 extract_create_targets: parsing '%s'", text[:100])
+    
+    # =========================================================================
+    # v1.43 NEW: Weaver output format patterns (highest priority)
+    # =========================================================================
+    
+    # Pattern W1: "create Desktop/X" or "Create/overwrite Desktop/X"
+    weaver_pattern1 = r"(?:create/?overwrite|create)\s+(?:the\s+)?(?:desktop|documents)[/\\](\w+(?:\.\w+)?)"
+    match = re.search(weaver_pattern1, text_lower)
+    if match:
+        filename = match.group(1)
+        # Extract anchor from the pattern
+        anchor_match = re.search(r"(desktop|documents)", text_lower)
+        anchor = anchor_match.group(1) if anchor_match else "desktop"
+        if filename and filename not in FILENAME_STOPWORDS:
+            create_targets.append({
+                "name": filename,
+                "anchor": anchor,
+                "is_create": True,
+            })
+            logger.info("[sandbox_discovery] v1.43 CREATE target (Weaver path format): '%s' on '%s'", filename, anchor)
+    
+    # Pattern W2: "Desktop/X.txt" or "Documents/X" standalone (with reply/output context)
+    weaver_pattern2 = r"(?:desktop|documents)[/\\](\w+(?:\.\w+)?)"
+    if "reply" in text_lower or "output" in text_lower or "create" in text_lower or "write" in text_lower:
+        matches = re.findall(weaver_pattern2, text_lower)
+        for filename in matches:
+            if filename and filename not in FILENAME_STOPWORDS and len(filename) >= 2:
+                # Don't add if already exists
+                if not any(t["name"].lower() == filename.lower() for t in create_targets):
+                    anchor_match = re.search(r"(desktop|documents)[/\\]" + re.escape(filename), text_lower)
+                    if anchor_match:
+                        anchor = "desktop" if "desktop" in anchor_match.group(0) else "documents"
+                    else:
+                        anchor = "desktop"
+                    create_targets.append({
+                        "name": filename,
+                        "anchor": anchor,
+                        "is_create": True,
+                    })
+                    logger.info("[sandbox_discovery] v1.43 CREATE target (Weaver standalone): '%s' on '%s'", filename, anchor)
+    
+    # =========================================================================
+    # Original user-format patterns
+    # =========================================================================
+    
+    # Pattern 1: "create a [new] file [on location] [and] call it X"
+    pattern1 = r"create\s+(?:a\s+)?(?:new\s+)?file\s+(?:on\s+(\w+)\s+)?(?:and\s+)?call\s+it\s+(\w+)"
+    match = re.search(pattern1, text_lower)
+    if match:
+        anchor = match.group(1)  # May be None
+        filename = match.group(2)
+        if filename and filename not in FILENAME_STOPWORDS:
+            if not any(t["name"] == filename for t in create_targets):
+                create_targets.append({
+                    "name": filename,
+                    "anchor": anchor,
+                    "is_create": True,
+                })
+                logger.info("[sandbox_discovery] v1.42 CREATE target (pattern1): '%s' on '%s'", filename, anchor)
+    
+    # Pattern 2: "create a file called/named X"
+    pattern2 = r"create\s+(?:a\s+)?(?:new\s+)?file\s+(?:called|named)\s+(\w+)"
+    match = re.search(pattern2, text_lower)
+    if match:
+        filename = match.group(1)
+        if filename and filename not in FILENAME_STOPWORDS:
+            if not any(t["name"] == filename for t in create_targets):
+                create_targets.append({
+                    "name": filename,
+                    "anchor": None,
+                    "is_create": True,
+                })
+                logger.info("[sandbox_discovery] v1.42 CREATE target (pattern2): '%s'", filename)
+    
+    # Pattern 3: "in the X file i want [you] to write" (preceded by create context)
+    if "create" in text_lower or "new file" in text_lower or "make a file" in text_lower:
+        pattern3 = r"in\s+the\s+(\w+)\s+file\s+(?:i\s+)?want\s+(?:you\s+)?to\s+write"
+        match = re.search(pattern3, text_lower)
+        if match:
+            filename = match.group(1)
+            if filename and filename not in FILENAME_STOPWORDS:
+                if not any(t["name"] == filename for t in create_targets):
+                    create_targets.append({
+                        "name": filename,
+                        "anchor": None,
+                        "is_create": True,
+                    })
+                    logger.info("[sandbox_discovery] v1.42 CREATE target (pattern3 - in-file): '%s'", filename)
+    
+    # Pattern 4: "make a [new] file [called/named] X [on location]"
+    pattern4 = r"make\s+(?:a\s+)?(?:new\s+)?file\s+(?:(?:called|named)\s+)?(\w+)(?:\s+on\s+(\w+))?"
+    match = re.search(pattern4, text_lower)
+    if match:
+        filename = match.group(1)
+        anchor = match.group(2)  # May be None
+        if filename and filename not in FILENAME_STOPWORDS and len(filename) >= 2:
+            if not any(t["name"] == filename for t in create_targets):
+                create_targets.append({
+                    "name": filename,
+                    "anchor": anchor,
+                    "is_create": True,
+                })
+                logger.info("[sandbox_discovery] v1.42 CREATE target (pattern4 - make): '%s' on '%s'", filename, anchor)
+    
+    # Pattern 5: "then create [a] [new] [file] [called] X" / "and create X"
+    pattern5 = r"(?:then|and)\s+create\s+(?:a\s+)?(?:new\s+)?(?:file\s+)?(?:called\s+)?(\w+)"
+    match = re.search(pattern5, text_lower)
+    if match:
+        filename = match.group(1)
+        if filename and filename not in FILENAME_STOPWORDS and len(filename) >= 2:
+            # Extra check: "create a" should not extract "a"
+            if filename != "a" and filename != "new" and filename != "file":
+                if not any(t["name"] == filename for t in create_targets):
+                    create_targets.append({
+                        "name": filename,
+                        "anchor": None,
+                        "is_create": True,
+                    })
+                    logger.info("[sandbox_discovery] v1.42 CREATE target (pattern5 - then/and): '%s'", filename)
+    
+    # Pattern 6: Extract anchor from "on desktop" / "on D drive" if we have targets without anchors
+    if create_targets:
+        # Check for anchor mentions
+        anchor_match = re.search(r"on\s+(?:the\s+)?(desktop|documents)", text_lower)
+        if anchor_match:
+            detected_anchor = anchor_match.group(1)
+            for target in create_targets:
+                if target.get("anchor") is None:
+                    target["anchor"] = detected_anchor
+                    logger.info(
+                        "[sandbox_discovery] v1.42 Updated CREATE target '%s' with anchor '%s'",
+                        target["name"], detected_anchor
+                    )
+    
+    logger.info(
+        "[sandbox_discovery] v1.43 extract_create_targets: found %d CREATE targets: %s",
+        len(create_targets), [t["name"] for t in create_targets]
+    )
+    
+    return create_targets
 
 
 def get_system_scan_targets(text: str) -> List[dict]:

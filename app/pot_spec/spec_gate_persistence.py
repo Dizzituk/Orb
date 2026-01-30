@@ -1,12 +1,17 @@
 # FILE: app/pot_spec/spec_gate_persistence.py
 """
-Spec Gate v2 - Persistence Layer
+Spec Gate v2 - Persistence Layer (v2.3)
 
 Contains:
 - Filesystem artifact writing
 - Database persistence
 - Spec schema building
 - Markdown generation
+
+v2.3 (2026-01-30): CRITICAL FIX - Persist multi-target read fields
+    - Added is_multi_target_read to spec_data for Critical Pipeline
+    - Added multi_target_files to spec_data for Critical Pipeline
+    - Fixes MICRO-CHECK-001 where quickcheck couldn't see multi-target data
 """
 
 from __future__ import annotations
@@ -21,6 +26,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# v2.3 BUILD VERIFICATION
+# =============================================================================
+SPEC_GATE_PERSISTENCE_BUILD_ID = "2026-01-30-v2.3.1-multi-target-diagnostic"
+print(f"[SPEC_GATE_PERSISTENCE_LOADED] BUILD_ID={SPEC_GATE_PERSISTENCE_BUILD_ID}")
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +305,29 @@ def build_spec_schema(
                 bool(grounding_data.get("sandbox_output_path")),
                 grounding_data.get("sandbox_output_mode"),  # v1.2.1: Log output mode
             )
+            
+            # v2.3: Multi-target read fields for Critical Pipeline quickcheck
+            # CRITICAL: These must be persisted for micro_quickcheck to pass on multi-target jobs
+            is_multi_target_read = grounding_data.get("is_multi_target_read", False)
+            multi_target_files = grounding_data.get("multi_target_files", [])
+            
+            # v2.3.1: DIAGNOSTIC - Always log multi-target status for debugging
+            logger.info(
+                "[spec_gate_persistence] v2.3.1 MULTI-TARGET CHECK: is_multi_target_read=%s, multi_target_files_count=%d, grounding_data_keys=%s",
+                is_multi_target_read,
+                len(multi_target_files) if multi_target_files else 0,
+                list(grounding_data.keys()) if grounding_data else [],
+            )
+            
+            if is_multi_target_read:
+                spec_data.update({
+                    "is_multi_target_read": is_multi_target_read,
+                    "multi_target_files": multi_target_files,
+                })
+                logger.info(
+                    "[spec_gate_persistence] v2.3 MULTI-TARGET READ: persisting %d files, is_multi_target_read=%s",
+                    len(multi_target_files), is_multi_target_read
+                )
             
             # v1.19: Log scan parameters if present
             if grounding_data.get("job_kind") == "scan_only":

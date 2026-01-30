@@ -1,6 +1,6 @@
 # FILE: app/pot_spec/grounded/job_classification.py
 """
-Job Kind Classifier (v1.9, v1.10, v1.18)
+Job Kind Classifier (v1.9, v1.10, v1.18, v1.19)
 
 Deterministic job classification - NO LLM calls.
 Classifies jobs as micro_execution, repo_change, architecture, scan_only, or unknown.
@@ -10,6 +10,11 @@ Version Notes:
 v1.9 (2026-01): Initial deterministic classifier
 v1.10 (2026-01): Added greenfield_build detection
 v1.18 (2026-01): Added scan_only job type
+v1.19 (2026-01-30): CRITICAL FIX - SCAN_ONLY with write targets
+    - SCAN_ONLY classification now checks for write targets before returning
+    - If sandbox_output_path exists OR sandbox_output_mode != CHAT_ONLY, job is NOT scan_only
+    - Fixes bug where "find all files + create reply" was misclassified as SCAN_ONLY
+    - Jobs with CREATE targets now correctly fall through to micro_execution
 """
 
 from __future__ import annotations
@@ -91,14 +96,36 @@ def classify_job_kind(
     detected_domains = detect_domains(all_text)
     
     # =========================================================================
-    # v1.18 RULE 0a: SCAN_ONLY jobs
+    # v1.19 RULE 0a: SCAN_ONLY jobs (with write target check)
     # =========================================================================
     
     if "scan_only" in detected_domains:
-        matched_keywords = [kw for kw in DOMAIN_KEYWORDS.get("scan_only", []) if kw in all_text][:3]
-        reason = f"scan_only domain detected (READ_ONLY scan): matched {matched_keywords}"
-        logger.info("[job_classification] v1.18 classify_job_kind: SCAN_ONLY - %s", reason)
-        return ("scan_only", 0.92, reason)
+        # v1.19 FIX: SCAN_ONLY must NOT have any write targets
+        # If there's an output path or non-CHAT_ONLY mode, this is NOT a scan_only job
+        has_write_target = False
+        write_target_reason = ""
+        
+        if spec.sandbox_output_path:
+            has_write_target = True
+            write_target_reason = f"sandbox_output_path={spec.sandbox_output_path}"
+        elif spec.sandbox_output_mode and spec.sandbox_output_mode.lower() not in ("", "chat_only"):
+            has_write_target = True
+            write_target_reason = f"sandbox_output_mode={spec.sandbox_output_mode}"
+        elif spec.is_multi_target_read and spec.sandbox_output_mode and spec.sandbox_output_mode.lower() != "chat_only":
+            has_write_target = True
+            write_target_reason = f"multi_target_read with output_mode={spec.sandbox_output_mode}"
+        
+        if has_write_target:
+            logger.info(
+                "[job_classification] v1.19 scan_only domain detected BUT has write target (%s) - NOT a scan_only job",
+                write_target_reason
+            )
+            # Fall through to other classification rules
+        else:
+            matched_keywords = [kw for kw in DOMAIN_KEYWORDS.get("scan_only", []) if kw in all_text][:3]
+            reason = f"scan_only domain detected (READ_ONLY scan, no write targets): matched {matched_keywords}"
+            logger.info("[job_classification] v1.19 classify_job_kind: SCAN_ONLY - %s", reason)
+            return ("scan_only", 0.92, reason)
     
     # =========================================================================
     # v1.10 RULE 0: Greenfield builds are ALWAYS architecture jobs
