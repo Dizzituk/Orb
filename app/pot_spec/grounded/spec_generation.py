@@ -1,13 +1,21 @@
 # FILE: app/pot_spec/grounded/spec_generation.py
 """
-SpecGate Spec Generation Module (v1.41)
+SpecGate Spec Generation Module (v1.42)
 
 Core specification generation logic including:
 - POT spec markdown builder
 - Step/test derivation from domains
 - Intent parsing and grounding
 - Main async entry point
-- v1.41: CRITICAL FIX - Include content field in multi_target_files serialization
+- v1.42: CRITICAL FIX - Multi-file refactor detection for natural language
+
+v1.42 (2026-01-31): CRITICAL FIX - Multi-file refactor detection for natural language
+    - _detect_multi_file_intent() now checks combined_text (Weaver job + user intent)
+    - Added flexible patterns for conversational refactor requests
+    - Added pattern extraction for "change X to Y", "rename X to Y" with varied phrasing
+    - Handles scope indicators like "D drive", "entire codebase", "all files"
+    - Detects intent from "I want to", "search for", "look for", etc.
+    - BUGFIX: discover_files() is synchronous, removed incorrect await
 
 v1.41 (2026-01-30): CRITICAL FIX - Multi-target content field for Critical Pipeline
     - Added 'content' field to multi_target_files serialization in grounding_data
@@ -101,9 +109,9 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-# v1.41 BUILD VERIFICATION
+# v1.42 BUILD VERIFICATION
 # =============================================================================
-SPEC_GENERATION_BUILD_ID = "2026-01-30-v1.41-multi-target-content-field"
+SPEC_GENERATION_BUILD_ID = "2026-01-31-v1.42-multi-file-refactor-detection"
 print(f"[SPEC_GENERATION_LOADED] BUILD_ID={SPEC_GENERATION_BUILD_ID}")
 logger.info(f"[spec_generation] Module loaded: BUILD_ID={SPEC_GENERATION_BUILD_ID}")
 
@@ -317,21 +325,253 @@ def _extract_keywords(text: str) -> List[str]:
 
 
 # =============================================================================
-# MULTI-FILE OPERATION HELPERS (v1.32 - Level 3)
+# MULTI-FILE OPERATION HELPERS (v1.42 - Enhanced Natural Language Detection)
 # =============================================================================
 
-def _detect_multi_file_intent(user_intent: str, constraints_hint: Optional[Dict]) -> Optional[Dict[str, Any]]:
+# v1.42: Extended scope indicators that trigger multi-file mode
+MULTI_FILE_SCOPE_INDICATORS = [
+    # Explicit scope keywords
+    r"\b(?:all|every|everywhere|entire|whole)\b",
+    r"\bcodebase\b",
+    r"\brepo(?:sitory)?\b",
+    r"\bproject\b",
+    r"\bacross\s+(?:all\s+)?(?:files?|the\s+codebase)\b",
+    r"\bthroughout\b",
+    r"\bsystem[- ]?wide\b",
+    r"\bproject[- ]?wide\b",
+    # Drive references (D drive, D:\, etc.)
+    r"\b[A-Za-z]\s+drive\b",
+    r"\b[A-Za-z]:\s*(?:\\|/)",
+    r"\bover\s+(?:the\s+)?[A-Za-z]\s+drive\b",
+    r"\bsearch\s+over\b",
+    r"\bscan\s+(?:the\s+)?(?:entire|whole|all)\b",
+    # File/folder scope
+    r"\bfile\s+(?:names?|structures?)\b",
+    r"\bfolder\s+names?\b",
+    r"\bwithin\s+(?:the\s+)?(?:code|files?|folders?)\b",
+    r"\bin\s+(?:all\s+)?(?:files?|folders?|the\s+code)\b",
+]
+
+# Compiled scope patterns
+_SCOPE_PATTERNS = [re.compile(p, re.IGNORECASE) for p in MULTI_FILE_SCOPE_INDICATORS]
+
+
+def _has_multi_file_scope(text: str) -> bool:
     """
-    Detect multi-file operation intent from user input or constraints.
+    Check if text indicates multi-file scope.
     
-    v1.32: Level 3 multi-file operations support.
+    v1.42: Expanded scope detection for natural language.
+    """
+    if not text:
+        return False
+    for pattern in _SCOPE_PATTERNS:
+        if pattern.search(text):
+            return True
+    return False
+
+
+def _extract_search_and_replace_terms(text: str) -> Optional[Dict[str, str]]:
+    """
+    Extract search pattern and replacement pattern from natural language text.
+    
+    v1.42: Handles conversational phrasing like:
+    - "I want to change X to Y"
+    - "rename all references to Orb to ASTRA"
+    - "replace X with Y"
+    - "look for X and change it to Y"
+    - "find any references to X... change to Y"
+    
+    Returns:
+        Dict with 'search_pattern' and 'replacement_pattern', or None
+    """
+    if not text:
+        return None
+    
+    text_clean = text.strip()
+    
+    # ==========================================================================
+    # PATTERN GROUP 0: HIGHEST PRIORITY - "to the name X" patterns
+    # These are the most explicit and should match first
+    # ==========================================================================
+    
+    explicit_name_patterns = [
+        # "to the name ASTRA" / "to name ASTRA"
+        r"to\s+(?:the\s+)?name\s+['\"]?([A-Z][A-Za-z0-9_]+)['\"]?",
+        # "change it to ASTRA" / "rename to ASTRA" (simple form)
+        r"(?:change|rename|replace)\s+(?:it|them|that)?\s*(?:to|with)\s+['\"]?([A-Z][A-Za-z0-9_]+)['\"]?(?:\s|$|[.!?,])",
+    ]
+    
+    for pattern in explicit_name_patterns:
+        match = re.search(pattern, text_clean, re.IGNORECASE)
+        if match:
+            candidate = match.group(1).strip().strip("'\"")
+            # Filter out known Weaver metadata words
+            weaver_noise_words = {'extras', 'features', 'with', 'scope', 'file', 'task', 'micro'}
+            if candidate and len(candidate) > 1 and candidate.lower() not in weaver_noise_words:
+                logger.info(
+                    "[spec_generation] v1.42 Explicit name pattern match: '%s' from pattern '%s'",
+                    candidate, pattern[:50]
+                )
+                # Try to find the search term as well
+                search_term = None
+                for sp in [
+                    r"(?:references?\s+to\s+(?:the\s+name\s+)?)['\"]?([A-Za-z][A-Za-z0-9_]*)['\"]?",
+                    r"(?:the\s+name\s+)['\"]?([A-Za-z][A-Za-z0-9_]*)['\"]?(?:[,.]|\s+(?:o-r-b|with|and))",
+                    r"(?:search\s+(?:for\s+)?.*?name[s]?\s+)['\"]?([A-Za-z][A-Za-z0-9_]*)['\"]?",
+                    r"(?:look\s+for\s+.*?)['\"]?([A-Za-z][A-Za-z0-9_]+)['\"]?",
+                ]:
+                    sm = re.search(sp, text_clean, re.IGNORECASE)
+                    if sm:
+                        s_candidate = sm.group(1).strip().strip("'\"")
+                        if s_candidate and s_candidate.lower() not in weaver_noise_words and s_candidate.lower() != candidate.lower():
+                            search_term = s_candidate
+                            break
+                
+                if search_term:
+                    return {"search_pattern": search_term, "replacement_pattern": candidate}
+    
+    # ==========================================================================
+    # PATTERN GROUP 1: Direct commands (highest confidence)
+    # "replace X with Y", "rename X to Y", "change X to Y"
+    # ==========================================================================
+    
+    direct_patterns = [
+        # "replace X with Y" / "replace X by Y"
+        r"(?:^|[.!?]\s*)replace\s+['\"]?(.+?)['\"]?\s+(?:with|by)\s+['\"]?(.+?)['\"]?(?:\s+(?:everywhere|in\s+all|across|without\s+breaking)|$|[.!?])",
+        # "rename X to Y"
+        r"(?:^|[.!?]\s*)rename\s+(?:all\s+)?(?:occurrences?\s+of\s+)?['\"]?(.+?)['\"]?\s+to\s+['\"]?(.+?)['\"]?(?:\s+(?:everywhere|in\s+all|across|without\s+breaking)|$|[.!?])",
+        # "change X to Y" (at start of sentence)
+        r"(?:^|[.!?]\s*)change\s+(?:all\s+)?(?:occurrences?\s+of\s+)?['\"]?(.+?)['\"]?\s+to\s+['\"]?(.+?)['\"]?(?:\s+(?:everywhere|in\s+all|across|without\s+breaking)|$|[.!?])",
+    ]
+    
+    for pattern in direct_patterns:
+        match = re.search(pattern, text_clean, re.IGNORECASE)
+        if match:
+            search = match.group(1).strip().strip("'\"")
+            replace = match.group(2).strip().strip("'\"")
+            if search and replace and len(search) > 1 and len(replace) > 1:
+                logger.info(
+                    "[spec_generation] v1.42 Direct pattern match: search='%s', replace='%s'",
+                    search, replace
+                )
+                return {"search_pattern": search, "replacement_pattern": replace}
+    
+    # ==========================================================================
+    # PATTERN GROUP 2: Conversational "I want to" patterns
+    # "I want to change X to Y", "I want to rename X to Y"
+    # ==========================================================================
+    
+    want_patterns = [
+        # "I want to change X to Y" / "I want you to change X to Y"
+        r"(?:i\s+)?want\s+(?:you\s+)?to\s+(?:change|rename|replace)\s+(?:(?:all\s+)?(?:occurrences?\s+of\s+|references?\s+to\s+)?)?['\"]?(.+?)['\"]?\s+(?:to|with|by)\s+['\"]?(.+?)['\"]?(?:\s+(?:without\s+breaking|everywhere|in\s+all)|$|[.!?])",
+        # "I want X changed to Y" / "I need X renamed to Y"
+        r"(?:i\s+)?(?:want|need|would\s+like)\s+['\"]?(.+?)['\"]?\s+(?:changed?|renamed?|replaced?)\s+(?:to|with|by)\s+['\"]?(.+?)['\"]?(?:\s+(?:without\s+breaking|everywhere)|$|[.!?])",
+    ]
+    
+    for pattern in want_patterns:
+        match = re.search(pattern, text_clean, re.IGNORECASE)
+        if match:
+            search = match.group(1).strip().strip("'\"")
+            replace = match.group(2).strip().strip("'\"")
+            if search and replace and len(search) > 1 and len(replace) > 1:
+                logger.info(
+                    "[spec_generation] v1.42 Conversational pattern match: search='%s', replace='%s'",
+                    search, replace
+                )
+                return {"search_pattern": search, "replacement_pattern": replace}
+    
+    # ==========================================================================
+    # PATTERN GROUP 3: "Find X and change to Y" patterns
+    # "search for X and change to Y", "find X... and rename to Y"
+    # ==========================================================================
+    
+    find_change_patterns = [
+        # "find/search/look for X ... change/rename to Y"
+        r"(?:find|search\s+for|look\s+for|scan\s+for)\s+(?:any\s+)?(?:references?\s+to\s+|occurrences?\s+of\s+)?(?:the\s+name\s+)?['\"]?(.+?)['\"]?[^.]*?(?:change|rename|replace|update)\s+(?:it|them|that)?\s*(?:to|with|by)\s+(?:the\s+name\s+)?['\"]?(.+?)['\"]?(?:\s+(?:without\s+breaking)|$|[.!?])",
+    ]
+    
+    for pattern in find_change_patterns:
+        match = re.search(pattern, text_clean, re.IGNORECASE | re.DOTALL)
+        if match:
+            search = match.group(1).strip().strip("'\"")
+            replace = match.group(2).strip().strip("'\"")
+            # Clean up common noise
+            search = re.sub(r'\s*,?\s*o-r-b\s*,?\s*', '', search, flags=re.IGNORECASE).strip()
+            if search and replace and len(search) > 1 and len(replace) > 1:
+                logger.info(
+                    "[spec_generation] v1.42 Find-change pattern match: search='%s', replace='%s'",
+                    search, replace
+                )
+                return {"search_pattern": search, "replacement_pattern": replace}
+    
+    # ==========================================================================
+    # PATTERN GROUP 4: Two-part extraction (search term + replacement separately)
+    # When patterns are split across text: "look for Orb" ... "change to ASTRA"
+    # ==========================================================================
+    
+    # Extract search term patterns
+    search_extractors = [
+        r"(?:references?\s+to\s+(?:the\s+name\s+)?)['\"]?([A-Za-z][A-Za-z0-9_]*)['\"]?",
+        r"(?:the\s+name\s+)['\"]?([A-Za-z][A-Za-z0-9_]*)['\"]?",
+        r"(?:occurrences?\s+of\s+)['\"]?([A-Za-z][A-Za-z0-9_]*)['\"]?",
+        r"(?:search\s+(?:for\s+|over\s+)?.*?)['\"]?([A-Za-z][A-Za-z0-9_]+)['\"]?",
+        r"(?:look\s+for\s+(?:any\s+)?(?:references?\s+to\s+)?)['\"]?([A-Za-z][A-Za-z0-9_]+)['\"]?",
+    ]
+    
+    # Extract replacement term patterns
+    # v1.42 FIX: More specific patterns to avoid matching Weaver metadata like "With extras / features"
+    replace_extractors = [
+        r"(?:change\s+(?:it|them|that)?\s*to\s+(?:the\s+name\s+)?)['\"]?([A-Za-z][A-Za-z0-9_]+)['\"]?",
+        r"(?:rename\s+(?:it|them|that)?\s*to\s+)['\"]?([A-Za-z][A-Za-z0-9_]+)['\"]?",
+        r"(?:replace\s+(?:it|them|that)?\s*(?:with|by)\s+)['\"]?([A-Za-z][A-Za-z0-9_]+)['\"]?",
+        r"(?:to\s+the\s+name\s+)['\"]?([A-Za-z][A-Za-z0-9_]+)['\"]?",
+        # REMOVED: r"(?:with\s+(?:the\s+name\s+)?)['\"]?..." - too greedy, matches "With extras"
+    ]
+    
+    search_term = None
+    replace_term = None
+    
+    for pattern in search_extractors:
+        match = re.search(pattern, text_clean, re.IGNORECASE)
+        if match:
+            candidate = match.group(1).strip().strip("'\"")
+            if candidate and len(candidate) > 1:
+                search_term = candidate
+                break
+    
+    for pattern in replace_extractors:
+        match = re.search(pattern, text_clean, re.IGNORECASE)
+        if match:
+            candidate = match.group(1).strip().strip("'\"")
+            if candidate and len(candidate) > 1:
+                replace_term = candidate
+                break
+    
+    if search_term and replace_term and search_term.lower() != replace_term.lower():
+        logger.info(
+            "[spec_generation] v1.42 Two-part extraction: search='%s', replace='%s'",
+            search_term, replace_term
+        )
+        return {"search_pattern": search_term, "replacement_pattern": replace_term}
+    
+    return None
+
+
+def _detect_multi_file_intent(
+    combined_text: str, 
+    constraints_hint: Optional[Dict] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Detect multi-file operation intent from combined text or constraints.
+    
+    v1.42: ENHANCED - handles conversational natural language.
     
     Args:
-        user_intent: User's raw intent text
+        combined_text: Combined user intent + Weaver job description
         constraints_hint: Weaver output and other hints (may contain multi_file_metadata)
     
     Returns:
-        Dict with keys: operation_type, search_pattern, replacement_pattern
+        Dict with keys: is_multi_file, operation_type, search_pattern, replacement_pattern
         or None if not a multi-file intent
     """
     # Check if constraints_hint already has multi-file metadata (from tier0)
@@ -339,77 +579,104 @@ def _detect_multi_file_intent(user_intent: str, constraints_hint: Optional[Dict]
         multi_file_meta = constraints_hint.get("multi_file_metadata")
         if multi_file_meta and multi_file_meta.get("is_multi_file"):
             logger.info(
-                "[spec_generation] v1.32 Multi-file metadata found in constraints_hint: %s",
+                "[spec_generation] v1.42 Multi-file metadata found in constraints_hint: %s",
                 multi_file_meta
             )
             return multi_file_meta
     
-    # Fallback: Detect from user_intent text patterns
-    if not user_intent:
+    # No text to analyze
+    if not combined_text:
         return None
     
-    text_lower = user_intent.lower().strip()
+    text = combined_text.strip()
+    text_lower = text.lower()
     
-    # Multi-file search patterns
-    search_patterns = [
-        (r"^find\s+all\s+(.+?)(?:\s+(?:in\s+)?(?:the\s+)?(?:codebase|repo|project|files?))?$", "search"),
-        (r"^list\s+(?:all\s+)?files?\s+(?:containing|with)\s+(.+)$", "search"),
-        (r"^search\s+(?:the\s+)?codebase\s+for\s+(.+)$", "search"),
-        (r"^count\s+(?:all\s+)?(?:occurrences?|instances?)\s+of\s+(.+)$", "search"),
-    ]
+    # Skip if text is too short
+    if len(text_lower) < 15:
+        return None
     
-    # Multi-file refactor patterns
-    refactor_patterns = [
-        (r"^replace\s+(.+?)\s+with\s+(.+?)(?:\s+(?:everywhere|in\s+all\s+files?))?$", "refactor"),
-        (r"^change\s+(?:all\s+)?(.+?)\s+to\s+(.+?)(?:\s+(?:everywhere|in\s+all\s+files?))?$", "refactor"),
-        (r"^rename\s+(.+?)\s+to\s+(.+?)(?:\s+(?:everywhere|across\s+the\s+codebase))?$", "refactor"),
-        (r"^(?:remove|delete)\s+(?:all\s+)?(.+?)(?:\s+from\s+(?:the\s+)?(?:codebase|all\s+files?))?$", "remove"),
-    ]
+    # ==========================================================================
+    # STEP 1: Check for scope indicators
+    # ==========================================================================
     
-    # Check for scope keywords (required for ambiguous patterns)
-    scope_keywords = ["all", "every", "everywhere", "codebase", "repo", "project"]
-    has_scope = any(kw in text_lower for kw in scope_keywords)
-    
+    has_scope = _has_multi_file_scope(text)
     if not has_scope:
-        return None  # Not clearly a multi-file operation
+        logger.debug("[spec_generation] v1.42 No multi-file scope indicators found")
+        return None
     
-    # Try search patterns
-    for pattern, op_type in search_patterns:
-        match = re.match(pattern, text_lower)
-        if match:
-            search_pattern = match.group(1).strip()
-            logger.info(
-                "[spec_generation] v1.32 Detected multi-file SEARCH from intent: pattern=%s",
-                search_pattern
-            )
-            return {
-                "is_multi_file": True,
-                "operation_type": "search",
-                "search_pattern": search_pattern,
-                "replacement_pattern": "",
-            }
+    # ==========================================================================
+    # STEP 2: Check for refactor/rename intent keywords
+    # ==========================================================================
     
-    # Try refactor patterns
-    for pattern, op_type in refactor_patterns:
-        match = re.match(pattern, text_lower)
-        if match:
-            groups = match.groups()
-            search_pattern = groups[0].strip() if len(groups) > 0 else ""
-            replacement_pattern = groups[1].strip() if len(groups) > 1 and op_type != "remove" else ""
-            
-            logger.info(
-                "[spec_generation] v1.32 Detected multi-file REFACTOR from intent: "
-                "search=%s, replace=%s",
-                search_pattern, replacement_pattern
-            )
-            return {
-                "is_multi_file": True,
-                "operation_type": "refactor",
-                "search_pattern": search_pattern,
-                "replacement_pattern": replacement_pattern,
-            }
+    refactor_intent_patterns = [
+        r"\b(?:rename|replace|change|update)\s+(?:all|every|it|them|that|to|with)",
+        r"\b(?:want\s+to|need\s+to|should)\s+(?:rename|replace|change)",
+        r"\bfind\s+(?:all\s+)?(?:references?|occurrences?)\b.*?\b(?:change|rename|replace)",
+        r"\bsearch\s+(?:for|over)\b.*?\b(?:change|rename|replace)",
+        r"\blook\s+for\b.*?\b(?:change|rename|replace)",
+        r"\bwithout\s+breaking\b",  # Safety indicator often in refactor requests
+    ]
     
-    return None
+    has_refactor_intent = False
+    for pattern in refactor_intent_patterns:
+        if re.search(pattern, text_lower, re.IGNORECASE | re.DOTALL):
+            has_refactor_intent = True
+            break
+    
+    if not has_refactor_intent:
+        # Check for search-only intent (no change/rename/replace)
+        search_only_patterns = [
+            r"\bfind\s+all\b(?!.*?\b(?:change|rename|replace))",
+            r"\blist\s+(?:all\s+)?(?:files?|references?|occurrences?)\b(?!.*?\b(?:change|rename|replace))",
+            r"\bsearch\s+(?:for|codebase)\b(?!.*?\b(?:change|rename|replace))",
+            r"\bcount\s+(?:all\s+)?(?:occurrences?|references?)\b",
+        ]
+        
+        for pattern in search_only_patterns:
+            if re.search(pattern, text_lower, re.IGNORECASE | re.DOTALL):
+                # This is a search-only operation (handled by MULTI_FILE_SEARCH)
+                # For now, return None and let existing scan_only logic handle it
+                logger.debug("[spec_generation] v1.42 Search-only intent, not refactor")
+                return None
+        
+        logger.debug("[spec_generation] v1.42 No refactor intent keywords found")
+        return None
+    
+    # ==========================================================================
+    # STEP 3: Extract search and replacement terms
+    # ==========================================================================
+    
+    terms = _extract_search_and_replace_terms(text)
+    
+    if not terms:
+        logger.warning(
+            "[spec_generation] v1.42 Has refactor intent + scope but couldn't extract terms from: %s",
+            text[:200]
+        )
+        return None
+    
+    search_pattern = terms.get("search_pattern", "")
+    replacement_pattern = terms.get("replacement_pattern", "")
+    
+    if not search_pattern or not replacement_pattern:
+        return None
+    
+    # ==========================================================================
+    # STEP 4: Build and return result
+    # ==========================================================================
+    
+    logger.info(
+        "[spec_generation] v1.42 MULTI-FILE REFACTOR detected: "
+        "search='%s' -> replace='%s' (scope indicators present)",
+        search_pattern, replacement_pattern
+    )
+    
+    return {
+        "is_multi_file": True,
+        "operation_type": "refactor",
+        "search_pattern": search_pattern,
+        "replacement_pattern": replacement_pattern,
+    }
 
 
 async def _build_multi_file_operation(
@@ -456,8 +723,8 @@ async def _build_multi_file_operation(
         # Get sandbox client (use provided or create new)
         client = sandbox_client or get_sandbox_client()
         
-        # Run discovery (v1.33: properly await async call)
-        result = await discover_files(
+        # Run discovery (v1.42: discover_files is synchronous, not async)
+        result = discover_files(
             search_pattern=search_pattern,
             sandbox_client=client,
             file_filter=file_filter,
@@ -1817,7 +2084,8 @@ async def run_spec_gate_grounded(
         # This runs before sandbox discovery since multi-file ops are different.
         
         multi_file_op = None
-        multi_file_meta = _detect_multi_file_intent(user_intent, constraints_hint)
+        # v1.42: Pass combined_text (not just user_intent) for full context analysis
+        multi_file_meta = _detect_multi_file_intent(combined_text, constraints_hint)
         
         if multi_file_meta and multi_file_meta.get("is_multi_file"):
             logger.info(

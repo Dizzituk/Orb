@@ -1,5 +1,5 @@
 # FILE: app/pot_spec/grounded/file_discovery.py
-"""File Discovery System (v1.0)
+"""File Discovery System (v1.2)
 
 Discovers files matching search patterns across the codebase using PowerShell
 Select-String via the sandbox controller. Used by SpecGate to build file lists
@@ -7,6 +7,17 @@ for multi-file operations.
 
 Architecture:
     SpecGate → file_discovery.py → SandboxClient.shell_run() → PowerShell Select-String
+
+v1.2 (2026-01-31): CRITICAL FIX - Prioritize stdout over exit codes
+    - Completely rewrote error handling logic
+    - If stdout has content, proceed with parsing (ignore exit code)
+    - Only fail if no stdout AND there's stderr content
+    - Handles sandbox controller returning ok=None/exit_code=None
+
+v1.1 (2026-01-31): BUGFIX - Handle sandbox controller exit codes
+    - Fixed exit_code=None being treated as error
+    - Added robust attribute access for shell_result
+    - Enhanced logging for debugging
 
 v1.0 (2026-01-28): Initial implementation
     - discover_files(): Pattern-based search using Select-String
@@ -225,22 +236,48 @@ def discover_files(
             timeout_seconds=timeout_seconds,
         )
         
-        if not shell_result.ok and shell_result.exit_code != 1:
-            # Exit code 1 means "no matches" in Select-String, which is valid
-            logger.warning(f"[file_discovery] Shell error: exit={shell_result.exit_code}, stderr={shell_result.stderr[:200]}")
+        # v1.2: Robust result handling - prioritize stdout content over exit codes
+        # The sandbox controller sometimes returns ok=None/exit_code=None even on success
+        stdout = getattr(shell_result, 'stdout', '') or ''
+        stderr = getattr(shell_result, 'stderr', '') or ''
+        exit_code = getattr(shell_result, 'exit_code', None)
+        ok_status = getattr(shell_result, 'ok', None)
+        
+        logger.info(
+            f"[file_discovery] Shell result: ok={ok_status}, exit_code={exit_code}, "
+            f"stdout_len={len(stdout)}, stderr_len={len(stderr)}"
+        )
+        
+        # v1.2 FIX: If we have stdout content, proceed with parsing regardless of exit code
+        # Only fail if there's no stdout AND there's a clear error indicator
+        if not stdout.strip():
+            # No output - check if this is an actual error or just "no matches"
+            if stderr.strip():
+                logger.warning(f"[file_discovery] Shell error: stderr={stderr[:200]}")
+                return DiscoveryResult(
+                    success=False,
+                    search_pattern=search_pattern,
+                    total_files=0,
+                    total_occurrences=0,
+                    error_message=f"PowerShell error: {stderr[:500]}",
+                    duration_ms=getattr(shell_result, 'duration_ms', 0),
+                    roots_searched=roots,
+                )
+            # No output, no error - just means no matches found
+            logger.info("[file_discovery] No matches found (empty stdout, no stderr)")
             return DiscoveryResult(
-                success=False,
+                success=True,
                 search_pattern=search_pattern,
                 total_files=0,
                 total_occurrences=0,
-                error_message=f"PowerShell error (exit {shell_result.exit_code}): {shell_result.stderr[:500]}",
-                duration_ms=shell_result.duration_ms,
+                files=[],
+                duration_ms=getattr(shell_result, 'duration_ms', 0),
                 roots_searched=roots,
             )
         
         # Parse Select-String output
         files, total_occurrences, truncated = _parse_select_string_output(
-            stdout=shell_result.stdout,
+            stdout=stdout,
             max_results=max_results,
             max_samples_per_file=max_samples_per_file,
         )
@@ -254,7 +291,7 @@ def discover_files(
             total_occurrences=total_occurrences,
             files=files,
             truncated=truncated,
-            duration_ms=shell_result.duration_ms,
+            duration_ms=getattr(shell_result, 'duration_ms', 0),
             roots_searched=roots,
         )
         
