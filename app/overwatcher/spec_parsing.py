@@ -10,6 +10,10 @@ Parses spec content to extract:
 - Output mode (append_in_place, separate_reply_file, chat_only) [v1.2]
 - Insertion format for append operations [v1.2]
 
+v1.3 (2026-01-31): CRITICAL FIX - Set action/must_exist based on output_mode
+    - separate_reply_file: action="add", must_exist=False (create new file)
+    - append_in_place/rewrite_in_place: action="modify", must_exist=True
+    - Fixes "SPEC VIOLATION: File does not exist" error for file creation tasks
 v1.2 (2026-01-24): Added output_mode and insertion_format for APPEND_IN_PLACE support
 """
 
@@ -139,22 +143,44 @@ def _parse_json_spec(spec: Dict[str, Any]) -> Optional[ParsedDeliverable]:
     target_file = sandbox_output_path or sandbox_input_path
     
     if target_file:
+        # v1.3 FIX: Determine action/must_exist based on output_mode
+        # - separate_reply_file: CREATING a new file (action=add, must_exist=False)
+        # - append_in_place/rewrite_in_place: MODIFYING existing file (action=modify, must_exist=True)
+        mode_lower = (sandbox_output_mode or "").lower()
+        
+        if mode_lower == "separate_reply_file":
+            # Creating a NEW file - don't check if it exists
+            action = "add"
+            must_exist = False
+        elif mode_lower in ("append_in_place", "rewrite_in_place", "overwrite_full"):
+            # Modifying EXISTING file - must exist first
+            action = "modify"
+            must_exist = True
+        elif mode_lower == "chat_only":
+            # No file operation - defaults don't matter
+            action = "add"
+            must_exist = False
+        else:
+            # Unknown mode - assume create for safety (don't block on non-existent file)
+            action = "add"
+            must_exist = False
+        
         logger.info(
-            "[parse_spec] Sandbox micro-execution: file=%s, content=%d chars, "
-            "output_mode=%s, insertion_format=%s (from grounding_data fallback: %s)",
+            "[parse_spec] v1.3 Sandbox micro-execution: file=%s, content=%d chars, "
+            "output_mode=%s, action=%s, must_exist=%s",
             target_file,
             len(sandbox_generated_reply) if sandbox_generated_reply else 0,
             sandbox_output_mode,
-            repr(sandbox_insertion_format) if sandbox_insertion_format else None,
-            bool((spec.get("grounding_data") or {}).get("sandbox_output_mode")),
+            action,
+            must_exist,
         )
         
         return ParsedDeliverable(
             filename=target_file,
             content=sandbox_generated_reply or "",
-            action="modify",
+            action=action,
             target=DEFAULT_TARGET,
-            must_exist=True,
+            must_exist=must_exist,
             output_mode=sandbox_output_mode,
             insertion_format=sandbox_insertion_format,
         )

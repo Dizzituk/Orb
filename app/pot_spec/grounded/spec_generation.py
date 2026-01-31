@@ -1,14 +1,19 @@
 # FILE: app/pot_spec/grounded/spec_generation.py
 """
-SpecGate Spec Generation Module (v1.40)
+SpecGate Spec Generation Module (v1.41)
 
 Core specification generation logic including:
 - POT spec markdown builder
 - Step/test derivation from domains
 - Intent parsing and grounding
 - Main async entry point
-- v1.40: CRITICAL FIX - Export multi-target read fields to grounding_data
+- v1.41: CRITICAL FIX - Include content field in multi_target_files serialization
 
+v1.41 (2026-01-30): CRITICAL FIX - Multi-target content field for Critical Pipeline
+    - Added 'content' field to multi_target_files serialization in grounding_data
+    - Added 'path' alias field for easier access (maps to resolved_path)
+    - Fixes MICRO-CHECK-001 where Critical Pipeline couldn't access file content
+    - Works with critical_pipeline_stream.py v2.9.1 multi-location checking
 v1.40 (2026-01-30): CRITICAL FIX - Export multi-target fields to grounding_data
     - Added is_multi_target_read to grounding_data for Critical Pipeline
     - Added multi_target_files (serialized) to grounding_data for Critical Pipeline
@@ -96,9 +101,9 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-# v1.35 BUILD VERIFICATION
+# v1.41 BUILD VERIFICATION
 # =============================================================================
-SPEC_GENERATION_BUILD_ID = "2026-01-30-v1.40-export-multi-target-to-grounding-data"
+SPEC_GENERATION_BUILD_ID = "2026-01-30-v1.41-multi-target-content-field"
 print(f"[SPEC_GENERATION_LOADED] BUILD_ID={SPEC_GENERATION_BUILD_ID}")
 logger.info(f"[spec_generation] Module loaded: BUILD_ID={SPEC_GENERATION_BUILD_ID}")
 

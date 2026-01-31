@@ -2,6 +2,17 @@
 """
 Critical Pipeline streaming handler for ASTRA command flow.
 
+v2.9.2 (2026-01-30): MULTI-LOCATION EVIDENCE GATHERING FIX
+- gather_critical_pipeline_evidence() now checks MULTIPLE LOCATIONS for multi_target_files
+- Checks: root level, grounding_data, evidence_package, sandbox_discovery_result
+- Matches the same multi-location logic as micro_quickcheck()
+- Fixes '📚 File evidence loaded: 1 file(s)' when data is in grounding_data
+- Logs source location when multi_target_files are found
+
+v2.9.1 (2026-01-30): MICRO_QUICKCHECK MULTI-LOCATION
+- micro_quickcheck() now checks multiple locations for multi_target_files
+- Matches SpecGate v1.41 data persistence structure
+
 v2.9 (2026-01-30): FULL EVIDENCE ACCESS
 - Critical Pipeline now has the SAME evidence gathering powers as SpecGate
 - Can load architecture maps, codebase reports, and read any file
@@ -81,7 +92,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # v2.8 BUILD VERIFICATION
 # =============================================================================
-CRITICAL_PIPELINE_BUILD_ID = "2026-01-30-v2.9.1-multi-location-multi-target"
+CRITICAL_PIPELINE_BUILD_ID = "2026-01-31-v2.9.3-schema-multi-target-fix"
 print(f"[CRITICAL_PIPELINE_LOADED] BUILD_ID={CRITICAL_PIPELINE_BUILD_ID}")
 logger.info(f"[critical_pipeline] Module loaded: BUILD_ID={CRITICAL_PIPELINE_BUILD_ID}")
 
@@ -468,13 +479,50 @@ def gather_critical_pipeline_evidence(
     # =========================================================================
     
     if include_file_evidence:
-        # First, check if spec already has multi_target_files from SpecGate
+        # v2.9.2: Check MULTIPLE LOCATIONS for multi_target_files
+        # Data may be at root or nested in grounding_data depending on persistence path
+        
+        # Location 1: Root level
         multi_target_files = spec_data.get("multi_target_files", [])
+        source_location = "root"
+        
+        # Location 2: In grounding_data (where SpecGate v1.40+ stores it)
+        if not multi_target_files:
+            grounding_data = spec_data.get("grounding_data", {})
+            multi_target_files = grounding_data.get("multi_target_files", [])
+            if multi_target_files:
+                source_location = "grounding_data"
+                logger.info(
+                    "[critical_pipeline] v2.9.2 Found multi_target_files in grounding_data: %d entries",
+                    len(multi_target_files)
+                )
+        
+        # Location 3: In evidence_package (alternative nesting)
+        if not multi_target_files:
+            evidence_pkg = spec_data.get("evidence_package", {})
+            multi_target_files = evidence_pkg.get("multi_target_files", [])
+            if multi_target_files:
+                source_location = "evidence_package"
+                logger.info(
+                    "[critical_pipeline] v2.9.2 Found multi_target_files in evidence_package: %d entries",
+                    len(multi_target_files)
+                )
+        
+        # Location 4: In sandbox_discovery_result
+        if not multi_target_files:
+            sandbox_result = spec_data.get("sandbox_discovery_result", {})
+            multi_target_files = sandbox_result.get("multi_target_files", [])
+            if multi_target_files:
+                source_location = "sandbox_discovery_result"
+                logger.info(
+                    "[critical_pipeline] v2.9.2 Found multi_target_files in sandbox_discovery_result: %d entries",
+                    len(multi_target_files)
+                )
         
         if multi_target_files:
             logger.info(
-                "[critical_pipeline] v2.9 Using %d multi_target_files from spec",
-                len(multi_target_files)
+                "[critical_pipeline] v2.9.2 Using %d multi_target_files from %s",
+                len(multi_target_files), source_location
             )
             
             for mtf in multi_target_files:

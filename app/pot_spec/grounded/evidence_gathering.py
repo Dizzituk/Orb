@@ -1,6 +1,6 @@
 # FILE: app/pot_spec/grounded/evidence_gathering.py
 """
-Evidence-First Filesystem Validation (v1.33)
+Evidence-First Filesystem Validation (v1.34)
 
 Core principle: Evidence gathered BEFORE LLM call, not discovered by LLM.
 
@@ -11,6 +11,13 @@ Access control (non-negotiable):
 
 Version Notes:
 -------------
+v1.34 (2026-01-30): CRITICAL FIX - Exclude CREATE targets from ALL code paths
+    - v1.33 only excluded CREATE targets from system_wide_scan
+    - But requests with anchors ("desktop") went through gather_filesystem_evidence()
+    - Now gather_filesystem_evidence() ALSO excludes CREATE targets
+    - Filters create_names from extract_path_references() results
+    - Fixes: "create a new file on desktop called reply" no longer searches for reply.txt
+    - Stores create_targets in package.metadata for Critical Pipeline / Implementer
 v1.33 (2026-01-30): CRITICAL FIX - Exclude CREATE targets from system scan
     - Added import for extract_create_targets from sandbox_discovery
     - Modified gather_system_wide_scan_evidence() to exclude CREATE targets
@@ -63,9 +70,9 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-# v1.29 BUILD VERIFICATION
+# v1.34 BUILD VERIFICATION
 # =============================================================================
-EVIDENCE_GATHERING_BUILD_ID = "2026-01-30-v1.33-exclude-create-targets"
+EVIDENCE_GATHERING_BUILD_ID = "2026-01-30-v1.34-exclude-create-from-all-paths"
 print(f"[EVIDENCE_GATHERING_LOADED] BUILD_ID={EVIDENCE_GATHERING_BUILD_ID}")
 logger.info(f"[evidence_gathering] Module loaded: BUILD_ID={EVIDENCE_GATHERING_BUILD_ID}")
 
@@ -246,7 +253,7 @@ class FileEvidence:
 @dataclass
 class EvidencePackage:
     """Complete evidence package for a task."""
-    task_type: str                     # qa_file_task, code_analysis, file_operation, multi_target_read, unresolved
+    task_type: str                     # qa_file_task, code_analysis, file_operation, multi_target_read, unresolved, create_only
     target_files: List[FileEvidence] = field(default_factory=list)
     rag_hints_used: List[dict] = field(default_factory=list)
     search_queries_run: List[str] = field(default_factory=list)
@@ -256,6 +263,8 @@ class EvidencePackage:
     # v1.27: Multi-target read tracking
     is_multi_target: bool = False
     multi_target_results: List[Dict[str, Any]] = field(default_factory=list)
+    # v1.34: Package-level metadata (includes create_targets for downstream use)
+    metadata: Dict[str, Any] = field(default_factory=dict)
     
     def has_valid_targets(self) -> bool:
         """Check if we have at least one valid target file."""
@@ -1274,16 +1283,18 @@ def gather_filesystem_evidence(
     rag_hints: Optional[List[dict]] = None,
 ) -> EvidencePackage:
     """
-    v1.31: Main entry point for Evidence-First filesystem validation.
+    v1.34: Main entry point for Evidence-First filesystem validation.
     
     Gathers filesystem evidence BEFORE any LLM calls using SANDBOX filesystem.
     Now automatically detects and handles:
     - v1.31: System-wide scan requests ("find files on my system")
     - v1.27: Multi-target requests with explicit anchors
     - Standard single-target requests
+    
+    v1.34: Now excludes CREATE targets from ALL code paths.
     """
     logger.info(
-        "[evidence_gathering] v1.31 gather_filesystem_evidence: anchor='%s', subfolder='%s', rag_hints=%d",
+        "[evidence_gathering] v1.34 gather_filesystem_evidence: anchor='%s', subfolder='%s', rag_hints=%d",
         anchor, subfolder, len(rag_hints) if rag_hints else 0
     )
     
@@ -1309,9 +1320,41 @@ def gather_filesystem_evidence(
     # Extract path references from text
     references = extract_path_references(combined_text)
     
+    # v1.34 CRITICAL FIX: Extract CREATE targets and exclude them from search
+    # CREATE targets are files the user wants to CREATE (output), not READ (input)
+    # SpecGate is READ-ONLY; Implementer handles CREATE operations
+    create_names = set()
+    create_targets = []
+    if _CREATE_TARGET_AVAILABLE and extract_create_targets:
+        create_targets = extract_create_targets(combined_text)
+        create_names = {t["name"].lower() for t in create_targets}
+        
+        if create_names:
+            original_count = len(references)
+            references = [r for r in references if r.lower() not in create_names]
+            excluded_count = original_count - len(references)
+            
+            if excluded_count > 0:
+                logger.info(
+                    "[evidence_gathering] v1.34 Excluded %d CREATE targets from references: %s",
+                    excluded_count, list(create_names)
+                )
+            
+            # Store create targets in package metadata for downstream use (Critical Pipeline / Implementer)
+            package.metadata["create_targets"] = create_targets
+            logger.info(
+                "[evidence_gathering] v1.34 Stored %d CREATE targets in metadata: %s",
+                len(create_targets), [t["name"] for t in create_targets]
+            )
+    
     if not references and not anchor:
+        # v1.34: If we ONLY have CREATE targets, that's valid - not an error
+        if create_targets:
+            package.task_type = "create_only"
+            logger.info("[evidence_gathering] v1.34 CREATE-only task detected, no READ targets")
+            return package
         package.validation_errors.append("No path references found in text")
-        logger.warning("[evidence_gathering] v1.27 No path references found")
+        logger.warning("[evidence_gathering] v1.34 No path references found")
         return package
     
     # v1.26: If we have anchor + subfolder + file reference, prioritize that
@@ -1361,7 +1404,7 @@ def gather_filesystem_evidence(
         )
     
     logger.info(
-        "[evidence_gathering] v1.27 gather_filesystem_evidence COMPLETE: %s",
+        "[evidence_gathering] v1.34 gather_filesystem_evidence COMPLETE: %s",
         package.to_summary()
     )
     

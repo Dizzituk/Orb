@@ -1,12 +1,23 @@
 # FILE: app/pot_spec/spec_gate_persistence.py
 """
-Spec Gate v2 - Persistence Layer (v2.3)
+Spec Gate v2 - Persistence Layer (v2.3.2)
 
 Contains:
 - Filesystem artifact writing
 - Database persistence
 - Spec schema building
 - Markdown generation
+
+v2.3.2 (2026-01-30): CRITICAL FIX - Always persist multi-target files
+    - Changed condition from `if is_multi_target_read` to `if is_multi_target_read or multi_target_files`
+    - Persists multi_target_files if they EXIST, regardless of flag state
+    - Sets is_multi_target_read=True if files exist (defensive fix)
+    - Changed logger.info to print() for terminal visibility
+    - Fixes data loss when flag doesn't propagate but file data does
+
+v2.3.1 (2026-01-30): DIAGNOSTIC - Added logging for multi-target status
+    - Added diagnostic logging for is_multi_target_read and multi_target_files_count
+    - Logs grounding_data keys for debugging
 
 v2.3 (2026-01-30): CRITICAL FIX - Persist multi-target read fields
     - Added is_multi_target_read to spec_data for Critical Pipeline
@@ -30,7 +41,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # v2.3 BUILD VERIFICATION
 # =============================================================================
-SPEC_GATE_PERSISTENCE_BUILD_ID = "2026-01-30-v2.3.1-multi-target-diagnostic"
+SPEC_GATE_PERSISTENCE_BUILD_ID = "2026-01-30-v2.3.2-always-persist-multi-target"
 print(f"[SPEC_GATE_PERSISTENCE_LOADED] BUILD_ID={SPEC_GATE_PERSISTENCE_BUILD_ID}")
 
 
@@ -311,22 +322,21 @@ def build_spec_schema(
             is_multi_target_read = grounding_data.get("is_multi_target_read", False)
             multi_target_files = grounding_data.get("multi_target_files", [])
             
-            # v2.3.1: DIAGNOSTIC - Always log multi-target status for debugging
-            logger.info(
-                "[spec_gate_persistence] v2.3.1 MULTI-TARGET CHECK: is_multi_target_read=%s, multi_target_files_count=%d, grounding_data_keys=%s",
-                is_multi_target_read,
-                len(multi_target_files) if multi_target_files else 0,
-                list(grounding_data.keys()) if grounding_data else [],
+            # v2.3.2: DIAGNOSTIC - Print to stdout so it appears in terminal
+            print(
+                f"[SPEC_GATE_PERSISTENCE] v2.3.2 MULTI-TARGET CHECK: is_multi_target_read={is_multi_target_read}, "
+                f"multi_target_files_count={len(multi_target_files) if multi_target_files else 0}"
             )
             
-            if is_multi_target_read:
+            # v2.3.2 FIX: Persist multi_target_files if they EXIST, regardless of flag
+            # This handles cases where the flag doesn't propagate but the data does
+            if is_multi_target_read or (multi_target_files and len(multi_target_files) > 0):
                 spec_data.update({
-                    "is_multi_target_read": is_multi_target_read,
+                    "is_multi_target_read": is_multi_target_read or len(multi_target_files) > 0,
                     "multi_target_files": multi_target_files,
                 })
-                logger.info(
-                    "[spec_gate_persistence] v2.3 MULTI-TARGET READ: persisting %d files, is_multi_target_read=%s",
-                    len(multi_target_files), is_multi_target_read
+                print(
+                    f"[SPEC_GATE_PERSISTENCE] v2.3.2 PERSISTING multi_target_files: {len(multi_target_files)} entries"
                 )
             
             # v1.19: Log scan parameters if present

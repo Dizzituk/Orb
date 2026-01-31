@@ -23,7 +23,15 @@ from enum import Enum
 import hashlib
 
 # Current schema version
-SPEC_SCHEMA_VERSION = "1.1"
+# v1.2: Added multi-target read fields (is_multi_target_read, multi_target_files, grounding_data)
+SPEC_SCHEMA_VERSION = "1.2"
+
+
+# v1.2 (2026-01-31): Added multi-target read fields for Critical Pipeline
+# - is_multi_target_read: Flag for multi-file read operations
+# - multi_target_files: Array of file targets with content
+# - grounding_data: Dict containing all grounding evidence
+# CRITICAL: These fields MUST be persisted for micro_quickcheck() to pass on multi-target jobs
 
 
 class SpecStatus(str, Enum):
@@ -194,6 +202,17 @@ class Spec:
     sandbox_output_mode: Optional[str] = None      # v1.2: append_in_place, separate_reply_file, chat_only
     sandbox_insertion_format: Optional[str] = None # v1.2: e.g., '\n\nAnswer:\n{reply}\n'
     
+    # ==========================================================================
+    # MULTI-TARGET READ FIELDS (v1.2) - For multi-file micro-execution jobs
+    # ==========================================================================
+    # These fields are CRITICAL for micro_quickcheck() to pass on multi-target jobs.
+    # They are populated by SpecGate's multi-target discovery and must survive
+    # the persistence/retrieval chain to reach Critical Pipeline.
+    
+    is_multi_target_read: bool = False                         # True if this is a multi-file read operation
+    multi_target_files: List[Dict[str, Any]] = field(default_factory=list)  # List of file targets with content
+    grounding_data: Dict[str, Any] = field(default_factory=dict)  # All grounding evidence from SpecGate
+    
     # Grounding metadata (what exists in the environment)
     goal: str = ""
     what_exists: List[str] = field(default_factory=list)
@@ -255,6 +274,11 @@ class Spec:
             "sandbox_discovery_status": self.sandbox_discovery_status,
             "sandbox_output_mode": self.sandbox_output_mode,
             "sandbox_insertion_format": self.sandbox_insertion_format,
+            
+            # v1.2: Multi-target read fields (CRITICAL for micro_quickcheck)
+            "is_multi_target_read": self.is_multi_target_read,
+            "multi_target_files": self.multi_target_files,
+            "grounding_data": self.grounding_data,
             
             # v1.1: Grounding metadata
             "goal": self.goal,
@@ -324,6 +348,11 @@ class Spec:
         spec.sandbox_discovery_status = data.get("sandbox_discovery_status")
         spec.sandbox_output_mode = data.get("sandbox_output_mode")
         spec.sandbox_insertion_format = data.get("sandbox_insertion_format")
+        
+        # v1.2: Multi-target read fields (CRITICAL for micro_quickcheck)
+        spec.is_multi_target_read = bool(data.get("is_multi_target_read", False))
+        spec.multi_target_files = data.get("multi_target_files", [])
+        spec.grounding_data = data.get("grounding_data", {})
         
         # v1.1: Grounding metadata
         spec.goal = data.get("goal", "")
@@ -477,7 +506,7 @@ def validate_spec(spec: Spec) -> SpecValidationResult:
         errors.append("objective is required")
     
     # Version check
-    if spec.spec_version not in [SPEC_SCHEMA_VERSION, "1.0"]:
+    if spec.spec_version not in [SPEC_SCHEMA_VERSION, "1.0", "1.1"]:
         warnings.append(f"spec_version '{spec.spec_version}' differs from current '{SPEC_SCHEMA_VERSION}'")
     
     # Provenance checks
