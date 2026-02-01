@@ -2,6 +2,12 @@
 """
 Spec Gate streaming handler for ASTRA command flow.
 
+v2.3 (2026-02-01): VISION CONTEXT FLOW FIX
+- Added _get_weaver_vision_context_from_flow() to extract vision context from flow state
+- Vision context is now passed in constraints_hint["vision_context"] to spec_runner
+- This completes the Weaver → SpecGate vision context data flow
+- Enables classifier to identify USER-VISIBLE UI elements for intelligent refactor
+
 v2.2 (2026-01-20): Caller-side persistence (v1.5 SpecGate support)
 - Persist spec to DB after validation (caller responsibility, not SpecGate)
 - SpecGate remains read-only in runtime
@@ -138,6 +144,31 @@ def _get_weaver_job_description_from_flow(project_id: int) -> Optional[str]:
     return None
 
 
+def _get_weaver_vision_context_from_flow(project_id: int) -> Optional[str]:
+    """
+    Get Weaver vision context from flow state (v2.3).
+    
+    v3.9.1: Vision context is extracted by Weaver from Gemini screenshot analysis
+    and stored in flow state. This allows SpecGate classifier to identify
+    USER-VISIBLE UI elements for intelligent refactor classification.
+    """
+    if not _FLOW_STATE_AVAILABLE or not get_active_flow:
+        return None
+    try:
+        flow = get_active_flow(project_id)
+        if flow:
+            vision_ctx = getattr(flow, 'weaver_vision_context', None)
+            if vision_ctx:
+                logger.info(
+                    "[spec_gate_stream] v2.3 Found vision context in flow state (%d chars)",
+                    len(vision_ctx)
+                )
+            return vision_ctx
+    except Exception as e:
+        logger.debug("[spec_gate_stream] get_active_flow failed for vision context: %s", e)
+    return None
+
+
 def _load_latest_weaver_spec_json(db: Session, project_id: int) -> tuple[Optional[dict], dict]:
     """Load Weaver output - checks flow state first (v3.0), then DB."""
     
@@ -269,6 +300,16 @@ async def generate_spec_gate_stream(
         weaver_spec_json, weaver_prov = _load_latest_weaver_spec_json(db, project_id)
 
         constraints_hint: dict = {"project_id": project_id}
+
+        # v2.3: Add vision context from flow state for SpecGate classifier
+        vision_context = _get_weaver_vision_context_from_flow(project_id)
+        if vision_context:
+            constraints_hint["vision_context"] = vision_context
+            logger.info(
+                "[spec_gate_stream] v2.3 Added vision_context to constraints_hint (%d chars)",
+                len(vision_context)
+            )
+            print(f"[spec_gate_stream] v2.3 VISION CONTEXT added to constraints_hint: {len(vision_context)} chars")
 
         if weaver_spec_json:
             constraints_hint["weaver_spec_json"] = weaver_spec_json

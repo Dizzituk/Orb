@@ -72,6 +72,10 @@ class SpecFlowState:
     weaver_spec_id: Optional[str] = None
     weaver_job_description: Optional[str] = None  # v3.0: Simple organized text from Weaver
     
+    # v3.9.1: Vision context from Gemini screenshot analysis
+    # This allows SpecGate classifier to identify USER-VISIBLE UI elements
+    weaver_vision_context: Optional[str] = None
+    
     # v1.1: Weaver design questions state (temporary during question flow)
     weaver_pending_questions: Dict[str, str] = field(default_factory=dict)  # type → question text
     weaver_answer_keywords: Dict[str, List[str]] = field(default_factory=dict)  # type → keywords
@@ -111,6 +115,7 @@ class SpecFlowState:
             "job_id": self.job_id,
             "weaver_spec_id": self.weaver_spec_id,
             "weaver_job_description": self.weaver_job_description,
+            "weaver_vision_context": self.weaver_vision_context,
             "weaver_pending_questions": self.weaver_pending_questions,
             "weaver_answer_keywords": self.weaver_answer_keywords,
             "weaver_captured_answers": self.weaver_captured_answers,
@@ -137,6 +142,7 @@ class SpecFlowState:
             job_id=data.get("job_id"),
             weaver_spec_id=data.get("weaver_spec_id"),
             weaver_job_description=data.get("weaver_job_description"),
+            weaver_vision_context=data.get("weaver_vision_context"),
             weaver_pending_questions=data.get("weaver_pending_questions", {}),
             weaver_answer_keywords=data.get("weaver_answer_keywords", {}),
             weaver_captured_answers=data.get("weaver_captured_answers", {}),
@@ -189,12 +195,14 @@ def start_weaver_flow(
     project_id: int,
     weaver_spec_id: str,
     weaver_job_description: Optional[str] = None,
+    vision_context: Optional[str] = None,
 ) -> SpecFlowState:
     """Start a new flow after Weaver generates a spec/job description.
     
     v3.0: Now accepts weaver_job_description for simple Weaver output.
     v1.2: PRESERVES existing confirmed_design_prefs and weave checkpoint!
     v1.3: PRESERVES woven_user_hashes for hash-based delta tracking!
+    v3.9.1: Now accepts vision_context for intelligent UI classification in SpecGate.
     """
     # Get existing state to preserve prefs and checkpoint
     existing = _FLOW_STATES.get(project_id)
@@ -204,9 +212,10 @@ def start_weaver_flow(
         existing.stage = SpecFlowStage.AWAITING_SPEC_GATE_CONFIRM
         existing.weaver_spec_id = weaver_spec_id
         existing.weaver_job_description = weaver_job_description
+        existing.weaver_vision_context = vision_context  # v3.9.1
         # KEEP: confirmed_design_prefs, last_weave_message_count, last_weave_output, woven_user_hashes
         set_flow_state(existing)
-        print(f"[FLOW_STATE] Updated flow for project {project_id}, preserving prefs: {list(existing.confirmed_design_prefs.keys())}, hashes: {len(existing.woven_user_hashes)}")
+        print(f"[FLOW_STATE] Updated flow for project {project_id}, preserving prefs: {list(existing.confirmed_design_prefs.keys())}, hashes: {len(existing.woven_user_hashes)}, vision_context: {len(vision_context or '')} chars")
         return existing
     else:
         # Create new state
@@ -215,6 +224,7 @@ def start_weaver_flow(
             stage=SpecFlowStage.AWAITING_SPEC_GATE_CONFIRM,
             weaver_spec_id=weaver_spec_id,
             weaver_job_description=weaver_job_description,
+            weaver_vision_context=vision_context,  # v3.9.1
         )
         set_flow_state(state)
         return state

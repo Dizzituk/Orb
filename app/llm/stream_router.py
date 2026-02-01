@@ -3,6 +3,12 @@
 Streaming endpoints for real-time LLM responses.
 Uses Server-Sent Events (SSE).
 
+v5.1 (2026-01-31): CRITICAL FIX - Explicit commands bypass flow state interception
+    - _handle_flow_state_routing now checks for explicit command intents
+    - RUN_CRITICAL_PIPELINE_FOR_JOB, OVERWATCHER_EXECUTE_CHANGES, etc. no longer
+      get intercepted by SPEC_GATE_QUESTIONS flow state
+    - Flow state interception only applies to regular chat messages
+
 v5.0 (2026-01-20): MAJOR REFACTOR - Modularized into routing/ subpackage
     - handler_registry.py: Centralized handler imports & availability
     - command_dispatch.py: Intent → handler dispatch
@@ -172,8 +178,9 @@ async def stream_chat(
         
         # =================================================================
         # FLOW STATE: Route clarifications to Spec Gate
+        # v5.1: Pass translation_result so explicit commands can bypass
         # =================================================================
-        response = _handle_flow_state_routing(req, db, trace, conversation_id, stage_trace)
+        response = _handle_flow_state_routing(req, db, trace, conversation_id, stage_trace, translation_result)
         if response:
             return response
         
@@ -268,10 +275,45 @@ async def stream_chat(
 # INTERNAL ROUTING HELPERS
 # =============================================================================
 
-def _handle_flow_state_routing(req, db, trace, conversation_id, stage_trace):
-    """Handle flow state routing (Spec Gate clarifications)."""
+# v5.1: Explicit command intents that should NOT be intercepted by flow state
+_EXPLICIT_COMMAND_INTENTS = {
+    CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB,
+    CanonicalIntent.OVERWATCHER_EXECUTE_CHANGES,
+    CanonicalIntent.ARCHITECTURE_MAP_WITH_FILES,
+    CanonicalIntent.ARCHITECTURE_MAP_STRUCTURE_ONLY,
+    CanonicalIntent.ARCHITECTURE_UPDATE_ATLAS_ONLY,
+    CanonicalIntent.START_SANDBOX_ZOMBIE_SELF,
+    CanonicalIntent.SCAN_SANDBOX_STRUCTURE,
+    CanonicalIntent.RAG_CODEBASE_QUERY,
+    CanonicalIntent.EMBEDDING_STATUS,
+    CanonicalIntent.GENERATE_EMBEDDINGS,
+    CanonicalIntent.FILESYSTEM_QUERY,
+    CanonicalIntent.CODEBASE_REPORT,
+    CanonicalIntent.LATEST_ARCHITECTURE_MAP,
+    CanonicalIntent.LATEST_CODEBASE_REPORT_FULL,
+}
+
+
+def _handle_flow_state_routing(req, db, trace, conversation_id, stage_trace, translation_result=None):
+    """Handle flow state routing (Spec Gate clarifications).
+    
+    v5.1: Now checks for explicit command intents and skips flow state interception
+    for commands like RUN_CRITICAL_PIPELINE_FOR_JOB, OVERWATCHER_EXECUTE_CHANGES, etc.
+    This prevents explicit commands from being incorrectly routed to spec_gate_clarification.
+    """
     if not _FLOW_STATE_AVAILABLE or not get_active_flow:
         return None
+    
+    # v5.1: Check if this is an explicit command that should bypass flow state
+    if translation_result is not None:
+        intent = translation_result.resolved_intent
+        if intent and intent in _EXPLICIT_COMMAND_INTENTS:
+            logger.info(
+                "[flow_state] v5.1 EXPLICIT COMMAND BYPASS: intent=%s skips flow state interception",
+                intent.value
+            )
+            print(f"[FLOW_STATE_BYPASS] Explicit command '{intent.value}' bypasses SPEC_GATE_QUESTIONS interception")
+            return None
     
     active_flow = get_active_flow(req.project_id)
     if not active_flow or active_flow.stage != SpecFlowStage.SPEC_GATE_QUESTIONS:

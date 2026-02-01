@@ -56,6 +56,25 @@ Your ONLY job: Take the human's rambling and restructure it into a minimal, stab
 - NO technical questions
 - NO resolving ambiguities yourself
 
+## RENAME/REBRAND HANDLING (v3.6 - CRITICAL):
+When the user mentions renaming, rebranding, or changing a name:
+- ALWAYS extract and output BOTH the source name AND target name
+- If user uses pronouns ("it", "that", "this"), infer source from context:
+  - Project/folder name mentioned (e.g., "orb-desktop" → "Orb")
+  - Earlier mention in conversation ("the Orb system" → "Orb")
+  - Screenshot/image context if mentioned
+- Format: "rename SOURCE to TARGET" or "change SOURCE to TARGET"
+
+EXAMPLES:
+- User: "change it to Astra" (context: "Orb Desktop" folder)
+  → Output: "rename Orb to Astra" NOT "rename to Astra"
+- User: "rebrand the UI to Astra" (context: Orb system)
+  → Output: "rebrand Orb UI to Astra" NOT "rebrand UI to Astra"
+- User: "I want to change the name to Astra" (context: orb-desktop project)
+  → Output: "change name from Orb to Astra" NOT "change name to Astra"
+
+NEVER output just "rename to X" without the source term.
+
 ## DEDUPLICATION RULES (Bug 3 - CRITICAL):
 NEVER repeat the same sentence or near-identical phrasing across sections.
 

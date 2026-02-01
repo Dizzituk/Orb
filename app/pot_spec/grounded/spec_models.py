@@ -1,6 +1,6 @@
 # FILE: app/pot_spec/grounded/spec_models.py
 """
-SpecGate Data Models
+SpecGate Data Models (v2.0)
 
 Contains all dataclasses and enums used by the SpecGate grounding system.
 
@@ -11,11 +11,16 @@ Classes:
 - GroundedAssumption: A safe default applied instead of asking (v1.4)
 - GroundedQuestion: A high-impact question requiring human input
 - FileTarget: Target file with individual anchor (v1.21 - Level 2.5 multi-target read)
-- MultiFileOperation: Multi-file operation spec (v1.20 - Level 3)
+- MultiFileOperation: Multi-file operation spec (v1.20 - Level 3, v2.0 - Intelligent Classification)
 - GroundedPOTSpec: The main Point-of-Truth spec dataclass
 
 Version Notes:
 -------------
+v2.0 (2026-02-01): Intelligent refactor classification integration
+    - MultiFileOperation extended with refactor_plan, classification_markdown,
+      classification_json, confirmation_message fields
+    - Added has_classification(), get_change_count(), get_skip_count(), get_flag_count()
+    - to_dict()/from_dict() updated to handle RefactorPlan serialization
 v1.21 (2026-01-29): Added FileTarget for Level 2.5 multi-target file read
     - Supports reading N specific named files from different locations
     - Each target has its own anchor (desktop, D:, etc.)
@@ -159,27 +164,37 @@ class GroundedQuestion:
 
 @dataclass
 class MultiFileOperation:
-    """Multi-file operation specification (v1.20 - Level 3).
+    """Multi-file operation specification (v1.20 - Level 3, v2.0 - Intelligent Classification).
     
     Used when SpecGate detects a multi-file intent and runs file discovery
     to build a target file list for human review before execution.
+    
+    v2.0 (2026-02-01): Added intelligent LLM-powered classification
+        - refactor_plan: Full classification with CHANGE/SKIP/FLAG decisions
+        - classification_markdown: Human-readable analysis
+        - classification_json: Machine-readable structured output
+        - confirmation_message: Concise user confirmation prompt
     
     Attributes:
         is_multi_file: Whether this is a multi-file operation
         operation_type: "search" (read-only) or "refactor" (write)
         search_pattern: Pattern to find in files
         replacement_pattern: Replacement text (empty for search operations)
-        target_files: List of file paths to process
+        target_files: List of file paths to process (CHANGE matches only in v2.0)
         total_files: Total number of matching files found
         total_occurrences: Total occurrences across all files
         file_filter: Optional extension filter (e.g., "*.py")
-        file_preview: Human-readable preview of matches
+        file_preview: Human-readable preview (classification markdown in v2.0)
         discovery_truncated: True if results were truncated
         discovery_duration_ms: How long discovery took
         roots_searched: Directories that were searched
         requires_confirmation: True for refactor operations (safety)
         confirmed: Whether user has approved the operation
         error_message: Set if discovery encountered issues
+        refactor_plan: v2.0 - Full RefactorPlan with classified matches
+        classification_markdown: v2.0 - Human-readable classification analysis
+        classification_json: v2.0 - Machine-readable structured output
+        confirmation_message: v2.0 - Concise confirmation prompt for user
     """
     # Operation type
     is_multi_file: bool = False
@@ -197,7 +212,7 @@ class MultiFileOperation:
     # File filter (e.g., "*.py")
     file_filter: Optional[str] = None
     
-    # Preview for human review (first N files with samples)
+    # Preview for human review (classification markdown in v2.0)
     file_preview: str = ""
     
     # Discovery metadata
@@ -212,9 +227,16 @@ class MultiFileOperation:
     # Error handling
     error_message: Optional[str] = None
     
+    # v2.0: Intelligent classification (LLM-powered analysis)
+    # Type hint uses Any to avoid circular import - actual type is RefactorPlan
+    refactor_plan: Optional[Any] = None
+    classification_markdown: str = ""   # Human-readable analysis
+    classification_json: Dict[str, Any] = field(default_factory=dict)  # Machine-readable
+    confirmation_message: str = ""      # Concise user prompt
+    
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to dictionary for JSON/DB storage."""
-        return {
+        result = {
             "is_multi_file": self.is_multi_file,
             "operation_type": self.operation_type,
             "search_pattern": self.search_pattern,
@@ -230,11 +252,23 @@ class MultiFileOperation:
             "requires_confirmation": self.requires_confirmation,
             "confirmed": self.confirmed,
             "error_message": self.error_message,
+            # v2.0: Classification fields
+            "classification_markdown": self.classification_markdown,
+            "classification_json": self.classification_json,
+            "confirmation_message": self.confirmation_message,
         }
+        # Serialize refactor_plan if present
+        if self.refactor_plan is not None and hasattr(self.refactor_plan, 'to_dict'):
+            result["refactor_plan"] = self.refactor_plan.to_dict()
+        else:
+            result["refactor_plan"] = None
+        return result
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MultiFileOperation":
         """Deserialize from dictionary."""
+        # Note: refactor_plan deserialization requires RefactorPlan.from_dict()
+        # which would create a circular import. Leave as dict for now.
         return cls(
             is_multi_file=data.get("is_multi_file", False),
             operation_type=data.get("operation_type", ""),
@@ -251,7 +285,44 @@ class MultiFileOperation:
             requires_confirmation=data.get("requires_confirmation", False),
             confirmed=data.get("confirmed", False),
             error_message=data.get("error_message"),
+            # v2.0: Classification fields (refactor_plan left as None/dict)
+            refactor_plan=data.get("refactor_plan"),
+            classification_markdown=data.get("classification_markdown", ""),
+            classification_json=data.get("classification_json", {}),
+            confirmation_message=data.get("confirmation_message", ""),
         )
+    
+    def has_classification(self) -> bool:
+        """v2.0: Check if intelligent classification was performed."""
+        return self.refactor_plan is not None or bool(self.classification_json)
+    
+    def get_change_count(self) -> int:
+        """v2.0: Get count of matches that will be changed."""
+        if self.refactor_plan and hasattr(self.refactor_plan, 'get_change_matches'):
+            return len(self.refactor_plan.get_change_matches())
+        # Fallback to classification_json
+        if self.classification_json:
+            summary = self.classification_json.get("refactor_summary", {})
+            return summary.get("change_count", self.total_occurrences)
+        return self.total_occurrences
+    
+    def get_skip_count(self) -> int:
+        """v2.0: Get count of matches that will be skipped."""
+        if self.refactor_plan and hasattr(self.refactor_plan, 'get_skip_matches'):
+            return len(self.refactor_plan.get_skip_matches())
+        if self.classification_json:
+            summary = self.classification_json.get("refactor_summary", {})
+            return summary.get("skip_count", 0)
+        return 0
+    
+    def get_flag_count(self) -> int:
+        """v2.0: Get count of matches flagged for user attention."""
+        if self.refactor_plan and hasattr(self.refactor_plan, 'get_flag_matches'):
+            return len(self.refactor_plan.get_flag_matches())
+        if self.classification_json:
+            summary = self.classification_json.get("refactor_summary", {})
+            return summary.get("flag_count", 0)
+        return 0
 
 
 @dataclass

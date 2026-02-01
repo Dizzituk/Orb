@@ -2,6 +2,30 @@
 r"""
 Weaver Stream Handler for ASTRA - SIMPLIFIED VERSION
 
+v3.9.0 (2026-02-01): VISION CONTEXT FLOW FIX
+- CRITICAL FIX: Vision analysis from Gemini now flows through to SpecGate
+- Added _is_vision_context() to detect assistant messages containing image analysis
+- Changed message filter: USER messages + assistant messages with vision context
+- Vision context includes: screenshot descriptions, UI element analysis, visual descriptions
+- This allows SpecGate's classifier to know which matches are USER-VISIBLE UI elements
+- Refactor tasks now get vision context for intelligent classification
+
+v3.8.0 (2026-02-01): REFACTOR TASK MODE - Separate handling for rename/refactor operations
+- CRITICAL FIX: Refactor tasks now bypass design job logic entirely
+- Added _is_refactor_task() check that takes precedence over _is_design_job()
+- Added REFACTOR_TASK_SYSTEM_PROMPT - no design questions, focused on search/replace scope
+- Added "questions not needed" detection - respects user dismissal of questions
+- Refactor tasks output: what, scope, search/replace terms, constraints only
+- No more "Dark mode or light mode?" questions on text rename tasks
+- Questions section says "none" unless user explicitly left something unclear
+
+v3.7.0 (2026-02-01): REFACTOR INDICATOR FIX - Codebase-wide renames never micro-tasks
+- FIXED: "Orb to Astra" rename was falsely classified as MICRO_FILE_TASK
+- Added REFACTOR_INDICATORS list: rename, rebrand, refactor, astra, front-end ui, etc.
+- Refactor check runs FIRST in _is_micro_file_task() before file indicators
+- These operations need full pipeline (Weaver→SpecGate→CriticalPipeline→Implementer)
+- Version marker now shows v3.7.0 in logs for verification
+
 v3.6.1 (2026-01-30): CRITICAL FIX - Context-aware micro-task detection
 - FIXED: "create a file" was falsely triggering "build verb + non-micro"
 - FIXED: "on my system" was falsely matching "system" as software system
@@ -330,6 +354,105 @@ def _hash_message(msg: Dict[str, Any]) -> str:
 def _hash_messages(messages: List[Dict[str, Any]]) -> Set[str]:
     """Hash a list of messages, returning a set of hashes."""
     return {_hash_message(m) for m in messages}
+
+
+# ---------------------------------------------------------------------------
+# Vision Context Detection (v3.9.0) - Preserve valuable assistant analysis
+# ---------------------------------------------------------------------------
+
+# Patterns that indicate an assistant message contains vision/image analysis
+# These messages should NOT be filtered out even though they're from assistant
+VISION_CONTEXT_PATTERNS = [
+    # Screenshot/image descriptions
+    r"screenshot",
+    r"image shows",
+    r"i can see",
+    r"i see a",
+    r"the image",
+    r"in the picture",
+    r"looking at the",
+    # UI element descriptions (from vision analysis)
+    r"title bar",
+    r"window title",
+    r"menu bar",
+    r"status bar",
+    r"status indicator",
+    r"toolbar",
+    r"heading.*says",
+    r"button.*labeled",
+    r"text.*reads",
+    r"displays.*text",
+    r"shows.*logo",
+    r"cyan.*text",
+    r"blue.*text",
+    r"icon.*shows",
+    # Visual descriptions
+    r"ui shows",
+    r"ui elements",
+    r"visible.*elements",
+    r"display shows",
+    r"interface shows",
+    r"window shows",
+    r"window contains",
+    # Color/appearance descriptions
+    r"dark\s*(?:theme|mode|background)",
+    r"light\s*(?:theme|mode|background)",
+    r"colored.*(?:text|background|border)",
+    # Position descriptions
+    r"top.*(?:left|right|corner)",
+    r"bottom.*(?:left|right|corner)",
+    r"center of",
+    r"sidebar",
+    # Action analysis phrases
+    r"appears to be",
+    r"looks like",
+    r"seems to show",
+]
+
+
+def _is_vision_context(content: str) -> bool:
+    """
+    Detect if an assistant message contains vision/image analysis.
+    
+    v3.9.0: Vision analysis from Gemini should NOT be filtered out.
+    This context is valuable for downstream stages (SpecGate classifier)
+    to understand which matches are USER-VISIBLE UI elements.
+    
+    Returns True if the message likely contains vision analysis.
+    """
+    if not content:
+        return False
+    
+    content_lower = content.lower()
+    
+    # Check for vision context patterns
+    for pattern in VISION_CONTEXT_PATTERNS:
+        if re.search(pattern, content_lower, re.IGNORECASE):
+            print(f"[WEAVER] v3.9 Vision context detected (pattern: {pattern[:30]}...)")
+            return True
+    
+    return False
+
+
+def _extract_vision_context(messages: List[Dict[str, Any]]) -> str:
+    """
+    Extract vision context from assistant messages for refactor tasks.
+    
+    v3.9.0: Returns a string describing UI elements that were identified
+    from screenshot analysis. This context is passed to SpecGate.
+    """
+    vision_parts = []
+    
+    for msg in messages:
+        if msg.get("role") == "assistant":
+            content = msg.get("content", "")
+            if _is_vision_context(content):
+                # Extract relevant portions (first 1000 chars to avoid bloat)
+                vision_parts.append(content[:1000])
+    
+    if vision_parts:
+        return "\n\n".join(vision_parts)
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -1103,6 +1226,122 @@ NON_MICRO_INDICATORS = [
     "prototype", "demo", "refactor", "restructure", "migrate",
 ]
 
+# v3.7: REFACTOR/RENAME operations should NEVER be micro-tasks
+# These are codebase-wide operations that need the full pipeline
+REFACTOR_INDICATORS = [
+    "rename", "rebrand", "refactor", "replace all", "change all",
+    "across", "codebase", "everywhere", "all files", "all occurrences",
+    "orb to astra", "astra", "branding",  # Specific to this rebrand task
+    "front-end ui", "frontend ui",
+]
+
+# v3.8: Patterns that indicate user dismissed/answered questions
+QUESTIONS_DISMISSED_PATTERNS = [
+    r"questions?\s+(are\s+)?not\s+(really\s+)?needed",
+    r"don'?t\s+need\s+(to\s+)?(ask|answer)\s+(those\s+)?questions?",
+    r"reply\s+to\s+(your\s+)?questions?\s+(are\s+)?not\s+needed",
+    r"no\s+need\s+(for|to\s+ask)\s+questions?",
+    r"skip\s+(the\s+)?questions?",
+    r"ignore\s+(the\s+)?questions?",
+    r"questions?\s+aren'?t\s+(really\s+)?relevant",
+]
+
+# v3.8: Refactor task system prompt - NO design questions, focused on search/replace
+REFACTOR_TASK_SYSTEM_PROMPT = """You are Weaver for REFACTOR/RENAME TASKS.
+
+Your job: Produce a FOCUSED job outline for text replacement / rename operations.
+
+## CRITICAL RULES FOR REFACTOR TASKS:
+1. NO design questions (dark mode, light mode, controls, layout, etc.) - IRRELEVANT
+2. NO UI/UX questions - this is a TEXT REPLACEMENT task
+3. NO platform questions - the pipeline knows the platform
+4. Focus ONLY on: what to search, what to replace, where to search
+5. Questions section should say "none" - the pipeline handles discovery
+
+## WHAT TO EXTRACT:
+- Search term: What text/string to find (e.g., "Orb")
+- Replace term: What to replace it with (e.g., "Astra")
+- Scope: Where to search (folder path, file types)
+- Constraints: What NOT to change (e.g., no logos, text-only)
+
+## OUTPUT FORMAT:
+
+What is being built: [Short description] (refactor task)
+Intent: Rename/replace "[SEARCH]" with "[REPLACE]" in [SCOPE]
+Execution type: REFACTOR_TASK
+Search term: [exact text to find]
+Replace term: [exact text to replace with]
+Scope: [folder/path to search]
+Constraints:
+- [constraint 1]
+- [constraint 2]
+Questions: none
+
+## EXAMPLE:
+
+Input: "Change the front-end UI so it's called Astra instead of Orb. Look in Orb Desktop on D drive. Text only, no logos."
+
+Output:
+What is being built: Text rebrand from Orb to Astra (refactor task)
+Intent: Rename all occurrences of "Orb" to "Astra" in D:\\Orb Desktop front-end files
+Execution type: REFACTOR_TASK
+Search term: Orb (case-preserving: Orb→Astra, ORB→ASTRA, orb→astra)
+Replace term: Astra
+Scope: D:\\Orb Desktop (front-end UI files)
+Constraints:
+- Text-only changes (no logos or icons)
+- Case-preserving replacement
+- Front-end UI files only
+Questions: none
+
+CRITICAL:
+- Keep output under 20 lines
+- Questions section MUST say "none" - design questions are NEVER relevant for refactor tasks
+- The Implementer will handle file discovery and show matches for confirmation
+- DO NOT ask about colors, themes, controls, layout, scope preferences, etc."""
+
+
+def _is_refactor_task(text: str) -> bool:
+    """
+    Detect refactor/rename operations that need special handling (v3.8.0).
+    
+    Refactor tasks:
+    - Should NOT trigger design job questions
+    - Should use REFACTOR_TASK_SYSTEM_PROMPT
+    - Focus on search/replace terms, not UI preferences
+    
+    Returns True if any REFACTOR_INDICATOR is present.
+    """
+    text_lower = text.lower()
+    
+    for indicator in REFACTOR_INDICATORS:
+        if indicator in text_lower:
+            print(f"[WEAVER] v3.8 REFACTOR_TASK detected (indicator: '{indicator}')")
+            return True
+    
+    return False
+
+
+def _user_dismissed_questions(text: str) -> bool:
+    """
+    Detect if user explicitly dismissed or said questions aren't needed (v3.8.0).
+    
+    Patterns like:
+    - "The reply to your questions are actually not needed"
+    - "Questions aren't relevant"
+    - "Don't need to ask those questions"
+    
+    Returns True if user dismissed questions.
+    """
+    text_lower = text.lower()
+    
+    for pattern in QUESTIONS_DISMISSED_PATTERNS:
+        if re.search(pattern, text_lower):
+            print(f"[WEAVER] v3.8 User dismissed questions (pattern matched)")
+            return True
+    
+    return False
+
 # Build verbs that make NON_MICRO_INDICATORS decisive
 BUILD_VERBS = [
     "build", "create", "make", "develop", "implement", "prototype",
@@ -1210,8 +1449,10 @@ def _is_micro_file_task(text: str) -> bool:
     """
     Detect simple file operations that need no questions (v3.6.0).
     v3.6.1: Context-aware detection - "create a file" is micro, "create an app" is not.
+    v3.7.0: Refactor/rename operations are NEVER micro-tasks.
     
     Logic:
+    - If REFACTOR_INDICATOR present → NOT micro (codebase-wide operation)
     - If BUILD_VERB in app/software context → NOT micro (it's a build job)
     - If "create" + "file" → IS micro (simple file creation)
     - If any MICRO_FILE_INDICATOR present → IS micro
@@ -1222,8 +1463,16 @@ def _is_micro_file_task(text: str) -> bool:
     - "create an app" → NOT micro task
     - "build a game" → NOT micro task
     - "find file on my system" → micro task
+    - "rename Orb to Astra" → NOT micro task (refactor!)
+    - "change the UI branding" → NOT micro task (refactor!)
     """
     text_lower = text.lower()
+    
+    # v3.7.0: FIRST check for refactor/rename indicators - these are NEVER micro
+    for indicator in REFACTOR_INDICATORS:
+        if indicator in text_lower:
+            print(f"[WEAVER] v3.7 NOT micro-task (refactor indicator: '{indicator}')")
+            return False
     
     # v3.6.1: First check for explicit file creation context
     # "create a file", "create new file", "make a file" are MICRO tasks
@@ -1538,8 +1787,8 @@ async def generate_weaver_stream(
     - If ambiguous, lists ambiguities + asks 3-5 shallow questions
     - No framework/architecture/algorithm questions
     """
-    print(f"[WEAVER] Starting weaver v3.5.0 for project_id={project_id}")
-    logger.info("[WEAVER] Starting weaver v3.5.0 for project_id=%s", project_id)
+    print(f"[WEAVER] Starting weaver v3.8.0 for project_id={project_id}")
+    logger.info("[WEAVER] Starting weaver v3.8.0 for project_id=%s", project_id)
     
     provider, model = _get_weaver_config()
     
@@ -1641,11 +1890,26 @@ async def generate_weaver_stream(
         
         # =====================================================================
         # STEP 4: Compute new messages using HASH-BASED dedup
+        # v3.9.0: Now includes assistant messages with vision context
         # =====================================================================
         
-        # Filter to USER messages only (prevents assistant pollution)
+        # v3.9.0: Extract vision context BEFORE filtering
+        # This preserves Gemini vision analysis for SpecGate
+        vision_context = _extract_vision_context(filtered_messages)
+        if vision_context:
+            print(f"[WEAVER] v3.9 Extracted {len(vision_context)} chars of vision context")
+        
+        # Filter to USER messages + assistant messages with vision context
+        # v3.9.0: Changed from USER-only to include valuable vision analysis
+        relevant_messages = [
+            m for m in filtered_messages 
+            if m.get("role") == "user" or 
+               (m.get("role") == "assistant" and _is_vision_context(m.get("content", "")))
+        ]
+        
+        # For hashing, we still only track USER messages (to determine what's new)
         user_messages_only = [m for m in filtered_messages if m.get("role") == "user"]
-        print(f"[WEAVER] Filtered to {len(user_messages_only)} USER messages (from {total_message_count} total)")
+        print(f"[WEAVER] Filtered to {len(relevant_messages)} relevant messages ({len(user_messages_only)} USER + vision context) (from {total_message_count} total)")
         
         # Compute hashes for current user messages
         current_user_hashes = _hash_messages(user_messages_only)
@@ -1678,8 +1942,9 @@ async def generate_weaver_stream(
         else:
             print("[WEAVER] CREATE mode: first weave for this project")
         
-        # Format ramble text from USER messages (with meta-mode removed)
-        ramble_text = _format_ramble(user_messages_only)
+        # Format ramble text from RELEVANT messages (USER + vision context)
+        # v3.9.0: Now includes vision analysis for context
+        ramble_text = _format_ramble(relevant_messages)
         
         # =====================================================================
         # STEP 5: Core goal check (FOR LOGGING ONLY - v3.5.0)
@@ -1696,8 +1961,15 @@ async def generate_weaver_stream(
         # =====================================================================
         
         is_micro_task = _is_micro_file_task(ramble_text)
+        is_refactor_task = _is_refactor_task(ramble_text)
+        questions_dismissed = _user_dismissed_questions(ramble_text)
+        
         if is_micro_task:
             print("[WEAVER] MICRO_FILE_TASK mode - minimal output, no unnecessary questions")
+        if is_refactor_task:
+            print("[WEAVER] v3.8 REFACTOR_TASK mode - no design questions")
+        if questions_dismissed:
+            print("[WEAVER] v3.8 User dismissed questions - skipping shallow questions")
         
         # =====================================================================
         # STEP 6: Get questions based on task type (v3.6.0 modified)
@@ -1713,6 +1985,10 @@ async def generate_weaver_stream(
             blocking_questions = _get_blocking_questions(ramble_text, is_micro_task=True)
             if blocking_questions:
                 print(f"[WEAVER] Micro-task has {len(blocking_questions)} blocking question(s)")
+        elif is_refactor_task or questions_dismissed:
+            # v3.8.0: Refactor tasks bypass design questions entirely
+            print("[WEAVER] v3.8 Skipping design questions")
+            shallow_questions = {}
         elif _is_design_job(ramble_text):
             # Design jobs: existing shallow question logic
             shallow_questions = _get_shallow_questions(ramble_text)
@@ -1764,6 +2040,22 @@ async def generate_weaver_stream(
 {ramble_text}{blocker_context}
 
 Produce the minimal job outline:"""
+        
+        elif is_refactor_task:
+            # =================================================================
+            # REFACTOR-TASK MODE (v3.8.0) - Text replacement, no design questions
+            # =================================================================
+            print(f"[WEAVER] REFACTOR-TASK mode: using refactor prompt")
+            
+            start_message = f"**Refactor/rename task detected...**\n\n"
+            yield _serialize_sse({"type": "token", "content": start_message})
+            
+            system_prompt = REFACTOR_TASK_SYSTEM_PROMPT
+            user_prompt = f"""User request:
+
+{ramble_text}
+
+Produce the refactor job outline:"""
         
         elif is_update_mode:
             # UPDATE MODE - Merge new info into existing job description
@@ -1939,13 +2231,17 @@ Remember:
             save_confirmed_design_prefs(project_id, confirmed_prefs)
         
         # Store in flow state for Spec Gate
+        # v3.9.1: Now passing vision_context for intelligent UI classification
         if _FLOW_STATE_AVAILABLE and start_weaver_flow:
             try:
                 start_weaver_flow(
                     project_id=project_id,
                     weaver_spec_id=weaver_output_id,
                     weaver_job_description=job_description,
+                    vision_context=vision_context,  # v3.9.1: Pass vision context to flow state
                 )
+                if vision_context:
+                    print(f"[WEAVER] v3.9.1 Vision context stored in flow state ({len(vision_context)} chars)")
             except Exception as e:
                 logger.warning("[WEAVER] Failed to store in flow state: %s", e)
         
