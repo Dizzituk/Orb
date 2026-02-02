@@ -2,6 +2,12 @@
 """
 Critical Pipeline streaming handler for ASTRA command flow.
 
+v2.10 (2026-02-02): POT SPEC MARKDOWN INJECTION
+- Retrieve db_spec.content_markdown alongside content_json
+- Pass spec_markdown to run_high_stakes_with_critique() for grounded architecture
+- Architecture LLM now receives FULL POT spec with real file paths, line numbers
+- Implements "Ground and trust" philosophy - spec IS the instruction set
+
 v2.9.2 (2026-01-30): MULTI-LOCATION EVIDENCE GATHERING FIX
 - gather_critical_pipeline_evidence() now checks MULTIPLE LOCATIONS for multi_target_files
 - Checks: root level, grounding_data, evidence_package, sandbox_discovery_result
@@ -92,7 +98,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # v2.8 BUILD VERIFICATION
 # =============================================================================
-CRITICAL_PIPELINE_BUILD_ID = "2026-01-31-v2.9.3-schema-multi-target-fix"
+CRITICAL_PIPELINE_BUILD_ID = "2026-02-02-v2.10-pot-spec-markdown-injection"
 print(f"[CRITICAL_PIPELINE_LOADED] BUILD_ID={CRITICAL_PIPELINE_BUILD_ID}")
 logger.info(f"[critical_pipeline] Module loaded: BUILD_ID={CRITICAL_PIPELINE_BUILD_ID}")
 
@@ -2046,6 +2052,7 @@ async def generate_critical_pipeline_stream(
         spec_id = db_spec.spec_id
         spec_hash = db_spec.spec_hash
         spec_json = db_spec.content_json
+        spec_markdown = db_spec.content_markdown  # v2.10: POT spec markdown for grounded architecture
         
         # Parse spec JSON
         try:
@@ -2664,6 +2671,7 @@ The implementation MUST NOT operate outside these boundaries.
                 spec_id=spec_id,
                 spec_hash=spec_hash,
                 spec_json=spec_json,
+                spec_markdown=spec_markdown,  # v2.10: Inject full POT spec for grounded architecture
                 use_json_critique=True,
             )
             

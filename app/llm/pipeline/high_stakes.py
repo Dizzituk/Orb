@@ -7,6 +7,14 @@ Block 4: Architecture generation as versioned artifact with spec traceability
 Block 5: Structured JSON critique with blocking/non-blocking issues (critique.py)
 Block 6: Revision loop until critique passes (revision.py)
 
+v5.0 (2026-02-02): GROUNDED SPEC INJECTION - POT spec as source of truth
+- NEW: spec_markdown parameter for full POT spec with grounded evidence
+- Architecture LLM now receives the COMPLETE POT spec with file paths, line numbers
+- The POT spec IS the instruction set - architecture must follow it
+- Removed rigid job_kind checking - spec tells the LLM what type of work this is
+- Philosophy: "Ground and trust" - grounded evidence prevents hallucination
+- If spec says "Change line 42 of file X", that's exactly what architecture addresses
+
 v4.3 (2026-01-22): CRITICAL FIX - Phantom ENVIRONMENT_CONSTRAINTS Bug
 - get_environment_context() now extracts tech_stack FROM SPEC, not hardcoded defaults
 - Removed hardcoded React/Electron/FastAPI/SQLite constraints that were causing
@@ -502,9 +510,14 @@ async def run_high_stakes_with_critique(
     spec_id: Optional[str] = None,
     spec_hash: Optional[str] = None,
     spec_json: Optional[str] = None,
+    spec_markdown: Optional[str] = None,  # v5.0: Full POT spec with grounded evidence
     use_json_critique: bool = True,
 ) -> LLMResult:
     """Run high-stakes critique pipeline.
+    
+    v5.0: Now accepts spec_markdown - the full POT spec with grounded evidence.
+    This is the PRIMARY source of truth with actual file paths, line numbers,
+    and specific changes. The architecture LLM follows this spec exactly.
     
     If spec_id/spec_hash are provided (from Spec Gate), uses Block 4-6 pipeline:
     - Stores architecture as versioned artifact
@@ -539,11 +552,45 @@ async def run_high_stakes_with_critique(
     draft_messages = list(envelope.messages)
     
     # =========================================================================
-    # v4.2 CRITICAL FIX: Inject spec content into architecture prompt
+    # v5.0: INJECT FULL POT SPEC MARKDOWN (PRIMARY SOURCE OF TRUTH)
     # =========================================================================
-    # The architecture LLM MUST see the spec constraints BEFORE generating.
-    # Without this, the LLM may propose a different tech stack than what was
-    # discussed with the user. See CRITICAL_PIPELINE_FAILURE_REPORT.md.
+    # The POT spec contains GROUNDED evidence: real file paths, real line numbers,
+    # real content. This is the instruction set - the architecture must follow it.
+    # Grounding IS the safety mechanism - if it says "Change line 42", that's truth.
+    
+    if spec_markdown:
+        pot_spec_instruction = f"""{'='*70}
+POT SPEC - AUTHORITATIVE SOURCE OF TRUTH (GROUNDED EVIDENCE)
+{'='*70}
+
+The following POT spec contains VERIFIED information:
+- Real file paths that have been confirmed to exist
+- Real line numbers pointing to actual code
+- Real content excerpts from the codebase
+
+Your architecture MUST:
+1. Address EVERY item in the "Change" section below
+2. NOT modify items in the "Skip" section
+3. Follow the exact file paths and line numbers provided
+4. NOT invent features, files, or changes beyond this spec
+
+{spec_markdown}
+
+{'='*70}
+END OF POT SPEC - Architecture must implement EXACTLY the above
+{'='*70}
+"""
+        draft_messages.append({"role": "system", "content": pot_spec_instruction})
+        
+        logger.info("[high_stakes] v5.0 Injected FULL POT spec markdown (%d chars)", len(spec_markdown))
+        print(f"[DEBUG] [high_stakes] v5.0 POT spec markdown injected ({len(spec_markdown)} chars)")
+    
+    # =========================================================================
+    # v4.2 LEGACY: Extract metadata from spec_json (supplementary to POT spec)
+    # =========================================================================
+    # This extracts goal, stack, requirements from spec_json.
+    # If spec_markdown was provided, this is supplementary context.
+    # If spec_markdown was NOT provided, this is the primary anchoring.
     
     if spec_json:
         try:
@@ -718,6 +765,10 @@ async def run_high_stakes_with_critique(
         # v1.1 FIX: Pass spec_json to get_environment_context() to avoid phantom constraints
         env_context = get_environment_context(spec_json=spec_json) if job_type_str in HIGH_STAKES_JOB_TYPES else None
         
+        # v5.0: Pass spec_markdown to revision loop for grounded critique
+        if spec_markdown:
+            print(f"[DEBUG] [high_stakes] v5.0 Passing spec_markdown ({len(spec_markdown)} chars) to revision loop")
+        
         final_content, final_version, passed, final_critique = await run_revision_loop(
             db=db,
             job_id=job_id,
@@ -727,6 +778,7 @@ async def run_high_stakes_with_critique(
             spec_id=spec_id,
             spec_hash=spec_hash,
             spec_json=spec_json,
+            spec_markdown=spec_markdown,
             original_request=original_request,
             opus_model_id=model_id,
             envelope=envelope,

@@ -12,13 +12,14 @@ Responsibilities:
 - Handle various goal extraction patterns including inline formats
 
 Key Features:
+- v2.1: Extract "Intent:" line as goal source (more reliable than title)
 - v1.39: Handle "What is being built:" extraction with regex
 - Support for both structured and unstructured Weaver output
 
 Used by:
 - spec_runner.py for intent parsing
 
-Version: v2.0 (2026-02-01) - Extracted from spec_generation.py
+Version: v2.1 (2026-02-02) - Extract Intent line as goal, filter placeholder titles
 """
 
 from __future__ import annotations
@@ -33,6 +34,70 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "parse_weaver_intent",
 ]
+
+
+# =============================================================================
+# v2.1: PLACEHOLDER DETECTION
+# =============================================================================
+
+# These are placeholder/template strings that should NEVER be used as goals
+PLACEHOLDER_GOALS = {
+    "job description",
+    "job description from weaver",
+    "weaver output",
+    "task description",
+    "implement requested feature",
+    "complete the requested task",
+    "tbd",
+    "todo",
+    "n/a",
+    "none",
+    "",
+}
+
+
+def _is_placeholder_goal(text: str) -> bool:
+    """
+    v2.1: Check if a goal candidate is a placeholder that should be skipped.
+    
+    Returns True if the text is:
+    - Empty or whitespace
+    - A known placeholder string
+    - Starts with a known placeholder pattern
+    - Contains only generic words with no specific content
+    """
+    if not text or not text.strip():
+        return True
+    
+    text_lower = text.lower().strip()
+    
+    # Exact match against known placeholders
+    if text_lower in PLACEHOLDER_GOALS:
+        return True
+    
+    # Starts with placeholder patterns
+    placeholder_prefixes = [
+        "job description",
+        "weaver output",
+        "task description",
+        "implement the",
+        "complete the task",
+    ]
+    for prefix in placeholder_prefixes:
+        if text_lower.startswith(prefix):
+            return True
+    
+    # Contains placeholder markers (like weaver job IDs used as titles)
+    if text_lower.startswith("weaver-") or "(weaver-" in text_lower:
+        # This might be "Job Description from Weaver (weaver-xxx)"
+        # But only reject if it's JUST the ID, not real content
+        if len(text_lower) < 50 and "weaver-" in text_lower:
+            # Check if there's real content besides the weaver ID
+            without_id = re.sub(r'\(?weaver-[a-f0-9]+\)?', '', text_lower).strip()
+            if without_id in PLACEHOLDER_GOALS or len(without_id) < 10:
+                return True
+    
+    return False
 
 
 def parse_weaver_intent(constraints_hint: Optional[Dict]) -> Dict[str, Any]:
@@ -85,23 +150,42 @@ def parse_weaver_intent(constraints_hint: Optional[Dict]) -> Dict[str, Any]:
         lines = job_desc_text.strip().split("\n")
         goal_found = False
         
-        # v1.39: First try direct regex extraction (handles inline format)
-        what_is_being_built_match = re.search(
-            r'what\s+is\s+being\s+built\s*[:\-]\s*(.+?)(?:\n|$)',
+        # v2.1: First try "Intent:" line - this is the most reliable goal source
+        intent_match = re.search(
+            r'intent\s*[:\-]\s*(.+?)(?:\n|$)',
             job_desc_text,
             re.IGNORECASE
         )
-        if what_is_being_built_match:
-            goal_text = what_is_being_built_match.group(1).strip()
+        if intent_match:
+            goal_text = intent_match.group(1).strip()
             # Clean up: remove trailing section markers
             goal_text = re.split(r'\*\*|\n', goal_text)[0].strip()
-            if goal_text:
+            if goal_text and not _is_placeholder_goal(goal_text):
                 result["goal"] = goal_text
                 goal_found = True
                 logger.info(
-                    "[weaver_parser] v1.39 Extracted goal via regex: %s",
+                    "[weaver_parser] v2.1 Extracted goal from Intent line: %s",
                     result["goal"][:100]
                 )
+        
+        # v1.39: Try "What is being built:" extraction (handles inline format)
+        if not goal_found:
+            what_is_being_built_match = re.search(
+                r'what\s+is\s+being\s+built\s*[:\-]\s*(.+?)(?:\n|$)',
+                job_desc_text,
+                re.IGNORECASE
+            )
+            if what_is_being_built_match:
+                goal_text = what_is_being_built_match.group(1).strip()
+                # Clean up: remove trailing section markers
+                goal_text = re.split(r'\*\*|\n', goal_text)[0].strip()
+                if goal_text and not _is_placeholder_goal(goal_text):
+                    result["goal"] = goal_text
+                    goal_found = True
+                    logger.info(
+                        "[weaver_parser] v1.39 Extracted goal via regex: %s",
+                        result["goal"][:100]
+                    )
         
         # Fallback: line-by-line parsing (v1.12 behavior)
         if not goal_found:
@@ -111,32 +195,36 @@ def parse_weaver_intent(constraints_hint: Optional[Dict]) -> Dict[str, Any]:
                     # Check if goal is on same line (after the phrase)
                     match = re.search(r'what\s+is\s+being\s+built\s*[:\-]\s*(.+)', line, re.IGNORECASE)
                     if match and match.group(1).strip():
-                        result["goal"] = match.group(1).strip()
-                        goal_found = True
-                        logger.info(
-                            "[weaver_parser] v1.39 Extracted goal from 'What is being built' line: %s",
-                            result["goal"][:100]
-                        )
-                        break
+                        candidate = match.group(1).strip()
+                        if not _is_placeholder_goal(candidate):
+                            result["goal"] = candidate
+                            goal_found = True
+                            logger.info(
+                                "[weaver_parser] v1.39 Extracted goal from 'What is being built' line: %s",
+                                result["goal"][:100]
+                            )
+                            break
                     # Otherwise, goal might be on next line
                     if i + 1 < len(lines):
                         next_line = lines[i + 1].strip()
                         if next_line and not next_line.lower().startswith(("intended", "unresolved", "questions", "-", "*", "**")):
-                            result["goal"] = next_line.lstrip("- ").strip()
-                            goal_found = True
-                            logger.info(
-                                "[weaver_parser] v1.39 Extracted goal from line after 'What is being built': %s",
-                                result["goal"][:100]
-                            )
-                            break
+                            candidate = next_line.lstrip("- ").strip()
+                            if not _is_placeholder_goal(candidate):
+                                result["goal"] = candidate
+                                goal_found = True
+                                logger.info(
+                                    "[weaver_parser] v1.39 Extracted goal from line after 'What is being built': %s",
+                                    result["goal"][:100]
+                                )
+                                break
         
         # Fallback: first non-header line (old behavior)
         if not goal_found and lines:
             for line in lines:
                 line = line.strip()
                 if line and not line.startswith("#") and not line.lower().startswith("what is being built"):
-                    # Skip generic headers
-                    if line.lower() not in ("job description", "job description from weaver"):
+                    # Skip generic headers and placeholders
+                    if not _is_placeholder_goal(line):
                         result["goal"] = line
                         break
         

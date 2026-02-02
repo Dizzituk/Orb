@@ -30,7 +30,70 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
 
+# Build ID for verification
+FILE_DISCOVERY_BUILD_ID = "2026-02-02-v2.3-local-fallback"
+print(f"[FILE_DISCOVERY_LOADED] BUILD_ID={FILE_DISCOVERY_BUILD_ID}")
+
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# v2.3: LOCAL POWERSHELL FALLBACK
+# =============================================================================
+
+import subprocess
+import time
+
+
+def _run_powershell_local(
+    command: str,
+    timeout_seconds: int = 120,
+) -> Tuple[bool, str, str, int]:
+    """
+    v2.3: Run PowerShell command locally (no sandbox).
+    
+    Used as fallback when sandbox is unavailable.
+    
+    Args:
+        command: PowerShell command to run
+        timeout_seconds: Command timeout
+        
+    Returns:
+        (success, stdout, stderr, duration_ms)
+    """
+    start_time = time.time()
+    
+    try:
+        logger.info("[file_discovery] v2.3 LOCAL FALLBACK: Running PowerShell locally")
+        print("[file_discovery] v2.3 LOCAL FALLBACK: Sandbox unavailable, using local PowerShell")
+        
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", command],
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            encoding='utf-8',
+            errors='replace',
+        )
+        
+        duration_ms = int((time.time() - start_time) * 1000)
+        
+        logger.info(
+            "[file_discovery] v2.3 LOCAL result: exit=%d, stdout=%d chars, stderr=%d chars",
+            result.returncode, len(result.stdout or ''), len(result.stderr or '')
+        )
+        
+        return True, result.stdout or '', result.stderr or '', duration_ms
+        
+    except subprocess.TimeoutExpired:
+        duration_ms = int((time.time() - start_time) * 1000)
+        logger.error("[file_discovery] v2.3 LOCAL timeout after %ds", timeout_seconds)
+        return False, '', f'Command timed out after {timeout_seconds}s', duration_ms
+        
+    except Exception as e:
+        duration_ms = int((time.time() - start_time) * 1000)
+        logger.error("[file_discovery] v2.3 LOCAL exception: %s", e)
+        return False, '', str(e), duration_ms
 
 
 # =============================================================================
@@ -579,12 +642,13 @@ def discover_files(
     """
     Discover files containing a search pattern.
     
+    v2.3: Now with local PowerShell fallback when sandbox unavailable.
     v2.1: Now filters garbage lines and classifies matches mechanically.
     """
     roots = roots or DEFAULT_ROOTS
     exclusions = exclusions or DEFAULT_EXCLUSIONS
     
-    logger.info(f"[file_discovery] v2.1 Pattern search: {search_pattern}, roots={roots}")
+    logger.info(f"[file_discovery] v2.3 Pattern search: {search_pattern}, roots={roots}")
     
     ps_command = _build_select_string_command(
         pattern=search_pattern,
@@ -596,79 +660,103 @@ def discover_files(
     
     logger.debug(f"[file_discovery] PowerShell command: {ps_command[:200]}...")
     
-    try:
-        shell_result = sandbox_client.shell_run(
+    # v2.3: Try sandbox first, fall back to local
+    stdout = ''
+    stderr = ''
+    duration_ms = 0
+    use_local = False
+    
+    if sandbox_client:
+        try:
+            shell_result = sandbox_client.shell_run(
+                command=ps_command,
+                cwd_target="REPO",
+                timeout_seconds=timeout_seconds,
+            )
+            
+            stdout = getattr(shell_result, 'stdout', '') or ''
+            stderr = getattr(shell_result, 'stderr', '') or ''
+            duration_ms = getattr(shell_result, 'duration_ms', 0)
+            
+            logger.debug(f"[file_discovery] Sandbox result: stdout_len={len(stdout)}")
+            
+        except Exception as e:
+            # v2.3: Sandbox failed, use local fallback
+            logger.warning(f"[file_discovery] v2.3 Sandbox failed: {e}")
+            print(f"[file_discovery] v2.3 Sandbox failed, trying local fallback...")
+            use_local = True
+    else:
+        # No sandbox client provided
+        use_local = True
+    
+    # v2.3: Local fallback
+    if use_local or (not stdout.strip() and not stderr.strip()):
+        logger.info("[file_discovery] v2.3 Using LOCAL PowerShell fallback")
+        success, stdout, stderr, duration_ms = _run_powershell_local(
             command=ps_command,
-            cwd_target="REPO",
             timeout_seconds=timeout_seconds,
         )
         
-        stdout = getattr(shell_result, 'stdout', '') or ''
-        stderr = getattr(shell_result, 'stderr', '') or ''
-        ok = getattr(shell_result, 'ok', None)
-        exit_code = getattr(shell_result, 'exit_code', None)
-        
-        logger.debug(f"[file_discovery] Result: ok={ok}, exit_code={exit_code}, stdout_len={len(stdout)}")
-        
-        # v1.2: Prioritize stdout over exit codes
-        if stdout.strip():
-            files, total_occurrences, truncated, lines_filtered = _parse_select_string_output_v21(
-                stdout=stdout,
-                max_results=max_results,
-                max_samples_per_file=max_samples_per_file,
-            )
-            
-            logger.info(f"[file_discovery] v2.1 Found {len(files)} files, {total_occurrences} occurrences, {lines_filtered} lines filtered")
-            
-            return DiscoveryResult(
-                success=True,
-                search_pattern=search_pattern,
-                total_files=len(files),
-                total_occurrences=total_occurrences,
-                files=files,
-                truncated=truncated,
-                duration_ms=getattr(shell_result, 'duration_ms', 0),
-                roots_searched=roots,
-                lines_filtered=lines_filtered,
-            )
-        
-        # No stdout
-        if stderr.strip():
-            error_msg = f"PowerShell error: {stderr[:500]}"
-            logger.warning(f"[file_discovery] {error_msg}")
+        if not success:
             return DiscoveryResult(
                 success=False,
                 search_pattern=search_pattern,
                 total_files=0,
                 total_occurrences=0,
-                error_message=error_msg,
-                duration_ms=getattr(shell_result, 'duration_ms', 0),
+                error_message=f"Local PowerShell failed: {stderr}",
+                duration_ms=duration_ms,
                 roots_searched=roots,
             )
+    
+    # Parse results
+    if stdout.strip():
+        files, total_occurrences, truncated, lines_filtered = _parse_select_string_output_v21(
+            stdout=stdout,
+            max_results=max_results,
+            max_samples_per_file=max_samples_per_file,
+        )
         
-        # No matches found
-        logger.info(f"[file_discovery] No matches found for pattern: {search_pattern}")
+        logger.info(f"[file_discovery] v2.3 Found {len(files)} files, {total_occurrences} occurrences")
+        print(f"[file_discovery] v2.3 SCAN COMPLETE: {total_occurrences} matches in {len(files)} files")
+        
         return DiscoveryResult(
             success=True,
             search_pattern=search_pattern,
-            total_files=0,
-            total_occurrences=0,
-            files=[],
-            truncated=False,
-            duration_ms=getattr(shell_result, 'duration_ms', 0),
+            total_files=len(files),
+            total_occurrences=total_occurrences,
+            files=files,
+            truncated=truncated,
+            duration_ms=duration_ms,
             roots_searched=roots,
+            lines_filtered=lines_filtered,
         )
-        
-    except Exception as e:
-        logger.error(f"[file_discovery] Exception: {e}")
+    
+    # No stdout
+    if stderr.strip():
+        error_msg = f"PowerShell error: {stderr[:500]}"
+        logger.warning(f"[file_discovery] {error_msg}")
         return DiscoveryResult(
             success=False,
             search_pattern=search_pattern,
             total_files=0,
             total_occurrences=0,
-            error_message=str(e),
+            error_message=error_msg,
+            duration_ms=duration_ms,
             roots_searched=roots,
         )
+    
+    # No matches found
+    logger.info(f"[file_discovery] No matches found for pattern: {search_pattern}")
+    return DiscoveryResult(
+        success=True,
+        search_pattern=search_pattern,
+        total_files=0,
+        total_occurrences=0,
+        files=[],
+        truncated=False,
+        duration_ms=duration_ms,
+        roots_searched=roots,
+    )
 
 
 def discover_files_by_extension(

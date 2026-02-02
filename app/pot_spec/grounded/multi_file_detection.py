@@ -778,6 +778,10 @@ async def _build_multi_file_operation(
         else:
             target_files = [fm.path for fm in result.files]
         
+        # v3.0: Do NOT set requires_confirmation=True just because it's a refactor
+        # The confirmation decision is made by spec_runner based on risk class
+        # multi_file_detection's job: detect + collect + metadata (NOT gating)
+        # v3.1: Also store raw_matches and rename_plan for spec_runner's v3 builder
         return MultiFileOperation(
             is_multi_file=True,
             operation_type=operation_type,
@@ -791,22 +795,25 @@ async def _build_multi_file_operation(
             discovery_truncated=result.truncated,
             discovery_duration_ms=result.duration_ms,
             roots_searched=result.roots_searched,
-            requires_confirmation=(operation_type == "refactor"),
-            confirmed=False,
+            requires_confirmation=False,  # v3.0: Gating decision moved to spec_runner
+            confirmed=False,  # v3.0: Deprecated, kept for backward compat
             error_message=None,
             refactor_plan=refactor_plan,
             classification_markdown=classification_markdown,
             classification_json=classification_json,
             confirmation_message=confirmation_message,
+            raw_matches=raw_matches,  # v3.1: Store for spec_runner's deterministic builder
         )
         
     except Exception as e:
         logger.error("[multi_file_detection] v2.1 Multi-file operation failed: %s", e)
+        # v3.0: Even on error, don't hardcode requires_confirmation
+        # Error handling and gating is spec_runner's responsibility
         return MultiFileOperation(
             is_multi_file=True,
             operation_type=operation_type,
             search_pattern=search_pattern,
             replacement_pattern=replacement_pattern,
-            requires_confirmation=(operation_type == "refactor"),
+            requires_confirmation=False,  # v3.0: Gating decision moved to spec_runner
             error_message=f"Discovery failed: {str(e)}",
         )

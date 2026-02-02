@@ -364,7 +364,9 @@ async def generate_spec_gate_stream(
         use_grounded = _USE_GROUNDED_SPEC_GATE and _SPEC_GATE_GROUNDED_AVAILABLE and run_spec_gate_grounded
         
         if use_grounded:
-            version_msg = "🔬 Using **SpecGate Contract v1** (grounded, evidence-based, read-only)\n\n"
+            # v3.0: More accurate versioning message
+            # The "Contract v1" was the LLM-based formatter. v3.0 uses deterministic builder.
+            version_msg = "🔬 Using **SpecGate v3.0** (grounded, evidence-based, deterministic)\n\n"
             yield _safe_json_event({"type": "token", "content": version_msg})
             response_parts.append(version_msg)
         
@@ -583,7 +585,7 @@ async def generate_spec_gate_stream(
                     
                     spec_schema = build_spec_schema(
                         spec_id=spec_id,
-                        title="SPoT Spec (SpecGate Contract v1)",
+                        title="SPoT Spec (SpecGate v3.0)",
                         summary=summary,
                         objective=goal,
                         outputs=[],  # Extracted from spec if needed

@@ -4,6 +4,13 @@
 The critique output is strict JSON for deterministic pass/fail decisioning.
 A parallel markdown artifact is generated for human readability.
 
+v1.2 (2026-02-02): GROUNDED CRITIQUE - POT spec as source of truth
+- build_json_critique_prompt() now accepts spec_markdown parameter
+- Full POT spec with grounded evidence injected into critique prompt
+- Critique ONLY flags issues that violate the spec
+- Critique DOES NOT invent constraints not in the spec
+- Philosophy: "Ground and trust" - spec IS the contract
+
 v1.1 (2026-01):
 - Added critique_mode field: "quickcheck" or "deep"
 - Added blocker type constants for filtering
@@ -365,21 +372,69 @@ def build_json_critique_prompt(
     draft_text: str,
     original_request: str,
     spec_json: Optional[str] = None,
+    spec_markdown: Optional[str] = None,
     env_context: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Build prompt for structured JSON critique output.
     
+    v1.2 (2026-02-02): Now accepts spec_markdown for grounded critique.
+    The POT spec markdown contains VERIFIED evidence (file paths, line numbers).
+    Critique judges ONLY against what's in the spec, not invented constraints.
+    
     Args:
         draft_text: The architecture document to critique
         original_request: Original user request
-        spec_json: Optional spec JSON for traceability
+        spec_json: Optional spec JSON for traceability (metadata)
+        spec_markdown: Optional POT spec markdown (AUTHORITATIVE source of truth)
         env_context: Optional environment constraints
     
     Returns:
         Prompt string requesting JSON critique output
     """
+    # =========================================================================
+    # v1.2: POT SPEC MARKDOWN (PRIMARY SOURCE OF TRUTH)
+    # =========================================================================
+    # This is the AUTHORITATIVE contract. Critique judges ONLY against this.
+    # If user requested "OpenAI API", that's in the spec, so it's ALLOWED.
+    
+    pot_spec_section = ""
+    if spec_markdown:
+        pot_spec_section = f"""
+{'='*70}
+POT SPEC - AUTHORITATIVE CONTRACT (CRITIQUE JUDGES AGAINST THIS)
+{'='*70}
+
+The following POT spec is the AUTHORITATIVE source of truth for this task.
+It contains VERIFIED information from the codebase and user requirements.
+
+Your critique MUST:
+1. Judge the architecture ONLY against what's in this spec
+2. NOT invent constraints that aren't in the spec
+3. NOT flag user-requested features as violations (e.g., if spec says "use OpenAI API", that's ALLOWED)
+4. Check that the architecture addresses what the spec requires
+5. Check grounding: do referenced file paths exist in the spec evidence?
+
+You should flag as BLOCKING only if:
+- Architecture MISSES something the spec REQUIRES
+- Architecture CONTRADICTS something the spec STATES
+- Architecture references files/paths NOT in the spec evidence
+- Architecture has internal contradictions
+
+You should NOT flag as blocking:
+- User-requested external integrations (if spec says "use X API", that's allowed)
+- Technology choices that align with the spec
+- Features that the spec explicitly requested
+
+{spec_markdown}
+
+{'='*70}
+END OF POT SPEC - Judge architecture against ONLY the above
+{'='*70}
+"""
+
     spec_section = ""
-    if spec_json:
+    if spec_json and not spec_markdown:
+        # Only use spec_json if spec_markdown is not provided (backward compat)
         spec_section = f"""
 
 SPECIFICATION (from Spec Gate):
@@ -398,9 +453,12 @@ ENVIRONMENT CONSTRAINTS:
 {json.dumps(env_context, indent=2)}
 
 Flag any architecture decisions that violate these constraints as blocking issues.
+NOTE: If the POT spec explicitly requests something (like external API integration),
+that OVERRIDES generic environment constraints. The spec is authoritative.
 """
 
     return f"""You are a senior architecture reviewer. Critique the following architecture document.
+{pot_spec_section}
 
 Your output MUST be valid JSON matching this schema exactly:
 ```json
@@ -461,6 +519,13 @@ ARCHITECTURE DOCUMENT TO CRITIQUE:
 ```
 {draft_text}
 ```
+
+CRITICAL GROUNDING CHECK:
+=========================
+If a POT spec was provided above, your critique is BOUND to that spec.
+- The spec IS the contract - you cannot add terms to it
+- If the user requested an external API, that's allowed per the spec
+- Only flag violations of what's ACTUALLY in the spec
 
 Output ONLY valid JSON, no markdown, no explanation, no preamble."""
 

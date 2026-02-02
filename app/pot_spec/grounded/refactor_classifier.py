@@ -818,6 +818,568 @@ def _build_exclusions(matches: List[ClassifiedMatch]) -> List[Dict[str, str]]:
 
 
 # =============================================================================
+# V3.0 PLANNER-FIRST CLASSIFICATION (2026-02-01)
+# =============================================================================
+
+# Build ID for v3 verification
+REFACTOR_CLASSIFIER_V3_BUILD_ID = "2026-02-01-v3.2-text-only-leniency"
+
+# Import v3 types
+from .refactor_schemas import (
+    RiskClass,
+    ExpansionFailureReason,
+    ReasonCode,
+    ExpansionResult,
+    BlockingIssue,
+    ClassifiedMatchV3,
+    RefactorPlanV3,
+)
+
+# Patterns that indicate a match NEEDS evidence expansion
+# (Can't confidently classify from single line alone)
+EXPANSION_NEEDED_PATTERNS = {
+    # Token/key/storage patterns
+    r'[a-z]+_[a-z]+_?(?:key|token|prefix|id)': 'potential_storage_key',
+    r'[A-Z]+_[A-Z]+_?(?:KEY|TOKEN|PREFIX|ID)': 'potential_env_var',
+    r'localStorage|sessionStorage': 'storage_api',
+    r'process\.env\.': 'env_access',
+    r'getenv|environ': 'env_access',
+    # Path patterns
+    r'[A-Z]:\\': 'windows_path',
+    r'/(?:home|usr|var|etc)/': 'unix_path',
+    # Config patterns
+    r'(?:config|settings)\[': 'config_access',
+    r'\.(?:json|yaml|yml|toml|ini)': 'config_file',
+}
+
+# Buckets that typically need expansion for confident classification
+EXPANSION_HINT_BUCKETS = {
+    MatchBucket.ENV_VAR_KEY,
+    MatchBucket.CONFIG_KEY,
+    MatchBucket.DATABASE_ARTIFACT,
+    MatchBucket.HISTORICAL_DATA,
+}
+
+
+def _needs_expansion(match: RawMatch) -> bool:
+    """
+    v3.0: Determine if a match needs evidence expansion for confident classification.
+    
+    Returns True if:
+    - Line contains patterns suggesting operational use (keys, tokens, env vars)
+    - Heuristic bucket suggests potentially risky category
+    - Single line doesn't provide enough context
+    """
+    line = match.line_content.strip()
+    
+    # Check expansion-needed patterns
+    for pattern in EXPANSION_NEEDED_PATTERNS.keys():
+        if re.search(pattern, line, re.IGNORECASE):
+            return True
+    
+    # Check heuristic bucket
+    hint_bucket, _ = _get_heuristic_hint(match)
+    if hint_bucket in EXPANSION_HINT_BUCKETS:
+        return True
+    
+    return False
+
+
+def _read_file_lines_from_sandbox(
+    file_path: str,
+    sandbox_client: Any,
+) -> Optional[List[str]]:
+    """
+    v3.0: Read file contents via sandbox client and return as lines.
+    
+    Uses existing /fs/contents endpoint.
+    """
+    if not sandbox_client:
+        return None
+    
+    try:
+        # Try to use sandbox client's file read capability
+        if hasattr(sandbox_client, 'read_file'):
+            content = sandbox_client.read_file(file_path)
+            if content:
+                return content.splitlines()
+        
+        # Alternative: try fs_read_file if available
+        if hasattr(sandbox_client, 'fs_read_file'):
+            result = sandbox_client.fs_read_file(file_path)
+            if result and result.get('success') and result.get('content'):
+                return result['content'].splitlines()
+        
+        # Alternative: try get_file_content
+        if hasattr(sandbox_client, 'get_file_content'):
+            content = sandbox_client.get_file_content(file_path)
+            if content:
+                return content.splitlines()
+        
+        return None
+        
+    except Exception as e:
+        logger.warning("[refactor_classifier] v3.0 Failed to read file %s: %s", file_path, e)
+        return None
+
+
+def _read_file_snippet(
+    file_path: str,
+    line_number: int,
+    context_lines: int,
+    sandbox_client: Any,
+) -> ExpansionResult:
+    """
+    v3.0: Read ±N lines around a specific line for evidence expansion.
+    
+    Pure slicing on backend - no new sandbox endpoint needed.
+    """
+    lines = _read_file_lines_from_sandbox(file_path, sandbox_client)
+    
+    if lines is None:
+        return ExpansionResult(
+            attempted=True,
+            succeeded=False,
+            failure_reason=ExpansionFailureReason.READ_FAILED,
+        )
+    
+    if not lines:
+        return ExpansionResult(
+            attempted=True,
+            succeeded=False,
+            failure_reason=ExpansionFailureReason.READ_FAILED,
+        )
+    
+    # Calculate range (0-indexed internally)
+    total_lines = len(lines)
+    target_idx = line_number - 1  # Convert to 0-indexed
+    
+    if target_idx < 0 or target_idx >= total_lines:
+        return ExpansionResult(
+            attempted=True,
+            succeeded=False,
+            failure_reason=ExpansionFailureReason.READ_FAILED,
+        )
+    
+    start_idx = max(0, target_idx - context_lines)
+    end_idx = min(total_lines, target_idx + context_lines + 1)
+    
+    snippet_lines = lines[start_idx:end_idx]
+    snippet = "\n".join(snippet_lines)
+    
+    return ExpansionResult(
+        attempted=True,
+        succeeded=True,
+        context=snippet,
+        lines_fetched=len(snippet_lines),
+    )
+
+
+async def _expand_evidence_batch(
+    matches: List[RawMatch],
+    sandbox_client: Any,
+    context_lines: int = 10,
+) -> Tuple[List[RawMatch], List[BlockingIssue]]:
+    """
+    v3.0: Batch evidence expansion per file to reduce IO.
+    
+    Groups matches by file, fetches ONE window covering all matches,
+    then distributes context to individual matches.
+    
+    Returns:
+        (expanded_matches, expansion_failures)
+    """
+    from collections import defaultdict
+    
+    # Group matches by file that need expansion
+    matches_by_file: Dict[str, List[RawMatch]] = defaultdict(list)
+    no_expansion_needed = []
+    
+    for match in matches:
+        if _needs_expansion(match):
+            matches_by_file[match.file_path].append(match)
+        else:
+            no_expansion_needed.append(match)
+    
+    expanded = []
+    failures = []
+    
+    for file_path, file_matches in matches_by_file.items():
+        # Calculate window that covers all matches in this file
+        min_line = min(m.line_number for m in file_matches)
+        max_line = max(m.line_number for m in file_matches)
+        
+        # Fetch once with padding
+        context_start = max(1, min_line - context_lines)
+        context_end = max_line + context_lines
+        
+        # Read lines for this file
+        lines = _read_file_lines_from_sandbox(file_path, sandbox_client)
+        
+        if lines is None:
+            # All matches in this file failed expansion
+            for match in file_matches:
+                failures.append(BlockingIssue(
+                    file_path=file_path,
+                    line_number=match.line_number,
+                    reason=f"Evidence expansion failed: could not read file",
+                    what_was_needed="File read capability",
+                    failure_type=ExpansionFailureReason.READ_FAILED,
+                ))
+                # Still add match but mark expansion failed
+                match.expanded_context = None
+                match.expansion_attempted = True
+                match.expansion_failed = True
+                expanded.append(match)
+        else:
+            # Extract context for each match
+            for match in file_matches:
+                target_idx = match.line_number - 1
+                start_idx = max(0, target_idx - context_lines)
+                end_idx = min(len(lines), target_idx + context_lines + 1)
+                
+                if 0 <= target_idx < len(lines):
+                    context = "\n".join(lines[start_idx:end_idx])
+                    match.expanded_context = context
+                    match.expansion_attempted = True
+                    match.expansion_failed = False
+                else:
+                    match.expanded_context = None
+                    match.expansion_attempted = True
+                    match.expansion_failed = True
+                    failures.append(BlockingIssue(
+                        file_path=file_path,
+                        line_number=match.line_number,
+                        reason=f"Line {match.line_number} out of range (file has {len(lines)} lines)",
+                        what_was_needed="Valid line number",
+                        failure_type=ExpansionFailureReason.READ_FAILED,
+                    ))
+                
+                expanded.append(match)
+    
+    # Add matches that didn't need expansion
+    for match in no_expansion_needed:
+        match.expanded_context = None
+        match.expansion_attempted = False
+        match.expansion_failed = False
+        expanded.append(match)
+    
+    logger.info(
+        "[refactor_classifier] v3.0 Evidence expansion: %d needed, %d succeeded, %d failed",
+        len(matches_by_file),
+        len(expanded) - len(no_expansion_needed) - len(failures),
+        len(failures),
+    )
+    
+    return expanded, failures
+
+
+def _compute_risk_class(
+    plan: RefactorPlanV3,
+    constraints: Dict[str, Any],
+) -> RiskClass:
+    """
+    v3.0: Compute risk class from the final refactor plan.
+    v3.2: Be more lenient for text_only jobs with expansion failures.
+    
+    Block when:
+    - Critical change is planned, OR
+    - Unknowns remain after expansion (but NOT for text_only jobs), OR
+    - Operation violates declared constraints
+    
+    For text_only jobs:
+    - Expansion failures downgraded from CRITICAL to MEDIUM
+    - Classified matches already provide sufficient confidence
+    """
+    risk_factors = []
+    
+    # Check constraints for leniency
+    text_only = constraints.get("text_only", False) or plan.text_only
+    questions_none = constraints.get("questions_none", False) or plan.questions_none
+    
+    # Check for critical-risk decisions (CHANGE on CRITICAL items)
+    for match in plan.classified_matches:
+        if match.decision == ChangeDecision.CHANGE:
+            if match.risk_level == RiskLevel.CRITICAL:
+                risk_factors.append(f"Critical change: {match.file_path}:{match.line_number}")
+                plan.risk_factors = risk_factors
+                return RiskClass.CRITICAL
+    
+    # Check for unresolved unknowns
+    # v3.2: For text_only jobs, unresolved unknowns don't block
+    if plan.has_unresolved_unknowns():
+        if text_only:
+            logger.info(
+                "[refactor_classifier] v3.2 Unresolved unknowns (%d) downgraded for text_only job",
+                plan.unresolved_count,
+            )
+            risk_factors.append(f"Unresolved unknowns (text_only leniency): {plan.unresolved_count} matches")
+            # Continue checking - don't return CRITICAL
+        else:
+            risk_factors.append(f"Unresolved unknowns: {plan.unresolved_count} matches")
+            plan.risk_factors = risk_factors
+            return RiskClass.CRITICAL
+    
+    # Check for expansion failures
+    # v3.2: For text_only jobs, expansion failures don't block
+    if plan.expansion_failures:
+        if text_only:
+            logger.info(
+                "[refactor_classifier] v3.2 Expansion failures (%d) downgraded for text_only job",
+                len(plan.expansion_failures),
+            )
+            print(f"[refactor_classifier] v3.2 EXPANSION_FAILURES downgraded (text_only=True): {len(plan.expansion_failures)} failures")
+            risk_factors.append(f"Expansion failures (text_only leniency): {len(plan.expansion_failures)} files")
+            # Continue checking - don't return CRITICAL
+        else:
+            risk_factors.append(f"Expansion failures: {len(plan.expansion_failures)} files")
+            plan.risk_factors = risk_factors
+            return RiskClass.CRITICAL
+    
+    # Check constraint violations
+    no_renames = constraints.get("no_renames", False) or plan.no_renames
+    
+    # Count high-risk items being changed
+    high_count = sum(
+        1 for m in plan.classified_matches 
+        if m.risk_level == RiskLevel.HIGH and m.decision == ChangeDecision.CHANGE
+    )
+    
+    if high_count > 0:
+        risk_factors.append(f"High-risk changes: {high_count}")
+        plan.risk_factors = risk_factors
+        return RiskClass.HIGH
+    
+    # Medium risk: many changes or some flags
+    if plan.change_count > 100 or plan.flag_count > 10:
+        risk_factors.append(f"Large scope: {plan.change_count} changes, {plan.flag_count} flags")
+        plan.risk_factors = risk_factors
+        return RiskClass.MEDIUM
+    
+    # v3.2: If text_only had downgraded failures, return MEDIUM instead of LOW
+    if text_only and (plan.expansion_failures or plan.has_unresolved_unknowns()):
+        risk_factors.append("Text-only job with minor issues")
+        plan.risk_factors = risk_factors
+        return RiskClass.MEDIUM
+    
+    plan.risk_factors = risk_factors
+    return RiskClass.LOW
+
+
+def _convert_to_v3_match(
+    v2_match: ClassifiedMatch,
+    expansion_attempted: bool = False,
+    expansion_succeeded: bool = False,
+    context_snippet: Optional[str] = None,
+) -> ClassifiedMatchV3:
+    """
+    v3.0: Convert v2 ClassifiedMatch to v3 ClassifiedMatchV3.
+    """
+    # Map v2 reasoning to v3 reason code
+    reason_code = ReasonCode.UNKNOWN_CONTEXT
+    reasoning_lower = (v2_match.reasoning or "").lower()
+    
+    if "ui" in reasoning_lower or "user-facing" in reasoning_lower or "visible" in reasoning_lower:
+        reason_code = ReasonCode.UI_TEXT_VISIBLE_TO_USER
+    elif "doc" in reasoning_lower or "comment" in reasoning_lower:
+        reason_code = ReasonCode.DOCUMENTATION_STRING
+    elif "test" in reasoning_lower:
+        reason_code = ReasonCode.TEST_ASSERTION_VALUE
+    elif "storage" in reasoning_lower or "localstorage" in reasoning_lower:
+        reason_code = ReasonCode.STORAGE_KEY_IN_USE
+    elif "env" in reasoning_lower:
+        reason_code = ReasonCode.ENV_VAR_EXTERNAL_DEPENDENCY
+    elif "token" in reasoning_lower or "prefix" in reasoning_lower:
+        reason_code = ReasonCode.TOKEN_PREFIX_VALIDATION
+    elif "database" in reasoning_lower or "db" in reasoning_lower:
+        reason_code = ReasonCode.DATABASE_ARTIFACT
+    elif "historical" in reasoning_lower or "artifact" in reasoning_lower:
+        reason_code = ReasonCode.HISTORICAL_DATA_NO_VALUE
+    elif "path" in reasoning_lower:
+        reason_code = ReasonCode.PATH_LITERAL_WORKS_NOW
+    elif "import" in reasoning_lower:
+        reason_code = ReasonCode.IMPORT_PATH_CASCADE
+    elif "api" in reasoning_lower or "route" in reasoning_lower:
+        reason_code = ReasonCode.API_ROUTE_EXTERNAL_CONSUMERS
+    elif "identifier" in reasoning_lower:
+        reason_code = ReasonCode.INTERNAL_IDENTIFIER
+    
+    return ClassifiedMatchV3(
+        file_path=v2_match.file_path,
+        line_number=v2_match.line_number,
+        line_content=v2_match.line_content,
+        match_text=v2_match.match_text,
+        context_snippet=context_snippet,
+        expansion_attempted=expansion_attempted,
+        expansion_succeeded=expansion_succeeded,
+        bucket=v2_match.bucket,
+        pre_bucket=None,
+        confidence=v2_match.confidence,
+        decision=v2_match.change_decision,
+        risk_level=v2_match.risk_level,
+        reason_code=reason_code,
+        reason_text=v2_match.reasoning or "",
+        impact_note=v2_match.impact_note,
+        is_unresolved=False,
+    )
+
+
+async def build_refactor_plan_v3(
+    raw_matches: List[RawMatch],
+    search_term: str,
+    replace_term: str,
+    context: str = "",
+    constraints: Optional[Dict[str, Any]] = None,
+    sandbox_client: Any = None,
+    provider_id: str = "openai",
+    model_id: str = "gpt-5.2-pro",
+    llm_call_func: Optional[Callable] = None,
+    vision_context: str = "",
+) -> RefactorPlanV3:
+    """
+    v3.0: Build a complete refactor plan with evidence expansion.
+    
+    This is the planner-first entry point:
+    1. Scan → matches
+    2. Expansion → context for ambiguous matches
+    3. Classify → decisions (v2 classifier with expansion context)
+    4. Build v3 plan with risk assessment
+    
+    PLAN GENERATION HAPPENS BEFORE GATING.
+    """
+    start_time = time.time()
+    constraints = constraints or {}
+    
+    logger.info(
+        "[refactor_classifier] v3.0 Building planner-first refactor plan: %d matches",
+        len(raw_matches),
+    )
+    print(f"[refactor_classifier] v3.0 PLANNER-FIRST: {len(raw_matches)} matches")
+    
+    # STEP 1: Evidence expansion for matches that need it
+    expanded_matches, expansion_failures = await _expand_evidence_batch(
+        matches=raw_matches,
+        sandbox_client=sandbox_client,
+        context_lines=10,
+    )
+    
+    matches_needing_expansion = sum(1 for m in raw_matches if _needs_expansion(m))
+    matches_expanded_ok = matches_needing_expansion - len(expansion_failures)
+    
+    # STEP 2: Apply heuristic exclusions
+    matches_for_llm, pre_classified = _apply_heuristic_exclusions(expanded_matches)
+    
+    # STEP 3: LLM classification (with expanded context in prompt)
+    all_v2_classified = list(pre_classified)
+    
+    for i in range(0, len(matches_for_llm), CLASSIFICATION_BATCH_SIZE):
+        batch = matches_for_llm[i:i + CLASSIFICATION_BATCH_SIZE]
+        
+        # Build context including expansion info
+        expanded_context = context
+        for m in batch:
+            if hasattr(m, 'expanded_context') and m.expanded_context:
+                expanded_context += f"\n\nExpanded context for {m.file_path}:{m.line_number}:\n{m.expanded_context[:500]}"
+        
+        batch_classified = await classify_matches_batch(
+            matches=batch,
+            search_term=search_term,
+            replace_term=replace_term,
+            context=expanded_context[:4000],  # Limit total context size
+            provider_id=provider_id,
+            model_id=model_id,
+            llm_call_func=llm_call_func,
+            vision_context=vision_context,
+        )
+        all_v2_classified.extend(batch_classified)
+    
+    # STEP 4: Convert to v3 matches
+    v3_matches = []
+    for v2_match in all_v2_classified:
+        # Find corresponding raw match for expansion info
+        raw = next(
+            (m for m in expanded_matches 
+             if m.file_path == v2_match.file_path and m.line_number == v2_match.line_number),
+            None
+        )
+        
+        expansion_attempted = hasattr(raw, 'expansion_attempted') and raw.expansion_attempted if raw else False
+        expansion_succeeded = hasattr(raw, 'expansion_failed') and not raw.expansion_failed if raw else False
+        context_snippet = raw.expanded_context if raw and hasattr(raw, 'expanded_context') else None
+        
+        v3_match = _convert_to_v3_match(
+            v2_match,
+            expansion_attempted=expansion_attempted,
+            expansion_succeeded=expansion_succeeded,
+            context_snippet=context_snippet,
+        )
+        
+        # Mark as unresolved if expansion was needed but failed
+        if expansion_attempted and not expansion_succeeded:
+            if _needs_expansion(raw) if raw else False:
+                v3_match.is_unresolved = True
+                v3_match.reason_code = ReasonCode.EXPANSION_FAILED
+        
+        v3_matches.append(v3_match)
+    
+    # STEP 5: Build v3 plan
+    change_count = sum(1 for m in v3_matches if m.decision == ChangeDecision.CHANGE)
+    skip_count = sum(1 for m in v3_matches if m.decision == ChangeDecision.SKIP)
+    flag_count = sum(1 for m in v3_matches if m.decision == ChangeDecision.FLAG)
+    unresolved_count = sum(1 for m in v3_matches if m.is_unresolved)
+    
+    files_to_change = list(set(m.file_path for m in v3_matches if m.decision == ChangeDecision.CHANGE))
+    files_to_skip = list(set(m.file_path for m in v3_matches if m.decision == ChangeDecision.SKIP))
+    files_to_flag = list(set(m.file_path for m in v3_matches if m.decision == ChangeDecision.FLAG))
+    
+    # Build flags
+    flags = _generate_flags(
+        [m.to_v2() for m in v3_matches],
+        search_term,
+        replace_term,
+    )
+    
+    duration_ms = int((time.time() - start_time) * 1000)
+    
+    plan = RefactorPlanV3(
+        search_term=search_term,
+        replace_term=replace_term,
+        total_files=len(set(m.file_path for m in raw_matches)),
+        total_occurrences=len(raw_matches),
+        classified_matches=v3_matches,
+        expansion_failures=expansion_failures,
+        matches_needing_expansion=matches_needing_expansion,
+        matches_expanded_successfully=matches_expanded_ok,
+        change_count=change_count,
+        skip_count=skip_count,
+        flag_count=flag_count,
+        unresolved_count=unresolved_count,
+        files_to_change=files_to_change,
+        files_to_skip=files_to_skip,
+        files_to_flag=files_to_flag,
+        flags=flags,
+        constraints_snapshot=constraints,
+        allows_migration=constraints.get("allows_migration", False),
+        text_only=constraints.get("text_only", False),
+        no_renames=constraints.get("no_renames", False),
+        questions_none=constraints.get("questions_none", False),
+        classification_model=f"{provider_id}/{model_id}",
+        classification_duration_ms=duration_ms,
+    )
+    
+    # STEP 6: Compute risk class
+    plan.computed_risk_class = _compute_risk_class(plan, constraints)
+    
+    logger.info(
+        "[refactor_classifier] v3.0 Plan built in %dms: change=%d, skip=%d, flag=%d, unresolved=%d, risk=%s",
+        duration_ms, change_count, skip_count, flag_count, unresolved_count, plan.computed_risk_class.value,
+    )
+    print(f"[refactor_classifier] v3.0 PLAN COMPLETE: risk={plan.computed_risk_class.value}")
+    
+    return plan
+
+
+# =============================================================================
 # EXPORTS
 # =============================================================================
 
@@ -825,4 +1387,9 @@ __all__ = [
     "classify_matches_batch",
     "build_refactor_plan",
     "CLASSIFICATION_BATCH_SIZE",
+    # v3.0 exports
+    "build_refactor_plan_v3",
+    "REFACTOR_CLASSIFIER_V3_BUILD_ID",
+    "_needs_expansion",
+    "_compute_risk_class",
 ]

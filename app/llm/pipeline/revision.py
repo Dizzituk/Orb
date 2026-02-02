@@ -6,6 +6,11 @@ Block 6 of the PoT (Proof of Thought) system:
 - Revision loop until critique passes or max iterations
 - Legacy single-revision for backward compatibility
 
+v1.2 (2026-02-02): GROUNDED CRITIQUE SUPPORT
+- run_revision_loop() now accepts spec_markdown parameter
+- Passes spec_markdown through to call_json_critic()
+- Enables grounded critique that judges only against the spec
+
 v1.1 (2026-01):
 - Uses stage_models for provider/model configuration (env-driven)
 - No more hardcoded provider - REVISION_PROVIDER/REVISION_MODEL from env
@@ -335,6 +340,7 @@ async def run_revision_loop(
     spec_id: str,
     spec_hash: str,
     spec_json: Optional[str],
+    spec_markdown: Optional[str] = None,
     original_request: str,
     opus_model_id: str,
     envelope: JobEnvelope,
@@ -343,6 +349,10 @@ async def run_revision_loop(
     store_architecture_fn=None,
 ) -> Tuple[str, int, bool, CritiqueResult]:
     """Run the revision loop until critique passes or max iterations.
+    
+    v1.2 (2026-02-02): Now accepts spec_markdown for grounded critique.
+    The POT spec markdown contains verified evidence (file paths, line numbers).
+    Critique judges ONLY against what's in the spec.
     
     Returns (final_content, final_version, passed, final_critique)
     """
@@ -371,11 +381,15 @@ async def run_revision_loop(
         print(f"[DEBUG] [revision_loop] === Iteration {iterations_used}/{MAX_REVISION_ITERATIONS} ===")
         
         # 1. Critique current architecture
+        # v1.2: Pass spec_markdown for grounded critique
         print(f"[DEBUG] [revision_loop] Calling JSON critic for arch_v{current_version}...")
+        if spec_markdown:
+            print(f"[DEBUG] [revision_loop] v1.2 Passing spec_markdown ({len(spec_markdown)} chars) to critic")
         critique = await call_json_critic(
             arch_content=current_content,
             original_request=original_request,
             spec_json=spec_json,
+            spec_markdown=spec_markdown,
             env_context=env_context,
             envelope=envelope,
         )

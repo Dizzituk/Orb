@@ -234,6 +234,9 @@ class MultiFileOperation:
     classification_json: Dict[str, Any] = field(default_factory=dict)  # Machine-readable
     confirmation_message: str = ""      # Concise user prompt
     
+    # v3.0: Raw matches for planner-first flow
+    raw_matches: List[Any] = field(default_factory=list)  # RawMatch objects from discovery
+    
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to dictionary for JSON/DB storage."""
         result = {

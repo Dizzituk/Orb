@@ -8,6 +8,15 @@ Block 5 of the PoT (Proof of Thought) system:
 - v1.2: Blocker filtering - only approved blocker types can block
 - v1.3: DETERMINISTIC spec-compliance check (catches stack/scope/platform mismatch)
 - v1.4: Uses explicit implementation_stack field from spec (stack_locked anchoring)
+- v1.6: GROUNDED CRITIQUE - POT spec markdown as source of truth
+
+v1.6 (2026-02-02): GROUNDED CRITIQUE - POT spec as source of truth
+- call_json_critic() now accepts spec_markdown parameter
+- Full POT spec with grounded evidence injected into critique prompt
+- Critique judges ONLY against what's in the spec
+- If user requested "OpenAI API", critique does NOT flag it as violation
+- Philosophy: "Ground and trust" - spec IS the contract
+- Updated system message to emphasize spec as authoritative
 
 v1.5 (2026-01-22): CRITICAL FIX - Phantom Constraint Bug
 - Fixed _detect_stack_from_text() to use word-boundary matching
@@ -768,6 +777,7 @@ async def call_json_critic(
     arch_content: str,
     original_request: str,
     spec_json: Optional[str] = None,
+    spec_markdown: Optional[str] = None,
     env_context: Optional[Dict[str, Any]] = None,
     envelope: JobEnvelope,
 ) -> CritiqueResult:
@@ -776,6 +786,8 @@ async def call_json_critic(
     Returns structured CritiqueResult.
     Uses CRITIQUE_PROVIDER/CRITIQUE_MODEL from env via stage_models.
     
+    v1.6: Now accepts spec_markdown - the full POT spec with grounded evidence.
+          Critique judges ONLY against what's in the spec, not invented constraints.
     v1.2: Now applies blocker filtering to ensure only real blockers block.
     v1.3: Added run_deterministic_spec_compliance_check() - runs BEFORE LLM critique.
     """
@@ -820,30 +832,53 @@ async def call_json_critic(
     # Deterministic check passed - proceed with LLM critique
     print(f"[DEBUG] [critique] v1.3 Deterministic check PASSED - proceeding to LLM critique")
     
+    # v1.6: Log spec_markdown injection
+    if spec_markdown:
+        print(f"[DEBUG] [critique] v1.6 POT spec markdown provided ({len(spec_markdown)} chars)")
+        logger.info("[critique] v1.6 POT spec markdown injected (%d chars)", len(spec_markdown))
+    
     critique_prompt = build_json_critique_prompt(
         draft_text=arch_content,
         original_request=original_request,
         spec_json=spec_json,
+        spec_markdown=spec_markdown,
         env_context=env_context,
     )
     
-    # System message emphasizes spec as authoritative anchor
+    # v1.6: System message emphasizes spec as AUTHORITATIVE - critique is BOUND to it
     system_message = """You are a critical architecture reviewer. Output ONLY valid JSON.
 
-SPEC VERIFICATION PROTOCOL:
-- The PoT Spec (if provided) is the AUTHORITATIVE source of requirements
-- When reviewing the architecture, check if it SATISFIES the spec requirements
-- Do NOT suggest adding features/requirements that aren't in the spec
-- Only flag as "blocking" if the architecture FAILS to meet spec requirements
-- Non-blocking issues are style/optimization suggestions that don't violate the spec
+GROUNDED CRITIQUE PROTOCOL (v1.6):
+==================================
+The POT Spec (if provided) is the AUTHORITATIVE CONTRACT for this task.
+Your critique is BOUND to that spec - you cannot add terms to the contract.
 
-EVIDENCE REQUIREMENT FOR BLOCKING ISSUES:
+CRITICAL RULES:
+1. Judge the architecture ONLY against what's in the POT spec
+2. Do NOT invent constraints that aren't in the spec
+3. If the spec says "use OpenAI API" or any external service, that is ALLOWED
+4. Do NOT flag user-requested features as violations
+5. The spec IS the contract - if user wanted local-only, spec would say so
+
+BLOCKING ISSUES (flag these):
+- Architecture MISSES something the spec REQUIRES
+- Architecture CONTRADICTS something the spec STATES
+- Architecture references files/paths NOT in the spec evidence
+- Architecture has internal contradictions or calculation errors
+
+NOT BLOCKING (do not flag these as blocking):
+- External API usage that the spec requested (e.g., "use OpenAI API")
+- Technology choices that align with the spec
+- Features the spec explicitly requested
+- Generic "best practices" not mentioned in the spec
+
+EVIDENCE REQUIREMENT:
 - Every blocking issue MUST include both spec_ref AND arch_ref
-- spec_ref: Which spec requirement is violated
+- spec_ref: Which spec requirement is violated (MUST exist in the spec)
 - arch_ref: Which architecture section shows the violation
 - If you cannot cite both, make the issue non_blocking
 
-Your suggestions must align with the spec. Do not expand scope."""
+Your critique must align with the spec. Do not expand scope or invent constraints."""
 
     critique_messages = [
         {"role": "system", "content": system_message},
