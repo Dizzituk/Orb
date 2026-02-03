@@ -255,6 +255,28 @@ def get_spec_schema(db_spec: Spec) -> SpecSchema:
     return SpecSchema.from_json(db_spec.content_json)
 
 
+def update_spec_content_markdown(
+    db: Session,
+    spec_id: str,
+    content_markdown: str,
+) -> Optional[Spec]:
+    """
+    Update a spec's content_markdown field.
+    
+    v2.4 (2026-02-03): Used to overwrite the generic spec_to_markdown() output
+    with actual POT spec markdown (containing ## Change / ## Skip sections).
+    This enables Overwatcher POT detection and Critical Pipeline architecture
+    generation to receive the full grounded spec content.
+    """
+    db_spec = get_spec(db, spec_id)
+    if not db_spec:
+        return None
+    db_spec.content_markdown = content_markdown
+    db.commit()
+    db.refresh(db_spec)
+    return db_spec
+
+
 def check_duplicate_spec(db: Session, project_id: int, spec_hash: str) -> Optional[Spec]:
     """Check if a spec with the same hash already exists."""
     return db.query(Spec).filter(

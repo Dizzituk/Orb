@@ -2,6 +2,13 @@
 """
 Spec Gate streaming handler for ASTRA command flow.
 
+v2.4 (2026-02-03): POT SPEC PERSISTENCE FIX
+- After persist_spec() succeeds, overwrite content_markdown with actual spot_markdown
+- Fixes: spec_to_markdown() only produced ~691-char generic header, losing POT spec content
+- The full POT markdown (with ## Change / ## Skip sections) is now persisted to DB
+- Enables: Overwatcher POT detection, Critical Pipeline full spec context
+- Uses new specs_service.update_spec_content_markdown() helper
+
 v2.3 (2026-02-01): VISION CONTEXT FLOW FIX
 - Added _get_weaver_vision_context_from_flow() to extract vision context from flow state
 - Vision context is now passed in constraints_hint["vision_context"] to spec_runner
@@ -609,6 +616,30 @@ async def generate_spec_gate_stream(
                         if success:
                             db_persisted = True
                             logger.info("[spec_gate_stream] v1.5: Spec persisted to DB: %s", db_spec_id)
+                            
+                            # v2.4 FIX: Overwrite content_markdown with actual POT spec markdown
+                            # The generic spec_to_markdown() only produces a ~691-char header.
+                            # For POT specs, the real content (with ## Change / ## Skip sections)
+                            # is in spot_markdown from SpecGateResult. Without this, Overwatcher
+                            # POT detection fails and Critical Pipeline gets incomplete context.
+                            if spot_md and len(spot_md) > 100:
+                                try:
+                                    updated = specs_service.update_spec_content_markdown(
+                                        db, db_spec_id, spot_md
+                                    )
+                                    if updated:
+                                        logger.info(
+                                            "[spec_gate_stream] v2.4: Updated content_markdown with POT spec (%d chars)",
+                                            len(spot_md)
+                                        )
+                                        print(f"[spec_gate_stream] v2.4 POT MARKDOWN PERSISTED: {len(spot_md)} chars")
+                                    else:
+                                        logger.warning(
+                                            "[spec_gate_stream] v2.4: content_markdown update returned None for spec_id=%s",
+                                            db_spec_id
+                                        )
+                                except Exception as e:
+                                    logger.warning("[spec_gate_stream] v2.4: Failed to update content_markdown: %s", e)
                         else:
                             persist_error = error
                             logger.warning("[spec_gate_stream] v1.5: Spec persistence failed: %s", error)

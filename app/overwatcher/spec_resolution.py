@@ -20,6 +20,7 @@ from typing import Any, Dict, Optional, Tuple
 from uuid import uuid4
 
 from .spec_parsing import ParsedDeliverable, parse_spec_content, DEFAULT_TARGET
+from .pot_spec_parser import is_pot_spec_format, parse_pot_spec_markdown, POTParseResult
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class ResolvedSpec:
     """Resolved spec context from database.
     
     v1.2: Added get_output_mode() and get_insertion_format() accessor methods.
+    v2.0 (2026-02-02): Added POT spec support with is_pot_spec and pot_tasks fields.
     """
     spec_id: str
     spec_hash: str
@@ -46,6 +48,8 @@ class ResolvedSpec:
     created_at: Optional[str] = None
     spec_content: Optional[str] = None
     deliverable: Optional[ParsedDeliverable] = None
+    is_pot_spec: bool = False
+    pot_tasks: Optional[POTParseResult] = None
     
     @property
     def is_smoke_test(self) -> bool:
@@ -177,15 +181,48 @@ def resolve_latest_spec(
         spec_content = None
         tried_fields = []
         
-        # Priority order: content_json first (canonical), then content_markdown
-        field_names = [
-            'content_json',      # Canonical JSON - PRIMARY SOURCE
-            'content_markdown',  # Markdown version
-            'content',           # Generic fallback
-            'spec_content',
-            'markdown',
-            'raw_content',
-        ]
+        # v2.0: POT SPEC DETECTION - Check both content_json and content_markdown
+        # POT specs may have empty content_json but real data in content_markdown
+        content_json = getattr(spec, 'content_json', None) if hasattr(spec, 'content_json') else None
+        content_markdown = getattr(spec, 'content_markdown', None) if hasattr(spec, 'content_markdown') else None
+        
+        # DEBUG PRINTS (will definitely show in console)
+        print(f">>> [POT_DETECT] content_json exists: {content_json is not None}, len: {len(content_json) if content_json else 0}")
+        print(f">>> [POT_DETECT] content_markdown exists: {content_markdown is not None}, len: {len(content_markdown) if content_markdown else 0}")
+        if content_markdown:
+            print(f">>> [POT_DETECT] content_markdown preview: {content_markdown[:300]}...")
+        else:
+            print(f">>> [POT_DETECT] content_markdown is NULL or empty!")
+        
+        # Detect if this is a POT spec by checking markdown format
+        is_pot_spec = False
+        if content_markdown and is_pot_spec_format(content_markdown):
+            is_pot_spec = True
+            print(f">>> [POT_DETECT] ✓ POT SPEC DETECTED - will use content_markdown")
+        else:
+            print(f">>> [POT_DETECT] Not a POT spec (content_markdown empty or no ## Change section)")
+        
+        # Priority order depends on spec type
+        if is_pot_spec:
+            # POT specs: prioritize content_markdown
+            field_names = [
+                'content_markdown',  # PRIMARY for POT specs
+                'content_json',      # Fallback
+                'content',
+                'spec_content',
+                'markdown',
+                'raw_content',
+            ]
+        else:
+            # Regular specs: prioritize content_json
+            field_names = [
+                'content_json',      # PRIMARY for regular specs
+                'content_markdown',
+                'content',
+                'spec_content',
+                'markdown',
+                'raw_content',
+            ]
         
         for field_name in field_names:
             tried_fields.append(field_name)
@@ -211,24 +248,58 @@ def resolve_latest_spec(
                     logger.error(f"  {attr}: <error reading: {e}>")
             return None
         
-        # Parse spec content to get deliverable
-        logger.info(f"[resolve_spec] Parsing spec content...")
-        deliverable = parse_spec_content(spec_content)
+        # v2.0: Parse spec content - different logic for POT vs regular specs
+        logger.info(f"[resolve_spec] Parsing spec content (is_pot_spec={is_pot_spec})...")
         
-        if not deliverable:
-            logger.error(f"[resolve_spec] Failed to parse deliverable from spec {spec.spec_id}")
-            logger.error(f"[resolve_spec] Full content:\n{spec_content}")
-            return ResolvedSpec(
-                spec_id=spec.spec_id,
-                spec_hash=spec.spec_hash,
-                project_id=project_id,
-                title=getattr(spec, 'title', None),
-                created_at=spec.created_at.isoformat() if hasattr(spec, 'created_at') and spec.created_at else None,
-                spec_content=spec_content,
-                deliverable=None,
+        deliverable = None
+        pot_tasks = None
+        
+        if is_pot_spec:
+            # Parse POT markdown into atomic tasks
+            logger.info(f"[resolve_spec] Parsing as POT spec...")
+            pot_tasks = parse_pot_spec_markdown(
+                markdown=spec_content,
+                spec_content=content_json or spec_content,
             )
-        
-        logger.info(f"[resolve_spec] SUCCESS: deliverable={deliverable.to_dict()}")
+            
+            if not pot_tasks.is_valid:
+                logger.error(f"[resolve_spec] POT parsing failed: {pot_tasks.errors}")
+                return ResolvedSpec(
+                    spec_id=spec.spec_id,
+                    spec_hash=spec.spec_hash,
+                    project_id=project_id,
+                    title=getattr(spec, 'title', None),
+                    created_at=spec.created_at.isoformat() if hasattr(spec, 'created_at') and spec.created_at else None,
+                    spec_content=spec_content,
+                    deliverable=None,
+                    is_pot_spec=True,
+                    pot_tasks=pot_tasks,
+                )
+            
+            logger.info(
+                f"[resolve_spec] POT parsing SUCCESS: {len(pot_tasks.tasks)} tasks, "
+                f"search='{pot_tasks.search_term}', replace='{pot_tasks.replace_term}'"
+            )
+        else:
+            # Parse regular spec (JSON/markdown)
+            deliverable = parse_spec_content(spec_content)
+            
+            if not deliverable:
+                logger.error(f"[resolve_spec] Failed to parse deliverable from spec {spec.spec_id}")
+                logger.error(f"[resolve_spec] Full content:\n{spec_content}")
+                return ResolvedSpec(
+                    spec_id=spec.spec_id,
+                    spec_hash=spec.spec_hash,
+                    project_id=project_id,
+                    title=getattr(spec, 'title', None),
+                    created_at=spec.created_at.isoformat() if hasattr(spec, 'created_at') and spec.created_at else None,
+                    spec_content=spec_content,
+                    deliverable=None,
+                    is_pot_spec=False,
+                    pot_tasks=None,
+                )
+            
+            logger.info(f"[resolve_spec] Regular spec SUCCESS: deliverable={deliverable.to_dict()}")
         
         return ResolvedSpec(
             spec_id=spec.spec_id,
@@ -238,6 +309,8 @@ def resolve_latest_spec(
             created_at=spec.created_at.isoformat() if hasattr(spec, 'created_at') and spec.created_at else None,
             spec_content=spec_content,
             deliverable=deliverable,
+            is_pot_spec=is_pot_spec,
+            pot_tasks=pot_tasks,
         )
         
     except ImportError as e:

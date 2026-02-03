@@ -1,6 +1,16 @@
 # FILE: app/overwatcher/overwatcher_command.py
 """Overwatcher Command Handler: Entry point for 'run overwatcher' command.
 
+v5.0 (2026-02-03): Build validation + self-correction loop.
+    - After POT execution, runs build validation in sandbox
+    - If build fails: LLM diagnoses error, generates fix, re-validates
+    - Bounded retry loop (max 3 attempts, configurable)
+    - Escalates to user with full evidence if stuck
+v4.4 (2026-02-03): Fixed POT spec routing order bug.
+    - POT spec check now happens BEFORE get_target_file() call
+    - Fixed import: pot_spec_executor (was missing from overwatcher.py)
+    - Added pot_spec_executor.py for POT atomic task execution
+    - Better error messages for failed POT parsing
 v4.3 (2026-01): Refactored into modules:
     - spec_parsing.py: Parsing logic
     - spec_resolution.py: DB resolution
@@ -12,6 +22,8 @@ SAFETY INVARIANT:
     - ASTRA may ONLY write to Windows Sandbox
     - NO host filesystem writes permitted
     - If sandbox unavailable → FAIL (no local fallback)
+    - Build validation bounded to MAX_BUILD_FIX_ATTEMPTS retries
+    - All diagnostic fixes go through sandbox_client only
 """
 
 from __future__ import annotations
@@ -307,12 +319,197 @@ async def run_overwatcher_command(
             logger.error("[overwatcher_command] %s", result.error)
             return result
     else:
-        # Validate deliverable exists for NON-smoke specs
-        if not spec.is_smoke_test and spec.deliverable is None:
-            result.error = (
-                f"Spec {spec.spec_id} has no parseable deliverable. "
-                "Cannot determine target file. Check spec content format."
+        # ======================================================================
+        # v4.4 FIX: POT spec routing MUST happen BEFORE get_target_file()
+        # because POT specs have no deliverable and get_target_file() crashes.
+        # ======================================================================
+
+        # First: check for POT spec and route early
+        logger.info(
+            f"[overwatcher_command] POT check: is_pot_spec={spec.is_pot_spec}, "
+            f"pot_tasks={spec.pot_tasks is not None}, "
+            f"is_valid={spec.pot_tasks.is_valid if spec.pot_tasks else 'N/A'}"
+        )
+
+        if spec.is_pot_spec and spec.pot_tasks and spec.pot_tasks.is_valid:
+            # POT spec with valid tasks → route to POT executor immediately
+            result.spec = spec
+            logger.info(
+                "[overwatcher_command] POT SPEC DETECTED: %d tasks to execute",
+                len(spec.pot_tasks.tasks)
             )
+            result.add_trace(
+                "SPEC_RESOLVE",
+                "success_pot",
+                {
+                    "spec_id": spec.spec_id,
+                    "is_pot_spec": True,
+                    "task_count": len(spec.pot_tasks.tasks),
+                    "search_term": spec.pot_tasks.search_term,
+                    "replace_term": spec.pot_tasks.replace_term,
+                },
+            )
+            result.add_trace(
+                "POT_SPEC_DETECTED",
+                "routing_to_pot_execution",
+                {
+                    "task_count": len(spec.pot_tasks.tasks),
+                    "search_term": spec.pot_tasks.search_term,
+                    "replace_term": spec.pot_tasks.replace_term,
+                },
+            )
+
+            # Import POT execution handler from pot_spec_executor
+            from .pot_spec_executor import run_pot_spec_execution
+
+            # Execute POT spec with sequential task processing
+            pot_result = await run_pot_spec_execution(
+                spec=spec,
+                pot_tasks=spec.pot_tasks,
+                job_id=job_id,
+                llm_call_fn=llm_call_fn,
+                artifact_root=artifact_root,
+            )
+
+            # Map POT result to OverwatcherCommandResult
+            result.success = pot_result.get("success", False)
+            result.overwatcher_decision = pot_result.get(
+                "decision", "PASS" if pot_result.get("success") else "FAIL"
+            )
+            result.error = pot_result.get("error")
+            result.stage_trace.extend(pot_result.get("trace", []))
+            result.artifacts_written = pot_result.get("artifacts_written", [])
+
+            logger.info(
+                "[overwatcher_command] POT execution complete: success=%s, "
+                "tasks_completed=%d/%d",
+                result.success,
+                pot_result.get("tasks_completed", 0),
+                pot_result.get("total_tasks", 0),
+            )
+
+            # ==================================================================
+            # v5.0: Build Validation + Self-Correction Loop
+            # ==================================================================
+            # If POT writes failed, return immediately (nothing to validate)
+            if not pot_result.get("success", False):
+                logger.warning(
+                    "[overwatcher_command] POT writes failed — skipping build validation"
+                )
+                return result
+
+            # POT writes succeeded → validate the build in sandbox
+            from .sandbox_build_validator import run_build_validation_loop
+            from .sandbox_client import get_sandbox_client, SandboxError
+
+            modified_files = pot_result.get("artifacts_written", [])
+
+            if not modified_files:
+                logger.info(
+                    "[overwatcher_command] No artifacts written — skipping build validation"
+                )
+                result.add_trace(
+                    "BUILD_VALIDATION", "skipped",
+                    {"reason": "no_artifacts_written"},
+                )
+                return result
+
+            # Get sandbox client for build validation
+            try:
+                build_client = get_sandbox_client()
+                if not build_client.is_connected():
+                    logger.warning(
+                        "[overwatcher_command] Sandbox not available for build validation "
+                        "— returning POT result as-is (warning)"
+                    )
+                    result.add_trace(
+                        "BUILD_VALIDATION", "skipped_no_sandbox",
+                        {"reason": "sandbox_unavailable"},
+                    )
+                    return result
+            except Exception as e:
+                logger.warning(
+                    "[overwatcher_command] Could not connect to sandbox for build "
+                    "validation: %s — returning POT result as-is", e
+                )
+                result.add_trace(
+                    "BUILD_VALIDATION", "skipped_error",
+                    {"reason": str(e)},
+                )
+                return result
+
+            # Run the full build validation + diagnostic/retry loop
+            build_passed, build_results, fix_history = await run_build_validation_loop(
+                client=build_client,
+                modified_files=modified_files,
+                spec_content=spec.spec_content or "",
+                pot_result=pot_result,
+                llm_call_fn=llm_call_fn,
+                add_trace=result.add_trace,
+            )
+
+            if build_passed:
+                result.success = True
+                result.overwatcher_decision = "PASS"
+                logger.info(
+                    "[overwatcher_command] ✓ POT execution + build validation PASSED"
+                )
+                result.add_trace(
+                    "BUILD_VALIDATION_COMPLETE", "passed",
+                    {
+                        "build_results": [
+                            r.to_dict() for r in build_results
+                        ] if build_results else [],
+                        "fix_attempts": len(fix_history),
+                    },
+                )
+            else:
+                result.success = False
+                result.overwatcher_decision = "FAIL"
+
+                # Build comprehensive error message for user
+                from .sandbox_build_validator import MAX_BUILD_FIX_ATTEMPTS
+                failed_summaries = [
+                    f"{r.project_type}: {r.error_summary or 'unknown error'}"
+                    for r in (build_results or []) if not r.passed
+                ]
+                result.error = (
+                    f"Build validation failed after {len(fix_history)} fix attempts "
+                    f"(max {MAX_BUILD_FIX_ATTEMPTS}). "
+                    f"Errors: {'; '.join(failed_summaries)}"
+                )
+
+                logger.error(
+                    "[overwatcher_command] ✗ Build validation FAILED: %s",
+                    result.error,
+                )
+                result.add_trace(
+                    "BUILD_VALIDATION_COMPLETE", "failed",
+                    {
+                        "error": result.error,
+                        "build_results": [
+                            r.to_dict() for r in build_results
+                        ] if build_results else [],
+                        "fix_history": fix_history,
+                    },
+                )
+
+            return result  # Exit — POT execution + build validation complete
+
+        # Non-POT path: validate deliverable exists
+        if not spec.is_smoke_test and spec.deliverable is None:
+            # Check if this was a POT spec that failed to parse
+            if spec.is_pot_spec:
+                pot_errors = spec.pot_tasks.errors if spec.pot_tasks else ["No POT tasks parsed"]
+                result.error = (
+                    f"Spec {spec.spec_id} is a POT spec but parsing failed: "
+                    f"{pot_errors}. Check POT markdown format in content_markdown."
+                )
+            else:
+                result.error = (
+                    f"Spec {spec.spec_id} has no parseable deliverable. "
+                    "Cannot determine target file. Check spec content format."
+                )
             result.add_trace(
                 "SPEC_RESOLVE",
                 "failed",
@@ -354,7 +551,7 @@ async def run_overwatcher_command(
     result.spec = spec
 
     # ==========================================================================
-    # Step 2: Load artifacts
+    # Step 2: Load artifacts (NON-POT path)
     # ==========================================================================
     artifacts = load_critical_pipeline_artifacts(job_id, artifact_root)
     result.add_trace(
