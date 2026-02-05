@@ -4,6 +4,13 @@
 The critique output is strict JSON for deterministic pass/fail decisioning.
 A parallel markdown artifact is generated for human readability.
 
+v1.3 (2026-02-05): SECTION AUTHORITY - distinguish user requirements from LLM suggestions
+- Critique prompt now includes SECTION AUTHORITY LEVELS guidance
+- 'Files to Modify', 'Implementation Steps', etc. are LLM-generated suggestions (non-blocking only)
+- 'Constraints', 'Goal', user-stated features are hard requirements (blocking if missed)
+- Fixes deadlock where critique raised blockers on LLM-suggested file modifications
+- See critique-pipeline-fix-jobspec.md for root cause analysis
+
 v1.2 (2026-02-02): GROUNDED CRITIQUE - POT spec as source of truth
 - build_json_critique_prompt() now accepts spec_markdown parameter
 - Full POT spec with grounded evidence injected into critique prompt
@@ -414,13 +421,40 @@ Your critique MUST:
 4. Check that the architecture addresses what the spec requires
 5. Check grounding: do referenced file paths exist in the spec evidence?
 
+SECTION AUTHORITY LEVELS:
+========================
+Not all sections of this spec carry equal authority. Some are USER REQUIREMENTS
+(hard constraints from the user), others are LLM-GENERATED SUGGESTIONS
+(implementation guidance from automated analysis).
+
+HARD REQUIREMENTS (blocking if missed):
+- 'Goal' section — what the user asked for
+- 'Constraints' section — explicit limits stated by the user
+- 'Scope' section — what's in/out of scope
+- 'Acceptance' criteria that map to explicit user requests
+- 'Implementation Stack' (if STACK LOCKED) — non-negotiable tech choice
+
+SOFT GUIDANCE (non-blocking only — architecture MAY choose alternatives):
+- 'Files to Modify' — LLM-suggested integration points from codebase analysis
+- 'Reference Files' — patterns identified by analysis, not mandated by user
+- 'Implementation Steps' — LLM-suggested execution order
+- 'New Files to Create' — LLM-suggested file structure
+- 'Patterns to Follow' / 'Existing Patterns' — LLM-extracted code patterns
+- 'LLM Architecture Analysis' — automated analysis output
+These sections are implementation SUGGESTIONS. The architecture may choose
+completely different files, approaches, or structures if they better serve
+the hard requirements. Only flag as NON-BLOCKING if the alternative approach
+seems technically problematic.
+
 You should flag as BLOCKING only if:
-- Architecture MISSES something the spec REQUIRES
-- Architecture CONTRADICTS something the spec STATES
+- Architecture MISSES something the spec REQUIRES (from HARD REQUIREMENT sections)
+- Architecture CONTRADICTS something the spec STATES (from HARD REQUIREMENT sections)
 - Architecture references files/paths NOT in the spec evidence
 - Architecture has internal contradictions
 
 You should NOT flag as blocking:
+- Architecture choosing different files than 'Files to Modify' suggests
+- Architecture using a different integration approach than the LLM analysis suggested
 - User-requested external integrations (if spec says "use X API", that's allowed)
 - Technology choices that align with the spec
 - Features that the spec explicitly requested
@@ -428,7 +462,7 @@ You should NOT flag as blocking:
 {spec_markdown}
 
 {'='*70}
-END OF POT SPEC - Judge architecture against ONLY the above
+END OF POT SPEC - Judge architecture against ONLY the HARD REQUIREMENTS above
 {'='*70}
 """
 
