@@ -17,6 +17,13 @@ v1.0 (2026-02-03): Initial implementation
     - Line-number-targeted edits with content verification
     - Per-file and per-task progress tracking
     - Rollback tracking (backup original content)
+v2.0 (2026-02-03): Idempotent re-run support
+    - When search_term not found but replace_term already present on line,
+      marks edit as 'already_applied' (idempotent success, no write needed)
+    - Returns affected_files (all files in POT, whether modified or already applied)
+      so build validation runs even on re-runs
+    - New counters: tasks_already_applied, files_already_applied
+    - Success = (files_modified > 0 OR files_already_applied > 0) AND files_failed == 0
 v1.1 (2026-02-03): BOM fix
     - Fixed UTF-8 BOM corruption: Set-Content -Encoding UTF8 adds 3-byte
       BOM (EF BB BF) in PowerShell 5.1, breaking JSON/Vite parsers.
@@ -43,7 +50,7 @@ from app.overwatcher.sandbox_client import (
 logger = logging.getLogger(__name__)
 
 # Build verification
-POT_EXECUTOR_BUILD_ID = "2026-02-03-v1.1-bom-fix"
+POT_EXECUTOR_BUILD_ID = "2026-02-03-v2.0-idempotent"
 print(f"[POT_EXECUTOR_LOADED] BUILD_ID={POT_EXECUTOR_BUILD_ID}")
 
 
@@ -207,6 +214,21 @@ def apply_line_edits(
                     task.line_number, actual_term, task.replace_term
                 )
             else:
+                # Check if replace_term is already present (idempotent re-run)
+                if task.replace_term and (
+                    task.replace_term in original_line
+                    or task.replace_term.lower() in original_line.lower()
+                ):
+                    result["status"] = "already_applied"
+                    result["new_line"] = original_line.strip()
+                    edit_results.append(result)
+                    logger.info(
+                        "[pot_executor] %s L%d: already applied ('%s' present)",
+                        task.file_path, task.line_number,
+                        task.replace_term,
+                    )
+                    continue
+
                 result["status"] = "warning"
                 result["error"] = (
                     f"Search term '{task.search_term}' not found on line {task.line_number}. "
@@ -355,9 +377,12 @@ async def run_pot_spec_execution(
     tasks_skipped = 0
     files_modified = 0
     files_failed = 0
+    files_already_applied = 0
+    tasks_already_applied = 0
     consecutive_errors = 0
     file_results: List[Dict[str, Any]] = []
     artifacts_written: List[str] = []
+    affected_files: List[str] = []
     
     for file_path, file_tasks in tasks_by_file.items():
         file_result: Dict[str, Any] = {
@@ -415,13 +440,15 @@ async def run_pot_spec_execution(
         file_failures = sum(1 for e in edit_results if e["status"] == "error")
         file_warnings = sum(1 for e in edit_results if e["status"] == "warning")
         file_skips = sum(1 for e in edit_results if e["status"] == "skipped")
+        file_already = sum(1 for e in edit_results if e["status"] == "already_applied")
         
         logger.info(
-            "[pot_executor] %s edits: %d success, %d fail, %d warn, %d skip",
-            file_path, file_successes, file_failures, file_warnings, file_skips
+            "[pot_executor] %s edits: %d success, %d already, %d fail, %d warn, %d skip",
+            file_path, file_successes, file_already, file_failures, file_warnings, file_skips
         )
         
-        if file_successes == 0:
+        if file_successes == 0 and file_already == 0:
+            # No successful edits and nothing already applied → actual failure
             file_result["status"] = "no_changes"
             file_result["error"] = "No successful edits"
             tasks_failed += file_failures
@@ -432,6 +459,30 @@ async def run_pot_spec_execution(
                 "file_path": file_path,
                 "successes": 0,
                 "failures": file_failures,
+            })
+            
+            file_results.append(file_result)
+            continue
+        
+        if file_successes == 0 and file_already > 0:
+            # All edits already applied — idempotent success, no write needed
+            file_result["status"] = "already_applied"
+            tasks_already_applied += file_already
+            tasks_skipped += file_skips + file_warnings
+            files_already_applied += 1
+            affected_files.append(file_path)
+            consecutive_errors = 0
+            
+            logger.info(
+                "[pot_executor] ✓ %s: %d edits already applied (idempotent)",
+                file_path, file_already
+            )
+            print(f"[POT_EXECUTOR] ✓ {file_path}: {file_already} edits already applied")
+            
+            add_trace("POT_FILE_ALREADY_APPLIED", "idempotent", {
+                "file_path": file_path,
+                "edits_already_applied": file_already,
+                "edits_skipped": file_skips + file_warnings,
             })
             
             file_results.append(file_result)
@@ -476,9 +527,11 @@ async def run_pot_spec_execution(
                 file_result["status"] = "success"
                 files_modified += 1
                 tasks_completed += file_successes
+                tasks_already_applied += file_already
                 tasks_skipped += file_skips + file_warnings
                 consecutive_errors = 0  # Reset on success
                 artifacts_written.append(file_path)
+                affected_files.append(file_path)
                 
                 logger.info(
                     "[pot_executor] ✓ %s: %d edits applied and verified",
@@ -504,27 +557,38 @@ async def run_pot_spec_execution(
     
     # Final summary
     elapsed_ms = int((time.time() - start_time) * 1000)
-    success = files_modified > 0 and files_failed == 0
+    success = (files_modified > 0 or files_already_applied > 0) and files_failed == 0
     
     summary = {
         "total_tasks": total_tasks,
         "tasks_completed": tasks_completed,
+        "tasks_already_applied": tasks_already_applied,
         "tasks_failed": tasks_failed,
         "tasks_skipped": tasks_skipped,
         "files_processed": len(tasks_by_file),
         "files_modified": files_modified,
+        "files_already_applied": files_already_applied,
         "files_failed": files_failed,
         "elapsed_ms": elapsed_ms,
     }
     
     logger.info(
-        "[pot_executor] COMPLETE: success=%s, tasks=%d/%d, files=%d/%d, %dms",
-        success, tasks_completed, total_tasks,
-        files_modified, len(tasks_by_file), elapsed_ms
+        "[pot_executor] COMPLETE: success=%s, tasks=%d/%d (already=%d), "
+        "files=%d/%d (already=%d), %dms",
+        success, tasks_completed, total_tasks, tasks_already_applied,
+        files_modified, len(tasks_by_file), files_already_applied, elapsed_ms
     )
+    
+    status_label = "✓ SUCCESS"
+    if not success:
+        status_label = "✗ FAILED"
+    elif files_already_applied > 0 and files_modified == 0:
+        status_label = "✓ ALREADY APPLIED"
+    
     print(
-        f"[POT_EXECUTOR] {'✓ SUCCESS' if success else '✗ FAILED'}: "
+        f"[POT_EXECUTOR] {status_label}: "
         f"{tasks_completed}/{total_tasks} tasks, "
+        f"{tasks_already_applied} already applied, "
         f"{files_modified}/{len(tasks_by_file)} files, "
         f"{elapsed_ms}ms"
     )
@@ -541,8 +605,10 @@ async def run_pot_spec_execution(
         "error": None if success else f"POT execution: {tasks_completed}/{total_tasks} tasks completed, {files_failed} files failed",
         "trace": trace,
         "tasks_completed": tasks_completed,
+        "tasks_already_applied": tasks_already_applied,
         "total_tasks": total_tasks,
         "artifacts_written": artifacts_written,
+        "affected_files": affected_files,
         "file_results": file_results,
         "summary": summary,
     }

@@ -2,6 +2,28 @@
 r"""
 Weaver Stream Handler for ASTRA - SIMPLIFIED VERSION
 
+v4.0.0 (2026-02-04): LLM-GENERATED QUESTIONS - Remove hardcoded game-design questions
+- CRITICAL FIX: Removed SHALLOW_QUESTIONS dict (Tetris-era hardcoded questions)
+- Removed DESIGN_JOB_INDICATORS and _is_design_job() - triggered on every feature request
+- Removed SHALLOW_QUESTION_KEYWORDS and _get_shallow_questions()
+- Removed questions_context injection into LLM prompt
+- LLM now generates its own contextual questions based on actual gaps in user requirements
+- System prompt rewritten: no game-specific examples, domain-agnostic question guidance
+- Removed _detect_filled_slots(), _reconcile_filled_slots(), _add_known_requirements_section()
+- Removed SLOT_AMBIGUITY_PATTERNS and SLOT_QUESTION_PATTERNS (hardcoded slot model)
+- GPT-5.2 is intelligent enough to identify missing information without hardcoded menus
+- Fixes: voice-to-text request no longer gets "Dark mode or light mode?" and "Arcade-style?" 
+
+v3.10.0 (2026-02-04): REFACTOR DETECTION FIX - Pattern-based, not keyword-based
+- CRITICAL FIX: "astra" was hardcoded as a refactor indicator, causing EVERY
+  message mentioning the app name to be classified as a REFACTOR_TASK
+- Removed all app-name-specific indicators: "astra", "orb to astra", "branding"
+- Removed overly-generic indicators: "front-end ui", "frontend ui", "across", "everywhere"
+- Replaced keyword matching with REFACTOR_ACTION_PATTERNS (regex-based)
+- Refactor detection now requires actual rename/replace ACTION + SCOPE context
+  e.g. "rename X to Y", "replace all X with Y", "find and replace across codebase"
+- Prevents false positives: "Add voice-to-text to ASTRA" no longer triggers refactor mode
+
 v3.9.0 (2026-02-01): VISION CONTEXT FLOW FIX
 - CRITICAL FIX: Vision analysis from Gemini now flows through to SpecGate
 - Added _is_vision_context() to detect assistant messages containing image analysis
@@ -102,7 +124,7 @@ v3.2 (2026-01-20): PERSISTENT PREFS + INCREMENTAL WEAVING
 - Subsequent weaves only process NEW messages (incremental/update mode)
 - Questions are only asked if prefs not already confirmed
 
-LOCKED WEAVER BEHAVIOUR (v3.5):
+LOCKED WEAVER BEHAVIOUR (v4.0):
 - Purpose: Convert human rambling into a structured job outline
 - NOT a full spec builder - just a text organizer
 - Reads messages to get input (the ramble)
@@ -110,7 +132,7 @@ LOCKED WEAVER BEHAVIOUR (v3.5):
 - Does NOT build JSON specs
 - Does NOT resolve ambiguities or contradictions
 - ALWAYS outputs structured outline (never conversational responses)
-- May ask up to 3-5 SHALLOW framing questions (platform, look/feel, controls, scope, layout)
+- LLM generates its own contextual questions based on actual gaps (no hardcoded question menus)
 - NEVER asks technical questions (frameworks, algorithms, architecture)
 
 WEAVER DECISION TREE (v3.5):
@@ -986,222 +1008,49 @@ def _has_core_goal(ramble_text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Design Job Detection
+# Design Job Detection — REMOVED in v4.0.0
 # ---------------------------------------------------------------------------
-
-DESIGN_JOB_INDICATORS = [
-    "app", "ui", "interface", "page", "screen", "dashboard",
-    "website", "form", "button", "layout", "component", "modal",
-    "sidebar", "navbar", "menu", "panel", "widget", "view",
-    "frontend", "front-end", "front end", "web app", "webapp",
-    "game",  # v3.5.0: Games also need design questions
-]
-
-
-def _is_design_job(ramble_text: str) -> bool:
-    """Check if this job involves UI/design decisions."""
-    text_lower = ramble_text.lower()
-    for indicator in DESIGN_JOB_INDICATORS:
-        if indicator in text_lower:
-            print(f"[WEAVER] Design job detected (indicator: '{indicator}')")
-            return True
-    return False
-
+# v4.0.0: _is_design_job() and DESIGN_JOB_INDICATORS removed.
+# The old design job detector triggered on ANY mention of "app", "ui",
+# "interface", "game", etc. — which meant EVERY ASTRA feature request
+# was classified as a "design job" and got hardcoded game-focused questions.
+# The LLM now generates its own contextual questions without gating.
 
 # ---------------------------------------------------------------------------
-# Shallow Question Generation (v3.5.0 - Bug 5 fix)
-# Weaver only asks 3-5 HIGH LEVEL questions, never technical
+# Shallow Question Generation — REMOVED in v4.0.0
 # ---------------------------------------------------------------------------
-
-# v3.5.0: Shallow framing questions only (Bug 5 - Scope Boundary Enforcement)
-# These are the ONLY types of questions Weaver is allowed to ask
-SHALLOW_QUESTIONS = {
-    "platform": "What platform do you want this on? (web / Android / desktop / iOS)",
-    "look_feel": "Dark mode or light mode?",
-    "style": "Minimal or arcade-style / fancy?",
-    "controls": "What controls? (keyboard / touch / controller)",
-    "scope": "Bare minimum playable first, or add some extras?",
-    "layout": "Any preference on layout? (centered vs sidebar HUD)",
-}
-
-# Keywords that indicate a question type is already answered
-SHALLOW_QUESTION_KEYWORDS = {
-    "platform": ["web", "android", "ios", "desktop", "mobile", "browser", "windows", "mac", "linux"],
-    "look_feel": ["dark mode", "light mode", "dark", "light", "bright", "night"],
-    "style": ["minimal", "minimalist", "arcade", "fancy", "retro", "classic", "modern", "playful", "simple"],
-    "controls": ["keyboard", "touch", "controller", "mouse", "wasd", "arrows", "swipe", "gamepad"],
-    "scope": ["minimal", "basic", "extras", "features", "bare", "simple", "full", "complete"],
-    "layout": ["centered", "sidebar", "hud", "split", "fullscreen"],
-}
+# v4.0.0: SHALLOW_QUESTIONS, SHALLOW_QUESTION_KEYWORDS, and
+# _get_shallow_questions() removed. These were hardcoded game-design
+# questions ("Arcade-style or minimal?", "Keyboard or touch or controller?",
+# "Centered vs sidebar HUD?") that were injected into the LLM prompt
+# regardless of context. A voice-to-text feature request would get asked
+# about game controllers because the keyword "app" appeared in the text.
+#
+# The LLM (GPT-5.2) now generates its own questions based on what's
+# actually unclear in the user's requirements. This uses the model's
+# reasoning capability rather than a fixed menu of 6 questions.
 
 
-def _get_shallow_questions(ramble_text: str) -> Dict[str, str]:
-    """
-    Get shallow framing questions that haven't been answered yet.
-    
-    v3.5.0: Weaver is limited to 3-5 shallow questions maximum.
-    These are high-level framing questions only, never technical.
-    
-    ALLOWED: platform, look/feel, controls, scope, layout
-    NOT ALLOWED: frameworks, algorithms, architecture, data structures
-    """
-    text_lower = ramble_text.lower()
-    questions = {}
-    
-    for q_type, keywords in SHALLOW_QUESTION_KEYWORDS.items():
-        if not any(kw in text_lower for kw in keywords):
-            questions[q_type] = SHALLOW_QUESTIONS[q_type]
-    
-    # Limit to 5 questions max
-    return dict(list(questions.items())[:5])
-
-
-def _detect_filled_slots(ramble_text: str) -> Dict[str, str]:
-    """
-    Detect which shallow question slots have been answered in user messages.
-    
-    v3.5.1: Deterministic slot detection for reconciliation.
-    Returns a dict of slot_name -> detected_value for filled slots.
-    """
-    text_lower = ramble_text.lower()
-    filled_slots = {}
-    
-    # Platform detection
-    platform_patterns = [
-        (r"\bandroid\b", "Android"),
-        (r"\bios\b", "iOS"),
-        (r"\biphone\b", "iOS"),
-        (r"\bipad\b", "iOS"),
-        (r"\bweb\b", "Web"),
-        (r"\bbrowser\b", "Web"),
-        (r"\bdesktop\b", "Desktop"),
-        (r"\bwindows\b", "Windows"),
-        (r"\bmac\b", "Mac"),
-        (r"\blinux\b", "Linux"),
-        (r"\bmobile\b", "Mobile"),
-    ]
-    for pattern, value in platform_patterns:
-        if re.search(pattern, text_lower):
-            filled_slots["platform"] = value
-            break
-    
-    # Color mode / theme detection
-    if re.search(r"\bdark\s*mode\b|\bdark\s+theme\b|\bdark\b", text_lower):
-        filled_slots["look_feel"] = "Dark mode"
-    elif re.search(r"\blight\s*mode\b|\blight\s+theme\b|\blight\b|\bbright\b", text_lower):
-        filled_slots["look_feel"] = "Light mode"
-    
-    # Controls detection
-    controls_patterns = [
-        (r"\btouch\b|\btap\b|\bswipe\b", "Touch"),
-        (r"\bkeyboard\b|\bwasd\b|\barrow\s*keys?\b", "Keyboard"),
-        (r"\bcontroller\b|\bgamepad\b|\bjoystick\b", "Controller"),
-        (r"\bmouse\b|\bclick\b", "Mouse"),
-    ]
-    for pattern, value in controls_patterns:
-        if re.search(pattern, text_lower):
-            filled_slots["controls"] = value
-            break
-    
-    # Scope detection
-    if re.search(r"\bbare\s*minimum\b|\bminimal\b|\bbasic\b|\bsimple\b|\bjust\s+the\s+basics?\b", text_lower):
-        filled_slots["scope"] = "Bare minimum / basic"
-    elif re.search(r"\bextras?\b|\bfull\b|\bcomplete\b|\bfeatures?\b|\badvanced\b", text_lower):
-        filled_slots["scope"] = "With extras / features"
-    
-    # Layout detection
-    if re.search(r"\bcentered\b|\bcenter\b|\bfull\s*screen\b|\bfullscreen\b", text_lower):
-        filled_slots["layout"] = "Centered / fullscreen"
-    elif re.search(r"\bsidebar\b|\bhud\b|\bsplit\b", text_lower):
-        filled_slots["layout"] = "Sidebar / HUD"
-    
-    return filled_slots
+# v4.0.0: _detect_filled_slots() REMOVED
+# Was hardcoded to detect game-design slots (platform, look_feel, controls, scope, layout).
+# Now that the LLM generates its own contextual questions, slot detection is unnecessary.
+# The LLM reads the user's requirements directly and knows what's been answered.
 
 
 # ---------------------------------------------------------------------------
-# Slot Reconciliation (v3.5.1 - Question Regression Fix)
-# Deterministically removes filled slots from Unresolved/Questions sections
+# Slot Reconciliation - v4.0.0: REMOVED
+# The entire slot-based reconciliation system has been removed.
+# It was built around 6 hardcoded game-design slots (platform, look_feel,
+# controls, scope, layout) and is incompatible with LLM-generated questions.
+# The LLM now handles question generation contextually, reading the user's
+# actual requirements to determine what's been answered.
 # ---------------------------------------------------------------------------
 
-# v3.5.2: Patterns for detecting slot-related lines in output sections
-# CRITICAL: Must match BOTH "unspecified" AND "not specified" variations
-SLOT_AMBIGUITY_PATTERNS = {
-    "platform": [
-        r"platform\s*(is\s+)?(not\s+specified|unspecified|unclear)",
-        r"target\s+platform\s*(is\s+)?(not\s+specified|unspecified|unclear)",
-        r"platform.*(not\s+specified|unspecified|unclear)",
-        r"which\s+platform",
-        r"web.*android.*desktop.*ios.*(not\s+specified|unspecified)",
-    ],
-    "look_feel": [
-        r"color\s*mode\s*(is\s+)?(not\s+specified|unspecified|unclear)",
-        r"visual\s+theme.*(not\s+specified|unspecified|unclear)",
-        r"dark\s*(vs|or|/|versus)\s*light.*(not\s+specified|unspecified|unclear)",
-        r"dark.*light.*(not\s+specified|unspecified|unclear)",
-        r"theme\s*(is\s+)?(not\s+specified|unspecified|unclear)",
-        r"(dark|light)\s*mode.*(not\s+specified|unspecified|unclear)",
-    ],
-    "controls": [
-        r"control\s*(method\s*)?(is\s+)?(not\s+specified|unspecified|unclear)",
-        r"controls?\s*(is\s+|are\s+)?(not\s+specified|unspecified|unclear)",
-        r"keyboard.*touch.*controller.*(not\s+specified|unspecified|unclear)",
-        r"input\s*(method\s*)?(is\s+)?(not\s+specified|unspecified|unclear)",
-        r"exact\s+control.*unspecified",
-        r"key\s*mappings?.*(not\s+specified|unspecified|unclear)",
-    ],
-    "scope": [
-        r"scope\s*(is\s+)?(not\s+specified|unspecified|unclear)",
-        r"scope.*level\s*(is\s+)?(not\s+specified|unspecified|unclear)",
-        r"bare\s*minimum.*extras?.*(not\s+specified|unspecified|unclear)",
-        r"minimum\s*(vs|or|/)\s*extras?.*(not\s+specified|unspecified|unclear)",
-    ],
-    "layout": [
-        r"layout\s*(preference\s*)?(is\s+)?(not\s+specified|unspecified|unclear)",
-        r"layout.*(not\s+specified|unspecified|unclear)",
-        r"hud\s*placement.*(not\s+specified|unspecified|unclear)",
-        r"centered.*sidebar.*hud.*(not\s+specified|unspecified|unclear)",
-    ],
-}
+# v4.0.0: SLOT_AMBIGUITY_PATTERNS REMOVED (was hardcoded game-design slots)
+# v4.0.0: SLOT_QUESTION_PATTERNS REMOVED (was hardcoded game-design slots)
+_SLOT_RECONCILIATION_REMOVED = True  # Marker for grep/search
 
-# v3.5.2: Question patterns - must match actual LLM output variations
-SLOT_QUESTION_PATTERNS = {
-    "platform": [
-        r"what\s+platform",
-        r"which\s+platform",
-        r"web.*android.*desktop.*ios",
-        r"platform.*\?",
-        r"target\s+platform",
-    ],
-    "look_feel": [
-        r"dark\s*(mode)?\s*(or|vs|/)\s*light\s*(mode)?",
-        r"color\s*(mode|scheme)\s*\?",
-        r"theme\s*\?",
-        r"visual\s+theme",
-        r"dark.*light.*\?",
-    ],
-    "controls": [
-        r"what\s+controls",
-        r"keyboard.*touch.*controller",
-        r"controls?\s*\?",
-        r"input\s*(method)?\s*\?",
-        r"control\s+method",
-        r"key\s*mappings?",
-    ],
-    "scope": [
-        r"bare\s*minimum.*extras?",
-        r"minimum.*playable.*extras?",
-        r"scope\s*\?",
-        r"basic.*or.*full",
-        r"minimal.*or.*complete",
-    ],
-    "layout": [
-        r"layout\s*\?",
-        r"centered.*sidebar",
-        r"preference\s*on\s*layout",
-        r"hud\s*placement",
-        r"sidebar.*hud",
-    ],
-}
+
 
 
 # ---------------------------------------------------------------------------
@@ -1227,12 +1076,30 @@ NON_MICRO_INDICATORS = [
 ]
 
 # v3.7: REFACTOR/RENAME operations should NEVER be micro-tasks
-# These are codebase-wide operations that need the full pipeline
-REFACTOR_INDICATORS = [
-    "rename", "rebrand", "refactor", "replace all", "change all",
-    "across", "codebase", "everywhere", "all files", "all occurrences",
-    "orb to astra", "astra", "branding",  # Specific to this rebrand task
-    "front-end ui", "frontend ui",
+# v3.10: Moved REFACTOR_INDICATORS below (cleaned up, app-name entries removed)
+# v3.10: Added REFACTOR_ACTION_PATTERNS for context-aware detection
+
+# v3.10: Refactor detection patterns — context-aware, not keyword-only
+# These patterns detect ACTUAL rename/refactor intent, not just keyword presence.
+# Each pattern requires a refactor ACTION + a SCOPE or TARGET indicator.
+REFACTOR_ACTION_PATTERNS = [
+    # "rename X to Y" / "rename all X to Y"
+    r"\brename\b.{1,40}\bto\b",
+    # "rebrand from X to Y" / "rebrand X as Y"
+    r"\brebrand\b",
+    # "refactor" + scope indicator (codebase, all files, across, everywhere)
+    r"\brefactor\b.{0,30}\b(across|codebase|all\s+files|everywhere|project)\b",
+    # "replace all X with Y" / "replace X with Y in all files"
+    r"\breplace\s+all\b",
+    r"\breplace\b.{1,40}\b(across|everywhere|all\s+files|codebase|all\s+occurrences)\b",
+    # "change all X to Y" / "change X to Y across"
+    r"\bchange\s+all\b.{1,40}\bto\b",
+    r"\bchange\b.{1,40}\bto\b.{1,40}\b(across|everywhere|all\s+files|codebase)\b",
+    # "search and replace" / "find and replace" + scope
+    r"\b(search|find)\s+and\s+replace\b",
+    # Explicit codebase-wide rename language
+    r"\ball\s+occurrences\b.{0,30}\b(of|rename|replace|change)\b",
+    r"\b(rename|replace|change)\b.{0,30}\ball\s+occurrences\b",
 ]
 
 # v3.8: Patterns that indicate user dismissed/answered questions
@@ -1247,6 +1114,17 @@ QUESTIONS_DISMISSED_PATTERNS = [
 ]
 
 # v3.8: Refactor task system prompt - NO design questions, focused on search/replace
+# v3.10: Legacy list kept ONLY for _is_micro_file_task guard.
+# Stripped of app-name-specific and overly-generic entries.
+# The real refactor detection now uses REFACTOR_ACTION_PATTERNS above.
+REFACTOR_INDICATORS = [
+    "rename", "rebrand", "refactor", "replace all", "change all",
+    "all occurrences", "codebase",
+    # NOTE: "astra", "orb to astra", "branding", "front-end ui",
+    # "across", "everywhere" were REMOVED in v3.10 — too generic,
+    # caused false positives on any message mentioning the app name.
+]
+
 REFACTOR_TASK_SYSTEM_PROMPT = """You are Weaver for REFACTOR/RENAME TASKS.
 
 Your job: Produce a FOCUSED job outline for text replacement / rename operations.
@@ -1303,22 +1181,34 @@ CRITICAL:
 
 def _is_refactor_task(text: str) -> bool:
     """
-    Detect refactor/rename operations that need special handling (v3.8.0).
+    Detect refactor/rename operations that need special handling.
     
-    Refactor tasks:
-    - Should NOT trigger design job questions
-    - Should use REFACTOR_TASK_SYSTEM_PROMPT
-    - Focus on search/replace terms, not UI preferences
+    v3.10: Now uses PATTERN-BASED detection instead of keyword matching.
+    Requires actual rename/replace ACTION + SCOPE/TARGET context.
     
-    Returns True if any REFACTOR_INDICATOR is present.
+    This prevents false positives like:
+    - "Add voice-to-text to the ASTRA desktop app" (mentions app name)
+    - "Update the branding page" (mentions branding as a feature)
+    - "Improve the front-end UI" (mentions UI as a feature target)
+    
+    Only triggers on actual refactor language like:
+    - "Rename Orb to Astra across the codebase"
+    - "Replace all occurrences of X with Y"
+    - "Rebrand from Orb to Astra"
+    - "Find and replace in all files"
+    
+    Returns True if a refactor ACTION PATTERN matches.
     """
     text_lower = text.lower()
     
-    for indicator in REFACTOR_INDICATORS:
-        if indicator in text_lower:
-            print(f"[WEAVER] v3.8 REFACTOR_TASK detected (indicator: '{indicator}')")
+    for pattern in REFACTOR_ACTION_PATTERNS:
+        match = re.search(pattern, text_lower, re.IGNORECASE)
+        if match:
+            matched_text = match.group(0).strip()
+            print(f"[WEAVER] v3.10 REFACTOR_TASK detected (pattern: '{matched_text}')")
             return True
     
+    print(f"[WEAVER] v3.10 NOT refactor task (no action patterns matched)")
     return False
 
 
@@ -1445,17 +1335,38 @@ def _normalize_typos(text: str) -> str:
     return result
 
 
+# v3.11: Feature component indicators - multi-component requests are NEVER micro
+# If 3+ of these appear in a request, it's a substantial feature, not a file task
+FEATURE_COMPONENT_INDICATORS = [
+    "audio", "microphone", "recording", "capture",
+    "transcription", "speech", "voice", "stt", "whisper",
+    "button", "widget", "component", "panel",
+    "endpoint", "api", "route", "handler",
+    "provider", "service", "integration",
+    "config", "settings", "environment",
+    "stream", "websocket", "real-time", "realtime",
+    "authentication", "auth", "permission",
+    "notification", "alert", "feedback",
+    "database", "storage", "persistence",
+]
+
+
 def _is_micro_file_task(text: str) -> bool:
     """
     Detect simple file operations that need no questions (v3.6.0).
     v3.6.1: Context-aware detection - "create a file" is micro, "create an app" is not.
     v3.7.0: Refactor/rename operations are NEVER micro-tasks.
+    v3.11.0: NON_MICRO indicators now checked EVEN when file indicators are present.
+             Multi-component feature detection prevents substantial features from
+             being classified as micro tasks.
     
     Logic:
     - If REFACTOR_INDICATOR present → NOT micro (codebase-wide operation)
-    - If BUILD_VERB in app/software context → NOT micro (it's a build job)
+    - If 3+ FEATURE_COMPONENT_INDICATORS present → NOT micro (substantial feature)
+    - If NON_MICRO indicator present → NOT micro (even if file indicators match)
+    - If BUILD_VERB + NON_MICRO → NOT micro (it's a build job)
     - If "create" + "file" → IS micro (simple file creation)
-    - If any MICRO_FILE_INDICATOR present → IS micro
+    - If any MICRO_FILE_INDICATOR present (without non-micro) → IS micro
     - Otherwise → NOT micro
     
     CRITICAL: Context matters!
@@ -1464,7 +1375,8 @@ def _is_micro_file_task(text: str) -> bool:
     - "build a game" → NOT micro task
     - "find file on my system" → micro task
     - "rename Orb to Astra" → NOT micro task (refactor!)
-    - "change the UI branding" → NOT micro task (refactor!)
+    - "add voice-to-text to the desktop app" → NOT micro task (feature!)
+    - "add push-to-talk with audio capture and transcription" → NOT micro task (multi-component!)
     """
     text_lower = text.lower()
     
@@ -1474,7 +1386,23 @@ def _is_micro_file_task(text: str) -> bool:
             print(f"[WEAVER] v3.7 NOT micro-task (refactor indicator: '{indicator}')")
             return False
     
-    # v3.6.1: First check for explicit file creation context
+    # v3.11.0: Check for multi-component feature requests
+    # If 3+ distinct feature components are mentioned, this is a substantial feature
+    component_matches = [ind for ind in FEATURE_COMPONENT_INDICATORS if ind in text_lower]
+    if len(component_matches) >= 3:
+        print(f"[WEAVER] v3.11 NOT micro-task (multi-component feature: {component_matches[:5]}...)")
+        return False
+    
+    # v3.11.0: Check NON_MICRO indicators EARLY - these override file indicators
+    # "desktop app", "desktop application", "desktop feature" are NOT file tasks
+    has_non_micro = any(ind in text_lower for ind in NON_MICRO_INDICATORS)
+    if has_non_micro:
+        # Find which non-micro indicator matched for logging
+        matched_non_micro = [ind for ind in NON_MICRO_INDICATORS if ind in text_lower]
+        print(f"[WEAVER] v3.11 NOT micro-task (non-micro indicators present: {matched_non_micro})")
+        return False
+    
+    # v3.6.1: Check for explicit file creation context
     # "create a file", "create new file", "make a file" are MICRO tasks
     file_creation_patterns = [
         r"create\s+(?:a\s+)?(?:new\s+)?file",
@@ -1487,20 +1415,16 @@ def _is_micro_file_task(text: str) -> bool:
             print("[WEAVER] Classified as MICRO_FILE_TASK (file creation pattern)")
             return True
     
-    # Check for file operation indicators FIRST (high priority)
+    # Check for file operation indicators
     has_file_indicator = any(ind in text_lower for ind in MICRO_FILE_INDICATORS)
     
-    # v3.6.1: Check for BUILD VERB + NON_MICRO combo (NOT micro)
-    # But ONLY if there's no strong file indicator
-    if not has_file_indicator:
-        has_build_verb = any(v in text_lower for v in BUILD_VERBS)
-        has_non_micro = any(ind in text_lower for ind in NON_MICRO_INDICATORS)
-        
-        if has_build_verb and has_non_micro:
-            print(f"[WEAVER] NOT micro-task (build verb + non-micro indicator, no file indicators)")
-            return False
+    # v3.6.1: Check for BUILD VERB (even without non-micro, build verbs suggest non-micro)
+    has_build_verb = any(v in text_lower for v in BUILD_VERBS)
+    if has_build_verb:
+        print(f"[WEAVER] NOT micro-task (build verb present without file context)")
+        return False
     
-    # If file indicators present, it's a micro task
+    # If file indicators present and no non-micro/build overrides, it's a micro task
     if has_file_indicator:
         print("[WEAVER] Classified as MICRO_FILE_TASK")
         return True
@@ -1551,210 +1475,8 @@ def _get_blocking_questions(text: str, is_micro_task: bool) -> List[str]:
     return questions
 
 
-def _reconcile_filled_slots(output: str, filled_slots: Dict[str, str]) -> str:
-    """
-    Deterministically remove filled slots from Unresolved ambiguities and Questions.
-    
-    v3.5.1: This is the key fix for the question regression bug.
-    v3.5.2: Fixed pattern matching - now matches "not specified" in addition to "unspecified"
-    
-    When user answers questions (e.g., "Android, Dark mode, centered"), subsequent
-    Weaver runs must remove those slots from:
-    - "Unresolved ambiguities" section
-    - "Questions" section
-    
-    This is DETERMINISTIC post-processing, not relying on LLM compliance.
-    """
-    if not filled_slots:
-        print("[WEAVER] Reconciliation: No filled slots detected, skipping")
-        return output
-    
-    print(f"[WEAVER] Reconciliation: Processing {len(filled_slots)} filled slots: {list(filled_slots.keys())}")
-    
-    lines = output.split("\n")
-    result_lines = []
-    in_ambiguities_section = False
-    in_questions_section = False
-    removed_ambiguities = 0
-    removed_questions = 0
-    
-    for i, line in enumerate(lines):
-        line_lower = line.lower().strip()
-        
-        # Detect section headers (various formats the LLM might output)
-        is_ambiguity_header = any([
-            line_lower.startswith("unresolved ambiguit"),
-            line_lower.startswith("**unresolved ambiguit"),
-            line_lower.startswith("## unresolved"),
-            line_lower.startswith("### unresolved"),
-            # Handle with or without colon
-            "unresolved ambiguities" in line_lower,
-        ])
-        
-        is_question_header = any([
-            line_lower.startswith("questions"),
-            line_lower.startswith("**questions"),
-            line_lower.startswith("## questions"),
-            line_lower.startswith("### questions"),
-            line_lower == "questions" or line_lower == "questions:",
-        ])
-        
-        # Detect other section headers (to know when we've left the section)
-        is_other_header = any([
-            line_lower.startswith("what is being"),
-            line_lower.startswith("**what is being"),
-            line_lower.startswith("intended outcome"),
-            line_lower.startswith("**intended outcome"),
-            line_lower.startswith("design preferences"),
-            line_lower.startswith("**design preferences"),
-            line_lower.startswith("constraints"),
-            line_lower.startswith("**constraints"),
-            line_lower.startswith("execution mode"),
-            line_lower.startswith("**execution mode"),
-            line_lower.startswith("new requirements"),
-            line_lower.startswith("**new requirements"),
-            line_lower.startswith("known requirements"),
-            line_lower.startswith("**known requirements"),
-            line_lower.startswith("job description"),
-            line_lower.startswith("**job description"),
-            line_lower.startswith("next step"),
-            line_lower.startswith("**next step"),
-        ])
-        
-        # Track which section we're in
-        if is_ambiguity_header:
-            in_ambiguities_section = True
-            in_questions_section = False
-            print(f"[WEAVER] Reconciliation: Entered AMBIGUITIES section at line {i}")
-            result_lines.append(line)
-            continue
-        elif is_question_header:
-            in_questions_section = True
-            in_ambiguities_section = False
-            print(f"[WEAVER] Reconciliation: Entered QUESTIONS section at line {i}")
-            result_lines.append(line)
-            continue
-        elif is_other_header and (in_ambiguities_section or in_questions_section):
-            if in_ambiguities_section:
-                print(f"[WEAVER] Reconciliation: Left AMBIGUITIES section at line {i}")
-            if in_questions_section:
-                print(f"[WEAVER] Reconciliation: Left QUESTIONS section at line {i}")
-            in_ambiguities_section = False
-            in_questions_section = False
-        
-        # Check if this line should be removed (filled slot)
-        should_remove = False
-        matched_slot = None
-        matched_pattern = None
-        
-        if in_ambiguities_section and line_lower and not line_lower.startswith("#"):
-            # Check if this line mentions a filled slot
-            for slot_name in filled_slots:
-                patterns = SLOT_AMBIGUITY_PATTERNS.get(slot_name, [])
-                for pattern in patterns:
-                    if re.search(pattern, line_lower, re.IGNORECASE):
-                        should_remove = True
-                        matched_slot = slot_name
-                        matched_pattern = pattern
-                        removed_ambiguities += 1
-                        break
-                if should_remove:
-                    break
-            
-            if should_remove:
-                print(f"[WEAVER] REMOVED ambiguity ({matched_slot}): '{line.strip()[:60]}' [matched: {matched_pattern}]")
-        
-        elif in_questions_section and line_lower and not line_lower.startswith("#"):
-            # Check if this line is a question about a filled slot
-            for slot_name in filled_slots:
-                patterns = SLOT_QUESTION_PATTERNS.get(slot_name, [])
-                for pattern in patterns:
-                    if re.search(pattern, line_lower, re.IGNORECASE):
-                        should_remove = True
-                        matched_slot = slot_name
-                        matched_pattern = pattern
-                        removed_questions += 1
-                        break
-                if should_remove:
-                    break
-            
-            if should_remove:
-                print(f"[WEAVER] REMOVED question ({matched_slot}): '{line.strip()[:60]}' [matched: {matched_pattern}]")
-        
-        if not should_remove:
-            result_lines.append(line)
-    
-    total_removed = removed_ambiguities + removed_questions
-    if total_removed > 0:
-        print(f"[WEAVER] Slot reconciliation COMPLETE: removed {removed_ambiguities} ambiguities, {removed_questions} questions")
-    else:
-        print(f"[WEAVER] Slot reconciliation: NO MATCHES FOUND (check patterns vs actual output)")
-        # Debug: Show what's in the sections we scanned
-        if filled_slots:
-            print(f"[WEAVER] Debug: Filled slots were: {filled_slots}")
-    
-    return "\n".join(result_lines)
-
-
-def _add_known_requirements_section(output: str, filled_slots: Dict[str, str]) -> str:
-    """
-    Add a "Known requirements" section showing filled slots at the top.
-    
-    v3.5.1: Makes it explicit what has been answered.
-    """
-    if not filled_slots:
-        return output
-    
-    # Build known requirements section
-    known_lines = ["\n**Known requirements:**"]
-    
-    slot_display_names = {
-        "platform": "Target platform",
-        "look_feel": "Color mode",
-        "controls": "Controls",
-        "scope": "Scope",
-        "layout": "Layout",
-    }
-    
-    for slot_name, value in filled_slots.items():
-        display_name = slot_display_names.get(slot_name, slot_name.replace("_", " ").title())
-        known_lines.append(f"- {display_name}: {value}")
-    
-    known_section = "\n".join(known_lines)
-    
-    # Find where to insert (after "Intended outcome" or "Design preferences")
-    lines = output.split("\n")
-    insert_idx = -1
-    
-    for i, line in enumerate(lines):
-        line_lower = line.lower().strip()
-        # Insert after design preferences, intended outcome, or what is being built
-        if any([
-            line_lower.startswith("intended outcome"),
-            line_lower.startswith("**intended outcome"),
-            line_lower.startswith("design preferences"),
-            line_lower.startswith("**design preferences"),
-        ]):
-            # Look for the end of this section (next blank line or header)
-            for j in range(i + 1, len(lines)):
-                if not lines[j].strip() or lines[j].strip().startswith("**"):
-                    insert_idx = j
-                    break
-            if insert_idx == -1:
-                insert_idx = i + 1
-            break
-    
-    if insert_idx == -1:
-        # Fallback: insert after first line
-        insert_idx = 1
-    
-    # Check if "Known requirements" already exists
-    output_lower = output.lower()
-    if "known requirements" in output_lower:
-        return output  # Already has it
-    
-    lines.insert(insert_idx, known_section)
-    return "\n".join(lines)
+# v4.0.0: _reconcile_filled_slots() REMOVED — was built around hardcoded slots
+# v4.0.0: _add_known_requirements_section() REMOVED — was built around hardcoded slots
 
 
 # ---------------------------------------------------------------------------
@@ -1787,8 +1509,8 @@ async def generate_weaver_stream(
     - If ambiguous, lists ambiguities + asks 3-5 shallow questions
     - No framework/architecture/algorithm questions
     """
-    print(f"[WEAVER] Starting weaver v3.8.0 for project_id={project_id}")
-    logger.info("[WEAVER] Starting weaver v3.8.0 for project_id=%s", project_id)
+    print(f"[WEAVER] Starting weaver v4.0.0 for project_id={project_id}")
+    logger.info("[WEAVER] Starting weaver v4.0.0 for project_id=%s", project_id)
     
     provider, model = _get_weaver_config()
     
@@ -1972,27 +1694,27 @@ async def generate_weaver_stream(
             print("[WEAVER] v3.8 User dismissed questions - skipping shallow questions")
         
         # =====================================================================
-        # STEP 6: Get questions based on task type (v3.6.0 modified)
-        # - Micro tasks: blocker-only questions
-        # - Design jobs: existing shallow question logic
+        # STEP 6: Get blocking questions for micro tasks (v4.0.0 simplified)
+        # v4.0.0: Removed _is_design_job() and hardcoded shallow questions.
+        # The LLM now generates its own contextual questions in the system prompt.
+        # Only micro tasks still get deterministic blocker questions.
         # =====================================================================
         
-        shallow_questions = {}
         blocking_questions = []
         
         if is_micro_task:
-            # Micro tasks: blocker-only questions
+            # Micro tasks: blocker-only questions (delete confirmation, move destination)
             blocking_questions = _get_blocking_questions(ramble_text, is_micro_task=True)
             if blocking_questions:
                 print(f"[WEAVER] Micro-task has {len(blocking_questions)} blocking question(s)")
         elif is_refactor_task or questions_dismissed:
-            # v3.8.0: Refactor tasks bypass design questions entirely
-            print("[WEAVER] v3.8 Skipping design questions")
-            shallow_questions = {}
-        elif _is_design_job(ramble_text):
-            # Design jobs: existing shallow question logic
-            shallow_questions = _get_shallow_questions(ramble_text)
-            print(f"[WEAVER] Generated {len(shallow_questions)} shallow questions")
+            # v3.8.0: Refactor tasks and dismissed questions skip question generation
+            print("[WEAVER] v3.8 Skipping questions (refactor task or user dismissed)")
+        else:
+            # v4.0.0: Normal feature requests - LLM generates its own questions
+            # No hardcoded question injection. The system prompt instructs the LLM
+            # to identify genuine gaps and ask contextually relevant questions.
+            print("[WEAVER] v4.0 LLM will generate contextual questions (no hardcoded injection)")
         
         # Clear any lingering question state
         if _FLOW_STATE_AVAILABLE and clear_weaver_design_questions:
@@ -2014,11 +1736,8 @@ async def generate_weaver_stream(
         if execution_mode:
             exec_mode_context = f"\n\nExecution mode (extracted from meta-phrases): {execution_mode}"
         
-        # Build shallow questions context
-        questions_context = ""
-        if shallow_questions:
-            q_list = "\n".join([f"- {q}" for q in shallow_questions.values()])
-            questions_context = f"\n\nShallow questions to include in output:\n{q_list}"
+        # v4.0.0: No questions_context injection. The LLM generates its own
+        # contextual questions based on actual gaps in the user's requirements.
         
         if is_micro_task:
             # =================================================================
@@ -2113,7 +1832,7 @@ Output the complete updated job description with all new features added:"""
             start_message = f"**Organizing your thoughts...**\n\nAnalyzing {total_message_count} messages to create a job description.\n\n"
             yield _serialize_sse({"type": "token", "content": start_message})
             
-            # v3.5.0: COMPLETELY REWRITTEN PROMPT with scope boundaries (Bug 5)
+            # v4.0.0: LLM-GENERATED QUESTIONS - domain-agnostic, contextual
             system_prompt = """You are Weaver, a SHALLOW text organizer.
 
 Your ONLY job: Take the human's rambling and restructure it into a minimal, stable job outline.
@@ -2121,53 +1840,95 @@ Your ONLY job: Take the human's rambling and restructure it into a minimal, stab
 ## What You DO:
 - Extract the core goal as a SHORT NOUN PHRASE (not a full sentence)
 - Summarize intent into "What is being built" and "Intended outcome" (DIFFERENT wording, no duplication)
+- Faithfully list ALL requirements, constraints, and specifications the user provided
 - List unresolved ambiguities at high level
-- Include up to 3-5 SHALLOW framing questions if provided
+- Generate up to 3-5 contextual clarifying questions about GENUINE GAPS (see rules below)
 - Include execution mode if extracted from meta-phrases
 
 ## What You DO NOT DO (CRITICAL - SCOPE BOUNDARY):
-- NO framework/library choices (don't suggest Pygame, React, etc.)
+- NO framework/library choices (don't suggest specific libraries or tools)
 - NO file structure discussion
-- NO algorithm talk (collision detection, rotations, data structures)
+- NO algorithm or data structure talk
 - NO architecture proposals
 - NO implementation plans
-- NO technical questions
+- NO technical questions (those belong to later pipeline stages)
 - NO resolving ambiguities yourself
+- NO inventing requirements the user didn't state
+
+## QUESTION GENERATION RULES (v4.1 - CRITICAL):
+Zero questions is the PREFERRED and DEFAULT outcome. You generate questions ONLY when there
+is a genuine gap that would make the requirement AMBIGUOUS TO BUILD.
+
+Do NOT manufacture questions to appear thorough. Do NOT ask questions to fill a quota.
+If the user gave clear, comprehensive requirements: output "Questions: none" and move on.
+
+Rules:
+1. DEFAULT TO ZERO QUESTIONS. Only ask if you genuinely cannot determine what to build.
+2. READ the user's requirements carefully first. Do NOT ask about things they already specified.
+3. Questions must be HIGH-LEVEL framing questions, never technical implementation questions.
+4. Absolute maximum: 3 questions. But 0 is almost always correct for detailed requests.
+5. Each question must address a GENUINE GAP - something the user didn't cover that would affect
+   what gets built (not how it gets built).
+6. Before writing ANY question, ask yourself: "Would the downstream pipeline be blocked without
+   this answer?" If no, don't ask it.
+7. NEVER ask these if the user already specified them (check carefully!):
+   - Platform (if they said "desktop app" or "Windows" - that's answered)
+   - Controls (if they described input methods - that's answered)
+   - Scope (if they defined phases or boundaries - that's answered)
+   - Architecture (if they described backend/frontend structure - that's answered)
+   - Technology choices (if they named specific tools/libraries - that's answered)
+8. If the user provided a detailed, well-structured request with explicit requirements,
+   constraints, and phase boundaries, you MUST output "Questions: none".
+
+ANTI-PATTERNS (never do these):
+- Asking 3-5 questions on every request regardless of completeness
+- Rephrasing stated requirements as questions ("You mentioned X, did you mean X?")
+- Asking about preferences the user clearly stated
+- Asking about things the downstream pipeline will handle (file paths, exact APIs, etc.)
+
+BAD questions (generic, context-blind):
+- "Dark mode or light mode?" (when user is asking for a backend service)
+- "Keyboard or touch?" (when user specified keyboard shortcuts)
+- "Bare minimum or extras?" (when user defined explicit Phase 1 boundaries)
+
+GOOD questions (contextual, gap-filling — but ONLY if genuinely needed):
+- "What latency target for transcription?" (voice feature, not specified)
+- "Should wake word detection run continuously or only when app is focused?" (genuine ambiguity)
+- "Target OS(es) beyond Windows?" (user said desktop but didn't clarify OS scope)
 
 ## Output Format:
 Produce a MINIMAL structured job outline with these sections:
-- **What is being built**: Short noun phrase (e.g., "Classic Tetris game")
-- **Intended outcome**: Different wording (e.g., "Playable Tetris implementation")
+- **What is being built**: Short noun phrase (e.g., "Voice-to-text input system")
+- **Intended outcome**: Different wording (e.g., "Local speech transcription integrated into desktop app")
 - **Execution mode**: Only if extracted (e.g., "Discussion only, no code yet")
-- **Design preferences**: Only if specified
-- **Constraints**: Only if explicitly stated
-- **Unresolved ambiguities**: List what's unclear (platform, style, controls, etc.)
-- **Questions**: 3-5 shallow framing questions ONLY (platform, look/feel, controls, scope, layout)
+- **Key requirements**: Bullet list of what the user explicitly asked for
+- **Design preferences**: Only if specified (visual/UI preferences only)
+- **Constraints**: Only if explicitly stated by the user
+- **Unresolved ambiguities**: Things genuinely unclear from the user's description
+- **Questions**: Usually "none" — only include if a genuine gap would block building
 
-## DEDUPLICATION RULE (Bug 3):
+## DEDUPLICATION RULE:
 "What is being built" and "Intended outcome" must use DIFFERENT words.
-BAD: What: "A Tetris game" / Outcome: "A Tetris game"
-GOOD: What: "Classic Tetris game" / Outcome: "Playable Tetris implementation"
+BAD: What: "Voice input feature" / Outcome: "Voice input feature"
+GOOD: What: "Voice-to-text input system" / Outcome: "Local speech transcription for desktop app"
 
-## SHALLOW QUESTIONS ONLY (Bug 5):
-Questions must be HIGH-LEVEL framing only:
-ALLOWED: "Web or desktop?", "Dark mode or light?", "Keyboard or touch?"
-NOT ALLOWED: "Use Pygame or Arcade?", "How should rotation work?", "What data structure for blocks?"
-
-## Critical Rule:
-If the human didn't say it, it doesn't appear in your output.
-You are a TEXT ORGANIZER, not a solution designer."""
+## Critical Rules:
+1. If the human didn't say it, it doesn't appear in your output.
+2. If the human DID say it, it MUST appear in your output (don't drop requirements).
+3. You are a TEXT ORGANIZER, not a solution designer.
+4. Preserve the user's terminology and domain language."""
 
             user_prompt = f"""Organize this conversation into a job description:
 
-{ramble_text}{prefs_context}{exec_mode_context}{questions_context}
+{ramble_text}{prefs_context}{exec_mode_context}
 
-Remember: 
-- Only include what was actually said
+Remember:
+- Include ALL requirements the user stated (don't drop anything)
 - Preserve any ambiguities (list them, don't resolve them)
 - Keep What and Outcome DIFFERENT (no duplication)
-- Only ask shallow framing questions (platform, look/feel, controls, scope, layout)
-- NO technical questions (frameworks, algorithms, architecture)"""
+- Only ask questions about GENUINE GAPS you identified (may be zero if requirements are comprehensive)
+- NO technical questions (frameworks, algorithms, architecture)
+- Preserve the user's domain terminology"""
         
         # Stream from LLM
         llm_messages = [
@@ -2205,16 +1966,10 @@ Remember:
         # Enforce deduplication (v3.5.0 - Bug 3 fix)
         dedup_output = _enforce_deduplication(hygiene_output)
         
-        # v3.5.1: Detect filled slots from ALL user messages
-        filled_slots = _detect_filled_slots(ramble_text)
-        if filled_slots:
-            print(f"[WEAVER] Detected filled slots: {filled_slots}")
-        
-        # v3.5.1: Reconcile slots - remove answered questions/ambiguities (CRITICAL FIX)
-        reconciled_output = _reconcile_filled_slots(dedup_output, filled_slots)
-        
-        # v3.5.1: Add "Known requirements" section for filled slots
-        job_description = _add_known_requirements_section(reconciled_output, filled_slots)
+        # v4.0.0: Slot detection/reconciliation REMOVED.
+        # The LLM generates its own contextual questions and reads the user's
+        # requirements directly — no need for hardcoded slot post-processing.
+        job_description = dedup_output
         
         weaver_output_id = f"weaver-{uuid.uuid4().hex[:12]}"
         

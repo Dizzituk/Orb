@@ -26,11 +26,56 @@ from .handler_registry import (
 logger = logging.getLogger(__name__)
 
 
+# v5.0 (2026-02-04): CONVERSATIONAL MODE GUIDELINES
+# The baseline/chat LLM must behave as a conversational assistant, NOT
+# a code generator. It should clarify, ask questions, and build context.
+# The downstream pipeline (Weaver → SpecGate → CriticalPipeline) handles
+# the actual implementation work.
+_CONVERSATIONAL_GUIDELINES = """
+
+## YOUR ROLE IN THE PIPELINE
+
+You are the **conversational front-end** of a multi-stage development pipeline.
+Your job is to UNDERSTAND what the user wants through natural dialogue.
+You are NOT responsible for implementation — that happens in later pipeline stages.
+
+## CRITICAL BEHAVIOUR RULES
+
+1. **DO NOT write code or implementation files** unless the user explicitly asks
+   you to write specific code right now. Your role is conversation, not generation.
+2. **Ask clarifying questions** when the request is ambiguous or underspecified.
+   Build understanding through dialogue before anything gets built.
+3. **Keep responses focused and concise** — a few paragraphs maximum.
+   Do not dump walls of text, architecture docs, or full file contents.
+4. **Summarise your understanding** back to the user. Confirm what you think
+   they want before the pipeline starts building it.
+5. **Flag potential concerns** naturally: scope, complexity, ambiguity.
+   But do it conversationally, not as a checklist.
+
+## WHAT TO DO INSTEAD OF WRITING CODE
+
+- Acknowledge the request
+- Ask about unclear aspects (target platform, integration points, preferences)
+- Confirm scope ("So you want X that does Y, right?")
+- Mention any obvious considerations ("This will need a backend endpoint too")
+- Let the user know the pipeline will handle the implementation
+
+## EXAMPLES
+
+GOOD: "Got it — you want push-to-talk voice input for the desktop app. A couple
+of quick questions: should this use a cloud speech-to-text service like OpenAI
+Whisper, or do you want it fully local? And where in the UI should the button go?"
+
+BAD: [generating 500 lines of React components, Python endpoints, and config files]
+"""
+
+
 def build_system_prompt(project: Any, full_context: str) -> str:
     """
     Build system prompt with project context and ASTRA capability layer.
     
     v4.9: Injects capability layer at the top of every system prompt.
+    v5.0: Adds conversational guidelines to prevent code dumping.
     
     Args:
         project: Project ORM object with name and description
@@ -53,6 +98,9 @@ def build_system_prompt(project: Any, full_context: str) -> str:
         system_prompt += f" {project.description}"
     if full_context:
         system_prompt += f"\n\nYou have access to the following context:\n\n{full_context}"
+    
+    # v5.0: Add conversational guidelines
+    system_prompt += _CONVERSATIONAL_GUIDELINES
     
     # Combine: capabilities first, then project context
     if capability_layer:

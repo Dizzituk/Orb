@@ -1,6 +1,10 @@
 # FILE: app/overwatcher/overwatcher_command.py
 """Overwatcher Command Handler: Entry point for 'run overwatcher' command.
 
+v5.1 (2026-02-04): Idempotent re-run + path inference support.
+    - Build validation uses affected_files (written + already_applied)
+      so it runs even on idempotent POT re-runs
+    - Works with pot_spec_executor v2.0 idempotent task handling
 v5.0 (2026-02-03): Build validation + self-correction loop.
     - After POT execution, runs build validation in sandbox
     - If build fails: LLM diagnoses error, generates fix, re-validates
@@ -382,10 +386,11 @@ async def run_overwatcher_command(
 
             logger.info(
                 "[overwatcher_command] POT execution complete: success=%s, "
-                "tasks_completed=%d/%d",
+                "tasks_completed=%d/%d, already_applied=%d",
                 result.success,
                 pot_result.get("tasks_completed", 0),
                 pot_result.get("total_tasks", 0),
+                pot_result.get("tasks_already_applied", 0),
             )
 
             # ==================================================================
@@ -402,7 +407,9 @@ async def run_overwatcher_command(
             from .sandbox_build_validator import run_build_validation_loop
             from .sandbox_client import get_sandbox_client, SandboxError
 
-            modified_files = pot_result.get("artifacts_written", [])
+            # Use affected_files (includes already-applied) so build validation
+            # runs even on idempotent re-runs; fall back to artifacts_written
+            modified_files = pot_result.get("affected_files", []) or pot_result.get("artifacts_written", [])
 
             if not modified_files:
                 logger.info(

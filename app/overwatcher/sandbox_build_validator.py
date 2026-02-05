@@ -5,9 +5,17 @@ commands, parses error output, and returns structured results that the
 Overwatcher can reason about for diagnostic/retry loops.
 
 Supported project types:
-    - vite_react: Vite + React + TypeScript (orb-desktop at C:\\Orb\\orb-desktop)
-    - python_backend: Python/FastAPI backend (Orb at C:\\Orb\\Orb)
+    - vite_react: Vite + React + TypeScript (orb-desktop)
+    - python_backend: Python/FastAPI backend (Orb)
 
+v1.1 (2026-02-04): Path inference from actual file paths
+    - Build commands now run in the directory where files were actually written
+      (infers project root from POT file paths instead of hardcoded constants)
+    - Fixes path mismatch: POT specs may use host paths (D:\\orb-desktop)
+      while sandbox defaults are C:\\Orb\\orb-desktop
+    - Inferred paths passed through fix execution chain
+    - Diagnostic prompt no longer hardcodes C:\\Orb paths
+    - Added BOM corruption hint to diagnostic system prompt
 v1.0 (2026-02-03): Initial implementation
     - Project type detection from modified file paths
     - Build command execution via sandbox_client.shell_run()
@@ -45,7 +53,7 @@ from app.overwatcher.sandbox_client import (
 logger = logging.getLogger(__name__)
 
 # Build verification
-BUILD_VALIDATOR_BUILD_ID = "2026-02-03-v1.0-initial"
+BUILD_VALIDATOR_BUILD_ID = "2026-02-04-v1.1-path-inference"
 print(f"[BUILD_VALIDATOR_LOADED] BUILD_ID={BUILD_VALIDATOR_BUILD_ID}")
 
 
@@ -246,6 +254,56 @@ def detect_affected_projects(modified_files: List[str]) -> Dict[str, List[str]]:
             )
 
     return projects
+
+
+def _infer_project_path(project_type: str, file_paths: List[str]) -> str:
+    """Infer the sandbox project root directory from actual file paths.
+
+    POT specs reference host paths (D:\\orb-desktop) which may differ from
+    the sandbox defaults (C:\\Orb\\orb-desktop). The build command must
+    run in the directory where files were actually written.
+
+    Falls back to hardcoded SANDBOX_*_PATH defaults if inference fails.
+    """
+    for fpath in file_paths:
+        normalized = fpath.replace("/", "\\")
+        lower = normalized.lower()
+
+        if project_type == PROJECT_VITE_REACT:
+            # Find "orb-desktop" in path and return everything up to it
+            idx = lower.find("orb-desktop")
+            if idx >= 0:
+                inferred = normalized[:idx + len("orb-desktop")]
+                logger.info(
+                    "[build_validator] Inferred frontend path: %s (from %s)",
+                    inferred, fpath,
+                )
+                return inferred
+
+        elif project_type == PROJECT_PYTHON_BACKEND:
+            # Match pattern like ...\Orb\Orb or ...\Orb\app\...
+            match = re.search(
+                r"(.*?[\\]Orb[\\]Orb)(?:[\\]|$)", normalized, re.IGNORECASE
+            )
+            if match:
+                inferred = match.group(1)
+                logger.info(
+                    "[build_validator] Inferred backend path: %s (from %s)",
+                    inferred, fpath,
+                )
+                return inferred
+
+    # Fall back to defaults
+    defaults = {
+        PROJECT_VITE_REACT: SANDBOX_FRONTEND_PATH,
+        PROJECT_PYTHON_BACKEND: SANDBOX_BACKEND_PATH,
+    }
+    fallback = defaults.get(project_type, "")
+    logger.info(
+        "[build_validator] Could not infer path for %s, using default: %s",
+        project_type, fallback,
+    )
+    return fallback
 
 
 async def detect_project_type_from_sandbox(
@@ -559,16 +617,11 @@ async def validate_all_affected_projects(
         {k: len(v) for k, v in affected.items()},
     )
 
-    # Map project types to sandbox paths
-    project_paths = {
-        PROJECT_VITE_REACT: SANDBOX_FRONTEND_PATH,
-        PROJECT_PYTHON_BACKEND: SANDBOX_BACKEND_PATH,
-    }
-
     results: List[BuildValidationResult] = []
 
     for project_type, files in affected.items():
-        project_path = project_paths.get(project_type)
+        # Infer project path from actual file paths (handles host vs sandbox paths)
+        project_path = _infer_project_path(project_type, files)
         if not project_path:
             logger.warning(
                 "[build_validator] No sandbox path for project type: %s", project_type
@@ -606,7 +659,7 @@ RESPOND WITH ONLY A VALID JSON OBJECT matching this schema:
   "fixes": [
     {{
       "fix_type": "rewrite_file|run_command|revert_file",
-      "file_path": "C:\\\\Orb\\\\orb-desktop\\\\path\\\\to\\\\file.ext",
+      "file_path": "<use same absolute path from error output>",
       "content": "Full corrected file content (for rewrite_file only)",
       "command": "npm install (for run_command only)",
       "rationale": "Why this fix addresses the root cause"
@@ -619,11 +672,12 @@ RULES:
 2. For rewrite_file: provide the COMPLETE corrected file content (not a diff)
 3. For run_command: ONLY these commands are allowed: npm install, npm ci, npx tsc, npx vite build, python -m py_compile, pip install
 4. For revert_file: provide the file_path to revert (content from POT executor backup)
-5. All file paths must be absolute sandbox paths (C:\\Orb\\...)
+5. All file paths must use the SAME absolute paths shown in the error output and modified files list (do NOT change drive letters or path prefixes)
 6. Do NOT suggest commands that delete files, modify system config, or access the network beyond npm
 7. Focus on the MINIMAL fix needed — do not rewrite files that weren't part of the error
 8. If the error mentions missing node_modules, suggest run_command with "npm install"
 9. Output ONLY JSON — no markdown, no explanations outside the JSON
+10. If the error is a UTF-8 BOM corruption (unexpected token at start of JSON), rewrite the affected file with clean UTF-8 content (no BOM)
 """
 
 DIAGNOSTIC_USER_PROMPT = """## Build Error Diagnostic
@@ -889,12 +943,16 @@ def _is_safe_command(command: str) -> bool:
 async def execute_build_fix(
     client: SandboxClient,
     fix_action: BuildFixAction,
+    inferred_frontend_path: str = SANDBOX_FRONTEND_PATH,
+    inferred_backend_path: str = SANDBOX_BACKEND_PATH,
 ) -> Dict[str, Any]:
     """Execute a single build fix action in the sandbox.
 
     Args:
         client: SandboxClient instance
         fix_action: The fix action to execute
+        inferred_frontend_path: Actual frontend project path (from file path inference)
+        inferred_backend_path: Actual backend project path (from file path inference)
 
     Returns:
         Dict with execution result: {"success": bool, "details": str}
@@ -966,9 +1024,9 @@ async def execute_build_fix(
 
             # Determine project path from context
             # Commands like "npm install" need to run in the right directory
-            project_path = SANDBOX_FRONTEND_PATH  # Default to frontend
+            project_path = inferred_frontend_path
             if "python" in fix_action.command or "pip" in fix_action.command:
-                project_path = SANDBOX_BACKEND_PATH
+                project_path = inferred_backend_path
 
             full_command = f'cd "{project_path}" ; {fix_action.command} 2>&1'
             result = client.shell_run(full_command, timeout_seconds=BUILD_VALIDATION_TIMEOUT)
@@ -1010,12 +1068,16 @@ async def execute_build_fix(
 async def execute_all_fixes(
     client: SandboxClient,
     diagnostic: DiagnosticResult,
+    inferred_frontend_path: str = SANDBOX_FRONTEND_PATH,
+    inferred_backend_path: str = SANDBOX_BACKEND_PATH,
 ) -> List[Dict[str, Any]]:
     """Execute all fix actions from a diagnostic result.
 
     Args:
         client: SandboxClient instance
         diagnostic: DiagnosticResult containing fix actions
+        inferred_frontend_path: Actual frontend project path
+        inferred_backend_path: Actual backend project path
 
     Returns:
         List of execution result dicts
@@ -1023,7 +1085,11 @@ async def execute_all_fixes(
     results: List[Dict[str, Any]] = []
 
     for fix in diagnostic.fixes:
-        result = await execute_build_fix(client, fix)
+        result = await execute_build_fix(
+            client, fix,
+            inferred_frontend_path=inferred_frontend_path,
+            inferred_backend_path=inferred_backend_path,
+        )
         results.append({
             "fix_type": fix.fix_type,
             "file_path": fix.file_path,
@@ -1101,6 +1167,17 @@ async def run_build_validation_loop(
             "modified_files": modified_files[:10],
         })
         return True, [], []
+
+    # Pre-compute inferred project paths for fix execution later
+    affected = detect_affected_projects(modified_files)
+    inferred_frontend = _infer_project_path(
+        PROJECT_VITE_REACT,
+        affected.get(PROJECT_VITE_REACT, []),
+    ) if PROJECT_VITE_REACT in affected else SANDBOX_FRONTEND_PATH
+    inferred_backend = _infer_project_path(
+        PROJECT_PYTHON_BACKEND,
+        affected.get(PROJECT_PYTHON_BACKEND, []),
+    ) if PROJECT_PYTHON_BACKEND in affected else SANDBOX_BACKEND_PATH
 
     # Check if all builds passed
     all_passed = all(r.passed for r in build_results)
@@ -1181,8 +1258,12 @@ async def run_build_validation_loop(
             })
             continue
 
-        # Execute fixes
-        fix_results = await execute_all_fixes(client, diagnostic)
+        # Execute fixes (using inferred project paths for correct directory)
+        fix_results = await execute_all_fixes(
+            client, diagnostic,
+            inferred_frontend_path=inferred_frontend,
+            inferred_backend_path=inferred_backend,
+        )
 
         add_trace("BUILD_FIX_EXECUTED", "complete", {
             "attempt": attempt,
@@ -1262,6 +1343,7 @@ __all__ = [
     "detect_project_from_path",
     "detect_affected_projects",
     "detect_project_type_from_sandbox",
+    "_infer_project_path",
     # Parsing
     "parse_build_error_output",
     # Validation

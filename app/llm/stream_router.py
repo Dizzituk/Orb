@@ -185,9 +185,10 @@ async def stream_chat(
             return response
         
         # =================================================================
-        # WEAVER DESIGN QUESTIONS
+        # WEAVER AUTO-REWEAVE (v5.2)
+        # If user replies during active weaver flow, auto-route to UPDATE
         # =================================================================
-        response = _handle_weaver_design_questions(req, db, trace, stage_trace)
+        response = _handle_weaver_design_questions(req, db, trace, stage_trace, translation_result)
         if response:
             return response
         
@@ -349,36 +350,78 @@ def _handle_flow_state_routing(req, db, trace, conversation_id, stage_trace, tra
     return None
 
 
-def _handle_weaver_design_questions(req, db, trace, stage_trace):
-    """Handle weaver design question flow."""
+# v5.2: Intents that indicate the user wants to LEAVE the weaver flow
+# If the user says one of these, don't auto-reweave — let it through.
+_WEAVER_EXIT_INTENTS = {
+    CanonicalIntent.SEND_TO_SPEC_GATE,
+    CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB,
+    CanonicalIntent.OVERWATCHER_EXECUTE_CHANGES,
+}
+
+
+def _handle_weaver_design_questions(req, db, trace, stage_trace, translation_result=None):
+    """Handle auto-reweave: route user replies back to Weaver UPDATE.
+    
+    v5.2 (2026-02-04): AUTO-REWEAVE
+    When Weaver finishes, flow enters AWAITING_SPEC_GATE_CONFIRM.
+    If the user replies with anything that ISN'T an explicit command
+    (like 'send to spec gate' or 'run critical pipeline'), we assume
+    they're adding more requirements or answering questions, so we
+    auto-route back to Weaver UPDATE mode.
+    
+    This creates a natural loop:
+      Weaver outputs (with or without questions)
+      → User replies (answers, additions, refinements)
+      → Auto-triggers Weaver UPDATE
+      → Repeat until user says 'send to spec gate'
+    
+    Previous behaviour (broken): Required keyword detection from
+    hardcoded WEAVER_DESIGN_QUESTIONS stage, which was never set
+    after v4.0 removed the slot/question infrastructure.
+    """
     if not _FLOW_STATE_AVAILABLE or not get_active_flow:
         return None
     
     active_flow = get_active_flow(req.project_id)
-    if not active_flow or active_flow.stage != SpecFlowStage.WEAVER_DESIGN_QUESTIONS:
+    if not active_flow:
         return None
     
-    # Check if message contains answer keywords
-    has_keywords, captured = check_weaver_answer_keywords(req.project_id, req.message)
-    
-    if not has_keywords:
-        print(f"[WEAVER_FLOW] No answer keywords found, falling through to chat")
-        logger.info("[flow_state] No design answer keywords in message, routing to chat")
+    # Only intercept in weaver-active stages
+    if active_flow.stage not in (
+        SpecFlowStage.WEAVER_DESIGN_QUESTIONS,
+        SpecFlowStage.AWAITING_SPEC_GATE_CONFIRM,
+    ):
         return None
     
-    logger.info(f"[flow_state] Captured design answers: {captured}")
-    print(f"[WEAVER_FLOW] User answered with keywords: {captured}")
+    # v5.2: If translation resolved to a weaver-exit intent, DON'T intercept
+    # Let the user proceed to spec gate / critical pipeline / etc.
+    if translation_result is not None:
+        intent = translation_result.resolved_intent
+        if intent and intent in _WEAVER_EXIT_INTENTS:
+            logger.info(
+                "[weaver_reweave] User issued exit intent '%s' — leaving weaver flow",
+                intent.value
+            )
+            print(f"[WEAVER_REWEAVE] Exit intent '{intent.value}' — NOT auto-reweaving")
+            return None
+        # Also skip if it's any explicit command (architecture, sandbox, etc.)
+        if intent and intent in _EXPLICIT_COMMAND_INTENTS:
+            logger.info(
+                "[weaver_reweave] Explicit command '%s' — bypassing auto-reweave",
+                intent.value
+            )
+            print(f"[WEAVER_REWEAVE] Explicit command '{intent.value}' — NOT auto-reweaving")
+            return None
     
-    # Store captured answers
-    capture_weaver_answers(req.project_id, captured)
-    
-    # Route to weaver continuation
+    # Auto-route to Weaver UPDATE
     if _WEAVER_AVAILABLE:
         weaver_provider, weaver_model = _get_weaver_config()
         if stage_trace:
-            stage_trace.enter_stage("weaver_continuation", provider=weaver_provider, model=weaver_model)
+            stage_trace.enter_stage("weaver_auto_reweave", provider=weaver_provider, model=weaver_model)
         
-        print(f"[WEAVER_FLOW] Routing to weaver continuation")
+        logger.info("[weaver_reweave] Auto-routing to Weaver UPDATE (flow stage: %s)", active_flow.stage.value)
+        print(f"[WEAVER_REWEAVE] Auto-routing to Weaver UPDATE (user replied in active weaver flow)")
+        
         return StreamingResponse(
             generate_weaver_stream(
                 project_id=req.project_id,
@@ -387,7 +430,7 @@ def _handle_weaver_design_questions(req, db, trace, stage_trace):
                 trace=trace,
                 conversation_id=str(req.project_id),
                 is_continuation=True,
-                captured_answers=captured,
+                captured_answers=None,
             ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -395,7 +438,7 @@ def _handle_weaver_design_questions(req, db, trace, stage_trace):
     else:
         log_routing_failure(
             stage_trace,
-            "Weaver handler not available for continuation routing",
+            "Weaver handler not available for auto-reweave routing",
             "generate_weaver_stream",
             "falling through to normal routing"
         )

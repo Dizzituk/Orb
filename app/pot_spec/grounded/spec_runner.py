@@ -16,19 +16,21 @@ v4.0 (2026-02-01): Stripped all gates - simple but powerful
 
 from __future__ import annotations
 
+import glob
 import hashlib
 import json
 import logging
 import os
 import re
 import uuid
+from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-SPEC_RUNNER_BUILD_ID = "2026-02-02-v4.4-goal-extraction-fix"
+SPEC_RUNNER_BUILD_ID = "2026-02-04-v4.5-dynamic-project-discovery"
 print(f"[SPEC_RUNNER_LOADED] BUILD_ID={SPEC_RUNNER_BUILD_ID}")
 
 
@@ -94,10 +96,211 @@ __all__ = ["run_spec_gate_grounded"]
 
 
 # =============================================================================
-# PATH EXTRACTION - v4.3 SCOPE-AWARE
+# PATH EXTRACTION - v4.5 DYNAMIC PROJECT DISCOVERY
 # =============================================================================
+#
+# v4.5 (2026-02-04): DYNAMIC PROJECT DISCOVERY
+# - Replaced hardcoded EXPLICIT_PROJECT_PATTERNS with architecture-driven discovery
+# - Reads INDEX.json from .architecture/ to discover project roots
+# - Classifies roots as frontend/backend from file zone metadata
+# - Generates product name aliases from folder names + configurable synonyms
+# - Falls back to codebase report JSON if INDEX.json unavailable
+# - Hardcoded paths kept ONLY as last-resort fallback
+#
+# Key insight: "Astra" and "Orb" are the same product. Future jobs may be
+# for completely different projects. System must discover, not assume.
+#
 
-# Scope indicators: UI/frontend vs backend
+# --- Architecture document locations (configurable via env) ---
+_ARCH_INDEX_DIR = os.getenv("ASTRA_ARCH_INDEX_DIR", os.path.join("D:\\", "Orb", ".architecture"))
+_ARCH_REPORT_DIR = os.getenv("ASTRA_ARCH_REPORT_DIR", os.path.join("D:\\", "Orb.architecture"))
+
+# --- Product synonyms: names that refer to the same product ---
+# Format: comma-separated pairs like "orb=astra,foo=bar"
+# These are BIDIRECTIONAL: orb=astra means both 'orb' and 'astra' map to the same roots
+_PRODUCT_SYNONYMS_RAW = os.getenv("ASTRA_PRODUCT_SYNONYMS", "orb=astra")
+
+
+def _parse_product_synonyms() -> Dict[str, List[str]]:
+    """Parse product synonyms from env config into a lookup table.
+
+    Returns dict mapping each name to ALL its synonyms (including itself).
+    E.g., {"orb": ["orb", "astra"], "astra": ["orb", "astra"]}
+    """
+    synonyms: Dict[str, List[str]] = {}
+    if not _PRODUCT_SYNONYMS_RAW:
+        return synonyms
+
+    for pair in _PRODUCT_SYNONYMS_RAW.split(","):
+        pair = pair.strip()
+        if "=" not in pair:
+            continue
+        names = [n.strip().lower() for n in pair.split("=") if n.strip()]
+        # Each name maps to the full group
+        for name in names:
+            synonyms[name] = names
+    return synonyms
+
+
+_PRODUCT_SYNONYMS = _parse_product_synonyms()
+
+
+def _generate_aliases_for_root(folder_name: str, root_path: str) -> List[str]:
+    """Generate product name aliases for a discovered root path.
+
+    For folder 'orb-desktop' with synonyms orb=astra:
+      → ['orb desktop', 'orb-desktop', 'astra desktop', 'astra-desktop']
+    For folder 'Orb' with synonyms orb=astra:
+      → ['orb', 'astra']
+    For folder 'my-project' with no synonyms:
+      → ['my project', 'my-project']
+    """
+    aliases: List[str] = []
+    folder_lower = folder_name.lower()
+
+    # Split folder name into base + suffix: "orb-desktop" → ("orb", "desktop")
+    parts = re.split(r'[-_\s]', folder_lower)
+    base_name = parts[0]
+    suffix = '-'.join(parts[1:]) if len(parts) > 1 else ''
+
+    # Get all name variants (base name + its synonyms)
+    name_variants = _PRODUCT_SYNONYMS.get(base_name, [base_name])
+
+    for variant in name_variants:
+        if suffix:
+            aliases.append(f"{variant} {suffix}")   # "orb desktop" / "astra desktop"
+            aliases.append(f"{variant}-{suffix}")    # "orb-desktop" / "astra-desktop"
+        else:
+            aliases.append(variant)                   # "orb" / "astra"
+
+    return aliases
+
+
+@lru_cache(maxsize=1)
+def _discover_project_roots() -> Dict[str, Any]:
+    """Dynamically discover project roots from architecture index.
+
+    Reads the ground-truth architecture documents to find:
+    - Which directories are project roots
+    - Which are frontend vs backend
+    - What product names map to which paths
+
+    Sources (in priority order):
+    1. INDEX.json from .architecture/ (structured, has zone metadata)
+    2. CODEBASE_REPORT_FULL_*.json from .architecture/ (scan metadata)
+    3. Hardcoded fallback (last resort)
+
+    Returns dict with:
+        roots: list of absolute paths to project roots
+        frontend_paths: list of frontend root paths
+        backend_paths: list of backend root paths
+        all_paths: combined list
+        aliases: dict mapping product name patterns → list of root paths
+    """
+    result: Dict[str, Any] = {
+        "roots": [],
+        "frontend_paths": [],
+        "backend_paths": [],
+        "all_paths": [],
+        "aliases": {},
+        "source": "none",
+    }
+
+    # --- Source 1: INDEX.json (best - has per-file zone metadata) ---
+    index_path = os.path.join(_ARCH_INDEX_DIR, "INDEX.json")
+    if os.path.isfile(index_path):
+        try:
+            with open(index_path, 'r', encoding='utf-8') as f:
+                index_data = json.load(f)
+
+            roots = index_data.get("roots", [])
+            # Filter to roots that actually exist on disk
+            roots = [r for r in roots if os.path.isdir(r)]
+
+            if roots:
+                result["roots"] = roots
+                result["all_paths"] = roots
+                result["source"] = f"INDEX.json ({index_path})"
+
+                # Classify roots by zone from file entries
+                frontend_roots: set = set()
+                backend_roots: set = set()
+                for file_entry in index_data.get("files", [])[:200]:  # Sample first 200 for speed
+                    zone = file_entry.get("zone", "")
+                    root = file_entry.get("root", "")
+                    if zone == "frontend" and root:
+                        frontend_roots.add(root)
+                    elif zone == "backend" and root:
+                        backend_roots.add(root)
+
+                # Use zone metadata if available, else heuristic
+                if frontend_roots:
+                    result["frontend_paths"] = [r for r in roots if r in frontend_roots]
+                else:
+                    result["frontend_paths"] = [r for r in roots if 'desktop' in r.lower()]
+
+                if backend_roots:
+                    result["backend_paths"] = [r for r in roots if r in backend_roots]
+                else:
+                    result["backend_paths"] = [r for r in roots if 'desktop' not in r.lower()]
+
+                print(f"[spec_runner] v4.5 DISCOVERY from INDEX.json: roots={roots}")
+        except Exception as e:
+            print(f"[spec_runner] v4.5 Failed to read INDEX.json: {e}")
+
+    # --- Source 2: Codebase report JSON (fallback) ---
+    if not result["roots"]:
+        report_pattern = os.path.join(_ARCH_REPORT_DIR, "CODEBASE_REPORT_FULL_*.json")
+        report_files = sorted(glob.glob(report_pattern), reverse=True)
+        if report_files:
+            try:
+                with open(report_files[0], 'r', encoding='utf-8') as f:
+                    report_data = json.load(f)
+                roots = report_data.get("metadata", {}).get("roots_scanned", [])
+                roots = [r for r in roots if os.path.isdir(r)]
+
+                if roots:
+                    result["roots"] = roots
+                    result["all_paths"] = roots
+                    result["source"] = f"CODEBASE_REPORT ({report_files[0]})"
+                    result["frontend_paths"] = [r for r in roots if 'desktop' in r.lower()]
+                    result["backend_paths"] = [r for r in roots if 'desktop' not in r.lower()]
+                    print(f"[spec_runner] v4.5 DISCOVERY from codebase report: roots={roots}")
+            except Exception as e:
+                print(f"[spec_runner] v4.5 Failed to read codebase report: {e}")
+
+    # --- Source 3: Hardcoded fallback (last resort) ---
+    if not result["roots"]:
+        print("[spec_runner] v4.5 WARNING: No architecture index found, using hardcoded fallback")
+        result["roots"] = ['D:\\orb-desktop', 'D:\\Orb']
+        result["frontend_paths"] = ['D:\\orb-desktop']
+        result["backend_paths"] = ['D:\\Orb']
+        result["all_paths"] = ['D:\\orb-desktop', 'D:\\Orb']
+        result["source"] = "hardcoded_fallback"
+
+    # --- Build product name aliases from discovered roots ---
+    for root in result["roots"]:
+        folder_name = os.path.basename(root)
+        if not folder_name:  # Handle "D:\\" edge case
+            continue
+        aliases = _generate_aliases_for_root(folder_name, root)
+        for alias in aliases:
+            if alias not in result["aliases"]:
+                result["aliases"][alias] = []
+            if root not in result["aliases"][alias]:
+                result["aliases"][alias].append(root)
+
+    print(f"[spec_runner] v4.5 DISCOVERY COMPLETE: "
+          f"roots={result['roots']}, "
+          f"frontend={result['frontend_paths']}, "
+          f"backend={result['backend_paths']}, "
+          f"aliases={list(result['aliases'].keys())}, "
+          f"source={result['source']}")
+
+    return result
+
+
+# --- Scope indicators: UI/frontend vs backend ---
 # Key insight: If user explicitly says "UI" or "frontend", DON'T include backend
 SCOPE_FRONTEND = {
     'the ui': True, 'on the ui': True, 'in the ui': True, 'to the ui': True,
@@ -112,18 +315,10 @@ SCOPE_BACKEND = {
     'fastapi': True, 'api endpoint': True, 'server': True,
 }
 
-# Explicit project name patterns (only match these, not bare 'orb'/'astra')
-EXPLICIT_PROJECT_PATTERNS = {
-    'orb desktop': ['D:\\orb-desktop', 'D:\\Orb Desktop'],
-    'orb-desktop': ['D:\\orb-desktop'],
-    'astra desktop': ['D:\\astra-desktop', 'D:\\Astra Desktop'],
-    'astra-desktop': ['D:\\astra-desktop'],
-}
-
-# Paths for each scope
-FRONTEND_PATHS = ['D:\\orb-desktop']
-BACKEND_PATHS = ['D:\\Orb']
-ALL_PATHS = ['D:\\orb-desktop', 'D:\\Orb']
+# LEGACY FALLBACK: Only used if dynamic discovery fails completely
+_FALLBACK_FRONTEND_PATHS = ['D:\\orb-desktop']
+_FALLBACK_BACKEND_PATHS = ['D:\\Orb']
+_FALLBACK_ALL_PATHS = ['D:\\orb-desktop', 'D:\\Orb']
 
 
 def _detect_search_replace_terms(text: str) -> tuple:
@@ -197,11 +392,15 @@ def _extract_project_paths(text: str, search_term: str = None, replace_term: str
     
     print(f"[spec_runner] v4.3.4 SCOPE: frontend={has_frontend_scope}, backend={has_backend_scope}")
     
-    # Step 3: Check for explicit project name patterns
-    for pattern, project_paths in EXPLICIT_PROJECT_PATTERNS.items():
-        if pattern in text_lower:
-            print(f"[spec_runner] v4.3.4 EXPLICIT PROJECT: '{pattern}' -> {project_paths}")
-            paths.extend(project_paths)
+    # Step 3: Check for project name patterns via DYNAMIC DISCOVERY
+    # v4.5: Uses architecture index instead of hardcoded patterns
+    discovery = _discover_project_roots()
+    for alias, alias_paths in discovery["aliases"].items():
+        if alias in text_lower:
+            # Don't match aliases that are search/replace terms
+            if alias not in excluded_terms:
+                print(f"[spec_runner] v4.5 DISCOVERED PROJECT: '{alias}' -> {alias_paths}")
+                paths.extend(alias_paths)
     
     # Step 4: Check for explicit paths like "D:\orb-desktop" or "D:\Orb"
     # v4.3.4: Only match short, valid folder names (max 20 chars)
@@ -225,32 +424,47 @@ def _extract_project_paths(text: str, search_term: str = None, replace_term: str
                 folder = cleaned[3:].replace(' ', '-').lower()
                 paths.append(drive + folder)
     
-    # Step 5: If no explicit paths found, use scope to determine paths
+    # Step 5: If no explicit paths found, use scope with DISCOVERED paths
+    # v4.5: Uses dynamically discovered frontend/backend paths
     if not paths:
+        fe_paths = discovery["frontend_paths"] or _FALLBACK_FRONTEND_PATHS
+        be_paths = discovery["backend_paths"] or _FALLBACK_BACKEND_PATHS
+        all_paths = discovery["all_paths"] or _FALLBACK_ALL_PATHS
+
         if has_frontend_scope and not has_backend_scope:
             # User explicitly mentioned UI/frontend -> frontend only
-            print(f"[spec_runner] v4.3.4 SCOPE-BASED: frontend only")
-            paths = FRONTEND_PATHS.copy()
+            print(f"[spec_runner] v4.5 SCOPE-BASED: frontend only -> {fe_paths}")
+            paths = list(fe_paths)
         elif has_backend_scope and not has_frontend_scope:
             # User explicitly mentioned backend -> backend only
-            print(f"[spec_runner] v4.3.4 SCOPE-BASED: backend only")
-            paths = BACKEND_PATHS.copy()
+            print(f"[spec_runner] v4.5 SCOPE-BASED: backend only -> {be_paths}")
+            paths = list(be_paths)
         elif has_frontend_scope and has_backend_scope:
             # User mentioned both -> all paths
-            print(f"[spec_runner] v4.3.4 SCOPE-BASED: both frontend + backend")
-            paths = ALL_PATHS.copy()
+            print(f"[spec_runner] v4.5 SCOPE-BASED: both frontend + backend -> {all_paths}")
+            paths = list(all_paths)
         # else: no scope indicators and no explicit paths -> return empty
     
     # Step 6: "X drive" + project name detection (fallback)
+    # v4.5: Uses discovered aliases to resolve "D drive" + project name
     if not paths:
         drive_match = re.search(r'\b([A-Za-z])\s+drive\b', text, re.IGNORECASE)
         if drive_match:
             drive = drive_match.group(1).upper()
-            # Only match explicit project names, not search terms
-            if re.search(r'\borb[\s-]*desktop\b', text_lower) and 'orb' not in excluded_terms:
-                paths.extend([f"{drive}:\\orb-desktop"])
-            if re.search(r'\bastra[\s-]*desktop\b', text_lower) and 'astra' not in excluded_terms:
-                paths.extend([f"{drive}:\\astra-desktop"])
+            # Check discovered aliases for project name patterns in the text
+            for alias, alias_paths in discovery["aliases"].items():
+                # Only check multi-word aliases ("orb desktop", not bare "orb")
+                if ' ' in alias or '-' in alias:
+                    # Build regex from alias: "orb desktop" -> r'\borb[\s-]*desktop\b'
+                    alias_parts = re.split(r'[-\s]', alias)
+                    alias_pattern = r'\b' + r'[\s-]*'.join(re.escape(p) for p in alias_parts) + r'\b'
+                    if re.search(alias_pattern, text_lower) and alias_parts[0] not in excluded_terms:
+                        # Use the discovered root but on the specified drive
+                        for ap in alias_paths:
+                            # Replace drive letter with user-specified drive
+                            folder_part = ap[2:]  # Strip "D:" prefix
+                            paths.append(f"{drive}:{folder_part}")
+                            print(f"[spec_runner] v4.5 DRIVE+ALIAS: '{alias}' on {drive}: -> {drive}:{folder_part}")
     
     # Dedupe while preserving order
     seen = set()
@@ -530,6 +744,8 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
                         what_to_do=weaver_job_text or user_intent,
                         project_paths=valid_paths,
                         sandbox_client=None,
+                        provider_id=provider_id,
+                        model_id=model_id,
                     )
                     print(f"[spec_runner] v4.3 CREATE SPEC READY: {len(spot_markdown)} chars")
                 except Exception as create_err:

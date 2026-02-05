@@ -9,6 +9,15 @@ Block 5 of the PoT (Proof of Thought) system:
 - v1.3: DETERMINISTIC spec-compliance check (catches stack/scope/platform mismatch)
 - v1.4: Uses explicit implementation_stack field from spec (stack_locked anchoring)
 - v1.6: GROUNDED CRITIQUE - POT spec markdown as source of truth
+- v1.7: GROUNDING VALIDATION - catch hallucinated constraints in critique output
+
+v1.7 (2026-02-04): GROUNDING VALIDATION - hallucinated constraint defense
+- validate_spec_ref_grounding() runs AFTER LLM critique and blocker filtering
+- Checks each blocking issue's spec_ref against actual spec content
+- Fabrication pattern detection (cloud_services: false, local_only, etc.)
+- Field reference validation (constraints.FIELD_NAME must exist in spec)
+- Issues citing non-existent constraints are downgraded to non-blocking
+- Defense-in-depth layer on top of v1.6's grounded system prompt
 
 v1.6 (2026-02-02): GROUNDED CRITIQUE - POT spec as source of truth
 - call_json_critic() now accepts spec_markdown parameter
@@ -235,6 +244,145 @@ def filter_blocking_issues(
         )
     
     return real_blocking, downgraded
+
+
+# =============================================================================
+# Block 5b: SPEC-REF GROUNDING VALIDATION (v1.7 - HALLUCINATION DEFENSE)
+# =============================================================================
+#
+# v1.7 (2026-02-04): Deterministic post-processing to catch hallucinated constraints.
+# After the LLM critique runs, we verify that each blocking issue's spec_ref
+# actually refers to something that exists in the spec. If a critic cites
+# a constraint like "cloud_services: false" that isn't in the spec,
+# the issue is downgraded to non-blocking.
+#
+# This is a DEFENSE-IN-DEPTH layer on top of v1.6's grounded system prompt.
+#
+
+def validate_spec_ref_grounding(
+    issues: List[CritiqueIssue],
+    spec_markdown: Optional[str] = None,
+    spec_json: Optional[str] = None,
+) -> Tuple[List[CritiqueIssue], List[CritiqueIssue]]:
+    """
+    v1.7: Validate that blocking issues cite constraints that ACTUALLY EXIST in the spec.
+    
+    Catches LLM hallucinations like:
+    - Citing "cloud_services: false" when spec has no such field
+    - Citing "local_only" constraint when spec doesn't mention it
+    - Inventing restrictions not present in the spec
+    
+    Strategy:
+    - Extract key terms from each issue's spec_ref
+    - Check if those terms appear in the spec markdown or JSON
+    - If spec_ref cites something not in the spec, downgrade to non-blocking
+    
+    Args:
+        issues: List of blocking CritiqueIssue objects to validate
+        spec_markdown: The POT spec markdown (primary source of truth)
+        spec_json: The spec JSON string (secondary source)
+    
+    Returns:
+        (validated_blocking, downgraded_to_non_blocking)
+    """
+    if not issues:
+        return [], []
+    
+    # Build the spec text corpus to search against
+    spec_corpus = ""
+    if spec_markdown:
+        spec_corpus += spec_markdown.lower()
+    if spec_json:
+        try:
+            if isinstance(spec_json, str):
+                spec_corpus += " " + spec_json.lower()
+            else:
+                spec_corpus += " " + json.dumps(spec_json).lower()
+        except Exception:
+            pass
+    
+    if not spec_corpus.strip():
+        # No spec to validate against - can't check, so keep all issues
+        print("[DEBUG] [critique] v1.7 No spec corpus available for grounding validation")
+        return issues, []
+    
+    validated: List[CritiqueIssue] = []
+    downgraded: List[CritiqueIssue] = []
+    
+    # Patterns that indicate a hallucinated/invented constraint
+    # These are field:value patterns the critic might fabricate
+    FABRICATION_PATTERNS = [
+        # "cloud_services: false/true" - invented field
+        r'cloud_services\s*[:=]\s*(false|true|no|yes)',
+        # "local_only" - invented constraint
+        r'local[_\s-]only\s*[:=]\s*(true|yes|required)',
+        # "requires_local" - invented constraint
+        r'requires?[_\s-]local',
+        # "no_external_apis" - invented constraint
+        r'no[_\s-]external[_\s-]apis?',
+        # "offline_only" - invented constraint
+        r'offline[_\s-]only',
+    ]
+    
+    for issue in issues:
+        spec_ref = (getattr(issue, 'spec_ref', '') or '').lower()
+        description = (getattr(issue, 'description', '') or '').lower()
+        combined_text = f"{spec_ref} {description}"
+        
+        is_fabricated = False
+        fabrication_reason = ""
+        
+        # Check 1: Does the spec_ref cite a specific field:value that doesn't exist?
+        for pattern in FABRICATION_PATTERNS:
+            match = _re.search(pattern, combined_text)
+            if match:
+                cited_text = match.group(0)
+                # Check if this exact term appears anywhere in the spec
+                if cited_text not in spec_corpus:
+                    is_fabricated = True
+                    fabrication_reason = f"Cited '{cited_text}' not found in spec"
+                    break
+        
+        # Check 2: If spec_ref mentions a constraint field, verify it exists in spec
+        if not is_fabricated and spec_ref:
+            # Extract quoted or field-like references from spec_ref
+            # e.g., "constraints.cloud_services" or "'local_only' requirement"
+            field_refs = _re.findall(r'constraints?\.([a-z_]+)', spec_ref)
+            field_refs += _re.findall(r"'([a-z_]+)'", spec_ref)
+            field_refs += _re.findall(r'"([a-z_]+)"', spec_ref)
+            
+            for field in field_refs:
+                # Skip common generic fields that are always valid
+                if field in ('integrations', 'platform', 'scope', 'goal', 'summary',
+                             'stack', 'language', 'framework', 'requirements'):
+                    continue
+                # Check if this field exists in the spec corpus
+                if field not in spec_corpus:
+                    is_fabricated = True
+                    fabrication_reason = f"Referenced field '{field}' not found in spec"
+                    break
+        
+        if is_fabricated:
+            issue.severity = "non_blocking"
+            downgraded.append(issue)
+            print(f"[DEBUG] [critique] v1.7 GROUNDING FAIL: Issue {getattr(issue, 'id', 'N/A')} "
+                  f"downgraded - {fabrication_reason}")
+            logger.info(
+                "[critique] v1.7 Grounding validation failed for %s: %s",
+                getattr(issue, 'id', 'N/A'), fabrication_reason
+            )
+        else:
+            validated.append(issue)
+    
+    if downgraded:
+        print(f"[DEBUG] [critique] v1.7 Grounding validation: {len(validated)} kept, "
+              f"{len(downgraded)} downgraded (hallucinated constraints)")
+        logger.info(
+            "[critique] v1.7 Grounding validation: %d kept, %d downgraded",
+            len(validated), len(downgraded)
+        )
+    
+    return validated, downgraded
 
 
 # =============================================================================
@@ -961,6 +1109,21 @@ Your critique must align with the spec. Do not expand scope or invent constraint
             if downgraded:
                 print(f"[DEBUG] [critique] Blocker filtering: {original_blocking_count} → {len(real_blocking)} (downgraded {len(downgraded)})")
         
+        # =====================================================================
+        # v1.7: Grounding validation - catch hallucinated constraints
+        # =====================================================================
+        if critique.blocking_issues and (spec_markdown or spec_json):
+            grounded_blocking, grounding_downgraded = validate_spec_ref_grounding(
+                critique.blocking_issues,
+                spec_markdown=spec_markdown,
+                spec_json=spec_json,
+            )
+            critique.blocking_issues = grounded_blocking
+            critique.non_blocking_issues.extend(grounding_downgraded)
+            critique.overall_pass = len(critique.blocking_issues) == 0 and not critique.critique_failed
+            if grounding_downgraded:
+                print(f"[DEBUG] [critique] v1.7 Grounding filter: {len(grounded_blocking)} kept, {len(grounding_downgraded)} downgraded")
+        
         # DEBUG: Log critique result
         print(f"[DEBUG] [critique] Result: overall_pass={critique.overall_pass}, blocking={len(critique.blocking_issues)}, non_blocking={len(critique.non_blocking_issues)}")
         logger.info(f"[critique] Result: pass={critique.overall_pass}, blocking={len(critique.blocking_issues)}, non_blocking={len(critique.non_blocking_issues)}")
@@ -1205,6 +1368,8 @@ __all__ = [
     "GEMINI_CRITIC_MAX_TOKENS",
     # Block 5: Blocker filtering (v1.2)
     "filter_blocking_issues",
+    # Block 5b: Grounding validation (v1.7)
+    "validate_spec_ref_grounding",
     # Block 5: Deterministic spec-compliance check (v1.3 - CRITICAL FIX)
     "run_deterministic_spec_compliance_check",
     # Block 5: JSON critique
