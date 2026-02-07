@@ -39,6 +39,10 @@ from app.rag.router import router as rag_router
 # Import refactored endpoints
 from app.endpoints import router as endpoints_router
 
+# Import voice/transcription routers
+from app.routers.transcribe import router as transcribe_router
+from app.routers.audio_stream import router as audio_stream_router
+
 app = FastAPI(
     title="Orb Assistant",
     version="0.17.0",
@@ -151,6 +155,10 @@ app.include_router(
     dependencies=[Depends(require_auth)]
 )
 
+# Voice/transcription routers
+app.include_router(transcribe_router)
+app.include_router(audio_stream_router)
+
 # Phase 4 conditional routers
 if os.getenv("ORB_ENABLE_PHASE4", "false").lower() == "true":
     try:
@@ -220,4 +228,3 @@ def list_job_types(auth = Depends(require_auth)):
             for jt in JobType
         ]
     }
-
