@@ -2,6 +2,12 @@
 """
 Critical Pipeline streaming handler for ASTRA command flow.
 
+v2.14 (2026-02-07): CONDITIONAL CODEBASE REPORT FOR ARCHITECTURE JOBS
+- Codebase report only injected for refactor/restructure/optimize jobs
+- CREATE jobs skip codebase report (~6k token savings per call)
+- Prevents path contamination (Orb/main.py pattern from codebase report)
+- New _is_refactor_job() helper for job kind detection
+
 v2.13 (2026-02-07): MULTI-ROOT PATH INSTRUCTIONS
 - Architecture prompt now instructs LLM to use orb-desktop/ prefix for frontend files
 - Backend paths relative to D:\Orb, frontend paths prefixed with orb-desktop/
@@ -118,7 +124,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # v2.8 BUILD VERIFICATION
 # =============================================================================
-CRITICAL_PIPELINE_BUILD_ID = "2026-02-06-v2.12-pending-evidence-mechanical-guard"
+CRITICAL_PIPELINE_BUILD_ID = "2026-02-07-v2.14-conditional-codebase-report"
 print(f"[CRITICAL_PIPELINE_LOADED] BUILD_ID={CRITICAL_PIPELINE_BUILD_ID}")
 logger.info(f"[critical_pipeline] Module loaded: BUILD_ID={CRITICAL_PIPELINE_BUILD_ID}")
 
@@ -1967,6 +1973,49 @@ def _build_artifact_binding_prompt(bindings: List[Dict[str, Any]]) -> str:
 
 
 # =============================================================================
+# v2.14: Refactor Job Detection
+# =============================================================================
+
+def _is_refactor_job(spec_data: Dict[str, Any], message: str) -> bool:
+    """
+    v2.14: Determine if this is a refactor/restructure job that needs codebase report.
+    
+    CREATE jobs don't need the codebase report (~6k tokens) — architecture map
+    provides sufficient structural context. Refactor jobs need file-level detail
+    to understand what exists and how to reorganise it.
+    """
+    # Check job_kind from spec
+    job_kind = (spec_data.get("job_kind", "") or "").lower()
+    if job_kind in ("refactor", "restructure", "optimize", "repo_change"):
+        logger.info("[critical_pipeline] v2.14 _is_refactor_job: True (job_kind=%s)", job_kind)
+        return True
+    
+    # Keyword scan in spec fields and message
+    summary = (spec_data.get("summary", "") or "").lower()
+    objective = (spec_data.get("objective", "") or "").lower()
+    msg_lower = (message or "").lower()
+    
+    # Check key_requirements if present
+    key_reqs = spec_data.get("key_requirements", [])
+    key_reqs_text = " ".join(str(r).lower() for r in key_reqs) if key_reqs else ""
+    
+    all_text = f"{summary} {objective} {msg_lower} {key_reqs_text}"
+    
+    refactor_keywords = [
+        "refactor", "restructure", "split file", "tech debt",
+        "file too large", "reorgani", "decompose", "break apart",
+    ]
+    
+    for kw in refactor_keywords:
+        if kw in all_text:
+            logger.info("[critical_pipeline] v2.14 _is_refactor_job: True (keyword=%s)", kw)
+            return True
+    
+    logger.info("[critical_pipeline] v2.14 _is_refactor_job: False")
+    return False
+
+
+# =============================================================================
 # Main Stream Handler
 # =============================================================================
 
@@ -2535,12 +2584,21 @@ You may need to re-run Spec Gate with more details about the file locations.
         yield "data: " + json.dumps({"type": "token", "content": "📚 **Gathering evidence...**\n"}) + "\n\n"
         response_parts.append("📚 **Gathering evidence...**\n")
         
+        # v2.14: Only inject codebase report for refactor jobs
+        is_refactor = _is_refactor_job(spec_data, message)
+        if is_refactor:
+            logger.info("[critical_pipeline] v2.14 Codebase report: INJECTED (refactor job)")
+            print("[critical_pipeline] v2.14 Codebase report: INJECTED (refactor job)")
+        else:
+            logger.info("[critical_pipeline] v2.14 Codebase report: SKIPPED (non-refactor job)")
+            print("[critical_pipeline] v2.14 Codebase report: SKIPPED (non-refactor job)")
+        
         # v2.9: Use new comprehensive evidence gathering (same powers as SpecGate)
         cp_evidence = gather_critical_pipeline_evidence(
             spec_data=spec_data,
             message=message,
             include_arch_map=True,
-            include_codebase_report=True,  # v2.9: Now load codebase report too
+            include_codebase_report=is_refactor,  # v2.14: Only for refactor jobs
             include_file_evidence=True,
             arch_map_max_lines=800,  # v2.9: More context
             codebase_max_lines=500,

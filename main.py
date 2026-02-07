@@ -39,9 +39,20 @@ from app.rag.router import router as rag_router
 # Import refactored endpoints
 from app.endpoints import router as endpoints_router
 
-# Import voice/transcription routers
-from app.routers.transcribe import router as transcribe_router
-from app.routers.audio_stream import router as audio_stream_router
+# Import voice/transcription routers (safe — don't crash app if deps missing)
+try:
+    from app.routers.transcribe import router as transcribe_router
+    _TRANSCRIBE_AVAILABLE = True
+except ImportError as e:
+    _TRANSCRIBE_AVAILABLE = False
+    print(f"[main] Transcribe router not available: {e}")
+
+try:
+    from app.routers.audio_stream import router as audio_stream_router
+    _AUDIO_STREAM_AVAILABLE = True
+except ImportError as e:
+    _AUDIO_STREAM_AVAILABLE = False
+    print(f"[main] Audio stream router not available: {e}")
 
 app = FastAPI(
     title="Orb Assistant",
@@ -156,8 +167,10 @@ app.include_router(
 )
 
 # Voice/transcription routers
-app.include_router(transcribe_router)
-app.include_router(audio_stream_router)
+if _TRANSCRIBE_AVAILABLE:
+    app.include_router(transcribe_router)
+if _AUDIO_STREAM_AVAILABLE:
+    app.include_router(audio_stream_router)
 
 # Phase 4 conditional routers
 if os.getenv("ORB_ENABLE_PHASE4", "false").lower() == "true":

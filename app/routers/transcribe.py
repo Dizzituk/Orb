@@ -1,229 +1,123 @@
 """
 FastAPI router for voice transcription endpoints.
 
-This module provides HTTP endpoints for:
-- Model status checking
-- Model loading/unloading
-- Audio transcription
-"""
+Endpoints:
+- GET  /model/status    — check if model is loaded
+- POST /model/load      — load the whisper model
+- POST /model/unload    — unload model from memory
+- POST /transcribe      — transcribe audio file
 
+All heavy work runs in a thread pool so it never blocks the async event loop.
+"""
+import asyncio
 import logging
-from typing import Dict, Any, Optional
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
-from pydantic import BaseModel, Field
+import time
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request
 
 from app.services.model_manager import get_model_manager
 from app.services.faster_whisper_service import FasterWhisperService
-from app.services.transcription_service import TranscriptionResult
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/model", tags=["transcription"])
+router = APIRouter(tags=["transcription"])
+
+# Module-level service instance (lazy — doesn't load model until first use)
+_service = FasterWhisperService()
 
 
-class ModelStatusResponse(BaseModel):
-    """Response model for model status endpoint."""
-    loaded: bool = Field(..., description="Whether a transcription model is currently loaded")
-    model_name: Optional[str] = Field(None, description="Name of the loaded model")
-    device: Optional[str] = Field(None, description="Device the model is running on (cpu/cuda)")
-    compute_type: Optional[str] = Field(None, description="Compute type (int8/float16/float32)")
+@router.get("/model/status")
+async def get_model_status():
+    """Get current transcription model status."""
+    return get_model_manager().get_status()
 
 
-class ModelLoadRequest(BaseModel):
-    """Request model for loading a transcription model."""
-    model_name: str = Field("base.en", description="Whisper model name to load")
-    device: Optional[str] = Field(None, description="Device to load model on (cpu/cuda/auto)")
-    compute_type: Optional[str] = Field(None, description="Compute type (int8/float16/float32/auto)")
-
-
-class ModelLoadResponse(BaseModel):
-    """Response model for model loading endpoint."""
-    success: bool = Field(..., description="Whether the model was loaded successfully")
-    model_name: str = Field(..., description="Name of the loaded model")
-    device: str = Field(..., description="Device the model is running on")
-    compute_type: str = Field(..., description="Compute type being used")
-    message: Optional[str] = Field(None, description="Additional information or error message")
-
-
-class TranscriptionResponse(BaseModel):
-    """Response model for transcription endpoint."""
-    text: str = Field(..., description="Full transcribed text")
-    language: Optional[str] = Field(None, description="Detected language code")
-    segments: list[Dict[str, Any]] = Field(default_factory=list, description="Detailed segment information")
-    processing_time: float = Field(..., description="Time taken to process the audio in seconds")
-
-
-@router.get("/status", response_model=ModelStatusResponse)
-async def get_model_status() -> ModelStatusResponse:
-    """
-    Get the current status of the transcription model.
-    
-    Returns information about whether a model is loaded and its configuration.
-    """
-    model_manager = get_model_manager()
-    transcription_service = model_manager.get_transcription_service()
-    
-    if transcription_service is None:
-        return ModelStatusResponse(loaded=False)
-    
-    # Get model info from the service
-    if isinstance(transcription_service, FasterWhisperService):
-        model_info = transcription_service.get_model_info()
-        return ModelStatusResponse(
-            loaded=True,
-            model_name=model_info.get("model_name"),
-            device=model_info.get("device"),
-            compute_type=model_info.get("compute_type")
-        )
-    
-    return ModelStatusResponse(loaded=True)
-
-
-@router.post("/load", response_model=ModelLoadResponse)
-async def load_model(request: ModelLoadRequest) -> ModelLoadResponse:
-    """
-    Load a transcription model with specified configuration.
-    
-    This endpoint will download the model if not cached and load it into memory.
-    Subsequent calls will unload any existing model and load the new one.
-    """
-    model_manager = get_model_manager()
-    
+@router.post("/model/load")
+async def load_model(
+    model_name: Optional[str] = None,
+    device: Optional[str] = None,
+    compute_type: Optional[str] = None,
+):
+    """Load the transcription model in a background thread."""
     try:
-        logger.info(f"Loading model: {request.model_name} on device: {request.device or 'auto'}")
-        
-        # Load the model
-        transcription_service = await model_manager.load_transcription_model(
-            model_name=request.model_name,
-            device=request.device,
-            compute_type=request.compute_type
+        mm = get_model_manager()
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None, lambda: mm.load_model(model_name=model_name, device=device, compute_type=compute_type)
         )
-        
-        # Get model info for response
-        if isinstance(transcription_service, FasterWhisperService):
-            model_info = transcription_service.get_model_info()
-            return ModelLoadResponse(
-                success=True,
-                model_name=model_info.get("model_name", request.model_name),
-                device=model_info.get("device", "unknown"),
-                compute_type=model_info.get("compute_type", "unknown"),
-                message="Model loaded successfully"
-            )
-        
-        return ModelLoadResponse(
-            success=True,
-            model_name=request.model_name,
-            device=request.device or "auto",
-            compute_type=request.compute_type or "auto",
-            message="Model loaded successfully"
-        )
-        
+        return mm.get_status()
     except Exception as e:
-        logger.error(f"Failed to load model: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to load model: {str(e)}"
-        )
+        logger.error("[transcribe_router] Failed to load model: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/unload")
-async def unload_model() -> Dict[str, Any]:
-    """
-    Unload the currently loaded transcription model from memory.
-    
-    This frees up GPU/CPU resources.
-    """
-    model_manager = get_model_manager()
-    
+@router.post("/model/unload")
+async def unload_model():
+    """Unload the transcription model from memory."""
     try:
-        model_manager.unload_transcription_model()
-        logger.info("Model unloaded successfully")
-        return {
-            "success": True,
-            "message": "Model unloaded successfully"
-        }
+        get_model_manager().unload_model()
+        return {"status": "unloaded"}
     except Exception as e:
-        logger.error(f"Failed to unload model: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to unload model: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/transcribe", response_model=TranscriptionResponse)
+@router.post("/transcribe")
 async def transcribe_audio(
-    file: UploadFile = File(..., description="Audio file to transcribe (WAV, MP3, etc.)"),
-    language: Optional[str] = Form(None, description="Language code (e.g., 'en', 'es'). Auto-detect if not provided."),
-    task: str = Form("transcribe", description="Task type: 'transcribe' or 'translate'"),
-    temperature: float = Form(0.0, description="Sampling temperature (0.0 = greedy, higher = more random)"),
-    vad_filter: bool = Form(True, description="Enable voice activity detection filter"),
-    beam_size: int = Form(5, description="Beam size for beam search decoding")
-) -> TranscriptionResponse:
-    """
-    Transcribe an audio file to text.
-    
-    The model will be automatically loaded if not already in memory.
-    Supports various audio formats (WAV, MP3, M4A, etc.).
-    """
-    model_manager = get_model_manager()
-    
-    # Get or load transcription service
-    transcription_service = model_manager.get_transcription_service()
-    if transcription_service is None:
-        try:
-            logger.info("No model loaded, loading default model")
-            transcription_service = await model_manager.load_transcription_model()
-        except Exception as e:
-            logger.error(f"Failed to load default model: {str(e)}", exc_info=True)
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to load transcription model: {str(e)}"
-            )
-    
-    # Read audio file
+    request: Request,
+    file: Optional[UploadFile] = File(None),
+    language: Optional[str] = Form(None),
+    vad_filter: bool = Form(True),
+    noise_sensitivity: float = Form(0.5),
+):
+    """Transcribe audio. Runs model inference in a thread pool."""
     try:
-        audio_data = await file.read()
-        if not audio_data:
-            raise HTTPException(status_code=400, detail="Empty audio file")
+        # Get audio bytes
+        if file:
+            audio_bytes = await file.read()
+        else:
+            audio_bytes = await request.body()
+
+        if not audio_bytes or len(audio_bytes) < 100:
+            raise HTTPException(status_code=400, detail="No audio data or too short")
+
+        # Map noise sensitivity to VAD params
+        vad_params = {
+            "threshold": 0.3 + (noise_sensitivity * 0.4),
+            "min_speech_duration_ms": int(200 + (noise_sensitivity * 300)),
+            "min_silence_duration_ms": int(400 + (noise_sensitivity * 400)),
+        }
+
+        t0 = time.time()
+
+        # Run transcription in thread pool so we don't block the event loop
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: _service.transcribe(
+                audio_bytes=audio_bytes,
+                language=language,
+                vad_filter=vad_filter,
+                vad_parameters=vad_params,
+            ),
+        )
+        elapsed = time.time() - t0
+
+        logger.info("[transcribe_router] Done in %.1fs: '%s'", elapsed, result.text[:80])
+
+        return {
+            "text": result.text,
+            "language": result.language,
+            "duration": result.duration,
+            "processing_time": round(elapsed, 2),
+            "segments": [
+                {"text": s.text, "start": s.start, "end": s.end}
+                for s in result.segments
+            ],
+        }
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Failed to read audio file: {str(e)}")
-        raise HTTPException(status_code=400, detail=f"Failed to read audio file: {str(e)}")
-    
-    # Transcribe
-    try:
-        logger.info(f"Transcribing audio file: {file.filename}, size: {len(audio_data)} bytes")
-        
-        result: TranscriptionResult = await transcription_service.transcribe(
-            audio_data=audio_data,
-            language=language,
-            task=task,
-            temperature=temperature,
-            vad_filter=vad_filter,
-            beam_size=beam_size
-        )
-        
-        # Convert segments to dict format
-        segments_dict = [
-            {
-                "start": seg.start,
-                "end": seg.end,
-                "text": seg.text
-            }
-            for seg in result.segments
-        ]
-        
-        logger.info(f"Transcription successful: {len(result.text)} chars, {len(segments_dict)} segments")
-        
-        return TranscriptionResponse(
-            text=result.text,
-            language=result.language,
-            segments=segments_dict,
-            processing_time=result.processing_time
-        )
-        
-    except Exception as e:
-        logger.error(f"Transcription failed: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Transcription failed: {str(e)}"
-        )
+        logger.error("[transcribe_router] Transcription failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
