@@ -2,6 +2,26 @@
 r"""
 Weaver Stream Handler for ASTRA - SIMPLIFIED VERSION
 
+v4.2.0 (2026-02-06): SPECGATE DIRECTIVE HANDOFF - Stop asking user code-answerable questions
+- CRITICAL CHANGE: Weaver now splits gaps into two categories:
+  1. "Questions for user" — ONLY subjective/preference gaps (visual style, UX feel, naming,
+     business priorities) that cannot be determined from code
+  2. "SpecGate must resolve" — Implementation gaps that SpecGate can answer by scanning
+     the codebase (endpoint patterns, error conventions, response formats, existing APIs)
+- Weaver NEVER asks the user about things the code can tell it
+- SpecGate directives are explicit instructions telling SpecGate what to look for
+- This eliminates the 3-round question ping-pong that blocked pipeline flow
+- Updated CREATE mode, UPDATE mode, and LOCKED BEHAVIOUR docs
+
+v4.1.0 (2026-02-06): AUTO-REWEAVE RACE CONDITION FIX
+- CRITICAL FIX: User replies during auto-reweave were invisible to hash-based dedup
+- Root cause: stream_router fires Weaver UPDATE before user message is persisted to DB
+- _gather_ramble_messages() reads DB, sees only old messages, hashes match → "Nothing new"
+- Fix: Added pending_user_message parameter to generate_weaver_stream()
+- stream_router passes req.message directly so Weaver sees it regardless of DB timing
+- Hash-based dedup prevents double-counting if message IS already in DB
+- Version bump to v4.1.0 in all log markers
+
 v4.0.0 (2026-02-04): LLM-GENERATED QUESTIONS - Remove hardcoded game-design questions
 - CRITICAL FIX: Removed SHALLOW_QUESTIONS dict (Tetris-era hardcoded questions)
 - Removed DESIGN_JOB_INDICATORS and _is_design_job() - triggered on every feature request
@@ -124,7 +144,7 @@ v3.2 (2026-01-20): PERSISTENT PREFS + INCREMENTAL WEAVING
 - Subsequent weaves only process NEW messages (incremental/update mode)
 - Questions are only asked if prefs not already confirmed
 
-LOCKED WEAVER BEHAVIOUR (v4.0):
+LOCKED WEAVER BEHAVIOUR (v4.2):
 - Purpose: Convert human rambling into a structured job outline
 - NOT a full spec builder - just a text organizer
 - Reads messages to get input (the ramble)
@@ -132,7 +152,10 @@ LOCKED WEAVER BEHAVIOUR (v4.0):
 - Does NOT build JSON specs
 - Does NOT resolve ambiguities or contradictions
 - ALWAYS outputs structured outline (never conversational responses)
-- LLM generates its own contextual questions based on actual gaps (no hardcoded question menus)
+- TWO types of gap handling:
+  1. "Questions for user" - ONLY subjective/preference gaps (colours, UX feel, naming)
+  2. "SpecGate must resolve" - Code-answerable gaps delegated to SpecGate
+- NEVER asks the user about implementation patterns, conventions, or anything the code can answer
 - NEVER asks technical questions (frameworks, algorithms, architecture)
 
 WEAVER DECISION TREE (v3.5):
@@ -723,6 +746,10 @@ def _enforce_design_pref_hygiene(output: str) -> str:
             line_lower.startswith("**what is being"),
             line_lower.startswith("execution mode"),
             line_lower.startswith("**execution mode"),
+            line_lower.startswith("specgate must resolve"),
+            line_lower.startswith("**specgate must resolve"),
+            line_lower.startswith("questions for user"),
+            line_lower.startswith("**questions for user"),
         ])
         
         if is_design_header:
@@ -1492,9 +1519,17 @@ async def generate_weaver_stream(
     conversation_id: str,
     is_continuation: bool = False,
     captured_answers: Optional[Dict[str, str]] = None,
+    pending_user_message: Optional[str] = None,
 ) -> AsyncIterator[bytes]:
     """
-    Weaver handler - v3.5.0 with FULL BUG FIXES.
+    Weaver handler - v4.1.0 with FULL BUG FIXES.
+    
+    v4.1.0 CHANGES:
+    - CRITICAL FIX: Added pending_user_message parameter for auto-reweave race condition
+    - When stream_router auto-routes to Weaver UPDATE, the user's reply may not yet
+      be persisted to the DB. pending_user_message is injected directly into the
+      message list so hash-based dedup sees it as new content, preventing the
+      false "Nothing new to weave" response.
     
     v3.5.0 CHANGES:
     - Bug 1: Core goal detection includes creative targets (game, prototype, etc.)
@@ -1509,8 +1544,8 @@ async def generate_weaver_stream(
     - If ambiguous, lists ambiguities + asks 3-5 shallow questions
     - No framework/architecture/algorithm questions
     """
-    print(f"[WEAVER] Starting weaver v4.0.0 for project_id={project_id}")
-    logger.info("[WEAVER] Starting weaver v4.0.0 for project_id=%s", project_id)
+    print(f"[WEAVER] Starting weaver v4.2.0 for project_id={project_id}")
+    logger.info("[WEAVER] Starting weaver v4.2.0 for project_id=%s", project_id)
     
     provider, model = _get_weaver_config()
     
@@ -1543,6 +1578,25 @@ async def generate_weaver_stream(
         # =====================================================================
         
         all_messages = _gather_ramble_messages(db, project_id)
+        
+        # =============================================================
+        # v4.1.0: INJECT PENDING USER MESSAGE (auto-reweave race fix)
+        # When stream_router auto-routes to Weaver UPDATE, the user's
+        # latest message may not yet be persisted to the DB (the SSE
+        # handler fires before message persistence completes). We
+        # inject it directly so hash-based dedup sees it as new.
+        # Dedup by hash ensures no double-counting if it IS in DB.
+        # =============================================================
+        if pending_user_message and pending_user_message.strip():
+            pending_msg = {"role": "user", "content": pending_user_message.strip()}
+            # Only inject if not already present (hash check prevents duplicates)
+            pending_hash = _hash_message(pending_msg)
+            existing_hashes = _hash_messages(all_messages)
+            if pending_hash not in existing_hashes:
+                all_messages.append(pending_msg)
+                print(f"[WEAVER] v4.1.0 Injected pending_user_message ({len(pending_user_message)} chars, hash={pending_hash})")
+            else:
+                print(f"[WEAVER] v4.1.0 pending_user_message already in DB (hash={pending_hash}), skipping injection")
         
         if not all_messages:
             no_messages_msg = (
@@ -1805,14 +1859,17 @@ CRITICAL RULES:
 7. If "Execution mode" is provided, include it as a section
 8. "What is being built" must be a SHORT NOUN PHRASE (not a sentence)
 9. "Intended outcome" must be DIFFERENT wording from "What is being built" (Bug 3 - no duplication)
+10. If the previous spec has a "SpecGate must resolve" section, KEEP it and add new directives if needed
+11. NEVER add code-answerable questions to "Questions for user" - those go in "SpecGate must resolve"
 
 OUTPUT FORMAT:
 - Output ONLY the complete updated job description
 - Start directly with the content (e.g., "What is being built or changed")
 - Include "Execution mode" section if provided
+- Preserve "SpecGate must resolve" section (add new directives from new requirements)
+- "Questions for user" should ONLY contain subjective/preference gaps (visual, UX, naming)
 - Do NOT include any preamble or explanation
-- Do NOT echo any part of these instructions
-- Do NOT ask technical questions (frameworks, algorithms, architecture)"""
+- Do NOT echo any part of these instructions"""
 
             user_prompt = f"""Previous job description:
 
@@ -1832,7 +1889,7 @@ Output the complete updated job description with all new features added:"""
             start_message = f"**Organizing your thoughts...**\n\nAnalyzing {total_message_count} messages to create a job description.\n\n"
             yield _serialize_sse({"type": "token", "content": start_message})
             
-            # v4.0.0: LLM-GENERATED QUESTIONS - domain-agnostic, contextual
+            # v4.2.0: SPECGATE DIRECTIVE HANDOFF - Two-tier gap handling
             system_prompt = """You are Weaver, a SHALLOW text organizer.
 
 Your ONLY job: Take the human's rambling and restructure it into a minimal, stable job outline.
@@ -1842,7 +1899,7 @@ Your ONLY job: Take the human's rambling and restructure it into a minimal, stab
 - Summarize intent into "What is being built" and "Intended outcome" (DIFFERENT wording, no duplication)
 - Faithfully list ALL requirements, constraints, and specifications the user provided
 - List unresolved ambiguities at high level
-- Generate up to 3-5 contextual clarifying questions about GENUINE GAPS (see rules below)
+- Classify any gaps into TWO categories (see GAP HANDLING below)
 - Include execution mode if extracted from meta-phrases
 
 ## What You DO NOT DO (CRITICAL - SCOPE BOUNDARY):
@@ -1851,50 +1908,49 @@ Your ONLY job: Take the human's rambling and restructure it into a minimal, stab
 - NO algorithm or data structure talk
 - NO architecture proposals
 - NO implementation plans
-- NO technical questions (those belong to later pipeline stages)
 - NO resolving ambiguities yourself
 - NO inventing requirements the user didn't state
+- NEVER ask the user about implementation patterns, conventions, or technical details
 
-## QUESTION GENERATION RULES (v4.1 - CRITICAL):
-Zero questions is the PREFERRED and DEFAULT outcome. You generate questions ONLY when there
-is a genuine gap that would make the requirement AMBIGUOUS TO BUILD.
+## GAP HANDLING (v4.2 - CRITICAL NEW BEHAVIOUR):
 
-Do NOT manufacture questions to appear thorough. Do NOT ask questions to fill a quota.
-If the user gave clear, comprehensive requirements: output "Questions: none" and move on.
+When you identify gaps in the requirements, you MUST classify each gap into exactly one of
+two categories. Getting this classification right is your most important job.
 
-Rules:
-1. DEFAULT TO ZERO QUESTIONS. Only ask if you genuinely cannot determine what to build.
-2. READ the user's requirements carefully first. Do NOT ask about things they already specified.
-3. Questions must be HIGH-LEVEL framing questions, never technical implementation questions.
-4. Absolute maximum: 3 questions. But 0 is almost always correct for detailed requests.
-5. Each question must address a GENUINE GAP - something the user didn't cover that would affect
-   what gets built (not how it gets built).
-6. Before writing ANY question, ask yourself: "Would the downstream pipeline be blocked without
-   this answer?" If no, don't ask it.
-7. NEVER ask these if the user already specified them (check carefully!):
-   - Platform (if they said "desktop app" or "Windows" - that's answered)
-   - Controls (if they described input methods - that's answered)
-   - Scope (if they defined phases or boundaries - that's answered)
-   - Architecture (if they described backend/frontend structure - that's answered)
-   - Technology choices (if they named specific tools/libraries - that's answered)
-8. If the user provided a detailed, well-structured request with explicit requirements,
-   constraints, and phase boundaries, you MUST output "Questions: none".
+### Category 1: "Questions for user" — ASK THE HUMAN
+ONLY for subjective decisions that NO amount of code scanning could answer:
+- Visual/aesthetic preferences (colour scheme, theme, visual style)
+- UX feel and interaction preferences ("should it feel snappy or smooth?")
+- Naming/branding choices (what to call things in the UI)
+- Business logic priorities (which feature matters more, what tradeoffs to make)
+- Target audience or persona preferences
+- Emotional/tonal qualities ("playful vs professional")
 
-ANTI-PATTERNS (never do these):
-- Asking 3-5 questions on every request regardless of completeness
-- Rephrasing stated requirements as questions ("You mentioned X, did you mean X?")
-- Asking about preferences the user clearly stated
-- Asking about things the downstream pipeline will handle (file paths, exact APIs, etc.)
+THESE ARE RARE. Most requests have zero questions for the user. Default to NONE.
+Maximum: 2 questions. If you can't limit to 2, you're asking about the wrong things.
 
-BAD questions (generic, context-blind):
-- "Dark mode or light mode?" (when user is asking for a backend service)
-- "Keyboard or touch?" (when user specified keyboard shortcuts)
-- "Bare minimum or extras?" (when user defined explicit Phase 1 boundaries)
+### Category 2: "SpecGate must resolve" — DELEGATE TO THE PIPELINE
+For ANY gap that could be answered by reading the existing codebase:
+- Endpoint conventions (input format, response shape, error patterns)
+- Existing service APIs and how to integrate with them
+- File structure and where new code should go
+- Database schema patterns and existing models
+- Authentication/authorization patterns
+- Configuration conventions (env vars, config files)
+- Testing patterns and conventions
+- Import paths and module organization
+- Any "how does the existing system do X?" question
 
-GOOD questions (contextual, gap-filling — but ONLY if genuinely needed):
-- "What latency target for transcription?" (voice feature, not specified)
-- "Should wake word detection run continuously or only when app is focused?" (genuine ambiguity)
-- "Target OS(es) beyond Windows?" (user said desktop but didn't clarify OS scope)
+These become explicit directives telling SpecGate what to investigate.
+Write them as actionable investigation tasks, e.g.:
+- "Determine the endpoint input format convention by examining app/endpoints/"
+- "Identify the error response pattern used across existing FastAPI routers"
+- "Find how existing services are registered in main.py"
+
+### THE GOLDEN RULE:
+If the answer COULD exist somewhere in the codebase → SpecGate must resolve.
+If the answer can ONLY come from the human's brain → Questions for user.
+When in doubt → SpecGate must resolve. The pipeline is smarter than you think.
 
 ## Output Format:
 Produce a MINIMAL structured job outline with these sections:
@@ -1905,18 +1961,47 @@ Produce a MINIMAL structured job outline with these sections:
 - **Design preferences**: Only if specified (visual/UI preferences only)
 - **Constraints**: Only if explicitly stated by the user
 - **Unresolved ambiguities**: Things genuinely unclear from the user's description
-- **Questions**: Usually "none" — only include if a genuine gap would block building
+- **SpecGate must resolve**: Directives for SpecGate to investigate by scanning the codebase
+  (this section is EXPECTED to have items — most implementation gaps belong here)
+- **Questions for user**: ONLY subjective/preference gaps. Usually "none".
+  (if you have items here, each MUST be something no code can answer)
 
 ## DEDUPLICATION RULE:
 "What is being built" and "Intended outcome" must use DIFFERENT words.
 BAD: What: "Voice input feature" / Outcome: "Voice input feature"
 GOOD: What: "Voice-to-text input system" / Outcome: "Local speech transcription for desktop app"
 
+## EXAMPLES OF CORRECT GAP CLASSIFICATION:
+
+User says: "Add voice-to-text to the ASTRA desktop app using faster-whisper"
+
+SpecGate must resolve:
+- Determine the endpoint input format convention (multipart? raw body?) by examining existing endpoints in app/endpoints/
+- Identify the standard response model pattern (Pydantic models, JSON shape) from existing routers
+- Determine the error handling convention (HTTPException patterns, status codes) across the codebase
+- Find how new FastAPI routers are registered in main.py
+- Check if an audio processing dependency (PyAV/FFmpeg) is already in requirements
+
+Questions for user: none
+(The user specified the tool, the feature, and the platform. Everything else is code-answerable.)
+
+---
+
+User says: "Build me a dashboard"
+
+SpecGate must resolve:
+- Identify existing frontend component patterns and framework
+- Determine the data sources available for dashboard widgets
+
+Questions for user:
+- What information should the dashboard show? (Only the user knows what they want to see)
+
 ## Critical Rules:
 1. If the human didn't say it, it doesn't appear in your output.
 2. If the human DID say it, it MUST appear in your output (don't drop requirements).
 3. You are a TEXT ORGANIZER, not a solution designer.
-4. Preserve the user's terminology and domain language."""
+4. Preserve the user's terminology and domain language.
+5. NEVER put a code-answerable question in "Questions for user" — that's SpecGate's job."""
 
             user_prompt = f"""Organize this conversation into a job description:
 
@@ -1926,8 +2011,9 @@ Remember:
 - Include ALL requirements the user stated (don't drop anything)
 - Preserve any ambiguities (list them, don't resolve them)
 - Keep What and Outcome DIFFERENT (no duplication)
-- Only ask questions about GENUINE GAPS you identified (may be zero if requirements are comprehensive)
-- NO technical questions (frameworks, algorithms, architecture)
+- Code-answerable gaps go in "SpecGate must resolve" (NOT questions for user)
+- Only put genuinely subjective/preference questions in "Questions for user"
+- When in doubt, it's a SpecGate directive, not a user question
 - Preserve the user's domain terminology"""
         
         # Stream from LLM

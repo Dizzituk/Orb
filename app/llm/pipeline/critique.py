@@ -11,6 +11,34 @@ Block 5 of the PoT (Proof of Thought) system:
 - v1.6: GROUNDED CRITIQUE - POT spec markdown as source of truth
 - v1.7: GROUNDING VALIDATION - catch hallucinated constraints in critique output
 - v1.9: SECTION AUTHORITY - downgrade blockers citing LLM-suggestion sections
+- v2.1: SCOPE CREEP DETECTION - endpoint drift + excluded feature enforcement
+
+v2.2 (2026-02-07): PLATFORM DETECTION FALSE-POSITIVE FIX
+- _check_platform_targeted_not_excluded() now requires STRUCTURAL platform signals
+- Incidental keyword mentions ("mobile browser", "mobile audio", "mobile-friendly") no longer trigger
+- New Layer 0: Tech stack override — if arch_stack contains Electron, platform is Desktop regardless
+- New Layer 4: Structural signal validation — affirmative mentions must appear in declarative contexts
+  (e.g., "targets: mobile", "platform: mobile", "mobile app", "for Android/iOS")
+- Incidental contexts added: compound words (mobile-friendly, mobile-first, mobile-responsive),
+  API/browser contexts (mobile browser, mobile audio, MediaRecorder), compatibility notes
+- Fixes: Desktop/Electron architecture blocked by incidental "mobile" mentions in component descriptions
+
+v2.1 (2026-02-06): SCOPE CREEP DETECTION - endpoint/feature drift
+- Added run_scope_creep_check() - deterministic endpoint and feature comparison
+- Extracts HTTP endpoint patterns (GET/POST/etc + /path) from spec and architecture
+- Check 1: Extra endpoints in architecture not listed in spec (scope creep)
+- Check 2: Spec endpoints missing from architecture (possible rename/drift)
+- Check 3: Excluded features (wake_word, tts, websocket) appearing in architecture
+- Wired into call_json_critic() after deterministic spec-compliance check
+- New blocker categories: scope_creep, endpoint_rename, excluded_feature
+- See voice STT integration analysis for root cause context
+v1.11 (2026-02-07): CRITIQUE META-COMMENTARY EXCLUSION - feedback loop fix
+- Broader future-reference pattern: future \w+ (catches 'future mobile/web clients')
+- Added critique rebuttal inline patterns: **Reviewer Claim**, **DECISION REJECT**, false positive
+- Added exclusion section headers: Reviewer Suggestion, Critique Rebuttal, Spec-Compliance
+- Fixes feedback loop: critique blocks -> Sonnet rebuts quoting error -> critique re-scans rebuttals
+- Fix for cp-964426dc
+
 
 v1.9 (2026-02-05): SECTION AUTHORITY VALIDATION - LLM suggestion defense
 - validate_section_authority() runs AFTER grounding validation
@@ -21,6 +49,16 @@ v1.9 (2026-02-05): SECTION AUTHORITY VALIDATION - LLM suggestion defense
 - Fixes critique deadlock where Gemini raised blockers on GPT-suggested files
 - Defense-in-depth layer on top of v1.3 prompt-level fix in critique_schemas.py
 - See critique-pipeline-fix-jobspec.md for full root cause analysis
+
+v1.11 (2026-02-07): CRITIQUE META-COMMENTARY EXCLUSION - feedback loop fix
+- Expanded _EXCLUSION_CONTEXT_PATTERNS with broader "future \w+" pattern and critique rebuttal patterns
+- Added inline exclusion patterns for **Reviewer Claim/Suggestion**, **DECISION**: **REJECT**,
+  "false positive", and "allowing future <word>" (catches "allowing future mobile/web clients")
+- Added exclusion section headers for Reviewer Suggestion / Critique Rebuttal sections
+- Fixes feedback loop where critique blocks architecture, Sonnet rebuts with meta-commentary
+  quoting the error message, critique re-scans and finds "mobile/Android/iOS" in the rebuttal,
+  loop repeats 3 times exhausting iterations
+- Fix for cp-964426dc: 3 wasted critique iterations on false positive feedback loop
 
 v1.8 (2026-02-05): CONTEXT-AWARE PLATFORM CHECK - false positive fix
 - _check_platform_targeted_not_excluded() replaces naive substring check in Check 3
@@ -92,6 +130,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
+import yaml
+
 from app.llm.schemas import LLMResult, LLMTask
 from app.jobs.schemas import (
     JobEnvelope,
@@ -112,6 +152,9 @@ from app.llm.pipeline.critique_schemas import (
     build_json_critique_prompt,
     APPROVED_ARCHITECTURE_BLOCKER_TYPES,
 )
+
+# Evidence loop utilities (v2.0)
+from app.llm.pipeline.evidence_loop import parse_evidence_requests
 
 # Ledger events
 try:
@@ -504,6 +547,350 @@ def validate_section_authority(
 
 
 # =============================================================================
+# Block 5d: EVIDENCE RESOLUTION CHECK (v2.0 - Evidence-or-Request Contract)
+# =============================================================================
+
+VALID_RESOLUTIONS = {"CITED", "DECISION", "HUMAN_REQUIRED"}
+
+
+def extract_critical_claims(arch_content: str) -> Optional[list]:
+    """Extract CRITICAL_CLAIMS register from architecture output.
+
+    CRITICAL_CLAIMS must be the last structured block.
+    Parses from rfind() for robustness against nested YAML,
+    blank lines, and field reordering.
+    """
+    idx = arch_content.rfind("\nCRITICAL_CLAIMS:")
+    if idx == -1:
+        if arch_content.startswith("CRITICAL_CLAIMS:"):
+            idx = 0
+        else:
+            return None
+
+    yaml_text = arch_content[idx:].strip()
+
+    try:
+        parsed = yaml.safe_load(yaml_text)
+        if not isinstance(parsed, dict):
+            return None
+        claims = parsed.get("CRITICAL_CLAIMS")
+        if claims is None:
+            return None
+        if not isinstance(claims, list):
+            return None
+        return claims
+    except yaml.YAMLError:
+        return None
+
+
+def run_evidence_resolution_check(
+    arch_content: str,
+) -> List[CritiqueIssue]:
+    """
+    v2.0: Deterministic check — validate CRITICAL_CLAIMS register.
+
+    Replaces regex heuristics with structured register validation.
+
+    Rules:
+    - Every claim must have resolution in {CITED, DECISION, HUMAN_REQUIRED}
+    - CITED claims must have at least one evidence entry
+    - DECISION claims must reference a decision_id
+    - Missing register entirely = non-blocking warning (transition period,
+      upgrade to blocking once all stages emit it)
+
+    IMPORTANT: Only call this on FINAL stage output — i.e. when there are
+    no pending EVIDENCE_REQUESTs. The orchestrator should check
+    parse_evidence_requests() returns empty before calling this.
+
+    Wire alongside run_deterministic_spec_compliance_check() in call_json_critic().
+    """
+    issues: List[CritiqueIssue] = []
+
+    claims = extract_critical_claims(arch_content)
+
+    if claims is None:
+        issues.append(CritiqueIssue(
+            id="CLAIMS-MISSING",
+            spec_ref="Evidence-or-Request Contract",
+            arch_ref="Architecture output",
+            category="missing_claims_register",
+            severity="non_blocking",  # Upgrade to blocking once all stages emit it
+            description="No CRITICAL_CLAIMS register found in architecture output",
+            fix_suggestion="Add CRITICAL_CLAIMS block as the last section listing all implementation-affecting claims with resolution status",
+        ))
+        return issues
+
+    for claim in claims:
+        claim_id = claim.get("id", "UNKNOWN")
+        resolution = claim.get("resolution", "MISSING")
+        claim_text = claim.get("claim", "")
+
+        if resolution not in VALID_RESOLUTIONS:
+            issues.append(CritiqueIssue(
+                id=f"CLAIMS-{claim_id}",
+                spec_ref="Evidence-or-Request Contract",
+                arch_ref=f"CRITICAL_CLAIMS.{claim_id}: {claim_text[:80]}",
+                category="unresolved_critical",
+                severity="blocking",
+                description=f"Critical claim '{claim_id}' has invalid resolution: '{resolution}'. Must be CITED, DECISION, or HUMAN_REQUIRED.",
+                fix_suggestion="Resolve this claim with evidence, an explicit decision, or flag for human input",
+            ))
+            continue
+
+        if resolution == "CITED":
+            evidence = claim.get("evidence", [])
+            if not evidence:
+                issues.append(CritiqueIssue(
+                    id=f"CLAIMS-{claim_id}",
+                    spec_ref="Evidence-or-Request Contract",
+                    arch_ref=f"CRITICAL_CLAIMS.{claim_id}: {claim_text[:80]}",
+                    category="unresolved_critical",
+                    severity="blocking",
+                    description=f"Critical claim '{claim_id}' marked CITED but has no evidence entries",
+                    fix_suggestion="Add evidence entries with file paths and line ranges",
+                ))
+
+        elif resolution == "DECISION":
+            decision_id = claim.get("decision_id")
+            if not decision_id:
+                issues.append(CritiqueIssue(
+                    id=f"CLAIMS-{claim_id}",
+                    spec_ref="Evidence-or-Request Contract",
+                    arch_ref=f"CRITICAL_CLAIMS.{claim_id}: {claim_text[:80]}",
+                    category="unresolved_critical",
+                    severity="blocking",
+                    description=f"Critical claim '{claim_id}' marked DECISION but missing decision_id reference",
+                    fix_suggestion="Add decision_id referencing a DECISION block with rationale and revisit_if",
+                ))
+
+    return issues
+
+
+import re as _re  # Used by Block 5e and Block 5 deterministic checks
+
+# =============================================================================
+# Block 5e: SCOPE CREEP DETECTION (v2.1 - Endpoint/Feature Drift)
+# =============================================================================
+#
+# v2.1 (2026-02-06): Deterministic check for scope creep.
+# Extracts HTTP endpoint patterns from spec markdown and architecture,
+# then flags:
+#   - Endpoints in architecture NOT listed in spec (scope creep)
+#   - Endpoint name changes (spec says /voice/status, arch says /voice/health)
+#   - Features explicitly excluded by spec constraints appearing in arch
+#
+# Wired into call_json_critic() alongside run_deterministic_spec_compliance_check().
+#
+
+_ENDPOINT_PATTERN = _re.compile(
+    r'(?:^|\s)'
+    r'(GET|POST|PUT|PATCH|DELETE|WS|WSS|WebSocket)'
+    r'\s+'
+    r'(/[a-zA-Z0-9/_{}\-]+)',
+    _re.IGNORECASE | _re.MULTILINE
+)
+
+# Features that spec constraints might explicitly exclude
+_EXCLUDED_FEATURE_KEYWORDS = {
+    'wake_word': ['wake_word', 'wake word', 'hotword', 'wakeword'],
+    'tts': ['text-to-speech', 'text_to_speech', 'tts', 'piper'],
+    'websocket': ['websocket', 'ws /voice', 'ws /audio', '/stream'],
+}
+
+
+def _extract_endpoints(text: str) -> List[Tuple[str, str]]:
+    """Extract (METHOD, /path) pairs from text."""
+    if not text:
+        return []
+    results = []
+    for match in _ENDPOINT_PATTERN.finditer(text):
+        method = match.group(1).upper()
+        path = match.group(2).rstrip('.')
+        # Normalize WebSocket variants
+        if method in ('WS', 'WSS', 'WEBSOCKET'):
+            method = 'WS'
+        results.append((method, path.lower()))
+    # Dedupe preserving order
+    seen = set()
+    unique = []
+    for ep in results:
+        if ep not in seen:
+            seen.add(ep)
+            unique.append(ep)
+    return unique
+
+
+def _build_exclusion_zone_set(lines: List[str]) -> set:
+    """Build a set of line indices that are inside exclusion zones.
+    
+    Exclusion zones are sections like "Out of Scope", "Not in this phase",
+    "Future Work", etc. where mentioning a feature does NOT mean the
+    architecture is implementing it.
+    
+    Returns set of 0-based line indices.
+    """
+    exclusion_headers = [
+        'out of scope', 'not in scope', 'excluded', 'future work',
+        'phase 2', 'phase 3', 'not in this phase', 'deferred',
+        'not implemented', 'out-of-scope', 'non-goals',
+    ]
+    zones: set = set()
+    in_exclusion = False
+    exclusion_depth = 0  # heading level that started the zone
+    
+    for i, line in enumerate(lines):
+        stripped = line.strip().lower()
+        
+        # Check if this line is a heading
+        heading_level = 0
+        if stripped.startswith('#'):
+            heading_level = len(stripped) - len(stripped.lstrip('#'))
+        
+        if heading_level > 0:
+            heading_text = stripped.lstrip('#').strip()
+            # Check if this heading starts an exclusion zone
+            if any(eh in heading_text for eh in exclusion_headers):
+                in_exclusion = True
+                exclusion_depth = heading_level
+                zones.add(i)
+                continue
+            # Check if a new heading at same or higher level ends the zone
+            if in_exclusion and heading_level <= exclusion_depth:
+                in_exclusion = False
+                exclusion_depth = 0
+        
+        if in_exclusion:
+            zones.add(i)
+    
+    return zones
+
+
+def run_scope_creep_check(
+    arch_content: str,
+    spec_markdown: Optional[str] = None,
+    spec_json: Optional[str] = None,
+) -> List[CritiqueIssue]:
+    """
+    v2.1: Deterministic scope creep detection.
+    
+    Compares endpoints and features in architecture against spec.
+    Flags:
+    - Extra endpoints not in spec
+    - Renamed endpoints (path differs from spec)
+    - Excluded features appearing in architecture
+    
+    Only runs if spec_markdown contains endpoint patterns (otherwise no baseline).
+    """
+    issues: List[CritiqueIssue] = []
+    
+    if not spec_markdown or not arch_content:
+        return issues
+    
+    spec_endpoints = _extract_endpoints(spec_markdown)
+    arch_endpoints = _extract_endpoints(arch_content)
+    
+    if not spec_endpoints:
+        # Spec doesn't list specific endpoints — can't check drift
+        return issues
+    
+    spec_paths = {path for _, path in spec_endpoints}
+    arch_paths = {path for _, path in arch_endpoints}
+    
+    # Check 1: Endpoints in architecture not in spec
+    extra_paths = arch_paths - spec_paths
+    if extra_paths:
+        # Filter out paths that are just minor variants (e.g., /voice/transcribe vs /voice/transcribe/b64)
+        truly_extra = []
+        for ep in extra_paths:
+            # Check it's not a sub-path of a spec endpoint
+            is_subpath = any(ep.startswith(sp + '/') for sp in spec_paths)
+            if not is_subpath:
+                truly_extra.append(ep)
+        
+        if truly_extra:
+            issue_id = len(issues) + 1
+            issues.append(CritiqueIssue(
+                id=f"SCOPE-CREEP-{issue_id:03d}",
+                spec_ref=f"Spec endpoints: {[f'{m} {p}' for m, p in spec_endpoints]}",
+                arch_ref=f"Extra architecture endpoints: {truly_extra}",
+                category="scope_creep",
+                severity="blocking",
+                description=(
+                    f"SCOPE CREEP: Architecture adds {len(truly_extra)} endpoint(s) not in spec: "
+                    f"{truly_extra}. Spec only lists: {[f'{m} {p}' for m, p in spec_endpoints]}. "
+                    f"Remove extra endpoints or get spec approval first."
+                ),
+                fix_suggestion=(
+                    f"Remove these endpoints from the architecture: {truly_extra}. "
+                    f"Only implement what the spec lists."
+                ),
+            ))
+            print(f"[DEBUG] [critique] v2.1 SCOPE CREEP: {len(truly_extra)} extra endpoint(s): {truly_extra}")
+    
+    # Check 2: Spec endpoints missing from architecture (possible rename)
+    missing_paths = spec_paths - arch_paths
+    if missing_paths:
+        issue_id = len(issues) + 1
+        issues.append(CritiqueIssue(
+            id=f"SCOPE-CREEP-{issue_id:03d}",
+            spec_ref=f"Missing spec endpoints: {list(missing_paths)}",
+            arch_ref=f"Architecture endpoints: {[f'{m} {p}' for m, p in arch_endpoints]}",
+            category="endpoint_rename",
+            severity="blocking",
+            description=(
+                f"ENDPOINT MISMATCH: Spec requires {list(missing_paths)} but architecture "
+                f"does not include them. The architecture may have renamed these endpoints. "
+                f"Use the exact endpoint paths from the spec."
+            ),
+            fix_suggestion=(
+                f"Ensure these spec endpoints are present with the exact paths: {list(missing_paths)}"
+            ),
+        ))
+        print(f"[DEBUG] [critique] v2.1 ENDPOINT MISMATCH: Missing {list(missing_paths)}")
+    
+    # Check 3: Excluded features appearing in architecture
+    spec_lower = spec_markdown.lower()
+    arch_lower = arch_content.lower()
+    
+    for feature, keywords in _EXCLUDED_FEATURE_KEYWORDS.items():
+        # Check if spec explicitly excludes this feature
+        spec_excludes = any(
+            _re.search(rf'(?:do\s+not|don.t|no)\s+(?:implement)?.*{_re.escape(kw)}', spec_lower)
+            for kw in keywords
+        )
+        if not spec_excludes:
+            continue
+        
+        # Check if architecture includes this feature (outside of "out of scope" sections)
+        for kw in keywords:
+            if kw in arch_lower:
+                # Quick check: is it in an exclusion context?
+                lines = arch_content.splitlines()
+                exclusion_zones = _build_exclusion_zone_set(lines)
+                for i, line in enumerate(lines):
+                    if kw in line.lower() and i not in exclusion_zones:
+                        # Found feature in non-excluded context
+                        issue_id = len(issues) + 1
+                        issues.append(CritiqueIssue(
+                            id=f"SCOPE-CREEP-{issue_id:03d}",
+                            spec_ref=f"Spec excludes: {feature}",
+                            arch_ref=f"Architecture includes '{kw}' at line {i+1}",
+                            category="excluded_feature",
+                            severity="blocking",
+                            description=(
+                                f"EXCLUDED FEATURE: Spec explicitly says do not implement '{feature}', "
+                                f"but architecture includes '{kw}' in a non-exclusion context (line {i+1})."
+                            ),
+                            fix_suggestion=f"Remove all references to '{feature}' from the architecture.",
+                        ))
+                        print(f"[DEBUG] [critique] v2.1 EXCLUDED FEATURE: '{feature}' found at line {i+1}")
+                        break  # One issue per feature is enough
+                break  # One keyword match per feature is enough
+    
+    return issues
+
+
+# =============================================================================
 # Block 5: DETERMINISTIC Spec-Compliance Check (v1.3 - CRITICAL FIX)
 # =============================================================================
 #
@@ -512,8 +899,6 @@ def validate_section_authority(
 #
 # See: CRITICAL_PIPELINE_FAILURE_REPORT.md (2026-01-22) for why this is needed.
 #
-
-import re as _re
 
 # Stack detection keywords - maps keywords to canonical stack names
 # v1.1 FIX: Use word-boundary aware patterns to prevent false matches
@@ -710,52 +1095,217 @@ _EXCLUSION_CONTEXT_PATTERNS = [
     r'no\s+mobile',
     # Future / deferred
     r'phase\s+[2-9]',
-    r'future\s+(?:work|phase|release|version|enhancement)',
+    r'future\s+(?:work|phase|release|version|enhancement|consideration)',
     r'planned\s+for\s+(?:future|later)',
     r'later\s+(?:phase|version|release)',
     r'beyond\s+(?:scope|phase\s*1|v1|mvp)',
+    # v1.11: Broader future-reference pattern (catches "future mobile/web clients" etc.)
+    r'future\s+\w+',
     # Revision notes discussing the mismatch itself (meta-commentary)
     r'critique\s+(?:claims?|says?|states?|flagged|reported)',
     r'erroneous\s+assessment',
     r'factually\s+incorrect',
     r'rejecting\s+this',
+    r'revision\s+notes?',
+    r'review\s*:.*(?:rejected|incorrect|wrong)',
+    # v1.11: Critique meta-commentary (architecture rebuttals to critique feedback)
+    r'reviewer\s+(?:claim|suggestion|feedback|assertion)',
+    r'false\s+positive',
+    r'\bREJECT\b',
+    r'this\s+is\s+(?:a\s+)?(?:false|erroneous|incorrect)',
+    r'appears\s+to\s+be\s+an\s+error',
+    r'spec[_-]?compliance',
+    r'platform\s+mismatch\s*:',
+    # v1.10: Additional inline exclusion indicators
+    r'explicitly\s+not',
+    r'not\s+(?:yet|now)',
+    r'must\s+not\s+block',
+    r'should\s+not\s+block',
+    r'without\s+(?:blocking|preventing)',
+    # v1.11: "allowing" pattern (forward-looking compatibility statements)
+    r'allowing\s+(?:future|other|additional|external)',
 ]
 
-# Pre-compile for performance
+# v1.10: Patterns for INLINE exclusion — checked on the keyword line itself only.
+# These are strong enough signals that we don't need surrounding context.
+_INLINE_EXCLUSION_PATTERNS = [
+    _re.compile(r'^\s*[\u274c\u2717\u2718\u2573\u00d7]', _re.UNICODE),  # Line starts with ❌ ✗ ✘ ╳ ×
+    _re.compile(r'no\s+mobile', _re.IGNORECASE),
+    _re.compile(r'not\s+(?:in\s+)?(?:this|phase|scope|v1|mvp)', _re.IGNORECASE),
+    _re.compile(r'phase\s+[2-9]', _re.IGNORECASE),
+    _re.compile(r'must\s+not\s+block', _re.IGNORECASE),
+    _re.compile(r'future\s+phase', _re.IGNORECASE),
+    _re.compile(r'explicitly\s+not', _re.IGNORECASE),
+    # v1.11: Critique meta-commentary patterns (inline)
+    _re.compile(r'\*\*Reviewer\s+(?:Claim|Suggestion)', _re.IGNORECASE),  # **Reviewer Claim**: ...
+    _re.compile(r'\*\*DECISION\*\*\s*:\s*\*\*REJECT', _re.IGNORECASE),  # **DECISION**: **REJECT**
+    _re.compile(r'false\s+positive', _re.IGNORECASE),
+    _re.compile(r'allowing\s+future\s+\w+', _re.IGNORECASE),  # "allowing future mobile/web clients"
+]
+
+# v1.10: Section headers that define "exclusion zones".
+# Everything under these headers until the next header is excluded.
+_EXCLUSION_SECTION_HEADERS = [
+    _re.compile(r'^#+\s*.*(?:out\s+of\s+scope|future\s+consideration|not\s+in\s+(?:scope|phase)|excluded|deferred|limitation)', _re.IGNORECASE),
+    _re.compile(r'^#+\s*.*(?:revision\s+(?:notes?|log|history))', _re.IGNORECASE),
+    _re.compile(r'^\d+\.\s*(?:future\s+consideration|out\s+of\s+scope|revision\s+(?:notes?|log))', _re.IGNORECASE),
+    _re.compile(r'^\*\*(?:out\s+of\s+scope|future|excluded|not\s+in\s+phase)', _re.IGNORECASE),
+    # v1.11: Critique rebuttal sections (architecture responding to critique feedback)
+    _re.compile(r'^#+\s*.*(?:reviewer\s+suggestion|revision\s+response|critique\s+rebuttal|spec[_-]?compliance)', _re.IGNORECASE),
+    _re.compile(r'^#+\s*.*(?:platform\s+mismatch\s+(?:claim|analysis))', _re.IGNORECASE),
+]
+
+# Any markdown header pattern (to detect section boundaries)
+_SECTION_HEADER_RE = _re.compile(r'^(?:#{1,6}\s|\d+\.\s)')
+
+# Pre-compile context patterns for performance
 _EXCLUSION_CONTEXT_RE = [_re.compile(p, _re.IGNORECASE) for p in _EXCLUSION_CONTEXT_PATTERNS]
+
+
+def _build_exclusion_zone_set(lines):
+    """
+    v1.10: Pre-scan document to identify "exclusion zones".
+    An exclusion zone starts at a section header matching _EXCLUSION_SECTION_HEADERS
+    and extends until the next section header.
+    Returns set of line indices inside exclusion zones.
+    """
+    excluded_lines = set()
+    in_exclusion_zone = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        is_any_header = bool(_SECTION_HEADER_RE.match(stripped))
+        if is_any_header:
+            is_exclusion_header = any(pat.match(stripped) for pat in _EXCLUSION_SECTION_HEADERS)
+            if is_exclusion_header:
+                in_exclusion_zone = True
+                excluded_lines.add(i)
+                continue
+            else:
+                in_exclusion_zone = False
+        if in_exclusion_zone:
+            excluded_lines.add(i)
+    return excluded_lines
+
+
+# v2.2: Patterns indicating INCIDENTAL use of platform keywords.
+# These are compound phrases or technical contexts where "mobile" etc. appear
+# but do NOT indicate the architecture targets a mobile platform.
+_INCIDENTAL_PLATFORM_PATTERNS = [
+    # Compound adjectives (mobile as modifier, not platform target)
+    _re.compile(r'mobile[\s-](?:friendly|first|responsive|optimized|compatible|aware|ready)', _re.IGNORECASE),
+    # Browser/API contexts (describing web APIs, not targeting mobile)
+    _re.compile(r'mobile\s+(?:browser|browsers|safari|chrome|device|devices|screen|viewport)', _re.IGNORECASE),
+    # Audio/media API contexts (common in voice/audio features)
+    _re.compile(r'mobile\s+(?:audio|microphone|media|recording|input)', _re.IGNORECASE),
+    _re.compile(r'(?:audio|microphone|media|recording)\s+(?:on|for|from)\s+mobile', _re.IGNORECASE),
+    # Compatibility/support mentions (not targeting, just noting support)
+    _re.compile(r'(?:support|handle|detect|check)\s+(?:for\s+)?mobile', _re.IGNORECASE),
+    _re.compile(r'mobile\s+(?:support|compatibility|fallback)', _re.IGNORECASE),
+    # CSS/responsive design contexts
+    _re.compile(r'(?:responsive|breakpoint|media\s+query|@media).*mobile', _re.IGNORECASE),
+    _re.compile(r'mobile.*(?:responsive|breakpoint|media\s+query|@media)', _re.IGNORECASE),
+    # User-agent / detection contexts
+    _re.compile(r'(?:user[\s-]?agent|navigator|window).*mobile', _re.IGNORECASE),
+    _re.compile(r'mobile.*(?:user[\s-]?agent|detection)', _re.IGNORECASE),
+    # WebRTC / MediaRecorder contexts (very common in voice features)
+    _re.compile(r'(?:MediaRecorder|getUserMedia|WebRTC|navigator\.mediaDevices).*mobile', _re.IGNORECASE),
+    _re.compile(r'mobile.*(?:MediaRecorder|getUserMedia|WebRTC)', _re.IGNORECASE),
+]
+
+# v2.2: Patterns indicating STRUCTURAL platform targeting.
+# These are declarative statements that the architecture IS for mobile.
+_STRUCTURAL_PLATFORM_PATTERNS = [
+    # Explicit platform declarations
+    _re.compile(r'(?:target|platform|deploy|build)\s*(?::|for|to)\s*(?:.*\b)?(?:mobile|android|ios)', _re.IGNORECASE),
+    _re.compile(r'(?:mobile|android|ios)\s+(?:app|application|client|platform|target|deployment)', _re.IGNORECASE),
+    # App store / native mobile indicators
+    _re.compile(r'(?:app\s+store|play\s+store|google\s+play|apple\s+store|apk|ipa\b)', _re.IGNORECASE),
+    _re.compile(r'(?:react\s+native|flutter|kotlin|swift|xcode|android\s+studio)', _re.IGNORECASE),
+    _re.compile(r'(?:cordova|capacitor|ionic|expo)\b', _re.IGNORECASE),
+    # Mobile-specific architecture patterns
+    _re.compile(r'\b(?:ios|android)\s+(?:sdk|api|permission|manifest)', _re.IGNORECASE),
+    _re.compile(r'(?:push\s+notification|geofencing|nfc)\s+.*(?:mobile|android|ios)', _re.IGNORECASE),
+]
+
+# v2.2: Tech stacks that DEFINITIVELY indicate a platform.
+# If the arch_stack contains any of these, platform is resolved immediately.
+_DESKTOP_DEFINITIVE_STACKS = {'TypeScript/Electron', 'Python+PyQt', 'Python+Tkinter', 'C#'}
+_MOBILE_DEFINITIVE_STACKS = {'React Native', 'Flutter', 'Kotlin', 'Swift'}
 
 
 def _check_platform_targeted_not_excluded(
     arch_content: str,
     platform_keywords: List[str],
-    context_window_lines: int = 2,
+    context_window_lines: int = 3,
+    arch_stack: Optional[List[str]] = None,
 ) -> bool:
     """
-    v1.8: Context-aware platform detection.
+    v2.2: Structural platform detection with tech stack awareness.
     
     Check whether platform keywords (e.g., 'mobile', 'android', 'ios') appear
-    in the architecture in an AFFIRMATIVE/TARGETING context, as opposed to an
-    exclusion context ("Out of Scope", "Phase 2+", "not in this phase", etc.).
+    in the architecture in a STRUCTURAL/TARGETING context, as opposed to
+    incidental mentions (API descriptions, compatibility notes, etc.).
     
-    Strategy:
-    - Find every line containing a platform keyword
-    - Check the line AND surrounding lines for exclusion indicators
-    - If ALL mentions are in exclusion context → not targeted (return False)
-    - If ANY mention is in affirmative context → targeted (return True)
+    v2.2 fixes the v1.10 false positive where incidental mentions of "mobile"
+    in technical contexts (e.g., "mobile browser", "mobile audio handling",
+    "MediaRecorder mobile support") were counted as affirmative platform signals
+    for a Desktop/Electron architecture.
+    
+    Five-layer detection:
+    0. TECH STACK OVERRIDE: If arch_stack contains definitive desktop tech
+       (e.g., Electron), the architecture is Desktop regardless of keywords.
+    1. EXCLUSION ZONES: Pre-scanned section headers ("Out of Scope", etc.)
+    2. INLINE PATTERNS: Line-level exclusion signals (❌ prefix, etc.)
+    3. CONTEXT WINDOW: Surrounding lines checked for exclusion language.
+    4. STRUCTURAL SIGNAL: After exclusion filtering, remaining mentions must
+       match STRUCTURAL platform patterns ("targets: mobile", "mobile app",
+       "for Android/iOS") to count. Incidental mentions ("mobile browser",
+       "mobile audio", "mobile-friendly") are filtered out.
     
     Args:
         arch_content: The architecture document text
         platform_keywords: Keywords to search for (e.g., ['mobile', 'android', 'ios'])
         context_window_lines: Number of lines above/below to check for exclusion context
+        arch_stack: Detected tech stack from architecture (e.g., ['TypeScript/Electron'])
     
     Returns:
-        True if the platform appears to be TARGETED (not just excluded)
+        True if the platform appears to be TARGETED (not just excluded/incidental)
     """
     if not arch_content:
         return False
     
+    # =========================================================================
+    # Layer 0: Tech stack override (v2.2)
+    # If the architecture uses definitively desktop tech, it's not mobile.
+    # =========================================================================
+    if arch_stack:
+        arch_stack_set = set(arch_stack)
+        has_desktop_stack = bool(arch_stack_set & _DESKTOP_DEFINITIVE_STACKS)
+        has_mobile_stack = bool(arch_stack_set & _MOBILE_DEFINITIVE_STACKS)
+        
+        if has_desktop_stack and not has_mobile_stack:
+            print(
+                f"[DEBUG] [critique] v2.2 Tech stack override: {arch_stack_set & _DESKTOP_DEFINITIVE_STACKS} "
+                f"is definitively Desktop — skipping mobile keyword scan"
+            )
+            logger.info(
+                "[critique] v2.2 Tech stack override: %s is Desktop, not scanning for mobile keywords",
+                arch_stack_set & _DESKTOP_DEFINITIVE_STACKS,
+            )
+            return False
+    
     lines = arch_content.splitlines()
-    affirmative_count = 0
+    
+    # Layer 1: Pre-scan for exclusion zones (section-level)
+    exclusion_zones = _build_exclusion_zone_set(lines)
+    if exclusion_zones:
+        logger.debug(
+            "[critique] v1.10 Exclusion zones: %d lines in %d total",
+            len(exclusion_zones), len(lines)
+        )
+    
+    structural_count = 0
+    incidental_count = 0
     excluded_count = 0
     
     for i, line in enumerate(lines):
@@ -771,48 +1321,97 @@ def _check_platform_targeted_not_excluded(
         if not has_keyword:
             continue
         
-        # Build context window: the line itself + surrounding lines
+        # --- Layer 1: Exclusion zone check ---
+        if i in exclusion_zones:
+            excluded_count += 1
+            logger.debug(
+                "[critique] v1.10 Line %d EXCLUDED (in exclusion zone): %s",
+                i + 1, line.strip()[:120]
+            )
+            continue
+        
+        # --- Layer 2: Inline exclusion patterns (line-level, no context needed) ---
+        is_inline_excluded = any(
+            pat.search(line) for pat in _INLINE_EXCLUSION_PATTERNS
+        )
+        if is_inline_excluded:
+            excluded_count += 1
+            logger.debug(
+                "[critique] v1.10 Line %d EXCLUDED (inline pattern): %s",
+                i + 1, line.strip()[:120]
+            )
+            continue
+        
+        # --- Layer 3: Context window check (original v1.8 approach, widened) ---
         start = max(0, i - context_window_lines)
         end = min(len(lines), i + context_window_lines + 1)
         context_block = " ".join(lines[start:end]).lower()
         
-        # Check if this mention is in an exclusion context
-        is_excluded = False
+        is_context_excluded = False
         for pattern in _EXCLUSION_CONTEXT_RE:
             if pattern.search(context_block):
-                is_excluded = True
+                is_context_excluded = True
                 break
         
-        if is_excluded:
+        if is_context_excluded:
             excluded_count += 1
             logger.debug(
-                "[critique] v1.8 Platform keyword on line %d is EXCLUDED (context: %s)",
-                i + 1, context_block[:120]
-            )
-        else:
-            affirmative_count += 1
-            logger.debug(
-                "[critique] v1.8 Platform keyword on line %d appears AFFIRMATIVE: %s",
+                "[critique] v1.10 Line %d EXCLUDED (context window): %s",
                 i + 1, line.strip()[:120]
             )
+            continue
+        
+        # --- Layer 4: Structural vs incidental classification (v2.2) ---
+        # The mention passed all exclusion checks. But is it actually a
+        # platform declaration, or just an incidental technical reference?
+        
+        is_incidental = any(
+            pat.search(line) for pat in _INCIDENTAL_PLATFORM_PATTERNS
+        )
+        if is_incidental:
+            incidental_count += 1
+            logger.debug(
+                "[critique] v2.2 Line %d INCIDENTAL (technical context): %s",
+                i + 1, line.strip()[:120]
+            )
+            continue
+        
+        is_structural = any(
+            pat.search(line) for pat in _STRUCTURAL_PLATFORM_PATTERNS
+        )
+        if is_structural:
+            structural_count += 1
+            logger.info(
+                "[critique] v2.2 Line %d STRUCTURAL platform signal: %s",
+                i + 1, line.strip()[:120]
+            )
+            continue
+        
+        # Mention is not excluded, not incidental, not structural.
+        # v2.2: Treat ambiguous mentions as incidental (conservative).
+        # This is the key change — previously these counted as affirmative.
+        incidental_count += 1
+        logger.debug(
+            "[critique] v2.2 Line %d AMBIGUOUS (treated as incidental): %s",
+            i + 1, line.strip()[:120]
+        )
     
-    total = affirmative_count + excluded_count
+    total = structural_count + incidental_count + excluded_count
     
     if total == 0:
-        # No mentions at all
         return False
     
-    if affirmative_count > 0:
+    if structural_count > 0:
         print(
-            f"[DEBUG] [critique] v1.8 Platform detection: {affirmative_count} affirmative, "
-            f"{excluded_count} excluded mentions"
+            f"[DEBUG] [critique] v2.2 Platform detection: {structural_count} structural, "
+            f"{incidental_count} incidental, {excluded_count} excluded mentions"
         )
         return True
     
-    # All mentions are in exclusion context
+    # No structural signals — only incidental/excluded mentions
     print(
-        f"[DEBUG] [critique] v1.8 Platform keywords found but ALL in exclusion context "
-        f"({excluded_count} mentions) - NOT a platform mismatch"
+        f"[DEBUG] [critique] v2.2 Platform keywords found but NO structural signals "
+        f"({incidental_count} incidental, {excluded_count} excluded) — NOT a platform mismatch"
     )
     return False
 
@@ -1067,6 +1666,7 @@ def run_deterministic_spec_compliance_check(
         mobile_is_targeted = _check_platform_targeted_not_excluded(
             arch_content=arch_content,
             platform_keywords=["mobile", "android", "ios"],
+            arch_stack=arch_stack,  # v2.2: Pass stack for tech-stack-aware detection
         )
         if mobile_is_targeted:
             issue_counter += 1
@@ -1082,7 +1682,7 @@ def run_deterministic_spec_compliance_check(
                 ),
                 fix_suggestion="Rewrite architecture to target Desktop platform as specified.",
             ))
-            print(f"[DEBUG] [critique] v1.8 BLOCKER: Platform mismatch (Desktop spec, Mobile arch)")
+            print(f"[DEBUG] [critique] v2.2 BLOCKER: Platform mismatch (Desktop spec, Mobile arch)")
     
     # Summary
     if issues:
@@ -1211,6 +1811,18 @@ async def call_json_critic(
         original_request=original_request,
     )
     
+    # =========================================================================
+    # v2.1: Run SCOPE CREEP check (endpoint drift + excluded features)
+    # =========================================================================
+    scope_creep_issues = run_scope_creep_check(
+        arch_content=arch_content,
+        spec_markdown=spec_markdown,
+        spec_json=spec_json,
+    )
+    deterministic_issues.extend(scope_creep_issues)
+    if scope_creep_issues:
+        print(f"[DEBUG] [critique] v2.1 Scope creep check: {len(scope_creep_issues)} issue(s)")
+    
     # If deterministic check found blocking issues, FAIL IMMEDIATELY
     # Don't even bother calling the LLM - the architecture is fundamentally wrong.
     if deterministic_issues:
@@ -1228,6 +1840,45 @@ async def call_json_critic(
             blocking_issues=deterministic_issues,
             non_blocking_issues=[],
         )
+    
+    # =========================================================================
+    # v2.0: Evidence resolution check (CRITICAL_CLAIMS register validation)
+    # Tweak #1: Only run when output is "final" — no pending EVIDENCE_REQUESTs
+    # =========================================================================
+    pending_requests = parse_evidence_requests(arch_content)
+    has_claims_register = "CRITICAL_CLAIMS:" in arch_content
+    
+    if not pending_requests:
+        # Output is final (no EVIDENCE_REQUESTs pending) — safe to validate
+        evidence_issues = run_evidence_resolution_check(arch_content=arch_content)
+        
+        # Only blocking evidence issues feed into the deterministic check.
+        # During transition, missing_claims_register is non_blocking so it
+        # won't cause an early fail — it flows through to the LLM critique.
+        blocking_evidence = [i for i in evidence_issues if i.severity == "blocking"]
+        non_blocking_evidence = [i for i in evidence_issues if i.severity != "blocking"]
+        
+        if blocking_evidence:
+            print(f"[DEBUG] [critique] v2.0 EVIDENCE CHECK FAIL: {len(blocking_evidence)} blocking issue(s)")
+            logger.warning(
+                "[critique] v2.0 Evidence resolution check BLOCKED: %d issue(s)",
+                len(blocking_evidence)
+            )
+            return CritiqueResult(
+                summary=f"Architecture BLOCKED by evidence resolution check: {len(blocking_evidence)} unresolved critical claim(s)",
+                critique_model="evidence_check_v2.0",
+                critique_failed=False,
+                critique_mode="deep+evidence",
+                blocking_issues=blocking_evidence,
+                non_blocking_issues=non_blocking_evidence,
+            )
+        
+        # Non-blocking evidence issues get collected to pass through
+        deterministic_issues.extend(non_blocking_evidence)
+        if non_blocking_evidence:
+            print(f"[DEBUG] [critique] v2.0 Evidence check: {len(non_blocking_evidence)} non-blocking issue(s) noted")
+    else:
+        print(f"[DEBUG] [critique] v2.0 Skipping evidence resolution check: {len(pending_requests)} pending EVIDENCE_REQUEST(s)")
     
     # Deterministic check passed - proceed with LLM critique
     print(f"[DEBUG] [critique] v1.3 Deterministic check PASSED - proceeding to LLM critique")
@@ -1293,7 +1944,68 @@ EVIDENCE REQUIREMENT:
 - If you cannot cite both, make the issue non_blocking
 - If spec_ref points to an LLM SUGGESTION section, make the issue non_blocking
 
-Your critique must align with the spec. Do not expand scope or invent constraints."""
+Your critique must align with the spec. Do not expand scope or invent constraints.
+
+## EVIDENCE-OR-REQUEST CONTRACT
+
+For every implementation-affecting claim, you MUST output exactly one of:
+
+1. **CITED** — You have seen evidence in this context.
+   Format: [CITED file="path/to/file.py" lines="42-58"]
+           [CITED doc="runtime_facts.yaml" key="sandbox.primary_paths.desktop"]
+           [CITED bundle="architecture_map" lines="80-110"]
+           [CITED rag_then_read="searched 'query', confirmed in path/file.py" lines="15-38"]
+
+2. **EVIDENCE_REQUEST** — You need the orchestrator to fetch something.
+   (See format below. You will be re-prompted with results.)
+
+3. **DECISION** — This is a genuine design choice, not a discoverable fact.
+   Format:
+   DECISION:
+     id: "D-NNN"
+     topic: "What you're deciding"
+     choice: "What you chose"
+     why: "Rationale"
+     consequences: ["Impact 1", "Impact 2"]
+     revisit_if: "Condition that would change this decision"
+
+4. **HUMAN_REQUIRED** — Evidence doesn't exist and guessing is high-risk.
+   Format:
+   HUMAN_REQUIRED:
+     id: "HR-NNN"
+     question: "One precise question"
+     why: "What breaks if we guess"
+     searched: ["What you already tried"]
+     default_if_no_answer: "Safe fallback if human doesn't respond"
+
+**NEVER** silently assume a path, port, format, encoding, library API, threading model, or integration point.
+
+### Evidence Hierarchy
+- File read / sandbox read = proof (use for any implementation-affecting claim about code)
+- RAG search = pointer (must follow up with file read to become a citation)
+- Policy documents (runtime_facts.yaml, third_party_policy.yaml) = citation for non-code stable facts
+- Architecture map / codebase report = citation for structure claims (they ARE file reads)
+
+### Severity
+- **CRITICAL**: paths, ports, formats, encodings, threading, security boundaries, API schemas, data flow contracts.
+  Must be resolved (CITED / DECISION / HUMAN_REQUIRED) before implementation.
+- **NONCRITICAL**: UI copy, CSS, optional optimizations, naming conventions, comment content.
+  Warn if unverified, does not block.
+
+### CRITICAL_CLAIMS Register (Required)
+At the END of your output (must be the LAST block — nothing follows it), include:
+
+CRITICAL_CLAIMS:
+  - id: "CC-001"
+    claim: "Short description of what you claimed"
+    resolution: "CITED"
+    evidence:
+      - file: "path/to/file.py"
+        lines: "42-58"
+
+Every critical claim must be accounted for. This register is validated deterministically.
+Do NOT output CRITICAL_CLAIMS until you are done requesting evidence.
+CRITICAL_CLAIMS must be the LAST block in your output. Nothing should follow it."""
 
     critique_messages = [
         {"role": "system", "content": system_message},
@@ -1655,6 +2367,11 @@ __all__ = [
     "validate_spec_ref_grounding",
     # Block 5c: Section authority validation (v1.9)
     "validate_section_authority",
+    # Block 5d: Evidence resolution check (v2.0)
+    "extract_critical_claims",
+    "run_evidence_resolution_check",
+    # Block 5e: Scope creep detection (v2.1)
+    "run_scope_creep_check",
     # Block 5: Deterministic spec-compliance check (v1.3 - CRITICAL FIX)
     "run_deterministic_spec_compliance_check",
     # Block 5: JSON critique

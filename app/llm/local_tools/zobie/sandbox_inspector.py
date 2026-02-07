@@ -26,6 +26,14 @@ v1.1 (2026-01): Desktop alias expansion (human-style resolution)
               - Added _identify_root_type() for reporting (host_onedrive_desktop, sandbox_desktop, etc.)
               - All discovery functions now track roots_tried for debugging
               - Returns discovery_method in results (exact, bounded_search, folder_discovery)
+v1.2 (2026-02): Project root resolution (D: drive support)
+              - anchor now accepts project names ("orb", "orb-desktop") and absolute paths
+              - PROJECT_ROOTS dict maps known project names to D: paths
+              - Dynamic D: discovery: unknown anchors checked against D: subdirectories
+              - _identify_root_type() recognises project roots ("project_orb", "project_orb-desktop")
+              - Unknown anchors fall back to D: root scan instead of returning empty
+              - Evidence contract prompt updated to tell LLMs about project anchors
+              - Subfolder paths normalised to OS separators (forward slashes converted)
 """
 
 from __future__ import annotations
@@ -51,6 +59,7 @@ MAX_FILES_PER_FOLDER = 50       # Don't list more than this
 
 # Sandbox root paths (Windows Sandbox + host user)
 # v1.1: Added OneDrive Desktop as primary host location
+# v1.2: Added D:\ project roots for direct project directory access
 # Priority order depends on whether "SANDBOX" is mentioned in intent
 SANDBOX_ROOTS: Dict[str, List[str]] = {
     "desktop": [
@@ -68,6 +77,19 @@ SANDBOX_ROOTS: Dict[str, List[str]] = {
         r"C:\Users\WDAGUtilityAccount\Documents",
     ],
 }
+
+# v1.2: Known project roots on D:\ drive
+# These are resolved directly — no anchor alias needed
+# The sandbox controller already allows D:\ in ALLOWED_FS_ROOTS
+PROJECT_ROOTS: Dict[str, str] = {
+    "orb": r"D:\Orb",
+    "orb-desktop": r"D:\orb-desktop",
+    "orb-electron-data": r"D:\orb-electron-data",
+    "sandbox_controller": r"D:\sandbox_controller",
+}
+
+# v1.2: D:\ drive root for dynamic project discovery
+D_DRIVE_ROOT = "D:\\"
 
 # Separate lists for intelligent ordering
 HOST_DESKTOP_ROOTS = [
@@ -98,31 +120,54 @@ MAX_SEARCH_DEPTH = 3
 
 def _get_ordered_roots(anchor: str, job_intent: Optional[str] = None) -> List[str]:
     """
-    Get desktop/documents roots in priority order based on context.
+    Get roots in priority order based on context.
     
     v1.1: If "SANDBOX" is explicitly mentioned in intent, try sandbox roots first.
     Otherwise, try host OneDrive roots first (most likely real location).
     
+    v1.2: Added project root resolution.
+    - If anchor matches a known project name ("orb", "orb-desktop", etc.),
+      return the project's D: path directly.
+    - If anchor is a full absolute path (e.g. "D:\\orb-desktop"), return it directly.
+    - If anchor doesn't match anything known, try to find it on D: dynamically.
+    
     Args:
-        anchor: "desktop" or "documents"
+        anchor: "desktop", "documents", project name, or absolute path
         job_intent: User's intent text (optional)
         
     Returns:
         List of root paths in priority order
     """
-    anchor_lower = anchor.lower()
+    anchor_lower = anchor.lower().strip().rstrip("\\/")
     intent_lower = (job_intent or "").lower()
     
-    # Determine if user explicitly wants sandbox
+    # ── v1.2: Check if anchor is a full absolute path ──
+    if len(anchor) >= 2 and anchor[1] == ":":
+        # It's already an absolute path like D:\orb-desktop or D:\Orb\app
+        logger.info("[sandbox_inspector] v1.2: Absolute path anchor: %s", anchor)
+        return [anchor]
+    
+    # ── v1.2: Check known project names ──
+    if anchor_lower in PROJECT_ROOTS:
+        project_path = PROJECT_ROOTS[anchor_lower]
+        logger.info("[sandbox_inspector] v1.2: Project anchor '%s' -> %s", anchor, project_path)
+        return [project_path]
+    
+    # ── v1.2: Check if anchor is a D:\ subdirectory name (dynamic discovery) ──
+    # e.g. anchor="orb-desktop" might not be in PROJECT_ROOTS but exists on D:\
+    candidate_d_path = os.path.join(D_DRIVE_ROOT, anchor)
+    if os.path.isdir(candidate_d_path):
+        logger.info("[sandbox_inspector] v1.2: Dynamic D:\\ discovery: %s -> %s", anchor, candidate_d_path)
+        return [candidate_d_path]
+    
+    # ── v1.1: Original desktop/documents logic ──
     sandbox_explicit = "sandbox" in intent_lower
     
     if anchor_lower == "desktop":
         if sandbox_explicit:
-            # Sandbox first, then host
             roots = SANDBOX_DESKTOP_ROOTS + HOST_DESKTOP_ROOTS
             logger.info("[sandbox_inspector] v1.1: SANDBOX explicit - sandbox roots first")
         else:
-            # Host first (OneDrive prioritized), then sandbox
             roots = HOST_DESKTOP_ROOTS + SANDBOX_DESKTOP_ROOTS
             logger.info("[sandbox_inspector] v1.1: Host roots first (OneDrive prioritized)")
     elif anchor_lower == "documents":
@@ -135,7 +180,12 @@ def _get_ordered_roots(anchor: str, job_intent: Optional[str] = None) -> List[st
     else:
         # Fallback to original SANDBOX_ROOTS
         roots = SANDBOX_ROOTS.get(anchor_lower, [])
-        logger.warning("[sandbox_inspector] Unknown anchor '%s', using default roots", anchor)
+        if not roots:
+            # v1.2: Last resort - try D:\ root itself so bounded search can find it
+            logger.warning("[sandbox_inspector] v1.2: Unknown anchor '%s', falling back to D:\\ scan", anchor)
+            roots = [D_DRIVE_ROOT]
+        else:
+            logger.warning("[sandbox_inspector] Unknown anchor '%s', using default roots", anchor)
     
     logger.info("[sandbox_inspector] Ordered roots: %s", roots)
     return roots
@@ -145,9 +195,19 @@ def _identify_root_type(root_path: str) -> str:
     """
     Identify the type of root for reporting purposes.
     
-    Returns: "host_onedrive_desktop", "host_desktop", "sandbox_desktop", etc.
+    v1.2: Added project root identification.
+    Returns: "project_orb", "project_orb-desktop", "host_onedrive_desktop", etc.
     """
-    path_lower = root_path.lower()
+    path_lower = root_path.lower().rstrip("\\/")
+    
+    # v1.2: Check if it's a known project root
+    for name, project_path in PROJECT_ROOTS.items():
+        if path_lower == project_path.lower().rstrip("\\/") or path_lower.startswith(project_path.lower().rstrip("\\/") + "\\"):
+            return f"project_{name}"
+    
+    # v1.2: Check if it's on D:\ drive (unknown project)
+    if path_lower.startswith("d:"):
+        return "project_d_drive"
     
     if "wdagutilityaccount" in path_lower:
         if "desktop" in path_lower:
@@ -296,7 +356,12 @@ def _discover_specific_folder(anchor: str, subfolder: str, job_intent: Optional[
     - Intelligent root ordering based on job_intent
     - Bounded search fallback if exact path not found
     - Tracking of roots tried
+    
+    v1.2: Normalise subfolder path separators (forward slashes to backslashes)
     """
+    # v1.2: Normalise subfolder separators — LLMs often send forward slashes
+    subfolder = subfolder.replace("/", "\\")
+    
     # v1.1: Use intelligent ordering
     roots = _get_ordered_roots(anchor, job_intent)
     roots_tried = []
@@ -304,7 +369,7 @@ def _discover_specific_folder(anchor: str, subfolder: str, job_intent: Optional[
     # ===== STEP A: Try exact path at each root =====
     for root in roots:
         root_type = _identify_root_type(root)
-        search_path = f"{root}\\{subfolder}"
+        search_path = os.path.join(root, subfolder)
         roots_tried.append({
             "root": root,
             "root_type": root_type,
@@ -755,6 +820,8 @@ __all__ = [
     "_bounded_folder_search",
     # Constants
     "SANDBOX_ROOTS",
+    "PROJECT_ROOTS",
+    "D_DRIVE_ROOT",
     "HOST_DESKTOP_ROOTS",
     "SANDBOX_DESKTOP_ROOTS",
     "HOST_DOCUMENTS_ROOTS",

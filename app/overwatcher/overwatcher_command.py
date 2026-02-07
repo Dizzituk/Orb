@@ -95,7 +95,13 @@ def load_critical_pipeline_artifacts(
     job_id: str,
     artifact_root: str = DEFAULT_ARTIFACT_ROOT,
 ) -> Dict[str, Any]:
-    """Load artifacts from Critical Pipeline if they exist."""
+    """Load artifacts from Critical Pipeline if they exist.
+    
+    v5.2: Searches multiple directory layouts:
+    - {root}/{job_id}/architecture/latest.md (original layout)
+    - {root}/{job_id}/arch/arch_v1.md (actual CP output layout)
+    - {root}/jobs/{job_id}/arch/arch_v1.md (nested jobs/ layout)
+    """
     artifacts: Dict[str, Any] = {
         "architecture": None,
         "critique": None,
@@ -103,25 +109,146 @@ def load_critical_pipeline_artifacts(
         "exists": False,
     }
 
-    job_dir = Path(artifact_root) / job_id
-    if not job_dir.exists():
+    # v5.2: Try multiple directory layouts for job artifacts
+    candidate_dirs = [
+        Path(artifact_root) / job_id,
+        Path(artifact_root) / "jobs" / job_id,
+    ]
+    
+    job_dir = None
+    for candidate in candidate_dirs:
+        if candidate.exists():
+            job_dir = candidate
+            break
+    
+    if job_dir is None:
+        logger.debug("[artifact_load] No job directory found for %s in %s", job_id, artifact_root)
         return artifacts
 
     for name, paths in [
-        ("architecture", ["architecture/latest.md", "arch_v1.md"]),
-        ("critique", ["critique/latest.json", "critique_v1.json"]),
+        ("architecture", [
+            "architecture/latest.md",
+            "arch/arch_v3.md",
+            "arch/arch_v2.md",
+            "arch/arch_v1.md",
+            "arch_v1.md",
+        ]),
+        ("critique", [
+            "critique/latest.json",
+            "critique/critique_v1.json",
+            "critique_v1.json",
+        ]),
         ("plan", ["plan/chunk_plan.json"]),
     ]:
         for rel_path in paths:
             candidate = job_dir / rel_path
             if candidate.exists():
                 artifacts[name] = str(candidate)
+                logger.debug("[artifact_load] Found %s at %s", name, candidate)
                 break
 
     artifacts["exists"] = any(
         [artifacts["architecture"], artifacts["critique"], artifacts["plan"]]
     )
     return artifacts
+
+
+# =============================================================================
+# v5.2: Architecture Document Discovery
+# =============================================================================
+
+def _find_architecture_for_spec(
+    spec_id: str,
+    artifact_root: str = DEFAULT_ARTIFACT_ROOT,
+) -> Optional[Dict[str, Any]]:
+    """Find the Critical Pipeline architecture document for a given spec.
+    
+    v5.2: The Critical Pipeline stores architecture docs in:
+        {artifact_root}/jobs/cp-{hash}/arch/arch_v{N}.md
+    
+    Since the Overwatcher doesn't receive the CP job_id directly, we scan
+    recent CP job directories and check if their architecture document
+    references the spec_id.
+    
+    Strategy:
+    1. Scan for cp-* directories in the jobs folder
+    2. Sort by modification time (most recent first)
+    3. Check if the architecture doc references the spec_id
+    4. Return the first match
+    """
+    jobs_dir = Path(artifact_root) / "jobs"
+    if not jobs_dir.exists():
+        # Also try flat layout
+        jobs_dir = Path(artifact_root)
+    
+    # Find all cp-* directories
+    cp_dirs = []
+    try:
+        for entry in jobs_dir.iterdir():
+            if entry.is_dir() and entry.name.startswith("cp-"):
+                cp_dirs.append(entry)
+    except OSError as e:
+        logger.warning("[arch_find] Failed to scan %s: %s", jobs_dir, e)
+        return None
+    
+    if not cp_dirs:
+        logger.info("[arch_find] No cp-* directories found in %s", jobs_dir)
+        return None
+    
+    # Sort by modification time, most recent first
+    cp_dirs.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+    
+    logger.info("[arch_find] Scanning %d cp-* dirs for spec %s", len(cp_dirs), spec_id)
+    
+    # Check each for an architecture document referencing our spec
+    for cp_dir in cp_dirs[:20]:  # Limit scan to 20 most recent
+        # Find the latest arch file
+        arch_dir = cp_dir / "arch"
+        if not arch_dir.exists():
+            continue
+        
+        # Get the highest-version arch file
+        arch_files = sorted(arch_dir.glob("arch_v*.md"), reverse=True)
+        if not arch_files:
+            continue
+        
+        arch_path = arch_files[0]  # Latest version
+        
+        # Quick check: does the architecture reference our spec_id?
+        try:
+            # Read just the first 2000 chars for spec_id check
+            with open(arch_path, 'r', encoding='utf-8') as f:
+                header = f.read(2000)
+            
+            if spec_id in header:
+                logger.info(
+                    "[arch_find] \u2713 Match: %s references spec %s",
+                    arch_path, spec_id,
+                )
+                return load_critical_pipeline_artifacts(
+                    job_id=cp_dir.name,
+                    artifact_root=str(jobs_dir.parent) if jobs_dir.name == "jobs" else artifact_root,
+                )
+        except Exception as e:
+            logger.debug("[arch_find] Failed to read %s: %s", arch_path, e)
+            continue
+    
+    # Fallback: return the most recent CP's architecture if we have one
+    # (in case the spec_id wasn't in the header)
+    for cp_dir in cp_dirs[:5]:
+        result = load_critical_pipeline_artifacts(
+            job_id=cp_dir.name,
+            artifact_root=str(jobs_dir.parent) if jobs_dir.name == "jobs" else artifact_root,
+        )
+        if result.get("architecture"):
+            logger.info(
+                "[arch_find] Fallback: using most recent architecture from %s",
+                cp_dir.name,
+            )
+            return result
+    
+    logger.warning("[arch_find] No architecture document found for spec %s", spec_id)
+    return None
 
 
 # =============================================================================
@@ -505,8 +632,128 @@ async def run_overwatcher_command(
 
         # Non-POT path: validate deliverable exists
         if not spec.is_smoke_test and spec.deliverable is None:
+            # =============================================================
+            # v5.2: Architecture spec routing (Bug 1 fix)
+            # When SpecGate grounded-create produces rich markdown but
+            # empty JSON, the spec gets flagged as is_architecture_spec.
+            # Route to the Implementer via the Critical Pipeline
+            # architecture document instead of hard-failing.
+            # =============================================================
+            if spec.is_architecture_spec:
+                logger.info(
+                    "[overwatcher_command] v5.2 ARCHITECTURE SPEC ROUTING: "
+                    "spec %s has no deliverable but is an architecture spec. "
+                    "Looking for Critical Pipeline architecture document...",
+                    spec.spec_id,
+                )
+                print(
+                    f">>> [ARCH_ROUTE] Architecture spec detected for {spec.spec_id} — "
+                    f"searching for Critical Pipeline architecture document"
+                )
+                
+                # Try to find the architecture document
+                # The job_id used by the Critical Pipeline is cp-{hash}
+                # We need to scan for it since the Overwatcher doesn't receive
+                # the CP job_id directly.
+                arch_artifacts = _find_architecture_for_spec(
+                    spec_id=spec.spec_id,
+                    artifact_root=artifact_root,
+                )
+                
+                if arch_artifacts and arch_artifacts.get("architecture"):
+                    arch_path = arch_artifacts["architecture"]
+                    logger.info(
+                        "[overwatcher_command] v5.2 Found architecture document: %s",
+                        arch_path,
+                    )
+                    print(f">>> [ARCH_ROUTE] \u2713 Found architecture: {arch_path}")
+                    
+                    # Read the architecture document
+                    try:
+                        arch_content = Path(arch_path).read_text(encoding="utf-8")
+                        logger.info(
+                            "[overwatcher_command] v5.2 Architecture document loaded: %d chars",
+                            len(arch_content),
+                        )
+                    except Exception as e:
+                        result.error = (
+                            f"Found architecture document at {arch_path} but failed to read it: {e}"
+                        )
+                        result.add_trace("SPEC_RESOLVE", "failed", {"error": result.error})
+                        logger.error("[overwatcher_command] %s", result.error)
+                        return result
+                    
+                    result.spec = spec
+                    result.add_trace(
+                        "SPEC_RESOLVE",
+                        "success_architecture",
+                        {
+                            "spec_id": spec.spec_id,
+                            "is_architecture_spec": True,
+                            "architecture_path": arch_path,
+                            "architecture_chars": len(arch_content),
+                            "spec_markdown_chars": len(spec.architecture_markdown or ""),
+                        },
+                    )
+                    result.add_trace(
+                        "ARCHITECTURE_SPEC_DETECTED",
+                        "routing_to_architecture_execution",
+                        {
+                            "architecture_path": arch_path,
+                            "architecture_chars": len(arch_content),
+                        },
+                    )
+                    
+                    # Route to architecture-based implementation
+                    # For now, pass to the LLM Overwatcher with the full
+                    # architecture as context, then let it proceed to
+                    # implementer for multi-file execution.
+                    # This is the bridge — the architecture document IS
+                    # the execution plan.
+                    from .architecture_executor import run_architecture_execution
+                    
+                    arch_result = await run_architecture_execution(
+                        spec=spec,
+                        architecture_content=arch_content,
+                        architecture_path=arch_path,
+                        job_id=job_id,
+                        llm_call_fn=llm_call_fn,
+                        artifact_root=artifact_root,
+                    )
+                    
+                    result.success = arch_result.get("success", False)
+                    result.overwatcher_decision = arch_result.get(
+                        "decision", "PASS" if arch_result.get("success") else "FAIL"
+                    )
+                    result.error = arch_result.get("error")
+                    result.stage_trace.extend(arch_result.get("trace", []))
+                    result.artifacts_written = arch_result.get("artifacts_written", [])
+                    
+                    logger.info(
+                        "[overwatcher_command] v5.2 Architecture execution complete: success=%s",
+                        result.success,
+                    )
+                    return result
+                else:
+                    logger.warning(
+                        "[overwatcher_command] v5.2 Architecture spec detected but no "
+                        "architecture document found. Has the Critical Pipeline been run?"
+                    )
+                    result.error = (
+                        f"Spec {spec.spec_id} is an architecture spec but no Critical Pipeline "
+                        f"architecture document was found. Run the Critical Pipeline first "
+                        f"('Astra, command: run critical pipeline') to generate the architecture."
+                    )
+                    result.add_trace(
+                        "SPEC_RESOLVE",
+                        "failed",
+                        {"error": result.error, "is_architecture_spec": True},
+                    )
+                    logger.error("[overwatcher_command] %s", result.error)
+                    return result
+            
             # Check if this was a POT spec that failed to parse
-            if spec.is_pot_spec:
+            elif spec.is_pot_spec:
                 pot_errors = spec.pot_tasks.errors if spec.pot_tasks else ["No POT tasks parsed"]
                 result.error = (
                     f"Spec {spec.spec_id} is a POT spec but parsing failed: "

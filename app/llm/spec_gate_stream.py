@@ -548,6 +548,19 @@ async def generate_spec_gate_stream(
                 )
                 yield _safe_json_event({"type": "token", "content": warn_msg})
                 response_parts.append(warn_msg)
+            elif validation_status == "pending_evidence":
+                # v4.6: Spec has unfulfilled CRITICAL EVIDENCE_REQUESTs
+                success_header = "🔬 **Spec Ready — Evidence Required Before Architecture**\n\n"
+                yield _safe_json_event({"type": "token", "content": success_header})
+                response_parts.append(success_header)
+                
+                evidence_msg = (
+                    "**Note:** This spec contains CRITICAL `EVIDENCE_REQUEST`(s) that must be \n"
+                    "fulfilled before the Critical Pipeline can produce a grounded architecture.\n"
+                    "The evidence plan is included in the spec below.\n\n"
+                )
+                yield _safe_json_event({"type": "token", "content": evidence_msg})
+                response_parts.append(evidence_msg)
             else:
                 success_header = "✅ **Spec Validated - SPoT Generated**\n\n"
                 yield _safe_json_event({"type": "token", "content": success_header})
@@ -672,10 +685,19 @@ async def generate_spec_gate_stream(
             yield _safe_json_event({"type": "token", "content": meta})
             response_parts.append(meta)
 
-            next_step = (
-                "\n🚀 **Spec Complete.**\n"
-                "Say **'Astra, command: run critical pipeline'** to proceed to architecture generation.\n"
-            )
+            # v4.6: Next-step message depends on validation status
+            if validation_status == "pending_evidence":
+                next_step = (
+                    "\n🔬 **Evidence Required Before Architecture.**\n"
+                    "This spec contains CRITICAL `EVIDENCE_REQUEST`(s) that must be fulfilled first.\n"
+                    "Say **'Astra, command: run critical pipeline'** to proceed — the Critical Pipeline\n"
+                    "will fulfil the evidence plan via sandbox reads before generating architecture.\n"
+                )
+            else:
+                next_step = (
+                    "\n🚀 **Spec Complete.**\n"
+                    "Say **'Astra, command: run critical pipeline'** to proceed to architecture generation.\n"
+                )
             yield _safe_json_event({"type": "token", "content": next_step})
             response_parts.append(next_step)
 

@@ -68,7 +68,7 @@ logger = logging.getLogger(__name__)
 # v1.11 BUILD VERIFICATION - Proves correct code is running
 # v1.11: Multi-file batch operations (Level 3 - Phase 5)
 # =============================================================================
-IMPLEMENTER_BUILD_ID = "2026-01-28-v1.11-multi-file-batch-ops"
+IMPLEMENTER_BUILD_ID = "2026-02-06-v1.12-atomic-task-interface"
 print(f"[IMPLEMENTER_LOADED] BUILD_ID={IMPLEMENTER_BUILD_ID}")
 logger.info(f"[implementer] Module loaded: BUILD_ID={IMPLEMENTER_BUILD_ID}")
 
@@ -1710,11 +1710,190 @@ async def run_multi_file_operation(
         )
 
 
+# =============================================================================
+# v1.12: ATOMIC TASK INTERFACE (Architecture Execution Support)
+# =============================================================================
+
+@dataclass
+class AtomicTaskResult:
+    """v1.12: Result from a single atomic task execution.
+    
+    Used by architecture_executor and future task-based callers.
+    The Implementer is the ONLY writer — this interface enforces that.
+    """
+    success: bool
+    path: str
+    action: str  # "create" or "modify"
+    chars_written: int = 0
+    error: Optional[str] = None
+    verified: bool = False
+    duration_ms: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "success": self.success,
+            "path": self.path,
+            "action": self.action,
+            "chars_written": self.chars_written,
+            "error": self.error,
+            "verified": self.verified,
+            "duration_ms": self.duration_ms,
+        }
+
+
+async def run_implementer_task(
+    *,
+    path: str,
+    content: str,
+    action: str = "create",
+    ensure_parents: bool = True,
+    client: Optional[SandboxClient] = None,
+) -> AtomicTaskResult:
+    """v1.12: Execute a single atomic write task in the sandbox.
+    
+    This is the task-level interface for the Implementer.
+    The architecture_executor (Overwatcher) calls this for each file.
+    
+    IMPLEMENTER IS THE ONLY WRITER.
+    
+    Flow:
+        1. Ensure parent directory exists (if ensure_parents=True)
+        2. Write file to sandbox via Base64 encoding
+        3. Read back to verify the write
+        4. Return result with verification status
+    
+    Args:
+        path: Absolute sandbox path to write to
+        content: Complete file content to write
+        action: "create" for new files, "modify" for modifications
+        ensure_parents: Create parent directories if needed
+        client: Optional sandbox client (uses default if None)
+    
+    Returns:
+        AtomicTaskResult with success/failure and verification
+    """
+    import time
+    start_time = time.time()
+    
+    def elapsed() -> int:
+        return int((time.time() - start_time) * 1000)
+    
+    logger.info(
+        "[implementer] v1.12 Atomic task: action=%s, path=%s, content=%d chars",
+        action, path, len(content),
+    )
+    print(f"[IMPLEMENTER_TASK] {action.upper()}: {path} ({len(content)} chars)")
+    
+    if client is None:
+        client = get_sandbox_client()
+    
+    if not client.is_connected():
+        return AtomicTaskResult(
+            success=False,
+            path=path,
+            action=action,
+            error="SAFETY: Sandbox not available",
+            duration_ms=elapsed(),
+        )
+    
+    # Step 1: Ensure parent directory exists
+    if ensure_parents:
+        parent_dir = str(Path(path).parent)
+        try:
+            mkdir_cmd = (
+                f'if (-not (Test-Path -Path "{parent_dir}")) '
+                f'{{ New-Item -ItemType Directory -Path "{parent_dir}" -Force | Out-Null; '
+                f'"CREATED" }} else {{ "EXISTS" }}'
+            )
+            mkdir_result = client.shell_run(mkdir_cmd, timeout_seconds=10)
+            if mkdir_result.stdout and ("CREATED" in mkdir_result.stdout or "EXISTS" in mkdir_result.stdout):
+                logger.debug("[implementer] v1.12 Parent dir: %s", mkdir_result.stdout.strip())
+            else:
+                logger.warning(
+                    "[implementer] v1.12 mkdir uncertain for %s: %s",
+                    parent_dir, mkdir_result.stderr or ""
+                )
+        except Exception as e:
+            return AtomicTaskResult(
+                success=False,
+                path=path,
+                action=action,
+                error=f"Failed to create parent directory {parent_dir}: {e}",
+                duration_ms=elapsed(),
+            )
+    
+    # Step 2: Write file via Base64 (BOM-free)
+    try:
+        encoded = base64.b64encode(content.encode('utf-8')).decode('ascii')
+        write_cmd = (
+            f'$bytes = [System.Convert]::FromBase64String("{encoded}"); '
+            f'[System.IO.File]::WriteAllBytes("{path}", $bytes)'
+        )
+        write_result = client.shell_run(write_cmd, timeout_seconds=60)
+        
+        if write_result.stderr and write_result.stderr.strip():
+            return AtomicTaskResult(
+                success=False,
+                path=path,
+                action=action,
+                error=f"Write failed: {write_result.stderr[:200]}",
+                duration_ms=elapsed(),
+            )
+        
+        logger.info("[implementer] v1.12 Wrote %d chars to %s", len(content), path)
+        
+    except Exception as e:
+        return AtomicTaskResult(
+            success=False,
+            path=path,
+            action=action,
+            error=f"Write exception: {e}",
+            duration_ms=elapsed(),
+        )
+    
+    # Step 3: Read back to verify
+    verified = False
+    try:
+        read_cmd = f'Get-Content -Path "{path}" -Raw -Encoding UTF8'
+        read_result = client.shell_run(read_cmd, timeout_seconds=30)
+        
+        if read_result.stdout is not None:
+            # Compare (strip to handle trailing newline differences)
+            if read_result.stdout.strip() == content.strip():
+                verified = True
+                logger.info("[implementer] v1.12 Verified: %s", path)
+            else:
+                logger.warning(
+                    "[implementer] v1.12 Verify mismatch for %s (wrote %d, read %d)",
+                    path, len(content), len(read_result.stdout),
+                )
+        else:
+            logger.warning("[implementer] v1.12 Verify read returned None for %s", path)
+    except Exception as e:
+        logger.warning("[implementer] v1.12 Verify exception for %s: %s", path, e)
+    
+    print(
+        f"[IMPLEMENTER_TASK] {'✓' if verified else '⚠'} "
+        f"{action.upper()} {path} ({len(content)} chars, verified={verified})"
+    )
+    
+    return AtomicTaskResult(
+        success=True,
+        path=path,
+        action=action,
+        chars_written=len(content),
+        verified=verified,
+        duration_ms=elapsed(),
+    )
+
+
 __all__ = [
     "ImplementerResult",
     "VerificationResult",
     "MultiFileResult",
+    "AtomicTaskResult",
     "run_implementer",
+    "run_implementer_task",
     "run_verification",
     "run_multi_file_search",
     "run_multi_file_refactor",

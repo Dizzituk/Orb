@@ -31,6 +31,14 @@ from datetime import datetime, timezone
 
 from app.overwatcher.evidence import EvidenceBundle
 
+# v2.0: Evidence-or-Request Contract prompt
+try:
+    from app.llm.pipeline.evidence_contract_prompt import EVIDENCE_CONTRACT_PROMPT
+    _EVIDENCE_CONTRACT_AVAILABLE = True
+except ImportError:
+    _EVIDENCE_CONTRACT_AVAILABLE = False
+    EVIDENCE_CONTRACT_PROMPT = ""
+
 logger = logging.getLogger(__name__)
 
 
@@ -316,11 +324,18 @@ def build_overwatcher_prompt(
 ) -> tuple[str, str]:
     """Build Overwatcher prompts.
     
+    v2.0: Appends Evidence-or-Request Contract when available.
+    
     Returns (system_prompt, user_prompt)
     """
     system = OVERWATCHER_SYSTEM.format(
         spec_hash=evidence.spec_hash,
     )
+    
+    # v2.0: Append evidence contract (CITE/EVIDENCE_REQUEST/DECISION/HUMAN_REQUIRED)
+    if _EVIDENCE_CONTRACT_AVAILABLE and EVIDENCE_CONTRACT_PROMPT:
+        system += "\n\n" + EVIDENCE_CONTRACT_PROMPT
+        logger.info("[overwatcher] v2.0 Evidence contract appended to system prompt")
     
     strike_hint = ""
     if evidence.strike_number == 1:

@@ -2,6 +2,26 @@
 """
 Critical Pipeline streaming handler for ASTRA command flow.
 
+v2.13 (2026-02-07): MULTI-ROOT PATH INSTRUCTIONS
+- Architecture prompt now instructs LLM to use orb-desktop/ prefix for frontend files
+- Backend paths relative to D:\Orb, frontend paths prefixed with orb-desktop/
+- Fixes: LLM producing bare src/ paths that resolve to D:\Orb\src\ instead of D:\orb-desktop\src\
+
+v2.12 (2026-02-06): PENDING_EVIDENCE MECHANICAL GUARD
+- Hard gate after spec loading: if validation_status == pending_evidence, refuse to proceed
+- Also blocks on: blocked, error, needs_clarification statuses
+- Emits clear SSE message explaining what to do + done event with blocked=True
+- Prevents architecture/execution from "filling in blanks" when CRITICAL ERs unfulfilled
+- Logs + prints guard activation for debugging
+
+v2.11 (2026-02-06): SPEC CONSTRAINT ENFORCEMENT
+- Extract constraints from spec (key_requirements, design_preferences, constraints, grounding_data)
+- Inject as INVIOLABLE rules in system prompt BEFORE evidence/spec content
+- Constraints are positioned so the LLM is primed to treat them as hard boundaries
+- DECISION blocks can never override explicit spec constraints
+- Keyword matching for constraint-like language ("don't rewrite", "as-is", "never", etc.)
+- Fixes: Architecture ignoring spec constraints (e.g., rewriting existing code, writing to disk)
+
 v2.10 (2026-02-02): POT SPEC MARKDOWN INJECTION
 - Retrieve db_spec.content_markdown alongside content_json
 - Pass spec_markdown to run_high_stakes_with_critique() for grounded architecture
@@ -98,7 +118,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # v2.8 BUILD VERIFICATION
 # =============================================================================
-CRITICAL_PIPELINE_BUILD_ID = "2026-02-02-v2.10-pot-spec-markdown-injection"
+CRITICAL_PIPELINE_BUILD_ID = "2026-02-06-v2.12-pending-evidence-mechanical-guard"
 print(f"[CRITICAL_PIPELINE_LOADED] BUILD_ID={CRITICAL_PIPELINE_BUILD_ID}")
 logger.info(f"[critical_pipeline] Module loaded: BUILD_ID={CRITICAL_PIPELINE_BUILD_ID}")
 
@@ -2064,6 +2084,90 @@ async def generate_critical_pipeline_stream(
         response_parts.append(f"✅ Spec loaded: `{spec_id[:16]}...`\n")
         
         # =====================================================================
+        # v2.12: MECHANICAL GUARD — pending_evidence blocks all downstream
+        # =====================================================================
+        # If SpecGate marked this spec as pending_evidence, it means CRITICAL
+        # EVIDENCE_REQUESTs are unfulfilled. Proceeding would let architecture
+        # or execution "fill in the blanks" with guesses. Hard stop here.
+        
+        validation_status = spec_data.get("validation_status", "validated")
+        
+        if validation_status == "pending_evidence":
+            block_msg = (
+                "\n🚫 **BLOCKED: Spec has unfulfilled CRITICAL evidence requirements**\n\n"
+                "SpecGate marked this spec as `pending_evidence` because it contains "
+                "CRITICAL EVIDENCE_REQUESTs that haven't been resolved yet.\n\n"
+                "**What this means:** The spec references files, patterns, or integration "
+                "points that haven't been verified against the actual codebase. Proceeding "
+                "now would produce architecture based on guesses, not evidence.\n\n"
+                "**What to do:**\n"
+                "1. Review the EVIDENCE_REQUESTs in the spec output above\n"
+                "2. Gather the requested evidence (inspect files, confirm patterns)\n"
+                "3. Re-run SpecGate with the evidence to get a `validated` spec\n"
+                "4. Then retry `run critical pipeline`\n\n"
+                "_This is a mechanical guard — not a suggestion. The pipeline will not "
+                "proceed until evidence is gathered._\n"
+            )
+            logger.warning(
+                "[critical_pipeline] v2.12 MECHANICAL GUARD: validation_status=pending_evidence, "
+                "spec_id=%s — refusing to proceed",
+                spec_id
+            )
+            print(f"[critical_pipeline] v2.12 BLOCKED: pending_evidence for spec {spec_id}")
+            yield "data: " + json.dumps({"type": "token", "content": block_msg}) + "\n\n"
+            response_parts.append(block_msg)
+            
+            yield "data: " + json.dumps({
+                "type": "done",
+                "provider": pipeline_provider,
+                "model": pipeline_model,
+                "total_length": sum(len(p) for p in response_parts),
+                "blocked": True,
+                "blocked_reason": "pending_evidence",
+                "validation_status": validation_status,
+                "spec_id": spec_id,
+            }) + "\n\n"
+            
+            if trace:
+                trace.finalize(success=False, error_message="Spec has pending_evidence status — CRITICAL ERs unfulfilled")
+            return
+        
+        # Also block on other non-ready statuses
+        non_ready_statuses = {"blocked", "error", "needs_clarification"}
+        if validation_status in non_ready_statuses:
+            block_msg = (
+                f"\n🚫 **BLOCKED: Spec status is `{validation_status}`**\n\n"
+                f"The spec cannot proceed to Critical Pipeline with status `{validation_status}`.\n"
+                "Please resolve the spec issues and re-validate before retrying.\n"
+            )
+            logger.warning(
+                "[critical_pipeline] v2.12 MECHANICAL GUARD: validation_status=%s, "
+                "spec_id=%s — refusing to proceed",
+                validation_status, spec_id
+            )
+            yield "data: " + json.dumps({"type": "token", "content": block_msg}) + "\n\n"
+            response_parts.append(block_msg)
+            
+            yield "data: " + json.dumps({
+                "type": "done",
+                "provider": pipeline_provider,
+                "model": pipeline_model,
+                "total_length": sum(len(p) for p in response_parts),
+                "blocked": True,
+                "blocked_reason": validation_status,
+                "spec_id": spec_id,
+            }) + "\n\n"
+            
+            if trace:
+                trace.finalize(success=False, error_message=f"Spec status is {validation_status}")
+            return
+        
+        logger.info(
+            "[critical_pipeline] v2.12 validation_status=%s — proceeding",
+            validation_status
+        )
+        
+        # =====================================================================
         # Step 1b: Classify Job Type (v2.2)
         # =====================================================================
         
@@ -2590,11 +2694,104 @@ The implementation MUST NOT operate outside these boundaries.
         
         system_prompt += binding_prompt
         
+        # v2.11: SPEC CONSTRAINT ENFORCEMENT
+        # Extract explicit constraints and "use as-is" directives from spec
+        # These are injected as INVIOLABLE rules in the system prompt so the LLM
+        # is primed to treat them as hard boundaries BEFORE seeing evidence or spec content
+        spec_constraints = []
+        
+        # Pull from key requirements
+        key_reqs = spec_data.get("key_requirements", [])
+        if isinstance(key_reqs, list):
+            for req in key_reqs:
+                if isinstance(req, str):
+                    lower = req.lower()
+                    if any(kw in lower for kw in [
+                        "don't rewrite", "don't rebuild", "as-is", "do not",
+                        "use existing", "never", "must not", "phase 1 only",
+                        "in-memory", "no disk", "no cross-platform",
+                        "don't implement", "don't add", "don't create",
+                        "only", "not implement",
+                    ]):
+                        spec_constraints.append(req)
+        
+        # Pull from design_preferences
+        design_prefs = spec_data.get("design_preferences", [])
+        if isinstance(design_prefs, list):
+            for pref in design_prefs:
+                if isinstance(pref, str):
+                    spec_constraints.append(pref)
+        
+        # Pull from explicit constraints field
+        explicit_constraints = spec_data.get("constraints", [])
+        if isinstance(explicit_constraints, list):
+            for c in explicit_constraints:
+                if isinstance(c, str):
+                    spec_constraints.append(c)
+        
+        # Also check nested locations where SpecGate may store constraints
+        grounding_constraints = spec_data.get("grounding_data", {}).get("constraints", [])
+        if isinstance(grounding_constraints, list):
+            for c in grounding_constraints:
+                if isinstance(c, str) and c not in spec_constraints:
+                    spec_constraints.append(c)
+        
+        if spec_constraints:
+            system_prompt += f"""
+
+## INVIOLABLE SPEC CONSTRAINTS (v2.11)
+
+The following constraints are ABSOLUTE. Your architecture MUST NOT violate any of them.
+A DECISION block can NEVER override these — they come directly from the user's spec.
+If your architecture would violate any constraint, STOP and redesign.
+
+{chr(10).join(f'- ❌ VIOLATION IF BROKEN: {c}' for c in spec_constraints)}
+
+These are not suggestions. Breaking ANY of these constraints means the architecture is WRONG.
+"""
+            logger.info(
+                "[critical_pipeline] v2.11 Injected %d spec constraints into system prompt",
+                len(spec_constraints)
+            )
+        else:
+            logger.info("[critical_pipeline] v2.11 No spec constraints found to inject")
+        
         # v2.9: Add comprehensive evidence context (architecture + codebase + files)
         if evidence_context and len(evidence_context) > 50:
             system_prompt += f"""\n\n## CODEBASE EVIDENCE (v2.9 - Comprehensive)\n\nThis is comprehensive evidence gathered from the codebase. Use this to understand:\n- Existing code structure and patterns\n- Available modules and services\n- Integration points\n- Actual file contents for context\n\n{evidence_context}\n\nReference these patterns when designing the architecture.\n"""
         
-        system_prompt += "\n\nGenerate a complete, detailed architecture document."
+        system_prompt += """
+
+## OUTPUT FORMAT REQUIREMENTS
+
+Your architecture document MUST include a `## File Inventory` section with two markdown tables:
+
+### New Files
+| File | Purpose |
+|------|--------|
+| `path/to/file.ext` | Brief description |
+
+### Modified Files
+| File | Purpose |
+|------|--------|
+| `path/to/file.ext` | Brief description |
+
+This section is REQUIRED — the downstream executor parses it to know which files to create and modify.
+
+**CRITICAL — MULTI-ROOT PATH RULES:**
+This project has TWO separate root directories:
+- **Backend** (`D:\Orb`): Python/FastAPI. Paths start with `app/`, `tests/`, `main.py`, `requirements.txt`, etc.
+- **Frontend** (`D:\orb-desktop`): Electron/React/TypeScript. Paths MUST use the `orb-desktop/` prefix.
+
+Path format rules:
+- Backend files: relative to D:\Orb (e.g. `app/routers/voice.py`, `main.py`, `.env`)
+- Frontend files: MUST start with `orb-desktop/` (e.g. `orb-desktop/src/components/VoiceInput.tsx`, `orb-desktop/package.json`)
+- NEVER use bare `src/` for frontend files — always prefix with `orb-desktop/`
+- The architecture map uses these same conventions — follow them exactly.
+
+If no files are modified, include the table header with no rows.
+
+Generate a complete, detailed architecture document."""
         
         task_messages = [
             {"role": "system", "content": system_prompt},

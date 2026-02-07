@@ -36,7 +36,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-SIMPLE_CREATE_BUILD_ID = "2026-02-05-v2.2-section-authority-labels"
+SIMPLE_CREATE_BUILD_ID = "2026-02-06-v3.7-wire-content-signal-scoring"
 print(f"[SIMPLE_CREATE_LOADED] BUILD_ID={SIMPLE_CREATE_BUILD_ID}")
 
 # =============================================================================
@@ -385,6 +385,56 @@ CONCEPT_DIRECTORY_PATTERNS = {
 }
 
 
+# =============================================================================
+# v3.6: CONTENT-SIGNAL SCORING for integration point disambiguation
+# =============================================================================
+# Problem: filename-only matching surfaces false positives like Orb/static/main.py
+# alongside the real FastAPI entrypoint D:/Orb/main.py. Both match the
+# architectural pattern r'^main\.py$' but only one is architecturally relevant.
+#
+# Solution: For ambiguous filenames (main.py, index.py, app.py), read a small
+# content sample and score based on signals. Negative scores for paths under
+# static/dist/build/public directories.
+
+_CONTENT_SIGNALS = [
+    (re.compile(r'FastAPI\s*\('), +10),
+    (re.compile(r'from\s+fastapi\s+import\s+FastAPI'), +10),
+    (re.compile(r'include_router\s*\('), +5),
+    (re.compile(r'app\.mount\s*\('), +3),
+    (re.compile(r'@app\.on_event'), +3),
+    (re.compile(r'uvicorn\.run'), +3),
+]
+
+_NEGATIVE_PATH_SEGMENTS = {'static', 'dist', 'build', 'public', 'assets', 'out', '.next'}
+
+
+def _score_integration_point(file_path: str, project_path: str) -> int:
+    """
+    v3.6: Score an integration point based on content signals and path heuristics.
+    Only reads the first 3KB of the file for efficiency.
+    Positive scores = more likely architecturally relevant.
+    Negative scores = likely a false positive.
+    """
+    score = 0
+    rel_path = os.path.relpath(file_path, project_path).lower().replace('\\', '/')
+    path_segments = set(rel_path.split('/'))
+
+    if path_segments & _NEGATIVE_PATH_SEGMENTS:
+        score -= 10
+
+    filename = os.path.basename(file_path).lower()
+    if filename in ('main.py', 'app.py', 'index.py', 'server.py'):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                head = f.read(3072)
+            for pattern, delta in _CONTENT_SIGNALS:
+                if pattern.search(head):
+                    score += delta
+        except Exception:
+            pass
+
+    return score
+
 def _find_integration_points(
     project_path: str,
     concepts: List[str],
@@ -453,10 +503,27 @@ def _find_integration_points(
             seen.add(p.file_path)
             unique.append(p)
     
-    # Sort: modify actions first, then by relevance
-    unique.sort(key=lambda x: (0 if x.action == "modify" else 1, x.file_name))
+    # v3.7: Score each integration point using content signals + path heuristics.
+    # Drop negative-scored points (false positives like static/main.py).
+    # Sort remainder: modify actions first, then highest score, then filename.
+    scored = []
+    dropped = []
+    for p in unique:
+        s = _score_integration_point(p.file_path, project_path)
+        if s < 0:
+            dropped.append((p.file_name, s))
+        else:
+            scored.append((p, s))
     
-    return unique[:15]  # Limit to top 15
+    if dropped:
+        print(f"[simple_create] v3.7 DROPPED {len(dropped)} negative-scored integration point(s): "
+              f"{[(name, sc) for name, sc in dropped]}")
+        logger.info("[simple_create] v3.7 Dropped %d negative-scored points: %s", len(dropped), dropped)
+    
+    scored.sort(key=lambda x: (0 if x[0].action == "modify" else 1, -x[1], x[0].file_name))
+    result = [p for p, _ in scored]
+    
+    return result[:15]  # Limit to top 15
 
 
 # =============================================================================
@@ -629,7 +696,44 @@ IMPORTANT:
 - Reference actual integration points provided
 - Keep implementation steps concrete and actionable
 - Do NOT suggest cloud services if constraints say local-only
-- Do NOT suggest files/features outside the stated phase scope"""
+- Do NOT suggest files/features outside the stated phase scope
+
+AMBIGUITY HANDLING:
+When a design decision has multiple valid approaches (e.g., "should the endpoint
+accept multipart/form-data or raw bytes?"), do NOT flag it as HUMAN_REQUIRED if
+a safe default exists that covers both options. Instead:
+- Pick the most flexible default (e.g., "support both multipart and raw body")
+- State it as a DECISION_ALLOWED with the chosen default
+- Only flag HUMAN_REQUIRED when there is genuine ambiguity with no safe default,
+  or when the choice has significant architectural consequences that cannot be
+  reversed without major rework
+- Implementation details like exact response field names, optional metadata fields,
+  or input format variants are NOT architectural decisions — adopt sensible defaults
+
+ENTRYPOINT IDENTIFICATION (CRITICAL):
+When generating EVIDENCE_REQUESTs to locate backend entrypoints (e.g., main.py):
+- The goal is to find the file that instantiates FastAPI() (or calls an app factory
+  returning FastAPI) and registers routers via include_router().
+- Ignore any main.py files under /static/, /dist/, /build/, /public/, or frontend
+  project roots. These are NOT the backend entrypoint.
+- success_criteria MUST include: "Evidence must include the lines showing
+  app = FastAPI(...) (or equivalent factory) and at least one include_router(...)."
+- If multiple main.py files exist, the ER must distinguish them by checking content,
+  not just path.
+
+CONFIGURATION FILE EVIDENCE:
+When the task references external configuration files (e.g., config.ini, .env, YAML)
+that are loaded by service wrappers or modules being integrated:
+- Include an EVIDENCE_REQUEST to read the configuration file directly.
+- Confirm that the sections, keys, and values match what the consuming code expects.
+- This prevents runtime mismatches between config parsers and actual config content.
+- Fold this into an existing ER if it already reads the consuming module's code,
+  or create a dedicated ER if the config file is on a separate path.
+
+ER ID UNIQUENESS:
+- Every EVIDENCE_REQUEST must have a unique id (ER-001, ER-002, etc.).
+- NEVER emit two EVIDENCE_REQUEST blocks with the same id.
+- If you need to request evidence for two different things, use different ids."""
 
 
 # Default fallback model when the allocated model times out

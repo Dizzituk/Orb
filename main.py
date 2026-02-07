@@ -39,7 +39,6 @@ from app.rag.router import router as rag_router
 # Import refactored endpoints
 from app.endpoints import router as endpoints_router
 
-
 app = FastAPI(
     title="Orb Assistant",
     version="0.17.0",
@@ -221,3 +220,4 @@ def list_job_types(auth = Depends(require_auth)):
             for jt in JobType
         ]
     }
+

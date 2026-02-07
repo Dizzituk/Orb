@@ -67,11 +67,31 @@ APPROVED_ARCHITECTURE_BLOCKER_TYPES = {
     "correctness",             # Correctness errors / calculations wrong
     "completeness",            # Missing required component (if spec says it's needed)
     
+    # v2.0: Evidence-or-Request Contract (CRITICAL_CLAIMS validation)
+    "unresolved_critical",     # CRITICAL_CLAIMS register has unresolved/invalid entries
+    "missing_claims_register", # Stage did not output CRITICAL_CLAIMS register (transition)
+    
+    # v2.1: Scope creep detection (endpoint/feature drift)
+    "scope_creep",             # Architecture adds endpoints/features not in spec
+    "endpoint_rename",         # Architecture renames spec-listed endpoints
+    "excluded_feature",        # Architecture includes feature spec explicitly excludes
+    
     # Aliases (LLM may output these)
     "drift",                   # Spec drift
     "hallucination",           # Invented requirements
     "contradiction",           # Internal contradiction
     "boundary_violation",      # Trust boundary
+}
+
+
+# =============================================================================
+# Known Architecture Issue Types (v2.0 - includes non-blocking transition types)
+# =============================================================================
+# Types that are RECOGNIZED but not yet blocking. These exist for diagnostics
+# and will be promoted to APPROVED_ARCHITECTURE_BLOCKER_TYPES once all stages
+# reliably emit the corresponding data.
+KNOWN_ARCHITECTURE_ISSUE_TYPES = {
+    "missing_claims_register",  # Stage did not output CRITICAL_CLAIMS register (transition period, non_blocking)
 }
 
 

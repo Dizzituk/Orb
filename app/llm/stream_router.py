@@ -422,6 +422,10 @@ def _handle_weaver_design_questions(req, db, trace, stage_trace, translation_res
         logger.info("[weaver_reweave] Auto-routing to Weaver UPDATE (flow stage: %s)", active_flow.stage.value)
         print(f"[WEAVER_REWEAVE] Auto-routing to Weaver UPDATE (user replied in active weaver flow)")
         
+        # v4.1.0: Pass req.message as pending_user_message to fix race condition.
+        # The user's reply may not be in the DB yet when Weaver reads messages,
+        # causing hash-based dedup to see "nothing new". This ensures the reply
+        # is always visible to the weaver regardless of persistence timing.
         return StreamingResponse(
             generate_weaver_stream(
                 project_id=req.project_id,
@@ -431,6 +435,7 @@ def _handle_weaver_design_questions(req, db, trace, stage_trace, translation_res
                 conversation_id=str(req.project_id),
                 is_continuation=True,
                 captured_answers=None,
+                pending_user_message=req.message,
             ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},

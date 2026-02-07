@@ -143,6 +143,7 @@ def build_spec_anchored_revision_prompt(
     spec_json: Optional[str] = None,
     spec_id: Optional[str] = None,
     spec_hash: Optional[str] = None,
+    spec_markdown: Optional[str] = None,
 ) -> str:
     """Build revision prompt with spec-anchoring to prevent drift.
     
@@ -180,7 +181,22 @@ This prevents "spec drift" where reviewers inadvertently add scope or change req
 
 """
 
-    if spec_json:
+    if spec_markdown:
+        prompt += f"""PoT SPEC MARKDOWN (AUTHORITATIVE - THIS IS THE FULL SPEC):
+================================================================
+The following markdown IS the complete, authoritative spec. ALL sections
+including Acceptance Criteria, Constraints, and Implementation Steps are
+binding requirements. Do NOT claim any section is empty or missing if it
+appears below.
+
+{spec_markdown}
+
+================================================================
+END OF AUTHORITATIVE SPEC
+================================================================
+
+"""
+    elif spec_json:
         prompt += f"""PoT SPEC (AUTHORITATIVE - DO NOT DEVIATE):
 ============================================
 {spec_json}
@@ -249,6 +265,7 @@ async def call_revision(
     spec_json: Optional[str] = None,
     spec_id: Optional[str] = None,
     spec_hash: Optional[str] = None,
+    spec_markdown: Optional[str] = None,
     opus_model_id: str,
     envelope: JobEnvelope,
 ) -> Optional[str]:
@@ -278,6 +295,7 @@ async def call_revision(
         spec_json=spec_json,
         spec_id=spec_id,
         spec_hash=spec_hash,
+        spec_markdown=spec_markdown,
     )
     
     revision_messages = [
@@ -425,6 +443,7 @@ async def run_revision_loop(
                 spec_json=spec_json,
                 spec_id=spec_id,
                 spec_hash=spec_hash,
+                spec_markdown=spec_markdown,
                 opus_model_id=opus_model_id,
                 envelope=envelope,
             )

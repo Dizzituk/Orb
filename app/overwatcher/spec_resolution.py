@@ -40,6 +40,7 @@ class ResolvedSpec:
     
     v1.2: Added get_output_mode() and get_insertion_format() accessor methods.
     v2.0 (2026-02-02): Added POT spec support with is_pot_spec and pot_tasks fields.
+    v3.0 (2026-02-06): Added architecture spec support for Critical Pipeline outputs.
     """
     spec_id: str
     spec_hash: str
@@ -50,6 +51,9 @@ class ResolvedSpec:
     deliverable: Optional[ParsedDeliverable] = None
     is_pot_spec: bool = False
     pot_tasks: Optional[POTParseResult] = None
+    # v3.0: Architecture spec support
+    is_architecture_spec: bool = False
+    architecture_markdown: Optional[str] = None
     
     @property
     def is_smoke_test(self) -> bool:
@@ -149,6 +153,68 @@ class ResolvedSpec:
             return desc
         
         return self.title or f"Execute spec {self.spec_id}"
+
+
+# =============================================================================
+# v3.0: Architecture Spec Detection
+# =============================================================================
+
+_ARCHITECTURE_MARKERS = [
+    "## Goal",
+    "## Implementation Steps",
+    "## New Files to Create",
+    "## Files to Modify",
+    "## Acceptance Criteria",
+    "## LLM Architecture Analysis",
+    "EVIDENCE_REQUEST",
+]
+
+
+def is_architecture_spec_format(content_markdown: Optional[str], content_json: Optional[str]) -> bool:
+    """Detect if a spec is an architecture/grounded-create spec.
+    
+    v3.0: Architecture specs from the SpecGate grounded-create path have:
+    - Substantial content_markdown (>500 chars) with architecture markers
+    - content_json that is either empty or has all-empty structured fields
+    - NOT a POT spec (no ## Change section)
+    
+    Returns True if this looks like an architecture spec that needs
+    routing through the Critical Pipeline architecture document.
+    """
+    if not content_markdown or len(content_markdown) < 500:
+        return False
+    
+    # Check for architecture markers in markdown
+    marker_count = sum(
+        1 for marker in _ARCHITECTURE_MARKERS
+        if marker in content_markdown
+    )
+    
+    # Need at least 2 markers to be confident
+    if marker_count < 2:
+        return False
+    
+    # Verify JSON is empty/minimal (the root cause of why this spec can't parse)
+    if content_json:
+        try:
+            import json as _json
+            parsed = _json.loads(content_json) if isinstance(content_json, str) else content_json
+            if isinstance(parsed, dict):
+                # Check if key structured fields are all empty
+                empty_indicators = [
+                    not parsed.get("proposed_steps"),
+                    not parsed.get("acceptance_criteria"),
+                    not parsed.get("deliverables"),
+                    not parsed.get("steps"),
+                    not parsed.get("sandbox_output_path"),
+                ]
+                if not all(empty_indicators):
+                    # JSON actually has content — not an architecture spec gap
+                    return False
+        except Exception:
+            pass  # If JSON is unparseable, markdown is even more likely the source of truth
+    
+    return True
 
 
 def resolve_latest_spec(
@@ -285,6 +351,33 @@ def resolve_latest_spec(
             deliverable = parse_spec_content(spec_content)
             
             if not deliverable:
+                # v3.0: Before failing, check if this is an architecture spec
+                # Architecture specs from grounded-create have rich content_markdown
+                # but empty content_json — they need routing via architecture doc
+                if is_architecture_spec_format(content_markdown, content_json):
+                    logger.info(
+                        f"[resolve_spec] v3.0 ARCHITECTURE SPEC DETECTED for {spec.spec_id}: "
+                        f"content_markdown={len(content_markdown)} chars, "
+                        f"content_json has empty structured fields"
+                    )
+                    print(
+                        f">>> [ARCH_DETECT] \u2713 Architecture spec detected — "
+                        f"will route via Critical Pipeline architecture document"
+                    )
+                    return ResolvedSpec(
+                        spec_id=spec.spec_id,
+                        spec_hash=spec.spec_hash,
+                        project_id=project_id,
+                        title=getattr(spec, 'title', None),
+                        created_at=spec.created_at.isoformat() if hasattr(spec, 'created_at') and spec.created_at else None,
+                        spec_content=spec_content,
+                        deliverable=None,
+                        is_pot_spec=False,
+                        pot_tasks=None,
+                        is_architecture_spec=True,
+                        architecture_markdown=content_markdown,
+                    )
+                
                 logger.error(f"[resolve_spec] Failed to parse deliverable from spec {spec.spec_id}")
                 logger.error(f"[resolve_spec] Full content:\n{spec_content}")
                 return ResolvedSpec(
@@ -368,4 +461,5 @@ __all__ = [
     "SpecMissingDeliverableError",
     "resolve_latest_spec",
     "create_smoke_test_spec",
+    "is_architecture_spec_format",
 ]

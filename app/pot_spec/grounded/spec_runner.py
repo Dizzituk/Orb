@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-SPEC_RUNNER_BUILD_ID = "2026-02-04-v4.5-dynamic-project-discovery"
+SPEC_RUNNER_BUILD_ID = "2026-02-06-v4.7-er-dedup-and-entrypoint-clarity"
 print(f"[SPEC_RUNNER_LOADED] BUILD_ID={SPEC_RUNNER_BUILD_ID}")
 
 
@@ -302,12 +302,25 @@ def _discover_project_roots() -> Dict[str, Any]:
 
 # --- Scope indicators: UI/frontend vs backend ---
 # Key insight: If user explicitly says "UI" or "frontend", DON'T include backend
+#
+# v4.6: TIGHTENED FRONTEND DETECTION
+# Only set frontend=True when the user requests CHANGES to the frontend.
+# Merely MENTIONING the frontend (e.g., "the desktop app will call it",
+# "the frontend will handle sending") does NOT mean frontend scope.
+# Removed: 'the app', 'desktop app', "app's" — too broad, triggers on
+# consumer/client mentions without requesting frontend code changes.
+#
 SCOPE_FRONTEND = {
+    # UI modification patterns (user wants to CHANGE the UI)
     'the ui': True, 'on the ui': True, 'in the ui': True, 'to the ui': True,
     'a ui': True, 'ui button': True, 'ui feature': True, 'ui text': True,
+    'change the ui': True, 'modify the ui': True, 'update the ui': True,
     'the frontend': True, 'front-end': True, 'frontend ui': True,
     'context window': True, 'input window': True, 'text input': True,
-    'the app': True, "app's": True, 'desktop app': True, 'electron': True,
+    # Electron is specific enough — only mentioned when discussing frontend code
+    'electron': True,
+    # NOTE: 'the app', 'desktop app', "app's" deliberately REMOVED.
+    # These match consumer mentions like "works from the desktop app".
 }
 
 SCOPE_BACKEND = {
@@ -521,6 +534,125 @@ def _build_simple_spec(
     lines.append("")
     
     return "\n".join(lines)
+
+
+# =============================================================================
+# v4.7: ER DEDUPLICATION — collapse duplicate EVIDENCE_REQUEST blocks by id
+# =============================================================================
+#
+# LLM outputs sometimes emit the same ER block twice (e.g., ER-001 appears
+# in both scaffold and LLM analysis sections). Duplicate ERs confuse the
+# Critical Pipeline and inflate the CRITICAL ER count.
+#
+# Strategy: Parse all EVIDENCE_REQUEST blocks from the spec markdown,
+# keep the first occurrence of each id, drop duplicates, and reconstruct.
+#
+
+def _dedup_evidence_requests(spec_markdown: str) -> str:
+    """
+    v4.7: Remove duplicate EVIDENCE_REQUEST blocks from spec markdown.
+
+    Scans for EVIDENCE_REQUEST blocks (delimited by 'EVIDENCE_REQUEST:' headers),
+    extracts the 'id' field from each, and removes duplicates (keeping first occurrence).
+
+    Returns the cleaned markdown with duplicates removed.
+    """
+    if not spec_markdown or 'EVIDENCE_REQUEST' not in spec_markdown:
+        return spec_markdown
+
+    lines = spec_markdown.split('\n')
+    output_lines = []
+    seen_er_ids = set()
+    in_er_block = False
+    er_block_lines = []
+    er_block_id = None
+    skip_current_block = False
+    duplicates_removed = 0
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # Detect start of an EVIDENCE_REQUEST block
+        if stripped.startswith('EVIDENCE_REQUEST:') or stripped == 'EVIDENCE_REQUEST:':
+            # If we were already in an ER block, flush it
+            if in_er_block and er_block_lines:
+                if not skip_current_block:
+                    output_lines.extend(er_block_lines)
+                else:
+                    duplicates_removed += 1
+
+            # Start new ER block
+            in_er_block = True
+            er_block_lines = [line]
+            er_block_id = None
+            skip_current_block = False
+            i += 1
+            continue
+
+        if in_er_block:
+            # Check if this line has the id field
+            id_match = re.match(r'\s+id:\s*["\']?(ER-[\w-]+)["\']?', line)
+            if id_match:
+                er_block_id = id_match.group(1)
+                if er_block_id in seen_er_ids:
+                    skip_current_block = True
+                    logger.info("[spec_runner] v4.7 DEDUP: dropping duplicate %s", er_block_id)
+                    print(f"[spec_runner] v4.7 ER DEDUP: dropping duplicate {er_block_id}")
+                else:
+                    seen_er_ids.add(er_block_id)
+
+            # Check if we've hit the end of this ER block
+            # An ER block ends when we hit: another EVIDENCE_REQUEST, a markdown header,
+            # an empty line followed by non-indented content, or end of file
+            next_is_new_section = False
+            if i + 1 < len(lines):
+                next_stripped = lines[i + 1].strip()
+                next_is_new_section = (
+                    next_stripped.startswith('EVIDENCE_REQUEST:') or
+                    next_stripped.startswith('# ') or
+                    next_stripped.startswith('## ') or
+                    next_stripped.startswith('### ') or
+                    # A new top-level YAML key after the ER block (not indented)
+                    (next_stripped and not next_stripped.startswith(' ') and
+                     not next_stripped.startswith('-') and
+                     not next_stripped.startswith('EVIDENCE_REQUEST') and
+                     ':' not in next_stripped and
+                     stripped == '')
+                )
+
+            er_block_lines.append(line)
+
+            # If next line starts a new section, or we're at EOF, flush this block
+            if next_is_new_section or i == len(lines) - 1:
+                if not skip_current_block:
+                    output_lines.extend(er_block_lines)
+                else:
+                    duplicates_removed += 1
+                in_er_block = False
+                er_block_lines = []
+                er_block_id = None
+                skip_current_block = False
+        else:
+            output_lines.append(line)
+
+        i += 1
+
+    # Flush any remaining ER block
+    if in_er_block and er_block_lines:
+        if not skip_current_block:
+            output_lines.extend(er_block_lines)
+        else:
+            duplicates_removed += 1
+
+    if duplicates_removed > 0:
+        print(f"[spec_runner] v4.7 ER DEDUP COMPLETE: removed {duplicates_removed} duplicate block(s), "
+              f"{len(seen_er_ids)} unique ER(s) remain")
+        logger.info("[spec_runner] v4.7 ER dedup: removed %d duplicate(s), %d unique remain",
+                    duplicates_removed, len(seen_er_ids))
+
+    return '\n'.join(output_lines)
 
 
 # =============================================================================
@@ -771,8 +903,28 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
         spec_id = f"sg-{uuid.uuid4().hex[:12]}"
         spec_hash = hashlib.sha256(spot_markdown.encode()).hexdigest()
         
+        # v4.8: Proper job_kind classification for grounding_data
+        # CREATE jobs that went through simple_create should be classified as
+        # "architecture" so Critical Pipeline routes them correctly.
+        # Previously hardcoded to "other" which caused 0.0 confidence and
+        # downstream parsing failures.
+        if multi_file_op:
+            _job_kind = "refactor"
+            _job_kind_confidence = 0.85
+            _job_kind_reason = "Multi-file operation detected"
+        elif spot_markdown and _CREATE_BUILDER_AVAILABLE and valid_paths:
+            _job_kind = "architecture"
+            _job_kind_confidence = 0.9
+            _job_kind_reason = "Grounded CREATE spec with project paths"
+        else:
+            _job_kind = "other"
+            _job_kind_confidence = 0.5
+            _job_kind_reason = "Simple spec without grounded evidence"
+        
         grounding_data = {
-            "job_kind": "refactor" if multi_file_op else "other",
+            "job_kind": _job_kind,
+            "job_kind_confidence": _job_kind_confidence,
+            "job_kind_reason": _job_kind_reason,
             "multi_file": {
                 "is_multi_file": multi_file_op.is_multi_file if multi_file_op else False,
                 "operation_type": multi_file_op.operation_type if multi_file_op else None,
@@ -784,8 +936,69 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
             "goal": goal,
         }
         
-        logger.info("[spec_runner] v4.0 DONE: ready_for_pipeline=True")
-        print("[spec_runner] v4.0 SUCCESS: POT spec ready for Implementer")
+        # =================================================================
+        # v4.7: DEDUP EVIDENCE_REQUESTs before counting
+        # =================================================================
+        if spot_markdown:
+            spot_markdown = _dedup_evidence_requests(spot_markdown)
+
+        # =================================================================
+        # v4.6: STATUS SEMANTICS — check for unfulfilled EVIDENCE_REQUESTs
+        # =================================================================
+        # If the spec contains CRITICAL EVIDENCE_REQUESTs that haven't been
+        # fulfilled, the spec is NOT validated — it's pending evidence.
+        # Marking it "validated" when patterns_extracted=0 and CRITICAL ERs
+        # exist is misleading and lets downstream stages proceed on guesses.
+        #
+        # Rules:
+        #   - EVIDENCE_REQUEST with severity CRITICAL → pending_evidence
+        #   - No EVIDENCE_REQUESTs → validated (genuinely ready)
+        #   - Only non-CRITICAL ERs → validated (nice-to-have, not blocking)
+        
+        has_critical_er = False
+        critical_er_count = 0
+        if spot_markdown:
+            # v4.6.1: Robust CRITICAL detection — multiple strategies to avoid
+            # false negatives from YAML formatting variations.
+            # Catches: severity: "CRITICAL", severity: CRITICAL,
+            #          severity:CRITICAL, severity : 'critical', etc.
+            
+            _spot_lower = spot_markdown.lower()
+            
+            # Strategy 1: Line-level scan (handles any indentation/quoting)
+            # Look for lines containing both "severity" and "critical"
+            for line in _spot_lower.split('\n'):
+                stripped = line.strip()
+                if stripped.startswith('severity') and 'critical' in stripped:
+                    critical_er_count += 1
+            
+            # Strategy 2: Regex fallback (catches inline/compact YAML)
+            # Only used if Strategy 1 found nothing — avoids double-counting
+            if critical_er_count == 0:
+                er_blocks = re.findall(
+                    r'severity\s*:\s*["\']?critical["\']?',
+                    _spot_lower,
+                )
+                critical_er_count = len(er_blocks)
+            
+            if critical_er_count > 0:
+                has_critical_er = True
+                print(f"[spec_runner] v4.6.1 CRITICAL EVIDENCE_REQUEST detected: {critical_er_count} block(s)")
+                logger.info(
+                    "[spec_runner] v4.6.1 Spec has %d CRITICAL EVIDENCE_REQUEST(s) — status=pending_evidence",
+                    critical_er_count
+                )
+        
+        if has_critical_er:
+            final_status = "pending_evidence"
+            final_notes = "v4.6: Spec has unfulfilled CRITICAL EVIDENCE_REQUESTs. Do not proceed to Critical Pipeline until evidence is gathered."
+            print("[spec_runner] v4.6 STATUS: pending_evidence (CRITICAL ERs unfulfilled)")
+        else:
+            final_status = "validated"
+            final_notes = "v4.0: Direct path, no gates"
+            print("[spec_runner] v4.0 SUCCESS: POT spec ready for Implementer")
+        
+        logger.info("[spec_runner] v4.6 DONE: ready_for_pipeline=True, status=%s", final_status)
         
         return SpecGateResult(
             ready_for_pipeline=True,
@@ -795,9 +1008,9 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
             spec_id=spec_id,
             spec_hash=spec_hash,
             spec_version=round_n,
-            notes="v4.0: Direct path, no gates",
+            notes=final_notes,
             blocking_issues=[],
-            validation_status="validated",
+            validation_status=final_status,
             grounding_data=grounding_data,
         )
         

@@ -1,6 +1,6 @@
 # FILE: app/pot_spec/grounded/evidence_gathering.py
 """
-Evidence-First Filesystem Validation (v1.34)
+Evidence-First Filesystem Validation (v2.1)
 
 Core principle: Evidence gathered BEFORE LLM call, not discovered by LLM.
 
@@ -11,6 +11,14 @@ Access control (non-negotiable):
 
 Version Notes:
 -------------
+v2.1 (2026-02-06): HARD READ FAIL + Evidence Gap Detection
+    - sandbox_read_file() now logs [ERROR] when file exists but BOTH
+      sandbox and direct read return no content (not silently swallowed)
+    - Added EvidencePackage.check_critical_evidence_gaps() method
+    - Detects exists=True + readable=False (hard gap)
+    - Detects exists=True + readable=True but no content (silent failure)
+    - Surfaces gaps as validation_errors on the EvidencePackage
+    - Pipeline can check validation_errors before proceeding with LLM calls
 v1.34 (2026-01-30): CRITICAL FIX - Exclude CREATE targets from ALL code paths
     - v1.33 only excluded CREATE targets from system_wide_scan
     - But requests with anchors ("desktop") went through gather_filesystem_evidence()
@@ -72,7 +80,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # v1.34 BUILD VERIFICATION
 # =============================================================================
-EVIDENCE_GATHERING_BUILD_ID = "2026-01-30-v1.34-exclude-create-from-all-paths"
+EVIDENCE_GATHERING_BUILD_ID = "2026-02-06-v2.1-hard-read-fail-and-evidence-gap-detection"
 print(f"[EVIDENCE_GATHERING_LOADED] BUILD_ID={EVIDENCE_GATHERING_BUILD_ID}")
 logger.info(f"[evidence_gathering] Module loaded: BUILD_ID={EVIDENCE_GATHERING_BUILD_ID}")
 
@@ -287,6 +295,34 @@ class EvidencePackage:
         total = len(self.target_files)
         multi_str = " [MULTI-TARGET]" if self.is_multi_target else ""
         return f"EvidencePackage(task={self.task_type}{multi_str}, files={valid}/{total} valid, errors={len(self.validation_errors)})"
+    
+    def check_critical_evidence_gaps(self) -> List[str]:
+        """v2.1: Check for files that exist but have no content (evidence gap).
+        
+        Returns list of error messages for files where exists=True but
+        readable=False or content_preview is None. These represent
+        hard evidence failures where the pipeline SHOULD NOT proceed
+        with LLM calls that depend on this grounding.
+        """
+        gaps = []
+        for fe in self.target_files:
+            if fe.exists and not fe.readable:
+                msg = (
+                    f"EVIDENCE GAP: '{fe.original_reference}' exists at {fe.resolved_path} "
+                    f"but is NOT readable. Grounding data missing for this file."
+                )
+                gaps.append(msg)
+                print(f"[ERROR] [evidence_gathering] v2.1 {msg}")
+            elif fe.exists and fe.readable and fe.content_preview is None and fe.full_content is None:
+                msg = (
+                    f"EVIDENCE GAP: '{fe.original_reference}' at {fe.resolved_path} "
+                    f"is marked readable but has NO content. Possible silent read failure."
+                )
+                gaps.append(msg)
+                print(f"[WARN] [evidence_gathering] v2.1 {msg}")
+        if gaps:
+            self.validation_errors.extend(gaps)
+        return gaps
 
 
 # =============================================================================
@@ -418,10 +454,26 @@ def sandbox_read_file(path: str, max_chars: int = 8000) -> Tuple[bool, Optional[
         
         if status != 200 or not data:
             logger.warning(
-                "[evidence_gathering] v1.28 sandbox_read_file: failed for %s (status=%s, error=%s)",
+                "[evidence_gathering] v1.28 sandbox_read_file: failed for %s (status=%s, error=%s) — trying host fallback",
                 actual_path, status, error
             )
-            return False, None
+            # v2.2 FIX: Fall back to host filesystem when sandbox returns non-200
+            # This handles paths that exist on the host but not in the sandbox
+            # (e.g., D:\orb-desktop frontend files when sandbox only has D:\Orb backend)
+            try:
+                with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                    fallback_content = f.read(max_chars)
+                logger.info(
+                    "[evidence_gathering] v2.2 sandbox_read_file: HOST FALLBACK SUCCESS %s (%d chars)",
+                    path, len(fallback_content)
+                )
+                return True, fallback_content
+            except Exception as host_err:
+                logger.warning(
+                    "[evidence_gathering] v2.2 sandbox_read_file: host fallback also failed for %s: %s",
+                    path, host_err
+                )
+                return False, None
         
         # v1.28 FIX: Use 'files' array like sandbox_inspector (not 'contents' dict)
         files = data.get("files", [])
@@ -437,7 +489,44 @@ def sandbox_read_file(path: str, max_chars: int = 8000) -> Tuple[bool, Optional[
         content = files[0].get("content")
         if not content:
             logger.warning(
-                "[evidence_gathering] v1.28 sandbox_read_file: no content in file object for %s",
+                "[evidence_gathering] v1.35 sandbox_read_file: no content in file object for %s — trying direct read fallback",
+                actual_path
+            )
+            # v1.35 FIX: Fallback to direct open() when sandbox returns empty content
+            # This handles cases where the sandbox controller finds the file but
+            # returns no content (encoding issues, empty files reported wrong, etc.)
+            try:
+                with open(actual_path, 'r', encoding='utf-8', errors='replace') as f:
+                    fallback_content = f.read(max_chars)
+                if fallback_content is not None:
+                    # Distinguish genuinely empty files from read failures
+                    if len(fallback_content) == 0:
+                        logger.info(
+                            "[evidence_gathering] v1.35 sandbox_read_file: file IS genuinely empty: %s",
+                            actual_path
+                        )
+                        return True, ""  # File exists but is empty — that's valid evidence
+                    logger.info(
+                        "[evidence_gathering] v1.35 sandbox_read_file: FALLBACK SUCCESS %s (%d chars)",
+                        actual_path, len(fallback_content)
+                    )
+                    return True, fallback_content
+            except Exception as fallback_err:
+                logger.warning(
+                    "[evidence_gathering] v1.35 sandbox_read_file: direct read fallback also failed for %s: %s",
+                    actual_path, fallback_err
+                )
+            # v2.1: HARD FAIL — file exists but BOTH read methods returned nothing.
+            # This is NOT a normal "file not found" — the sandbox confirmed the file
+            # exists but we cannot read its content. This MUST surface as an error,
+            # not be silently swallowed.
+            print(
+                f"[ERROR] [evidence_gathering] v2.1 HARD READ FAIL: File exists at "
+                f"{actual_path} but BOTH sandbox and direct read returned no content. "
+                f"Evidence grounding is BROKEN for this file."
+            )
+            logger.error(
+                "[evidence_gathering] v2.1 HARD READ FAIL: %s exists but unreadable by both methods",
                 actual_path
             )
             return False, None
