@@ -349,6 +349,10 @@ async def _resolve_sandbox_base(client: SandboxClient) -> str:
 FRONTEND_PREFIX = "orb-desktop/"
 FRONTEND_ROOT = r"D:\orb-desktop"
 
+# v2.5.1: Backend prefix variants that architecture docs may use
+# These get stripped before resolving against sandbox_base
+BACKEND_PREFIXES = ["Orb/", "orb/"]
+
 def _resolve_multi_root_path(rel_path: str, sandbox_base: str) -> str:
     """Resolve a relative path to its correct absolute path.
     
@@ -374,10 +378,18 @@ def _resolve_multi_root_path(rel_path: str, sandbox_base: str) -> str:
         abs_path = f"{FRONTEND_ROOT}\\{frontend_rel.replace('/', '\\')}"
         logger.info("[arch_exec] v2.2 Frontend path: %s -> %s", rel_path, abs_path)
         return abs_path
-    else:
-        # Backend path — resolve against sandbox_base as before
-        abs_path = f"{sandbox_base}\\{normalized.replace('/', '\\')}"
-        return abs_path
+    
+    # v2.5.1: Strip backend project prefix if architecture included it
+    # e.g. "Orb/main.py" -> "main.py" (before prepending sandbox_base D:\Orb)
+    for prefix in BACKEND_PREFIXES:
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix):]
+            logger.info("[arch_exec] v2.5.1 Stripped backend prefix: %s -> %s", rel_path, normalized)
+            break
+    
+    # Backend path — resolve against sandbox_base
+    abs_path = f"{sandbox_base}\\{normalized.replace('/', '\\')}"
+    return abs_path
 
 
 async def _read_existing_file(client: SandboxClient, path: str) -> Optional[str]:
