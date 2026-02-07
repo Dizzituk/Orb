@@ -1138,6 +1138,19 @@ async def run_architecture_execution(
                 "absolute_path": abs_path,
                 "job_context_files": list(job_context.keys()),  # v2.3
             })
+        else:
+            files_failed += 1
+            logger.error(
+                "[arch_exec] ✗ %s %s FAILED after %d strikes: %s",
+                action.upper(), rel_path, MAX_STRIKES_PER_TASK, last_error,
+            )
+            print(f"[ARCH_EXEC] ✗ {action.upper()} {rel_path} FAILED: {last_error}")
+            
+            add_trace("FILE_TASK_FAILED", "exhausted_strikes", {
+                "path": rel_path,
+                "strikes": MAX_STRIKES_PER_TASK,
+                "last_error": last_error,
+            })
         
         # =====================================================================
         # v2.5: Two-pass boundary — after all CREATEs, re-extract interfaces
@@ -1158,19 +1171,6 @@ async def run_architecture_execution(
                     logger.warning("[arch_exec] v2.5 Two-pass extraction failed for %s: %s", created_path, e)
             add_trace("TWO_PASS_CONTEXT_REFRESH", "success", {
                 "files_refreshed": list(created_file_contents.keys()),
-            })
-        else:
-            files_failed += 1
-            logger.error(
-                "[arch_exec] ✗ %s %s FAILED after %d strikes: %s",
-                action.upper(), rel_path, MAX_STRIKES_PER_TASK, last_error,
-            )
-            print(f"[ARCH_EXEC] ✗ {action.upper()} {rel_path} FAILED: {last_error}")
-            
-            add_trace("FILE_TASK_FAILED", "exhausted_strikes", {
-                "path": rel_path,
-                "strikes": MAX_STRIKES_PER_TASK,
-                "last_error": last_error,
             })
     
     # =========================================================================
