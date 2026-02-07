@@ -11,6 +11,14 @@ The Architecture Executor is part of the OVERWATCHER domain. It:
 CRITICAL RULE: Overwatcher (this module) NEVER writes to the sandbox.
     All writes go through the Implementer (implementer.py).
 
+v2.6 (2026-02-07): AUTO __init__.py FOR NEW PYTHON PACKAGES
+    - New Python files in directories without __init__.py get auto-created init files
+    - _ensure_python_init_files() scans manifest + sandbox before the task loop
+    - Checks both the file manifest AND the sandbox (existing dirs may already have init)
+    - Only targets backend Python paths (not frontend orb-desktop/ paths)
+    - Injected init files are empty (just a comment) and don't need LLM generation
+    - Fixes: new app/services/ and app/routers/ dirs being non-importable packages
+
 v2.5 (2026-02-07): CROSS-FILE COHERENCE — FACTORY FUNCTIONS + URL PATHS
     - Bug 1 fix: System prompt now requires factory/singleton functions when consuming code expects them
     - Bug 1 fix: Two-pass context — after all CREATEs, re-extract interfaces before MODIFY phase
@@ -79,7 +87,7 @@ from .sandbox_client import (
 
 logger = logging.getLogger(__name__)
 
-ARCHITECTURE_EXECUTOR_BUILD_ID = "2026-02-07-v2.5-cross-file-coherence"
+ARCHITECTURE_EXECUTOR_BUILD_ID = "2026-02-07-v2.6-auto-init-py"
 print(f"[ARCHITECTURE_EXECUTOR_LOADED] BUILD_ID={ARCHITECTURE_EXECUTOR_BUILD_ID}")
 
 
@@ -378,6 +386,122 @@ def _resolve_multi_root_path(rel_path: str, sandbox_base: str) -> str:
         # Backend path — resolve against sandbox_base as before
         abs_path = f"{sandbox_base}\\{normalized.replace('/', '\\')}"
         return abs_path
+
+
+def _ensure_python_init_files(
+    new_files: List[Dict[str, str]],
+    modified_files: List[Dict[str, str]],
+    sandbox_base: str,
+    client: SandboxClient,
+) -> List[Dict[str, str]]:
+    """Auto-create __init__.py files for new Python package directories.
+    
+    v2.6: When the architecture creates Python files in new directories
+    (e.g. app/services/transcription_service.py), those directories need
+    __init__.py to be importable as Python packages. The architecture
+    rarely includes these, and the Implementer doesn't know to create them.
+    
+    This function:
+    1. Collects all directories that will contain new .py files
+    2. For each directory, walks up to the project root checking for __init__.py
+    3. Skips directories that already have __init__.py (in manifest or on disk)
+    4. Returns a list of __init__.py file entries to prepend to new_files
+    
+    Only applies to backend Python paths (not orb-desktop/ frontend paths).
+    
+    Args:
+        new_files: List of new file dicts from parse_file_inventory
+        modified_files: List of modified file dicts (for manifest awareness)
+        sandbox_base: Resolved backend root (e.g. D:\Orb)
+        client: SandboxClient for checking existing files on disk
+    
+    Returns:
+        List of __init__.py file dicts to prepend to new_files
+    """
+    # Collect all paths already in the manifest (new + modified)
+    manifest_paths = set()
+    for f in new_files:
+        manifest_paths.add(f["path"].replace("\\", "/"))
+    for f in modified_files:
+        manifest_paths.add(f["path"].replace("\\", "/"))
+    
+    # Collect directories that need __init__.py checking
+    dirs_needing_init: set = set()
+    
+    for f in new_files:
+        rel_path = f["path"].replace("\\", "/")
+        
+        # Skip non-Python files
+        if not rel_path.endswith(".py"):
+            continue
+        
+        # Skip frontend paths
+        if rel_path.startswith(FRONTEND_PREFIX):
+            continue
+        
+        # Skip if this IS an __init__.py (already being created)
+        if rel_path.endswith("__init__.py"):
+            continue
+        
+        # Walk up directory tree from the file's parent to the project root
+        parts = rel_path.split("/")
+        for depth in range(1, len(parts)):  # depth=1 is immediate parent dir
+            dir_path = "/".join(parts[:depth])
+            init_path = f"{dir_path}/__init__.py"
+            
+            # Skip if __init__.py already in manifest
+            if init_path in manifest_paths:
+                continue
+            
+            # Skip top-level (no __init__.py needed at project root)
+            if "/" not in dir_path:
+                # e.g. "app" — this IS a package dir, check it
+                # But if dir_path is just a filename component, skip
+                pass
+            
+            dirs_needing_init.add(init_path)
+    
+    if not dirs_needing_init:
+        return []
+    
+    # Check which of these __init__.py files already exist on disk
+    init_files_to_create: List[Dict[str, str]] = []
+    
+    for init_path in sorted(dirs_needing_init):
+        abs_path = f"{sandbox_base}\\{init_path.replace('/', '\\')}"
+        
+        # Check if file exists in sandbox
+        try:
+            cmd = f'Test-Path -Path "{abs_path}" -PathType Leaf'
+            result = client.shell_run(cmd, timeout_seconds=10)
+            if result.stdout and result.stdout.strip().lower() == "true":
+                logger.info(
+                    "[arch_exec] v2.6 __init__.py already exists: %s",
+                    init_path,
+                )
+                continue
+        except Exception as e:
+            logger.warning(
+                "[arch_exec] v2.6 Could not check %s: %s — will create anyway",
+                init_path, e,
+            )
+        
+        init_files_to_create.append({
+            "path": init_path,
+            "description": f"v2.6 auto-created: Python package init for {init_path.rsplit('/', 1)[0]}/",
+        })
+        logger.info(
+            "[arch_exec] v2.6 Auto-creating __init__.py: %s",
+            init_path,
+        )
+    
+    if init_files_to_create:
+        print(
+            f"[ARCH_EXEC] v2.6 Auto-creating {len(init_files_to_create)} __init__.py file(s): "
+            + ", ".join(f["path"] for f in init_files_to_create)
+        )
+    
+    return init_files_to_create
 
 
 async def _read_existing_file(client: SandboxClient, path: str) -> Optional[str]:
@@ -889,6 +1013,30 @@ async def run_architecture_execution(
     add_trace("SANDBOX_BASE_RESOLVED", "success", {"base_path": sandbox_base})
     
     # =========================================================================
+    # Step 3b: v2.6 Auto-create __init__.py for new Python packages
+    # =========================================================================
+    try:
+        init_files = _ensure_python_init_files(
+            new_files, modified_files, sandbox_base, client
+        )
+        if init_files:
+            # Prepend to new_files so they're created BEFORE the files that need them
+            new_files = init_files + new_files
+            total_operations = len(new_files) + len(modified_files)
+            add_trace("AUTO_INIT_PY", "success", {
+                "init_files_added": [f["path"] for f in init_files],
+                "new_total_operations": total_operations,
+            })
+            logger.info(
+                "[arch_exec] v2.6 Added %d __init__.py files, total ops now %d",
+                len(init_files), total_operations,
+            )
+    except Exception as e:
+        # Non-fatal — continue without auto-init if it fails
+        logger.warning("[arch_exec] v2.6 _ensure_python_init_files failed: %s", e)
+        add_trace("AUTO_INIT_PY", "failed", {"error": str(e)})
+    
+    # =========================================================================
     # Step 4: Process all file tasks
     # =========================================================================
     # Import the Implementer's atomic task interface
@@ -942,6 +1090,27 @@ async def run_architecture_execution(
         
         for strike in range(1, MAX_STRIKES_PER_TASK + 1):
             logger.info("[arch_exec] %s strike %d/%d", rel_path, strike, MAX_STRIKES_PER_TASK)
+            
+            # --- v2.6: Skip LLM for auto-generated __init__.py files ---
+            if rel_path.endswith("__init__.py") and file_info.get("description", "").startswith("v2.6 auto-created"):
+                file_content = "# Auto-generated by architecture executor v2.6\n"
+                logger.info("[arch_exec] v2.6 Direct-writing __init__.py: %s", rel_path)
+                
+                try:
+                    impl_result = await run_implementer_task(
+                        path=abs_path,
+                        content=file_content,
+                        action="create",
+                        ensure_parents=True,
+                        client=client,
+                    )
+                    if impl_result.success:
+                        task_success = True
+                    else:
+                        last_error = f"Implementer write failed for __init__.py: {impl_result.error}"
+                except Exception as e:
+                    last_error = f"__init__.py write exception: {e}"
+                break  # No retries needed for __init__.py
             
             # --- Generate content via Implementer LLM ---
             try:
@@ -1228,5 +1397,6 @@ __all__ = [
     "_extract_router_registrations",
     "_build_resolved_endpoints",
     "_format_job_context",
+    "_ensure_python_init_files",
     "ARCHITECTURE_EXECUTOR_BUILD_ID",
 ]

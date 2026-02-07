@@ -1,25 +1,26 @@
-# FILE: app/llm/critical_pipeline_stream.py
+# FILE: app/llm/critical_pipeline/__init__.py
 """
-Backward-compatibility shim for Critical Pipeline.
+Critical Pipeline package — refactored from critical_pipeline_stream.py (v3.0).
 
-The implementation has been refactored into the ``app.llm.critical_pipeline``
-package (v3.0).  This file re-exports all public symbols so that existing
-imports continue to work without modification:
+All public symbols are re-exported here for backward compatibility so that
+existing imports like:
 
     from app.llm.critical_pipeline_stream import generate_critical_pipeline_stream
-    from app.llm.critical_pipeline_stream import JobKind, micro_quickcheck, ...
 
-See app/llm/critical_pipeline/ for the full source.
+continue to work via the compatibility shim in critical_pipeline_stream.py.
 """
 
-# Re-export everything from the package
-from app.llm.critical_pipeline import (  # noqa: F401
-    generate_critical_pipeline_stream,
-    JobKind,
+from app.llm.critical_pipeline.stream_handler import generate_critical_pipeline_stream
+from app.llm.critical_pipeline.job_classification import JobKind
+from app.llm.critical_pipeline.quickcheck_micro import (
     MicroQuickcheckResult,
     micro_quickcheck,
+)
+from app.llm.critical_pipeline.quickcheck_scan import (
     ScanQuickcheckResult,
     scan_quickcheck,
+)
+from app.llm.critical_pipeline.evidence import (
     CriticalPipelineEvidence,
     gather_critical_pipeline_evidence,
     read_file_for_critical_pipeline,
