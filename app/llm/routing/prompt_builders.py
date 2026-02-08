@@ -3,6 +3,7 @@
 System prompt and message builders for stream routing.
 
 v1.0 (2026-01-20): Extracted from stream_router.py for modularity.
+v1.1 (2026-01-20): Added large-output truncation for command outputs.
 
 This module provides:
 - `build_system_prompt()` - Constructs system prompt with capability layer
@@ -12,7 +13,7 @@ This module provides:
 from __future__ import annotations
 
 import logging
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 
 from sqlalchemy.orm import Session
 
@@ -29,7 +30,7 @@ logger = logging.getLogger(__name__)
 # v5.0 (2026-02-04): CONVERSATIONAL MODE GUIDELINES
 # The baseline/chat LLM must behave as a conversational assistant, NOT
 # a code generator. It should clarify, ask questions, and build context.
-# The downstream pipeline (Weaver → SpecGate → CriticalPipeline) handles
+# The downstream pipeline (Weaver  SpecGate  CriticalPipeline) handles
 # the actual implementation work.
 _CONVERSATIONAL_GUIDELINES = """
 
@@ -37,7 +38,7 @@ _CONVERSATIONAL_GUIDELINES = """
 
 You are the **conversational front-end** of a multi-stage development pipeline.
 Your job is to UNDERSTAND what the user wants through natural dialogue.
-You are NOT responsible for implementation — that happens in later pipeline stages.
+You are NOT responsible for implementation - that happens in later pipeline stages.
 
 ## CRITICAL BEHAVIOUR RULES
 
@@ -45,7 +46,7 @@ You are NOT responsible for implementation — that happens in later pipeline st
    you to write specific code right now. Your role is conversation, not generation.
 2. **Ask clarifying questions** when the request is ambiguous or underspecified.
    Build understanding through dialogue before anything gets built.
-3. **Keep responses focused and concise** — a few paragraphs maximum.
+3. **Keep responses focused and concise** - a few paragraphs maximum.
    Do not dump walls of text, architecture docs, or full file contents.
 4. **Summarise your understanding** back to the user. Confirm what you think
    they want before the pipeline starts building it.
@@ -62,7 +63,7 @@ You are NOT responsible for implementation — that happens in later pipeline st
 
 ## EXAMPLES
 
-GOOD: "Got it — you want push-to-talk voice input for the desktop app. A couple
+GOOD: "Got it - you want push-to-talk voice input for the desktop app. A couple
 of quick questions: should this use a cloud speech-to-text service like OpenAI
 Whisper, or do you want it fully local? And where in the UI should the button go?"
 
@@ -114,9 +115,14 @@ def build_messages(
     db: Session,
     include_history: bool = True,
     history_limit: int = 20,
-) -> List[dict]:
+) -> List[Dict[str, str]]:
     """
     Build message list from history + current message.
+    
+    v1.1: Added large-output truncation for command outputs.
+    Large assistant messages (>10k chars) are truncated to prevent
+    context exhaustion, except for the most recent K=2 large messages
+    which are kept in full.
     
     Args:
         message: Current user message
@@ -128,17 +134,54 @@ def build_messages(
     Returns:
         List of message dicts with role and content
     """
-    messages = []
+    LARGE_THRESHOLD = 10_000
+    KEEP_RECENT_FULL = 2
+    TRUNCATE_HEAD = 8_000
+    TRUNCATE_TAIL = 1_000
+    
+    messages_list = []
     
     if include_history:
         try:
             history = memory_service.list_messages(db, project_id, limit=history_limit)
-            messages = [{"role": msg.role, "content": msg.content} for msg in history]
+            
+            # Identify large assistant messages
+            large_assistant_msgs = [
+                msg for msg in history 
+                if msg.role == "assistant" and len(msg.content) > LARGE_THRESHOLD
+            ]
+            
+            # Most recent K large messages get full content
+            keep_full_ids = {
+                msg.id for msg in large_assistant_msgs[-KEEP_RECENT_FULL:]
+            }
+            
+            # Convert to LLM format with truncation
+            for msg in history:
+                content = msg.content
+                
+                # Apply truncation if needed
+                if (msg.role == "assistant" and 
+                    len(content) > LARGE_THRESHOLD and 
+                    msg.id not in keep_full_ids):
+                    
+                    head = content[:TRUNCATE_HEAD]
+                    tail = content[-TRUNCATE_TAIL:]
+                    marker = (
+                        "\n\n[...TRUNCATED: Large command output. "
+                        "Ask to retrieve specific sections if needed...]\n\n"
+                    )
+                    content = head + marker + tail
+                
+                messages_list.append({
+                    "role": msg.role,
+                    "content": content
+                })
         except Exception as e:
             logger.warning(f"[prompt_builders] Failed to load history: {e}")
     
-    messages.append({"role": "user", "content": message})
-    return messages
+    messages_list.append({"role": "user", "content": message})
+    return messages_list
 
 
 def build_full_context(
