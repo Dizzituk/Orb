@@ -202,9 +202,11 @@ except ImportError:
 # Memory service for reading conversation
 try:
     from app.memory import service as memory_service
+    from app.memory import schemas as memory_schemas
     _MEMORY_AVAILABLE = True
 except ImportError:
     memory_service = None
+    memory_schemas = None
     _MEMORY_AVAILABLE = False
 
 # Flow state for storing output and design question state
@@ -2086,6 +2088,24 @@ Remember:
             except Exception as e:
                 logger.warning("[WEAVER] Failed to store in flow state: %s", e)
         
+        # =====================================================================
+        # Persist to message history for cross-model context continuity
+        # =====================================================================
+        if _MEMORY_AVAILABLE and memory_service and memory_schemas:
+            try:
+                memory_service.create_message(
+                    db,
+                    memory_schemas.MessageCreate(
+                        project_id=project_id,
+                        role="assistant",
+                        content=job_description,
+                        provider=provider,
+                        model=model,
+                    ),
+                )
+            except Exception as e:
+                logger.warning("[WEAVER] Failed to save message to history: %s", e)
+
         # =====================================================================
         # Completion message
         # =====================================================================

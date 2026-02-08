@@ -119,8 +119,10 @@ except Exception:
 # Memory service (optional)
 try:
     from app.memory import service as memory_service
+    from app.memory import schemas as memory_schemas
 except Exception:
     memory_service = None
+    memory_schemas = None
 
 # Audit logger (optional)
 try:
@@ -828,17 +830,21 @@ async def generate_spec_gate_stream(
             })
 
         # Persist assistant message
-        if memory_service:
+        if memory_service and memory_schemas:
             try:
                 full_response = "".join(response_parts)
                 memory_service.create_message(
-                    db=db,
-                    project_id=project_id,
-                    role="assistant",
-                    content=full_response,
+                    db,
+                    memory_schemas.MessageCreate(
+                        project_id=project_id,
+                        role="assistant",
+                        content=full_response,
+                        provider=spec_gate_provider,
+                        model=spec_gate_model,
+                    ),
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("[spec_gate_stream] Failed to save message: %s", e)
 
         yield _safe_json_event({
             "type": "done",

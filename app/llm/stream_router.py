@@ -194,8 +194,9 @@ async def stream_chat(
         
         # =================================================================
         # DB-BACKED SPEC: Route "critical pipeline" to Critical Pipeline
+        # v5.3: Pass translation_result to prevent chat-mode false positives
         # =================================================================
-        response = _handle_db_spec_routing(req, db, trace, conversation_id, stage_trace)
+        response = _handle_db_spec_routing(req, db, trace, conversation_id, stage_trace, translation_result)
         if response:
             return response
         
@@ -226,6 +227,20 @@ async def stream_chat(
         # COMMAND MODE
         # =================================================================
         if translation_result.mode == TranslationMode.COMMAND_CAPABLE:
+            # v5.3: Save user command message to history for cross-model context
+            try:
+                from app.memory import service as _mem_svc, schemas as _mem_schemas
+                _mem_svc.create_message(
+                    db,
+                    _mem_schemas.MessageCreate(
+                        project_id=req.project_id,
+                        role="user",
+                        content=req.message,
+                        provider="system",
+                    ),
+                )
+            except Exception:
+                pass  # Non-fatal — don't block command execution
             
             # Awaiting confirmation
             if (translation_result.confirmation_gate and 
@@ -451,9 +466,17 @@ def _handle_weaver_design_questions(req, db, trace, stage_trace, translation_res
     return None
 
 
-def _handle_db_spec_routing(req, db, trace, conversation_id, stage_trace):
-    """Handle DB-backed spec routing for critical pipeline."""
+def _handle_db_spec_routing(req, db, trace, conversation_id, stage_trace, translation_result=None):
+    """Handle DB-backed spec routing for critical pipeline.
+    
+    v5.3: Only triggers for COMMAND_CAPABLE mode to prevent false positives
+    when user mentions 'critical pipeline' in conversational context.
+    """
     if not _SPEC_SERVICE_AVAILABLE or not get_latest_validated_spec:
+        return None
+    
+    # v5.3: MUST be in command mode — never trigger from chat/conversational text
+    if translation_result is None or translation_result.mode != TranslationMode.COMMAND_CAPABLE:
         return None
     
     msg_lower = req.message.lower()

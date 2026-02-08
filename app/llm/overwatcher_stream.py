@@ -766,6 +766,23 @@ async def generate_overwatcher_stream(
                 yield sse_token(f"❌ **Verification FAILED** - {evidence.get('overall_result')}\n")
                 emit(f"❌ **Verification FAILED** - {evidence.get('overall_result')}\n")
         
+        # Persist to message history for cross-model context continuity
+        if memory_service and memory_schemas:
+            try:
+                full_response = "".join(response_parts)
+                memory_service.create_message(
+                    db,
+                    memory_schemas.MessageCreate(
+                        project_id=project_id,
+                        role="assistant",
+                        content=full_response,
+                        provider=ow_provider,
+                        model=ow_model,
+                    ),
+                )
+            except Exception as e:
+                logger.warning("[overwatcher_stream] Failed to save message: %s", e)
+
         # Done event - ALWAYS yield this
         yield sse_event(
             "done",
