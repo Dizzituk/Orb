@@ -35,11 +35,12 @@ from app.embeddings.router import router as embeddings_router, search_router as 
 from app.introspection.router import router as introspection_router
 from app.astra_memory.router import router as astra_memory_router
 from app.rag.router import router as rag_router
+from app.shared_context.router import router as shared_context_router
 
 # Import refactored endpoints
 from app.endpoints import router as endpoints_router
 
-# Import voice/transcription routers (safe — don't crash app if deps missing)
+# Import voice/transcription routers (safe - don't crash app if deps missing)
 try:
     from app.routers.transcribe import router as transcribe_router
     _TRANSCRIBE_AVAILABLE = True
@@ -152,6 +153,7 @@ app.include_router(web_search_router)
 app.include_router(embeddings_router)
 app.include_router(embeddings_search_router)
 app.include_router(astra_memory_router)
+app.include_router(shared_context_router, dependencies=[Depends(require_auth)])
 
 # Refactored endpoints (chat, chat_with_attachments, direct_llm)
 app.include_router(endpoints_router)

@@ -126,7 +126,7 @@ def chat(
             if semantic_results:
                 semantic_context = "=== RELEVANT DOCUMENTS ===\n"
                 for result in semantic_results:
-                    semantic_context += f"\n[Score: {result.similarity_score:.3f}] {result.content_preview}\n"
+                    semantic_context += f"\n[Score: {result.similarity:.3f}] {result.content}\n"
         except Exception as e:
             print(f"[chat] Semantic search failed: {e}")
     
