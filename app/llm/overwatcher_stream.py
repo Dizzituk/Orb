@@ -439,7 +439,7 @@ def create_overwatcher_llm_fn() -> Optional[Callable]:
             messages: OpenAI-style message list [{"role": ..., "content": ...}]
             provider_id: Provider to use (defaults to Overwatcher config)
             model_id: Model to use (defaults to Overwatcher config)
-            max_tokens: Max output tokens (advisory - call_llm_text uses env config)
+            max_tokens: Max output tokens (passed through to call_llm_text)
         
         Returns:
             Response text as string
@@ -470,6 +470,7 @@ def create_overwatcher_llm_fn() -> Optional[Callable]:
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 messages=user_messages if len(user_messages) > 1 else None,
+                max_tokens=max_tokens,
             )
             logger.info(f"[overwatcher_llm] Response length: {len(result)}")
             return result

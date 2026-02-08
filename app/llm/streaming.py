@@ -633,6 +633,7 @@ async def call_llm_text(
     constraints_hint: Optional[Any] = None,
     enable_reasoning: bool = False,
     route: Optional[str] = None,
+    max_tokens: Optional[int] = None,
 ) -> str:
     """
     Convenience helper for callers that want a single final string.
@@ -677,6 +678,7 @@ async def call_llm_text(
             model=model,
             enable_reasoning=enable_reasoning,
             route=route,
+            max_tokens=max_tokens,
         ):
             et = event.get("type")
             if et == "token":
