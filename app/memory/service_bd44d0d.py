@@ -46,70 +46,12 @@ def update_project(db: Session, project_id: int, data: schemas.ProjectUpdate) ->
 
 
 def delete_project(db: Session, project_id: int) -> bool:
-    """Delete a project and all associated data.
-
-    v0.13.0: Now explicitly deletes Phase-4 job system data (artefacts, jobs,
-             sessions, scheduled_jobs, project_configs) with best-effort error
-             handling before deleting the project itself.
-    """
     project = get_project(db, project_id)
     if not project:
         return False
-
-    # Phase 1: Delete Phase-4 job system data (best-effort)
-    try:
-        from app.jobs.models import Artefact
-        artefact_count = db.query(Artefact).filter(Artefact.project_id == project_id).delete()
-        print(f"[memory.service] Deleted {artefact_count} artefacts for project {project_id}")
-    except Exception as e:
-        print(f"[memory.service] Failed to delete artefacts for project {project_id}: {e}")
-
-    try:
-        from app.jobs.models import Job
-        job_count = db.query(Job).filter(Job.project_id == project_id).delete()
-        print(f"[memory.service] Deleted {job_count} jobs for project {project_id}")
-    except Exception as e:
-        print(f"[memory.service] Failed to delete jobs for project {project_id}: {e}")
-
-    try:
-        from app.jobs.models import Session as JobSession
-        session_count = db.query(JobSession).filter(JobSession.project_id == project_id).delete()
-        print(f"[memory.service] Deleted {session_count} sessions for project {project_id}")
-    except Exception as e:
-        print(f"[memory.service] Failed to delete sessions for project {project_id}: {e}")
-
-    try:
-        from app.jobs.models import ScheduledJob
-        scheduled_count = db.query(ScheduledJob).filter(ScheduledJob.project_id == project_id).delete()
-        print(f"[memory.service] Deleted {scheduled_count} scheduled jobs for project {project_id}")
-    except Exception as e:
-        print(f"[memory.service] Failed to delete scheduled jobs for project {project_id}: {e}")
-
-    try:
-        from app.jobs.models import ProjectConfigModel
-        config_count = db.query(ProjectConfigModel).filter(ProjectConfigModel.project_id == project_id).delete()
-        print(f"[memory.service] Deleted {config_count} project configs for project {project_id}")
-    except Exception as e:
-        print(f"[memory.service] Failed to delete project configs for project {project_id}: {e}")
-
-    # Phase 2: Delete embeddings (best-effort)
-    try:
-        from app.embeddings.models import Embedding
-        embedding_count = db.query(Embedding).filter(Embedding.project_id == project_id).delete()
-        print(f"[memory.service] Deleted {embedding_count} embeddings for project {project_id}")
-    except Exception as e:
-        print(f"[memory.service] Failed to delete embeddings for project {project_id}: {e}")
-
-    # Phase 3: Delete the project itself (always attempted)
-    try:
-        db.delete(project)
-        db.commit()
-        print(f"[memory.service] Successfully deleted project {project_id}")
-        return True
-    except Exception as e:
-        db.rollback()
-        print(f"[memory.service] Failed to delete project {project_id}: {e}")
-        return False
+    db.delete(project)
+    db.commit()
+    return True
 
 
 # ============== NOTE ==============

@@ -998,7 +998,7 @@ async def run_architecture_execution(
         impl_config = get_implementer_config()
         impl_provider = impl_config.provider
         impl_model = impl_config.model
-        impl_max_tokens = min(impl_config.max_output_tokens or IMPLEMENTER_MAX_TOKENS, IMPLEMENTER_MAX_TOKENS)
+        impl_max_tokens = impl_config.max_output_tokens or IMPLEMENTER_MAX_TOKENS
     except Exception as e:
         logger.warning("[arch_exec] Could not load implementer config: %s — using defaults", e)
         impl_provider = "anthropic"
