@@ -87,7 +87,7 @@ from .sandbox_client import (
 
 logger = logging.getLogger(__name__)
 
-ARCHITECTURE_EXECUTOR_BUILD_ID = "2026-02-08-v2.7-fix-false-fail-counting"
+ARCHITECTURE_EXECUTOR_BUILD_ID = "2026-02-09-v2.9-boot-retry-loop-with-auto-fix"
 print(f"[ARCHITECTURE_EXECUTOR_LOADED] BUILD_ID={ARCHITECTURE_EXECUTOR_BUILD_ID}")
 
 
@@ -1037,6 +1037,61 @@ async def run_architecture_execution(
         add_trace("AUTO_INIT_PY", "failed", {"error": str(e)})
     
     # =========================================================================
+    # Step 3b: Module shadowing pre-flight check (v2.8)
+    # Prevents creating a directory/package that shadows an existing .py file.
+    # e.g. creating stream_utils/__init__.py when stream_utils.py already exists
+    # would break all existing imports of stream_utils.
+    # =========================================================================
+    shadowing_blocked = []
+    for file_info in new_files:
+        new_path = file_info["path"]
+        # If the new file lives inside a directory, check if a .py file
+        # with the same name as that directory already exists
+        parts = new_path.replace("\\", "/").split("/")
+        for depth in range(1, len(parts)):
+            dir_segment = "/".join(parts[:depth])
+            existing_py = dir_segment + ".py"
+            # Check via sandbox filesystem
+            try:
+                check_cmd = (
+                    f'if (Test-Path -Path "{_resolve_multi_root_path(existing_py, sandbox_base)}") '
+                    f'{{ "EXISTS" }} else {{ "NONE" }}'
+                )
+                check_result = client.shell_run(check_cmd, timeout_seconds=10)
+                if check_result.stdout and "EXISTS" in check_result.stdout:
+                    shadowing_blocked.append({
+                        "new_path": new_path,
+                        "shadows": existing_py,
+                        "reason": (
+                            f"Creating '{new_path}' would create a package directory "
+                            f"that shadows existing module '{existing_py}'. "
+                            f"Python resolves packages before modules, so all "
+                            f"existing 'import {dir_segment.replace('/', '.')}' "
+                            f"statements would break."
+                        ),
+                    })
+            except Exception as e:
+                logger.warning("[arch_exec] v2.8 Shadow check failed for %s: %s", new_path, e)
+
+    if shadowing_blocked:
+        for blocked in shadowing_blocked:
+            logger.error(
+                "[arch_exec] v2.8 MODULE SHADOW BLOCKED: %s shadows %s",
+                blocked["new_path"], blocked["shadows"],
+            )
+            print(f"[ARCH_EXEC] \u2717 BLOCKED: {blocked['reason']}")
+            add_trace("MODULE_SHADOW_BLOCKED", "fatal", blocked)
+
+        # Remove shadowing files from new_files so they don't get created
+        shadow_paths = {b["new_path"] for b in shadowing_blocked}
+        original_count = len(new_files)
+        new_files = [f for f in new_files if f["path"] not in shadow_paths]
+        logger.info(
+            "[arch_exec] v2.8 Removed %d shadowing files from task list",
+            original_count - len(new_files),
+        )
+
+    # =========================================================================
     # Step 4: Process all file tasks
     # =========================================================================
     # Import the Implementer's atomic task interface
@@ -1369,7 +1424,194 @@ async def run_architecture_execution(
         "success" if success else "partial" if total_succeeded > 0 else "failed",
         summary,
     )
-    
+
+    # =========================================================================
+    # Step 6: Backend boot check with retry loop (v2.9)
+    # After all file operations, verify the backend can still start.
+    # If boot fails, identify the broken file from the traceback, feed the
+    # error back to the Implementer for a targeted fix, and retry.
+    # Three-strike limit per unique error. New errors reset the counter.
+    # Critical contract: fixes must not destroy working functionality.
+    # =========================================================================
+    BOOT_MAX_STRIKES = 3
+
+    def _run_boot_check(cl: SandboxClient, sb: str) -> tuple:
+        """Run boot check, return (passed: bool, error: str, stderr: str)."""
+        venv_python = sb + "\\.venv\\Scripts\\python.exe"
+        boot_cmd = (
+            f'cd "{sb}" ; '
+            f'& "{venv_python}" -c '
+            f'"import sys; sys.path.insert(0, r\'{sb}\'); '
+            f'from main import app; print(\'BOOT_CHECK_PASS\')"'
+        )
+        result = cl.shell_run(boot_cmd, timeout_seconds=30)
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+        passed = "BOOT_CHECK_PASS" in stdout
+        return passed, stderr[:1000] if stderr else "No output", stderr
+
+    def _parse_broken_file_from_traceback(tb: str, written: list) -> Optional[str]:
+        """Extract the broken file path from a Python traceback.
+        Only returns paths that were written by this job (artifacts_written)."""
+        import re
+        # Match 'File "<path>"' lines in traceback
+        file_matches = re.findall(r'File "([^"]+)"', tb)
+        # Walk backwards — the deepest frame is most likely the broken file
+        written_set = {p.replace("/", "\\") for p in written}
+        for fpath in reversed(file_matches):
+            normalised = fpath.replace("/", "\\")
+            if normalised in written_set:
+                return normalised
+        return None
+
+    if success or total_succeeded > 0:
+        logger.info("[arch_exec] v2.9 Running backend boot check...")
+        print("[ARCH_EXEC] 🔍 Running backend boot check...")
+        add_trace("BOOT_CHECK_START", "running")
+
+        boot_passed = False
+        last_boot_error = None
+        same_error_count = 0
+
+        try:
+            for boot_strike in range(1, BOOT_MAX_STRIKES + 1):
+                passed, boot_error, full_stderr = _run_boot_check(client, sandbox_base)
+
+                if passed:
+                    logger.info("[arch_exec] v2.9 ✓ Backend boot check PASSED (strike %d)", boot_strike)
+                    print(f"[ARCH_EXEC] ✅ Backend boot check PASSED (attempt {boot_strike})")
+                    add_trace("BOOT_CHECK_COMPLETE", "pass", {"attempt": boot_strike})
+                    boot_passed = True
+                    break
+
+                # Boot failed — check if same error or new error
+                logger.error("[arch_exec] v2.9 ✗ Boot check FAILED (strike %d): %s", boot_strike, boot_error[:200])
+                print(f"[ARCH_EXEC] ❌ Boot check FAILED (attempt {boot_strike}/{BOOT_MAX_STRIKES}): {boot_error[:200]}")
+                add_trace("BOOT_CHECK_FAIL", f"strike_{boot_strike}", {
+                    "error": boot_error[:500],
+                })
+
+                # Track same-error vs new-error
+                if boot_error == last_boot_error:
+                    same_error_count += 1
+                else:
+                    same_error_count = 1
+                    last_boot_error = boot_error
+
+                if same_error_count >= BOOT_MAX_STRIKES:
+                    logger.error("[arch_exec] v2.9 Same boot error %d times — giving up", same_error_count)
+                    print(f"[ARCH_EXEC] ❌ Same boot error {same_error_count} times — giving up")
+                    break
+
+                # Last strike — don't retry, just fail
+                if boot_strike >= BOOT_MAX_STRIKES:
+                    break
+
+                # --- Attempt to fix the broken file ---
+                broken_file = _parse_broken_file_from_traceback(full_stderr, artifacts_written)
+                if not broken_file:
+                    logger.warning("[arch_exec] v2.9 Cannot identify broken file from traceback — cannot auto-fix")
+                    print("[ARCH_EXEC] ⚠️ Cannot identify broken file from traceback")
+                    break
+
+                logger.info("[arch_exec] v2.9 Broken file identified: %s — attempting fix", broken_file)
+                print(f"[ARCH_EXEC] 🔧 Attempting fix on: {broken_file}")
+                add_trace("BOOT_FIX_ATTEMPT", f"strike_{boot_strike}", {
+                    "broken_file": broken_file,
+                    "error": boot_error[:300],
+                })
+
+                # Read the current (broken) content from sandbox
+                broken_content = await _read_existing_file(client, broken_file)
+                if not broken_content:
+                    logger.warning("[arch_exec] v2.9 Cannot read broken file: %s", broken_file)
+                    break
+
+                # Get the architecture section for this file
+                broken_rel = broken_file
+                for prefix in [sandbox_base + "\\", "D:\\orb-desktop\\"]:
+                    if broken_file.startswith(prefix):
+                        broken_rel = broken_file[len(prefix):]
+                        break
+                arch_section = extract_section_for_file(architecture_content, broken_rel)
+
+                # Build a targeted fix prompt
+                fix_prompt = (
+                    f"## BOOT CHECK FIX — Strike {boot_strike}\n\n"
+                    f"The backend failed to start after your changes. "
+                    f"You MUST fix this file while preserving ALL existing functionality.\n\n"
+                    f"### Boot Error\n```\n{boot_error}\n```\n\n"
+                    f"### Full Traceback\n```\n{full_stderr[:2000]}\n```\n\n"
+                    f"### Current File Content (broken)\n```\n{broken_content}\n```\n\n"
+                    f"### Architecture Specification For This File\n{arch_section}\n\n"
+                    f"### CRITICAL RULES\n"
+                    f"1. Output ONLY the complete fixed file — no markdown fences, no explanations.\n"
+                    f"2. Fix the boot error shown above.\n"
+                    f"3. DO NOT remove or break any existing imports, functions, or functionality.\n"
+                    f"4. The fix must integrate the new feature while keeping everything that already worked.\n"
+                    f"5. If an import path doesn't exist, remove it or fix it — don't guess.\n"
+                    f"6. Preserve the file's existing code style and patterns.\n"
+                )
+
+                # Call the Implementer to fix
+                from .implementer import run_implementer_task
+                try:
+                    fix_result = await llm_call_fn(
+                        provider_id=impl_provider,
+                        model_id=impl_model,
+                        messages=[
+                            {"role": "system", "content": IMPLEMENTER_MODIFY_FILE_SYSTEM},
+                            {"role": "user", "content": fix_prompt},
+                        ],
+                        max_tokens=IMPLEMENTER_MAX_TOKENS,
+                    )
+
+                    fix_content = _extract_llm_content(fix_result)
+                    fix_content = _strip_markdown_fences(fix_content)
+
+                    if not fix_content or len(fix_content) < 50:
+                        logger.warning("[arch_exec] v2.9 Fix produced empty/minimal content")
+                        continue
+
+                    # Write the fix to sandbox
+                    write_result = await run_implementer_task(
+                        path=broken_file,
+                        content=fix_content,
+                        action="modify",
+                        client=client,
+                    )
+
+                    if write_result.success:
+                        logger.info("[arch_exec] v2.9 Fix written: %s (%d chars)", broken_file, len(fix_content))
+                        print(f"[ARCH_EXEC] ✓ Fix applied to {broken_file} ({len(fix_content)} chars)")
+                    else:
+                        logger.error("[arch_exec] v2.9 Fix write failed: %s", write_result.error)
+                        break
+
+                except Exception as e:
+                    logger.error("[arch_exec] v2.9 Fix LLM call failed: %s", e)
+                    break
+
+            # Final status
+            if not boot_passed:
+                boot_error_final = last_boot_error or "Boot check failed"
+                add_trace("BOOT_CHECK_COMPLETE", "fail", {
+                    "error": boot_error_final[:500],
+                    "strikes": boot_strike,
+                })
+                success = False
+                files_failed += total_succeeded
+                summary["boot_check"] = "FAILED"
+                summary["boot_error"] = boot_error_final[:500]
+
+        except Exception as e:
+            logger.warning("[arch_exec] v2.9 Boot check could not run: %s", e)
+            print(f"[ARCH_EXEC] ⚠️ Boot check skipped: {e}")
+            add_trace("BOOT_CHECK_COMPLETE", "skipped", {"error": str(e)})
+
+    # =========================================================================
+    # Step 7: Final result
+    # =========================================================================
     error_msg = None
     if not success:
         if total_succeeded == 0:

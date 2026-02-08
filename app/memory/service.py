@@ -92,6 +92,22 @@ def delete_project(db: Session, project_id: int) -> bool:
     except Exception as e:
         print(f"[memory.service] Failed to delete project configs for project {project_id}: {e}")
 
+    # Phase 1b: Delete specs and dependent tables (best-effort)
+    # Order matters: spec_questions and spec_history reference specs.id,
+    # so they must be deleted before specs.
+    try:
+        from app.specs.models import Spec, SpecQuestion, SpecHistory
+        # Get spec IDs for this project first
+        spec_ids = [s.id for s in db.query(Spec.id).filter(Spec.project_id == project_id).all()]
+        if spec_ids:
+            q_count = db.query(SpecQuestion).filter(SpecQuestion.spec_id.in_(spec_ids)).delete(synchronize_session=False)
+            h_count = db.query(SpecHistory).filter(SpecHistory.spec_id.in_(spec_ids)).delete(synchronize_session=False)
+            print(f"[memory.service] Deleted {q_count} spec_questions, {h_count} spec_history for project {project_id}")
+        spec_count = db.query(Spec).filter(Spec.project_id == project_id).delete()
+        print(f"[memory.service] Deleted {spec_count} specs for project {project_id}")
+    except Exception as e:
+        print(f"[memory.service] Failed to delete specs for project {project_id}: {e}")
+
     # Phase 2: Delete embeddings (best-effort)
     try:
         from app.embeddings.models import Embedding
