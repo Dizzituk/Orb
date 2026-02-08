@@ -26,7 +26,7 @@ class Session(Base):
     __tablename__ = "sessions"
     
     id = Column(String(36), primary_key=True)  # UUID
-    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     
     # Metadata (not encrypted - for search/filtering)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -39,7 +39,7 @@ class Session(Base):
     
     # Relationships
     project = relationship("Project", backref="sessions")
-    jobs = relationship("Job", back_populates="session", cascade="all, delete-orphan")
+    jobs = relationship("Job", back_populates="session", cascade="all, delete-orphan", passive_deletes=True)
 
 
 class Job(Base):
@@ -48,7 +48,7 @@ class Job(Base):
     
     Each job has:
     - Complete envelope specification
-    - State tracking (pending → running → succeeded/failed)
+    - State tracking (pending  running  succeeded/failed)
     - Routing decision and execution results
     - Tool invocation history
     - Usage metrics
@@ -57,8 +57,8 @@ class Job(Base):
     
     # Identifiers
     id = Column(String(36), primary_key=True)  # UUID
-    session_id = Column(String(36), ForeignKey("sessions.id"), nullable=False, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    session_id = Column(String(36), ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     
     # Job specification (not encrypted - for routing/filtering)
     job_spec_version = Column(Integer, default=1, nullable=False)
@@ -133,7 +133,7 @@ class Artefact(Base):
     
     # Identifiers
     id = Column(String(36), primary_key=True)  # UUID
-    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     
     # Artefact metadata (not encrypted - for search/versioning)
     artefact_type = Column(String(50), nullable=False, index=True)
@@ -177,7 +177,7 @@ class ScheduledJob(Base):
     
     # Identifiers
     id = Column(String(36), primary_key=True)  # UUID
-    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     
     # Schedule configuration (not encrypted - for scheduler)
     enabled = Column(Boolean, default=True, nullable=False)
@@ -222,7 +222,7 @@ class ProjectConfigModel(Base):
     __tablename__ = "project_configs"
     
     # Identifiers (one config per project)
-    project_id = Column(Integer, ForeignKey("projects.id"), primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True)
     
     # ENCRYPTED: Configuration JSON
     config_json = Column(EncryptedJSON, nullable=False)

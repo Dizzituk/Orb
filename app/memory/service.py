@@ -4,6 +4,8 @@ Memory service layer for Orb.
 
 v0.12.4: Fixed create_message() to properly save provider, model, and reasoning fields.
          Fixed get_message_history() to return actual provider/model/reasoning values.
+v0.12.5: Sanitizes content to prevent UTF-8 surrogate encoding errors.
+v0.13.0: Enhanced delete_project() to explicitly delete Phase-4 job system data with best-effort error handling.
 """
 from typing import List, Optional
 from sqlalchemy.orm import Session
@@ -46,12 +48,72 @@ def update_project(db: Session, project_id: int, data: schemas.ProjectUpdate) ->
 
 
 def delete_project(db: Session, project_id: int) -> bool:
+    """
+    Delete a project and all associated data.
+    
+    v0.13.0: Now explicitly deletes Phase-4 job system data (artefacts, jobs, sessions,
+             scheduled_jobs, project_configs) with best-effort error handling.
+             Database CASCADE should handle cleanup, but explicit deletion provides
+             better logging and graceful degradation if CASCADE fails.
+    """
     project = get_project(db, project_id)
     if not project:
         return False
-    db.delete(project)
-    db.commit()
-    return True
+    
+    # Phase 1: Delete Phase-4 job system data (best-effort)
+    try:
+        from app.jobs.models import Artefact
+        artefact_count = db.query(Artefact).filter(Artefact.project_id == project_id).delete()
+        print(f"[memory.service] Deleted {artefact_count} artefacts for project {project_id}")
+    except Exception as e:
+        print(f"[memory.service] Failed to delete artefacts for project {project_id}: {e}")
+    
+    try:
+        from app.jobs.models import Job
+        job_count = db.query(Job).filter(Job.project_id == project_id).delete()
+        print(f"[memory.service] Deleted {job_count} jobs for project {project_id}")
+    except Exception as e:
+        print(f"[memory.service] Failed to delete jobs for project {project_id}: {e}")
+    
+    try:
+        from app.jobs.models import Session as JobSession
+        session_count = db.query(JobSession).filter(JobSession.project_id == project_id).delete()
+        print(f"[memory.service] Deleted {session_count} sessions for project {project_id}")
+    except Exception as e:
+        print(f"[memory.service] Failed to delete sessions for project {project_id}: {e}")
+    
+    try:
+        from app.jobs.models import ScheduledJob
+        scheduled_count = db.query(ScheduledJob).filter(ScheduledJob.project_id == project_id).delete()
+        print(f"[memory.service] Deleted {scheduled_count} scheduled jobs for project {project_id}")
+    except Exception as e:
+        print(f"[memory.service] Failed to delete scheduled jobs for project {project_id}: {e}")
+    
+    try:
+        from app.jobs.models import ProjectConfigModel
+        config_count = db.query(ProjectConfigModel).filter(ProjectConfigModel.project_id == project_id).delete()
+        print(f"[memory.service] Deleted {config_count} project configs for project {project_id}")
+    except Exception as e:
+        print(f"[memory.service] Failed to delete project configs for project {project_id}: {e}")
+    
+    # Phase 2: Delete embeddings (best-effort)
+    try:
+        from app.embeddings.models import Embedding
+        embedding_count = db.query(Embedding).filter(Embedding.project_id == project_id).delete()
+        print(f"[memory.service] Deleted {embedding_count} embeddings for project {project_id}")
+    except Exception as e:
+        print(f"[memory.service] Failed to delete embeddings for project {project_id}: {e}")
+    
+    # Phase 3: Delete the project itself (always attempted)
+    try:
+        db.delete(project)
+        db.commit()
+        print(f"[memory.service] Successfully deleted project {project_id}")
+        return True
+    except Exception as e:
+        db.rollback()
+        print(f"[memory.service] Failed to delete project {project_id}: {e}")
+        return False
 
 
 # ============== NOTE ==============
@@ -354,207 +416,4 @@ def create_message(db: Session, data: schemas.MessageCreate) -> models.Message:
     Create a new message in the database.
     
     v0.12.4: Now properly saves provider, model, and reasoning fields.
-    v0.12.5: Sanitizes content to prevent UTF-8 surrogate encoding errors.
-    """
-    msg = models.Message(
-        project_id=data.project_id,
-        role=data.role,
-        content=_sanitize_utf8(data.content),  # v0.12.5: Sanitize surrogates
-        provider=data.provider,  # v0.12.4: Was missing
-        model=data.model,  # v0.12.4: Was missing
-        reasoning=data.reasoning,  # v0.12.4: New field
-    )
-    db.add(msg)
-    db.commit()
-    db.refresh(msg)
-    
-    _index_message_if_enabled(db, msg)
-    
-    return msg
-
-
-def list_messages(db: Session, project_id: int, limit: int = 100) -> List[models.Message]:
-    return (
-        db.query(models.Message)
-        .filter(models.Message.project_id == project_id)
-        .order_by(models.Message.created_at.asc())
-        .limit(limit)
-        .all()
-    )
-
-
-def delete_messages_for_project(db: Session, project_id: int) -> int:
-    # Delete associated embeddings first
-    try:
-        from app.embeddings.models import Embedding
-        db.query(Embedding).filter(
-            Embedding.project_id == project_id,
-            Embedding.source_type == "message",
-        ).delete()
-    except Exception as e:
-        print(f"[memory.service] Failed to delete message embeddings for project {project_id}: {e}")
-    
-    count = db.query(models.Message).filter(models.Message.project_id == project_id).delete()
-    db.commit()
-    return count
-
-
-# ============== MESSAGE HISTORY (NEW) ==============
-
-def get_message_history(
-    db: Session,
-    project_id: int,
-    limit: int = 50,
-    before_id: Optional[int] = None,
-) -> schemas.MessageHistoryResponse:
-    """
-    Get paginated message history for a project.
-    
-    v0.12.4: Now returns actual provider, model, and reasoning values.
-    """
-    limit = max(1, min(limit, 200))
-    
-    query = db.query(models.Message).filter(models.Message.project_id == project_id)
-    
-    if before_id is not None:
-        query = query.filter(models.Message.id < before_id)
-    
-    messages_desc = (
-        query
-        .order_by(models.Message.id.desc())
-        .limit(limit)
-        .all()
-    )
-    
-    messages = list(reversed(messages_desc))
-    
-    oldest_id = messages[0].id if messages else None
-    
-    has_older = False
-    if oldest_id is not None:
-        older_exists = (
-            db.query(models.Message.id)
-            .filter(models.Message.project_id == project_id)
-            .filter(models.Message.id < oldest_id)
-            .first()
-        )
-        has_older = older_exists is not None
-    
-    # v0.12.4: Include actual provider, model, and reasoning values
-    message_items = [
-        schemas.MessageHistoryItem(
-            id=msg.id,
-            project_id=msg.project_id,
-            role=msg.role,
-            content=msg.content,
-            provider=msg.provider,  # v0.12.4: Was hardcoded to None
-            model=msg.model,  # v0.12.4: New field
-            reasoning=msg.reasoning,  # v0.12.4: New field
-            created_at=msg.created_at,
-        )
-        for msg in messages
-    ]
-    
-    return schemas.MessageHistoryResponse(
-        messages=message_items,
-        has_older=has_older,
-        oldest_id=oldest_id,
-    )
-
-
-# ============== DOCUMENT CONTENT ==============
-
-def create_document_content(
-    db: Session, data: schemas.DocumentContentCreate
-) -> models.DocumentContent:
-    doc = models.DocumentContent(
-        project_id=data.project_id,
-        file_id=data.file_id,
-        filename=data.filename,
-        doc_type=data.doc_type,
-        raw_text=data.raw_text,
-        summary=data.summary,
-        structured_data=data.structured_data,
-    )
-    db.add(doc)
-    db.commit()
-    db.refresh(doc)
-    return doc
-
-
-def get_document_content_by_file_id(
-    db: Session, file_id: int
-) -> Optional[models.DocumentContent]:
-    return (
-        db.query(models.DocumentContent)
-        .filter(models.DocumentContent.file_id == file_id)
-        .first()
-    )
-
-
-def get_document_content_by_filename(
-    db: Session, project_id: int, filename: str
-) -> Optional[models.DocumentContent]:
-    return (
-        db.query(models.DocumentContent)
-        .filter(models.DocumentContent.project_id == project_id)
-        .filter(models.DocumentContent.filename.ilike(f"%{filename}%"))
-        .order_by(models.DocumentContent.created_at.desc())
-        .first()
-    )
-
-
-def list_document_contents(
-    db: Session, project_id: int, doc_type: Optional[str] = None
-) -> List[models.DocumentContent]:
-    query = db.query(models.DocumentContent).filter(
-        models.DocumentContent.project_id == project_id
-    )
-    if doc_type:
-        query = query.filter(models.DocumentContent.doc_type == doc_type)
-    return query.order_by(models.DocumentContent.created_at.desc()).all()
-
-
-def search_document_contents(
-    db: Session, project_id: int, search_term: str
-) -> List[models.DocumentContent]:
-    pattern = f"%{search_term}%"
-    return (
-        db.query(models.DocumentContent)
-        .filter(models.DocumentContent.project_id == project_id)
-        .filter(
-            (models.DocumentContent.raw_text.ilike(pattern)) |
-            (models.DocumentContent.summary.ilike(pattern)) |
-            (models.DocumentContent.filename.ilike(pattern))
-        )
-        .order_by(models.DocumentContent.created_at.desc())
-        .all()
-    )
-
-
-def get_latest_document_content(
-    db: Session, project_id: int
-) -> Optional[models.DocumentContent]:
-    return (
-        db.query(models.DocumentContent)
-        .filter(models.DocumentContent.project_id == project_id)
-        .order_by(models.DocumentContent.created_at.desc())
-        .first()
-    )
-
-
-def delete_document_content(db: Session, doc_id: int) -> bool:
-    doc = db.query(models.DocumentContent).filter(models.DocumentContent.id == doc_id).first()
-    if not doc:
-        return False
-    
-    # Delete associated embeddings
-    try:
-        from app.embeddings import delete_embeddings_for_source
-        delete_embeddings_for_source(db, doc.project_id, "file", doc.file_id)
-    except Exception as e:
-        print(f"[memory.service] Failed to delete embeddings for doc {doc_id}: {e}")
-    
-    db.delete(doc)
-    db.commit()
-    return True
+    v0.12.5: Sanitizes content to prevent UTF-8 surrogate

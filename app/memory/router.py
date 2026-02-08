@@ -50,6 +50,17 @@ def update_project(project_id: int, data: schemas.ProjectUpdate, db: Session = D
 
 @router.delete("/projects/{project_id}", status_code=204)
 def delete_project(project_id: int, db: Session = Depends(get_db)):
+    """
+    Delete a project and all associated data.
+    
+    This endpoint performs best-effort cleanup of:
+    - Memory content (notes, tasks, files, messages)
+    - Job system data (jobs, sessions, artefacts, scheduled jobs, project configs)
+    - Database cascade handles Phase-4 foreign key relationships
+    
+    The project deletion is always attempted even if Phase-4 cleanup encounters errors.
+    Returns 204 on success, 404 if project not found, 500 for unexpected errors.
+    """
     success = service.delete_project(db, project_id)
     if not success:
         raise HTTPException(status_code=404, detail="Project not found")
