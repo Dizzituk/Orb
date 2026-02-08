@@ -66,6 +66,33 @@ For every implementation-affecting claim, you MUST output exactly one of:
 - **NONCRITICAL**: UI copy, CSS, optional optimizations, naming conventions, comment content.
   Warn if unverified, does not block.
 
+### Function Signature Verification (CRITICAL)
+When your architecture proposes CALLING an existing function:
+- You MUST have CITED evidence of that function's actual signature (parameter names,
+  types, required vs optional, return type) before using it in your design.
+- Do NOT assume parameter names. If you write "search_embeddings(source_type=..., top_k=...)" 
+  you must have read the function definition and confirmed those exact parameter names exist.
+- If you haven't seen the signature, emit an EVIDENCE_REQUEST to read the file containing
+  the function definition.
+- This applies to ALL existing functions you plan to reuse, wrap, or extend.
+
+### Caller Chain Verification (CRITICAL)
+When your architecture proposes injecting logic at a specific code point:
+- You MUST verify who calls that code and what data flows into it.
+- If your design depends on a field being available (e.g., project_id in metadata),
+  emit an EVIDENCE_REQUEST to read at least one caller and confirm the field is populated.
+- Do NOT propose regex-parsing free text to extract structured data. If the data isn't
+  available where you need it, your architecture should add it as an explicit field.
+
+### Content Format Awareness
+When your architecture proposes processing text content (e.g., creating summaries,
+parsing output, extracting structure):
+- Consider that content may arrive in multiple formats (JSON, markdown, plain text,
+  numbered lists, structured output from different LLM providers).
+- Do NOT propose naive text splitting (e.g., split on ". ") when the input format varies.
+- If the input format is unknown or varies by provider, the architecture must handle
+  format detection or use a robust parsing approach.
+
 ### EVIDENCE_REQUEST Format
 EVIDENCE_REQUEST:
   id: "ER-NNN"

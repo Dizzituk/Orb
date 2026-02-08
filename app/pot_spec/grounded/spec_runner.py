@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-SPEC_RUNNER_BUILD_ID = "2026-02-08-v5.0-specgate-evidence-fulfilment"
+SPEC_RUNNER_BUILD_ID = "2026-02-08-v5.3-revert-scope-hardcoding-add-zone-todo"
 print(f"[SPEC_RUNNER_LOADED] BUILD_ID={SPEC_RUNNER_BUILD_ID}")
 
 
@@ -316,7 +316,10 @@ SCOPE_FRONTEND = {
     'a ui': True, 'ui button': True, 'ui feature': True, 'ui text': True,
     'change the ui': True, 'modify the ui': True, 'update the ui': True,
     'the frontend': True, 'front-end': True, 'frontend ui': True,
-    'context window': True, 'input window': True, 'text input': True,
+    # v5.2: REMOVED 'text input' — too ambiguous.
+    # 'text input' in AI/ML context means text-type data ingestion, not a UI field.
+    # Also REMOVED 'context window' and 'input window' in v4.7 for same reason.
+    # Users requesting frontend changes will say 'the UI', 'the frontend', etc.
     # Electron is specific enough — only mentioned when discussing frontend code
     'electron': True,
     # NOTE: 'the app', 'desktop app', "app's" deliberately REMOVED.
@@ -326,6 +329,12 @@ SCOPE_FRONTEND = {
 SCOPE_BACKEND = {
     'the backend': True, 'back-end': True, 'backend api': True,
     'fastapi': True, 'api endpoint': True, 'server': True,
+    # NOTE: Static keyword dicts are a dead end for scope detection.
+    # The real fix is to use INDEX.json zone data (every file is already
+    # tagged as 'backend' or 'frontend'). When the job mentions files or
+    # modules, look up their zone. That's intelligent scope detection.
+    # TODO: Replace keyword-based scope with zone-aware detection using
+    # the integration points already extracted by the spec runner.
 }
 
 # LEGACY FALLBACK: Only used if dynamic discovery fails completely

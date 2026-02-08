@@ -217,6 +217,30 @@ async def generate_critical_pipeline_stream(
         yield _emit(f"\u2705 Spec loaded: `{spec_id[:16]}...`\n")
 
         # =================================================================
+        # v5.1: Segment context info (UI visibility)
+        # =================================================================
+        if segment_context:
+            _seg_id = segment_context.get("segment_id", "unknown")
+            _seg_deps = segment_context.get("dependencies", [])
+            _seg_files = segment_context.get("file_scope", [])
+            _seg_reqs = segment_context.get("requirements", [])
+            _seg_exposes = segment_context.get("exposes")
+            _seg_consumes = segment_context.get("consumes")
+
+            seg_info = f"\ud83e\udde9 **Segment:** `{_seg_id}`\n"
+            if _seg_deps:
+                seg_info += f"   \u2514\u2500 Dependencies: {', '.join(f'`{d}`' for d in _seg_deps)}\n"
+            if _seg_files:
+                seg_info += f"   \u2514\u2500 Files in scope: {len(_seg_files)}\n"
+            if _seg_reqs:
+                seg_info += f"   \u2514\u2500 Requirements: {len(_seg_reqs)}\n"
+            if _seg_exposes:
+                seg_info += f"   \u2514\u2500 Exposes: interface contracts for downstream\n"
+            if _seg_consumes:
+                seg_info += f"   \u2514\u2500 Consumes: interface contracts from upstream\n"
+            yield _emit(seg_info)
+
+        # =================================================================
         # Mechanical guard: pending_evidence / blocked / error
         # =================================================================
         validation_status = spec_data.get("validation_status", "validated")
@@ -256,6 +280,46 @@ async def generate_critical_pipeline_stream(
             return
 
         logger.info("[critical_pipeline] validation_status=%s \u2014 proceeding", validation_status)
+
+        # =================================================================
+        # Step 1a: Check for segmented spec (v5.1)
+        # =================================================================
+        # If SpecGate decomposed this job into segments, the critical pipeline
+        # should NOT process the parent spec as a blob. Redirect to segment loop.
+        _spec_context = spec_data.get("context", {})
+        _is_segmented = (
+            _spec_context.get("segmented", False)
+            or spec_data.get("total_segments", 0) > 0
+        )
+        _total_segs = (
+            spec_data.get("total_segments", 0)
+            or _spec_context.get("total_segments", 0)
+        )
+
+        if _is_segmented and not segment_context:
+            # This spec has segments but was called directly (not via segment loop).
+            # The segment loop passes segment_context when calling per-segment.
+            seg_msg = (
+                f"\n\u26a0\ufe0f **This spec has been segmented into {_total_segs} segments.**\n\n"
+                f"The critical pipeline should process each segment individually, "
+                f"not the parent spec as a single blob.\n\n"
+                f"Please use: **'Astra, command: run segments'** to execute "
+                f"all segments through the pipeline in dependency order.\n"
+            )
+            logger.warning(
+                "[critical_pipeline] v5.1 SEGMENT GUARD: spec %s has %d segments "
+                "but was called directly — redirecting user to segment loop",
+                spec_id, _total_segs,
+            )
+            print(f"[DEBUG] [critical_pipeline] v5.1 SEGMENT GUARD: {_total_segs} segments detected, blocking direct execution")
+            yield _emit(seg_msg)
+            yield _done(
+                provider=pipeline_provider, model=pipeline_model,
+                total_length=sum(len(p) for p in response_parts),
+            )
+            if trace:
+                trace.finalize(success=False, error_message=f"Segmented spec ({_total_segs} segments) — use 'run segments' command")
+            return
 
         # =================================================================
         # Step 1b: Classify job type

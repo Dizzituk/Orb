@@ -1928,6 +1928,14 @@ BLOCKING ISSUES (flag these):
 - Architecture CONTRADICTS something the spec's USER REQUIREMENTS state
 - Architecture references files/paths NOT in the spec evidence
 - Architecture has internal contradictions or calculation errors
+- Architecture calls existing functions with UNVERIFIED parameter names (no CITED evidence
+  showing the function signature accepts those exact parameters)
+- Architecture depends on data (e.g., project_id) being available at a code point but has
+  no CITED evidence showing callers actually pass that data in
+- Architecture proposes regex-parsing free text to extract structured data instead of adding
+  the field explicitly
+- Architecture proposes naive text processing (e.g., split on ". ") for content that may
+  arrive in varying formats (JSON, markdown, structured LLM output)
 
 NOT BLOCKING (do not flag these as blocking):
 - Architecture choosing different integration files than 'Files to Modify' lists

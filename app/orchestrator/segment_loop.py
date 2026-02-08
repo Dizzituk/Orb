@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-SEGMENT_LOOP_BUILD_ID = "2026-02-08-v1.0-initial"
+SEGMENT_LOOP_BUILD_ID = "2026-02-08-v1.1-overwatcher-wired"
 print(f"[SEGMENT_LOOP_LOADED] BUILD_ID={SEGMENT_LOOP_BUILD_ID}")
 
 # --- Internal imports ---
@@ -62,6 +62,15 @@ try:
     _IMPLEMENTER_AVAILABLE = True
 except ImportError:
     _IMPLEMENTER_AVAILABLE = False
+
+try:
+    from app.overwatcher.architecture_executor import run_architecture_execution
+    from app.overwatcher.spec_resolution import resolve_latest_spec, ResolvedSpec
+    from app.overwatcher.overwatcher_stream import create_overwatcher_llm_fn
+    _ARCH_EXECUTOR_AVAILABLE = True
+except ImportError as _ae:
+    _ARCH_EXECUTOR_AVAILABLE = False
+    logger.debug("[SEGMENT_LOOP] Architecture executor not available: %s", _ae)
 
 
 # Type alias for progress callback
@@ -367,6 +376,8 @@ async def run_segment_through_pipeline(
     """
     Run a single segment through: Critical Pipeline → Critique → Overwatcher → Implementer.
 
+    v1.1: Overwatcher + Implementer wired via run_architecture_execution.
+
     Returns a dict with:
         - success: bool
         - output_files: list[str]
@@ -387,92 +398,127 @@ async def run_segment_through_pipeline(
     seg_id = segment.segment_id
     _emit = on_progress or (lambda msg: None)
 
-    # --- Step 1: Critical Pipeline (architecture generation) ---
+    # Use a segment-specific sub-job-id so architecture files don't
+    # overwrite each other across segments sharing the same parent job.
+    seg_job_id = f"{job_id}__{seg_id}"
+
+    # =====================================================================
+    # Step 1: Critical Pipeline (architecture generation + critique)
+    # =====================================================================
     _emit(f"  📝 Running Critical Pipeline for {seg_id}...")
 
     if not _CRITICAL_PIPELINE_AVAILABLE:
         result["error"] = "Critical Pipeline not available"
         return result
 
+    arch_content_parts: List[str] = []
+    done_metadata: Dict[str, Any] = {}
+
     try:
-        # The critical pipeline is an async generator that yields SSE events.
-        # We consume it fully to get the architecture document.
-        # The segment_context parameter is the Phase 2 addition.
-        arch_content = []
         async for event in generate_critical_pipeline_stream(
             project_id=project_id,
             message=json.dumps(segment_context.get("segment_spec", {})),
             db=db,
-            job_id=job_id,
+            job_id=seg_job_id,
             segment_context=segment_context,
         ):
-            # Collect architecture content from SSE events
-            if isinstance(event, str) and '"type": "token"' in event:
-                # Extract content from SSE token events
+            if not isinstance(event, str):
+                continue
+            # Parse SSE events: each is "data: {json}\n\n"
+            for line in event.split("\n"):
+                if not line.startswith("data: "):
+                    continue
                 try:
-                    # SSE format: data: {"type": "token", "content": "..."}
-                    for line in event.split("\n"):
-                        if line.startswith("data: "):
-                            payload = json.loads(line[6:])
-                            if payload.get("type") == "token":
-                                arch_content.append(payload.get("content", ""))
-                except (json.JSONDecodeError, KeyError):
-                    pass
+                    payload = json.loads(line[6:])
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                evt_type = payload.get("type")
+                if evt_type == "token":
+                    arch_content_parts.append(payload.get("content", ""))
+                elif evt_type == "done":
+                    done_metadata = payload
 
-        if not arch_content:
+        if not arch_content_parts:
             result["error"] = f"Critical Pipeline produced no output for {seg_id}"
             return result
 
-        _emit(f"  ✅ Architecture generated for {seg_id}")
+        arch_text = "".join(arch_content_parts)
+        critique_passed = done_metadata.get("critique_passed", False)
+        arch_id = done_metadata.get("arch_id", "unknown")
+
+        _emit(f"  ✅ Architecture generated for {seg_id} ({len(arch_text)} chars, arch_id={arch_id})")
+        if not critique_passed:
+            _emit(f"  ⚠️ Critique did not fully pass — proceeding with caution")
 
     except Exception as e:
         result["error"] = f"Critical Pipeline failed for {seg_id}: {e}"
         logger.exception("[SEGMENT_LOOP] Critical Pipeline error for %s", seg_id)
         return result
 
-    # --- Step 2: Critique (with contract validation) ---
-    # Critique runs as part of the critical pipeline's Block 4-6.
-    # Interface contract validation is injected via segment_context.
-    # The critical pipeline already runs critique internally, so we
-    # don't need a separate critique call here.
-    _emit(f"  🔍 Critique completed for {seg_id}")
+    # --- Save architecture per-segment on disk ---
+    seg_arch_dir = os.path.join(
+        get_job_dir(job_id), "segments", seg_id, "arch",
+    )
+    os.makedirs(seg_arch_dir, exist_ok=True)
+    seg_arch_path = os.path.join(seg_arch_dir, "arch_v1.md")
+    try:
+        with open(seg_arch_path, "w", encoding="utf-8") as f:
+            f.write(arch_text)
+        _emit(f"  💾 Architecture saved: segments/{seg_id}/arch/arch_v1.md")
+    except Exception as e:
+        logger.warning("[SEGMENT_LOOP] Failed to save segment arch: %s", e)
 
-    # --- Step 3: Overwatcher + Implementer ---
-    # These stages are invoked after the critical pipeline produces
-    # an approved architecture document. The overwatcher receives
-    # file_scope for segment isolation.
-    _emit(f"  🔧 Running Overwatcher + Implementer for {seg_id}...")
+    # =====================================================================
+    # Step 2: Overwatcher + Architecture Executor
+    # =====================================================================
+    _emit(f"  🔧 Running Overwatcher for {seg_id}...")
 
-    # Note: The actual overwatcher/implementer invocation depends on the
-    # existing flow state management. In the current architecture, the
-    # overwatcher is triggered as a separate command. For segmented
-    # execution, we call it directly within the loop.
-
-    if _OVERWATCHER_AVAILABLE and _IMPLEMENTER_AVAILABLE:
-        try:
-            # The overwatcher and implementer are called with segment context
-            # injected. The file_scope parameter is the Phase 2 addition that
-            # prevents cross-segment contamination.
-            #
-            # For Phase 2, we record that the pipeline stages were invoked.
-            # The actual integration with run_overwatcher/run_implementer
-            # requires the ResolvedSpec and EvidenceBundle objects that are
-            # constructed by the critical pipeline's output parsing.
-            # This will be wired during the pipeline stage modifications
-            # (steps 8-11 of the approach order).
-            _emit(f"  ✅ Overwatcher + Implementer completed for {seg_id}")
-            result["success"] = True
-
-        except Exception as e:
-            result["error"] = f"Overwatcher/Implementer failed for {seg_id}: {e}"
-            logger.exception("[SEGMENT_LOOP] Overwatcher error for %s", seg_id)
-            return result
-    else:
-        # Pipeline stages not fully available — mark as succeeded for the
-        # critical pipeline portion. Overwatcher integration comes in the
-        # pipeline stage modifications.
-        _emit(f"  ⚠️ Overwatcher/Implementer not wired yet — architecture generated only")
+    if not _ARCH_EXECUTOR_AVAILABLE:
+        _emit(f"  ⚠️ Architecture executor not available — architecture generated only")
         result["success"] = True
+        return result
+
+    try:
+        # Resolve the spec (the parent SPoT spec)
+        spec = resolve_latest_spec(project_id, db)
+        if spec is None:
+            _emit(f"  ⚠️ No spec found for project {project_id} — skipping Overwatcher")
+            result["success"] = True
+            return result
+
+        # Create LLM function for Overwatcher
+        llm_call_fn = create_overwatcher_llm_fn()
+
+        # Run architecture execution for this segment
+        arch_result = await run_architecture_execution(
+            spec=spec,
+            architecture_content=arch_text,
+            architecture_path=seg_arch_path,
+            job_id=seg_job_id,
+            llm_call_fn=llm_call_fn,
+            artifact_root=os.getenv("ORB_JOB_ARTIFACT_ROOT", "D:/Orb/jobs"),
+        )
+
+        if arch_result.get("success", False):
+            result["success"] = True
+            result["output_files"] = arch_result.get("artifacts_written", [])
+            result["critique_warnings"] = [
+                e.get("status", "")
+                for e in arch_result.get("trace", [])
+                if e.get("stage", "").startswith("WARN")
+            ]
+            _emit(
+                f"  ✅ Overwatcher + Implementer completed for {seg_id} "
+                f"({len(result['output_files'])} artifact(s) written)"
+            )
+        else:
+            error_msg = arch_result.get("error", "Unknown error")
+            result["error"] = f"Architecture execution failed for {seg_id}: {error_msg}"
+            _emit(f"  ❌ Architecture execution failed for {seg_id}: {error_msg}")
+
+    except Exception as e:
+        result["error"] = f"Overwatcher failed for {seg_id}: {e}"
+        logger.exception("[SEGMENT_LOOP] Overwatcher error for %s", seg_id)
 
     return result
 

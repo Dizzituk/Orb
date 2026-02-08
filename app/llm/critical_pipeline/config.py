@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # Build Verification
 # =============================================================================
-CRITICAL_PIPELINE_BUILD_ID = "2026-02-07-v3.0-refactored"
+CRITICAL_PIPELINE_BUILD_ID = "2026-02-08-v3.1-segment-guard"
 print(f"[CRITICAL_PIPELINE_LOADED] BUILD_ID={CRITICAL_PIPELINE_BUILD_ID}")
 logger.info(f"[critical_pipeline] Module loaded: BUILD_ID={CRITICAL_PIPELINE_BUILD_ID}")
 

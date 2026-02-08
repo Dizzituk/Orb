@@ -87,7 +87,7 @@ from .sandbox_client import (
 
 logger = logging.getLogger(__name__)
 
-ARCHITECTURE_EXECUTOR_BUILD_ID = "2026-02-07-v2.6-auto-init-py"
+ARCHITECTURE_EXECUTOR_BUILD_ID = "2026-02-08-v2.7-fix-false-fail-counting"
 print(f"[ARCHITECTURE_EXECUTOR_LOADED] BUILD_ID={ARCHITECTURE_EXECUTOR_BUILD_ID}")
 
 
@@ -1296,8 +1296,23 @@ async def run_architecture_execution(
                 "job_context_files": list(job_context.keys()),  # v2.3
             })
         
+        else:
+            # Task FAILED after exhausting all strikes
+            files_failed += 1
+            logger.error(
+                "[arch_exec] \u2717 %s %s FAILED after %d strikes: %s",
+                action.upper(), rel_path, MAX_STRIKES_PER_TASK, last_error,
+            )
+            print(f"[ARCH_EXEC] \u2717 {action.upper()} {rel_path} FAILED: {last_error}")
+
+            add_trace("FILE_TASK_FAILED", "exhausted_strikes", {
+                "path": rel_path,
+                "strikes": MAX_STRIKES_PER_TASK,
+                "last_error": last_error,
+            })
+
         # =====================================================================
-        # v2.5: Two-pass boundary — after all CREATEs, re-extract interfaces
+        # v2.5: Two-pass boundary - after all CREATEs, re-extract interfaces
         # This ensures MODIFY tasks get the FULL cross-file context from all
         # created files, not just the ones that happened to be created earlier.
         # =====================================================================
@@ -1315,19 +1330,6 @@ async def run_architecture_execution(
                     logger.warning("[arch_exec] v2.5 Two-pass extraction failed for %s: %s", created_path, e)
             add_trace("TWO_PASS_CONTEXT_REFRESH", "success", {
                 "files_refreshed": list(created_file_contents.keys()),
-            })
-        else:
-            files_failed += 1
-            logger.error(
-                "[arch_exec] ✗ %s %s FAILED after %d strikes: %s",
-                action.upper(), rel_path, MAX_STRIKES_PER_TASK, last_error,
-            )
-            print(f"[ARCH_EXEC] ✗ {action.upper()} {rel_path} FAILED: {last_error}")
-            
-            add_trace("FILE_TASK_FAILED", "exhausted_strikes", {
-                "path": rel_path,
-                "strikes": MAX_STRIKES_PER_TASK,
-                "last_error": last_error,
             })
     
     # =========================================================================

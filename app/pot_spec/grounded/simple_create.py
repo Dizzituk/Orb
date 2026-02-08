@@ -36,7 +36,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-SIMPLE_CREATE_BUILD_ID = "2026-02-08-v4.5-specgate-final-loop-and-caps"
+SIMPLE_CREATE_BUILD_ID = "2026-02-08-v5.0-sig-verify-caller-chain-format-aware"
 print(f"[SIMPLE_CREATE_LOADED] BUILD_ID={SIMPLE_CREATE_BUILD_ID}")
 
 # v4.0: Max evidence fulfilment loops (matches ASTRA_EVIDENCE_MAX_LOOPS convention)
@@ -641,44 +641,17 @@ def _suggest_new_files(
         elif os.path.exists(os.path.join(path, 'app')):
             backend_path = path
     
-    ext = '.tsx' if tech_stack.frontend_language == 'TypeScript' else '.jsx'
-    hook_ext = ext.replace('x', '')  # .ts or .js
+    # v4.6: REMOVED all hardcoded concept-to-file mappings.
+    # Previously this function had static suggestions like:
+    #   voice/transcription → app/routers/transcribe.py, app/services/transcription_service.py
+    #   streaming → app/routers/audio_stream.py
+    # These polluted specs for unrelated jobs (e.g., "streaming" matched SSE chat streaming
+    # and suggested audio_stream.py). The LLM analysis step already generates file suggestions
+    # from actual codebase evidence — it doesn't need a static lookup table.
+    #
+    # The pipeline must be domain-agnostic. New file suggestions come from LLM analysis only.
     
-    # Voice/Audio feature
-    if any(c in concepts for c in ['voice', 'transcription', 'wake_word', 'noise_suppression']):
-        if frontend_path or tech_stack.frontend_framework:
-            suggested.append(f"src/components/VoiceInput{ext}")
-            suggested.append(f"src/hooks/useVoiceRecorder{hook_ext}")
-        
-        if backend_path or tech_stack.backend_framework:
-            if tech_stack.backend_framework == 'FastAPI':
-                suggested.append("app/routers/transcribe.py")
-                suggested.append("app/services/transcription_service.py")
-                suggested.append("app/services/model_manager.py")
-    
-    # Wake word specific
-    if 'wake_word' in concepts:
-        if backend_path or tech_stack.backend_framework:
-            suggested.append("app/services/wake_word_service.py")
-    
-    # v2.0: REMOVED the old mapping that suggested openai_client.py
-    # The old code had: if any(kw in ['api', 'openai', 'whisper']) → openai_client.py
-    # This is wrong — "no cloud APIs" + "whisper" means LOCAL whisper, not OpenAI API
-    
-    # Streaming feature
-    if 'streaming' in concepts:
-        if backend_path or tech_stack.backend_framework:
-            suggested.append("app/routers/audio_stream.py")
-    
-    # Dedupe
-    seen = set()
-    unique = []
-    for f in suggested:
-        if f not in seen:
-            seen.add(f)
-            unique.append(f)
-    
-    return unique
+    return suggested
 
 
 # =============================================================================
@@ -876,7 +849,13 @@ async def _fulfil_evidence_requests(
                             "tool": tool_name,
                             "file_path": file_path,
                             "success": success,
-                            "content": content[:4000] if success else None,
+                            # v4.7: Removed hardcoded 4000 char cap. The file is already
+                            # truncated by _host_read_file at _EVIDENCE_MAX_FILE_CHARS (50k).
+                            # The old [:4000] was starving the LLM of evidence — e.g.
+                            # search_embeddings() in service.py starts at char 5237,
+                            # call_llm_async() in core.py starts at char ~10000.
+                            # The re-prompt's _MAX_EVIDENCE_CHARS (40k) is the real backstop.
+                            "content": content if success else None,
                             "error": content if not success else None,
                         })
                         logger.info("[SPEC_GATE_EVIDENCE] %s: read_file %s → %s (%d chars)",
@@ -1000,19 +979,82 @@ async def _fulfil_evidence_requests(
         current_analysis = strip_fulfilled_requests(current_analysis, fulfilled_ids)
 
         # Re-prompt LLM with the original analysis + real evidence
-        evidence_block = "\n".join(evidence_bundle_parts)
+        # v4.8: Smart evidence prioritisation — instead of blind concatenation
+        # and truncation, score each evidence part by relevance to the job
+        # and include the most relevant first within the budget.
+        _MAX_EVIDENCE_CHARS = 60000  # v4.8: Raised from 40k — full files need room
+
+        def _score_evidence_relevance(ev_text: str, job_goal: str, job_desc: str) -> float:
+            """Score how relevant an evidence block is to the job.
+            Higher = more relevant = included first.
+            Uses keyword overlap between the evidence content and the job description."""
+            # Extract meaningful words from goal + description
+            import re as _re
+            job_words = set(_re.findall(r'[a-z_]{4,}', (job_goal + ' ' + job_desc).lower()))
+            # Remove very common words that would match everything
+            stop_words = {'that', 'this', 'with', 'from', 'have', 'will', 'been', 'being',
+                          'should', 'would', 'could', 'also', 'into', 'when', 'each',
+                          'already', 'existing', 'current', 'ensure', 'which', 'their',
+                          'them', 'they', 'than', 'then', 'what', 'where', 'were', 'here',
+                          'there', 'other', 'some', 'more', 'only', 'same', 'does', 'none',
+                          'true', 'false', 'self', 'return', 'import', 'file', 'path',
+                          'line', 'string', 'list', 'dict', 'type', 'name', 'value'}
+            job_words -= stop_words
+            ev_lower = ev_text.lower()
+            ev_words = set(_re.findall(r'[a-z_]{4,}', ev_lower))
+            ev_words -= stop_words
+            if not job_words:
+                return 0.0
+            # Score = overlap ratio
+            overlap = job_words & ev_words
+            score = len(overlap) / len(job_words)
+            # Bonus for files that contain function definitions (more useful than __init__.py)
+            if 'def ' in ev_text or 'async def ' in ev_text:
+                score += 0.1
+            # Bonus for files that contain class definitions (models, schemas)
+            if 'class ' in ev_text:
+                score += 0.05
+            return score
+
+        # Score and sort evidence parts by relevance
+        scored_parts = []
+        for part in evidence_bundle_parts:
+            relevance = _score_evidence_relevance(part, goal, what_to_do)
+            scored_parts.append((relevance, part))
+        scored_parts.sort(key=lambda x: x[0], reverse=True)
+
+        # Assemble within budget, most relevant first
+        evidence_block = ""
+        included_count = 0
+        skipped_count = 0
+        for relevance, part in scored_parts:
+            if len(evidence_block) + len(part) <= _MAX_EVIDENCE_CHARS:
+                evidence_block += part + "\n"
+                included_count += 1
+            else:
+                # Try to include a truncated version if there's room for at least 2000 chars
+                remaining = _MAX_EVIDENCE_CHARS - len(evidence_block)
+                if remaining >= 2000:
+                    evidence_block += part[:remaining - 200] + (
+                        f"\n\n... [File truncated to fit budget. "
+                        f"Relevance score: {relevance:.2f}]\n"
+                    )
+                    included_count += 1
+                else:
+                    skipped_count += 1
+
+        if skipped_count > 0:
+            evidence_block += (
+                f"\n\n[{skipped_count} lower-relevance evidence block(s) omitted to stay within budget. "
+                f"Included {included_count} blocks sorted by relevance to the job.]\n"
+            )
+            print(f"[SPEC_GATE_EVIDENCE] Smart prioritisation: included {included_count}, "
+                  f"skipped {skipped_count} (budget={_MAX_EVIDENCE_CHARS})")
+        else:
+            print(f"[SPEC_GATE_EVIDENCE] All {included_count} evidence blocks fit within budget")
 
         # v4.4: Determine if this is the final loop
         is_final_loop = (loop_idx >= _EVIDENCE_MAX_LOOPS - 1)
-
-        # v4.4: Cap evidence block to prevent context explosion
-        _MAX_EVIDENCE_CHARS = 40000
-        if len(evidence_block) > _MAX_EVIDENCE_CHARS:
-            evidence_block = evidence_block[:_MAX_EVIDENCE_CHARS] + (
-                f"\n\n... [Evidence truncated at {_MAX_EVIDENCE_CHARS} chars. "
-                f"Focus on the evidence shown above to produce your analysis.]"
-            )
-            print(f"[SPEC_GATE_EVIDENCE] Evidence truncated to {_MAX_EVIDENCE_CHARS} chars")
 
         # v4.4: Cap previous analysis to prevent input explosion
         _MAX_PREV_ANALYSIS_CHARS = 15000
@@ -1023,6 +1065,17 @@ async def _fulfil_evidence_requests(
                 f"Use the evidence below to produce a complete, grounded analysis.]"
             )
             print(f"[SPEC_GATE_EVIDENCE] Previous analysis truncated to {_MAX_PREV_ANALYSIS_CHARS} chars")
+
+        # v4.7: Always re-inject the original job description so the LLM
+        # never loses sight of what it's building across evidence loops.
+        # Without this, each re-prompt dilutes the original intent until
+        # the LLM produces generic boilerplate instead of a job-specific spec.
+        job_context = (
+            f"--- ORIGINAL JOB (do not lose sight of this) ---\n\n"
+            f"Feature Request:\n{goal}\n\n"
+            f"Full Description:\n{what_to_do}\n\n"
+            f"--- END ORIGINAL JOB ---\n\n"
+        )
 
         if is_final_loop:
             # v4.4: FINAL LOOP — force spec production, no more ERs allowed
@@ -1035,6 +1088,7 @@ async def _fulfil_evidence_requests(
                 f"ignored. Use the evidence you have to produce the best possible analysis.\n\n"
                 f"For anything you still don't know, use DECISION_ALLOWED with a sensible "
                 f"default, or HUMAN_REQUIRED only if truly high-risk.\n\n"
+                f"{job_context}"
                 f"REQUIRED OUTPUT SECTIONS (all mandatory):\n"
                 f"## Architecture Overview\n"
                 f"## Implementation Steps (numbered, actionable, referencing real files)\n"
@@ -1057,12 +1111,13 @@ async def _fulfil_evidence_requests(
                 f"EVIDENCE_REQUEST blocks. The orchestrator has now fulfilled "
                 f"{len(fulfilled_ids)} of those requests by reading actual files. "
                 f"The fulfilled requests have been replaced with RESOLVED_REQUEST markers.\n\n"
+                f"{job_context}"
                 f"Please revise your analysis using the REAL evidence provided below. "
                 f"Replace any assumptions or hallucinated architecture with what the "
                 f"actual code shows. Keep all other sections intact. "
                 f"If you still need more evidence, you may emit new EVIDENCE_REQUEST blocks "
                 f"(with new unique IDs, not reusing resolved ones). Focus your new ERs on "
-                f"the most critical gaps — prioritise files that directly affect the "
+                f"the most critical gaps \u2014 prioritise files that directly affect the "
                 f"implementation over general exploration.\n\n"
                 f"--- PREVIOUS ANALYSIS (with RESOLVED_REQUEST markers) ---\n\n"
                 f"{prev_analysis_text}\n\n"
@@ -1189,6 +1244,29 @@ that are loaded by service wrappers or modules being integrated:
 - Fold this into an existing ER if it already reads the consuming module's code,
   or create a dedicated ER if the config file is on a separate path.
 
+FUNCTION SIGNATURE VERIFICATION (CRITICAL):
+When your implementation plan proposes CALLING an existing function (e.g., store_embedding(),
+search_embeddings(), generate_embedding(), or any other existing function):
+- You MUST emit an EVIDENCE_REQUEST to read that function's definition BEFORE proposing
+  parameter names or return types in your spec.
+- Verify: exact parameter names, required vs optional params, return type/structure.
+- Do NOT assume parameter names like 'top_k', 'source_type', 'chunk_index' exist —
+  the actual function may use different names (e.g., 'limit', 'content_type', 'idx').
+- If your plan says "call X(a=1, b=2)", you must have CITED evidence showing X accepts
+  parameters 'a' and 'b'. Otherwise emit an ER to read the function.
+- This applies equally to ORM model fields — if you propose filtering by a column,
+  verify that column exists on the model.
+
+CALLER CHAIN VERIFICATION (CRITICAL):
+When your implementation plan proposes injecting code at a specific point (e.g., adding
+a call inside an existing function), you MUST verify:
+- WHO calls that function and WHAT data they pass in.
+- If your plan depends on a field being available (e.g., project_id in task metadata),
+  emit an EVIDENCE_REQUEST to read at least one caller to confirm the field is populated.
+- Do NOT propose regex-parsing free text fields to extract structured data that should
+  be passed explicitly. If a field isn't available, the spec should say "add this field"
+  rather than "parse it out of an unrelated string".
+
 ER ID UNIQUENESS:
 - Every EVIDENCE_REQUEST must have a unique id (ER-001, ER-002, etc.).
 - NEVER emit two EVIDENCE_REQUEST blocks with the same id.
@@ -1288,11 +1366,14 @@ async def _run_llm_analysis(
     
     constraints_desc = "\n".join(f"- {c}" for c in constraints) if constraints else "None specified"
     
+    # v4.7: Removed [:3000] cap on what_to_do. The weaver output is typically
+    # 5-7k chars and the second half contains critical requirements (canonicalization,
+    # retrieval, provenance, etc.) that were being silently dropped.
     user_prompt = f"""Feature Request:
 {goal}
 
 Full Description:
-{what_to_do[:3000]}
+{what_to_do}
 
 Tech Stack:
 {chr(10).join(stack_desc) if stack_desc else 'Not detected'}
