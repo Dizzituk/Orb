@@ -755,6 +755,40 @@ INTENT_DEFINITIONS: Dict[CanonicalIntent, IntentDefinition] = {
     ),
     
     # -------------------------------------------------------------------------
+    # SEGMENT LOOP (v1.8 - Phase 2 Pipeline Segmentation)
+    # -------------------------------------------------------------------------
+    
+    CanonicalIntent.RUN_SEGMENT_LOOP: IntentDefinition(
+        intent=CanonicalIntent.RUN_SEGMENT_LOOP,
+        trigger_phrases=[
+            "run segments",
+            "Run segments",
+            "run segment loop",
+            "Run segment loop",
+            "execute segments",
+            "Execute segments",
+        ],
+        trigger_patterns=[
+            r"^[Rr]un\s+(?:the\s+)?segments?$",
+            r"^[Ee]xecute\s+(?:the\s+)?segments?$",
+            r"^[Rr]un\s+segment\s+loop$",
+            r"^[Ss]egment\s+loop$",
+            r"^[Rr]un\s+segmented\s+job$",
+        ],
+        requires_context=[],
+        requires_confirmation=False,
+        description="Execute segmented job through the pipeline segment by segment",
+        behavior=(
+            "Execute a segmented job through the pipeline:\n"
+            "1. Load segments from validated spec\n"
+            "2. Process each segment through critical pipeline\n"
+            "3. Track progress and report results\n"
+            "\n"
+            "Requires validated spec with segments."
+        ),
+    ),
+    
+    # -------------------------------------------------------------------------
     # CHAT (no action)
     # -------------------------------------------------------------------------
     

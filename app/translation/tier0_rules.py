@@ -146,6 +146,11 @@ def tier0_classify(text: str) -> Tier0RuleResult:
     if result.matched:
         return result
     
+    # 4a2. Check segment loop trigger (v1.8 — Phase 2 Pipeline Segmentation)
+    result = check_segment_loop_trigger(text_stripped)
+    if result.matched:
+        return result
+    
     # 4b. Check RAG codebase query (v1.3)
     result = check_rag_codebase_query(text_stripped)
     if result.matched:
@@ -619,6 +624,41 @@ def check_overwatcher_trigger(text: str) -> Tier0RuleResult:
                 confidence=1.0,
                 rule_name="overwatcher_execute",
                 reason="Overwatcher execute command detected",
+            )
+    
+    return Tier0RuleResult(matched=False)
+
+
+def check_segment_loop_trigger(text: str) -> Tier0RuleResult:
+    """
+    Special handler for segment loop execution triggers.
+    
+    Executes a segmented job through the pipeline, segment by segment.
+    Phase 2 of Pipeline Segmentation.
+    
+    v1.8 (2026-02-08): Added segment loop support.
+    """
+    text_lower = text.strip().lower()
+    
+    patterns = [
+        r"^run segments?$",
+        r"^run (?:the )?segments?$",
+        r"^execute segments?$",
+        r"^run segment loop$",
+        r"^execute segment loop$",
+        r"^segment loop$",
+        r"^run segmented job$",
+        r"^(?:ok(?:ay)?,?\s*)?run (?:the )?segments?$",
+    ]
+    
+    for pattern in patterns:
+        if re.match(pattern, text_lower):
+            return Tier0RuleResult(
+                matched=True,
+                intent=CanonicalIntent.RUN_SEGMENT_LOOP,
+                confidence=1.0,
+                rule_name="segment_loop",
+                reason="Segment loop execution command detected",
             )
     
     return Tier0RuleResult(matched=False)

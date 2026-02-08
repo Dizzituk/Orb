@@ -471,6 +471,7 @@ async def run_overwatcher(
     provider_id: str = None,
     model_id: str = None,
     deep_research_context: Optional[str] = None,
+    file_scope: Optional[list] = None,
 ) -> OverwatcherOutput:
     """Run Overwatcher analysis on evidence bundle.
     
@@ -632,6 +633,7 @@ async def run_pot_spec_execution(
     job_id: str,
     llm_call_fn: Optional[Callable] = None,
     artifact_root: str = "D:/Orb/jobs",
+    file_scope: Optional[list] = None,
 ) -> Dict[str, Any]:
     """
     Execute POT spec with sequential task processing.

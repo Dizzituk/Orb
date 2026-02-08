@@ -611,6 +611,89 @@ def sandbox_list_directory(path: str) -> Tuple[bool, List[Dict]]:
 
 
 # =============================================================================
+# INTERFACE SIGNATURE READING (v2.2 - Segmentation support)
+# =============================================================================
+
+def read_interface_signatures(
+    path: str,
+    max_chars: int = 2000,
+) -> Tuple[bool, List[str], Optional[str]]:
+    """
+    v2.2: Read class/function/export signatures from a source file.
+    
+    Host-direct read — does NOT use the sandbox client. This is used by
+    the file verifier during segmentation, which runs before any sandbox
+    session is active.
+    
+    Extracts structural signatures (class names, function definitions,
+    exports) from the first `max_chars` of a file. Supports Python (.py)
+    and TypeScript/React (.ts, .tsx, .js, .jsx).
+    
+    Args:
+        path: Absolute file path on the host filesystem
+        max_chars: Maximum characters to read for signature extraction
+    
+    Returns:
+        (success: bool, signatures: List[str], excerpt: Optional[str])
+        - success: True if the file was readable
+        - signatures: Extracted class/function/export signature lines
+        - excerpt: First ~500 chars of file content
+    """
+    import re as _re
+    
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            content = f.read(max_chars)
+    except OSError as e:
+        logger.warning("[evidence_gathering] v2.2 read_interface_signatures: cannot read %s: %s", path, e)
+        return False, [], None
+    
+    excerpt = content[:500]
+    signatures: list = []
+    ext = os.path.splitext(path)[1].lower()
+    
+    if ext == '.py':
+        # Python: class and public function definitions
+        for match in _re.finditer(r'^class\s+(\w+)\s*[\(:]', content, _re.MULTILINE):
+            line_start = content.rfind('\n', 0, match.start()) + 1
+            line_end = content.find('\n', match.start())
+            if line_end == -1:
+                line_end = len(content)
+            sig = content[line_start:line_end].strip()
+            signatures.append(sig[:200])
+        
+        for match in _re.finditer(r'^(?:async\s+)?def\s+(\w+)\s*\(([^)]*)\)', content, _re.MULTILINE):
+            name = match.group(1)
+            if name.startswith('_') and name != '__init__':
+                continue
+            line_start = content.rfind('\n', 0, match.start()) + 1
+            line_end = content.find('\n', match.start())
+            if line_end == -1:
+                line_end = len(content)
+            sig = content[line_start:line_end].strip()
+            signatures.append(sig[:200])
+    
+    elif ext in ('.ts', '.tsx', '.js', '.jsx'):
+        # TypeScript/JS: exported definitions
+        for match in _re.finditer(
+            r'^export\s+(?:default\s+)?(?:function|const|class|interface|type|enum)\s+(\w+)',
+            content, _re.MULTILINE,
+        ):
+            line_start = content.rfind('\n', 0, match.start()) + 1
+            line_end = content.find('\n', match.start())
+            if line_end == -1:
+                line_end = len(content)
+            sig = content[line_start:line_end].strip()
+            signatures.append(sig[:200])
+    
+    logger.info(
+        "[evidence_gathering] v2.2 read_interface_signatures: %s — %d signatures extracted",
+        path, len(signatures),
+    )
+    return True, signatures, excerpt
+
+
+# =============================================================================
 # PATH RESOLUTION FUNCTIONS (v1.27 - MULTI-TARGET AWARE)
 # =============================================================================
 

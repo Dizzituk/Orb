@@ -115,6 +115,13 @@ class CanonicalIntent(str, Enum):
     # Refactor across multiple files (write): "replace X with Y everywhere"
     MULTI_FILE_REFACTOR = "MULTI_FILE_REFACTOR"
 
+    # =========================================================================
+    # SEGMENT LOOP (v1.8 - Phase 2 Pipeline Segmentation)
+    # =========================================================================
+
+    # Execute segmented job through the pipeline (segment-by-segment)
+    RUN_SEGMENT_LOOP = "RUN_SEGMENT_LOOP"
+
 
 class LatencyTier(str, Enum):
     """Which cost tier resolved this intent?"""

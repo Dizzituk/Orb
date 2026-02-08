@@ -249,6 +249,19 @@ except ImportError as e:
     generate_embeddings_stream = None
 
 # =============================================================================
+# SEGMENT LOOP (Phase 2 — Pipeline Segmentation)
+# =============================================================================
+
+try:
+    from app.orchestrator.segment_loop_stream import generate_segment_loop_stream
+    _SEGMENT_LOOP_AVAILABLE = True
+    print("[handler_registry] Segment loop handler loaded successfully")
+except ImportError as e:
+    _SEGMENT_LOOP_AVAILABLE = False
+    print(f"[handler_registry] WARNING: Segment loop import failed: {e}")
+    generate_segment_loop_stream = None
+
+# =============================================================================
 # INTROSPECTION
 # =============================================================================
 
@@ -280,6 +293,7 @@ def log_handler_availability() -> None:
     print(f"[HANDLER_STATUS] Sandbox: {_SANDBOX_AVAILABLE}")
     print(f"[HANDLER_STATUS] RAGStream: {_RAG_STREAM_AVAILABLE}")
     print(f"[HANDLER_STATUS] EmbeddingStream: {_EMBEDDING_STREAM_AVAILABLE}")
+    print(f"[HANDLER_STATUS] SegmentLoop: {_SEGMENT_LOOP_AVAILABLE}")
     print(f"[HANDLER_STATUS] Introspection: {_INTROSPECTION_AVAILABLE}")
 
 
@@ -300,6 +314,7 @@ def get_handler_status() -> dict:
         "sandbox": _SANDBOX_AVAILABLE,
         "rag_stream": _RAG_STREAM_AVAILABLE,
         "embedding_stream": _EMBEDDING_STREAM_AVAILABLE,
+        "segment_loop": _SEGMENT_LOOP_AVAILABLE,
         "introspection": _INTROSPECTION_AVAILABLE,
     }
 
@@ -372,6 +387,9 @@ __all__ = [
     # Embedding
     "generate_embedding_status_stream",
     "generate_embeddings_stream",
+    # Segment Loop
+    "_SEGMENT_LOOP_AVAILABLE",
+    "generate_segment_loop_stream",
     # Introspection
     "detect_log_intent",
     # Status functions

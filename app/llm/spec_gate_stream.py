@@ -92,6 +92,7 @@ try:
         get_active_flow,
         advance_to_spec_gate_questions,
         advance_to_spec_validated,
+        advance_to_spec_segmented,
         cancel_flow,
     )
     _FLOW_STATE_AVAILABLE = True
@@ -100,6 +101,7 @@ except Exception:
     get_active_flow = None
     advance_to_spec_gate_questions = None
     advance_to_spec_validated = None
+    advance_to_spec_segmented = None
     cancel_flow = None
 
 # Job service (optional)
@@ -527,6 +529,110 @@ async def generate_spec_gate_stream(
                     )
                 except Exception as e:
                     logger.debug("[spec_gate_stream] advance_to_spec_gate_questions failed: %s", e)
+
+        # v4.9 PHASE 2: Segmented job — route to segment loop, not single-pass
+        elif validation_status == "segmented":
+            seg_data = (getattr(result, 'grounding_data', None) or {}).get('segmentation', {})
+            seg_count = seg_data.get('total_segments', 0)
+            seg_ids = seg_data.get('segment_ids', [])
+
+            seg_header = f"🔀 **Job Segmented** — {seg_count} segments ready for execution\n\n"
+            yield _safe_json_event({"type": "token", "content": seg_header})
+            response_parts.append(seg_header)
+
+            seg_detail = (
+                f"SpecGate has decomposed this job into **{seg_count} segments** "
+                f"that will be executed in dependency order:\n\n"
+            )
+            for i, sid in enumerate(seg_ids, 1):
+                seg_detail += f"  {i}. `{sid}`\n"
+            seg_detail += "\n"
+            yield _safe_json_event({"type": "token", "content": seg_detail})
+            response_parts.append(seg_detail)
+
+            # Persist the parent spec to DB (segments need it for reference)
+            db_persisted = getattr(result, "db_persisted", False)
+            if not db_persisted and _SPEC_PERSISTENCE_AVAILABLE and persist_spec and build_spec_schema:
+                try:
+                    spot_md = getattr(result, "spot_markdown", "") or ""
+                    spec_id = getattr(result, "spec_id", "") or ""
+                    grounding_data = getattr(result, "grounding_data", None)
+                    goal_text = (grounding_data or {}).get("goal", "Segmented job")
+                    summary = safe_summary_from_objective(goal_text) if safe_summary_from_objective else goal_text[:180]
+
+                    spec_schema = build_spec_schema(
+                        spec_id=spec_id,
+                        title="SPoT Spec (SpecGate v3.0 — Segmented)",
+                        summary=summary,
+                        objective=goal_text,
+                        outputs=[], steps=[], acceptance=[],
+                        context={"source": "spec_gate_grounded", "segmented": True, "round": clarification_round},
+                        job_id=job_id,
+                        provider_id=spec_gate_provider,
+                        model_id=spec_gate_model,
+                        grounding_data=grounding_data,
+                    )
+                    if spec_schema:
+                        success, db_spec_id, db_spec_hash, error = persist_spec(
+                            db=db, project_id=project_id, spec_schema=spec_schema,
+                            provider_id=spec_gate_provider, model_id=spec_gate_model,
+                        )
+                        if success:
+                            db_persisted = True
+                            # Also persist the full SPoT markdown
+                            if spot_md and len(spot_md) > 100:
+                                try:
+                                    specs_service.update_spec_content_markdown(db, db_spec_id, spot_md)
+                                except Exception:
+                                    pass
+                except Exception as e:
+                    logger.warning("[spec_gate_stream] v4.9 Segmented spec persistence failed: %s", e)
+
+            if db_persisted:
+                db_msg = "💾 Parent spec persisted to database.\n\n"
+            else:
+                db_msg = "⚠️ Parent spec NOT persisted to database.\n\n"
+            yield _safe_json_event({"type": "token", "content": db_msg})
+            response_parts.append(db_msg)
+
+            # Stream the parent spec markdown for user review
+            spot_md = getattr(result, "spot_markdown", None)
+            if spot_md:
+                yield _safe_json_event({"type": "token", "content": spot_md})
+                response_parts.append(spot_md)
+
+            # Set flow state to SEGMENTED (prevents single-pass routing)
+            if _FLOW_STATE_AVAILABLE and advance_to_spec_segmented:
+                try:
+                    advance_to_spec_segmented(
+                        project_id=project_id,
+                        spec_id=getattr(result, "spec_id", "") or "",
+                        spec_hash=getattr(result, "spec_hash", "") or "",
+                        job_id=job_id,
+                        total_segments=seg_count,
+                        spec_version=clarification_round,
+                    )
+                except Exception as e:
+                    logger.debug("[spec_gate_stream] advance_to_spec_segmented failed: %s", e)
+
+            next_step = (
+                f"\n🚀 **Segments Ready.**\n"
+                f"Say **'Astra, command: run segments'** to execute all {seg_count} segments "
+                f"through the pipeline in dependency order.\n"
+            )
+            yield _safe_json_event({"type": "token", "content": next_step})
+            response_parts.append(next_step)
+
+            yield _safe_json_event({
+                "type": "spec_segmented",
+                "spec_id": getattr(result, "spec_id", None),
+                "spec_hash": getattr(result, "spec_hash", None),
+                "job_id": job_id,
+                "total_segments": seg_count,
+                "segment_ids": seg_ids,
+                "db_persisted": db_persisted,
+                "validation_status": "segmented",
+            })
 
         # Ready: stream SPoT markdown
         else:

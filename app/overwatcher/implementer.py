@@ -654,6 +654,7 @@ async def run_implementer(
     spec: ResolvedSpec,
     output: OverwatcherOutput,
     client: Optional[SandboxClient] = None,
+    segment_context: Optional[dict] = None,
 ) -> ImplementerResult:
     """Execute approved work via Sandbox."""
     import time

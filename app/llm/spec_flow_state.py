@@ -49,6 +49,9 @@ class SpecFlowStage(str, Enum):
     # Spec validated, awaiting user to run critical pipeline
     SPEC_VALIDATED = "spec_validated"
     
+    # Spec segmented, awaiting user to run segment loop (Phase 2)
+    SPEC_SEGMENTED = "spec_segmented"
+    
     # Critical Pipeline complete, awaiting Overwatcher
     AWAITING_OVERWATCHER = "awaiting_overwatcher"
     
@@ -640,6 +643,34 @@ def advance_to_spec_validated(
     return state
 
 
+def advance_to_spec_segmented(
+    project_id: int,
+    spec_id: str,
+    spec_hash: str,
+    job_id: str,
+    total_segments: int,
+    spec_version: int = 1,
+) -> Optional[SpecFlowState]:
+    """Advance flow to spec segmented stage (Phase 2 — segments ready for execution)."""
+    state = _FLOW_STATES.get(project_id)
+    if not state:
+        state = SpecFlowState(project_id=project_id, stage=SpecFlowStage.SPEC_SEGMENTED)
+
+    state.stage = SpecFlowStage.SPEC_SEGMENTED
+    state.spec_id = spec_id
+    state.spec_hash = spec_hash
+    state.spec_version = spec_version
+    state.open_questions = []
+    # Store segment metadata in work_artifacts for downstream access
+    state.work_artifacts = {
+        "job_id": job_id,
+        "total_segments": total_segments,
+        "segmented": True,
+    }
+    set_flow_state(state)
+    return state
+
+
 def advance_to_awaiting_overwatcher(
     project_id: int,
     work_artifacts: Dict[str, Any],
@@ -741,6 +772,7 @@ __all__ = [
     # Spec Gate flow
     "advance_to_spec_gate_questions",
     "advance_to_spec_validated",
+    "advance_to_spec_segmented",
     "advance_to_awaiting_overwatcher",
     "complete_flow",
     "cancel_flow",

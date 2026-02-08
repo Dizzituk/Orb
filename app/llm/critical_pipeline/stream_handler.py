@@ -131,6 +131,7 @@ async def generate_critical_pipeline_stream(
     spec_id: Optional[str] = None,
     spec_hash: Optional[str] = None,
     job_id: Optional[str] = None,
+    segment_context: Optional[dict] = None,
 ):
     """Generate SSE stream for Critical Pipeline execution."""
     response_parts = []
@@ -221,31 +222,24 @@ async def generate_critical_pipeline_stream(
         validation_status = spec_data.get("validation_status", "validated")
 
         if validation_status == "pending_evidence":
-            block_msg = (
-                "\n\ud83d\udeab **BLOCKED: Spec has unfulfilled CRITICAL evidence requirements**\n\n"
-                "SpecGate marked this spec as `pending_evidence` because it contains "
-                "CRITICAL EVIDENCE_REQUESTs that haven't been resolved yet.\n\n"
-                "**What to do:**\n"
-                "1. Review the EVIDENCE_REQUESTs in the spec output above\n"
-                "2. Gather the requested evidence (inspect files, confirm patterns)\n"
-                "3. Re-run SpecGate with the evidence to get a `validated` spec\n"
-                "4. Then retry `run critical pipeline`\n\n"
-                "_This is a mechanical guard \u2014 not a suggestion._\n"
+            # v5.0: Softened from hard block to warning. SpecGate v4.0+ fulfils
+            # its own ERs, so pending_evidence should no longer occur. If a legacy
+            # spec arrives with this status, warn but proceed — the Critical
+            # Pipeline's own evidence_loop in high_stakes.py can attempt to fulfil
+            # remaining ERs during architecture generation. The old hard block
+            # caused a deadlock where SpecGate and Critical Pipeline each told
+            # the user to go to the other.
+            warn_msg = (
+                "\n\u26a0\ufe0f **Warning: Spec has unfulfilled evidence requirements**\n\n"
+                "SpecGate marked this spec as `pending_evidence`. This usually means "
+                "evidence fulfilment was partially unsuccessful. Proceeding anyway \u2014 "
+                "the architecture stage will attempt to gather remaining evidence.\n\n"
             )
             logger.warning(
-                "[critical_pipeline] MECHANICAL GUARD: pending_evidence, spec_id=%s",
+                "[critical_pipeline] v5.0 SOFT GUARD: pending_evidence (proceeding), spec_id=%s",
                 spec_id,
             )
-            yield _emit(block_msg)
-            yield _done(
-                provider=pipeline_provider, model=pipeline_model,
-                total_length=sum(len(p) for p in response_parts),
-                blocked=True, blocked_reason="pending_evidence",
-                validation_status=validation_status, spec_id=spec_id,
-            )
-            if trace:
-                trace.finalize(success=False, error_message="Spec has pending_evidence status")
-            return
+            yield _emit(warn_msg)
 
         if validation_status in ("blocked", "error", "needs_clarification"):
             yield _emit(

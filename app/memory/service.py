@@ -332,16 +332,34 @@ def _index_message_if_enabled(db: Session, message: models.Message) -> None:
         print(f"[memory.service] Failed to auto-index message {message.id}: {e}")
 
 
+def _sanitize_utf8(text: str) -> str:
+    """Sanitize string to valid UTF-8, replacing surrogate pairs.
+    
+    Some emoji characters (e.g. \u2699\ufe0f) can produce surrogate pairs
+    that cause 'surrogates not allowed' errors when SQLite/Python tries
+    to encode them. This replaces any problematic characters with the
+    Unicode replacement character.
+    """
+    if not text:
+        return text
+    try:
+        # Round-trip through bytes to flush out surrogates
+        return text.encode('utf-8', errors='surrogatepass').decode('utf-8', errors='replace')
+    except Exception:
+        return text
+
+
 def create_message(db: Session, data: schemas.MessageCreate) -> models.Message:
     """
     Create a new message in the database.
     
     v0.12.4: Now properly saves provider, model, and reasoning fields.
+    v0.12.5: Sanitizes content to prevent UTF-8 surrogate encoding errors.
     """
     msg = models.Message(
         project_id=data.project_id,
         role=data.role,
-        content=data.content,
+        content=_sanitize_utf8(data.content),  # v0.12.5: Sanitize surrogates
         provider=data.provider,  # v0.12.4: Was missing
         model=data.model,  # v0.12.4: Was missing
         reasoning=data.reasoning,  # v0.12.4: New field

@@ -182,6 +182,16 @@ def intent_to_routing_info(intent: "CanonicalIntent") -> Optional[dict]:
                 f"({overwatcher.provider}/{overwatcher.model})"
             ),
         },
+        # Phase 2: Segment loop execution (v1.8)
+        CanonicalIntent.RUN_SEGMENT_LOOP: {
+            "type": "local.segment_loop",
+            "provider": critical.provider,
+            "model": critical.model,
+            "reason": (
+                "Translation layer: SEGMENT LOOP EXECUTE "
+                f"({critical.provider}/{critical.model})"
+            ),
+        },
         CanonicalIntent.RAG_CODEBASE_QUERY: {
             "type": "local.rag_query",
             "provider": "local",

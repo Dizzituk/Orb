@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-SPEC_RUNNER_BUILD_ID = "2026-02-06-v4.7-er-dedup-and-entrypoint-clarity"
+SPEC_RUNNER_BUILD_ID = "2026-02-08-v5.0-specgate-evidence-fulfilment"
 print(f"[SPEC_RUNNER_LOADED] BUILD_ID={SPEC_RUNNER_BUILD_ID}")
 
 
@@ -656,6 +656,229 @@ def _dedup_evidence_requests(spec_markdown: str) -> str:
 
 
 # =============================================================================
+# SEGMENTATION HELPERS (v4.8 — Pipeline Segmentation Phase 1)
+# =============================================================================
+
+def _get_job_dir_for_segmentation(job_id: str) -> str:
+    """
+    v4.9 PHASE 2: Get job directory path for segmentation manifest references.
+    Uses the same path construction as _write_segmentation_output().
+    """
+    try:
+        from ..spec_gate_persistence import artifact_root as _ar, job_dir as _jd
+        return _jd(_ar(), job_id)
+    except ImportError:
+        _root = os.path.abspath(os.getenv("ORB_JOB_ARTIFACT_ROOT", "jobs"))
+        return os.path.join(_root, "jobs", job_id)
+
+
+def _extract_file_scope_from_spec(
+    spec_markdown: Optional[str],
+    grounding_data: Optional[Dict] = None,
+    multi_file_op: Optional[Any] = None,
+) -> List[str]:
+    """
+    v4.9: Extract file paths mentioned as targets in the spec.
+    
+    Looks for patterns like:
+    - Relative paths: `app/foo/bar.py`, `src/components/Foo.tsx`
+    - Absolute Windows paths: `D:\Orb\app\foo.py`, `D:/Orb/app/foo.py`
+    - Backtick-wrapped paths in markdown
+    - Paths from multi_file_op target files
+    - Paths from grounding_data if available
+    
+    v4.9 (2026-02-08): Added absolute path extraction and multi_file_op support.
+    Previous version only matched relative paths starting with app/, src/, etc.
+    This meant CREATE jobs (which use absolute paths from simple_create.py)
+    returned empty file scope and segmentation never triggered.
+    """
+    paths: List[str] = []
+    seen_normalised: set = set()  # Normalised keys for dedup
+    
+    def _add_path(p: str) -> None:
+        """Add path with dedup (case-insensitive, separator-normalised)."""
+        key = p.lower().replace('/', '\\').rstrip('\\')
+        if key not in seen_normalised:
+            seen_normalised.add(key)
+            paths.append(p)
+    
+    if not spec_markdown:
+        # Still check multi_file_op even without spec markdown
+        if multi_file_op and hasattr(multi_file_op, 'raw_matches'):
+            for match_entry in (multi_file_op.raw_matches or []):
+                if isinstance(match_entry, dict) and 'file' in match_entry:
+                    _add_path(match_entry['file'])
+        return paths
+    
+    # Pattern 1: Relative paths (existing — app/, src/, etc.)
+    rel_pattern = re.compile(
+        r'(?:^|[\s`|])'
+        r'((?:app|src|orb-desktop|tests|scripts|config)[/\\]'
+        r'[\w/\\.-]+\.(?:py|ts|tsx|js|jsx|json|yaml|yml|md|css))'
+        r'(?:[\s`|,]|$)',
+        re.MULTILINE,
+    )
+    for match in rel_pattern.finditer(spec_markdown):
+        _add_path(match.group(1).replace('/', os.sep))
+    
+    # Pattern 2: Absolute Windows paths (D:\Orb\app\foo.py or D:/Orb/app/foo.py)
+    # Grounded CREATE specs from simple_create.py use full absolute paths.
+    abs_pattern = re.compile(
+        r'(?:^|[\s`|])'
+        r'([A-Za-z]:[/\\]'
+        r'[\w/\\.-]+\.(?:py|ts|tsx|js|jsx|json|yaml|yml|md|css))'
+        r'(?:[\s`|,]|$)',
+        re.MULTILINE,
+    )
+    for match in abs_pattern.finditer(spec_markdown):
+        abs_path = match.group(1)
+        _add_path(abs_path)
+        # Also extract the relative portion for layer classification.
+        # e.g. D:\Orb\app\services\foo.py → app\services\foo.py
+        # This ensures classify_file_layer() works correctly since it
+        # matches on relative path patterns like "app/services/".
+        normalised = abs_path.replace('/', '\\')
+        for prefix in ('app\\', 'src\\'):
+            idx = normalised.lower().find(prefix)
+            if idx >= 0:
+                rel_part = normalised[idx:]
+                _add_path(rel_part)
+                break
+    
+    # Pattern 3: Extract from multi_file_op target files if available
+    if multi_file_op:
+        if hasattr(multi_file_op, 'raw_matches'):
+            for match_entry in (multi_file_op.raw_matches or []):
+                if isinstance(match_entry, dict) and 'file' in match_entry:
+                    _add_path(match_entry['file'])
+        # Also check target_files attribute directly
+        if hasattr(multi_file_op, 'target_files'):
+            for f in (multi_file_op.target_files or []):
+                if isinstance(f, str):
+                    _add_path(f)
+    
+    # Pattern 4: Extract from grounding_data if provided
+    if grounding_data and isinstance(grounding_data, dict):
+        multi = grounding_data.get('multi_file', {})
+        if multi and isinstance(multi, dict):
+            for f in multi.get('target_files', []):
+                if isinstance(f, str):
+                    _add_path(f)
+    
+    return paths
+
+
+def _extract_requirements_from_spec(spec_markdown: Optional[str]) -> List[str]:
+    """
+    v4.8: Extract requirement lines from spec markdown.
+    
+    Looks for bullet points under Goal, Requirements, What to do sections.
+    """
+    requirements: List[str] = []
+    if not spec_markdown:
+        return requirements
+    
+    in_section = False
+    for line in spec_markdown.split('\n'):
+        stripped = line.strip()
+        # Detect relevant sections
+        if stripped.startswith('## ') and any(
+            kw in stripped.lower() for kw in ['goal', 'requirement', 'what to do', 'scope']
+        ):
+            in_section = True
+            continue
+        elif stripped.startswith('## '):
+            in_section = False
+            continue
+        
+        if in_section and stripped and (stripped.startswith('- ') or stripped.startswith('* ')):
+            req_text = stripped.lstrip('- *').strip()
+            if req_text and len(req_text) > 5:  # Skip trivially short items
+                requirements.append(req_text)
+    
+    return requirements
+
+
+def _extract_acceptance_from_spec(spec_markdown: Optional[str]) -> List[str]:
+    """
+    v4.8: Extract acceptance criteria from spec markdown.
+    
+    Looks for checkbox items under Acceptance sections.
+    """
+    criteria: List[str] = []
+    if not spec_markdown:
+        return criteria
+    
+    in_section = False
+    for line in spec_markdown.split('\n'):
+        stripped = line.strip()
+        if stripped.startswith('## ') and any(
+            kw in stripped.lower() for kw in ['acceptance', 'verification', 'criteria']
+        ):
+            in_section = True
+            continue
+        elif stripped.startswith('## '):
+            in_section = False
+            continue
+        
+        if in_section and stripped:
+            # Match checkbox items: - [ ] or - [x] or just bullet points
+            check_match = re.match(r'^[-*]\s*\[.?\]\s*(.*)', stripped)
+            if check_match:
+                criteria.append(check_match.group(1).strip())
+            elif stripped.startswith('- ') or stripped.startswith('* '):
+                criteria.append(stripped.lstrip('- *').strip())
+    
+    return criteria
+
+
+def _write_segmentation_output(job_id: str, manifest) -> None:
+    """
+    v4.9: Write manifest and segment specs to the job directory.
+    
+    Creates:
+        <artifact_root>/jobs/<job-id>/segments/manifest.json
+        <artifact_root>/jobs/<job-id>/segments/seg-XX/spec.json (per segment)
+    
+    v4.9 (2026-02-08): Uses spec_gate_persistence.artifact_root() + job_dir()
+    for path construction instead of relative paths. The previous version used
+    os.path.join('jobs', job_id) which resolves relative to cwd — wrong when
+    the FastAPI server's working directory differs from the project root.
+    """
+    from .segment_schemas import SegmentManifest
+    
+    # Use the same path construction as spec_gate_persistence.py
+    try:
+        from ..spec_gate_persistence import artifact_root as _artifact_root, job_dir as _job_dir
+        job_dir_path = _job_dir(_artifact_root(), job_id)
+    except ImportError:
+        # Fallback: replicate the logic directly
+        _root = os.path.abspath(os.getenv("ORB_JOB_ARTIFACT_ROOT", "jobs"))
+        job_dir_path = os.path.join(_root, "jobs", job_id)
+    
+    os.makedirs(job_dir_path, exist_ok=True)
+    
+    segments_dir = os.path.join(job_dir_path, 'segments')
+    os.makedirs(segments_dir, exist_ok=True)
+    
+    # Write manifest
+    manifest_path = os.path.join(segments_dir, 'manifest.json')
+    with open(manifest_path, 'w', encoding='utf-8') as f:
+        f.write(manifest.to_json(indent=2))
+    
+    logger.info("[spec_runner] v4.8 Wrote manifest: %s", manifest_path)
+    
+    # Write per-segment specs
+    for seg in manifest.segments:
+        seg_dir = os.path.join(segments_dir, seg.segment_id)
+        os.makedirs(seg_dir, exist_ok=True)
+        seg_spec_path = os.path.join(seg_dir, 'spec.json')
+        with open(seg_spec_path, 'w', encoding='utf-8') as f:
+            f.write(seg.to_json(indent=2))
+        logger.info("[spec_runner] v4.8 Wrote segment spec: %s", seg_spec_path)
+
+
+# =============================================================================
 # MAIN ENTRY POINT
 # =============================================================================
 
@@ -897,6 +1120,100 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
                 )
         
         # =================================================================
+        # STEP 4b: Segmentation check (Phase 1 — Pipeline Segmentation)
+        # =================================================================
+        # If the spec is large enough, SpecGate decomposes it into segments.
+        # Each segment goes through the pipeline independently.
+        # If segmentation fails validation, we fall back to single-pass.
+        
+        segmentation_manifest = None
+        try:
+            from .segmentation import needs_segmentation, generate_segments
+            
+            # Extract file scope from the spec (all files mentioned as targets)
+            _file_scope = _extract_file_scope_from_spec(
+                spot_markdown, grounding_data=None, multi_file_op=multi_file_op,
+            )
+            
+            if _file_scope:
+                _should_segment, _seg_reason = needs_segmentation(_file_scope)
+                if _should_segment:
+                    logger.info("[spec_runner] v4.8 Segmentation triggered: %s", _seg_reason)
+                    print(f"[spec_runner] v4.8 SEGMENTATION: {_seg_reason}")
+                    
+                    # Extract requirements and acceptance criteria from spec
+                    _requirements = _extract_requirements_from_spec(spot_markdown)
+                    _acceptance = _extract_acceptance_from_spec(spot_markdown)
+                    
+                    segmentation_manifest = generate_segments(
+                        file_scope=_file_scope,
+                        requirements=_requirements,
+                        acceptance_criteria=_acceptance,
+                        parent_spec_id=f"sg-{uuid.uuid4().hex[:12]}",
+                        parent_spec_hash=hashlib.sha256(spot_markdown.encode()).hexdigest() if spot_markdown else None,
+                    )
+                    
+                    if segmentation_manifest:
+                        # Write manifest and segment specs to job directory
+                        _write_segmentation_output(job_id, segmentation_manifest)
+                        logger.info(
+                            "[spec_runner] v4.8 Segmentation complete: %s",
+                            segmentation_manifest.summary(),
+                        )
+                        print(f"[spec_runner] v4.8 SEGMENTED: {segmentation_manifest.summary()}")
+
+                        # v4.9 PHASE 2: Return early with "segmented" status.
+                        # This prevents the spec from falling through to single-pass.
+                        # The caller (spec_gate_stream.py) routes to the segment loop
+                        # instead of the critical pipeline.
+                        _seg_spec_id = f"sg-{uuid.uuid4().hex[:12]}"
+                        _seg_spec_hash = hashlib.sha256(spot_markdown.encode()).hexdigest() if spot_markdown else ""
+                        _seg_grounding = {
+                            "job_kind": "architecture",
+                            "job_kind_confidence": 0.9,
+                            "job_kind_reason": "Segmented job — Phase 2 segment loop",
+                            "goal": goal,
+                            "segmentation": {
+                                "segmented": True,
+                                "total_segments": segmentation_manifest.total_segments,
+                                "segment_ids": [s.segment_id for s in segmentation_manifest.segments],
+                                "manifest_path": os.path.join(
+                                    _get_job_dir_for_segmentation(job_id),
+                                    'segments', 'manifest.json',
+                                ),
+                            },
+                        }
+                        logger.info(
+                            "[spec_runner] v4.9 PHASE 2: Returning segmented result for segment loop"
+                        )
+                        print("[spec_runner] v4.9 PHASE 2: Segmented — routing to segment loop")
+                        return SpecGateResult(
+                            ready_for_pipeline=True,
+                            open_questions=[],
+                            spot_markdown=spot_markdown,
+                            db_persisted=False,
+                            spec_id=_seg_spec_id,
+                            spec_hash=_seg_spec_hash,
+                            spec_version=round_n,
+                            notes="v4.9: Job segmented — use segment loop for execution",
+                            blocking_issues=[],
+                            validation_status="segmented",
+                            grounding_data=_seg_grounding,
+                        )
+                    else:
+                        logger.info("[spec_runner] v4.8 Segmentation returned None — single pass")
+                        print("[spec_runner] v4.8 Segmentation validation failed or not needed — single pass")
+                else:
+                    logger.info("[spec_runner] v4.8 No segmentation needed: %s", _seg_reason)
+        except ImportError:
+            logger.debug("[spec_runner] v4.8 Segmentation module not available")
+        except Exception as seg_err:
+            # Segmentation failure is NEVER fatal — fall back to single pass
+            logger.warning("[spec_runner] v4.8 Segmentation failed (non-fatal): %s", seg_err)
+            print(f"[spec_runner] v4.8 SEGMENTATION FAILED (non-fatal): {seg_err}")
+            segmentation_manifest = None
+        
+        # =================================================================
         # STEP 5: Return result
         # =================================================================
         
@@ -934,6 +1251,11 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
                 "total_occurrences": multi_file_op.total_occurrences if multi_file_op else 0,
             } if multi_file_op else None,
             "goal": goal,
+            "segmentation": {
+                "segmented": segmentation_manifest is not None,
+                "total_segments": segmentation_manifest.total_segments if segmentation_manifest else 0,
+                "segment_ids": [s.segment_id for s in segmentation_manifest.segments] if segmentation_manifest else [],
+            } if segmentation_manifest is not None else None,
         }
         
         # =================================================================
@@ -943,16 +1265,20 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
             spot_markdown = _dedup_evidence_requests(spot_markdown)
 
         # =================================================================
-        # v4.6: STATUS SEMANTICS — check for unfulfilled EVIDENCE_REQUESTs
+        # v5.0: STATUS SEMANTICS — check for unfulfilled EVIDENCE_REQUESTs
         # =================================================================
-        # If the spec contains CRITICAL EVIDENCE_REQUESTs that haven't been
-        # fulfilled, the spec is NOT validated — it's pending evidence.
-        # Marking it "validated" when patterns_extracted=0 and CRITICAL ERs
-        # exist is misleading and lets downstream stages proceed on guesses.
+        # v4.0 of simple_create.py now fulfils ERs during spec generation,
+        # so CRITICAL ERs should no longer appear in the final spec. Any
+        # surviving ERs are either:
+        #   a) Force-resolved (FORCED_RESOLUTION markers) — already handled
+        #   b) Edge cases where fulfilment wasn't available (import failure)
         #
-        # Rules:
-        #   - EVIDENCE_REQUEST with severity CRITICAL → pending_evidence
-        #   - No EVIDENCE_REQUESTs → validated (genuinely ready)
+        # v5.0 CHANGE: NEVER return "pending_evidence" — it caused a deadlock
+        # where SpecGate and Critical Pipeline each told the user to go to the
+        # other. Instead:
+        #   - No EVIDENCE_REQUESTs → validated
+        #   - Surviving CRITICAL ERs → force-resolve them HERE as a safety net,
+        #     then set validated_with_gaps (proceeds with honest acknowledgment)
         #   - Only non-CRITICAL ERs → validated (nice-to-have, not blocking)
         
         has_critical_er = False
@@ -983,20 +1309,48 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
             
             if critical_er_count > 0:
                 has_critical_er = True
-                print(f"[spec_runner] v4.6.1 CRITICAL EVIDENCE_REQUEST detected: {critical_er_count} block(s)")
-                logger.info(
-                    "[spec_runner] v4.6.1 Spec has %d CRITICAL EVIDENCE_REQUEST(s) — status=pending_evidence",
+                print(f"[spec_runner] v5.0 CRITICAL EVIDENCE_REQUEST survived fulfilment: {critical_er_count} block(s)")
+                logger.warning(
+                    "[spec_runner] v5.0 Spec has %d CRITICAL EVIDENCE_REQUEST(s) after fulfilment — force-resolving",
                     critical_er_count
                 )
         
         if has_critical_er:
-            final_status = "pending_evidence"
-            final_notes = "v4.6: Spec has unfulfilled CRITICAL EVIDENCE_REQUESTs. Do not proceed to Critical Pipeline until evidence is gathered."
-            print("[spec_runner] v4.6 STATUS: pending_evidence (CRITICAL ERs unfulfilled)")
+            # v5.0: Force-resolve surviving CRITICAL ERs instead of deadlocking
+            # Import the stripping utility to convert ERs to FORCED_RESOLUTION markers
+            try:
+                from app.llm.pipeline.evidence_loop import (
+                    parse_evidence_requests,
+                    strip_forced_stop_requests,
+                )
+                remaining_ers = parse_evidence_requests(spot_markdown)
+                if remaining_ers:
+                    remaining_ids = {r.get("id", "UNKNOWN") for r in remaining_ers}
+                    spot_markdown = strip_forced_stop_requests(spot_markdown, remaining_ids)
+                    # Add a visible note to the spec about unfulfilled evidence
+                    gap_note = (
+                        "\n\n## ⚠️ Evidence Gaps\n\n"
+                        "The following evidence requests could not be fulfilled during spec generation "
+                        "and have been force-resolved. The Critical Pipeline's architecture stage "
+                        "should gather this evidence directly.\n\n"
+                    )
+                    for r in remaining_ers:
+                        gap_note += f"- **{r.get('id', '?')}**: {r.get('need', 'No description')}\n"
+                    spot_markdown += gap_note
+                    logger.info("[spec_runner] v5.0 Force-resolved %d surviving ER(s): %s",
+                                len(remaining_ids), remaining_ids)
+                    print(f"[spec_runner] v5.0 Force-resolved {len(remaining_ids)} surviving ER(s)")
+            except ImportError as _imp_err:
+                logger.warning("[spec_runner] v5.0 Cannot import evidence_loop for force-resolve: %s", _imp_err)
+                # Can't strip, but still don't deadlock — proceed with gaps acknowledged
+            
+            final_status = "validated_with_gaps"
+            final_notes = "v5.0: Spec has force-resolved CRITICAL EVIDENCE_REQUESTs. Proceeding with acknowledged gaps."
+            print("[spec_runner] v5.0 STATUS: validated_with_gaps (CRITICAL ERs force-resolved)")
         else:
             final_status = "validated"
-            final_notes = "v4.0: Direct path, no gates"
-            print("[spec_runner] v4.0 SUCCESS: POT spec ready for Implementer")
+            final_notes = "v5.0: Direct path, evidence fulfilled"
+            print("[spec_runner] v5.0 SUCCESS: POT spec ready for pipeline")
         
         logger.info("[spec_runner] v4.6 DONE: ready_for_pipeline=True, status=%s", final_status)
         

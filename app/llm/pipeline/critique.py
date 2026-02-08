@@ -2357,6 +2357,137 @@ async def call_gemini_critic(
         return None
 
 
+# =============================================================================
+# SEGMENT INTERFACE CONTRACT VALIDATION (Phase 2 — Pipeline Segmentation)
+# =============================================================================
+
+def validate_interface_contracts(
+    arch_content: str,
+    segment_context: dict,
+) -> list:
+    """
+    Phase 2: Validate that a segment's architecture respects its interface contracts.
+
+    Checks:
+    1. Does the architecture create/modify files consistent with 'exposes' contracts?
+    2. Does the architecture reference interfaces from 'consumes' contracts?
+
+    Returns a list of CritiqueIssue-style dicts (same shape as existing critique issues).
+    This is a NEW function — zero changes to existing critique functions.
+
+    Called by the segment loop after the standard critique pass.
+    Backward compatible: only called when segment_context is present.
+
+    v1.0 (2026-02-08): Initial implementation — Phase 2 Pipeline Segmentation.
+    """
+    issues = []
+    if not segment_context or not arch_content:
+        return issues
+
+    file_scope = segment_context.get("file_scope", [])
+    exposes = segment_context.get("exposes") or {}
+    consumes = segment_context.get("consumes") or {}
+    segment_id = segment_context.get("segment_id", "unknown")
+
+    arch_lower = arch_content.lower()
+
+    # --- Check 'exposes' contracts ---
+    # Verify that class names, endpoints, and exports promised by this segment
+    # are mentioned in the architecture document.
+    for class_name in exposes.get("class_names", []):
+        if class_name.lower() not in arch_lower:
+            issues.append({
+                "type": "contract_violation",
+                "severity": "warning",
+                "segment_id": segment_id,
+                "message": (
+                    f"Segment {segment_id} promises to expose class '{class_name}' "
+                    f"but it is not mentioned in the architecture document."
+                ),
+            })
+
+    for endpoint in exposes.get("endpoint_paths", []):
+        # Check for the path portion (e.g. "/voice/transcribe")
+        path_part = endpoint.split()[-1] if " " in endpoint else endpoint
+        if path_part.lower() not in arch_lower:
+            issues.append({
+                "type": "contract_violation",
+                "severity": "warning",
+                "segment_id": segment_id,
+                "message": (
+                    f"Segment {segment_id} promises to expose endpoint '{endpoint}' "
+                    f"but it is not mentioned in the architecture document."
+                ),
+            })
+
+    for export_name in exposes.get("export_names", []):
+        if export_name.lower() not in arch_lower:
+            issues.append({
+                "type": "contract_violation",
+                "severity": "warning",
+                "segment_id": segment_id,
+                "message": (
+                    f"Segment {segment_id} promises to expose '{export_name}' "
+                    f"but it is not mentioned in the architecture document."
+                ),
+            })
+
+    # --- Check 'consumes' contracts ---
+    # Verify that consumed interfaces from upstream segments are referenced.
+    for class_name in consumes.get("class_names", []):
+        if class_name.lower() not in arch_lower:
+            issues.append({
+                "type": "contract_violation",
+                "severity": "info",
+                "segment_id": segment_id,
+                "message": (
+                    f"Segment {segment_id} declares it consumes '{class_name}' from upstream "
+                    f"but doesn't reference it in the architecture. This may be intentional."
+                ),
+            })
+
+    # --- Check file_scope alignment ---
+    # Verify that the architecture doesn't mention files outside the segment's scope.
+    # This is advisory, not blocking.
+    if file_scope:
+        scope_basenames = {os.path.basename(f).lower() for f in file_scope}
+        # Look for file paths in the architecture that aren't in scope
+        import re as _re
+        file_refs = _re.findall(
+            r'[\w/\\.-]+\.(?:py|ts|tsx|js|jsx|json|yaml|css)',
+            arch_content,
+        )
+        for ref in file_refs:
+            ref_basename = os.path.basename(ref).lower()
+            if ref_basename not in scope_basenames:
+                # Only flag if it looks like a creation/modification, not a reference
+                # Skip common reference patterns like imports
+                ref_context_idx = arch_content.lower().find(ref.lower())
+                if ref_context_idx >= 0:
+                    context_before = arch_content[max(0, ref_context_idx - 50):ref_context_idx].lower()
+                    if any(kw in context_before for kw in ["create", "modify", "write", "add to", "update"]):
+                        issues.append({
+                            "type": "scope_violation",
+                            "severity": "warning",
+                            "segment_id": segment_id,
+                            "message": (
+                                f"Architecture for {segment_id} references file '{ref}' "
+                                f"which is outside the segment's file_scope. "
+                                f"This may cause cross-segment contamination."
+                            ),
+                        })
+
+    if issues:
+        logger.info(
+            "[critique] Phase 2 contract validation for %s: %d issue(s)",
+            segment_id, len(issues),
+        )
+        for issue in issues:
+            print(f"[critique] CONTRACT: [{issue['severity']}] {issue['message']}")
+
+    return issues
+
+
 __all__ = [
     # Configuration
     "GEMINI_CRITIC_MODEL",
@@ -2383,4 +2514,6 @@ __all__ = [
     "build_critique_prompt_for_architecture",
     "build_critique_prompt_for_security",
     "build_critique_prompt_for_general",
+    # Phase 2: Segment interface contract validation
+    "validate_interface_contracts",
 ]

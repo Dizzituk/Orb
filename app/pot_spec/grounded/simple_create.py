@@ -36,8 +36,13 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-SIMPLE_CREATE_BUILD_ID = "2026-02-06-v3.7-wire-content-signal-scoring"
+SIMPLE_CREATE_BUILD_ID = "2026-02-08-v4.5-specgate-final-loop-and-caps"
 print(f"[SIMPLE_CREATE_LOADED] BUILD_ID={SIMPLE_CREATE_BUILD_ID}")
+
+# v4.0: Max evidence fulfilment loops (matches ASTRA_EVIDENCE_MAX_LOOPS convention)
+_EVIDENCE_MAX_LOOPS = int(os.getenv("ASTRA_EVIDENCE_MAX_LOOPS", "3"))  # v4.2: Increased from 2 to 3
+# v4.0: Max chars to read per file during evidence fulfilment
+_EVIDENCE_MAX_FILE_CHARS = int(os.getenv("ASTRA_EVIDENCE_MAX_FILE_CHARS", "50000"))
 
 # =============================================================================
 # ENV-DRIVEN MODEL OVERRIDE FOR CREATE ANALYSIS
@@ -382,6 +387,24 @@ CONCEPT_DIRECTORY_PATTERNS = {
     "api_endpoint": ["routers", "routes", "endpoints", "api"],
     "state_management": ["store", "context", "hooks"],
     "wake_word": ["voice", "wakeword", "hotword"],
+    # v4.3: Extended concept mappings for common feature domains
+    "context": ["stream", "routing", "context", "memory", "llm"],
+    "model": ["llm", "routing", "stream", "models"],
+    "chat": ["llm", "stream", "chat", "routing", "memory"],
+    "memory": ["memory", "db", "store", "persistence"],
+    "persistence": ["memory", "db", "store", "models"],
+    "routing": ["routing", "llm", "stream", "routers"],
+    "llm": ["llm", "stream", "routing", "pipeline"],
+    "pipeline": ["pipeline", "llm", "pot_spec"],
+    "specgate": ["pot_spec", "llm", "pipeline"],
+    "weaver": ["llm", "stream", "pipeline"],
+    "upload": ["memory", "routers", "endpoints"],
+    "file_upload": ["memory", "routers", "endpoints"],
+    "user": ["auth", "memory", "routers"],
+    "db": ["db", "models", "memory"],
+    "database": ["db", "models", "memory"],
+    "retention": ["memory", "db", "jobs"],
+    "session": ["llm", "stream", "memory", "auth"],
 }
 
 
@@ -659,6 +682,442 @@ def _suggest_new_files(
 
 
 # =============================================================================
+# HOST-DIRECT FILE READER (v4.0 — SpecGate Evidence Fulfilment)
+# =============================================================================
+# SpecGate runs BEFORE the sandbox is available, so evidence fulfilment must
+# use host-direct filesystem access. This is intentionally local to simple_create
+# to make the "SpecGate uses host-direct access" boundary explicit.
+
+
+def _host_read_file(file_path: str, max_chars: int = 0, project_paths: Optional[List[str]] = None) -> Tuple[bool, str]:
+    """Read a file from the host filesystem for evidence fulfilment.
+
+    v4.1: Added project_paths parameter for resolving relative paths.
+    If file_path is not absolute or doesn't exist, tries resolving against
+    each project root (e.g. 'app/llm/stream_router.py' → 'D:\\Orb\\app\\llm\\stream_router.py').
+
+    Returns (success, content_or_error_message).
+    Uses _read_text_any_encoding for robust encoding handling.
+    """
+    if not max_chars:
+        max_chars = _EVIDENCE_MAX_FILE_CHARS
+
+    # Normalise path separators for Windows
+    file_path = file_path.replace('/', os.sep).replace('\\', os.sep)
+
+    # v4.1: Resolve relative paths against project roots
+    if not os.path.exists(file_path) and project_paths:
+        for root in project_paths:
+            candidate = os.path.join(root, file_path)
+            candidate = candidate.replace('/', os.sep).replace('\\', os.sep)
+            if os.path.exists(candidate):
+                logger.info("[SPEC_GATE_EVIDENCE] Resolved relative path: %s → %s", file_path, candidate)
+                file_path = candidate
+                break
+
+    if not os.path.exists(file_path):
+        logger.info("[SPEC_GATE_EVIDENCE] File not found: %s", file_path)
+        return False, f"File not found: {file_path}"
+
+    if not os.path.isfile(file_path):
+        logger.info("[SPEC_GATE_EVIDENCE] Not a file: %s", file_path)
+        return False, f"Path is not a file: {file_path}"
+
+    try:
+        content = _read_text_any_encoding(file_path)
+        if not content:
+            return False, f"File is empty or unreadable: {file_path}"
+        if len(content) > max_chars:
+            content = content[:max_chars] + f"\n\n... [truncated at {max_chars} chars, file has {len(content)} total]"
+        logger.info("[SPEC_GATE_EVIDENCE] Read %d chars from %s", min(len(content), max_chars), file_path)
+        return True, content
+    except Exception as exc:
+        logger.warning("[SPEC_GATE_EVIDENCE] Failed to read %s: %s", file_path, exc)
+        return False, f"Read error: {exc}"
+
+
+def _host_list_directory(dir_path: str, max_entries: int = 200, project_paths: Optional[List[str]] = None) -> Tuple[bool, str]:
+    """List directory contents from the host filesystem for evidence fulfilment.
+
+    v4.1: Added project_paths for resolving relative directory paths.
+    Returns (success, listing_or_error_message).
+    """
+    dir_path = dir_path.replace('/', os.sep).replace('\\', os.sep)
+
+    # v4.1: Resolve relative paths against project roots
+    if not os.path.exists(dir_path) and project_paths:
+        for root in project_paths:
+            candidate = os.path.join(root, dir_path)
+            candidate = candidate.replace('/', os.sep).replace('\\', os.sep)
+            if os.path.exists(candidate):
+                logger.info("[SPEC_GATE_EVIDENCE] Resolved relative dir: %s \u2192 %s", dir_path, candidate)
+                dir_path = candidate
+                break
+
+    if not os.path.exists(dir_path):
+        return False, f"Directory not found: {dir_path}"
+    if not os.path.isdir(dir_path):
+        return False, f"Path is not a directory: {dir_path}"
+
+    try:
+        entries = []
+        for entry in sorted(os.listdir(dir_path)):
+            full = os.path.join(dir_path, entry)
+            tag = "[DIR]" if os.path.isdir(full) else "[FILE]"
+            entries.append(f"  {tag} {entry}")
+            if len(entries) >= max_entries:
+                entries.append(f"  ... ({len(os.listdir(dir_path)) - max_entries} more entries)")
+                break
+        listing = f"{dir_path}/\n" + "\n".join(entries)
+        logger.info("[SPEC_GATE_EVIDENCE] Listed %d entries from %s", len(entries), dir_path)
+        return True, listing
+    except Exception as exc:
+        logger.warning("[SPEC_GATE_EVIDENCE] Failed to list %s: %s", dir_path, exc)
+        return False, f"List error: {exc}"
+
+
+# =============================================================================
+# EVIDENCE FULFILMENT LOOP (v4.0 — SpecGate Evidence Fulfilment)
+# =============================================================================
+# Uses parsing/stripping utilities from evidence_loop.py but dispatches file
+# reads via host-direct access (not sandbox). This keeps SpecGate independent
+# of the sandbox lifecycle while reusing the robust 3-layer YAML parsing.
+
+
+async def _fulfil_evidence_requests(
+    llm_analysis: str,
+    provider_id: str,
+    model_id: str,
+    llm_call_func: Callable,
+    project_paths: List[str],
+    goal: str = "",
+    what_to_do: str = "",
+) -> str:
+    """Fulfil EVIDENCE_REQUEST blocks in the LLM analysis by reading actual files.
+
+    v4.0: Parses ERs from the analysis, reads requested files from the host
+    filesystem, then re-prompts the LLM with real evidence so it can produce
+    a grounded spec instead of hallucinating architecture.
+
+    Uses parse_evidence_requests() and strip_fulfilled_requests() from
+    evidence_loop.py for robust ER parsing (3-layer YAML defence).
+
+    Max loops: _EVIDENCE_MAX_LOOPS (default 2). After exhaustion, remaining
+    ERs are force-resolved with FORCED_RESOLUTION markers.
+
+    Returns updated LLM analysis with ERs replaced by RESOLVED_REQUEST or
+    FORCED_RESOLUTION markers and real evidence injected.
+    """
+    try:
+        from app.llm.pipeline.evidence_loop import (
+            parse_evidence_requests,
+            strip_fulfilled_requests,
+            strip_forced_stop_requests,
+        )
+    except ImportError as exc:
+        logger.warning("[SPEC_GATE_EVIDENCE] Cannot import evidence_loop: %s — skipping fulfilment", exc)
+        print(f"[SPEC_GATE_EVIDENCE] WARNING: evidence_loop import failed: {exc}")
+        return llm_analysis
+
+    current_analysis = llm_analysis
+
+    for loop_idx in range(_EVIDENCE_MAX_LOOPS):
+        # Parse outstanding EVIDENCE_REQUESTs
+        requests = parse_evidence_requests(current_analysis)
+        if not requests:
+            logger.info("[SPEC_GATE_EVIDENCE] Loop %d/%d: No EVIDENCE_REQUESTs found — done",
+                        loop_idx + 1, _EVIDENCE_MAX_LOOPS)
+            print(f"[SPEC_GATE_EVIDENCE] Loop {loop_idx + 1}/{_EVIDENCE_MAX_LOOPS}: No ERs — done")
+            break
+
+        logger.info("[SPEC_GATE_EVIDENCE] Loop %d/%d: %d EVIDENCE_REQUEST(s): %s",
+                    loop_idx + 1, _EVIDENCE_MAX_LOOPS, len(requests),
+                    [r.get('id') for r in requests])
+        print(f"[SPEC_GATE_EVIDENCE] Loop {loop_idx + 1}/{_EVIDENCE_MAX_LOOPS}: "
+              f"{len(requests)} ER(s): {[r.get('id') for r in requests]}")
+
+        # Dispatch file reads for each ER
+        fulfilled_ids = set()
+        evidence_bundle_parts = []  # Accumulated evidence text for re-prompt
+
+        for req in requests:
+            req_id = req.get("id", "UNKNOWN")
+            tool_calls = req.get("tool_calls", [])
+            need = req.get("need", "")
+            er_results = []
+
+            logger.info("[SPEC_GATE_EVIDENCE] Processing %s: need=%s, tools=%d",
+                        req_id, need[:80], len(tool_calls))
+            # v4.2: Diagnostic logging for tool dispatch debugging
+            for _tc_debug in tool_calls:
+                print(f"[SPEC_GATE_EVIDENCE] {req_id}: tool='{_tc_debug.get('tool', 'NONE')}' "
+                      f"args={dict(_tc_debug.get('args', {}))}")
+
+            for tc in tool_calls:
+                tool_name = tc.get("tool", "")
+                args = tc.get("args", {})
+
+                # Dispatch host-direct reads
+                # v4.1: Extended tool name matching — LLM may use various tool names
+                # from the evidence contract. Map them all to host-direct reads.
+                if tool_name in ("sandbox_inspector.read_sandbox_file",
+                                 "evidence_collector.add_file_read_to_bundle",
+                                 "read_file",
+                                 "sandbox_inspector.file_exists_in_sandbox",
+                                 "arch_query.get_file_signatures"):
+                    file_path = args.get("file_path") or args.get("path", "")
+                    if file_path:
+                        success, content = _host_read_file(
+                            file_path,
+                            max_chars=args.get("max_chars", _EVIDENCE_MAX_FILE_CHARS),
+                            project_paths=project_paths,
+                        )
+                        er_results.append({
+                            "tool": tool_name,
+                            "file_path": file_path,
+                            "success": success,
+                            "content": content[:4000] if success else None,
+                            "error": content if not success else None,
+                        })
+                        logger.info("[SPEC_GATE_EVIDENCE] %s: read_file %s → %s (%d chars)",
+                                    req_id, file_path, "OK" if success else "FAIL",
+                                    len(content) if success else 0)
+
+                elif tool_name in ("sandbox_inspector.run_sandbox_discovery_chain",
+                                   "list_directory"):
+                    dir_path = args.get("anchor") or args.get("path", "")
+                    if dir_path:
+                        success, listing = _host_list_directory(dir_path, project_paths=project_paths)
+                        er_results.append({
+                            "tool": tool_name,
+                            "path": dir_path,
+                            "success": success,
+                            "content": listing[:2000] if success else None,
+                            "error": listing if not success else None,
+                        })
+                        logger.info("[SPEC_GATE_EVIDENCE] %s: list_dir %s → %s",
+                                    req_id, dir_path, "OK" if success else "FAIL")
+
+                elif tool_name in ("evidence_collector.verify_path_exists",
+                                   "evidence_collector.find_in_evidence"):
+                    # v4.2: Map verify_path_exists to a simple file existence check
+                    file_path = args.get("path") or args.get("file_path", "")
+                    if file_path:
+                        resolved = file_path.replace('/', os.sep).replace('\\', os.sep)
+                        if not os.path.exists(resolved) and project_paths:
+                            for root in project_paths:
+                                candidate = os.path.join(root, resolved)
+                                if os.path.exists(candidate):
+                                    resolved = candidate
+                                    break
+                        exists = os.path.exists(resolved)
+                        er_results.append({
+                            "tool": tool_name,
+                            "file_path": resolved,
+                            "success": exists,
+                            "content": f"Path {'exists' if exists else 'does NOT exist'}: {resolved}" if exists else None,
+                            "error": f"Path does not exist: {resolved}" if not exists else None,
+                        })
+                        logger.info("[SPEC_GATE_EVIDENCE] %s: verify_path %s → %s",
+                                    req_id, resolved, "EXISTS" if exists else "NOT FOUND")
+
+                elif tool_name in ("embeddings_service.search_embeddings",
+                                   "evidence_collector.add_search_to_bundle",
+                                   "arch_query.search_symbols"):
+                    # v4.2: Search tools not available at spec stage — map to directory listing
+                    # Use query/anchor to find relevant files via listing
+                    query = args.get("query") or args.get("anchor", "")
+                    search_path = None
+                    if project_paths:
+                        search_path = project_paths[0]
+                        # If query looks like a path fragment, try listing that dir
+                        for root in project_paths:
+                            candidate = os.path.join(root, query.replace('.', os.sep))
+                            if os.path.isdir(candidate):
+                                search_path = candidate
+                                break
+                    if search_path:
+                        success, listing = _host_list_directory(search_path, project_paths=project_paths)
+                        er_results.append({
+                            "tool": tool_name,
+                            "path": search_path,
+                            "success": success,
+                            "content": f"Directory listing for context (search unavailable at spec stage):\n{listing[:2000]}" if success else None,
+                            "error": listing if not success else None,
+                        })
+                    else:
+                        er_results.append({
+                            "tool": tool_name,
+                            "skipped": True,
+                            "reason": f"Search tool '{tool_name}' not available at spec stage; no project path to list",
+                        })
+
+                else:
+                    # Unsupported tool at spec stage — log and skip
+                    logger.info("[SPEC_GATE_EVIDENCE] %s: Skipping unsupported tool '%s' (args=%s)",
+                                req_id, tool_name, list(args.keys()))
+                    print(f"[SPEC_GATE_EVIDENCE] {req_id}: UNSUPPORTED TOOL '{tool_name}' "
+                          f"args={list(args.keys())} — skipping")
+                    er_results.append({
+                        "tool": tool_name,
+                        "skipped": True,
+                        "reason": f"Tool '{tool_name}' not available at spec stage",
+                    })
+
+            # If we got ANY successful reads, mark this ER as fulfilled
+            any_success = any(r.get("success") for r in er_results)
+            if any_success:
+                fulfilled_ids.add(req_id)
+                # Build evidence text block for re-prompt
+                evidence_text = f"\n### Evidence for {req_id} (need: {need})\n"
+                for r in er_results:
+                    if r.get("success") and r.get("content"):
+                        label = r.get("file_path") or r.get("path", "unknown")
+                        evidence_text += f"\n**{label}:**\n```\n{r['content']}\n```\n"
+                    elif r.get("error"):
+                        evidence_text += f"\n**Error:** {r['error']}\n"
+                evidence_bundle_parts.append(evidence_text)
+            else:
+                # No successful reads — will be force-resolved after loops
+                logger.warning("[SPEC_GATE_EVIDENCE] %s: All tool calls failed", req_id)
+                print(f"[SPEC_GATE_EVIDENCE] {req_id}: ALL FAILED — "
+                      f"results={[(r.get('tool','?'), r.get('error','?')[:100] if r.get('error') else r.get('reason','?')) for r in er_results]}")
+                if er_results:  # Had tool calls but all failed
+                    evidence_text = f"\n### Evidence for {req_id} — UNAVAILABLE\n"
+                    for r in er_results:
+                        if r.get("error"):
+                            evidence_text += f"- {r.get('tool', '?')}: {r['error']}\n"
+                        elif r.get("skipped"):
+                            evidence_text += f"- {r.get('tool', '?')}: {r.get('reason', 'skipped')}\n"
+                    evidence_bundle_parts.append(evidence_text)
+
+        if not fulfilled_ids and not evidence_bundle_parts:
+            logger.info("[SPEC_GATE_EVIDENCE] No evidence gathered — stopping loop")
+            print("[SPEC_GATE_EVIDENCE] No evidence gathered — stopping loop")
+            break
+
+        # Strip fulfilled ERs → RESOLVED_REQUEST markers
+        current_analysis = strip_fulfilled_requests(current_analysis, fulfilled_ids)
+
+        # Re-prompt LLM with the original analysis + real evidence
+        evidence_block = "\n".join(evidence_bundle_parts)
+
+        # v4.4: Determine if this is the final loop
+        is_final_loop = (loop_idx >= _EVIDENCE_MAX_LOOPS - 1)
+
+        # v4.4: Cap evidence block to prevent context explosion
+        _MAX_EVIDENCE_CHARS = 40000
+        if len(evidence_block) > _MAX_EVIDENCE_CHARS:
+            evidence_block = evidence_block[:_MAX_EVIDENCE_CHARS] + (
+                f"\n\n... [Evidence truncated at {_MAX_EVIDENCE_CHARS} chars. "
+                f"Focus on the evidence shown above to produce your analysis.]"
+            )
+            print(f"[SPEC_GATE_EVIDENCE] Evidence truncated to {_MAX_EVIDENCE_CHARS} chars")
+
+        # v4.4: Cap previous analysis to prevent input explosion
+        _MAX_PREV_ANALYSIS_CHARS = 15000
+        prev_analysis_text = current_analysis
+        if len(prev_analysis_text) > _MAX_PREV_ANALYSIS_CHARS:
+            prev_analysis_text = prev_analysis_text[:_MAX_PREV_ANALYSIS_CHARS] + (
+                f"\n\n... [Previous analysis truncated. "
+                f"Use the evidence below to produce a complete, grounded analysis.]"
+            )
+            print(f"[SPEC_GATE_EVIDENCE] Previous analysis truncated to {_MAX_PREV_ANALYSIS_CHARS} chars")
+
+        if is_final_loop:
+            # v4.4: FINAL LOOP — force spec production, no more ERs allowed
+            re_prompt = (
+                f"You have completed {loop_idx + 1} rounds of evidence gathering. "
+                f"The orchestrator has read real files from the codebase for you across "
+                f"all rounds.\n\n"
+                f"THIS IS YOUR FINAL ROUND. You MUST now produce your complete, grounded "
+                f"analysis. Do NOT emit any more EVIDENCE_REQUEST blocks — they will be "
+                f"ignored. Use the evidence you have to produce the best possible analysis.\n\n"
+                f"For anything you still don't know, use DECISION_ALLOWED with a sensible "
+                f"default, or HUMAN_REQUIRED only if truly high-risk.\n\n"
+                f"REQUIRED OUTPUT SECTIONS (all mandatory):\n"
+                f"## Architecture Overview\n"
+                f"## Implementation Steps (numbered, actionable, referencing real files)\n"
+                f"## Files to Modify (with WHAT and WHY for each)\n"
+                f"## New Files to Create (or state 'None needed')\n"
+                f"## Acceptance Criteria (testable, specific)\n\n"
+                f"--- PREVIOUS ANALYSIS ---\n\n"
+                f"{prev_analysis_text}\n\n"
+                f"--- EVIDENCE FROM CODEBASE ---\n\n"
+                f"{evidence_block}\n\n"
+                f"--- END EVIDENCE ---\n\n"
+                f"Produce your FINAL grounded analysis now. All sections required. "
+                f"No EVIDENCE_REQUEST blocks."
+            )
+            logger.info("[SPEC_GATE_EVIDENCE] FINAL LOOP — forcing spec production")
+            print(f"[SPEC_GATE_EVIDENCE] FINAL LOOP — forcing spec production (no more ERs)")
+        else:
+            re_prompt = (
+                f"You previously produced the analysis below, which contained "
+                f"EVIDENCE_REQUEST blocks. The orchestrator has now fulfilled "
+                f"{len(fulfilled_ids)} of those requests by reading actual files. "
+                f"The fulfilled requests have been replaced with RESOLVED_REQUEST markers.\n\n"
+                f"Please revise your analysis using the REAL evidence provided below. "
+                f"Replace any assumptions or hallucinated architecture with what the "
+                f"actual code shows. Keep all other sections intact. "
+                f"If you still need more evidence, you may emit new EVIDENCE_REQUEST blocks "
+                f"(with new unique IDs, not reusing resolved ones). Focus your new ERs on "
+                f"the most critical gaps — prioritise files that directly affect the "
+                f"implementation over general exploration.\n\n"
+                f"--- PREVIOUS ANALYSIS (with RESOLVED_REQUEST markers) ---\n\n"
+                f"{prev_analysis_text}\n\n"
+                f"--- FULFILLED EVIDENCE ---\n\n"
+                f"{evidence_block}\n\n"
+                f"--- END EVIDENCE ---\n\n"
+                f"Please provide your revised, grounded analysis."
+            )
+
+        logger.info("[SPEC_GATE_EVIDENCE] Re-prompting LLM with %d chars of evidence "
+                    "(%d ERs fulfilled, %d unfulfilled)",
+                    len(evidence_block), len(fulfilled_ids),
+                    len(requests) - len(fulfilled_ids))
+        print(f"[SPEC_GATE_EVIDENCE] Re-prompting LLM: {len(fulfilled_ids)} fulfilled, "
+              f"{len(requests) - len(fulfilled_ids)} remaining")
+
+        try:
+            result = await llm_call_func(
+                provider_id=provider_id,
+                model_id=model_id,
+                messages=[{"role": "user", "content": re_prompt}],
+                system_prompt=CREATE_ANALYSIS_SYSTEM_PROMPT,
+                temperature=0.2,
+                max_tokens=8192,
+                timeout_seconds=_CREATE_ANALYSIS_TIMEOUT,
+            )
+
+            if result.is_success() and result.content:
+                current_analysis = result.content.strip()
+                logger.info("[SPEC_GATE_EVIDENCE] Re-analysis success: %d chars", len(current_analysis))
+                print(f"[SPEC_GATE_EVIDENCE] Re-analysis: {len(current_analysis)} chars")
+            else:
+                error_msg = getattr(result, 'error_message', 'Unknown error')
+                logger.warning("[SPEC_GATE_EVIDENCE] Re-analysis LLM failed: %s — keeping current", error_msg)
+                print(f"[SPEC_GATE_EVIDENCE] Re-analysis failed: {error_msg} — keeping current")
+                break  # Don't loop further if LLM fails
+
+        except Exception as exc:
+            logger.warning("[SPEC_GATE_EVIDENCE] Re-analysis exception: %s — keeping current", exc)
+            print(f"[SPEC_GATE_EVIDENCE] Re-analysis exception: {exc} — keeping current")
+            break
+
+    # Force-resolve any remaining ERs after all loops
+    remaining = parse_evidence_requests(current_analysis)
+    if remaining:
+        remaining_ids = {r.get("id", "UNKNOWN") for r in remaining}
+        logger.warning("[SPEC_GATE_EVIDENCE] Force-resolving %d remaining ER(s) after %d loops: %s",
+                       len(remaining), _EVIDENCE_MAX_LOOPS, remaining_ids)
+        print(f"[SPEC_GATE_EVIDENCE] Force-resolving {len(remaining)} remaining ER(s): {remaining_ids}")
+        current_analysis = strip_forced_stop_requests(current_analysis, remaining_ids)
+
+    return current_analysis
+
+
+# =============================================================================
 # LLM ANALYSIS (v2.0 — NEW)
 # =============================================================================
 
@@ -733,7 +1192,43 @@ that are loaded by service wrappers or modules being integrated:
 ER ID UNIQUENESS:
 - Every EVIDENCE_REQUEST must have a unique id (ER-001, ER-002, etc.).
 - NEVER emit two EVIDENCE_REQUEST blocks with the same id.
-- If you need to request evidence for two different things, use different ids."""
+- If you need to request evidence for two different things, use different ids.
+
+EVIDENCE_REQUEST FORMAT (you MUST use this exact YAML format — the parser is strict):
+EVIDENCE_REQUEST:
+  id: "ER-NNN"
+  severity: "CRITICAL" | "NONCRITICAL"
+  need: "What you need to know"
+  why: "What breaks if you guess wrong"
+  scope:
+    roots: ["where to look"]
+    max_files: 500
+  tool_calls:
+    - tool: "sandbox_inspector.read_sandbox_file"
+      args: {file_path: "full/path/to/file.py"}
+      expect: "What you expect to find"
+  success_criteria: "What counts as having the answer"
+  fallback_if_not_found: "DECISION_ALLOWED" | "HUMAN_REQUIRED"
+
+CRITICAL FORMATTING RULES:
+- The block MUST start with 'EVIDENCE_REQUEST:' on its own line (no prefix, no markdown header)
+- Fields MUST be indented with 2 spaces under EVIDENCE_REQUEST:
+- The id field MUST be quoted: id: "ER-001" (not id: ER-001)
+- Do NOT wrap EVIDENCE_REQUESTs in markdown code blocks or headers
+- Do NOT use prose-style descriptions — use the YAML structure above
+
+TOOL USAGE:
+- Use tool 'sandbox_inspector.read_sandbox_file' with args: {file_path: "FULL_PATH"} for reading files
+- Use tool 'sandbox_inspector.run_sandbox_discovery_chain' with args: {anchor: "FULL_PATH"} for listing directories
+- ALWAYS use FULL ABSOLUTE PATHS from the Integration Points list provided to you
+- Do NOT guess paths. Only request files that appear in the Integration Points list,
+  or that you discovered from a previous directory listing or file read.
+- If you need to find files not in the Integration Points list, first request a
+  directory listing of the parent directory, then request specific files from the results.
+
+When you need to examine files to ground your analysis, emit EVIDENCE_REQUEST blocks
+in this exact format. The orchestrator will read the files and re-prompt you with
+the actual contents so you can produce a grounded analysis instead of guessing."""
 
 
 # Default fallback model when the allocated model times out
@@ -788,8 +1283,8 @@ async def _run_llm_analysis(
         stack_desc.append(f"Styling: {tech_stack.styling}")
     
     integration_desc = []
-    for p in integration_points[:10]:
-        integration_desc.append(f"- {p.file_name} ({p.action}): {p.relevance}")
+    for p in integration_points[:20]:  # v4.2: Increased from 10 to give LLM more valid paths for ERs
+        integration_desc.append(f"- {p.file_path} ({p.action}): {p.relevance}")
     
     constraints_desc = "\n".join(f"- {c}" for c in constraints) if constraints else "None specified"
     
@@ -802,7 +1297,7 @@ Full Description:
 Tech Stack:
 {chr(10).join(stack_desc) if stack_desc else 'Not detected'}
 
-Existing Integration Points:
+Existing Integration Points (VERIFIED — these files exist and can be read via EVIDENCE_REQUESTs):
 {chr(10).join(integration_desc) if integration_desc else 'None found'}
 
 Suggested New Files:
@@ -839,7 +1334,7 @@ Please provide your structured analysis."""
                 messages=[{"role": "user", "content": user_prompt}],
                 system_prompt=CREATE_ANALYSIS_SYSTEM_PROMPT,
                 temperature=0.2,
-                max_tokens=4096,
+                max_tokens=8192,  # v4.1: Increased from 4096 — LLM needs room for analysis + YAML ERs
                 timeout_seconds=attempt_timeout,
             )
             
@@ -1177,6 +1672,25 @@ async def build_grounded_create_spec(
                 model_id=model_id,
                 llm_call_func=llm_call_func,
             )
+
+            # v4.0: Fulfil EVIDENCE_REQUESTs from the LLM analysis
+            # If the LLM produced ERs asking to read specific files, read them
+            # and re-prompt with real evidence for a grounded spec.
+            if llm_analysis and 'EVIDENCE_REQUEST' in llm_analysis:
+                logger.info("[SPEC_GATE_EVIDENCE] LLM analysis contains EVIDENCE_REQUESTs — starting fulfilment")
+                print("[SPEC_GATE_EVIDENCE] EVIDENCE_REQUESTs detected — starting fulfilment loop")
+                llm_analysis = await _fulfil_evidence_requests(
+                    llm_analysis=llm_analysis,
+                    provider_id=provider_id,
+                    model_id=model_id,
+                    llm_call_func=llm_call_func,
+                    project_paths=project_paths,
+                    goal=goal,
+                    what_to_do=what_to_do,
+                )
+                print(f"[SPEC_GATE_EVIDENCE] Fulfilment complete: {len(llm_analysis)} chars")
+            elif llm_analysis:
+                logger.info("[SPEC_GATE_EVIDENCE] No EVIDENCE_REQUESTs in LLM analysis — skipping fulfilment")
     else:
         print(f"[simple_create] v2.0 NO LLM: provider_id={provider_id}, model_id={model_id}")
     

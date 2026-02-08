@@ -37,6 +37,7 @@ from .handler_registry import (
     _SPEC_GATE_STREAM_AVAILABLE,
     _CRITICAL_PIPELINE_AVAILABLE,
     _OVERWATCHER_AVAILABLE,
+    _SEGMENT_LOOP_AVAILABLE,
     _LOCAL_TOOLS_AVAILABLE,
     _SANDBOX_AVAILABLE,
     _RAG_STREAM_AVAILABLE,
@@ -47,6 +48,7 @@ from .handler_registry import (
     generate_spec_gate_stream,
     generate_critical_pipeline_stream,
     generate_overwatcher_stream,
+    generate_segment_loop_stream,
     generate_sandbox_stream,
     generate_local_architecture_map_stream,
     generate_full_architecture_map_stream,
@@ -314,6 +316,32 @@ def handle_command_execution(
                 "CRITICAL PIPELINE HANDLER NOT AVAILABLE - Command will NOT execute!",
                 "generate_critical_pipeline_stream",
                 "Check if app/llm/critical_pipeline_stream.py exists and imports correctly"
+            )
+            log_handler_availability()
+    
+    # --- Segment Loop (Phase 2 — Pipeline Segmentation) ---
+    if intent == CanonicalIntent.RUN_SEGMENT_LOOP:
+        if _SEGMENT_LOOP_AVAILABLE:
+            crit_provider, crit_model = _get_critical_pipeline_config()
+            print(f"[SEGMENT_LOOP_ROUTE] Using provider={crit_provider}, model={crit_model}")
+            if stage_trace:
+                stage_trace.enter_stage("segment_loop", provider=crit_provider, model=crit_model)
+            return StreamingResponse(
+                generate_segment_loop_stream(
+                    project_id=req.project_id,
+                    db=db,
+                    trace=trace,
+                    conversation_id=str(req.project_id),
+                ),
+                media_type="text/event-stream",
+                headers=sse_headers,
+            )
+        else:
+            log_routing_failure(
+                stage_trace,
+                "SEGMENT LOOP HANDLER NOT AVAILABLE",
+                "generate_segment_loop_stream",
+                "Check if app/orchestrator/segment_loop_stream.py exists and imports correctly"
             )
             log_handler_availability()
     
