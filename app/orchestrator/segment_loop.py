@@ -66,11 +66,12 @@ except ImportError:
 try:
     from app.overwatcher.architecture_executor import run_architecture_execution
     from app.overwatcher.spec_resolution import resolve_latest_spec, ResolvedSpec
-    from app.overwatcher.overwatcher_stream import create_overwatcher_llm_fn
+    from app.llm.overwatcher_stream import create_overwatcher_llm_fn
     _ARCH_EXECUTOR_AVAILABLE = True
 except ImportError as _ae:
     _ARCH_EXECUTOR_AVAILABLE = False
-    logger.debug("[SEGMENT_LOOP] Architecture executor not available: %s", _ae)
+    logger.warning("[SEGMENT_LOOP] Architecture executor not available: %s", _ae)
+    print(f"[SEGMENT_LOOP] ⚠️ Architecture executor import failed: {_ae}")
 
 
 # Type alias for progress callback
@@ -468,8 +469,43 @@ async def run_segment_through_pipeline(
     except Exception as e:
         logger.warning("[SEGMENT_LOOP] Failed to save segment arch: %s", e)
 
+    # --- v3.0: Show File Inventory from architecture for transparency ---
+    try:
+        import re as _re
+        _file_lines = []
+        for _m in _re.finditer(r'\|\s*`([^`]+)`\s*\|\s*([^|]+)', arch_text):
+            _fp = _m.group(1).strip()
+            _desc = _m.group(2).strip()
+            if _fp and not _fp.startswith('---') and _fp.lower() != 'file':
+                _file_lines.append(f"    {'CREATE' if 'new' in _desc.lower() or 'create' in _desc.lower() or 'package' in _desc.lower() else 'MODIFY'}: `{_fp}` — {_desc[:80]}")
+        if _file_lines:
+            _emit(f"  📂 File Inventory ({len(_file_lines)} operations):")
+            for _fl in _file_lines:
+                _emit(_fl)
+        else:
+            _emit(f"  📂 File Inventory: (could not parse — check arch_v1.md)")
+    except Exception:
+        pass  # Non-fatal
+
     # =====================================================================
-    # Step 2: Overwatcher + Architecture Executor
+    # Step 2: Human Approval Gate (v3.0)
+    # Architecture is generated and critique-approved. STOP here and
+    # wait for explicit human approval before executing any writes.
+    # =====================================================================
+    auto_execute = os.getenv("ASTRA_SEGMENT_AUTO_EXECUTE", "0").strip()
+    if auto_execute != "1":
+        _emit(f"  ⏸️ AWAITING APPROVAL: Architecture ready for {seg_id}")
+        _emit(f"  📄 Review: jobs/{os.path.basename(get_job_dir(job_id))}/segments/{seg_id}/arch/arch_v1.md")
+        _emit(f"  💡 To execute: say 'Astra, command: execute segment {seg_id}'")
+        _emit(f"  💡 To execute all: set env ASTRA_SEGMENT_AUTO_EXECUTE=1 and re-run")
+        result["success"] = True
+        result["awaiting_approval"] = True
+        result["architecture_path"] = seg_arch_path
+        return result
+
+    # =====================================================================
+    # Step 3: Overwatcher + Architecture Executor
+    # Only reached if ASTRA_SEGMENT_AUTO_EXECUTE=1 or explicit approval
     # =====================================================================
     _emit(f"  🔧 Running Overwatcher for {seg_id}...")
 
@@ -511,6 +547,9 @@ async def run_segment_through_pipeline(
                 f"  ✅ Overwatcher + Implementer completed for {seg_id} "
                 f"({len(result['output_files'])} artifact(s) written)"
             )
+            # v3.0: List individual output files for transparency
+            for _of in result['output_files']:
+                _emit(f"    ✅ {_of}")
         else:
             error_msg = arch_result.get("error", "Unknown error")
             result["error"] = f"Architecture execution failed for {seg_id}: {error_msg}"
@@ -738,10 +777,19 @@ async def run_segmented_job(
     save_state(state, job_dir_path)
 
     counts = state.count_by_status()
+    # v3.0: Count segments awaiting approval
+    awaiting_count = sum(
+        1 for seg_id in state.segments
+        if state.segments[seg_id].get("awaiting_approval", False)
+    ) if hasattr(state, 'segments') and isinstance(getattr(state, 'segments', None), dict) else 0
+    
     _emit(f"\n{'='*50}")
     _emit(f"📊 SEGMENTED EXECUTION COMPLETE")
     _emit(f"   Status: {state.overall_status.upper()}")
     _emit(f"   Complete: {counts.get('complete', 0)}/{total}")
+    if awaiting_count:
+        _emit(f"   ⏸️ Awaiting approval: {awaiting_count} segment(s)")
+        _emit(f"   Review architectures in jobs/ then say 'Astra, command: execute segments'")
     if counts.get("failed", 0):
         _emit(f"   Failed: {counts.get('failed', 0)}")
     if counts.get("blocked", 0):

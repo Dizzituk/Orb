@@ -32,7 +32,7 @@ from typing import Optional, List, Dict, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
-_BUILD_ID = "2026-02-06-v2.2-tool-dispatch-fixes"
+_BUILD_ID = "2026-02-09-v2.3-empty-path-guard"
 print(f"[EVIDENCE_LOOP_LOADED] BUILD_ID={_BUILD_ID}")
 
 
@@ -532,16 +532,25 @@ async def execute_tool_call(
     try:
         # ── sandbox_inspector ──
         if tool_name == "sandbox_inspector.read_sandbox_file":
+            file_path = args.get("file_path") or args.get("path") or ""
+            if not file_path.strip():
+                logger.warning("[evidence_loop] v2.3 Empty file_path in read_sandbox_file call — args=%s", args)
+                print(f"[evidence_loop] ⚠️ SKIPPED read_sandbox_file: empty file_path (args={args})")
+                return {"tool": tool_name, "success": False, "error": "Empty file_path", "content": None}
             from app.pot_spec.grounded.evidence_gathering import sandbox_read_file
             success, content = sandbox_read_file(
-                args.get("file_path", ""),
+                file_path,
                 max_chars=args.get("max_chars", 50000),
             )
             return {"tool": tool_name, "success": success, "content": content[:4000] if content else None}
 
         if tool_name == "sandbox_inspector.file_exists_in_sandbox":
+            file_path = args.get("file_path") or args.get("path") or ""
+            if not file_path.strip():
+                logger.warning("[evidence_loop] v2.3 Empty file_path in file_exists call — args=%s", args)
+                return {"tool": tool_name, "exists": False, "error": "Empty file_path"}
             from app.pot_spec.grounded.evidence_gathering import sandbox_path_exists
-            exists = sandbox_path_exists(args.get("file_path", ""))
+            exists = sandbox_path_exists(file_path)
             return {"tool": tool_name, "exists": exists}
 
         if tool_name == "sandbox_inspector.run_sandbox_discovery_chain":

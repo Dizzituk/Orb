@@ -36,7 +36,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-SIMPLE_CREATE_BUILD_ID = "2026-02-08-v5.0-sig-verify-caller-chain-format-aware"
+SIMPLE_CREATE_BUILD_ID = "2026-02-09-v5.1-pre-resolve-mentioned-files"
 print(f"[SIMPLE_CREATE_LOADED] BUILD_ID={SIMPLE_CREATE_BUILD_ID}")
 
 # v4.0: Max evidence fulfilment loops (matches ASTRA_EVIDENCE_MAX_LOOPS convention)
@@ -225,6 +225,96 @@ def _extract_constraints(text: str) -> List[str]:
             constraints.append(constraint_map.get(tag, tag))
     
     return constraints
+
+
+# =============================================================================
+# v5.1: PRE-RESOLVE MENTIONED FILENAMES
+# =============================================================================
+# When the user mentions specific filenames (e.g. `weaver_stream.py`,
+# `architecture_executor.py`), resolve them to real paths BEFORE the LLM
+# is called. This prevents the LLM from guessing wrong paths in
+# EVIDENCE_REQUESTs.
+
+
+def _resolve_mentioned_files(
+    text: str,
+    project_paths: List[str],
+) -> List[Dict[str, Any]]:
+    """
+    v5.1: Extract filenames mentioned in the job description and resolve
+    them to real filesystem paths under project_paths.
+
+    Looks for patterns like:
+    - `filename.py` (backtick-quoted)
+    - filename.py (bare, with .py/.js/.ts/.jsx/.tsx/.json/.md/.yaml/.yml extension)
+
+    Returns list of dicts: {mentioned, resolved_path, size_bytes}
+    """
+    results = []
+    seen_filenames = set()
+
+    # Extract filenames from backtick-quoted references
+    backtick_pattern = re.compile(r'`([\w./_-]+\.(?:py|js|ts|jsx|tsx|json|md|yaml|yml|toml|cfg|txt))`')
+    # Also match bare filenames with extensions (word boundaries)
+    bare_pattern = re.compile(r'\b([\w_-]+\.(?:py|js|ts|jsx|tsx|json|md|yaml|yml|toml|cfg|txt))\b')
+
+    for pattern in [backtick_pattern, bare_pattern]:
+        for match in pattern.finditer(text):
+            filename = match.group(1)
+            # Normalise — take just the basename for searching
+            basename = os.path.basename(filename)
+            if basename in seen_filenames or not basename:
+                continue
+            seen_filenames.add(basename)
+
+            # Search for this file across all project paths
+            resolved = _find_file_in_projects(basename, project_paths)
+            if resolved:
+                for rpath in resolved:
+                    try:
+                        size = os.path.getsize(rpath)
+                    except OSError:
+                        size = 0
+                    results.append({
+                        "mentioned": filename,
+                        "resolved_path": rpath,
+                        "size_bytes": size,
+                    })
+
+    return results
+
+
+def _find_file_in_projects(
+    filename: str,
+    project_paths: List[str],
+    max_results: int = 3,
+) -> List[str]:
+    """
+    v5.1: Walk project directories to find files matching the given filename.
+
+    Returns up to max_results absolute paths. Skips common junk directories.
+    """
+    skip_dirs = {
+        '__pycache__', '.git', 'node_modules', '.venv', 'venv',
+        '.tox', '.mypy_cache', '.pytest_cache', 'dist', 'build',
+        '.next', '.nuxt', 'eggs', '*.egg-info',
+    }
+    found = []
+    for root_path in project_paths:
+        if not os.path.isdir(root_path):
+            continue
+        for dirpath, dirnames, filenames in os.walk(root_path):
+            # Prune junk dirs
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in skip_dirs and not d.endswith('.egg-info')
+            ]
+            if filename in filenames:
+                full = os.path.join(dirpath, filename)
+                found.append(full)
+                if len(found) >= max_results:
+                    return found
+    return found
 
 
 # =============================================================================
@@ -1326,6 +1416,7 @@ async def _run_llm_analysis(
     provider_id: str,
     model_id: str,
     llm_call_func: Optional[Callable],
+    resolved_target_files: Optional[List[Dict]] = None,  # v5.1
 ) -> Optional[str]:
     """
     v2.1: Use an LLM to analyze the feature request.
@@ -1369,11 +1460,30 @@ async def _run_llm_analysis(
     # v4.7: Removed [:3000] cap on what_to_do. The weaver output is typically
     # 5-7k chars and the second half contains critical requirements (canonicalization,
     # retrieval, provenance, etc.) that were being silently dropped.
+    # v5.1: Build target files section with RESOLVED paths
+    target_files_desc = ""
+    if resolved_target_files:
+        target_lines = []
+        for rtf in resolved_target_files:
+            size_kb = rtf.get('size_bytes', 0) / 1024
+            target_lines.append(
+                f"- RESOLVED: `{rtf['mentioned']}` → `{rtf['resolved_path']}` "
+                f"({size_kb:.1f}KB)"
+            )
+        target_files_desc = (
+            "\n\nTARGET FILES (PRE-RESOLVED — use these EXACT paths in EVIDENCE_REQUESTs):\n"
+            + chr(10).join(target_lines)
+            + "\n\nIMPORTANT: The paths above are ground truth from the filesystem. "
+            "Do NOT guess alternative paths for these files. Use the resolved paths exactly "
+            "as shown when emitting EVIDENCE_REQUESTs to read them."
+        )
+
     user_prompt = f"""Feature Request:
 {goal}
 
 Full Description:
 {what_to_do}
+{target_files_desc}
 
 Tech Stack:
 {chr(10).join(stack_desc) if stack_desc else 'Not detected'}
@@ -1729,6 +1839,16 @@ async def build_grounded_create_spec(
     # v2.0: Suggest new files with CONSTRAINT awareness
     suggested_files = _suggest_new_files(concepts, constraints, tech_stack, project_paths)
     
+    # v5.1: PRE-RESOLVE mentioned filenames to real paths BEFORE LLM call
+    # The LLM should never have to guess file paths — resolve them proactively.
+    resolved_target_files = _resolve_mentioned_files(combined_text, project_paths)
+    if resolved_target_files:
+        print(f"[simple_create] v5.1 RESOLVED {len(resolved_target_files)} target file(s):")
+        for _rtf in resolved_target_files:
+            print(f"[simple_create] v5.1   {_rtf['mentioned']} → {_rtf['resolved_path']}")
+    else:
+        print(f"[simple_create] v5.1 No explicit filenames found in job description")
+
     # v2.0: Run LLM analysis if model available
     llm_analysis = None
     if provider_id and model_id:
@@ -1752,6 +1872,7 @@ async def build_grounded_create_spec(
                 provider_id=provider_id,
                 model_id=model_id,
                 llm_call_func=llm_call_func,
+                resolved_target_files=resolved_target_files,  # v5.1
             )
 
             # v4.0: Fulfil EVIDENCE_REQUESTs from the LLM analysis
