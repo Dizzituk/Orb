@@ -87,7 +87,7 @@ from .sandbox_client import (
 
 logger = logging.getLogger(__name__)
 
-ARCHITECTURE_EXECUTOR_BUILD_ID = "2026-02-09-v2.9-boot-retry-loop-with-auto-fix"
+ARCHITECTURE_EXECUTOR_BUILD_ID = "2026-02-09-v3.0-source-context-and-token-fix"
 print(f"[ARCHITECTURE_EXECUTOR_LOADED] BUILD_ID={ARCHITECTURE_EXECUTOR_BUILD_ID}")
 
 
@@ -96,8 +96,12 @@ print(f"[ARCHITECTURE_EXECUTOR_LOADED] BUILD_ID={ARCHITECTURE_EXECUTOR_BUILD_ID}
 # =============================================================================
 
 MAX_STRIKES_PER_TASK = 3   # Three-strike error handling
-IMPLEMENTER_MAX_TOKENS = 16000
+IMPLEMENTER_MAX_TOKENS = 60000  # v3.0: bumped from 16k — must handle large file MODIFY output
 VERIFY_READ_TIMEOUT = 30
+
+# v3.0: Max source file size (chars) to inject as context for CREATE extractions
+# Files larger than this are truncated to avoid blowing input context
+SOURCE_CONTEXT_MAX_CHARS = 200_000
 
 
 # =============================================================================
@@ -271,6 +275,14 @@ RULES:
 7. If the architecture shows code blocks, use them as the implementation — they are the ground truth.
 8. CROSS-FILE REFERENCES: If a "Files Already Created in This Job" section is provided, use the EXACT class names, method signatures, and import paths listed there. Do NOT invent alternative names or paths — these files already exist on disk.
 9. COMPLETENESS: If the architecture specification or consuming code (in cross-file context) references factory functions (e.g. get_model_manager()), singleton accessors (e.g. TranscriptionService.get_instance()), or module-level convenience functions, you MUST implement them. Do NOT create only classes when the architecture or other files expect callable module-level functions. Every symbol that another file imports must actually exist.
+10. SOURCE FILE EXTRACTION (v3.0 CRITICAL): If a "SOURCE FILES" section is provided, the code in it is the REAL implementation being extracted/decomposed into this new file. You MUST:
+    - Copy function bodies, class definitions, constants, and imports VERBATIM from the source
+    - Preserve the EXACT function signatures (same parameter names, types, defaults)
+    - Preserve the EXACT import paths (same module references)
+    - Preserve ALL logic, debug prints, logger calls, and comments
+    - Do NOT rewrite, simplify, or "improve" the code
+    - Do NOT import from non-existent modules — use the same imports as the source file
+    - The ONLY changes allowed: removing code that stays in the source file, and updating relative import paths if the new file is in a different directory
 """
 
 IMPLEMENTER_MODIFY_FILE_SYSTEM = """You are a code implementation agent. You receive an existing file and modification instructions from an architecture specification. You output the COMPLETE modified file.
@@ -515,6 +527,137 @@ async def _read_existing_file(client: SandboxClient, path: str) -> Optional[str]
     except Exception as e:
         logger.error("[arch_exec] Read exception for %s: %s", path, e)
         return None
+
+
+# =============================================================================
+# v3.0: Source Context for CREATE Extractions
+# =============================================================================
+
+def _detect_source_files_from_architecture(
+    file_section: str,
+    architecture_content: str,
+    rel_path: str,
+) -> List[str]:
+    """v3.0: Detect source files that a CREATE operation is extracting from.
+    
+    When architecture says "extract X from critique.py into critique_parts/blocker_filtering.py",
+    the Implementer needs the actual content of critique.py to copy the real code.
+    
+    Detection strategies:
+    1. Explicit extraction phrases: "extract from", "move from", "split from", "decompose from"
+    2. Architecture section references to source files (e.g. "currently in critique.py")
+    3. Parent file inference: if creating foo/bar.py and foo.py exists, it's likely extraction
+    
+    Returns list of relative paths to source files (may be empty).
+    """
+    source_files: List[str] = []
+    section_lower = file_section.lower()
+    
+    # Strategy 1: Explicit extraction phrases
+    extraction_patterns = [
+        r'(?:extract|move|split|decompose|factor|pull)\s+(?:out\s+)?(?:from|of)\s+[`\'\"]?([\w/\\._-]+\.\w+)[`\'\"]?',
+        r'(?:currently|presently|existing)\s+(?:in|inside)\s+[`\'\"]?([\w/\\._-]+\.\w+)[`\'\"]?',
+        r'(?:from|in)\s+(?:the\s+)?(?:original|monolithic|parent)\s+(?:file\s+)?[`\'\"]?([\w/\\._-]+\.\w+)[`\'\"]?',
+        r'(?:source|original)\s+(?:file)?\s*[:\s]+[`\'\"]?([\w/\\._-]+\.\w+)[`\'\"]?',
+    ]
+    
+    for pattern in extraction_patterns:
+        for match in re.finditer(pattern, section_lower):
+            source_path = match.group(1)
+            # Normalise separators
+            source_path = source_path.replace('\\', '/')
+            if source_path not in source_files and source_path != rel_path.replace('\\', '/'):
+                source_files.append(source_path)
+    
+    # Strategy 2: File references in the section with backticks (common in architecture docs)
+    backtick_files = re.findall(r'`([\w/\\._-]+\.(?:py|ts|tsx|js|jsx))`', file_section)
+    for bf in backtick_files:
+        bf_norm = bf.replace('\\', '/')
+        # Only add if it's a plausible source (not the target file itself)
+        if (bf_norm != rel_path.replace('\\', '/') 
+            and bf_norm not in source_files
+            and not bf_norm.startswith('__')):
+            # Check if the architecture section discusses extracting FROM this file
+            # by checking if it's mentioned in an extraction context
+            bf_lower = bf.lower()
+            context_check = f"{bf_lower}" in section_lower
+            if context_check:
+                # Check nearby extraction language
+                bf_idx = section_lower.find(bf_lower)
+                context_window = section_lower[max(0, bf_idx-80):bf_idx+80]
+                extraction_words = ['extract', 'move', 'from', 'split', 'decompose', 'factor', 
+                                   'original', 'source', 'currently', 'existing', 'monolith',
+                                   'façade', 'orchestrator', 'imports from']
+                if any(w in context_window for w in extraction_words):
+                    source_files.append(bf_norm)
+    
+    # Strategy 3: Parent file inference
+    # If creating app/llm/pipeline/critique_parts/blocker_filtering.py
+    # and app/llm/pipeline/critique.py exists as a MODIFY target, it's the source
+    rel_norm = rel_path.replace('\\', '/')
+    parts = rel_norm.split('/')
+    if len(parts) >= 2:
+        # Check if parent directory name matches a file being modified
+        parent_dir = parts[-2]  # e.g. "critique_parts"
+        # Strip common suffixes like "_parts", "_modules", "_components"
+        for suffix in ['_parts', '_modules', '_components', '_lib', '_utils']:
+            if parent_dir.endswith(suffix):
+                base_name = parent_dir[:-len(suffix)]
+                # Look for a .py file with this base name
+                potential_source = '/'.join(parts[:-2]) + '/' + base_name + '.py'
+                if potential_source not in source_files:
+                    source_files.append(potential_source)
+    
+    return source_files
+
+
+async def _read_source_context(
+    client: SandboxClient,
+    source_files: List[str],
+    sandbox_base: str,
+) -> str:
+    """v3.0: Read source files and format as context for the Implementer.
+    
+    Returns formatted source context string, or empty string if no sources found.
+    """
+    if not source_files:
+        return ""
+    
+    context_parts = []
+    total_chars = 0
+    
+    for src_path in source_files:
+        abs_path = _resolve_multi_root_path(src_path, sandbox_base)
+        content = await _read_existing_file(client, abs_path)
+        if content and len(content.strip()) > 10:
+            # Truncate if too large
+            if total_chars + len(content) > SOURCE_CONTEXT_MAX_CHARS:
+                remaining = SOURCE_CONTEXT_MAX_CHARS - total_chars
+                if remaining > 500:
+                    content = content[:remaining] + "\n# ... [TRUNCATED — file too large for full context]"
+                else:
+                    continue
+            context_parts.append(
+                f"## Source File: `{src_path}`\n"
+                f"The following is the ACTUAL content of the source file. "
+                f"When extracting functions/classes, copy the REAL code from here — "
+                f"do NOT rewrite or reimagine the implementation.\n"
+                f"```\n{content}\n```"
+            )
+            total_chars += len(content)
+            logger.info("[arch_exec] v3.0 Loaded source context: %s (%d chars)", src_path, len(content))
+    
+    if not context_parts:
+        return ""
+    
+    return (
+        "## SOURCE FILES (v3.0 — COPY REAL CODE, DO NOT REWRITE)\n\n"
+        "The architecture is extracting/decomposing code from the source file(s) below. "
+        "You MUST copy the actual function/class implementations verbatim from these sources. "
+        "Do NOT reimagine, rewrite, or hallucinate alternative implementations. "
+        "Use the exact same imports, function signatures, variable names, and logic.\n\n"
+        + "\n\n".join(context_parts)
+    )
 
 
 # =============================================================================
@@ -1186,6 +1329,25 @@ async def run_architecture_execution(
                     )
                     if job_context_section:
                         user_prompt += f"{job_context_section}\n\n"
+                    
+                    # v3.0: Detect and inject source file context for extraction jobs
+                    try:
+                        source_files = _detect_source_files_from_architecture(
+                            file_section=file_context,
+                            architecture_content=architecture_content,
+                            rel_path=rel_path,
+                        )
+                        if source_files:
+                            print(f"[ARCH_EXEC] v3.0 Detected source files for {rel_path}: {source_files}")
+                            logger.info("[arch_exec] v3.0 Source files for %s: %s", rel_path, source_files)
+                            source_context = await _read_source_context(client, source_files, sandbox_base)
+                            if source_context:
+                                user_prompt += f"{source_context}\n\n"
+                                print(f"[ARCH_EXEC] v3.0 Injected {len(source_context)} chars of source context")
+                    except Exception as e:
+                        # Non-fatal — proceed without source context if detection/read fails
+                        logger.warning("[arch_exec] v3.0 Source context failed for %s: %s", rel_path, e)
+                    
                     user_prompt += "Output ONLY the file content. No markdown fences, no explanations."
                     system_prompt = IMPLEMENTER_NEW_FILE_SYSTEM
                 else:
@@ -1195,6 +1357,27 @@ async def run_architecture_execution(
                         last_error = f"Cannot read existing file for modification: {abs_path}"
                         logger.error("[arch_exec] %s", last_error)
                         break  # File doesn't exist — can't modify
+                    
+                    # v3.0: File size guardrail — warn if file is very large
+                    # The Implementer must output the COMPLETE modified file.
+                    # Sonnet's max output is ~60k tokens (~240k chars).
+                    # Files over ~150k chars risk truncated output.
+                    file_char_count = len(existing_content)
+                    if file_char_count > 150_000:
+                        last_error = (
+                            f"MODIFY TARGET TOO LARGE: {rel_path} is {file_char_count:,} chars. "
+                            f"The Implementer must output the entire modified file but may "
+                            f"hit output token limits. Consider decomposing the file first."
+                        )
+                        logger.error("[arch_exec] v3.0 %s", last_error)
+                        print(f"[ARCH_EXEC] ⚠️ v3.0 {last_error}")
+                        add_trace("FILE_SIZE_WARNING", "too_large", {
+                            "path": rel_path, "chars": file_char_count,
+                        })
+                        # Don't break — still attempt it, but log the warning
+                    elif file_char_count > 80_000:
+                        print(f"[ARCH_EXEC] ⚠️ v3.0 Large MODIFY target: {rel_path} ({file_char_count:,} chars)")
+                        logger.warning("[arch_exec] v3.0 Large MODIFY target: %s (%d chars)", rel_path, file_char_count)
                     
                     user_prompt = (
                         f"Apply the following modifications to `{rel_path}`.\n\n"

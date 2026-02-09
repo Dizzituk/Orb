@@ -4,18 +4,17 @@ System prompt and message builders for stream routing.
 
 v1.0 (2026-01-20): Extracted from stream_router.py for modularity.
 v1.1 (2026-01-20): Added large-output truncation for command outputs.
-v1.2 (2026-02-04): Added architecture map injection for section-based context retrieval.
+v1.2 (2026-02-09): Added scan-aware context injection — TOC replacement + section retrieval.
 
 This module provides:
 - `build_system_prompt()` - Constructs system prompt with capability layer
 - `build_messages()` - Constructs message list from history + current message
-- `inject_architecture_sections()` - Injects relevant architecture sections into message list
+  (now scan-aware: replaces breadcrumbs with TOC, injects sections on demand)
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import re
 from pathlib import Path
 from typing import List, Optional, Any, Dict
@@ -32,8 +31,8 @@ from .handler_registry import (
 logger = logging.getLogger(__name__)
 
 
-# Default path to architecture map file
-_ARCHITECTURE_MAP_PATH = r'D:\Orb\.architecture\ARCHITECTURE_MAP.md'
+# Architecture map file path (host filesystem, read-only)
+ARCHMAP_PATH = r'D:\Orb\.architecture\ARCHITECTURE_MAP.md'
 
 
 # v5.0 (2026-02-04): CONVERSATIONAL MODE GUIDELINES
@@ -79,6 +78,116 @@ Whisper, or do you want it fully local? And where in the UI should the button go
 BAD: [generating 500 lines of React components, Python endpoints, and config files]
 """
 
+
+# =============================================================================
+# SCAN-AWARE ARCHITECTURE MAP HELPERS
+# =============================================================================
+
+def _try_read_archmap() -> Optional[str]:
+    """Read architecture map file. Returns content or None on any error."""
+    path = Path(ARCHMAP_PATH)
+    try:
+        if not path.exists():
+            return None
+        return path.read_text(encoding='utf-8', errors='ignore')
+    except (IOError, OSError) as e:
+        logger.debug(f"[arch_inject] Could not read architecture map: {e}")
+        return None
+
+
+def _parse_archmap_sections(text: str) -> List[Dict[str, Any]]:
+    """
+    Parse architecture map sections using ## <number>. pattern.
+    Returns list of dicts with: number, title, start, end.
+    """
+    pattern = r'(?m)^##\s+(\d+)\.\s*(.*?)\s*$'
+    matches = list(re.finditer(pattern, text))
+    
+    sections = []
+    for i, match in enumerate(matches):
+        number = int(match.group(1))
+        title = match.group(2).strip()
+        start = match.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        
+        sections.append({
+            'number': number,
+            'title': title,
+            'start': start,
+            'end': end,
+        })
+    
+    return sections
+
+
+def _build_toc(sections: List[Dict], target_chars: int = 500) -> str:
+    """Build compact TOC from sections, truncating to target_chars."""
+    if not sections:
+        return "[architecture_scan] Scan completed (no sections parsed)"
+    
+    parts = [f"{s['number']}. {s['title']}" for s in sections]
+    toc = "Architecture scan available — sections: " + ", ".join(parts)
+    toc += "\n\nAsk about any section by number or name (e.g. 'tell me about section 12')."
+    
+    if len(toc) > target_chars:
+        # Truncate to fit, keep whole section entries
+        truncated = toc[:target_chars - 4]
+        last_comma = truncated.rfind(',')
+        if last_comma > 0:
+            toc = truncated[:last_comma] + ", …\n\nAsk about any section by number or name."
+        else:
+            toc = truncated + " …"
+    
+    return toc
+
+
+def _detect_requested_sections(user_text: str, sections: List[Dict]) -> List[Dict]:
+    """
+    Detect which sections user is referencing.
+    
+    Supports:
+    - Explicit: "section 12", "section 3"
+    - Numbered: "tell me about 12.", "what's in 25"
+    - Title keywords: "observations", "dependency graph", "patterns"
+    
+    Returns list of matching section dicts (may be empty).
+    """
+    matches = []
+    
+    # 1. Explicit "section N" references
+    explicit_pattern = r'(?i)\bsection\s+(\d+)\b'
+    for match in re.finditer(explicit_pattern, user_text):
+        section_num = int(match.group(1))
+        for sec in sections:
+            if sec['number'] == section_num and sec not in matches:
+                matches.append(sec)
+                break
+    
+    # 2. Standalone number references like "tell me about 12" or "25."
+    number_pattern = r'(?i)(?:about|regarding|explain|describe|show|what.s in)\s+(\d+)\.?\b'
+    for match in re.finditer(number_pattern, user_text):
+        section_num = int(match.group(1))
+        for sec in sections:
+            if sec['number'] == section_num and sec not in matches:
+                matches.append(sec)
+                break
+    
+    # 3. Title keyword matching (only if no explicit matches yet)
+    if not matches:
+        user_lower = user_text.lower()
+        for sec in sections:
+            title_lower = sec['title'].lower()
+            # Match if significant words (>3 chars) from title appear in user text
+            title_words = [w for w in title_lower.split() if len(w) > 3]
+            if title_words and any(word in user_lower for word in title_words):
+                matches.append(sec)
+    
+    return matches
+
+
+# =============================================================================
+# CORE PROMPT BUILDERS
+# =============================================================================
 
 def build_system_prompt(project: Any, full_context: str) -> str:
     """
@@ -129,9 +238,9 @@ def build_messages(
     Build message list from history + current message.
     
     v1.1: Added large-output truncation for command outputs.
-    Large assistant messages (>10k chars) are truncated to prevent
-    context exhaustion, except for the most recent K=2 large messages
-    which are kept in full.
+    v1.2: Scan-aware context injection:
+      - Replaces [architecture_scan] breadcrumbs with lightweight TOC
+      - Injects relevant section content when user references a section
     
     Args:
         message: Current user message
@@ -147,8 +256,10 @@ def build_messages(
     KEEP_RECENT_FULL = 2
     TRUNCATE_HEAD = 8_000
     TRUNCATE_TAIL = 1_000
+    SECTION_SOFT_CAP = 3_500
     
     messages_list = []
+    has_scan_breadcrumb = False
     
     if include_history:
         try:
@@ -169,8 +280,25 @@ def build_messages(
             for msg in history:
                 content = msg.content
                 
-                # Apply truncation if needed
+                # v1.2: Detect architecture scan breadcrumb and replace with TOC
                 if (msg.role == "assistant" and 
+                    isinstance(content, str) and 
+                    content.startswith("[architecture_scan]")):
+                    
+                    has_scan_breadcrumb = True
+                    arch_text = _try_read_archmap()
+                    if arch_text:
+                        sections = _parse_archmap_sections(arch_text)
+                        if sections:
+                            content = _build_toc(sections)
+                            logger.info(f"[arch_inject] Replaced breadcrumb with TOC ({len(sections)} sections)")
+                        else:
+                            logger.debug("[arch_inject] Architecture map found but no sections parsed")
+                    else:
+                        logger.debug(f"[arch_inject] Architecture map not readable, keeping breadcrumb")
+                
+                # Apply truncation if needed (TOC is small, won't trigger this)
+                elif (msg.role == "assistant" and 
                     len(content) > LARGE_THRESHOLD and 
                     msg.id not in keep_full_ids):
                     
@@ -188,6 +316,35 @@ def build_messages(
                 })
         except Exception as e:
             logger.warning(f"[prompt_builders] Failed to load history: {e}")
+    
+    # v1.2: Inject section content if user references a section
+    if has_scan_breadcrumb:
+        arch_text = _try_read_archmap()
+        if arch_text:
+            sections = _parse_archmap_sections(arch_text)
+            if sections:
+                requested = _detect_requested_sections(message, sections)
+                if requested:
+                    # Inject first matched section only (prevent context bloat)
+                    sec = requested[0]
+                    section_content = arch_text[sec['start']:sec['end']]
+                    
+                    # Soft cap at 3500 chars
+                    if len(section_content) > SECTION_SOFT_CAP:
+                        section_content = section_content[:3000] + "\n\n[...SECTION TRUNCATED...]\n"
+                    
+                    injection = {
+                        "role": "system",
+                        "content": (
+                            f"Architecture scan context — Section {sec['number']}: {sec['title']}\n\n"
+                            f"{section_content}"
+                        )
+                    }
+                    messages_list.append(injection)
+                    logger.info(
+                        f"[arch_inject] Injected section {sec['number']} "
+                        f"({len(section_content)} chars) for current request"
+                    )
     
     messages_list.append({"role": "user", "content": message})
     return messages_list
@@ -233,240 +390,8 @@ def build_full_context(
     return full_context
 
 
-def _load_architecture_map(map_path: Optional[str] = None) -> Optional[str]:
-    """
-    Load architecture map file content.
-    
-    Args:
-        map_path: Optional custom path. If None, uses _ARCHITECTURE_MAP_PATH.
-    
-    Returns:
-        File content as string, or None if file not found/error.
-    """
-    path = Path(map_path or _ARCHITECTURE_MAP_PATH)
-    
-    if not path.exists():
-        logger.debug(f"[arch_inject] Architecture map not found: {path}")
-        return None
-    
-    try:
-        content = path.read_text(encoding='utf-8')
-        logger.debug(f"[arch_inject] Loaded architecture map: {len(content)} chars")
-        return content
-    except Exception as e:
-        logger.warning(f"[arch_inject] Failed to read architecture map: {e}")
-        return None
-
-
-def _extract_section_by_title(content: str, title: str) -> Optional[str]:
-    """
-    Extract a section from markdown content by exact title match.
-    
-    Handles both ATX-style (#) and Setext-style (===) headers.
-    Section ends at next header of same or higher level, or EOF.
-    
-    Args:
-        content: Full markdown content
-        title: Exact section title to find (case-insensitive)
-    
-    Returns:
-        Section content including header, or None if not found.
-    """
-    lines = content.split('\n')
-    title_lower = title.lower().strip()
-    
-    section_start = None
-    section_level = None
-    
-    # Find section start
-    for i, line in enumerate(lines):
-        # ATX-style: # Title
-        atx_match = re.match(r'^(#{1,6})\s+(.+)$', line)
-        if atx_match:
-            level = len(atx_match.group(1))
-            header_text = atx_match.group(2).strip().lower()
-            if header_text == title_lower:
-                section_start = i
-                section_level = level
-                break
-        
-        # Setext-style: Title\n===
-        if i + 1 < len(lines):
-            next_line = lines[i + 1].strip()
-            if re.match(r'^=+$', next_line):
-                if line.strip().lower() == title_lower:
-                    section_start = i
-                    section_level = 1
-                    break
-            elif re.match(r'^-+$', next_line):
-                if line.strip().lower() == title_lower:
-                    section_start = i
-                    section_level = 2
-                    break
-    
-    if section_start is None:
-        return None
-    
-    # Find section end
-    section_end = len(lines)
-    for i in range(section_start + 1, len(lines)):
-        line = lines[i]
-        
-        # ATX-style header
-        atx_match = re.match(r'^(#{1,6})\s+', line)
-        if atx_match:
-            level = len(atx_match.group(1))
-            if level <= section_level:
-                section_end = i
-                break
-        
-        # Setext-style header
-        if i + 1 < len(lines):
-            next_line = lines[i + 1].strip()
-            if re.match(r'^[=-]+$', next_line):
-                # Setext = level 1, - = level 2
-                setext_level = 1 if '=' in next_line else 2
-                if setext_level <= section_level:
-                    section_end = i
-                    break
-    
-    section_content = '\n'.join(lines[section_start:section_end])
-    return section_content.strip()
-
-
-def _detect_section_references(message: str) -> List[str]:
-    """
-    Detect section reference patterns in user message.
-    
-    Patterns supported:
-    - "what does [Section Title] say"
-    - "check the [Another Section] section"
-    - "according to [Foo Bar]"
-    - Bracket notation alone: [Section Name]
-    
-    Args:
-        message: User message text
-    
-    Returns:
-        List of detected section titles (deduplicated, case-preserved)
-    """
-    patterns = [
-        r'\[([^\]]+)\]\s+(?:say|section|mention|describe|explain)',
-        r'(?:what|how|check|see|read|according to|from)\s+(?:the\s+)?\[([^\]]+)\]',
-        r'\[([^\]]+)\]',
-    ]
-    
-    found = []
-    for pattern in patterns:
-        matches = re.finditer(pattern, message, re.IGNORECASE)
-        for match in matches:
-            title = match.group(1).strip()
-            if title and title not in found:
-                found.append(title)
-    
-    return found
-
-
-def inject_architecture_sections(
-    messages: List[Dict[str, str]],
-    map_path: Optional[str] = None,
-) -> List[Dict[str, str]]:
-    """
-    Inject relevant architecture sections before the final user message.
-    
-    Scans the last user message for section references like [Section Title].
-    If found, extracts matching sections from ARCHITECTURE_MAP.md and injects
-    them as system messages immediately before the user message.
-    
-    Args:
-        messages: Original message list (will be copied, not modified)
-        map_path: Optional custom architecture map path
-    
-    Returns:
-        New message list with injected sections, or original if no refs found
-    """
-    if not messages:
-        return messages
-    
-    # Work on a copy
-    messages = messages.copy()
-    
-    # Find last user message
-    last_user_idx = None
-    for i in range(len(messages) - 1, -1, -1):
-        if messages[i].get('role') == 'user':
-            last_user_idx = i
-            break
-    
-    if last_user_idx is None:
-        return messages
-    
-    user_message = messages[last_user_idx]['content']
-    
-    # Detect section references
-    section_refs = _detect_section_references(user_message)
-    if not section_refs:
-        logger.debug("[arch_inject] No section references detected")
-        return messages
-    
-    logger.info(f"[arch_inject] Detected section references: {section_refs}")
-    
-    # Load architecture map
-    arch_content = _load_architecture_map(map_path)
-    if not arch_content:
-        logger.warning("[arch_inject] Architecture map not available, skipping injection")
-        return messages
-    
-    # Extract sections
-    injected_sections = []
-    for title in section_refs:
-        section = _extract_section_by_title(arch_content, title)
-        if section:
-            logger.info(f"[arch_inject] Extracted section '{title}': {len(section)} chars")
-            injected_sections.append({
-                'title': title,
-                'content': section
-            })
-        else:
-            logger.warning(f"[arch_inject] Section '{title}' not found in architecture map")
-    
-    if not injected_sections:
-        logger.info("[arch_inject] No matching sections found in architecture map")
-        return messages
-    
-    # Build injection message
-    injection_parts = [
-        "=== ARCHITECTURE CONTEXT (INJECTED) ===",
-        "",
-        "The following sections from the architecture map are relevant to your query:",
-        ""
-    ]
-    
-    for i, sec in enumerate(injected_sections, 1):
-        injection_parts.append(f"--- Section {i}: {sec['title']} ---")
-        injection_parts.append("")
-        injection_parts.append(sec['content'])
-        injection_parts.append("")
-    
-    injection_parts.append("=== END ARCHITECTURE CONTEXT ===")
-    injection_content = '\n'.join(injection_parts)
-    
-    # Insert before last user message
-    injection_msg = {
-        'role': 'system',
-        'content': injection_content
-    }
-    
-    messages.insert(last_user_idx, injection_msg)
-    
-    logger.info(f"[arch_inject] Injected {len(injected_sections)} section(s) ({len(injection_content)} chars)")
-    
-    return messages
-
-
 __all__ = [
     "build_system_prompt",
     "build_messages",
     "build_full_context",
-    "inject_architecture_sections",
 ]
