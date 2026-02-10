@@ -1720,9 +1720,39 @@ async def generate_weaver_stream(
         else:
             print("[WEAVER] CREATE mode: first weave for this project")
         
+        # =====================================================================
+        # v5.5 PHASE 4C: Progressive Memory — compact long conversations
+        # =====================================================================
+        _compaction_applied = False
+        if len(relevant_messages) >= 15:
+            try:
+                from app.llm.weaver_memory import compact_conversation
+                _compaction_result = await compact_conversation(relevant_messages)
+                if _compaction_result.was_compacted:
+                    ramble_text = _compaction_result.format_for_weaver()
+                    _compaction_applied = True
+                    logger.info(
+                        "[WEAVER] v5.5 Progressive memory: %d messages compacted "
+                        "(%d distilled → %d chars, %d verbatim)",
+                        _compaction_result.total_messages,
+                        _compaction_result.compacted_count,
+                        len(_compaction_result.distilled_summary),
+                        _compaction_result.preserved_count,
+                    )
+                    print(
+                        f"[WEAVER] v5.5 COMPACTION: {_compaction_result.compacted_count} old → "
+                        f"{len(_compaction_result.distilled_summary)} char summary, "
+                        f"{_compaction_result.preserved_count} recent kept verbatim"
+                    )
+                else:
+                    logger.debug("[WEAVER] v5.5 Compaction skipped: %s", _compaction_result.skip_reason)
+            except (ImportError, Exception) as _compact_err:
+                logger.debug("[WEAVER] v5.5 Progressive memory unavailable: %s", _compact_err)
+
         # Format ramble text from RELEVANT messages (USER + vision context)
         # v3.9.0: Now includes vision analysis for context
-        ramble_text = _format_ramble(relevant_messages)
+        if not _compaction_applied:
+            ramble_text = _format_ramble(relevant_messages)
         
         # =====================================================================
         # STEP 5: Core goal check (FOR LOGGING ONLY - v3.5.0)
@@ -1836,7 +1866,20 @@ Produce the refactor job outline:"""
             # UPDATE MODE - Merge new info into existing job description
             print(f"[WEAVER] UPDATE mode: weaving {len(new_user_messages)} new messages into existing spec")
             
-            new_ramble = _format_ramble(new_user_messages)
+            # v5.5 PHASE 4C: Compact new messages if there are many
+            _update_compacted = False
+            if len(new_user_messages) >= 15:
+                try:
+                    from app.llm.weaver_memory import compact_conversation
+                    _update_compact = await compact_conversation(new_user_messages)
+                    if _update_compact.was_compacted:
+                        new_ramble = _update_compact.format_for_weaver()
+                        _update_compacted = True
+                        print(f"[WEAVER] v5.5 UPDATE compaction: {_update_compact.compacted_count} distilled + {_update_compact.preserved_count} verbatim")
+                except (ImportError, Exception):
+                    pass
+            if not _update_compacted:
+                new_ramble = _format_ramble(new_user_messages)
             previous_output = checkpoint["last_output"]
             
             # DEBUG: Show what we're sending to the LLM

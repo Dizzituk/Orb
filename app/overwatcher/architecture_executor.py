@@ -87,7 +87,7 @@ from .sandbox_client import (
 
 logger = logging.getLogger(__name__)
 
-ARCHITECTURE_EXECUTOR_BUILD_ID = "2026-02-09-v3.0-source-context-and-token-fix"
+ARCHITECTURE_EXECUTOR_BUILD_ID = "2026-02-10-v3.1-edit-mode-and-verbatim-extraction"
 print(f"[ARCHITECTURE_EXECUTOR_LOADED] BUILD_ID={ARCHITECTURE_EXECUTOR_BUILD_ID}")
 
 
@@ -205,7 +205,31 @@ def parse_file_inventory(architecture: str) -> Tuple[List[Dict[str, str]], List[
             if path not in [f["path"] for f in modified_files]:
                 modified_files.append({"path": path, "description": "From architecture design"})
     
+    # v3.1 Fallback: look for #### `path.py` style section headers
+    # Some architecture documents use heading-based file listings instead of tables
+    if not new_files and not modified_files:
+        known_paths = set()
+        for match in re.finditer(
+            r'^#{2,6}\s+(?:Fa[cç]ade:\s*)?`([^`]+\.\w+)`',
+            architecture, re.MULTILINE,
+        ):
+            path = match.group(1).strip()
+            if path in known_paths:
+                continue
+            known_paths.add(path)
+            # Determine if this is a MODIFY (facade replacing existing) or CREATE (new extracted module)
+            line = match.group(0)
+            if 'façade' in line.lower() or 'facade' in line.lower():
+                modified_files.append({"path": path, "description": "Façade (from architecture heading)"})
+            else:
+                new_files.append({"path": path, "description": "From architecture heading"})
+        if new_files or modified_files:
+            logger.info("[arch_exec] v3.1 Fallback parser found %d new, %d modified from headings",
+                        len(new_files), len(modified_files))
+            print(f"[ARCH_EXEC] v3.1 Fallback parser: {len(new_files)} new, {len(modified_files)} modified (from heading format)")
+    
     return new_files, modified_files
+
 
 
 def extract_section_for_file(architecture: str, file_path: str) -> str:
@@ -301,6 +325,206 @@ RULES:
 11. GITIGNORE SAFETY: For .gitignore modifications, be conservative. NEVER add broad glob patterns like *.json, *.md, *.txt, *.yaml, *.yml that would exclude tracked project files. Only add specific paths or narrow patterns (e.g. dist/, node_modules/, *.pyc).
 12. API URL PATHS: When adding or modifying frontend API calls (fetch, axios, etc.), use the EXACT endpoint paths from the "Resolved API Endpoints" section in the cross-file context if provided. Do NOT invent URL prefixes — the resolved paths show the actual backend URLs including any router prefix.
 """
+
+
+# v1.13: Targeted edit mode for large MODIFY operations
+# Instead of asking the LLM to regenerate the entire file, ask it to output
+# a JSON array of {old_text, new_text} edit pairs. The Implementer then applies
+# these edits directly. This avoids truncation on files >40KB.
+MODIFY_EDIT_MODE_THRESHOLD = 40_000  # chars — use edit mode above this
+
+IMPLEMENTER_MODIFY_EDIT_SYSTEM = """You are a code implementation agent. You receive an existing file and modification instructions. Because this file is LARGE, you must output ONLY the specific changes as a JSON array of edit objects.
+
+OUTPUT FORMAT — a JSON array, nothing else:
+```json
+[
+  {
+    "old_text": "exact text to find in the file (must be unique)",
+    "new_text": "replacement text"
+  },
+  {
+    "old_text": "another exact snippet to find",
+    "new_text": "its replacement"
+  }
+]
+```
+
+RULES:
+1. Output ONLY a valid JSON array — no markdown fences, no explanations, no comments.
+2. Each "old_text" MUST be an exact substring of the current file content.
+3. Each "old_text" MUST appear exactly ONCE in the file (include enough surrounding context to ensure uniqueness).
+4. Include enough context lines in old_text to be unambiguous — typically 3-5 lines around the change point.
+5. "new_text" is the complete replacement for the matched region.
+6. To ADD code, set old_text to the line(s) AFTER which the new code should appear, and set new_text to those same lines plus the new code.
+7. To DELETE code, set new_text to empty string "".
+8. Apply ALL modifications from the architecture specification.
+9. Preserve existing code style, indentation, and patterns in new_text.
+10. CROSS-FILE REFERENCES: If "Files Already Created in This Job" is provided, use EXACT import paths from those files.
+11. IMPORT PATTERNS: Follow existing import patterns shown in the "Existing Imports" section.
+12. Order edits from top-of-file to bottom-of-file.
+"""
+
+
+def _parse_edit_pairs(llm_output: str) -> Optional[List[Dict[str, str]]]:
+    """v1.13: Parse LLM output into edit pairs.
+    
+    Handles:
+    - Clean JSON array
+    - JSON wrapped in markdown fences
+    - Trailing commas or minor JSON issues
+    
+    Returns list of {"old_text": str, "new_text": str} dicts, or None if parsing fails.
+    """
+    import json
+    
+    text = llm_output.strip()
+    
+    # Strip markdown fences if present
+    if text.startswith("```"):
+        # Remove opening fence (with optional language tag)
+        first_newline = text.index("\n") if "\n" in text else len(text)
+        text = text[first_newline + 1:]
+    if text.endswith("```"):
+        text = text[:-3]
+    text = text.strip()
+    
+    # Try direct JSON parse
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            # Validate each entry has old_text and new_text
+            edits = []
+            for item in parsed:
+                if isinstance(item, dict) and "old_text" in item and "new_text" in item:
+                    edits.append({
+                        "old_text": str(item["old_text"]),
+                        "new_text": str(item["new_text"]),
+                    })
+            if edits:
+                return edits
+    except json.JSONDecodeError:
+        pass
+    
+    # Try fixing trailing commas
+    import re
+    cleaned = re.sub(r',\s*\]', ']', text)
+    cleaned = re.sub(r',\s*\}', '}', cleaned)
+    try:
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, list):
+            edits = []
+            for item in parsed:
+                if isinstance(item, dict) and "old_text" in item and "new_text" in item:
+                    edits.append({
+                        "old_text": str(item["old_text"]),
+                        "new_text": str(item["new_text"]),
+                    })
+            if edits:
+                return edits
+    except json.JSONDecodeError:
+        pass
+    
+    logger.warning("[arch_exec] v1.13 Failed to parse edit pairs from LLM output (len=%d)", len(text))
+    return None
+
+
+# =============================================================================
+# v1.13: Verbatim Code Extraction (Phase 0C)
+# =============================================================================
+
+def _extract_verbatim_code_from_architecture(file_context: str, rel_path: str) -> Optional[str]:
+    """v1.13: Attempt to extract complete file content directly from architecture spec.
+    
+    If the architecture section for this file contains a single large code block
+    (or multiple code blocks that can be concatenated), and the surrounding text
+    indicates this is an extraction/decomposition, return the code directly.
+    
+    This bypasses the LLM Implementer entirely for cases where the architecture
+    already contains the exact code.
+    
+    Returns:
+        The extracted file content as a string, or None if extraction isn't possible.
+    """
+    import re as _re
+    
+    if not file_context:
+        return None
+    
+    # Find all fenced code blocks in the architecture section
+    # Match ```language\n...code...\n``` or ```\n...code...\n```
+    code_blocks = _re.findall(
+        r'```(?:\w+)?\s*\n(.*?)```',
+        file_context,
+        _re.DOTALL,
+    )
+    
+    if not code_blocks:
+        return None
+    
+    # Heuristic: if there's one large code block (>500 chars) that looks like
+    # a complete file, it's likely the verbatim content
+    large_blocks = [b for b in code_blocks if len(b.strip()) > 500]
+    
+    if len(large_blocks) == 1:
+        candidate = large_blocks[0].strip()
+        
+        # Sanity checks: does it look like a complete file?
+        ext = Path(rel_path).suffix.lower()
+        
+        if ext == '.py':
+            # Python file: should have imports or def/class or module-level code
+            has_structure = (
+                'import ' in candidate or 
+                'def ' in candidate or 
+                'class ' in candidate or
+                candidate.startswith('#')  # comment header
+            )
+            if has_structure:
+                logger.info(
+                    "[arch_exec] v1.13 Verbatim extraction: single block, %d chars for %s",
+                    len(candidate), rel_path,
+                )
+                return candidate
+        
+        elif ext in ('.ts', '.tsx', '.js', '.jsx'):
+            has_structure = (
+                'import ' in candidate or
+                'export ' in candidate or
+                'function ' in candidate or
+                'const ' in candidate
+            )
+            if has_structure:
+                logger.info(
+                    "[arch_exec] v1.13 Verbatim extraction: single block, %d chars for %s",
+                    len(candidate), rel_path,
+                )
+                return candidate
+        
+        elif ext in ('.json', '.yaml', '.yml', '.toml', '.cfg', '.ini', '.md', '.txt'):
+            # Config/doc files: any substantial block is likely complete
+            logger.info(
+                "[arch_exec] v1.13 Verbatim extraction: config/doc block, %d chars for %s",
+                len(candidate), rel_path,
+            )
+            return candidate
+    
+    # Multiple large blocks: check if the architecture text says "complete file"
+    # or if the blocks should be concatenated
+    if len(large_blocks) > 1:
+        # Only attempt if the text explicitly mentions this is the complete content
+        lower_context = file_context.lower()
+        if any(phrase in lower_context for phrase in [
+            'complete file', 'full content', 'entire file', 
+            'verbatim', 'extract the following',
+        ]):
+            combined = '\n\n'.join(b.strip() for b in large_blocks)
+            logger.info(
+                "[arch_exec] v1.13 Verbatim extraction: %d blocks combined, %d chars for %s",
+                len(large_blocks), len(combined), rel_path,
+            )
+            return combined
+    
+    return None
 
 
 # =============================================================================
@@ -1056,6 +1280,7 @@ async def run_architecture_execution(
     job_id: str,
     llm_call_fn: Optional[Callable] = None,
     artifact_root: str = "D:/Orb/jobs",
+    interface_contract: str = "",
 ) -> Dict[str, Any]:
     """Supervise architecture-level spec execution.
     
@@ -1115,7 +1340,9 @@ async def run_architecture_execution(
     
     if total_operations == 0:
         error_msg = "No file operations found in architecture document."
-        add_trace("ARCHITECTURE_PARSE", "failed", {"error": error_msg})
+        logger.error("[arch_exec] v3.1 HARD FAIL: %s (arch_length=%d chars)", error_msg, len(architecture_content or ""))
+        print(f"[ARCH_EXEC] ❌ HARD FAIL: {error_msg} — parser found 0 operations in {len(architecture_content or '')} chars of architecture")
+        add_trace("ARCHITECTURE_PARSE", "failed", {"error": error_msg, "arch_length": len(architecture_content or "")})
         return {"success": False, "decision": "FAIL", "error": error_msg, "trace": trace, "artifacts_written": []}
     
     # =========================================================================
@@ -1238,7 +1465,7 @@ async def run_architecture_execution(
     # Step 4: Process all file tasks
     # =========================================================================
     # Import the Implementer's atomic task interface
-    from .implementer import run_implementer_task
+    from .implementer import run_implementer_task, run_implementer_edit_task
     
     files_created = 0
     files_modified_count = 0
@@ -1322,7 +1549,27 @@ async def run_architecture_execution(
                 # v2.3/v2.5: Build cross-file context section (with resolved endpoints)
                 job_context_section = _format_job_context(job_context, router_registrations)
                 
+                use_edit_mode = False  # v1.13: default, overridden in MODIFY branch for large files
+                verbatim_content = None  # v1.13: set if verbatim extraction succeeds
+                
                 if action == "create":
+                    # v1.13: Try verbatim extraction before LLM call
+                    verbatim_content = _extract_verbatim_code_from_architecture(
+                        file_context, rel_path,
+                    )
+                    if verbatim_content:
+                        print(
+                            f"[ARCH_EXEC] v1.13 VERBATIM extraction: {rel_path} "
+                            f"({len(verbatim_content)} chars) — skipping LLM"
+                        )
+                        logger.info(
+                            "[arch_exec] v1.13 Verbatim extraction for %s: %d chars",
+                            rel_path, len(verbatim_content),
+                        )
+                        add_trace("VERBATIM_EXTRACTION", "success", {
+                            "path": rel_path, "chars": len(verbatim_content),
+                        })
+                    
                     user_prompt = (
                         f"Generate the complete content for a new file: `{rel_path}`\n\n"
                         f"## Architecture Specification\n\n{file_context}\n\n"
@@ -1358,81 +1605,116 @@ async def run_architecture_execution(
                         logger.error("[arch_exec] %s", last_error)
                         break  # File doesn't exist — can't modify
                     
-                    # v3.0: File size guardrail — warn if file is very large
-                    # The Implementer must output the COMPLETE modified file.
-                    # Sonnet's max output is ~60k tokens (~240k chars).
-                    # Files over ~150k chars risk truncated output.
+                    # v1.13: File size guardrail + edit mode decision
                     file_char_count = len(existing_content)
+                    use_edit_mode = file_char_count >= MODIFY_EDIT_MODE_THRESHOLD
+                    
                     if file_char_count > 150_000:
-                        last_error = (
-                            f"MODIFY TARGET TOO LARGE: {rel_path} is {file_char_count:,} chars. "
-                            f"The Implementer must output the entire modified file but may "
-                            f"hit output token limits. Consider decomposing the file first."
-                        )
-                        logger.error("[arch_exec] v3.0 %s", last_error)
-                        print(f"[ARCH_EXEC] ⚠️ v3.0 {last_error}")
-                        add_trace("FILE_SIZE_WARNING", "too_large", {
+                        logger.warning("[arch_exec] v3.0 Very large MODIFY target: %s (%d chars)", rel_path, file_char_count)
+                        print(f"[ARCH_EXEC] ⚠️ Very large MODIFY: {rel_path} ({file_char_count:,} chars) — using edit mode")
+                    elif use_edit_mode:
+                        print(f"[ARCH_EXEC] v1.13 Large MODIFY: {rel_path} ({file_char_count:,} chars) — using edit mode")
+                    
+                    if use_edit_mode:
+                        # v1.13: EDIT MODE — ask LLM for JSON edit pairs, not full file
+                        logger.info("[arch_exec] v1.13 Edit mode for %s (%d chars)", rel_path, file_char_count)
+                        add_trace("MODIFY_EDIT_MODE", "enabled", {
                             "path": rel_path, "chars": file_char_count,
                         })
-                        # Don't break — still attempt it, but log the warning
-                    elif file_char_count > 80_000:
-                        print(f"[ARCH_EXEC] ⚠️ v3.0 Large MODIFY target: {rel_path} ({file_char_count:,} chars)")
-                        logger.warning("[arch_exec] v3.0 Large MODIFY target: %s (%d chars)", rel_path, file_char_count)
-                    
-                    user_prompt = (
-                        f"Apply the following modifications to `{rel_path}`.\n\n"
-                        f"## Current File Content\n```\n{existing_content}\n```\n\n"
-                    )
-                    
-                    # v2.4: Extract and inject existing import patterns
-                    existing_imports = _extract_existing_imports(existing_content, rel_path)
-                    if existing_imports:
+                        
+                        user_prompt = (
+                            f"Apply the following modifications to `{rel_path}` ({file_char_count:,} chars).\n\n"
+                            f"## Current File Content\n```\n{existing_content}\n```\n\n"
+                        )
+                        
+                        existing_imports = _extract_existing_imports(existing_content, rel_path)
+                        if existing_imports:
+                            user_prompt += (
+                                f"## Existing Imports\n"
+                                f"Follow the same import patterns for any new imports.\n"
+                                f"```\n{existing_imports}\n```\n\n"
+                            )
+                        
+                        user_prompt += f"## Modification Instructions\n\n{file_context}\n\n"
+                        if job_context_section:
+                            user_prompt += f"{job_context_section}\n\n"
                         user_prompt += (
-                            f"## Existing Imports\n"
-                            f"The file currently uses these imports. Follow the same "
-                            f"import patterns and module paths for any new imports you add.\n"
-                            f"```\n{existing_imports}\n```\n\n"
+                            "Output ONLY a JSON array of edit objects. "
+                            "Each object has \"old_text\" (exact unique snippet from the file) "
+                            "and \"new_text\" (replacement). No markdown fences."
+                        )
+                        system_prompt = IMPLEMENTER_MODIFY_EDIT_SYSTEM
+                    else:
+                        # Standard full-file rewrite (small files)
+                        user_prompt = (
+                            f"Apply the following modifications to `{rel_path}`.\n\n"
+                            f"## Current File Content\n```\n{existing_content}\n```\n\n"
+                        )
+                        
+                        existing_imports = _extract_existing_imports(existing_content, rel_path)
+                        if existing_imports:
+                            user_prompt += (
+                                f"## Existing Imports\n"
+                                f"The file currently uses these imports. Follow the same "
+                                f"import patterns and module paths for any new imports you add.\n"
+                                f"```\n{existing_imports}\n```\n\n"
+                            )
+                        
+                        user_prompt += f"## Modification Instructions\n\n{file_context}\n\n"
+                        if job_context_section:
+                            user_prompt += f"{job_context_section}\n\n"
+                        user_prompt += "Output the COMPLETE modified file. No markdown fences."
+                        system_prompt = IMPLEMENTER_MODIFY_FILE_SYSTEM
+                
+                # v1.13: Skip LLM call if verbatim extraction succeeded
+                if verbatim_content and strike == 1:
+                    file_content = verbatim_content
+                    logger.info(
+                        "[arch_exec] v1.13 Using verbatim content: %d chars for %s",
+                        len(file_content), rel_path,
+                    )
+                else:
+                    # Verbatim not available or retry — use LLM
+                    if verbatim_content and strike > 1:
+                        logger.info(
+                            "[arch_exec] v1.13 Verbatim failed verification, falling back to LLM for %s",
+                            rel_path,
+                        )
+                        verbatim_content = None  # Don't retry verbatim
+                    
+                    # Add error context for retry strikes
+                    if strike > 1 and last_error:
+                        user_prompt += (
+                            f"\n\n## Previous Attempt Failed\n"
+                            f"Error from previous attempt: {last_error}\n"
+                            f"Please fix the issue and try again."
                         )
                     
-                    user_prompt += f"## Modification Instructions\n\n{file_context}\n\n"
-                    if job_context_section:
-                        user_prompt += f"{job_context_section}\n\n"
-                    user_prompt += "Output the COMPLETE modified file. No markdown fences."
-                    system_prompt = IMPLEMENTER_MODIFY_FILE_SYSTEM
-                
-                # Add error context for retry strikes
-                if strike > 1 and last_error:
-                    user_prompt += (
-                        f"\n\n## Previous Attempt Failed\n"
-                        f"Error from previous attempt: {last_error}\n"
-                        f"Please fix the issue and try again."
+                    llm_result = await llm_call_fn(
+                        provider_id=impl_provider,
+                        model_id=impl_model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        max_tokens=impl_max_tokens,
                     )
-                
-                llm_result = await llm_call_fn(
-                    provider_id=impl_provider,
-                    model_id=impl_model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    max_tokens=impl_max_tokens,
-                )
-                
-                file_content = _extract_llm_content(llm_result)
-                file_content = _strip_markdown_fences(file_content)
-                
-                if not file_content or len(file_content.strip()) < 10:
-                    last_error = "LLM returned empty/minimal content"
-                    logger.warning("[arch_exec] Strike %d: %s for %s", strike, last_error, rel_path)
-                    add_trace("FILE_TASK_STRIKE", f"strike_{strike}", {
-                        "path": rel_path, "error": last_error,
-                    })
-                    continue
-                
-                logger.info(
-                    "[arch_exec] LLM generated %d chars for %s (strike %d)",
-                    len(file_content), rel_path, strike,
-                )
+                    
+                    file_content = _extract_llm_content(llm_result)
+                    file_content = _strip_markdown_fences(file_content)
+                    
+                    if not file_content or len(file_content.strip()) < 10:
+                        last_error = "LLM returned empty/minimal content"
+                        logger.warning("[arch_exec] Strike %d: %s for %s", strike, last_error, rel_path)
+                        add_trace("FILE_TASK_STRIKE", f"strike_{strike}", {
+                            "path": rel_path, "error": last_error,
+                        })
+                        continue
+                    
+                    logger.info(
+                        "[arch_exec] LLM generated %d chars for %s (strike %d)",
+                        len(file_content), rel_path, strike,
+                    )
                 
             except Exception as e:
                 last_error = f"LLM call failed: {e}"
@@ -1444,13 +1726,74 @@ async def run_architecture_execution(
             
             # --- Delegate write to Implementer ---
             try:
-                impl_result = await run_implementer_task(
-                    path=abs_path,
-                    content=file_content,
-                    action=action,
-                    ensure_parents=True,
-                    client=client,
-                )
+                if use_edit_mode:
+                    # v1.13: Parse edit pairs and apply targeted edits
+                    edit_pairs = _parse_edit_pairs(file_content)
+                    
+                    if edit_pairs is None:
+                        # Parsing failed — fall back to full-file write
+                        logger.warning(
+                            "[arch_exec] v1.13 Edit pair parsing failed for %s, "
+                            "falling back to full-file write",
+                            rel_path,
+                        )
+                        print(f"[ARCH_EXEC] v1.13 Edit parse failed for {rel_path} — falling back to full write")
+                        add_trace("EDIT_PARSE_FALLBACK", "parse_failed", {
+                            "path": rel_path,
+                        })
+                        # Try writing as full file (may truncate, but better than nothing)
+                        impl_result = await run_implementer_task(
+                            path=abs_path,
+                            content=file_content,
+                            action=action,
+                            ensure_parents=True,
+                            client=client,
+                        )
+                    else:
+                        logger.info(
+                            "[arch_exec] v1.13 Applying %d targeted edits to %s",
+                            len(edit_pairs), rel_path,
+                        )
+                        print(f"[ARCH_EXEC] v1.13 Applying {len(edit_pairs)} targeted edits to {rel_path}")
+                        
+                        edit_result = await run_implementer_edit_task(
+                            path=abs_path,
+                            edits=edit_pairs,
+                            client=client,
+                        )
+                        
+                        # Convert EditTaskResult to match expected interface
+                        class _EditResultAdapter:
+                            def __init__(self, er):
+                                self.success = er.success
+                                self.chars_written = er.chars_after
+                                self.verified = er.verified
+                                self.error = er.error
+                        
+                        impl_result = _EditResultAdapter(edit_result)
+                        
+                        if edit_result.edits_failed > 0:
+                            logger.warning(
+                                "[arch_exec] v1.13 %d/%d edits failed for %s: %s",
+                                edit_result.edits_failed,
+                                edit_result.edits_applied + edit_result.edits_failed,
+                                rel_path,
+                                edit_result.failed_edits[:3],
+                            )
+                            add_trace("EDIT_PARTIAL", "some_failed", {
+                                "path": rel_path,
+                                "applied": edit_result.edits_applied,
+                                "failed": edit_result.edits_failed,
+                            })
+                else:
+                    # Standard full-file write
+                    impl_result = await run_implementer_task(
+                        path=abs_path,
+                        content=file_content,
+                        action=action,
+                        ensure_parents=True,
+                        client=client,
+                    )
                 
                 if not impl_result.success:
                     last_error = f"Implementer write failed: {impl_result.error}"
@@ -1484,7 +1827,47 @@ async def run_architecture_execution(
                 })
                 continue
             
-            # SUCCESS — all three checks passed
+            # --- v5.5 PHASE 4A: Job Checker — verify against arch spec + contract ---
+            try:
+                from .job_checker import check_written_file
+                _check_arch = extract_section_for_file(architecture_content, rel_path) or ""
+                _check_result = await check_written_file(
+                    file_path=rel_path,
+                    file_content=file_content,
+                    arch_section=_check_arch,
+                    interface_contract=interface_contract,
+                )
+                if _check_result.skipped:
+                    logger.debug("[arch_exec] v5.5 Job check skipped for %s: %s",
+                                 rel_path, _check_result.skip_reason)
+                elif not _check_result.passed:
+                    _blocking = _check_result.blocking_issues
+                    _block_desc = "; ".join(i.description for i in _blocking[:3])
+                    last_error = f"Job Checker FAILED: {len(_blocking)} blocking issue(s): {_block_desc}"
+                    logger.warning("[arch_exec] v5.5 Strike %d: %s", strike, last_error)
+                    print(f"[ARCH_EXEC] v5.5 JOB_CHECK FAIL: {rel_path} — {_block_desc[:120]}")
+                    add_trace("JOB_CHECK_FAIL", f"strike_{strike}", {
+                        "path": rel_path,
+                        "blocking": len(_blocking),
+                        "warnings": len(_check_result.warning_issues),
+                        "issues": [i.to_dict() for i in _check_result.issues[:5]],
+                    })
+                    continue  # Use existing three-strike retry
+                else:
+                    _warns = len(_check_result.warning_issues)
+                    if _warns:
+                        logger.info("[arch_exec] v5.5 Job check PASSED with %d warning(s): %s",
+                                    _warns, rel_path)
+                    add_trace("JOB_CHECK_PASS", "verified", {
+                        "path": rel_path,
+                        "warnings": _warns,
+                    })
+            except ImportError:
+                logger.debug("[arch_exec] v5.5 job_checker not available — skipping")
+            except Exception as _jc_err:
+                logger.warning("[arch_exec] v5.5 Job checker error (non-fatal): %s", _jc_err)
+            
+            # SUCCESS — all checks passed
             task_success = True
             break
         
@@ -1496,6 +1879,15 @@ async def run_architecture_execution(
                 created_file_contents[rel_path] = file_content
             else:
                 files_modified_count += 1
+                # v1.13: For edit mode, file_content is JSON edits, not actual content.
+                # Read the actual file for cross-file context extraction.
+                if use_edit_mode:
+                    try:
+                        _actual = await _read_existing_file(client, abs_path)
+                        if _actual:
+                            file_content = _actual
+                    except Exception:
+                        pass  # Non-fatal — proceed with what we have
                 # v2.5: Capture router registrations from modified files (e.g. main.py)
                 if rel_path.endswith('.py'):
                     try:
@@ -1619,7 +2011,13 @@ async def run_architecture_execution(
     BOOT_MAX_STRIKES = 3
 
     def _run_boot_check(cl: SandboxClient, sb: str) -> tuple:
-        """Run boot check, return (passed: bool, error: str, stderr: str)."""
+        """Run boot check, return (passed: bool, error: str, full_output: str).
+        
+        v3.1: Fixed error reporting - when boot fails, report the actual
+        failure from stdout (import errors, syntax errors) not just stderr
+        warnings. stderr often contains non-fatal warnings like
+        'MemoryService not available' that are red herrings.
+        """
         venv_python = sb + "\\.venv\\Scripts\\python.exe"
         boot_cmd = (
             f'cd "{sb}" ; '
@@ -1631,7 +2029,29 @@ async def run_architecture_execution(
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
         passed = "BOOT_CHECK_PASS" in stdout
-        return passed, stderr[:1000] if stderr else "No output", stderr
+        
+        if passed:
+            return passed, "", stderr
+        
+        # v3.1: Build a useful error message - prefer traceback/import errors
+        error_keywords = (
+            'Error', 'Traceback', 'ImportError', 'ModuleNotFoundError',
+            'SyntaxError', 'AttributeError', 'NameError', 'TypeError',
+            'File "', 'cannot import', 'No module named',
+        )
+        error_parts = []
+        for line in (stdout + "\n" + stderr).split('\n'):
+            line_s = line.strip()
+            if any(kw in line_s for kw in error_keywords):
+                error_parts.append(line_s)
+        
+        if error_parts:
+            error_msg = '\n'.join(error_parts[:10])
+        else:
+            error_msg = f"stdout(tail): {stdout[-500:]}\nstderr(tail): {stderr[-500:]}"
+        
+        full_output = stdout + "\n---STDERR---\n" + stderr
+        return passed, error_msg[:1000], full_output
 
     def _parse_broken_file_from_traceback(tb: str, written: list) -> Optional[str]:
         """Extract the broken file path from a Python traceback.
@@ -1737,7 +2157,7 @@ async def run_architecture_execution(
                 )
 
                 # Call the Implementer to fix
-                from .implementer import run_implementer_task
+                from .implementer import run_implementer_task, run_implementer_edit_task
                 try:
                     fix_result = await llm_call_fn(
                         provider_id=impl_provider,

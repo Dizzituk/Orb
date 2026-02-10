@@ -163,12 +163,14 @@ class JobState:
 
         if counts.get(SegmentStatus.COMPLETE.value, 0) == total:
             return "complete"
+        # v3.0: All segments approved = awaiting execution
+        if counts.get(SegmentStatus.APPROVED.value, 0) == total:
+            return "approved"
         if counts.get(SegmentStatus.FAILED.value, 0) == total:
             return "failed"
         if counts.get(SegmentStatus.FAILED.value, 0) > 0 or counts.get(SegmentStatus.BLOCKED.value, 0) > 0:
             if counts.get(SegmentStatus.COMPLETE.value, 0) > 0:
                 return "partial"
-            # All pending/blocked/failed with no completions — might still be running
             if counts.get(SegmentStatus.IN_PROGRESS.value, 0) > 0:
                 return "running"
             return "failed"

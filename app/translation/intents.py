@@ -789,6 +789,63 @@ INTENT_DEFINITIONS: Dict[CanonicalIntent, IntentDefinition] = {
     ),
     
     # -------------------------------------------------------------------------
+    # v5.4 PHASE 1B: UNIFIED PIPELINE COMMAND
+    # -------------------------------------------------------------------------
+    # Merges RUN_CRITICAL_PIPELINE_FOR_JOB and RUN_SEGMENT_LOOP.
+    # Always runs through the segment loop (which handles both single and
+    # multi-segment manifests). Trigger phrases cover both old commands.
+    
+    CanonicalIntent.RUN_PIPELINE: IntentDefinition(
+        intent=CanonicalIntent.RUN_PIPELINE,
+        trigger_phrases=[
+            "Run the pipeline",
+            "run the pipeline",
+            "Run pipeline",
+            "run pipeline",
+            "Run critical pipeline",
+            "run critical pipeline",
+            "Execute pipeline",
+            "execute pipeline",
+            "Start the pipeline",
+            "start the pipeline",
+            "Run segments",
+            "run segments",
+            "Execute segments",
+            "execute segments",
+        ],
+        trigger_patterns=[
+            r"^[Rr]un (?:the )?pipeline$",
+            r"^[Rr]un (?:the )?[Cc]ritical [Pp]ipeline$",
+            r"^[Rr]un (?:the )?[Cc]ritical [Pp]ipeline for job\s+",
+            r"^[Ee]xecute (?:the )?pipeline$",
+            r"^[Ee]xecute (?:the )?[Cc]ritical [Pp]ipeline$",
+            r"^[Ss]tart the pipeline$",
+            r"^[Rr]un\s+(?:the\s+)?segments?$",
+            r"^[Ee]xecute\s+(?:the\s+)?segments?$",
+            r"^[Rr]un\s+segment\s+loop$",
+            r"^[Rr]un\s+segmented\s+job$",
+        ],
+        requires_context=["job_id", "spec_id"],
+        requires_confirmation=True,
+        confirmation_prompt=(
+            "⚠️ HIGH-STAKES OPERATION\n"
+            "You are about to run the pipeline for the latest validated spec.\n"
+            "This will generate architecture and write files to your project.\n\n"
+            "Type 'confirm' or 'yes' to proceed."
+        ),
+        description="Run the unified pipeline (handles both single and multi-segment jobs)",
+        behavior=(
+            "Execute the validated spec through the pipeline:\n"
+            "1. Load the segment manifest (always present after SpecGate)\n"
+            "2. Process each segment through critical pipeline → critique → overwatcher\n"
+            "3. For single-segment jobs, runs the loop once (no extra overhead)\n"
+            "4. For multi-segment jobs, processes in dependency order with evidence threading\n"
+            "\n"
+            "Requires validated spec."
+        ),
+    ),
+    
+    # -------------------------------------------------------------------------
     # CHAT (no action)
     # -------------------------------------------------------------------------
     
@@ -839,7 +896,8 @@ def get_spec_gate_flow_intents() -> List[CanonicalIntent]:
     return [
         CanonicalIntent.WEAVER_BUILD_SPEC,
         CanonicalIntent.SEND_TO_SPEC_GATE,
-        CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB,
+        CanonicalIntent.RUN_PIPELINE,  # v5.4: unified
+        CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB,  # v5.4: deprecated alias
     ]
 
 

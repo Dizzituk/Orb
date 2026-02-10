@@ -292,40 +292,19 @@ def handle_command_execution(
         else:
             log_routing_failure(stage_trace, "Spec Gate stream handler not available", "generate_spec_gate_stream")
     
-    # --- Critical Pipeline ---
-    if intent == CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB:
-        if _CRITICAL_PIPELINE_AVAILABLE:
-            crit_provider, crit_model = _get_critical_pipeline_config()
-            print(f"[CRITICAL_PIPELINE_ROUTE] Using provider={crit_provider}, model={crit_model}")
-            if stage_trace:
-                stage_trace.enter_stage("critical_pipeline", provider=crit_provider, model=crit_model)
-            return StreamingResponse(
-                generate_critical_pipeline_stream(
-                    project_id=req.project_id,
-                    message=req.message,
-                    db=db,
-                    trace=trace,
-                    conversation_id=str(req.project_id),
-                ),
-                media_type="text/event-stream",
-                headers=sse_headers,
-            )
-        else:
-            log_routing_failure(
-                stage_trace,
-                "CRITICAL PIPELINE HANDLER NOT AVAILABLE - Command will NOT execute!",
-                "generate_critical_pipeline_stream",
-                "Check if app/llm/critical_pipeline_stream.py exists and imports correctly"
-            )
-            log_handler_availability()
-    
-    # --- Segment Loop (Phase 2 — Pipeline Segmentation) ---
-    if intent == CanonicalIntent.RUN_SEGMENT_LOOP:
+    # --- v5.4 PHASE 1B: Unified Pipeline Command ---
+    # RUN_PIPELINE is the canonical intent. RUN_CRITICAL_PIPELINE_FOR_JOB and
+    # RUN_SEGMENT_LOOP are backward-compatible aliases that route here too.
+    if intent in (
+        CanonicalIntent.RUN_PIPELINE,
+        CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB,
+        CanonicalIntent.RUN_SEGMENT_LOOP,
+    ):
         if _SEGMENT_LOOP_AVAILABLE:
             crit_provider, crit_model = _get_critical_pipeline_config()
-            print(f"[SEGMENT_LOOP_ROUTE] Using provider={crit_provider}, model={crit_model}")
+            print(f"[PIPELINE_ROUTE] v5.4 Unified pipeline — provider={crit_provider}, model={crit_model}")
             if stage_trace:
-                stage_trace.enter_stage("segment_loop", provider=crit_provider, model=crit_model)
+                stage_trace.enter_stage("pipeline", provider=crit_provider, model=crit_model)
             return StreamingResponse(
                 generate_segment_loop_stream(
                     project_id=req.project_id,
@@ -339,7 +318,7 @@ def handle_command_execution(
         else:
             log_routing_failure(
                 stage_trace,
-                "SEGMENT LOOP HANDLER NOT AVAILABLE",
+                "PIPELINE HANDLER NOT AVAILABLE (segment_loop_stream)",
                 "generate_segment_loop_stream",
                 "Check if app/orchestrator/segment_loop_stream.py exists and imports correctly"
             )

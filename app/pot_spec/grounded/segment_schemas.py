@@ -59,6 +59,7 @@ class SegmentStatus(str, Enum):
     """
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
+    APPROVED = "approved"       # v3.0: Architecture generated + critique passed, awaiting execution
     COMPLETE = "complete"
     FAILED = "failed"
     BLOCKED = "blocked"

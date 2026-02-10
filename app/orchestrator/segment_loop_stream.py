@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-SEGMENT_LOOP_STREAM_BUILD_ID = "2026-02-08-v1.0-initial"
+SEGMENT_LOOP_STREAM_BUILD_ID = "2026-02-10-v1.1-unified-pipeline"
 print(f"[SEGMENT_LOOP_STREAM_LOADED] BUILD_ID={SEGMENT_LOOP_STREAM_BUILD_ID}")
 
 # --- Internal imports ---
@@ -106,12 +106,13 @@ def _find_manifest_path(job_id: str) -> Optional[str]:
     return None
 
 
-def _find_latest_segmented_job(project_id: int, db: Session) -> Optional[str]:
+def _find_latest_job_with_manifest(project_id: int, db: Session) -> Optional[str]:
     """
-    Find the most recent job ID that has a segment manifest.
+    v5.4: Find the most recent job ID that has a segment manifest.
 
-    Scans the jobs directory for manifests. In future, this could
-    query the DB for jobs with segmented status.
+    Since Phase 1A (always-manifest), every validated spec produces a manifest,
+    whether single or multi-segment. Scans the jobs directory for manifests,
+    returns the most recently modified.
     """
     jobs_root = os.path.join(_artifact_root(), "jobs")
     if not os.path.isdir(jobs_root):
@@ -199,17 +200,17 @@ async def generate_segment_loop_stream(
         return _token(text + "\n")
 
     try:
-        yield _emit("🔀 **Segment Loop Executor**\n")
+        yield _emit("🔀 **Pipeline Executor**\n")
 
         # =================================================================
         # Step 1: Find the segmented job
         # =================================================================
 
         if not job_id:
-            job_id = _find_latest_segmented_job(project_id, db)
+            job_id = _find_latest_job_with_manifest(project_id, db)
 
         if not job_id:
-            yield _emit("❌ No segmented job found. Run SpecGate first with a large job.")
+            yield _emit("❌ No job with manifest found. Run SpecGate first to validate a spec.")
             yield _done(
                 provider=pipeline_provider, model=pipeline_model,
                 total_length=sum(len(p) for p in response_parts),

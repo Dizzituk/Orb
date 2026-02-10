@@ -119,7 +119,7 @@ def is_critical_pipeline_trigger(text: str) -> Tuple[bool, Optional[str]]:
     """
     result = check_message_intent(text)
     
-    if result.resolved_intent != CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB:
+    if result.resolved_intent not in (CanonicalIntent.RUN_PIPELINE, CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB):
         return False, None
     
     # Check if confirmation is pending
@@ -217,7 +217,8 @@ def _intent_to_action(intent: CanonicalIntent) -> Optional[str]:
         CanonicalIntent.ARCHITECTURE_MAP_STRUCTURE_ONLY: "generate_structure_map",
         CanonicalIntent.ARCHITECTURE_UPDATE_ATLAS_ONLY: "update_code_atlas",
         CanonicalIntent.START_SANDBOX_ZOMBIE_SELF: "start_sandbox_zombie",
-        CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB: "run_critical_pipeline",
+        CanonicalIntent.RUN_PIPELINE: "run_pipeline",  # v5.4: unified
+        CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB: "run_pipeline",  # v5.4: alias
         CanonicalIntent.OVERWATCHER_EXECUTE_CHANGES: "execute_overwatcher_changes",
         CanonicalIntent.CHAT_ONLY: None,
         CanonicalIntent.USER_BEHAVIOR_FEEDBACK: "log_feedback",

@@ -139,6 +139,21 @@ async def generate_critical_pipeline_stream(
     pipeline_provider = model_cfg["provider"]
     pipeline_model = model_cfg["model"]
 
+    # v5.5 PHASE 3C: Needle-based model selection — override for segments
+    _needle_model_override = None
+    if segment_context:
+        try:
+            from app.llm.critical_pipeline.needle_model_selector import select_model_for_segment
+            _needle_model_override = select_model_for_segment(
+                segment_context=segment_context,
+                grounding_data=segment_context.get("_grounding_data"),
+                default_config={"provider": pipeline_provider, "model": pipeline_model},
+            )
+            pipeline_provider = _needle_model_override["provider"]
+            pipeline_model = _needle_model_override["model"]
+        except (ImportError, Exception) as _nm_err:
+            logger.debug("[critical_pipeline] Needle model selector unavailable: %s", _nm_err)
+
     def _emit(text):
         response_parts.append(text)
         return _token(text)
@@ -239,6 +254,13 @@ async def generate_critical_pipeline_stream(
             if _seg_consumes:
                 seg_info += f"   \u2514\u2500 Consumes: interface contracts from upstream\n"
             yield _emit(seg_info)
+        # v5.5 PHASE 3C: Show model selection reason
+        if _needle_model_override:
+            _nm_tier = _needle_model_override.get("tier", "?")
+            _nm_reason = _needle_model_override.get("reason", "")
+            yield _emit(f"🧠 **Model tier:** `{_nm_tier}` → `{pipeline_model}`\n")
+            if _nm_reason:
+                yield _emit(f"   └─ {_nm_reason}\n")
 
         # =================================================================
         # Mechanical guard: pending_evidence / blocked / error
@@ -287,16 +309,18 @@ async def generate_critical_pipeline_stream(
         # If SpecGate decomposed this job into segments, the critical pipeline
         # should NOT process the parent spec as a blob. Redirect to segment loop.
         _spec_context = spec_data.get("context", {})
-        _is_segmented = (
-            _spec_context.get("segmented", False)
-            or spec_data.get("total_segments", 0) > 0
-        )
+        # v5.4: Check for MULTI-segment specs only. Single-segment manifests
+        # (Phase 1 always-manifest) should flow through normally.
         _total_segs = (
             spec_data.get("total_segments", 0)
             or _spec_context.get("total_segments", 0)
         )
+        _is_multi_segmented = (
+            _spec_context.get("segmented", False)
+            or _total_segs > 1
+        )
 
-        if _is_segmented and not segment_context:
+        if _is_multi_segmented and not segment_context:
             # This spec has segments but was called directly (not via segment loop).
             # The segment loop passes segment_context when calling per-segment.
             seg_msg = (
@@ -633,15 +657,80 @@ async def _handle_architecture(
         spec_constraints=spec_constraints,
     )
 
+    # =====================================================================
+    # v5.4 PHASE 2B: Inject segment scope + interface contract into prompt
+    # =====================================================================
+    _segment_injection = ""
+    if segment_context:
+        _si_parts = []
+
+        # Segment scope: constrain architecture to this segment's files
+        _si_files = segment_context.get("file_scope", [])
+        _si_reqs = segment_context.get("requirements", [])
+        _si_seg_id = segment_context.get("segment_id", "unknown")
+        _si_ac = segment_context.get("acceptance_criteria", [])
+
+        _si_parts.append(f"## Segment Scope: {_si_seg_id}\n")
+        _si_parts.append(
+            "**IMPORTANT**: You are generating architecture for ONE SEGMENT "
+            "of a multi-segment job, not the full specification. Only design "
+            "and produce code for the files listed below.\n"
+        )
+        if _si_files:
+            _si_parts.append("### Files in Scope (ONLY these files)")
+            for _f in _si_files:
+                _si_parts.append(f"- `{_f}`")
+            _si_parts.append("")
+        if _si_reqs:
+            _si_parts.append("### Segment Requirements")
+            for _r in _si_reqs[:15]:
+                _si_parts.append(f"- {_r}")
+            if len(_si_reqs) > 15:
+                _si_parts.append(f"- ... (+{len(_si_reqs)-15} more)")
+            _si_parts.append("")
+        if _si_ac:
+            _si_parts.append("### Acceptance Criteria")
+            for _a in _si_ac[:10]:
+                _si_parts.append(f"- {_a}")
+            if len(_si_ac) > 10:
+                _si_parts.append(f"- ... (+{len(_si_ac)-10} more)")
+            _si_parts.append("")
+
+        # Interface contract (Phase 2A output)
+        _si_contract = segment_context.get("interface_contract", "")
+        if _si_contract:
+            _si_parts.append(_si_contract)
+
+        # Upstream evidence (completed segments' output)
+        _si_evidence = segment_context.get("evidence", [])
+        if _si_evidence:
+            _si_parts.append("### Upstream Evidence (from completed segments)\n")
+            for _ev in _si_evidence[:10]:
+                if isinstance(_ev, dict):
+                    _ev_path = _ev.get("file_path", _ev.get("path", ""))
+                    _ev_sigs = _ev.get("signatures", [])
+                    _si_parts.append(f"**{_ev_path}**")
+                    for _sig in _ev_sigs[:5]:
+                        _si_parts.append(f"  - `{_sig}`")
+                elif isinstance(_ev, str):
+                    _si_parts.append(f"- {_ev}")
+            _si_parts.append("")
+
+        _segment_injection = "\n".join(_si_parts)
+
+    # v5.4 Phase 2B: Extract contract for critique injection
+    _segment_contract_for_critique = ""
+    if segment_context:
+        _segment_contract_for_critique = segment_context.get("interface_contract", "")
+
+    _user_content = f"Generate architecture for:\n\n{original_request}\n\n"
+    if _segment_injection:
+        _user_content += f"---\n\n{_segment_injection}\n---\n\n"
+    _user_content += f"Spec:\n{json.dumps(spec_data, indent=2)}"
+
     task_messages = [
         {"role": "system", "content": system_prompt},
-        {
-            "role": "user",
-            "content": (
-                f"Generate architecture for:\n\n{original_request}\n\n"
-                f"Spec:\n{json.dumps(spec_data, indent=2)}"
-            ),
-        },
+        {"role": "user", "content": _user_content},
     ]
 
     task = LLMTask(
@@ -721,6 +810,7 @@ async def _handle_architecture(
             spec_json=spec_json,
             spec_markdown=spec_markdown,
             use_json_critique=True,
+            segment_contract_markdown=_segment_contract_for_critique or None,
         )
     except Exception as e:
         logger.exception("[critical_pipeline] Pipeline failed: %s", e)

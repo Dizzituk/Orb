@@ -576,6 +576,7 @@ def check_critical_pipeline_trigger(text: str) -> Tier0RuleResult:
     text_lower = text.strip().lower()
     
     patterns = [
+        r"^run (?:the )?pipeline$",          # v5.4: new unified trigger
         r"^run (?:the )?critical pipeline$",
         r"^execute (?:the )?critical pipeline$",
         r"^start the pipeline$",
@@ -588,10 +589,10 @@ def check_critical_pipeline_trigger(text: str) -> Tier0RuleResult:
         if re.match(pattern, text_lower):
             return Tier0RuleResult(
                 matched=True,
-                intent=CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB,
+                intent=CanonicalIntent.RUN_PIPELINE,  # v5.4: unified pipeline
                 confidence=1.0,
-                rule_name="critical_pipeline",
-                reason="Critical pipeline command detected",
+                rule_name="run_pipeline",
+                reason="Pipeline command detected (unified)",
             )
     
     return Tier0RuleResult(matched=False)
@@ -655,10 +656,10 @@ def check_segment_loop_trigger(text: str) -> Tier0RuleResult:
         if re.match(pattern, text_lower):
             return Tier0RuleResult(
                 matched=True,
-                intent=CanonicalIntent.RUN_SEGMENT_LOOP,
+                intent=CanonicalIntent.RUN_PIPELINE,  # v5.4: unified pipeline
                 confidence=1.0,
-                rule_name="segment_loop",
-                reason="Segment loop execution command detected",
+                rule_name="run_pipeline",
+                reason="Pipeline command detected (unified)",
             )
     
     return Tier0RuleResult(matched=False)

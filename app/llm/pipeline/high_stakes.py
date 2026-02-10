@@ -625,6 +625,7 @@ async def run_high_stakes_with_critique(
     spec_json: Optional[str] = None,
     spec_markdown: Optional[str] = None,  # v5.0: Full POT spec with grounded evidence
     use_json_critique: bool = True,
+    segment_contract_markdown: Optional[str] = None,  # v5.4 Phase 2B: Interface contract for critique
 ) -> LLMResult:
     """Run high-stakes critique pipeline.
     
@@ -703,6 +704,47 @@ END OF POT SPEC - Architecture must implement EXACTLY the above
         logger.info("[high_stakes] v5.0 Injected FULL POT spec markdown (%d chars)", len(spec_markdown))
         print(f"[DEBUG] [high_stakes] v5.0 POT spec markdown injected ({len(spec_markdown)} chars)")
     
+    # =========================================================================
+    # v5.5 PHASE 4B: Foundation Templates — inject for greenfield CREATE jobs
+    # =========================================================================
+    try:
+        _spec_data_for_templates = {}
+        if spec_json:
+            try:
+                _spec_data_for_templates = json.loads(spec_json) if isinstance(spec_json, str) else (spec_json or {})
+            except Exception:
+                pass
+
+        _job_kind = _spec_data_for_templates.get("job_kind", "")
+        _impl_stack = _spec_data_for_templates.get("implementation_stack", {})
+
+        # Only inject for architecture/CREATE jobs (not refactors or simple edits)
+        if _job_kind in ("architecture", "create", "") and spec_markdown:
+            from app.llm.critical_pipeline.foundation_templates import match_templates
+
+            _tech_dict = {}
+            if isinstance(_impl_stack, dict):
+                _tech_dict = {k: str(v) for k, v in _impl_stack.items() if v}
+
+            _matched = match_templates(
+                tech_stack=_tech_dict,
+                spec_text=spec_markdown,
+                max_templates=4,
+            )
+
+            if _matched.count > 0:
+                _tmpl_markdown = _matched.format_for_prompt()
+                draft_messages.append({"role": "system", "content": _tmpl_markdown})
+                logger.info(
+                    "[high_stakes] v5.5 Foundation templates injected: %d templates (%d chars)",
+                    _matched.count, len(_tmpl_markdown),
+                )
+                print(f"[DEBUG] [high_stakes] v5.5 FOUNDATION TEMPLATES: {_matched.count} injected")
+    except ImportError:
+        logger.debug("[high_stakes] v5.5 Foundation templates module not available")
+    except Exception as _ft_err:
+        logger.warning("[high_stakes] v5.5 Foundation template matching failed (non-fatal): %s", _ft_err)
+
     # =========================================================================
     # v4.2 LEGACY: Extract metadata from spec_json (supplementary to POT spec)
     # =========================================================================
@@ -1053,6 +1095,7 @@ END OF POT SPEC - Architecture must implement EXACTLY the above
             envelope=envelope,
             env_context=env_context,
             store_architecture_fn=store_architecture_artifact,
+            segment_contract_markdown=segment_contract_markdown,
         )
         
         if trace:

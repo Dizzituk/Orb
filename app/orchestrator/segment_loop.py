@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-SEGMENT_LOOP_BUILD_ID = "2026-02-08-v1.1-overwatcher-wired"
+SEGMENT_LOOP_BUILD_ID = "2026-02-10-v1.5-needle-model-grounding"
 print(f"[SEGMENT_LOOP_LOADED] BUILD_ID={SEGMENT_LOOP_BUILD_ID}")
 
 # --- Internal imports ---
@@ -106,7 +106,9 @@ def can_execute_segment(segment: SegmentSpec, state: JobState) -> bool:
                 segment.segment_id, dep_id,
             )
             return False
-        if dep_state.status != SegmentStatus.COMPLETE.value:
+        # v3.0: APPROVED counts as dependency-met for architecture generation,
+        # and COMPLETE counts for execution. Both allow the next segment to proceed.
+        if dep_state.status not in (SegmentStatus.COMPLETE.value, SegmentStatus.APPROVED.value):
             return False
 
     return True
@@ -198,7 +200,7 @@ def mark_dependents_blocked(
         for dep_id in seg.dependencies:
             if dep_id in blocked_set:
                 seg_state = state.segments.get(seg.segment_id)
-                if seg_state and seg_state.status == SegmentStatus.PENDING.value:
+                if seg_state and seg_state.status in (SegmentStatus.PENDING.value, SegmentStatus.APPROVED.value):
                     update_segment_status(
                         state, seg.segment_id, SegmentStatus.BLOCKED, job_dir_path,
                         error=f"Blocked by failed segment {failed_segment_id}",
@@ -330,6 +332,7 @@ def build_segment_context(
     state: JobState,
     parent_spec: dict,
     job_dir_path: str,
+    contract_set: Any = None,
 ) -> Dict[str, Any]:
     """
     Build the execution context for a segment.
@@ -344,8 +347,31 @@ def build_segment_context(
         - file_scope: what files this segment owns
         - exposes: what this segment must create for downstream
         - consumes: what this segment needs from upstream
+        - interface_contract: (v5.4 Phase 2A) formatted contract markdown for this segment
+
+    Args:
+        contract_set: Optional SupervisorContractSet from the Critical Supervisor.
+                      If provided, the relevant contract is formatted and injected.
     """
     evidence = build_evidence_bundle(segment, state, job_dir_path)
+
+    # v5.4 PHASE 2A: Format interface contract for this segment
+    _contract_markdown = ""
+    if contract_set is not None:
+        try:
+            _contract_markdown = contract_set.format_contract_for_segment(segment.segment_id)
+        except Exception as _ce:
+            logger.warning("[build_segment_context] Failed to format contract for %s: %s",
+                           segment.segment_id, _ce)
+
+    # v5.5 PHASE 3C: Extract grounding_data for needle-based model selection.
+    # The selector reads _grounding_data.needle_estimate to choose the model tier.
+    _grounding_data = None
+    if isinstance(parent_spec, dict):
+        _grounding_data = parent_spec.get("grounding_data")
+        if _grounding_data is None:
+            # Try nested — spec_json might wrap it
+            _grounding_data = parent_spec.get("grounding")
 
     return {
         "segment_id": segment.segment_id,
@@ -358,6 +384,8 @@ def build_segment_context(
         "requirements": segment.requirements,
         "acceptance_criteria": segment.acceptance_criteria,
         "dependencies": segment.dependencies,
+        "interface_contract": _contract_markdown,
+        "_grounding_data": _grounding_data,
     }
 
 
@@ -526,6 +554,8 @@ async def run_segment_through_pipeline(
         llm_call_fn = create_overwatcher_llm_fn()
 
         # Run architecture execution for this segment
+        # v5.5 PHASE 4A: Pass interface contract for Job Checker
+        _seg_contract = segment_context.get("interface_contract", "")
         arch_result = await run_architecture_execution(
             spec=spec,
             architecture_content=arch_text,
@@ -533,6 +563,7 @@ async def run_segment_through_pipeline(
             job_id=seg_job_id,
             llm_call_fn=llm_call_fn,
             artifact_root=os.getenv("ORB_JOB_ARTIFACT_ROOT", "D:/Orb/jobs"),
+            interface_contract=_seg_contract,
         )
 
         if arch_result.get("success", False):
@@ -609,7 +640,132 @@ async def run_segmented_job(
         state = JobState(job_id=job_id, overall_status="failed")
         return state
 
-    _emit(f"📋 Manifest loaded: {manifest.total_segments} segments")
+    _emit(f"📋 Manifest loaded: {manifest.total_segments} segment(s)")
+
+    # =================================================================
+    # v5.4 PHASE 1C: Single-segment fast path
+    # =================================================================
+    # When the manifest has exactly 1 segment (non-segmented job wrapped
+    # by Phase 1A always-manifest), skip:
+    #   - State persistence (nothing to resume)
+    #   - Dependency checking (no deps)
+    #   - Evidence threading (no upstream)
+    #   - Contract verification (no interfaces)
+    #   - Integration checks (nothing to integrate)
+    #   - Blocker cascading (no dependents)
+    # Same pipeline stages, less ceremony.
+    
+    if manifest.total_segments == 1:
+        seg_spec = manifest.segments[0]
+        seg_id = seg_spec.segment_id
+        _emit(f"⚡ Single-segment fast path: {seg_id}")
+        _emit(f"  Files: {', '.join(seg_spec.file_scope[:5])}"
+               f"{'...' if len(seg_spec.file_scope) > 5 else ''}")
+        
+        # Build minimal context — no evidence bundle, no upstream
+        segment_context = {
+            "segment_id": seg_id,
+            "segment_spec": seg_spec.to_dict(),
+            "parent_spec": parent_spec,
+            "file_scope": seg_spec.file_scope,
+            "evidence": [],
+            "exposes": None,
+            "consumes": None,
+            "requirements": seg_spec.requirements,
+            "acceptance_criteria": seg_spec.acceptance_criteria,
+            "dependencies": [],
+        }
+        
+        try:
+            pipeline_result = await run_segment_through_pipeline(
+                segment=seg_spec,
+                segment_context=segment_context,
+                job_id=job_id,
+                db=db,
+                project_id=project_id,
+                on_progress=on_progress,
+            )
+        except Exception as e:
+            pipeline_result = {
+                "success": False,
+                "output_files": [],
+                "error": str(e),
+                "critique_warnings": [],
+            }
+            logger.exception("[SEGMENT_LOOP] Single-segment error: %s", e)
+        
+        # Build minimal final state (no disk persistence)
+        state = JobState(job_id=job_id)
+        state.segments[seg_id] = SegmentState(
+            segment_id=seg_id,
+            status=(
+                SegmentStatus.COMPLETE.value if pipeline_result["success"]
+                else SegmentStatus.FAILED.value
+            ),
+            output_files=pipeline_result.get("output_files", []),
+            error=pipeline_result.get("error"),
+        )
+        state.overall_status = "complete" if pipeline_result["success"] else "failed"
+        
+        output_count = len(pipeline_result.get("output_files", []))
+        if pipeline_result["success"]:
+            _emit(f"\n✅ Pipeline complete ({output_count} file(s) written)")
+        else:
+            _emit(f"\n❌ Pipeline failed: {pipeline_result.get('error', 'Unknown')}")
+        
+        logger.info(
+            "[SEGMENT_LOOP] v5.4 Single-segment fast path %s: %s",
+            state.overall_status, job_id,
+        )
+        return state
+    
+    # =================================================================
+    # Multi-segment path (existing logic)
+    # =================================================================
+
+    # --- v5.4 PHASE 2A: Critical Supervisor — Interface Contract Generation ---
+    # Before generating any architectures, call the Critical Supervisor to
+    # produce interface contracts. These contracts ensure independently
+    # generated segment architectures remain compatible.
+    _contract_set = None
+    try:
+        from app.orchestrator.critical_supervisor import (
+            generate_interface_contracts,
+            save_contracts,
+            load_contracts,
+            SupervisorContractSet,
+        )
+        _SUPERVISOR_AVAILABLE = True
+    except ImportError:
+        _SUPERVISOR_AVAILABLE = False
+        logger.debug("[SEGMENT_LOOP] Critical Supervisor not available")
+
+    if _SUPERVISOR_AVAILABLE:
+        # Check if contracts already exist (crash recovery)
+        _contract_set = load_contracts(job_dir_path)
+        if _contract_set and _contract_set.boundaries:
+            _emit(f"📋 Loaded existing contracts: {len(_contract_set.boundaries)} boundary(ies)")
+        else:
+            _emit("🔗 Running Critical Supervisor — generating interface contracts...")
+            try:
+                _contract_set = await generate_interface_contracts(
+                    job_id=job_id,
+                    spec_markdown=parent_spec.get("spot_markdown", "") if parent_spec else "",
+                    manifest_dict=manifest.to_dict(),
+                )
+                if _contract_set.boundaries:
+                    save_contracts(_contract_set, job_dir_path)
+                    _emit(f"✅ Generated {len(_contract_set.boundaries)} interface boundary(ies)")
+                    for _b in _contract_set.boundaries:
+                        _emit(f"  🔗 {_b.exposing_segment} → {', '.join(_b.consuming_segments)}: {_b.name} ({_b.kind})")
+                else:
+                    _emit("ℹ️ No cross-segment boundaries detected (segments may be independent)")
+                    if _contract_set.generation_notes:
+                        logger.info("[SEGMENT_LOOP] Supervisor notes: %s", _contract_set.generation_notes)
+            except Exception as sup_err:
+                logger.warning("[SEGMENT_LOOP] Critical Supervisor failed (non-fatal): %s", sup_err)
+                _emit(f"⚠️ Critical Supervisor failed (non-fatal): {sup_err}")
+                _contract_set = None
 
     # --- Initialise or resume state ---
     state = load_or_init_state(job_id, manifest)
@@ -639,6 +795,108 @@ async def run_segmented_job(
             _emit(f"🚫 [{idx}/{total}] {seg_id}: BLOCKED — {seg_state.error or 'dependency failed'}")
             continue
 
+        # --- v3.0: APPROVED segments — skip architecture, go straight to execution ---
+        if seg_state.status == SegmentStatus.APPROVED.value:
+            # v3.1: Check if dependencies failed/blocked BEFORE executing
+            if is_segment_blocked(seg_spec, state):
+                update_segment_status(
+                    state, seg_id, SegmentStatus.BLOCKED, job_dir_path,
+                    error="Dependency failed or blocked",
+                )
+                _emit(f"🚫 [{idx}/{total}] {seg_id}: BLOCKED by failed dependency (was APPROVED)")
+                continue
+            if not can_execute_segment(seg_spec, state):
+                _emit(f"⏳ [{idx}/{total}] {seg_id}: APPROVED but waiting on dependencies (skipping)")
+                continue
+
+            _emit(f"\n✅ [{idx}/{total}] {seg_id}: APPROVED — executing...")
+            _emit(f"  Files: {', '.join(seg_spec.file_scope[:5])}"
+                   f"{'...' if len(seg_spec.file_scope) > 5 else ''}")
+            update_segment_status(state, seg_id, SegmentStatus.IN_PROGRESS, job_dir_path)
+
+            # Load the saved architecture and execute directly
+            seg_dir = os.path.join(job_dir_path, "segments", seg_id)
+            arch_path = os.path.join(seg_dir, "arch", "arch_v1.md")
+            # Also try arch_v2 if revision happened
+            arch_v2_path = os.path.join(seg_dir, "arch", "arch_v2.md")
+            if os.path.isfile(arch_v2_path):
+                arch_path = arch_v2_path
+
+            if not os.path.isfile(arch_path):
+                update_segment_status(
+                    state, seg_id, SegmentStatus.FAILED, job_dir_path,
+                    error=f"Architecture file not found: {arch_path}",
+                )
+                _emit(f"  ❌ Architecture file missing: {arch_path}")
+                blocked = mark_dependents_blocked(state, seg_id, manifest, job_dir_path)
+                if blocked:
+                    _emit(f"  🚫 Blocked {len(blocked)} dependent segment(s)")
+                continue
+
+            with open(arch_path, 'r', encoding='utf-8') as f:
+                arch_text = f.read()
+            _emit(f"  📄 Loaded architecture: {arch_path} ({len(arch_text)} chars)")
+
+            # Execute via Overwatcher + Implementer
+            pipeline_result = {"success": False, "error": None, "output_files": []}
+            try:
+                if not _ARCH_EXECUTOR_AVAILABLE:
+                    pipeline_result["error"] = "Architecture executor not available"
+                    _emit(f"  ⚠️ Architecture executor not available")
+                else:
+                    spec = resolve_latest_spec(project_id, db)
+                    if spec is None:
+                        pipeline_result["error"] = f"No spec found for project {project_id}"
+                        _emit(f"  ⚠️ No spec found")
+                    else:
+                        llm_call_fn = create_overwatcher_llm_fn()
+                        seg_job_id = f"{job_id}__{seg_id}"
+                        # v5.5 PHASE 4A: Pass interface contract for Job Checker
+                        _seg_contract_md = segment_context.get("interface_contract", "") if segment_context else ""
+                        arch_result = await run_architecture_execution(
+                            spec=spec,
+                            architecture_content=arch_text,
+                            architecture_path=arch_path,
+                            job_id=seg_job_id,
+                            llm_call_fn=llm_call_fn,
+                            artifact_root=os.getenv("ORB_JOB_ARTIFACT_ROOT", "D:/Orb/jobs"),
+                            interface_contract=_seg_contract_md,
+                        )
+                        if arch_result.get("success", False):
+                            pipeline_result["success"] = True
+                            pipeline_result["output_files"] = arch_result.get("artifacts_written", [])
+                            _emit(f"  ✅ Overwatcher + Implementer completed ({len(pipeline_result['output_files'])} files)")
+                            for _of in pipeline_result['output_files']:
+                                _emit(f"    ✅ {_of}")
+                        else:
+                            pipeline_result["error"] = arch_result.get("error", "Unknown error")
+                            _emit(f"  ❌ Execution failed: {pipeline_result['error']}")
+            except Exception as e:
+                pipeline_result["error"] = f"Execution error: {e}"
+                logger.exception("[SEGMENT_LOOP] Execution error for approved %s", seg_id)
+                _emit(f"  ❌ Execution error: {e}")
+
+            # Handle result (same as normal flow)
+            if pipeline_result["success"]:
+                output_files = pipeline_result.get("output_files", [])
+                update_segment_status(
+                    state, seg_id, SegmentStatus.COMPLETE, job_dir_path,
+                    output_files=output_files,
+                )
+                _emit(f"  ✅ {seg_id}: COMPLETE ({len(output_files)} output file(s))")
+            else:
+                error_msg = pipeline_result.get("error", "Unknown")
+                update_segment_status(
+                    state, seg_id, SegmentStatus.FAILED, job_dir_path,
+                    error=error_msg,
+                )
+                _emit(f"  ❌ {seg_id}: FAILED — {error_msg}")
+                print(f"[SEGMENT_LOOP] v3.1 ❌ SEGMENT FAILED: {seg_id} — {error_msg}")
+                blocked = mark_dependents_blocked(state, seg_id, manifest, job_dir_path)
+                if blocked:
+                    _emit(f"  🚫 STOPPING: Blocked {len(blocked)} dependent segment(s): {blocked}")
+                    print(f"[SEGMENT_LOOP] v3.1 🚫 BLOCKED dependents: {blocked}")
+            continue  # v3.1: CRITICAL — must continue after APPROVED handling to avoid fall-through
         # --- Check if segment should be blocked ---
         if is_segment_blocked(seg_spec, state):
             update_segment_status(
@@ -662,9 +920,10 @@ async def run_segmented_job(
         # Mark IN_PROGRESS
         update_segment_status(state, seg_id, SegmentStatus.IN_PROGRESS, job_dir_path)
 
-        # Build execution context with upstream evidence
+        # Build execution context with upstream evidence + interface contracts
         segment_context = build_segment_context(
             seg_spec, state, parent_spec, job_dir_path,
+            contract_set=_contract_set,
         )
 
         # Run through pipeline
@@ -688,23 +947,30 @@ async def run_segmented_job(
 
         # --- Handle result ---
         if pipeline_result["success"]:
-            # Collect output files
-            output_files = pipeline_result.get("output_files", [])
-            if not output_files:
-                output_files = collect_segment_outputs(seg_id, job_dir_path)
+            # v3.0: Check if segment is awaiting approval (architecture generated but not executed)
+            if pipeline_result.get("awaiting_approval", False):
+                update_segment_status(
+                    state, seg_id, SegmentStatus.APPROVED, job_dir_path,
+                )
+                _emit(f"  ✅ {seg_id}: APPROVED — architecture ready for review")
+            else:
+                # Collect output files
+                output_files = pipeline_result.get("output_files", [])
+                if not output_files:
+                    output_files = collect_segment_outputs(seg_id, job_dir_path)
 
-            # Mark COMPLETE
-            update_segment_status(
-                state, seg_id, SegmentStatus.COMPLETE, job_dir_path,
-                output_files=output_files,
-            )
+                # Mark COMPLETE
+                update_segment_status(
+                    state, seg_id, SegmentStatus.COMPLETE, job_dir_path,
+                    output_files=output_files,
+                )
 
-            # Verify interface contracts
-            contract_warnings = verify_contracts_fulfilled(seg_id, state, manifest)
-            if contract_warnings:
-                _emit(f"  ⚠️ Contract warnings: {len(contract_warnings)}")
+                # Verify interface contracts
+                contract_warnings = verify_contracts_fulfilled(seg_id, state, manifest)
+                if contract_warnings:
+                    _emit(f"  ⚠️ Contract warnings: {len(contract_warnings)}")
 
-            _emit(f"  ✅ {seg_id}: COMPLETE ({len(output_files)} output file(s))")
+                _emit(f"  ✅ {seg_id}: COMPLETE ({len(output_files)} output file(s))")
 
         else:
             error_msg = pipeline_result.get("error", "Unknown error")
@@ -720,6 +986,61 @@ async def run_segmented_job(
             blocked = mark_dependents_blocked(state, seg_id, manifest, job_dir_path)
             if blocked:
                 _emit(f"  🚫 Blocked {len(blocked)} dependent segment(s): {blocked}")
+
+    # --- v5.4 PHASE 2C: Cross-Segment Cohesion Check ---
+    # After architecture generation, before execution. Runs when 2+ segments
+    # have architectures (APPROVED or COMPLETE). Calls Opus 4.6 to verify
+    # all imports resolve, names match, data shapes are compatible.
+    _approved_seg_ids = [
+        sid for sid, ss in state.segments.items()
+        if ss.status in (SegmentStatus.APPROVED.value, SegmentStatus.COMPLETE.value)
+    ]
+    if len(_approved_seg_ids) >= 2:
+        _emit(f"\n{'='*50}")
+        _emit("🔍 Running cross-segment cohesion check...")
+        try:
+            from app.orchestrator.cohesion_check import (
+                run_cohesion_check,
+                save_cohesion_result,
+            )
+
+            # Load contract JSON if available
+            _cohesion_contract_json = None
+            if _contract_set and _contract_set.boundaries:
+                _cohesion_contract_json = _contract_set.to_json()
+
+            _cohesion_result = await run_cohesion_check(
+                job_id=job_id,
+                job_dir=job_dir_path,
+                segment_ids=_approved_seg_ids,
+                contract_json=_cohesion_contract_json,
+            )
+            save_cohesion_result(_cohesion_result, job_dir_path)
+
+            if _cohesion_result.status == "pass":
+                _emit("✅ Cohesion check PASSED — all segments are compatible")
+            elif _cohesion_result.status == "fail":
+                _n_blocking = len(_cohesion_result.blocking_issues)
+                _n_warning = len(_cohesion_result.warning_issues)
+                _emit(f"❌ Cohesion check FAILED — {_n_blocking} blocking, {_n_warning} warning(s)")
+                for _ci in _cohesion_result.blocking_issues:
+                    _emit(f"  🚫 {_ci.issue_id} [{_ci.category}] {_ci.source_segment} ↔ {_ci.related_segment}")
+                    _emit(f"     {_ci.description}")
+                    if _ci.suggested_fix:
+                        _emit(f"     Fix: {_ci.suggested_fix}")
+                for _ci in _cohesion_result.warning_issues:
+                    _emit(f"  ⚠️ {_ci.issue_id} [{_ci.category}] {_ci.description}")
+                _regen_segs = _cohesion_result.segments_needing_regen
+                if _regen_segs:
+                    _emit(f"\n  💡 Segment(s) needing re-generation: {', '.join(_regen_segs)}")
+            else:
+                _emit(f"⚠️ Cohesion check error: {_cohesion_result.notes or 'unknown'}")
+
+        except ImportError:
+            logger.debug("[SEGMENT_LOOP] Cohesion check module not available")
+        except Exception as _coh_err:
+            logger.warning("[SEGMENT_LOOP] Cohesion check failed (non-fatal): %s", _coh_err)
+            _emit(f"⚠️ Cohesion check error (non-fatal): {_coh_err}")
 
     # --- Cross-segment integration check (Phase 3) ---
     any_segments_complete = any(
@@ -777,19 +1098,19 @@ async def run_segmented_job(
     save_state(state, job_dir_path)
 
     counts = state.count_by_status()
-    # v3.0: Count segments awaiting approval
-    awaiting_count = sum(
-        1 for seg_id in state.segments
-        if state.segments[seg_id].get("awaiting_approval", False)
-    ) if hasattr(state, 'segments') and isinstance(getattr(state, 'segments', None), dict) else 0
+    # v3.0: Count segments awaiting execution (APPROVED status)
+    approved_count = sum(
+        1 for seg in state.segments.values()
+        if seg.status == SegmentStatus.APPROVED.value
+    )
     
     _emit(f"\n{'='*50}")
     _emit(f"📊 SEGMENTED EXECUTION COMPLETE")
     _emit(f"   Status: {state.overall_status.upper()}")
     _emit(f"   Complete: {counts.get('complete', 0)}/{total}")
-    if awaiting_count:
-        _emit(f"   ⏸️ Awaiting approval: {awaiting_count} segment(s)")
-        _emit(f"   Review architectures in jobs/ then say 'Astra, command: execute segments'")
+    if approved_count:
+        _emit(f"   ⏸️ Approved (awaiting execution): {approved_count} segment(s)")
+        _emit(f"   Say 'Astra, command: run segments' to execute approved segments")
     if counts.get("failed", 0):
         _emit(f"   Failed: {counts.get('failed', 0)}")
     if counts.get("blocked", 0):

@@ -293,7 +293,9 @@ async def stream_chat(
 
 # v5.1: Explicit command intents that should NOT be intercepted by flow state
 _EXPLICIT_COMMAND_INTENTS = {
-    CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB,
+    CanonicalIntent.RUN_PIPELINE,  # v5.4: unified pipeline
+    CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB,  # v5.4: deprecated alias
+    CanonicalIntent.RUN_SEGMENT_LOOP,  # v5.4: deprecated alias
     CanonicalIntent.OVERWATCHER_EXECUTE_CHANGES,
     CanonicalIntent.ARCHITECTURE_MAP_WITH_FILES,
     CanonicalIntent.ARCHITECTURE_MAP_STRUCTURE_ONLY,
@@ -369,7 +371,8 @@ def _handle_flow_state_routing(req, db, trace, conversation_id, stage_trace, tra
 # If the user says one of these, don't auto-reweave — let it through.
 _WEAVER_EXIT_INTENTS = {
     CanonicalIntent.SEND_TO_SPEC_GATE,
-    CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB,
+    CanonicalIntent.RUN_PIPELINE,  # v5.4: unified pipeline
+    CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB,  # v5.4: deprecated alias
     CanonicalIntent.OVERWATCHER_EXECUTE_CHANGES,
 }
 
@@ -552,6 +555,7 @@ def _handle_blocked_command(translation_result, stage_trace):
     
     # Only return hard error for high-stakes commands
     if intent not in (
+        CanonicalIntent.RUN_PIPELINE,
         CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB,
         CanonicalIntent.OVERWATCHER_EXECUTE_CHANGES,
         CanonicalIntent.SEND_TO_SPEC_GATE,

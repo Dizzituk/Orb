@@ -147,11 +147,21 @@ def intent_to_routing_info(intent: "CanonicalIntent") -> Optional[dict]:
         },
         # v1.2: Dynamic config from stage_models
         CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB: {
-            "type": "high_stakes.critical_pipeline",
+            "type": "local.pipeline",
             "provider": critical.provider,
             "model": critical.model,
             "reason": (
-                "Translation layer: RUN CRITICAL PIPELINE "
+                "Translation layer: RUN PIPELINE (legacy critical_pipeline alias) "
+                f"({critical.provider}/{critical.model})"
+            ),
+        },
+        # v5.4 PHASE 1B: Unified pipeline command
+        CanonicalIntent.RUN_PIPELINE: {
+            "type": "local.pipeline",
+            "provider": critical.provider,
+            "model": critical.model,
+            "reason": (
+                "Translation layer: RUN PIPELINE "
                 f"({critical.provider}/{critical.model})"
             ),
         },
@@ -182,13 +192,13 @@ def intent_to_routing_info(intent: "CanonicalIntent") -> Optional[dict]:
                 f"({overwatcher.provider}/{overwatcher.model})"
             ),
         },
-        # Phase 2: Segment loop execution (v1.8)
+        # Phase 2: Segment loop execution (v1.8) — deprecated, use RUN_PIPELINE
         CanonicalIntent.RUN_SEGMENT_LOOP: {
-            "type": "local.segment_loop",
+            "type": "local.pipeline",
             "provider": critical.provider,
             "model": critical.model,
             "reason": (
-                "Translation layer: SEGMENT LOOP EXECUTE "
+                "Translation layer: RUN PIPELINE (legacy segment_loop alias) "
                 f"({critical.provider}/{critical.model})"
             ),
         },

@@ -80,6 +80,19 @@ STAGE_DEFAULTS: Dict[str, Tuple[str, str, int, int]] = {
     "OVERWATCHER":        ("openai",    "gpt-4.1",                    1200,  60),
     "CRITICAL_PIPELINE":  ("anthropic", "claude-sonnet-4-5-20250929", 60000, 600),
     
+    # Supervisor (Phase 2A — interface contracts between segments)
+    "CRITICAL_SUPERVISOR": ("anthropic", "claude-opus-4-5-20251101", 8000, 120),
+    "COHESION_CHECK":      ("anthropic", "claude-opus-4-5-20251101", 8000, 180),
+    "NEEDLE_CLASSIFIER":   ("openai",    "gpt-4.1-mini",               500,  30),
+    "SMART_SEGMENTATION":  ("openai",    "gpt-4.1-mini",               2000, 45),
+    # Phase 3C: Needle-based model tiers for architecture generation
+    "ARCH_TIER_LOW":       ("anthropic", "claude-sonnet-4-5-20250929",  16000, 300),
+    "ARCH_TIER_HIGH":      ("anthropic", "claude-opus-4-5-20251101",    16000, 600),
+    # Phase 4A: Post-write verification
+    "JOB_CHECKER":         ("anthropic", "claude-sonnet-4-5-20250929",  1500, 45),
+    # Phase 4C: Weaver conversation compaction
+    "WEAVER_COMPACTION":   ("openai",    "gpt-4.1-mini",               1500, 45),
+    
     # Support stages
     "CHAT":               ("openai",    "gpt-4.1-mini",               4000,  30),
     "ARCHMAP":            ("anthropic", "claude-opus-4-5-20251101",   60000, 300),

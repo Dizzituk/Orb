@@ -527,6 +527,121 @@ def _distribute_requirements(
 
 
 # =============================================================================
+# v5.5 PHASE 3B: Build manifest from concept-aware groupings
+# =============================================================================
+
+def _build_manifest_from_concepts(
+    concept_groups: List[Dict[str, Any]],
+    file_scope: List[str],
+    requirements: List[str],
+    acceptance_criteria: List[str],
+    parent_spec_id: Optional[str],
+    parent_spec_hash: Optional[str],
+    arch_paths: List[str],
+) -> Optional["SegmentManifest"]:
+    """
+    Build a SegmentManifest from concept-aware groupings (Phase 3B).
+
+    Takes the output of smart_segmentation.generate_concept_segments() and
+    converts it into the same SegmentManifest format that the legacy
+    layer-based path produces.
+
+    Args:
+        concept_groups: List of dicts with keys: title, files, concepts, depends_on
+        file_scope: Full file scope (for validation)
+        requirements: Job requirements
+        acceptance_criteria: Job acceptance criteria
+        parent_spec_id/parent_spec_hash: Parent spec identifiers
+        arch_paths: Known architecture file paths for verification
+    """
+    segments: List[SegmentSpec] = []
+    index_to_seg_id: Dict[int, str] = {}
+
+    for idx, group in enumerate(concept_groups):
+        title = group.get("title", f"Segment {idx + 1}")
+        files = group.get("files", [])
+        concepts = group.get("concepts", [])
+
+        # Generate segment ID from title
+        # e.g. "Voice Transcription" → "seg-01-voice-transcription"
+        slug = title.lower().replace(" ", "-").replace("_", "-")
+        slug = re.sub(r'[^a-z0-9\-]', '', slug)[:30]
+        seg_id = f"seg-{idx + 1:02d}-{slug}" if slug else f"seg-{idx + 1:02d}"
+        index_to_seg_id[idx] = seg_id
+
+        # Evidence files: files from dependency groups that this segment reads
+        dep_indices = group.get("depends_on", [])
+        evidence_files: List[str] = []
+        for dep_idx in dep_indices:
+            if 0 <= dep_idx < len(concept_groups):
+                for dep_file in concept_groups[dep_idx].get("files", []):
+                    if dep_file not in files:
+                        evidence_files.append(dep_file)
+
+        # File verification (same as legacy path)
+        grounding = None
+        try:
+            grounding = verify_segment_files(
+                file_scope=files,
+                evidence_files=evidence_files,
+                known_arch_paths=set(arch_paths) if arch_paths else None,
+            )
+        except Exception as verify_err:
+            logger.warning("[segmentation] v5.5 File verification failed for %s: %s",
+                           seg_id, verify_err)
+
+        segment = SegmentSpec(
+            segment_id=seg_id,
+            title=f"{title} — {len(files)} file(s)",
+            parent_spec_id=parent_spec_id,
+            requirements=[],  # Populated below
+            acceptance_criteria=[],
+            file_scope=files,
+            evidence_files=evidence_files,
+            dependencies=[],  # Resolved below after all IDs are known
+            estimated_files=len(files),
+            grounding_data=grounding,
+        )
+        segments.append(segment)
+
+    # Resolve dependency indices → segment IDs
+    for idx, group in enumerate(concept_groups):
+        dep_indices = group.get("depends_on", [])
+        dep_ids = [index_to_seg_id[d] for d in dep_indices
+                    if d in index_to_seg_id and d != idx]
+        segments[idx].dependencies = dep_ids
+
+    # Distribute requirements
+    requirement_map = _distribute_requirements(requirements, segments)
+    seg_id_to_seg = {s.segment_id: s for s in segments}
+    for req, seg_ids in requirement_map.items():
+        for sid in seg_ids:
+            if sid in seg_id_to_seg:
+                seg_id_to_seg[sid].requirements.append(req)
+
+    # Build manifest
+    manifest = SegmentManifest(
+        parent_spec_id=parent_spec_id,
+        parent_spec_hash=parent_spec_hash,
+        segments=segments,
+        requirement_map=requirement_map,
+    )
+
+    # Validate
+    valid, errors = validate_manifest(manifest)
+    if not valid:
+        logger.warning(
+            "[segmentation] v5.5 Concept manifest validation failed: %s — "
+            "falling back to legacy layer-based segmentation",
+            errors,
+        )
+        return None  # Caller falls through to legacy path
+
+    logger.info("[segmentation] v5.5 Concept manifest generated: %s", manifest.summary())
+    return manifest
+
+
+# =============================================================================
 # MAIN ENTRY POINT
 # =============================================================================
 
@@ -536,20 +651,22 @@ def generate_segments(
     acceptance_criteria: List[str],
     parent_spec_id: Optional[str] = None,
     parent_spec_hash: Optional[str] = None,
+    concept_groups: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[SegmentManifest]:
     """
     Generate a segmented manifest from a job's file scope.
     
     This is the main segmentation entry point. It:
     1. Checks if segmentation is needed
-    2. Loads architecture map for path resolution (v1.1)
-    3. Groups files by architectural layer
-    4. Infers dependency ordering
-    5. Merges small segments
-    6. Generates SegmentSpec objects
-    7. Runs file verification per segment (v1.1)
-    8. Distributes requirements to segments (v1.1)
-    9. Builds and validates the manifest
+    2. (v5.5) If concept_groups provided, uses concept-aware grouping (Phase 3B)
+    3. Otherwise loads architecture map for path resolution (v1.1)
+    4. Groups files by architectural layer (legacy fallback)
+    5. Infers dependency ordering
+    6. Merges small segments
+    7. Generates SegmentSpec objects
+    8. Runs file verification per segment (v1.1)
+    9. Distributes requirements to segments (v1.1)
+    10. Builds and validates the manifest
     
     Returns None if segmentation is not needed (job runs single-pass).
     Returns None if validation fails (graceful fallback to single-pass).
@@ -560,18 +677,42 @@ def generate_segments(
         acceptance_criteria: Job acceptance criteria
         parent_spec_id: ID of the parent SPoT spec
         parent_spec_hash: Hash of the parent SPoT spec
+        concept_groups: (v5.5 Phase 3B) Pre-computed concept segments from
+                        smart_segmentation.py. List of dicts with keys:
+                        title, files, concepts, depends_on.
     """
-    # Check if segmentation is needed
-    should_segment, reason = needs_segmentation(file_scope, requirements)
-    if not should_segment:
-        logger.info("[segmentation] Skipping segmentation: %s", reason)
-        return None
-
-    logger.info("[segmentation] Segmentation triggered: %s", reason)
+    # Check if segmentation is needed (skipped if concept_groups already provided)
+    if concept_groups is None:
+        should_segment, reason = needs_segmentation(file_scope, requirements)
+        if not should_segment:
+            logger.info("[segmentation] Skipping segmentation: %s", reason)
+            return None
+        logger.info("[segmentation] Segmentation triggered (legacy): %s", reason)
+    else:
+        logger.info("[segmentation] Using concept-aware grouping (Phase 3B): %d groups",
+                     len(concept_groups))
 
     # v1.1: Load architecture map for path resolution and boundary detection
     arch_paths = _load_architecture_file_list()
 
+    # =====================================================================
+    # v5.5 PHASE 3B: Concept-aware grouping (preferred path)
+    # =====================================================================
+    if concept_groups and len(concept_groups) >= 2:
+        logger.info("[segmentation] v5.5 Building segments from concept groups")
+        return _build_manifest_from_concepts(
+            concept_groups=concept_groups,
+            file_scope=file_scope,
+            requirements=requirements,
+            acceptance_criteria=acceptance_criteria,
+            parent_spec_id=parent_spec_id,
+            parent_spec_hash=parent_spec_hash,
+            arch_paths=arch_paths,
+        )
+
+    # =====================================================================
+    # Legacy path: layer-based grouping
+    # =====================================================================
     # Group files by architectural layer
     layer_groups = group_files_by_layer(file_scope)
     layers_present = list(layer_groups.keys())

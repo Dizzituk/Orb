@@ -54,6 +54,7 @@ APPROVED_ARCHITECTURE_BLOCKER_TYPES = {
     "repo_mismatch",           # Invented modules/endpoints that don't exist
     "operational_gap",         # Locking/migration/timeout ignored
     "internal_contradiction",  # Architecture contradicts itself
+    "contract_violation",      # v5.4: Violates interface contract from Critical Supervisor
     
     # v1.2 (2026-01-22): Spec-Anchored Compliance Types (CRITICAL FIX)
     # These catch architecture drift from SPoT requirements
@@ -401,6 +402,7 @@ def build_json_critique_prompt(
     spec_json: Optional[str] = None,
     spec_markdown: Optional[str] = None,
     env_context: Optional[Dict[str, Any]] = None,
+    segment_contract_markdown: Optional[str] = None,
 ) -> str:
     """Build prompt for structured JSON critique output.
     
@@ -511,6 +513,34 @@ NOTE: If the POT spec explicitly requests something (like external API integrati
 that OVERRIDES generic environment constraints. The spec is authoritative.
 """
 
+    # v5.4 PHASE 2B: Interface contract compliance check
+    _contract_section = ""
+    if segment_contract_markdown:
+        _contract_section = f"""
+INTERFACE CONTRACT COMPLIANCE (v5.4 — BLOCKING):
+{'='*60}
+This architecture is for ONE SEGMENT of a multi-segment job.
+The Critical Supervisor has defined interface contracts that this
+segment MUST conform to. Violations are BLOCKING because they
+will cause cross-segment integration failures.
+
+{segment_contract_markdown}
+
+CONTRACT COMPLIANCE CHECKS (all BLOCKING if violated):
+1. Every interface listed under "MUST EXPOSE" exists in the architecture
+2. Names match EXACTLY (class names, function names, file paths)
+3. Signatures match EXACTLY (parameters, types, return types)
+4. Import paths match EXACTLY
+5. Data shapes match EXACTLY (fields, types)
+6. Interfaces listed under "CONSUMES" are imported correctly
+7. No renaming, no "creative interpretation" of contract names
+
+If the architecture violates ANY contract term, mark it as a BLOCKING issue
+with category "contract_violation" and reference the specific contract term.
+{'='*60}
+
+"""
+
     return f"""You are a senior architecture reviewer. Critique the following architecture document.
 {pot_spec_section}
 
@@ -566,7 +596,7 @@ RULES:
 6. overall_pass is derived: true if blocking_issues is empty, false otherwise
 7. spec_coverage maps each spec requirement to: covered, partial, missing, or not_applicable
 
-ORIGINAL REQUEST:
+{_contract_section}ORIGINAL REQUEST:
 {original_request}
 {spec_section}{env_section}
 ARCHITECTURE DOCUMENT TO CRITIQUE:

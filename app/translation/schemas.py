@@ -56,7 +56,10 @@ class CanonicalIntent(str, Enum):
     # =========================================================================
     
     # Pipeline control (high-stakes)
-    RUN_CRITICAL_PIPELINE_FOR_JOB = "RUN_CRITICAL_PIPELINE_FOR_JOB"
+    RUN_CRITICAL_PIPELINE_FOR_JOB = "RUN_CRITICAL_PIPELINE_FOR_JOB"  # v5.4: deprecated alias — use RUN_PIPELINE
+    
+    # v5.4 PHASE 1B: Unified pipeline command — always runs through segment loop
+    RUN_PIPELINE = "RUN_PIPELINE"
     
     # Overwatcher (applies validated spec + pipeline result)
     OVERWATCHER_EXECUTE_CHANGES = "OVERWATCHER_EXECUTE_CHANGES"
@@ -120,7 +123,7 @@ class CanonicalIntent(str, Enum):
     # =========================================================================
 
     # Execute segmented job through the pipeline (segment-by-segment)
-    RUN_SEGMENT_LOOP = "RUN_SEGMENT_LOOP"
+    RUN_SEGMENT_LOOP = "RUN_SEGMENT_LOOP"  # v5.4: deprecated alias — use RUN_PIPELINE
 
 
 class LatencyTier(str, Enum):

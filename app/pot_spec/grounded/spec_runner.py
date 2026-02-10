@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-SPEC_RUNNER_BUILD_ID = "2026-02-08-v5.3-revert-scope-hardcoding-add-zone-todo"
+SPEC_RUNNER_BUILD_ID = "2026-02-10-v5.4-always-manifest-phase1a"
 print(f"[SPEC_RUNNER_LOADED] BUILD_ID={SPEC_RUNNER_BUILD_ID}")
 
 
@@ -887,6 +887,64 @@ def _write_segmentation_output(job_id: str, manifest) -> None:
         logger.info("[spec_runner] v4.8 Wrote segment spec: %s", seg_spec_path)
 
 
+def _build_single_segment_manifest(
+    spec_markdown: str,
+    spec_id: str,
+    spec_hash: str,
+    goal: str,
+    file_scope: List[str],
+    requirements: List[str],
+    acceptance_criteria: List[str],
+    job_kind: str = "architecture",
+) -> "SegmentManifest":
+    """
+    v5.4 PHASE 1: Wrap a non-segmented spec into a single-segment manifest.
+    
+    This ensures SpecGate ALWAYS outputs a manifest, whether the job has 1 or N
+    segments. Downstream consumers (segment loop, critical pipeline) only need
+    to handle one format.
+    
+    The single segment gets:
+    - segment_id: "seg-01" (consistent with multi-segment naming)
+    - title: the goal from the spec
+    - No dependencies (it's the only segment)
+    - No interface contracts (nothing to expose/consume)
+    - Full file scope and requirements from the parent spec
+    """
+    from .segment_schemas import SegmentManifest, SegmentSpec
+    
+    segment = SegmentSpec(
+        segment_id="seg-01",
+        title=goal or "Single-segment job",
+        parent_spec_id=spec_id,
+        requirements=requirements,
+        file_scope=file_scope,
+        evidence_files=[],
+        dependencies=[],
+        exposes=None,
+        consumes=None,
+        acceptance_criteria=acceptance_criteria,
+        estimated_files=len(file_scope),
+    )
+    
+    manifest = SegmentManifest(
+        parent_spec_id=spec_id,
+        parent_spec_hash=spec_hash,
+        segments=[segment],
+        requirement_map={r: ["seg-01"] for r in requirements},
+        total_segments=1,
+        total_files=len(file_scope),
+        manifest_version="1.0",
+    )
+    
+    logger.info(
+        "[spec_runner] v5.4 Built single-segment manifest: spec_id=%s, files=%d",
+        spec_id, len(file_scope),
+    )
+    
+    return manifest
+
+
 # =============================================================================
 # MAIN ENTRY POINT
 # =============================================================================
@@ -1129,13 +1187,16 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
                 )
         
         # =================================================================
-        # STEP 4b: Segmentation check (Phase 1 — Pipeline Segmentation)
+        # STEP 4b: Segmentation check (Phase 3A — Needle-Count Classification)
         # =================================================================
-        # If the spec is large enough, SpecGate decomposes it into segments.
-        # Each segment goes through the pipeline independently.
-        # If segmentation fails validation, we fall back to single-pass.
+        # v5.5 PHASE 3A: Replace crude file-count trigger with needle-count
+        # classification. A lightweight LLM call estimates the cognitive load
+        # of the spec, then segmentation is triggered if needles >= 5.
+        # Falls back to the legacy needs_segmentation() if needle classifier
+        # is unavailable.
         
         segmentation_manifest = None
+        _needle_estimate = None
         try:
             from .segmentation import needs_segmentation, generate_segments
             
@@ -1145,14 +1206,70 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
             )
             
             if _file_scope:
-                _should_segment, _seg_reason = needs_segmentation(_file_scope)
+                # v5.5: Try needle classifier first
+                _should_segment = False
+                _seg_reason = ""
+                try:
+                    from .needle_classifier import classify_needles
+                    _needle_estimate = await classify_needles(
+                        spec_markdown=spot_markdown,
+                        file_scope=_file_scope,
+                    )
+                    logger.info(
+                        "[spec_runner] v5.5 Needle estimate: %d (%s) — blast=%d concept=%d interface=%d",
+                        _needle_estimate.needle_estimate,
+                        _needle_estimate.difficulty_tier,
+                        _needle_estimate.blast_radius_count,
+                        _needle_estimate.concept_count,
+                        _needle_estimate.interface_count,
+                    )
+                    print(
+                        f"[spec_runner] v5.5 NEEDLES: {_needle_estimate.needle_estimate} "
+                        f"({_needle_estimate.difficulty_tier}) — "
+                        f"blast={_needle_estimate.blast_radius_count} "
+                        f"concept={_needle_estimate.concept_count} "
+                        f"interface={_needle_estimate.interface_count}"
+                    )
+                    _should_segment = _needle_estimate.needs_segmentation
+                    _seg_reason = (
+                        f"Needle count {_needle_estimate.needle_estimate} "
+                        f"({_needle_estimate.difficulty_tier}): "
+                        f"blast={_needle_estimate.blast_radius_count}, "
+                        f"concept={_needle_estimate.concept_count}, "
+                        f"interface={_needle_estimate.interface_count}"
+                    )
+                except (ImportError, Exception) as _nc_err:
+                    logger.debug("[spec_runner] Needle classifier unavailable: %s — using legacy", _nc_err)
+                    _should_segment, _seg_reason = needs_segmentation(_file_scope)
+
                 if _should_segment:
-                    logger.info("[spec_runner] v4.8 Segmentation triggered: %s", _seg_reason)
-                    print(f"[spec_runner] v4.8 SEGMENTATION: {_seg_reason}")
+                    logger.info("[spec_runner] v5.5 Segmentation triggered: %s", _seg_reason)
+                    print(f"[spec_runner] v5.5 SEGMENTATION: {_seg_reason}")
                     
                     # Extract requirements and acceptance criteria from spec
                     _requirements = _extract_requirements_from_spec(spot_markdown)
                     _acceptance = _extract_acceptance_from_spec(spot_markdown)
+                    
+                    # v5.5 PHASE 3B: Try concept-aware grouping first
+                    _concept_groups = None
+                    _target_segs = _needle_estimate.recommended_segment_count if _needle_estimate else 0
+                    if _target_segs >= 2:
+                        try:
+                            from .smart_segmentation import generate_concept_segments
+                            _concept_groups = await generate_concept_segments(
+                                spec_markdown=spot_markdown,
+                                file_scope=_file_scope,
+                                target_segments=_target_segs,
+                                requirements=_requirements,
+                            )
+                            if _concept_groups:
+                                logger.info("[spec_runner] v5.5 Concept grouping: %d groups",
+                                            len(_concept_groups))
+                                print(f"[spec_runner] v5.5 CONCEPT GROUPS: {len(_concept_groups)}")
+                            else:
+                                logger.info("[spec_runner] v5.5 Concept grouping returned None — using legacy")
+                        except (ImportError, Exception) as _cg_err:
+                            logger.debug("[spec_runner] Smart segmentation unavailable: %s", _cg_err)
                     
                     segmentation_manifest = generate_segments(
                         file_scope=_file_scope,
@@ -1160,6 +1277,7 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
                         acceptance_criteria=_acceptance,
                         parent_spec_id=f"sg-{uuid.uuid4().hex[:12]}",
                         parent_spec_hash=hashlib.sha256(spot_markdown.encode()).hexdigest() if spot_markdown else None,
+                        concept_groups=_concept_groups,
                     )
                     
                     if segmentation_manifest:
@@ -1247,6 +1365,41 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
             _job_kind_confidence = 0.5
             _job_kind_reason = "Simple spec without grounded evidence"
         
+        # =================================================================
+        # v5.4 PHASE 1: Always-Manifest — wrap non-segmented specs too
+        # =================================================================
+        # If segmentation didn't trigger, build a single-segment manifest.
+        # This ensures SpecGate ALWAYS outputs a manifest, regardless of
+        # whether segmentation was needed. Downstream only handles one format.
+        
+        if segmentation_manifest is None:
+            # Extract file scope, requirements, acceptance for wrapping
+            _wrap_file_scope = _extract_file_scope_from_spec(
+                spot_markdown, grounding_data=None, multi_file_op=multi_file_op,
+            )
+            _wrap_requirements = _extract_requirements_from_spec(spot_markdown)
+            _wrap_acceptance = _extract_acceptance_from_spec(spot_markdown)
+            
+            segmentation_manifest = _build_single_segment_manifest(
+                spec_markdown=spot_markdown,
+                spec_id=spec_id,
+                spec_hash=spec_hash,
+                goal=goal or "",
+                file_scope=_wrap_file_scope,
+                requirements=_wrap_requirements,
+                acceptance_criteria=_wrap_acceptance,
+                job_kind=_job_kind,
+            )
+            _write_segmentation_output(job_id, segmentation_manifest)
+            print(f"[spec_runner] v5.4 ALWAYS-MANIFEST: single-segment manifest written for job {job_id}")
+            logger.info("[spec_runner] v5.4 Single-segment manifest written for job %s", job_id)
+        
+        # Build manifest path (always available now)
+        _manifest_path = os.path.join(
+            _get_job_dir_for_segmentation(job_id),
+            'segments', 'manifest.json',
+        )
+        
         grounding_data = {
             "job_kind": _job_kind,
             "job_kind_confidence": _job_kind_confidence,
@@ -1261,10 +1414,13 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
             } if multi_file_op else None,
             "goal": goal,
             "segmentation": {
-                "segmented": segmentation_manifest is not None,
-                "total_segments": segmentation_manifest.total_segments if segmentation_manifest else 0,
-                "segment_ids": [s.segment_id for s in segmentation_manifest.segments] if segmentation_manifest else [],
-            } if segmentation_manifest is not None else None,
+                "segmented": segmentation_manifest.total_segments > 1,
+                "total_segments": segmentation_manifest.total_segments,
+                "segment_ids": [s.segment_id for s in segmentation_manifest.segments],
+                "manifest_path": _manifest_path,
+            },
+            # v5.5 PHASE 3A: Needle estimate for downstream model selection
+            "needle_estimate": _needle_estimate.to_dict() if _needle_estimate else None,
         }
         
         # =================================================================

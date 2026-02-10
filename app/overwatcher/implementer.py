@@ -11,6 +11,12 @@ Handles:
 - OVERWRITE_FULL mode for complete file replacement (v1.6)
 - Multi-file batch operations (search and refactor) (v1.11)
 
+v1.13 (2026-02-10): WinError 206 fix — temp-file write for large files
+    - Added _write_content_to_sandbox(): auto-selects inline or temp-file method
+    - Added INLINE_BASE64_CHAR_LIMIT constant (24000 chars)
+    - All 6 write call sites now use shared helper
+    - Files >~18KB safely written via temp file chunking
+    - Fixes WinError 206 (command line too long) for large file writes
 v1.11 (2026-01-28): Multi-file batch operations (Level 3 - Phase 5)
     - Added run_multi_file_search(): read-only search across multiple files
     - Added run_multi_file_refactor(): batch search/replace with verification
@@ -68,7 +74,7 @@ logger = logging.getLogger(__name__)
 # v1.11 BUILD VERIFICATION - Proves correct code is running
 # v1.11: Multi-file batch operations (Level 3 - Phase 5)
 # =============================================================================
-IMPLEMENTER_BUILD_ID = "2026-02-06-v1.12-atomic-task-interface"
+IMPLEMENTER_BUILD_ID = "2026-02-10-v1.13-winerror206-temp-file-write"
 print(f"[IMPLEMENTER_LOADED] BUILD_ID={IMPLEMENTER_BUILD_ID}")
 logger.info(f"[implementer] Module loaded: BUILD_ID={IMPLEMENTER_BUILD_ID}")
 
@@ -77,6 +83,13 @@ logger.info(f"[implementer] Module loaded: BUILD_ID={IMPLEMENTER_BUILD_ID}")
 # =============================================================================
 MULTI_FILE_MAX_ERRORS = 10  # Stop after N consecutive errors
 MULTI_FILE_VERIFY_TIMEOUT = 30  # Seconds per file verification
+
+# v1.13: WinError 206 fix — command line length limit
+# Windows has a 32,767 character command line limit. Base64 encoding inflates
+# content by ~33%, so a 20KB file becomes ~27KB Base64 which, with the
+# PowerShell wrapper, exceeds the limit. When the Base64 string exceeds this
+# threshold, we write it to a temp file first and have PowerShell read from it.
+INLINE_BASE64_CHAR_LIMIT = 24000  # Safe threshold with overhead for PS wrapper
 
 
 def _is_absolute_windows_path(path: str) -> bool:
@@ -121,6 +134,111 @@ def _build_powershell_write_command_base64(path: str, content: str) -> str:
         f'[System.Convert]::FromBase64String("{encoded}"))'
         f' | Set-Content -Path "{path}" -NoNewline -Encoding UTF8'
     )
+
+
+def _write_content_to_sandbox(
+    client: 'SandboxClient',
+    path: str,
+    content: str,
+    timeout_seconds: int = 60,
+) -> 'ShellResult':
+    """
+    v1.13: Write content to sandbox, automatically choosing inline or temp-file method.
+
+    If the Base64-encoded content fits within INLINE_BASE64_CHAR_LIMIT, uses the
+    fast inline method (existing behaviour). If it exceeds the limit, writes the
+    Base64 to a temp file in the sandbox first, then has PowerShell read and
+    decode from the temp file. This avoids WinError 206 (command line too long).
+
+    Args:
+        client: SandboxClient instance
+        path: Absolute path in sandbox to write to
+        content: File content (UTF-8 string)
+        timeout_seconds: Timeout for the write command
+
+    Returns:
+        ShellResult from the sandbox client
+    """
+    encoded = base64.b64encode(content.encode('utf-8')).decode('ascii')
+
+    if len(encoded) <= INLINE_BASE64_CHAR_LIMIT:
+        # Fast path: inline Base64 (existing behaviour)
+        write_cmd = (
+            f'$bytes = [System.Convert]::FromBase64String("{encoded}"); '
+            f'[System.IO.File]::WriteAllBytes("{path}", $bytes)'
+        )
+        logger.info(
+            "[implementer] v1.13 Writing %d chars inline (b64=%d) to %s",
+            len(content), len(encoded), path,
+        )
+        return client.shell_run(write_cmd, timeout_seconds=timeout_seconds)
+    else:
+        # Temp-file path: avoids WinError 206
+        # Use a temp file in the sandbox's own temp directory
+        import uuid as _uuid
+        temp_name = f"_orb_impl_{_uuid.uuid4().hex[:12]}.b64"
+        temp_path = f"C:\\Users\\WDAGUtilityAccount\\AppData\\Local\\Temp\\{temp_name}"
+
+        logger.info(
+            "[implementer] v1.13 LARGE FILE: %d chars, b64=%d chars — using temp-file write for %s",
+            len(content), len(encoded), path,
+        )
+        print(
+            f"[IMPLEMENTER] v1.13 LARGE FILE ({len(content)} chars, "
+            f"b64={len(encoded)}) — temp-file write to avoid WinError 206"
+        )
+
+        # Step A: Write Base64 to temp file using .NET (bypasses command line limit)
+        # We chunk the encoded string into safe-sized pieces and append
+        chunk_size = 20000  # Well under the limit
+        chunks = [encoded[i:i+chunk_size] for i in range(0, len(encoded), chunk_size)]
+
+        # First chunk: create/overwrite the temp file
+        first_chunk_cmd = (
+            f'[System.IO.File]::WriteAllText("{temp_path}", "{chunks[0]}")'
+        )
+        result = client.shell_run(first_chunk_cmd, timeout_seconds=30)
+        if result.stderr and result.stderr.strip():
+            logger.error("[implementer] v1.13 Temp file first chunk failed: %s", result.stderr[:200])
+            return result
+
+        # Remaining chunks: append
+        for i, chunk in enumerate(chunks[1:], 2):
+            append_cmd = (
+                f'[System.IO.File]::AppendAllText("{temp_path}", "{chunk}")'
+            )
+            result = client.shell_run(append_cmd, timeout_seconds=30)
+            if result.stderr and result.stderr.strip():
+                logger.error(
+                    "[implementer] v1.13 Temp file chunk %d/%d failed: %s",
+                    i, len(chunks), result.stderr[:200],
+                )
+                # Clean up temp file
+                client.shell_run(f'Remove-Item -Path "{temp_path}" -Force -ErrorAction SilentlyContinue', timeout_seconds=5)
+                return result
+
+        # Step B: Read temp file, decode Base64, write to target path
+        decode_cmd = (
+            f'$b64 = [System.IO.File]::ReadAllText("{temp_path}"); '
+            f'$bytes = [System.Convert]::FromBase64String($b64); '
+            f'[System.IO.File]::WriteAllBytes("{path}", $bytes); '
+            f'Remove-Item -Path "{temp_path}" -Force -ErrorAction SilentlyContinue; '
+            f'"WRITE_OK"'
+        )
+        result = client.shell_run(decode_cmd, timeout_seconds=timeout_seconds)
+
+        if result.stdout and "WRITE_OK" in result.stdout:
+            logger.info("[implementer] v1.13 Temp-file write succeeded for %s", path)
+        else:
+            logger.error(
+                "[implementer] v1.13 Temp-file decode/write failed for %s: stderr=%s, stdout=%s",
+                path, result.stderr[:200] if result.stderr else "",
+                result.stdout[:200] if result.stdout else "",
+            )
+            # Clean up on failure
+            client.shell_run(f'Remove-Item -Path "{temp_path}" -Force -ErrorAction SilentlyContinue', timeout_seconds=5)
+
+        return result
 
 
 def _generate_sandbox_path_candidates(path: str) -> List[str]:
@@ -794,9 +912,8 @@ async def run_implementer(
                     if corrections_count > 0:
                         logger.info("[implementer] v1.10 Applied %d intelligent corrections", corrections_count)
                         
-                        # Write corrected content
-                        write_cmd = _build_powershell_write_command_base64(expected_path, updated_text)
-                        write_result = client.shell_run(write_cmd, timeout_seconds=60)
+                        # Write corrected content (v1.13: auto temp-file for large files)
+                        write_result = _write_content_to_sandbox(client, expected_path, updated_text, timeout_seconds=60)
                         
                         write_success = not write_result.stderr or write_result.stderr.strip() == ""
                         if write_success:
@@ -835,11 +952,9 @@ async def run_implementer(
                 fmt = insertion_format or "\n\nAnswer:\n{reply}\n"
                 updated_text = _insert_answers_under_questions(original_text, answers, fmt)
                 
-                # v1.8: Write using Base64 encoding to avoid escaping issues
-                write_cmd = _build_powershell_write_command_base64(expected_path, updated_text)
-                
-                logger.info(f"[implementer] v1.8 Writing {len(updated_text)} chars via Base64")
-                write_result = client.shell_run(write_cmd, timeout_seconds=60)
+                # v1.13: Write using shared helper (auto temp-file for large files)
+                logger.info(f"[implementer] v1.13 Writing {len(updated_text)} chars")
+                write_result = _write_content_to_sandbox(client, expected_path, updated_text, timeout_seconds=60)
                 
                 write_success = not write_result.stderr or write_result.stderr.strip() == ""
                 if write_success:
@@ -881,9 +996,8 @@ async def run_implementer(
                 existing_content = read_result.stdout or ""
                 
                 combined_content = existing_content + append_text
-                write_cmd = _build_powershell_write_command_base64(expected_path, combined_content)
-                
-                write_result = client.shell_run(write_cmd, timeout_seconds=60)
+                # v1.13: auto temp-file for large files
+                write_result = _write_content_to_sandbox(client, expected_path, combined_content, timeout_seconds=60)
                 
                 write_success = not write_result.stderr or write_result.stderr.strip() == ""
                 if write_success:
@@ -909,10 +1023,9 @@ async def run_implementer(
             
             # SEPARATE_REPLY_FILE or OVERWRITE_FULL mode
             elif mode_lower in ("separate_reply_file", "overwrite_full"):
-                write_cmd = _build_powershell_write_command_base64(expected_path, content)
+                # v1.13: auto temp-file for large files
                 write_method = "overwrite_full" if mode_lower == "overwrite_full" else "overwrite"
-                
-                write_result = client.shell_run(write_cmd, timeout_seconds=60)
+                write_result = _write_content_to_sandbox(client, expected_path, content, timeout_seconds=60)
                 
                 write_success = not write_result.stderr or write_result.stderr.strip() == ""
                 if write_success:
@@ -1259,30 +1372,20 @@ async def _multi_file_write_content(
     Returns True if write succeeded, False otherwise.
     """
     try:
-        # Encode content as Base64 for safe PowerShell transfer
-        content_bytes = content.encode('utf-8')
-        content_b64 = base64.b64encode(content_bytes).decode('ascii')
+        # v1.13: Use shared write helper (auto temp-file for large files)
+        result = _write_content_to_sandbox(client, file_path, content, timeout_seconds=MULTI_FILE_VERIFY_TIMEOUT)
         
-        # PowerShell command to decode and write
-        ps_command = (
-            f'[System.Text.Encoding]::UTF8.GetString('
-            f'[System.Convert]::FromBase64String("{content_b64}"))'
-            f' | Set-Content -Path "{file_path}" -NoNewline -Encoding UTF8'
-        )
+        if result.stderr and result.stderr.strip():
+            logger.warning(
+                "[implementer] v1.13 Write failed for %s: stderr=%s",
+                file_path, result.stderr[:100] if result.stderr else ""
+            )
+            return False
         
-        result = client.shell_run(ps_command, timeout_seconds=MULTI_FILE_VERIFY_TIMEOUT)
-        
-        if result.exit_code == 0:
-            return True
-        
-        logger.warning(
-            "[implementer] v1.11 Write failed for %s: exit=%s, stderr=%s",
-            file_path, result.exit_code, result.stderr[:100] if result.stderr else ""
-        )
-        return False
+        return True
         
     except Exception as e:
-        logger.error("[implementer] v1.11 Write exception for %s: %s", file_path, e)
+        logger.error("[implementer] v1.13 Write exception for %s: %s", file_path, e)
         return False
 
 
@@ -1823,14 +1926,9 @@ async def run_implementer_task(
                 duration_ms=elapsed(),
             )
     
-    # Step 2: Write file via Base64 (BOM-free)
+    # Step 2: Write file via _write_content_to_sandbox (v1.13: auto temp-file for large files)
     try:
-        encoded = base64.b64encode(content.encode('utf-8')).decode('ascii')
-        write_cmd = (
-            f'$bytes = [System.Convert]::FromBase64String("{encoded}"); '
-            f'[System.IO.File]::WriteAllBytes("{path}", $bytes)'
-        )
-        write_result = client.shell_run(write_cmd, timeout_seconds=60)
+        write_result = _write_content_to_sandbox(client, path, content, timeout_seconds=60)
         
         if write_result.stderr and write_result.stderr.strip():
             return AtomicTaskResult(
@@ -1841,7 +1939,7 @@ async def run_implementer_task(
                 duration_ms=elapsed(),
             )
         
-        logger.info("[implementer] v1.12 Wrote %d chars to %s", len(content), path)
+        logger.info("[implementer] v1.13 Wrote %d chars to %s", len(content), path)
         
     except Exception as e:
         return AtomicTaskResult(
@@ -1888,13 +1986,273 @@ async def run_implementer_task(
     )
 
 
+# =============================================================================
+# v1.13: TARGETED EDIT INTERFACE (Phase 0B — MODIFY without full-file rewrite)
+# =============================================================================
+
+@dataclass
+class EditTaskResult:
+    """v1.13: Result from a targeted edit task.
+    
+    Used when MODIFY operations can be expressed as {old_text, new_text} pairs
+    instead of requiring the LLM to regenerate the entire file.
+    """
+    success: bool
+    path: str
+    edits_applied: int = 0
+    edits_failed: int = 0
+    chars_before: int = 0
+    chars_after: int = 0
+    error: Optional[str] = None
+    failed_edits: List[Dict[str, str]] = field(default_factory=list)
+    verified: bool = False
+    duration_ms: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "success": self.success,
+            "path": self.path,
+            "edits_applied": self.edits_applied,
+            "edits_failed": self.edits_failed,
+            "chars_before": self.chars_before,
+            "chars_after": self.chars_after,
+            "error": self.error,
+            "failed_edits": self.failed_edits,
+            "verified": self.verified,
+            "duration_ms": self.duration_ms,
+        }
+
+
+async def run_implementer_edit_task(
+    *,
+    path: str,
+    edits: List[Dict[str, str]],
+    client: Optional[SandboxClient] = None,
+) -> EditTaskResult:
+    """v1.13: Apply targeted edits to an existing file in the sandbox.
+    
+    Instead of having the LLM regenerate the entire file, this function:
+    1. Reads the existing file from sandbox
+    2. Applies each {old_text, new_text} replacement in order
+    3. Writes the modified file back
+    4. Verifies the write
+    
+    Each edit dict must have:
+        - "old_text": exact text to find (must appear exactly once)
+        - "new_text": replacement text
+    
+    If old_text appears 0 or 2+ times, that edit is skipped and recorded
+    in failed_edits. All other edits still apply.
+    
+    IMPLEMENTER IS THE ONLY WRITER.
+    
+    Args:
+        path: Absolute sandbox path to the file to edit
+        edits: List of {"old_text": str, "new_text": str} dicts
+        client: Optional sandbox client (uses default if None)
+    
+    Returns:
+        EditTaskResult with per-edit success/failure tracking
+    """
+    import time
+    start_time = time.time()
+    
+    def elapsed() -> int:
+        return int((time.time() - start_time) * 1000)
+    
+    logger.info(
+        "[implementer] v1.13 Edit task: path=%s, edits=%d",
+        path, len(edits),
+    )
+    print(f"[IMPLEMENTER_EDIT] MODIFY: {path} ({len(edits)} edits)")
+    
+    if not edits:
+        return EditTaskResult(
+            success=False,
+            path=path,
+            error="No edits provided",
+            duration_ms=elapsed(),
+        )
+    
+    if client is None:
+        client = get_sandbox_client()
+    
+    if not client.is_connected():
+        return EditTaskResult(
+            success=False,
+            path=path,
+            error="SAFETY: Sandbox not available",
+            duration_ms=elapsed(),
+        )
+    
+    # Step 1: Read existing file
+    try:
+        read_cmd = f'Get-Content -Path "{path}" -Raw -Encoding UTF8'
+        read_result = client.shell_run(read_cmd, timeout_seconds=30)
+        
+        if read_result.stdout is None or (read_result.stderr and read_result.stderr.strip()):
+            return EditTaskResult(
+                success=False,
+                path=path,
+                error=f"Cannot read file: {read_result.stderr or 'no output'}",
+                duration_ms=elapsed(),
+            )
+        
+        content = read_result.stdout
+        chars_before = len(content)
+        logger.info("[implementer] v1.13 Read %d chars from %s", chars_before, path)
+        
+    except Exception as e:
+        return EditTaskResult(
+            success=False,
+            path=path,
+            error=f"Read exception: {e}",
+            duration_ms=elapsed(),
+        )
+    
+    # Step 2: Apply edits sequentially
+    edits_applied = 0
+    edits_failed = 0
+    failed_edits: List[Dict[str, str]] = []
+    
+    for i, edit in enumerate(edits, 1):
+        old_text = edit.get("old_text", "")
+        new_text = edit.get("new_text", "")
+        
+        if not old_text:
+            logger.warning("[implementer] v1.13 Edit %d: empty old_text, skipping", i)
+            edits_failed += 1
+            failed_edits.append({"old_text": "(empty)", "reason": "empty old_text"})
+            continue
+        
+        # Count occurrences
+        count = content.count(old_text)
+        
+        if count == 0:
+            logger.warning(
+                "[implementer] v1.13 Edit %d: old_text not found (len=%d, preview='%s')",
+                i, len(old_text), old_text[:80],
+            )
+            edits_failed += 1
+            failed_edits.append({
+                "old_text": old_text[:100],
+                "reason": "not found in file",
+            })
+            continue
+        
+        if count > 1:
+            logger.warning(
+                "[implementer] v1.13 Edit %d: old_text found %d times (ambiguous), skipping",
+                i, count,
+            )
+            edits_failed += 1
+            failed_edits.append({
+                "old_text": old_text[:100],
+                "reason": f"found {count} times (must be unique)",
+            })
+            continue
+        
+        # Exactly 1 occurrence — apply
+        content = content.replace(old_text, new_text, 1)
+        edits_applied += 1
+        logger.info(
+            "[implementer] v1.13 Edit %d applied: -%d chars, +%d chars",
+            i, len(old_text), len(new_text),
+        )
+    
+    chars_after = len(content)
+    
+    if edits_applied == 0:
+        return EditTaskResult(
+            success=False,
+            path=path,
+            edits_applied=0,
+            edits_failed=edits_failed,
+            chars_before=chars_before,
+            chars_after=chars_before,
+            error="No edits could be applied",
+            failed_edits=failed_edits,
+            duration_ms=elapsed(),
+        )
+    
+    # Step 3: Write modified content back
+    try:
+        write_result = _write_content_to_sandbox(client, path, content, timeout_seconds=60)
+        
+        if write_result.stderr and write_result.stderr.strip():
+            return EditTaskResult(
+                success=False,
+                path=path,
+                edits_applied=edits_applied,
+                edits_failed=edits_failed,
+                chars_before=chars_before,
+                chars_after=chars_after,
+                error=f"Write failed: {write_result.stderr[:200]}",
+                failed_edits=failed_edits,
+                duration_ms=elapsed(),
+            )
+        
+        logger.info("[implementer] v1.13 Wrote %d chars to %s", chars_after, path)
+        
+    except Exception as e:
+        return EditTaskResult(
+            success=False,
+            path=path,
+            edits_applied=edits_applied,
+            edits_failed=edits_failed,
+            chars_before=chars_before,
+            chars_after=chars_after,
+            error=f"Write exception: {e}",
+            failed_edits=failed_edits,
+            duration_ms=elapsed(),
+        )
+    
+    # Step 4: Verify
+    verified = False
+    try:
+        verify_result = client.shell_run(
+            f'Get-Content -Path "{path}" -Raw -Encoding UTF8',
+            timeout_seconds=30,
+        )
+        if verify_result.stdout is not None:
+            if verify_result.stdout.strip() == content.strip():
+                verified = True
+                logger.info("[implementer] v1.13 Edit verified: %s", path)
+            else:
+                logger.warning(
+                    "[implementer] v1.13 Edit verify mismatch: wrote %d, read %d",
+                    len(content), len(verify_result.stdout),
+                )
+    except Exception as e:
+        logger.warning("[implementer] v1.13 Edit verify exception: %s", e)
+    
+    print(
+        f"[IMPLEMENTER_EDIT] {'✓' if verified else '⚠'} "
+        f"MODIFY {path}: {edits_applied}/{len(edits)} edits applied, "
+        f"{chars_before} → {chars_after} chars, verified={verified}"
+    )
+    
+    return EditTaskResult(
+        success=True,
+        path=path,
+        edits_applied=edits_applied,
+        edits_failed=edits_failed,
+        chars_before=chars_before,
+        chars_after=chars_after,
+        failed_edits=failed_edits,
+        verified=verified,
+        duration_ms=elapsed(),
+    )
+
 __all__ = [
     "ImplementerResult",
     "VerificationResult",
     "MultiFileResult",
     "AtomicTaskResult",
+    "EditTaskResult",
     "run_implementer",
     "run_implementer_task",
+    "run_implementer_edit_task",
     "run_verification",
     "run_multi_file_search",
     "run_multi_file_refactor",

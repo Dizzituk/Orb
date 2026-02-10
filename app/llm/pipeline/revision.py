@@ -363,6 +363,7 @@ async def run_revision_loop(
     opus_model_id: str,
     envelope: JobEnvelope,
     env_context: Optional[Dict[str, Any]] = None,
+    segment_contract_markdown: Optional[str] = None,  # v5.4 Phase 2B
     # Callback to store revised architecture
     store_architecture_fn=None,
 ) -> Tuple[str, int, bool, CritiqueResult]:
@@ -409,6 +410,7 @@ async def run_revision_loop(
             spec_json=spec_json,
             spec_markdown=spec_markdown,
             env_context=env_context,
+            segment_contract_markdown=segment_contract_markdown,
             envelope=envelope,
         )
         
