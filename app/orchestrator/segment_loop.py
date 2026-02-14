@@ -754,8 +754,7 @@ async def run_segment_through_pipeline(
     if auto_execute != "1" and not _is_cohesion_regen:
         _emit(f"  ⏸️ AWAITING APPROVAL: Architecture ready for {seg_id}")
         _emit(f"  📄 Review: jobs/{os.path.basename(get_job_dir(job_id))}/segments/{seg_id}/arch/arch_v1.md")
-        _emit(f"  💡 To execute: say 'Astra, command: execute segment {seg_id}'")
-        _emit(f"  💡 To execute all: set env ASTRA_SEGMENT_AUTO_EXECUTE=1 and re-run")
+        _emit(f"  💡 To implement: say 'Astra, command: implement segments'")
         result["success"] = True
         result["awaiting_approval"] = True
         result["architecture_path"] = seg_arch_path
@@ -929,6 +928,7 @@ async def run_segmented_job(
     db: Any = None,
     project_id: int = 0,
     on_progress: ProgressCallback = None,
+    implement_only: bool = False,
 ) -> JobState:
     """
     Main entry point for segmented execution.
@@ -1200,6 +1200,11 @@ async def run_segmented_job(
 
             # --- v3.0: APPROVED segments — skip architecture, go straight to execution ---
             if seg_state.status == SegmentStatus.APPROVED.value:
+                # v5.13: If NOT in implement_only mode, skip APPROVED segments.
+                # They need a separate "implement segments" command to execute.
+                if not implement_only:
+                    _emit(f"⏸️ [{idx}/{total}] {seg_id}: APPROVED — awaiting 'implement segments' command")
+                    continue
                 # v3.1: Check if dependencies failed/blocked BEFORE executing
                 if is_segment_blocked(seg_spec, state):
                     update_segment_status(
@@ -1321,6 +1326,12 @@ async def run_segmented_job(
                         _emit(f"  🚫 STOPPING: Blocked {len(blocked)} dependent segment(s): {blocked}")
                         print(f"[SEGMENT_LOOP] v3.1 🚫 BLOCKED dependents: {blocked}")
                 continue  # v3.1: CRITICAL — must continue after APPROVED handling to avoid fall-through
+            # --- v5.13: In implement_only mode, skip PENDING segments ---
+            # They need architecture generation first (via 'run segments')
+            if implement_only and seg_state.status == SegmentStatus.PENDING.value:
+                _emit(f"⏭️ [{idx}/{total}] {seg_id}: PENDING — needs architecture first (run 'run segments')")
+                continue
+
             # --- Check if segment should be blocked ---
             if is_segment_blocked(seg_spec, state):
                 update_segment_status(

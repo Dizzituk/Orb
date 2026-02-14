@@ -846,6 +846,51 @@ INTENT_DEFINITIONS: Dict[CanonicalIntent, IntentDefinition] = {
     ),
     
     # -------------------------------------------------------------------------
+    # v5.13: IMPLEMENT SEGMENTS — Phase 2 (execution only, no architecture)
+    # -------------------------------------------------------------------------
+    # Separated from RUN_PIPELINE to prevent accidental auto-execution.
+    # RUN_PIPELINE (= "run segments") generates architectures and stops.
+    # IMPLEMENT_SEGMENTS (= "implement segments") executes approved architectures.
+    
+    CanonicalIntent.IMPLEMENT_SEGMENTS: IntentDefinition(
+        intent=CanonicalIntent.IMPLEMENT_SEGMENTS,
+        trigger_phrases=[
+            "Implement segments",
+            "implement segments",
+            "Implement the segments",
+            "implement the segments",
+            "Execute implementations",
+            "execute implementations",
+            "Run implementations",
+            "run implementations",
+        ],
+        trigger_patterns=[
+            r"^[Ii]mplement\s+(?:the\s+)?segments?$",
+            r"^[Ee]xecute\s+(?:the\s+)?implementations?$",
+            r"^[Rr]un\s+(?:the\s+)?implementations?$",
+            r"^[Ii]mplement\s+(?:the\s+)?(?:approved\s+)?(?:architecture|arch)s?$",
+        ],
+        requires_context=["job_id"],
+        requires_confirmation=True,
+        confirmation_prompt=(
+            "⚠️ IMPLEMENTATION\n"
+            "You are about to implement all APPROVED segments.\n"
+            "This will write files to your project via Overwatcher + Implementer.\n\n"
+            "Type 'confirm' or 'yes' to proceed."
+        ),
+        description="Implement approved segments through Overwatcher + Implementer",
+        behavior=(
+            "Execute APPROVED segments through implementation:\n"
+            "1. Load the segment manifest and state\n"
+            "2. Skip PENDING segments (architecture not yet generated)\n"
+            "3. Execute only APPROVED segments through Overwatcher + Implementer\n"
+            "4. Write files to the project\n"
+            "\n"
+            "Requires segments to be APPROVED first (via 'run segments')."
+        ),
+    ),
+    
+    # -------------------------------------------------------------------------
     # CHAT (no action)
     # -------------------------------------------------------------------------
     

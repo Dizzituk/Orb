@@ -324,6 +324,31 @@ def handle_command_execution(
             )
             log_handler_availability()
     
+    # --- v5.13: Implement Segments (Phase 2 — execution only) ---
+    if intent == CanonicalIntent.IMPLEMENT_SEGMENTS:
+        if _SEGMENT_LOOP_AVAILABLE:
+            crit_provider, crit_model = _get_critical_pipeline_config()
+            print(f"[PIPELINE_ROUTE] v5.13 Implement segments — provider={crit_provider}, model={crit_model}")
+            if stage_trace:
+                stage_trace.enter_stage("pipeline_implement", provider=crit_provider, model=crit_model)
+            return StreamingResponse(
+                generate_segment_loop_stream(
+                    project_id=req.project_id,
+                    db=db,
+                    trace=trace,
+                    conversation_id=str(req.project_id),
+                    implement_only=True,
+                ),
+                media_type="text/event-stream",
+                headers=sse_headers,
+            )
+        else:
+            log_routing_failure(
+                stage_trace,
+                "PIPELINE HANDLER NOT AVAILABLE (segment_loop_stream)",
+                "generate_segment_loop_stream",
+            )
+    
     # --- Overwatcher ---
     if intent == CanonicalIntent.OVERWATCHER_EXECUTE_CHANGES:
         if _OVERWATCHER_AVAILABLE:

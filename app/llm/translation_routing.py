@@ -202,6 +202,16 @@ def intent_to_routing_info(intent: "CanonicalIntent") -> Optional[dict]:
                 f"({critical.provider}/{critical.model})"
             ),
         },
+        # v5.13: Implement segments — Phase 2 execution only
+        CanonicalIntent.IMPLEMENT_SEGMENTS: {
+            "type": "local.pipeline",
+            "provider": critical.provider,
+            "model": critical.model,
+            "reason": (
+                "Translation layer: IMPLEMENT SEGMENTS (phase 2 execution) "
+                f"({critical.provider}/{critical.model})"
+            ),
+        },
         CanonicalIntent.RAG_CODEBASE_QUERY: {
             "type": "local.rag_query",
             "provider": "local",

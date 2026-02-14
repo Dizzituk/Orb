@@ -125,6 +125,9 @@ class CanonicalIntent(str, Enum):
     # Execute segmented job through the pipeline (segment-by-segment)
     RUN_SEGMENT_LOOP = "RUN_SEGMENT_LOOP"  # v5.4: deprecated alias — use RUN_PIPELINE
 
+    # v5.13: Implement segments — runs APPROVED segments through Overwatcher + Implementer
+    # Separated from RUN_SEGMENT_LOOP to prevent accidental auto-execution
+    IMPLEMENT_SEGMENTS = "IMPLEMENT_SEGMENTS"
 
 class LatencyTier(str, Enum):
     """Which cost tier resolved this intent?"""

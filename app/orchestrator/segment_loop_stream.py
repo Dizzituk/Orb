@@ -177,6 +177,7 @@ async def generate_segment_loop_stream(
     job_id: Optional[str] = None,
     trace: Optional[Any] = None,
     conversation_id: Optional[str] = None,
+    implement_only: bool = False,
 ) -> AsyncGenerator[str, None]:
     """
     SSE stream handler for segmented job execution.
@@ -301,6 +302,7 @@ async def generate_segment_loop_stream(
             db=db,
             project_id=project_id,
             on_progress=on_progress,
+            implement_only=implement_only,
         )
 
         # Yield all collected progress messages as SSE tokens

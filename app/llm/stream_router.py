@@ -296,6 +296,7 @@ _EXPLICIT_COMMAND_INTENTS = {
     CanonicalIntent.RUN_PIPELINE,  # v5.4: unified pipeline
     CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB,  # v5.4: deprecated alias
     CanonicalIntent.RUN_SEGMENT_LOOP,  # v5.4: deprecated alias
+    CanonicalIntent.IMPLEMENT_SEGMENTS,  # v5.13: phase 2 execution
     CanonicalIntent.OVERWATCHER_EXECUTE_CHANGES,
     CanonicalIntent.ARCHITECTURE_MAP_WITH_FILES,
     CanonicalIntent.ARCHITECTURE_MAP_STRUCTURE_ONLY,
