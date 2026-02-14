@@ -116,6 +116,7 @@ class JobType(str, Enum):
     CV_PARSING = "cv_parsing"
     UNKNOWN = "unknown"
     EMBEDDINGS = "embeddings"
+    DEEP_RESEARCH = "deep_research"
     
     # =========== PIPELINE-SPECIFIC ROUTES (v0.14.1) ===========
     VIDEO_CODE_DEBUG = "video.code.debug"  # 2-step: Gemini3 transcribe → Sonnet code
