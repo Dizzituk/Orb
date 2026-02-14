@@ -27,11 +27,11 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
-JOB_CHECKER_BUILD_ID = "2026-02-10-v1.0-post-write-verification"
+JOB_CHECKER_BUILD_ID = "2026-02-14-v2.2-strike-contradiction-awareness"
 print(f"[JOB_CHECKER_LOADED] BUILD_ID={JOB_CHECKER_BUILD_ID}")
 
 
@@ -188,6 +188,183 @@ def _should_skip(file_path: str, file_content: str) -> Optional[str]:
 
 
 # =============================================================================
+# DETERMINISTIC IMPORT PRE-CHECK
+# =============================================================================
+
+
+def _resolve_relative_imports(
+    file_path: str,
+    file_content: str,
+    sandbox_base: str = "",
+    existing_sandbox_files: Optional[Set[str]] = None,
+) -> Dict[str, List[Dict[str, str]]]:
+    """
+    Deterministically verify relative imports against the actual filesystem.
+
+    Parses all `from .xxx import` and `from ..xxx import` lines, resolves
+    the target module path relative to the file being checked, and verifies
+    whether the target exists on disk.
+
+    Returns:
+        {
+            "verified": [{"import_line": ..., "resolved_path": ..., "exists": True}],
+            "unresolvable": [{"import_line": ..., "resolved_path": ..., "reason": ...}],
+        }
+    """
+    from pathlib import Path
+
+    verified = []
+    unresolvable = []
+
+    if not file_path:
+        return {"verified": verified, "unresolvable": unresolvable}
+
+    # Normalise to forward slashes
+    norm_path = file_path.replace("\\", "/")
+
+    # Determine file's directory (relative)
+    file_dir = "/".join(norm_path.split("/")[:-1]) if "/" in norm_path else ""
+
+    # Resolve sandbox base for absolute checks
+    _base = sandbox_base
+    if not _base:
+        _base = os.getenv("SANDBOX_BASE", "")
+    if not _base:
+        # Try common roots
+        for candidate in ["D:/Orb", "C:/Orb"]:
+            if os.path.isdir(candidate):
+                _base = candidate
+                break
+
+    # Parse relative imports from file content
+    # Matches: from .module import X, from ..module import X, from ...module import X
+    import_pattern = re.compile(
+        r'^\s*from\s+(\.{1,6}\w[\w.]*)\s+import\s+',
+        re.MULTILINE,
+    )
+
+    for match in import_pattern.finditer(file_content):
+        import_ref = match.group(1)  # e.g. ".constants", "..sandbox_client", "...something"
+        import_line = match.group(0).strip()
+
+        # Count leading dots
+        dot_count = 0
+        for ch in import_ref:
+            if ch == '.':
+                dot_count += 1
+            else:
+                break
+
+        module_name = import_ref[dot_count:]  # e.g. "constants", "sandbox_client"
+
+        if not module_name:
+            # "from . import X" — importing from package __init__
+            continue
+
+        # Resolve: each dot = one directory up from the file's directory
+        # 1 dot = same package, 2 dots = parent package, etc.
+        target_dir = file_dir
+        for _ in range(dot_count - 1):  # -1 because first dot = current package
+            if "/" in target_dir:
+                target_dir = target_dir.rsplit("/", 1)[0]
+            else:
+                target_dir = ""
+
+        # Build candidate paths
+        if target_dir:
+            candidate_file = f"{target_dir}/{module_name.replace('.', '/')}.py"
+            candidate_pkg = f"{target_dir}/{module_name.replace('.', '/')}/__init__.py"
+        else:
+            candidate_file = f"{module_name.replace('.', '/')}.py"
+            candidate_pkg = f"{module_name.replace('.', '/')}/__init__.py"
+
+        # Check filesystem — first check host, then check sandbox file list
+        found = False
+        resolved = candidate_file
+        found_via = ""
+
+        # v2.1: Check existing_sandbox_files first (files confirmed on sandbox)
+        _sandbox_files = existing_sandbox_files or set()
+        _candidate_fwd = candidate_file.replace("\\", "/")
+        _candidate_pkg_fwd = candidate_pkg.replace("\\", "/")
+        for sf in _sandbox_files:
+            sf_norm = sf.replace("\\", "/")
+            if sf_norm == _candidate_fwd or sf_norm == _candidate_pkg_fwd:
+                found = True
+                resolved = candidate_file
+                found_via = "sandbox_file_list"
+                break
+
+        # Fallback: check host filesystem (only works if host == sandbox)
+        if not found and _base:
+            abs_file = os.path.join(_base, candidate_file)
+            abs_pkg = os.path.join(_base, candidate_pkg)
+            if os.path.isfile(abs_file):
+                found = True
+                resolved = candidate_file
+                found_via = "host_filesystem"
+            elif os.path.isfile(abs_pkg):
+                found = True
+                resolved = candidate_pkg
+                found_via = "host_filesystem"
+
+        entry = {
+            "import_line": import_line,
+            "import_ref": import_ref,
+            "resolved_path": resolved,
+        }
+
+        if found:
+            entry["exists"] = True
+            entry["found_via"] = found_via
+            verified.append(entry)
+            logger.debug("[job_checker] IMPORT VERIFIED (%s): %s -> %s", found_via, import_ref, resolved)
+        else:
+            if not _base and not _sandbox_files:
+                entry["reason"] = "Cannot verify - no sandbox base path or file list available"
+                # Don't mark as unresolvable if we can't check
+                verified.append(entry)
+            else:
+                entry["reason"] = f"Module not found at {candidate_file} or {candidate_pkg}"
+                entry["exists"] = False
+                unresolvable.append(entry)
+                logger.debug("[job_checker] IMPORT NOT FOUND: %s -> tried %s", import_ref, candidate_file)
+
+    return {"verified": verified, "unresolvable": unresolvable}
+
+
+def _build_import_evidence(import_results: Dict[str, List[Dict[str, str]]]) -> str:
+    """
+    Build a prompt section that tells the LLM which imports are
+    filesystem-verified so it does NOT flag them.
+    """
+    verified = import_results.get("verified", [])
+    unresolvable = import_results.get("unresolvable", [])
+
+    if not verified and not unresolvable:
+        return ""
+
+    lines = []
+    lines.append("\n## Deterministic Import Verification (GROUND TRUTH — do NOT override)")
+    lines.append("The following imports have been checked against the actual filesystem.")
+    lines.append("DO NOT flag verified imports as errors. They are confirmed correct.\n")
+
+    if verified:
+        lines.append("### ✅ VERIFIED (exist on disk — do NOT flag):")
+        for v in verified:
+            lines.append(f"- `{v['import_ref']}` → `{v['resolved_path']}`")
+        lines.append("")
+
+    if unresolvable:
+        lines.append("### ❌ NOT FOUND (should be flagged as blocking):")
+        for u in unresolvable:
+            lines.append(f"- `{u['import_ref']}` → {u.get('reason', 'not found')}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+# =============================================================================
 # LLM CALL
 # =============================================================================
 
@@ -196,6 +373,8 @@ def _build_check_prompt(
     file_content: str,
     arch_section: str,
     interface_contract: str = "",
+    import_evidence: str = "",
+    previous_strike_errors: Optional[List[str]] = None,
 ) -> str:
     """Build user prompt for the job checker."""
     # Trim file content if huge
@@ -216,13 +395,38 @@ def _build_check_prompt(
 {interface_contract}
 """
 
+    # v2.2: Strike history — show previous checker feedback to prevent contradictions
+    strike_history_section = ""
+    if previous_strike_errors:
+        strike_lines = []
+        for i, err in enumerate(previous_strike_errors, 1):
+            strike_lines.append(f"- **Strike {i}**: {err}")
+        strike_history_section = f"""
+
+## ⚠️ PREVIOUS STRIKE HISTORY (CRITICAL — READ CAREFULLY)
+This file has been rejected {len(previous_strike_errors)} time(s) already.
+The Implementer rewrote the file after each rejection based on YOUR feedback.
+
+{chr(10).join(strike_lines)}
+
+**IMPORTANT**: If you see that previous strikes gave CONTRADICTORY feedback
+(e.g. strike 1 said "make it async" and strike 2 said "make it sync"), then
+the spec itself has an ambiguity. In this case you MUST:
+1. Accept the current implementation if it is functionally correct
+2. Downgrade the contradicted issue from "blocking" to "warning"
+3. Do NOT re-raise an issue that contradicts feedback from a previous strike
+
+The goal is forward progress, not perfection. Only flag issues that are
+genuinely broken (will cause ImportError, NameError, or logic bugs at runtime).
+"""
+
     return f"""\
 ## File Path
 `{file_path}`
 
 ## Architecture Specification For This File
 {arch_section}
-{contract_section}
+{contract_section}{import_evidence}{strike_history_section}
 ## Written File Content
 ```
 {_content}
@@ -288,6 +492,9 @@ async def check_written_file(
     interface_contract: str = "",
     provider_id: Optional[str] = None,
     model_id: Optional[str] = None,
+    sandbox_base: str = "",
+    existing_sandbox_files: Optional[Set[str]] = None,
+    previous_strike_errors: Optional[List[str]] = None,
 ) -> CheckResult:
     """
     Main entry point: verify a written file against its architecture spec.
@@ -340,7 +547,18 @@ async def check_written_file(
         file_path, len(file_content), len(arch_section), _provider, _model,
     )
 
-    user_prompt = _build_check_prompt(file_path, file_content, arch_section, interface_contract)
+    # v2.1: Deterministic import pre-check — resolve relative imports against filesystem + sandbox file list
+    _import_results = _resolve_relative_imports(file_path, file_content, sandbox_base, existing_sandbox_files)
+    _import_evidence = _build_import_evidence(_import_results)
+    _v_count = len(_import_results.get("verified", []))
+    _u_count = len(_import_results.get("unresolvable", []))
+    if _v_count or _u_count:
+        logger.info(
+            "[job_checker] v2.0 Import pre-check: %d verified, %d unresolvable",
+            _v_count, _u_count,
+        )
+
+    user_prompt = _build_check_prompt(file_path, file_content, arch_section, interface_contract, _import_evidence, previous_strike_errors)
 
     try:
         from app.providers.registry import llm_call

@@ -73,6 +73,7 @@ SAFETY INVARIANT:
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -155,10 +156,22 @@ def parse_file_inventory(architecture: str) -> Tuple[List[Dict[str, str]], List[
     new_files: List[Dict[str, str]] = []
     modified_files: List[Dict[str, str]] = []
     
-    # Look for "New Files" section
+    # v3.2 FIX: First isolate the File Inventory section to prevent matching
+    # "New Files" in description prose earlier in the document (e.g. when the
+    # architecture describes parse_file_inventory itself and mentions "New Files"
+    # in its own documentation).
+    search_text = architecture
+    inventory_match = re.search(
+        r'#+\s*File Inventory\b(.*?)(?=\n---\s*$|\n##\s+[^#F]|\Z)',
+        architecture, re.DOTALL | re.IGNORECASE | re.MULTILINE,
+    )
+    if inventory_match:
+        search_text = inventory_match.group(1)
+    
+    # Look for "New Files" section (within inventory bounds if found)
     new_section = re.search(
         r'(?:New Files|Files to Create)(.*?)(?=\n##|\n###.*Modified|\Z)',
-        architecture, re.DOTALL | re.IGNORECASE,
+        search_text, re.DOTALL | re.IGNORECASE,
     )
     if new_section:
         for match in re.finditer(
@@ -170,10 +183,10 @@ def parse_file_inventory(architecture: str) -> Tuple[List[Dict[str, str]], List[
             if path and not path.startswith('---') and not path.lower() == 'file':
                 new_files.append({"path": path, "description": desc})
     
-    # Look for "Modified Files" section  
+    # Look for "Modified Files" section (within inventory bounds if found)
     mod_section = re.search(
         r'(?:Modified Files|Files to Modify)(.*?)(?=\n## [^#]|\n---\s*$|\Z)',
-        architecture, re.DOTALL | re.IGNORECASE,
+        search_text, re.DOTALL | re.IGNORECASE,
     )
     if mod_section:
         for match in re.finditer(
@@ -1447,47 +1460,27 @@ async def run_architecture_execution(
                 logger.warning("[arch_exec] v2.8 Shadow check failed for %s: %s", new_path, e)
 
     if shadowing_blocked:
-        # v2.9: Detect refactor-to-package — if the new files include an __init__.py
-        # for the shadowed directory, this is an intentional module→package conversion.
-        # In that case, rename the old .py file out of the way instead of blocking.
-        shadow_dirs = {b["dir_segment"] for b in shadowing_blocked}
-        new_paths_set = {f["path"].replace("\\", "/") for f in new_files}
-        for dir_seg in shadow_dirs:
+        # v2.9 DEPRECATED: The rename logic that was here is now handled by
+        # package_quarantine.py at the segment_loop level BEFORE any segments execute.
+        # The quarantine moves the .py file into a .quarantined/ folder, so by the
+        # time we reach here the shadow should not exist.
+        #
+        # If we still see shadows at this point, it means quarantine failed or
+        # wasn't run — log a clear error rather than attempting a second rename.
+        for blocked in shadowing_blocked:
+            dir_seg = blocked["dir_segment"]
             init_path = dir_seg + "/__init__.py"
+            new_paths_set = {f["path"].replace("\\", "/") for f in new_files}
             if init_path in new_paths_set:
-                # This is a refactor-to-package: rename old .py → .py.pre_refactor
-                existing_py = dir_seg + ".py"
-                resolved_old = _resolve_multi_root_path(existing_py, sandbox_base)
-                backup_path = resolved_old + ".pre_refactor"
-                try:
-                    rename_cmd = (
-                        f'if (Test-Path -Path "{resolved_old}") {{ '
-                        f'Rename-Item -Path "{resolved_old}" -NewName "{Path(backup_path).name}" -Force; '
-                        f'"RENAMED" }} else {{ "MISSING" }}'
-                    )
-                    rename_result = client.shell_run(rename_cmd, timeout_seconds=15)
-                    if rename_result.stdout and "RENAMED" in rename_result.stdout:
-                        shadowing_renamed.append(existing_py)
-                        logger.info(
-                            "[arch_exec] v2.9 REFACTOR-TO-PACKAGE: Renamed %s → %s",
-                            resolved_old, backup_path,
-                        )
-                        print(f"[ARCH_EXEC] \u2713 Refactor-to-package: renamed {existing_py} → {existing_py}.pre_refactor")
-                        add_trace("REFACTOR_TO_PACKAGE_RENAME", "success", {
-                            "old_file": existing_py,
-                            "backup": backup_path,
-                        })
-                    else:
-                        logger.warning("[arch_exec] v2.9 Rename failed for %s: %s", resolved_old, rename_result.stdout)
-                except Exception as e:
-                    logger.error("[arch_exec] v2.9 Rename error for %s: %s", existing_py, e)
-
-        # Remove successfully renamed entries from blocked list
-        if shadowing_renamed:
-            shadowing_blocked = [
-                b for b in shadowing_blocked
-                if b["shadows"] not in shadowing_renamed
-            ]
+                logger.error(
+                    "[arch_exec] v2.9 Shadow still exists after quarantine for %s — "
+                    "package_quarantine may have failed. Check quarantine logs.",
+                    blocked["shadows"],
+                )
+                print(
+                    f"[ARCH_EXEC] ⚠ Shadow conflict: {blocked['shadows']} still exists. "
+                    f"Expected package_quarantine to have moved it."
+                )
 
         # Any remaining blocked entries are genuine conflicts (no __init__.py planned)
         for blocked in shadowing_blocked:
@@ -1532,6 +1525,41 @@ async def run_architecture_execution(
     # v2.5: Track file contents for two-pass re-extraction
     created_file_contents: Dict[str, str] = {}  # rel_path -> content
     
+    # v5.11: Build set of existing files on sandbox for import validation.
+    # This allows the Job Checker to verify imports against files that were
+    # created by previously completed segments, not just the host filesystem.
+    _existing_sandbox_files: set = set()
+    try:
+        # Scan the package directory if we're working inside one
+        _all_task_paths = [t["info"]["path"] for t in all_tasks]
+        _pkg_dirs = set()
+        for _tp in _all_task_paths:
+            _tp_norm = _tp.replace("\\", "/")
+            _parts = _tp_norm.rsplit("/", 1)
+            if len(_parts) == 2:
+                _pkg_dirs.add(_parts[0])
+        for _pkg_dir in _pkg_dirs:
+            _abs_pkg = os.path.join(sandbox_base, _pkg_dir.replace("/", os.sep))
+            _scan_cmd = (
+                f'if (Test-Path "{_abs_pkg}" -PathType Container) {{ '
+                f'Get-ChildItem -Path "{_abs_pkg}" -Filter "*.py" -File | '
+                f'ForEach-Object {{ $_.Name }} '
+                f'}} else {{ "" }}'
+            )
+            _scan_result = client.shell_run(_scan_cmd, timeout_seconds=10)
+            if _scan_result.stdout:
+                for _fname in _scan_result.stdout.strip().split("\n"):
+                    _fname = _fname.strip()
+                    if _fname:
+                        _existing_sandbox_files.add(f"{_pkg_dir}/{_fname}")
+        if _existing_sandbox_files:
+            logger.info(
+                "[arch_exec] v5.11 Found %d existing .py files on sandbox for import validation: %s",
+                len(_existing_sandbox_files), sorted(_existing_sandbox_files),
+            )
+    except Exception as _scan_err:
+        logger.warning("[arch_exec] v5.11 Sandbox file scan failed: %s", _scan_err)
+    
     # v2.5: Identify boundary between CREATE and MODIFY tasks for two-pass
     create_count = len(new_files)
     
@@ -1559,6 +1587,7 @@ async def run_architecture_execution(
         # =====================================================================
         task_success = False
         last_error = None
+        _job_checker_strike_errors: list = []  # v2.2: Accumulate checker feedback across strikes
         
         for strike in range(1, MAX_STRIKES_PER_TASK + 1):
             logger.info("[arch_exec] %s strike %d/%d", rel_path, strike, MAX_STRIKES_PER_TASK)
@@ -1745,6 +1774,7 @@ async def run_architecture_execution(
                             {"role": "user", "content": user_prompt},
                         ],
                         max_tokens=impl_max_tokens,
+                        timeout_seconds=600,  # v3.2: Large file gen (up to 60k tokens) needs room
                     )
                     
                     file_content = _extract_llm_content(llm_result)
@@ -1883,6 +1913,9 @@ async def run_architecture_execution(
                     file_content=file_content,
                     arch_section=_check_arch,
                     interface_contract=interface_contract,
+                    sandbox_base=sandbox_base,
+                    existing_sandbox_files=_existing_sandbox_files,
+                    previous_strike_errors=_job_checker_strike_errors if _job_checker_strike_errors else None,
                 )
                 if _check_result.skipped:
                     logger.debug("[arch_exec] v5.5 Job check skipped for %s: %s",
@@ -1891,6 +1924,7 @@ async def run_architecture_execution(
                     _blocking = _check_result.blocking_issues
                     _block_desc = "; ".join(i.description for i in _blocking[:3])
                     last_error = f"Job Checker FAILED: {len(_blocking)} blocking issue(s): {_block_desc}"
+                    _job_checker_strike_errors.append(_block_desc)  # v2.2: accumulate for next strike
                     logger.warning("[arch_exec] v5.5 Strike %d: %s", strike, last_error)
                     print(f"[ARCH_EXEC] v5.5 JOB_CHECK FAIL: {rel_path} — {_block_desc[:120]}")
                     add_trace("JOB_CHECK_FAIL", f"strike_{strike}", {
@@ -1948,7 +1982,7 @@ async def run_architecture_execution(
                     except Exception as e:
                         logger.warning("[arch_exec] v2.5 Router registration extraction failed: %s", e)
             artifacts_written.append(abs_path)
-            
+            _existing_sandbox_files.add(rel_path.replace("\\", "/"))  # v5.11: track for import validation
             # v2.3: Capture interfaces for cross-file context
             try:
                 interface_summary = _extract_file_interfaces(rel_path, file_content)
@@ -2218,6 +2252,7 @@ async def run_architecture_execution(
                             {"role": "user", "content": fix_prompt},
                         ],
                         max_tokens=IMPLEMENTER_MAX_TOKENS,
+                        timeout_seconds=600,  # v3.2: Fix attempts can be large
                     )
 
                     fix_content = _extract_llm_content(fix_result)

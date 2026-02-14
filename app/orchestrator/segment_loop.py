@@ -26,8 +26,114 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-SEGMENT_LOOP_BUILD_ID = "2026-02-13-v4.0-phase-checkout-boot-check"
+SEGMENT_LOOP_BUILD_ID = "2026-02-14-v5.11-multi-pass-loop"
 print(f"[SEGMENT_LOOP_LOADED] BUILD_ID={SEGMENT_LOOP_BUILD_ID}")
+
+
+def _find_latest_arch(seg_dir: str) -> Optional[str]:
+    """
+    Find the latest architecture version file in a segment's arch directory.
+
+    Scans for arch_v{N}.md files and returns the path to the highest version.
+    Used by both execution and cohesion checking to ensure consistent version
+    resolution across the entire pipeline.
+
+    v5.8: Replaces hardcoded v1/v2 checks and static v3/v2/v1 fallback lists.
+    """
+    arch_dir = os.path.join(seg_dir, "arch")
+    if not os.path.isdir(arch_dir):
+        return None
+
+    max_version = 0
+    max_path = None
+    for fname in os.listdir(arch_dir):
+        if fname.startswith("arch_v") and fname.endswith(".md"):
+            try:
+                v = int(fname.replace("arch_v", "").replace(".md", ""))
+                if v > max_version:
+                    max_version = v
+                    max_path = os.path.join(arch_dir, fname)
+            except ValueError:
+                pass
+    return max_path
+
+
+def _clear_stale_arch_versions(seg_dir: str) -> int:
+    """
+    Remove stale autofix arch versions when a fresh regen produces arch_v1.md.
+
+    When the Critical Pipeline regenerates an architecture (e.g. after cohesion
+    regen feedback), it writes to arch_v1.md. Any existing v2, v3, etc. from
+    previous cohesion autofixes are now stale and must be removed so that:
+      1. The cohesion checker reads the fresh regen (not old autofix patches)
+      2. The executor loads the correct version
+      3. Version numbers don't drift upward across runs
+
+    v5.8: Fixes the recurring import-logging cohesion loop where regen wrote
+    a correct v1 but stale v2/v3 (without the fix) kept being loaded instead.
+
+    Returns:
+        Number of stale files removed.
+    """
+    arch_dir = os.path.join(seg_dir, "arch")
+    if not os.path.isdir(arch_dir):
+        return 0
+
+    removed = 0
+    for fname in os.listdir(arch_dir):
+        if fname.startswith("arch_v") and fname.endswith(".md") and fname != "arch_v1.md":
+            try:
+                stale_path = os.path.join(arch_dir, fname)
+                os.remove(stale_path)
+                removed += 1
+                logger.info("[SEGMENT_LOOP] v5.8 Removed stale arch: %s", stale_path)
+            except OSError as e:
+                logger.warning("[SEGMENT_LOOP] v5.8 Could not remove stale arch %s: %s", fname, e)
+    return removed
+
+
+def _save_execution_trace(seg_id: str, job_dir: str, arch_result: dict) -> None:
+    """
+    Persist the architecture execution trace to disk on failure.
+
+    The architecture_executor returns an in-memory trace list with per-file
+    success/failure details, but this was previously discarded — only the
+    summary error string was saved to state.json.  This function writes the
+    full trace to the segment's ledger directory so we can diagnose which
+    specific file failed and why.
+
+    v5.8: Closes the observability gap where partial failures (e.g. "4/5
+    succeeded, 1 failed") gave no indication of which file broke.
+    """
+    trace = arch_result.get("trace", [])
+    summary = arch_result.get("summary", {})
+    if not trace and not summary:
+        return
+
+    try:
+        trace_dir = os.path.join(job_dir, "segments", seg_id, "execution_trace")
+        os.makedirs(trace_dir, exist_ok=True)
+
+        trace_path = os.path.join(trace_dir, "trace.json")
+        trace_data = {
+            "segment_id": seg_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "error": arch_result.get("error"),
+            "success": arch_result.get("success", False),
+            "summary": summary,
+            "artifacts_written": arch_result.get("artifacts_written", []),
+            "trace_events": trace,
+        }
+        with open(trace_path, "w", encoding="utf-8") as f:
+            json.dump(trace_data, f, indent=2, default=str)
+
+        logger.info(
+            "[SEGMENT_LOOP] v5.8 Execution trace saved: %s (%d events)",
+            trace_path, len(trace),
+        )
+    except Exception as e:
+        logger.warning("[SEGMENT_LOOP] v5.8 Failed to save execution trace: %s", e)
+
 
 # --- Internal imports ---
 from app.pot_spec.grounded.segment_schemas import (
@@ -473,6 +579,7 @@ async def run_segment_through_pipeline(
     job_dir_path: str = "",         # v2.0: Job dir for rejection persistence
     manifest: Any = None,           # v2.0: Manifest for pre-flight context
     parent_spec: Any = None,        # v2.0: SPoT spec for rejection context
+    quarantine_result: Any = None,  # v5.9: Job-level quarantine result for MODIFY->CREATE promotion
 ) -> Dict[str, Any]:
     """
     Run a single segment through: Critical Pipeline → Critique → Overwatcher → Implementer.
@@ -561,6 +668,16 @@ async def run_segment_through_pipeline(
         get_job_dir(job_id), "segments", seg_id, "arch",
     )
     os.makedirs(seg_arch_dir, exist_ok=True)
+
+    # v5.8: Clear stale autofix versions before writing fresh regen.
+    # Prevents the cohesion checker from reading old v2/v3 instead of
+    # the new v1 that includes the fix.
+    _seg_dir_for_clear = os.path.join(get_job_dir(job_id), "segments", seg_id)
+    _stale_removed = _clear_stale_arch_versions(_seg_dir_for_clear)
+    if _stale_removed:
+        _emit(f"  🧹 Cleared {_stale_removed} stale arch version(s)")
+        logger.info("[SEGMENT_LOOP] v5.8 Cleared %d stale arch version(s) for %s", _stale_removed, seg_id)
+
     seg_arch_path = os.path.join(seg_arch_dir, "arch_v1.md")
     try:
         with open(seg_arch_path, "w", encoding="utf-8") as f:
@@ -626,9 +743,15 @@ async def run_segment_through_pipeline(
     # Step 2: Human Approval Gate (v3.0)
     # Architecture is generated and critique-approved. STOP here and
     # wait for explicit human approval before executing any writes.
+    #
+    # v5.8: Cohesion regen bypass — if this segment was previously approved
+    # and is only being re-run because cohesion found a fixable issue, skip
+    # the approval gate. The regen is a targeted patch, not new work.
     # =====================================================================
     auto_execute = os.getenv("ASTRA_SEGMENT_AUTO_EXECUTE", "0").strip()
-    if auto_execute != "1":
+    _is_cohesion_regen = bool(segment_context and segment_context.get("cohesion_feedback"))
+
+    if auto_execute != "1" and not _is_cohesion_regen:
         _emit(f"  ⏸️ AWAITING APPROVAL: Architecture ready for {seg_id}")
         _emit(f"  📄 Review: jobs/{os.path.basename(get_job_dir(job_id))}/segments/{seg_id}/arch/arch_v1.md")
         _emit(f"  💡 To execute: say 'Astra, command: execute segment {seg_id}'")
@@ -638,9 +761,14 @@ async def run_segment_through_pipeline(
         result["architecture_path"] = seg_arch_path
         return result
 
+    if _is_cohesion_regen:
+        _emit(f"  🧩 Cohesion regen — bypassing approval gate (was previously approved)")
+        logger.info("[SEGMENT_LOOP] v5.8 Cohesion regen bypass for %s", seg_id)
+
     # =====================================================================
     # Step 3: Overwatcher Pre-Flight + Architecture Executor
-    # Only reached if ASTRA_SEGMENT_AUTO_EXECUTE=1 or explicit approval
+    # Only reached if ASTRA_SEGMENT_AUTO_EXECUTE=1, explicit approval,
+    # or cohesion regen bypass (v5.8)
     # =====================================================================
     _emit(f"  🔧 Running Overwatcher for {seg_id}...")
 
@@ -732,6 +860,22 @@ async def run_segment_through_pipeline(
 
         # Run architecture execution for this segment
         _seg_contract = segment_context.get("interface_contract", "")
+
+        # v5.7: Promote quarantined MODIFY->CREATE in architecture text
+        # When quarantine renames a file, the Implementer can't MODIFY it.
+        # Rewrite the File Inventory to list it as New Files instead.
+        if quarantine_result and quarantine_result.has_quarantined:
+            try:
+                from app.orchestrator.package_quarantine import promote_quarantined_in_architecture
+                _orig_len = len(arch_text)
+                arch_text = promote_quarantined_in_architecture(
+                    arch_text, quarantine_result.quarantined_rel_paths,
+                )
+                if len(arch_text) != _orig_len:
+                    _emit(f"  [quarantine] Promoted quarantined file(s) from MODIFY->CREATE")
+            except Exception as _promo_err:
+                logger.warning("[SEGMENT_LOOP] v5.7 Quarantine promotion failed (non-fatal): %s", _promo_err)
+
         # v4.0: Skip boot check — segments are intermediate builds.
         # Boot check runs once at Phase Checkout after ALL segments complete.
         arch_result = await run_architecture_execution(
@@ -764,6 +908,12 @@ async def run_segment_through_pipeline(
             error_msg = arch_result.get("error", "Unknown error")
             result["error"] = f"Architecture execution failed for {seg_id}: {error_msg}"
             _emit(f"  ❌ Architecture execution failed for {seg_id}: {error_msg}")
+
+            # v5.8: Persist execution trace for failure diagnosis
+            _save_execution_trace(seg_id, get_job_dir(job_id), arch_result)
+            _n_trace = len(arch_result.get("trace", []))
+            if _n_trace:
+                _emit(f"  💾 Execution trace saved ({_n_trace} events) — check segments/{seg_id}/execution_trace/trace.json")
 
     except Exception as e:
         result["error"] = f"Overwatcher failed for {seg_id}: {e}"
@@ -971,248 +1121,329 @@ async def run_segmented_job(
         logger.warning("[SEGMENT_LOOP] Evidence ledger init failed (non-fatal): %s", _ledger_err)
         _ledger = None
 
+    # --- v5.7 PRE-EXECUTION QUARANTINE — File→Package Refactors ---
+    # When a job converts a .py file into a package directory, the original
+    # must be quarantined BEFORE any segments execute. The per-segment shadow
+    # check (arch_executor v2.9) can't handle this because __init__.py is
+    # typically in a different segment than the files that need the directory.
+    _quarantine_result = None
+    try:
+        from app.orchestrator.package_quarantine import (
+            run_quarantine,
+            QuarantineResult,
+        )
+        from app.overwatcher.sandbox_client import get_sandbox_client
+
+        _q_client = get_sandbox_client()
+        # Resolve sandbox base the same way architecture_executor does
+        _q_sandbox_base = os.getenv("ORB_SANDBOX_BASE", "D:\\Orb")
+
+        _quarantine_result = run_quarantine(
+            manifest_dict=manifest.to_dict(),
+            sandbox_base=_q_sandbox_base,
+            client=_q_client,
+            on_progress=_emit,
+        )
+        if _quarantine_result.has_quarantined:
+            logger.info(
+                "[SEGMENT_LOOP] v5.7 Quarantine: %d file(s), %d dir(s)",
+                len([e for e in _quarantine_result.entries if e.status == 'quarantined']),
+                len(_quarantine_result.directories_created),
+            )
+        if not _quarantine_result.all_ok:
+            for _q_err in _quarantine_result.errors:
+                _emit(f"  ⚠️ Quarantine warning: {_q_err}")
+    except ImportError:
+        logger.debug("[SEGMENT_LOOP] Package quarantine not available")
+    except Exception as _q_err:
+        logger.warning("[SEGMENT_LOOP] v5.7 Quarantine failed (non-fatal): %s", _q_err)
+        _emit(f"⚠️ Quarantine check failed (non-fatal): {_q_err}")
+
     # --- Initialise or resume state ---
     state = load_or_init_state(job_id, manifest)
     _emit(f"📊 State: {state.summary()}")
 
-    # --- Process segments in dependency order ---
+    # --- Process segments in dependency order (multi-pass) ---
+    # v5.11: The loop repeats until no further progress is made.
+    # This handles segments that are skipped on early passes because
+    # their dependencies aren't COMPLETE yet (e.g. seg-01 depends on seg-02..seg-09).
+    # Also handles PENDING segments that get architectures generated and need
+    # a second pass to execute once approved.
     execution_order = manifest.get_execution_order()
     total = len(execution_order)
+    _pass_number = 0
+    MAX_PASSES = 5  # Safety limit to prevent infinite loops
 
     _emit(f"🔄 Processing {total} segment(s) in dependency order...\n")
 
-    for idx, seg_id in enumerate(execution_order, 1):
-        seg_state = state.segments.get(seg_id)
-        seg_spec = manifest.get_segment(seg_id)
+    while _pass_number < MAX_PASSES:
+        _pass_number += 1
+        _progress_this_pass = 0
 
-        if seg_state is None or seg_spec is None:
-            logger.error("[SEGMENT_LOOP] Missing state/spec for segment %s", seg_id)
-            continue
+        for idx, seg_id in enumerate(execution_order, 1):
+            seg_state = state.segments.get(seg_id)
+            seg_spec = manifest.get_segment(seg_id)
 
-        # --- Skip already COMPLETE segments (crash recovery) ---
-        if seg_state.status == SegmentStatus.COMPLETE.value:
-            _emit(f"⏭️ [{idx}/{total}] {seg_id}: already COMPLETE (skipping)")
-            continue
+            if seg_state is None or seg_spec is None:
+                logger.error("[SEGMENT_LOOP] Missing state/spec for segment %s", seg_id)
+                continue
 
-        # --- Skip BLOCKED segments ---
-        if seg_state.status == SegmentStatus.BLOCKED.value:
-            _emit(f"🚫 [{idx}/{total}] {seg_id}: BLOCKED — {seg_state.error or 'dependency failed'}")
-            continue
+            # --- Skip already COMPLETE segments (crash recovery) ---
+            if seg_state.status == SegmentStatus.COMPLETE.value:
+                _emit(f"⏭️ [{idx}/{total}] {seg_id}: already COMPLETE (skipping)")
+                continue
 
-        # --- v3.0: APPROVED segments — skip architecture, go straight to execution ---
-        if seg_state.status == SegmentStatus.APPROVED.value:
-            # v3.1: Check if dependencies failed/blocked BEFORE executing
+            # --- Skip BLOCKED segments ---
+            if seg_state.status == SegmentStatus.BLOCKED.value:
+                _emit(f"🚫 [{idx}/{total}] {seg_id}: BLOCKED — {seg_state.error or 'dependency failed'}")
+                continue
+
+            # --- v3.0: APPROVED segments — skip architecture, go straight to execution ---
+            if seg_state.status == SegmentStatus.APPROVED.value:
+                # v3.1: Check if dependencies failed/blocked BEFORE executing
+                if is_segment_blocked(seg_spec, state):
+                    update_segment_status(
+                        state, seg_id, SegmentStatus.BLOCKED, job_dir_path,
+                        error="Dependency failed or blocked",
+                    )
+                    _emit(f"🚫 [{idx}/{total}] {seg_id}: BLOCKED by failed dependency (was APPROVED)")
+                    continue
+                # v5.10: APPROVED execution requires deps COMPLETE (files on disk),
+                # not just APPROVED. APPROVED-as-met is only for architecture generation.
+                _deps_complete = True
+                for _dep_id in (seg_spec.dependencies or []):
+                    _dep_st = state.segments.get(_dep_id)
+                    if _dep_st and _dep_st.status != SegmentStatus.COMPLETE.value:
+                        _deps_complete = False
+                        break
+                if not _deps_complete:
+                    _emit(f"⏳ [{idx}/{total}] {seg_id}: APPROVED but dependencies not yet COMPLETE (skipping)")
+                    continue
+
+                _emit(f"\n✅ [{idx}/{total}] {seg_id}: APPROVED — executing...")
+                _emit(f"  Files: {', '.join(seg_spec.file_scope[:5])}"
+                       f"{'...' if len(seg_spec.file_scope) > 5 else ''}")
+                update_segment_status(state, seg_id, SegmentStatus.IN_PROGRESS, job_dir_path)
+
+                # Load the saved architecture and execute directly
+                # v5.8: Use consistent version resolution (find highest arch_v{N}.md)
+                seg_dir = os.path.join(job_dir_path, "segments", seg_id)
+                arch_path = _find_latest_arch(seg_dir)
+
+                if arch_path is None or not os.path.isfile(arch_path):
+                    update_segment_status(
+                        state, seg_id, SegmentStatus.FAILED, job_dir_path,
+                        error=f"Architecture file not found: {arch_path}",
+                    )
+                    _emit(f"  ❌ Architecture file missing: {arch_path}")
+                    blocked = mark_dependents_blocked(state, seg_id, manifest, job_dir_path)
+                    if blocked:
+                        _emit(f"  🚫 Blocked {len(blocked)} dependent segment(s)")
+                    continue
+
+                with open(arch_path, 'r', encoding='utf-8') as f:
+                    arch_text = f.read()
+                _emit(f"  📄 Loaded architecture: {arch_path} ({len(arch_text)} chars)")
+
+                # v2.2: Build segment context for approved-resume path
+                segment_context = build_segment_context(
+                    seg_spec, state, parent_spec, job_dir_path,
+                    contract_set=_contract_set,
+                    source_file_evidence=_source_evidence,
+                )
+
+                # Execute via Overwatcher + Implementer
+                pipeline_result = {"success": False, "error": None, "output_files": []}
+                try:
+                    if not _ARCH_EXECUTOR_AVAILABLE:
+                        pipeline_result["error"] = "Architecture executor not available"
+                        _emit(f"  ⚠️ Architecture executor not available")
+                    else:
+                        spec = resolve_latest_spec(project_id, db)
+                        if spec is None:
+                            pipeline_result["error"] = f"No spec found for project {project_id}"
+                            _emit(f"  ⚠️ No spec found")
+                        else:
+                            llm_call_fn = create_overwatcher_llm_fn()
+                            seg_job_id = f"{job_id}__{seg_id}"
+                            # v5.5 PHASE 4A: Pass interface contract for Job Checker
+                            _seg_contract_md = segment_context.get("interface_contract", "") if segment_context else ""
+                            # v4.0: Skip boot check — Phase Checkout handles it
+                            arch_result = await run_architecture_execution(
+                                spec=spec,
+                                architecture_content=arch_text,
+                                architecture_path=arch_path,
+                                job_id=seg_job_id,
+                                llm_call_fn=llm_call_fn,
+                                artifact_root=os.getenv("ORB_JOB_ARTIFACT_ROOT", "D:/Orb/jobs"),
+                                interface_contract=_seg_contract_md,
+                                skip_boot_check=True,
+                            )
+                            if arch_result.get("success", False):
+                                pipeline_result["success"] = True
+                                pipeline_result["output_files"] = arch_result.get("artifacts_written", [])
+                                _emit(f"  ✅ Overwatcher + Implementer completed ({len(pipeline_result['output_files'])} files)")
+                                for _of in pipeline_result['output_files']:
+                                    _emit(f"    ✅ {_of}")
+                            else:
+                                pipeline_result["error"] = arch_result.get("error", "Unknown error")
+                                _emit(f"  ❌ Execution failed: {pipeline_result['error']}")
+
+                                # v5.8: Persist execution trace for failure diagnosis
+                                _save_execution_trace(seg_id, job_dir_path, arch_result)
+                                _n_trace = len(arch_result.get("trace", []))
+                                if _n_trace:
+                                    _emit(f"  💾 Execution trace saved ({_n_trace} events) — check segments/{seg_id}/execution_trace/trace.json")
+                except Exception as e:
+                    pipeline_result["error"] = f"Execution error: {e}"
+                    logger.exception("[SEGMENT_LOOP] Execution error for approved %s", seg_id)
+                    _emit(f"  ❌ Execution error: {e}")
+
+                # Handle result (same as normal flow)
+                if pipeline_result["success"]:
+                    output_files = pipeline_result.get("output_files", [])
+                    update_segment_status(
+                        state, seg_id, SegmentStatus.COMPLETE, job_dir_path,
+                        output_files=output_files,
+                    )
+                    _emit(f"  ✅ {seg_id}: COMPLETE ({len(output_files)} output file(s))")
+                    _progress_this_pass += 1
+                else:
+                    error_msg = pipeline_result.get("error", "Unknown")
+                    update_segment_status(
+                        state, seg_id, SegmentStatus.FAILED, job_dir_path,
+                        error=error_msg,
+                    )
+                    _emit(f"  ❌ {seg_id}: FAILED — {error_msg}")
+                    print(f"[SEGMENT_LOOP] v3.1 ❌ SEGMENT FAILED: {seg_id} — {error_msg}")
+                    blocked = mark_dependents_blocked(state, seg_id, manifest, job_dir_path)
+                    if blocked:
+                        _emit(f"  🚫 STOPPING: Blocked {len(blocked)} dependent segment(s): {blocked}")
+                        print(f"[SEGMENT_LOOP] v3.1 🚫 BLOCKED dependents: {blocked}")
+                continue  # v3.1: CRITICAL — must continue after APPROVED handling to avoid fall-through
+            # --- Check if segment should be blocked ---
             if is_segment_blocked(seg_spec, state):
                 update_segment_status(
                     state, seg_id, SegmentStatus.BLOCKED, job_dir_path,
                     error="Dependency failed or blocked",
                 )
-                _emit(f"🚫 [{idx}/{total}] {seg_id}: BLOCKED by failed dependency (was APPROVED)")
-                continue
-            if not can_execute_segment(seg_spec, state):
-                _emit(f"⏳ [{idx}/{total}] {seg_id}: APPROVED but waiting on dependencies (skipping)")
+                _emit(f"🚫 [{idx}/{total}] {seg_id}: BLOCKED by failed dependency")
                 continue
 
-            _emit(f"\n✅ [{idx}/{total}] {seg_id}: APPROVED — executing...")
+            # --- Check dependencies ---
+            if not can_execute_segment(seg_spec, state):
+                _emit(f"⏳ [{idx}/{total}] {seg_id}: waiting on dependencies (skipping)")
+                continue
+
+            # --- Execute segment ---
+            _emit(f"\n⚙️ [{idx}/{total}] {seg_id}: {seg_spec.title}")
             _emit(f"  Files: {', '.join(seg_spec.file_scope[:5])}"
                    f"{'...' if len(seg_spec.file_scope) > 5 else ''}")
+            _emit(f"  Dependencies: {seg_spec.dependencies or 'none'}")
+
+            # Mark IN_PROGRESS
             update_segment_status(state, seg_id, SegmentStatus.IN_PROGRESS, job_dir_path)
 
-            # Load the saved architecture and execute directly
-            seg_dir = os.path.join(job_dir_path, "segments", seg_id)
-            arch_path = os.path.join(seg_dir, "arch", "arch_v1.md")
-            # Also try arch_v2 if revision happened
-            arch_v2_path = os.path.join(seg_dir, "arch", "arch_v2.md")
-            if os.path.isfile(arch_v2_path):
-                arch_path = arch_v2_path
-
-            if not os.path.isfile(arch_path):
-                update_segment_status(
-                    state, seg_id, SegmentStatus.FAILED, job_dir_path,
-                    error=f"Architecture file not found: {arch_path}",
-                )
-                _emit(f"  ❌ Architecture file missing: {arch_path}")
-                blocked = mark_dependents_blocked(state, seg_id, manifest, job_dir_path)
-                if blocked:
-                    _emit(f"  🚫 Blocked {len(blocked)} dependent segment(s)")
-                continue
-
-            with open(arch_path, 'r', encoding='utf-8') as f:
-                arch_text = f.read()
-            _emit(f"  📄 Loaded architecture: {arch_path} ({len(arch_text)} chars)")
-
-            # v2.2: Build segment context for approved-resume path
+            # Build execution context with upstream evidence + interface contracts
             segment_context = build_segment_context(
                 seg_spec, state, parent_spec, job_dir_path,
                 contract_set=_contract_set,
                 source_file_evidence=_source_evidence,
             )
 
-            # Execute via Overwatcher + Implementer
-            pipeline_result = {"success": False, "error": None, "output_files": []}
-            try:
-                if not _ARCH_EXECUTOR_AVAILABLE:
-                    pipeline_result["error"] = "Architecture executor not available"
-                    _emit(f"  ⚠️ Architecture executor not available")
-                else:
-                    spec = resolve_latest_spec(project_id, db)
-                    if spec is None:
-                        pipeline_result["error"] = f"No spec found for project {project_id}"
-                        _emit(f"  ⚠️ No spec found")
-                    else:
-                        llm_call_fn = create_overwatcher_llm_fn()
-                        seg_job_id = f"{job_id}__{seg_id}"
-                        # v5.5 PHASE 4A: Pass interface contract for Job Checker
-                        _seg_contract_md = segment_context.get("interface_contract", "") if segment_context else ""
-                        # v4.0: Skip boot check — Phase Checkout handles it
-                        arch_result = await run_architecture_execution(
-                            spec=spec,
-                            architecture_content=arch_text,
-                            architecture_path=arch_path,
-                            job_id=seg_job_id,
-                            llm_call_fn=llm_call_fn,
-                            artifact_root=os.getenv("ORB_JOB_ARTIFACT_ROOT", "D:/Orb/jobs"),
-                            interface_contract=_seg_contract_md,
-                            skip_boot_check=True,
-                        )
-                        if arch_result.get("success", False):
-                            pipeline_result["success"] = True
-                            pipeline_result["output_files"] = arch_result.get("artifacts_written", [])
-                            _emit(f"  ✅ Overwatcher + Implementer completed ({len(pipeline_result['output_files'])} files)")
-                            for _of in pipeline_result['output_files']:
-                                _emit(f"    ✅ {_of}")
-                        else:
-                            pipeline_result["error"] = arch_result.get("error", "Unknown error")
-                            _emit(f"  ❌ Execution failed: {pipeline_result['error']}")
-            except Exception as e:
-                pipeline_result["error"] = f"Execution error: {e}"
-                logger.exception("[SEGMENT_LOOP] Execution error for approved %s", seg_id)
-                _emit(f"  ❌ Execution error: {e}")
+            # v2.3 FIX #2: Inject cohesion feedback for targeted regen
+            # If this segment was reset due to cohesion failure, inject the feedback
+            # so the architecture generator knows what to fix.
+            _seg_state = state.segments.get(seg_id)
+            if _seg_state and _seg_state.error and _seg_state.error.startswith("Cohesion regen:"):
+                segment_context["cohesion_feedback"] = _seg_state.error
+                logger.info("[SEGMENT_LOOP] v2.3 Injected cohesion feedback for %s regen", seg_id)
+                _emit(f"  🔄 Re-generating with cohesion feedback: {_seg_state.error[:120]}")
 
-            # Handle result (same as normal flow)
-            if pipeline_result["success"]:
-                output_files = pipeline_result.get("output_files", [])
-                update_segment_status(
-                    state, seg_id, SegmentStatus.COMPLETE, job_dir_path,
-                    output_files=output_files,
+            # Run through pipeline
+            try:
+                pipeline_result = await run_segment_through_pipeline(
+                    segment=seg_spec,
+                    segment_context=segment_context,
+                    job_id=job_id,
+                    db=db,
+                    project_id=project_id,
+                    on_progress=on_progress,
+                    contract_set=_contract_set,
+                    job_dir_path=job_dir_path,
+                    manifest=manifest,
+                    parent_spec=parent_spec,
+                    quarantine_result=_quarantine_result,
                 )
-                _emit(f"  ✅ {seg_id}: COMPLETE ({len(output_files)} output file(s))")
+            except Exception as e:
+                pipeline_result = {
+                    "success": False,
+                    "output_files": [],
+                    "error": str(e),
+                    "critique_warnings": [],
+                }
+                logger.exception("[SEGMENT_LOOP] Unexpected error processing %s", seg_id)
+
+            # --- Handle result ---
+            if pipeline_result["success"]:
+                # v3.0: Check if segment is awaiting approval (architecture generated but not executed)
+                if pipeline_result.get("awaiting_approval", False):
+                    update_segment_status(
+                        state, seg_id, SegmentStatus.APPROVED, job_dir_path,
+                    )
+                    _emit(f"  ✅ {seg_id}: APPROVED — architecture ready for review")
+                    _progress_this_pass += 1
+                else:
+                    # Collect output files
+                    output_files = pipeline_result.get("output_files", [])
+                    if not output_files:
+                        output_files = collect_segment_outputs(seg_id, job_dir_path)
+
+                    # Mark COMPLETE
+                    update_segment_status(
+                        state, seg_id, SegmentStatus.COMPLETE, job_dir_path,
+                        output_files=output_files,
+                    )
+
+                    # Verify interface contracts
+                    contract_warnings = verify_contracts_fulfilled(seg_id, state, manifest)
+                    if contract_warnings:
+                        _emit(f"  ⚠️ Contract warnings: {len(contract_warnings)}")
+
+                    _emit(f"  ✅ {seg_id}: COMPLETE ({len(output_files)} output file(s))")
+                    _progress_this_pass += 1
+
             else:
-                error_msg = pipeline_result.get("error", "Unknown")
+                error_msg = pipeline_result.get("error", "Unknown error")
+
+                # Mark FAILED
                 update_segment_status(
                     state, seg_id, SegmentStatus.FAILED, job_dir_path,
                     error=error_msg,
                 )
                 _emit(f"  ❌ {seg_id}: FAILED — {error_msg}")
-                print(f"[SEGMENT_LOOP] v3.1 ❌ SEGMENT FAILED: {seg_id} — {error_msg}")
+
+                # Block dependents
                 blocked = mark_dependents_blocked(state, seg_id, manifest, job_dir_path)
                 if blocked:
-                    _emit(f"  🚫 STOPPING: Blocked {len(blocked)} dependent segment(s): {blocked}")
-                    print(f"[SEGMENT_LOOP] v3.1 🚫 BLOCKED dependents: {blocked}")
-            continue  # v3.1: CRITICAL — must continue after APPROVED handling to avoid fall-through
-        # --- Check if segment should be blocked ---
-        if is_segment_blocked(seg_spec, state):
-            update_segment_status(
-                state, seg_id, SegmentStatus.BLOCKED, job_dir_path,
-                error="Dependency failed or blocked",
-            )
-            _emit(f"🚫 [{idx}/{total}] {seg_id}: BLOCKED by failed dependency")
-            continue
+                    _emit(f"  🚫 Blocked {len(blocked)} dependent segment(s): {blocked}")
 
-        # --- Check dependencies ---
-        if not can_execute_segment(seg_spec, state):
-            _emit(f"⏳ [{idx}/{total}] {seg_id}: waiting on dependencies (skipping)")
-            continue
-
-        # --- Execute segment ---
-        _emit(f"\n⚙️ [{idx}/{total}] {seg_id}: {seg_spec.title}")
-        _emit(f"  Files: {', '.join(seg_spec.file_scope[:5])}"
-               f"{'...' if len(seg_spec.file_scope) > 5 else ''}")
-        _emit(f"  Dependencies: {seg_spec.dependencies or 'none'}")
-
-        # Mark IN_PROGRESS
-        update_segment_status(state, seg_id, SegmentStatus.IN_PROGRESS, job_dir_path)
-
-        # Build execution context with upstream evidence + interface contracts
-        segment_context = build_segment_context(
-            seg_spec, state, parent_spec, job_dir_path,
-            contract_set=_contract_set,
-            source_file_evidence=_source_evidence,
-        )
-
-        # v2.3 FIX #2: Inject cohesion feedback for targeted regen
-        # If this segment was reset due to cohesion failure, inject the feedback
-        # so the architecture generator knows what to fix.
-        _seg_state = state.segments.get(seg_id)
-        if _seg_state and _seg_state.error and _seg_state.error.startswith("Cohesion regen:"):
-            segment_context["cohesion_feedback"] = _seg_state.error
-            logger.info("[SEGMENT_LOOP] v2.3 Injected cohesion feedback for %s regen", seg_id)
-            _emit(f"  🔄 Re-generating with cohesion feedback: {_seg_state.error[:120]}")
-
-        # Run through pipeline
-        try:
-            pipeline_result = await run_segment_through_pipeline(
-                segment=seg_spec,
-                segment_context=segment_context,
-                job_id=job_id,
-                db=db,
-                project_id=project_id,
-                on_progress=on_progress,
-                contract_set=_contract_set,
-                job_dir_path=job_dir_path,
-                manifest=manifest,
-                parent_spec=parent_spec,
-            )
-        except Exception as e:
-            pipeline_result = {
-                "success": False,
-                "output_files": [],
-                "error": str(e),
-                "critique_warnings": [],
-            }
-            logger.exception("[SEGMENT_LOOP] Unexpected error processing %s", seg_id)
-
-        # --- Handle result ---
-        if pipeline_result["success"]:
-            # v3.0: Check if segment is awaiting approval (architecture generated but not executed)
-            if pipeline_result.get("awaiting_approval", False):
-                update_segment_status(
-                    state, seg_id, SegmentStatus.APPROVED, job_dir_path,
-                )
-                _emit(f"  ✅ {seg_id}: APPROVED — architecture ready for review")
-            else:
-                # Collect output files
-                output_files = pipeline_result.get("output_files", [])
-                if not output_files:
-                    output_files = collect_segment_outputs(seg_id, job_dir_path)
-
-                # Mark COMPLETE
-                update_segment_status(
-                    state, seg_id, SegmentStatus.COMPLETE, job_dir_path,
-                    output_files=output_files,
-                )
-
-                # Verify interface contracts
-                contract_warnings = verify_contracts_fulfilled(seg_id, state, manifest)
-                if contract_warnings:
-                    _emit(f"  ⚠️ Contract warnings: {len(contract_warnings)}")
-
-                _emit(f"  ✅ {seg_id}: COMPLETE ({len(output_files)} output file(s))")
-
+        # v5.11: Check if any progress was made this pass
+        if _progress_this_pass == 0:
+            logger.info("[SEGMENT_LOOP] v5.11 Pass %d: no progress — stopping", _pass_number)
+            break
         else:
-            error_msg = pipeline_result.get("error", "Unknown error")
-
-            # Mark FAILED
-            update_segment_status(
-                state, seg_id, SegmentStatus.FAILED, job_dir_path,
-                error=error_msg,
+            _remaining = sum(
+                1 for ss in state.segments.values()
+                if ss.status not in (SegmentStatus.COMPLETE.value, SegmentStatus.FAILED.value, SegmentStatus.BLOCKED.value)
             )
-            _emit(f"  ❌ {seg_id}: FAILED — {error_msg}")
-
-            # Block dependents
-            blocked = mark_dependents_blocked(state, seg_id, manifest, job_dir_path)
-            if blocked:
-                _emit(f"  🚫 Blocked {len(blocked)} dependent segment(s): {blocked}")
+            logger.info(
+                "[SEGMENT_LOOP] v5.11 Pass %d: %d segment(s) progressed, %d remaining",
+                _pass_number, _progress_this_pass, _remaining,
+            )
+            if _remaining == 0:
+                break
+            _emit(f"\n🔄 Pass {_pass_number} complete ({_progress_this_pass} progressed, {_remaining} remaining) — continuing...\n")
 
     # --- v5.4 PHASE 2C: Cross-Segment Cohesion Check ---
     # After architecture generation, before execution. Runs when 2+ segments
@@ -1354,81 +1585,82 @@ async def run_segmented_job(
             _emit(f"[SEGMENT_LOOP] Integration check error: {e}")
             # Do NOT crash the segment loop — segments already completed
 
-    # --- v4.0 PHASE CHECKOUT (Placeholder for Stage 9) ---
-    # Boot check runs ONCE after ALL segments complete.
-    # This is where boot testing belongs — not inside individual segments.
-    # When the full Phase Checkout (Stage 9) is built, this will be replaced
-    # by the full verification: boot test + skeleton contract check + SPoT
-    # spec compliance + test bed execution.
+    # --- v5.0 PHASE CHECKOUT — Stage 9 Full Verification ---
+    # Replaces the v4.0 boot check stub with comprehensive verification:
+    # size validation + skeleton contract check + boot test + failure routing.
     all_segments_complete = all(
         s.status == SegmentStatus.COMPLETE.value
         for s in state.segments.values()
     )
     if all_segments_complete and total > 0:
-        _emit(f"\n{'='*50}")
-        _emit("🏁 PHASE CHECKOUT — Post-completion boot check...")
         try:
-            from app.overwatcher.sandbox_client import get_sandbox_client
+            from app.orchestrator.phase_checkout import run_phase_checkout
+            from app.orchestrator.skeleton_contracts import load_skeleton_contract
 
-            _pc_client = get_sandbox_client()
-            # Resolve sandbox base (same logic as architecture_executor)
-            _pc_sandbox_base = r"D:\Orb"  # Default; could resolve dynamically
-            for _candidate in [r"C:\Orb\Orb", r"C:\Orb", r"D:\Orb"]:
-                try:
-                    _test = _pc_client.shell_run(
-                        f'Test-Path -Path "{_candidate}\\main.py"',
-                        timeout_seconds=10,
-                    )
-                    if (_test.stdout or "").strip().lower() == "true":
-                        _pc_sandbox_base = _candidate
-                        break
-                except Exception:
-                    continue
-
-            _pc_venv = _pc_sandbox_base + "\\.venv\\Scripts\\python.exe"
-            _pc_cmd = (
-                f'cd "{_pc_sandbox_base}" ; '
-                f'& "{_pc_venv}" -c '
-                f'"import sys; sys.path.insert(0, r\'{_pc_sandbox_base}\'); '
-                f'from main import app; print(\'BOOT_CHECK_PASS\')"'
+            _skeleton = load_skeleton_contract(job_dir_path)
+            _checkout_result = run_phase_checkout(
+                job_id=job_id,
+                job_dir=job_dir_path,
+                state=state,
+                manifest=manifest,
+                skeleton=_skeleton,
+                attempt=1,
+                emit=_emit,
             )
-            _pc_result = _pc_client.shell_run(_pc_cmd, timeout_seconds=30)
-            _pc_stdout = (_pc_result.stdout or "").strip()
-            _pc_stderr = (_pc_result.stderr or "").strip()
 
-            if "BOOT_CHECK_PASS" in _pc_stdout:
-                _emit("✅ Phase Checkout boot check PASSED — application starts cleanly")
-                logger.info("[SEGMENT_LOOP] v4.0 Phase Checkout boot check PASSED")
-                state.phase_checkout_boot = "pass"
-            else:
-                # Extract useful error info
-                _err_keywords = (
-                    'Error', 'Traceback', 'ImportError', 'ModuleNotFoundError',
-                    'SyntaxError', 'AttributeError', 'NameError', 'TypeError',
-                    'cannot import', 'No module named',
+            # Map Phase Checkout result to JobState fields
+            if _checkout_result.boot_test:
+                state.phase_checkout_boot = _checkout_result.boot_test.status
+                if _checkout_result.boot_test.error_summary:
+                    state.phase_checkout_error = _checkout_result.boot_test.error_summary[:500]
+            
+            # Store full checkout result for downstream inspection
+            state.integration_check = state.integration_check or {}
+            state.integration_check["phase_checkout"] = _checkout_result.to_dict()
+
+            if _checkout_result.passed:
+                logger.info("[SEGMENT_LOOP] v5.0 Phase Checkout PASSED")
+            elif _checkout_result.routing:
+                logger.warning(
+                    "[SEGMENT_LOOP] v5.0 Phase Checkout FAILED → route to %s (seg=%s)",
+                    _checkout_result.routing.target_stage,
+                    _checkout_result.routing.target_segment or "all",
                 )
-                _err_lines = [
-                    ln.strip() for ln in (_pc_stdout + "\n" + _pc_stderr).split("\n")
-                    if any(kw in ln for kw in _err_keywords)
-                ]
-                _err_summary = "\n".join(_err_lines[:5]) or "Unknown boot failure"
-                _emit(f"❌ Phase Checkout boot check FAILED:\n{_err_summary}")
-                logger.error(
-                    "[SEGMENT_LOOP] v4.0 Phase Checkout boot check FAILED: %s",
-                    _err_summary[:300]
-                )
-                state.phase_checkout_boot = "fail"
-                state.phase_checkout_error = _err_summary[:500]
-                # NOTE: This does NOT mark segments as failed.
-                # The Phase Checkout failure is a separate concern.
-                # When full Stage 9 is built, it will diagnose and
-                # route fixes back to the Overwatcher.
-        except Exception as _pc_err:
-            logger.warning("[SEGMENT_LOOP] v4.0 Phase Checkout boot check error: %s", _pc_err)
-            _emit(f"⚠️ Phase Checkout boot check could not run: {_pc_err}")
+                # NOTE: Retry routing is logged but not yet auto-executed.
+                # When the phase loop orchestrator is built (Stage 3),
+                # it will consume this routing to re-run the right stage.
+                # For now, the failure info is saved in state for manual review.
+
+        except (ImportError, Exception) as _pc_err:
+            logger.warning("[SEGMENT_LOOP] v5.0 Phase Checkout error: %s", _pc_err)
+            _emit(f"⚠️ Phase Checkout could not run: {_pc_err}")
             state.phase_checkout_boot = "error"
 
         save_state(state, job_dir_path)
+
+    # --- v5.7 QUARANTINE CLEANUP / ROLLBACK ---
+    if _quarantine_result and _quarantine_result.has_quarantined:
+        _final_status = state.compute_overall_status()
+        if _final_status == "complete":
+            # All segments succeeded — delete quarantine backups
+            try:
+                from app.orchestrator.package_quarantine import cleanup_quarantine
+                cleanup_quarantine(_quarantine_result, _q_client, _emit)
+            except Exception as _cleanup_err:
+                logger.warning("[SEGMENT_LOOP] v5.7 Quarantine cleanup failed: %s", _cleanup_err)
+        elif _final_status == "failed":
+            # Job failed — rollback quarantined files
+            try:
+                from app.orchestrator.package_quarantine import rollback_quarantine
+                _rollback_ok = rollback_quarantine(_quarantine_result, _q_client, _emit)
+                if _rollback_ok:
+                    _emit("✅ Quarantine rollback complete — original files restored")
+                else:
+                    _emit("⚠️ Quarantine rollback had issues — check manually")
+            except Exception as _rollback_err:
+                logger.error("[SEGMENT_LOOP] v5.7 Quarantine rollback failed: %s", _rollback_err)
+                _emit(f"❌ Quarantine rollback error: {_rollback_err}")
+        # else: partial/running — leave quarantine in place for resume
 
     # --- Final summary ---
     state.overall_status = state.compute_overall_status()
