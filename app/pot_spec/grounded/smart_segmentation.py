@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-SMART_SEGMENTATION_BUILD_ID = "2026-02-14-v1.2-file-size-constraint"
+SMART_SEGMENTATION_BUILD_ID = "2026-02-14-v1.3-size-metadata-integration"
 print(f"[SMART_SEGMENTATION_LOADED] BUILD_ID={SMART_SEGMENTATION_BUILD_ID}")
 
 
@@ -66,11 +66,11 @@ segment.
 5. Config/schema/migration files go with the feature they serve, not in their \
 own segment.
 
-6. OUTPUT FILE SIZE CONSTRAINT: No single output file should exceed 15 KB \
-(~400 lines). If a planned file would be very large (e.g. a main orchestrator \
-that coordinates many phases), it MUST be split into multiple smaller files \
-across separate segments. Thin orchestrators that call sub-modules are preferred \
-over monolithic files.
+6. OUTPUT FILE SIZE CONSTRAINT: No single output file should ideally exceed 20 KB \
+(~500 lines). If a planned file would be larger, it MUST be decomposed into smaller \
+focused modules unless there is a solid reason the logic cannot be split further. \
+Prefer single-responsibility modules with one primary function per file. Thin \
+orchestrators that call focused sub-modules are always preferred over monolithic files.
 
 RULES:
 - Every file in the input MUST appear in exactly one segment.
@@ -113,6 +113,7 @@ def _build_grouping_prompt(
     file_scope: List[str],
     target_segments: int,
     requirements: List[str],
+    size_metadata: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Build user prompt for concept-aware grouping."""
     # Trim spec for context window efficiency
@@ -131,12 +132,35 @@ def _build_grouping_prompt(
         if len(requirements) > 20:
             req_text += f"\n... (+{len(requirements)-20} more)"
 
+    # v1.2: Build file list with size annotations if available
+    file_lines = []
+    for f in file_scope:
+        meta = (size_metadata or {}).get(f)
+        if meta and meta.get("estimated_lines", 0) > 0:
+            est = meta["estimated_lines"]
+            flag = " ⚠️ LARGE" if est > 400 else ""
+            file_lines.append(f"- {f}  (~{est} lines, ~{meta.get('estimated_kb', '?')} KB{flag})")
+        else:
+            file_lines.append(f"- {f}")
+    files_text = chr(10).join(file_lines)
+
+    # v1.2: Add size constraint reminder if any files are flagged
+    size_warning = ""
+    if size_metadata:
+        large = [p for p, m in size_metadata.items() if m.get("estimated_lines", 0) > 400]
+        if large:
+            size_warning = (
+                "\n\nSIZE CONSTRAINT: No output file may exceed 400 lines / 15 KB. "
+                "Files marked ⚠️ LARGE must be paired with their decomposition "
+                "sub-files in the SAME segment so the architect can split them.\n"
+            )
+
     return f"""\
 Group these files into {target_segments} segments (±1 is acceptable).
 
 Files ({len(file_scope)} total):
-{chr(10).join(f'- {f}' for f in file_scope)}
-{req_text}
+{files_text}
+{req_text}{size_warning}
 
 Specification context:
 {_spec}
@@ -242,6 +266,7 @@ async def generate_concept_segments(
     requirements: List[str] = None,
     provider_id: Optional[str] = None,
     model_id: Optional[str] = None,
+    size_metadata: Optional[Dict[str, Any]] = None,
 ) -> Optional[List[Dict[str, Any]]]:
     """
     Generate concept-aware segment groupings via LLM.
@@ -252,6 +277,10 @@ async def generate_concept_segments(
         target_segments: How many segments to target (from needle_estimate)
         requirements: Job requirements for context
         provider_id/model_id: Override model selection
+        size_metadata: (v1.2) Per-file size estimates from size_analyzer.
+                       Dict of {rel_path: {estimated_lines, estimated_kb, ...}}
+                       Injected into the prompt so the LLM can make
+                       size-aware grouping decisions.
 
     Returns:
         List of segment dicts, or None if LLM call fails (caller falls back).
@@ -286,7 +315,7 @@ async def generate_concept_segments(
         target_segments, len(file_scope), _provider, _model,
     )
 
-    user_prompt = _build_grouping_prompt(spec_markdown, file_scope, target_segments, requirements)
+    user_prompt = _build_grouping_prompt(spec_markdown, file_scope, target_segments, requirements, size_metadata)
 
     try:
         from app.providers.registry import llm_call

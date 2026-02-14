@@ -692,6 +692,12 @@ Your architecture MUST:
    appear in the markdown below, they ARE the authoritative requirements regardless
    of any structured JSON fields. Do NOT claim acceptance criteria are empty or
    missing if they appear in this markdown.
+6. FILE SIZE CONSTRAINT: Design all output files to be under 20 KB (~500 lines)
+   each. Prefer single-responsibility modules with one primary function per file.
+   If a file would exceed 20 KB, decompose it into smaller focused modules. Only
+   exceed 20 KB if there is a solid reason the logic cannot be decomposed further.
+   Do NOT leave large orchestration blobs — split them into thin coordinators that
+   call focused sub-modules.
 
 {spec_markdown}
 

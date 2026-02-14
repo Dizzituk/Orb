@@ -317,9 +317,10 @@ RULES:
     - Preserve the EXACT function signatures (same parameter names, types, defaults)
     - Preserve the EXACT import paths (same module references)
     - Preserve ALL logic, debug prints, logger calls, and comments
-    - Do NOT rewrite, simplify, or "improve" the code
     - Do NOT import from non-existent modules — use the same imports as the source file
     - The ONLY changes allowed: removing code that stays in the source file, and updating relative import paths if the new file is in a different directory
+11. DO NOT GUESS: If you are unsure about any import path, module name, function signature, or implementation detail, follow the architecture specification exactly. Do NOT invent module names, file paths, or helper functions that are not in the spec or the Available Modules list. Every import must resolve to a real file.
+12. FILE SIZE: Keep files focused and under 20 KB (~500 lines) where possible. If the architecture asks you to write a file that seems too large, implement it fully anyway — file decomposition is the architecture's responsibility, not yours.
 """
 
 IMPLEMENTER_MODIFY_FILE_SYSTEM = """You are a code implementation agent. You receive an existing file and modification instructions from an architecture specification. You output the COMPLETE modified file.
@@ -337,6 +338,7 @@ RULES:
 10. IMPORT PATTERNS: When adding new imports, check the "Existing Imports" section if provided. Use the same module paths and import patterns as the file already uses. Do NOT invent new module paths — follow what already works in this file.
 11. GITIGNORE SAFETY: For .gitignore modifications, be conservative. NEVER add broad glob patterns like *.json, *.md, *.txt, *.yaml, *.yml that would exclude tracked project files. Only add specific paths or narrow patterns (e.g. dist/, node_modules/, *.pyc).
 12. API URL PATHS: When adding or modifying frontend API calls (fetch, axios, etc.), use the EXACT endpoint paths from the "Resolved API Endpoints" section in the cross-file context if provided. Do NOT invent URL prefixes — the resolved paths show the actual backend URLs including any router prefix.
+13. DO NOT GUESS: Do NOT invent module names, file paths, or helper functions that are not referenced in the architecture spec, the existing file, or the Available Modules list. Every import must resolve to a real file.
 """
 
 
@@ -1560,6 +1562,35 @@ async def run_architecture_execution(
     except Exception as _scan_err:
         logger.warning("[arch_exec] v5.11 Sandbox file scan failed: %s", _scan_err)
     
+    # v5.12: Also add ALL files from this segment's task list as "planned".
+    # When _executor.py imports from process_task_loop_part1.py (file [2/5]),
+    # the Job Checker needs to know that file is about to be created even though
+    # it doesn't exist on disk yet. This prevents false "import not found" errors
+    # for intra-segment cross-file imports.
+    for _task in all_tasks:
+        _task_path = _task["info"]["path"].replace("\\", "/")
+        _existing_sandbox_files.add(_task_path)
+    logger.info(
+        "[arch_exec] v5.12 Total known files for import validation: %d (sandbox + planned)",
+        len(_existing_sandbox_files),
+    )
+    # v5.12: Build available-modules evidence string for Implementer prompts.
+    # This tells the LLM exactly which sibling modules exist (or will exist)
+    # so it never invents imports to non-existent files.
+    _available_modules_evidence = ""
+    if _existing_sandbox_files:
+        _sorted_modules = sorted(_existing_sandbox_files)
+        _mod_lines = [f"  - `{m}`" for m in _sorted_modules]
+        _available_modules_evidence = (
+            "\n\n## Available Modules (DO NOT invent imports to files not in this list)\n"
+            "The following modules exist or are being created in this package. "
+            "You may ONLY import from these modules. Do NOT create imports to any "
+            "file not listed here. Do NOT split your implementation into sub-files "
+            "that are not in this list.\n\n"
+            + "\n".join(_mod_lines)
+            + "\n"
+        )
+
     # v2.5: Identify boundary between CREATE and MODIFY tasks for two-pass
     create_count = len(new_files)
     
@@ -1671,6 +1702,8 @@ async def run_architecture_execution(
                         # Non-fatal — proceed without source context if detection/read fails
                         logger.warning("[arch_exec] v3.0 Source context failed for %s: %s", rel_path, e)
                     
+                    if _available_modules_evidence:
+                        user_prompt += _available_modules_evidence
                     user_prompt += "Output ONLY the file content. No markdown fences, no explanations."
                     system_prompt = IMPLEMENTER_NEW_FILE_SYSTEM
                 else:
@@ -1739,6 +1772,8 @@ async def run_architecture_execution(
                         user_prompt += f"## Modification Instructions\n\n{file_context}\n\n"
                         if job_context_section:
                             user_prompt += f"{job_context_section}\n\n"
+                        if _available_modules_evidence:
+                            user_prompt += _available_modules_evidence
                         user_prompt += "Output the COMPLETE modified file. No markdown fences."
                         system_prompt = IMPLEMENTER_MODIFY_FILE_SYSTEM
                 
