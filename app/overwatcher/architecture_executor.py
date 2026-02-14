@@ -88,7 +88,7 @@ from .sandbox_client import (
 
 logger = logging.getLogger(__name__)
 
-ARCHITECTURE_EXECUTOR_BUILD_ID = "2026-02-10-v3.1-edit-mode-and-verbatim-extraction"
+ARCHITECTURE_EXECUTOR_BUILD_ID = "2026-02-15-v5.13-quarantine-aware-modify-skip"
 print(f"[ARCHITECTURE_EXECUTOR_LOADED] BUILD_ID={ARCHITECTURE_EXECUTOR_BUILD_ID}")
 
 
@@ -1612,6 +1612,81 @@ async def run_architecture_execution(
             "absolute_path": abs_path,
             "task_number": i,
         })
+        
+        # =====================================================================
+        # v5.13: Quarantine-aware skip for MODIFY/DELETE on quarantined files
+        # When a file→package refactor is in progress, the quarantine system
+        # moves the old .py file into a .quarantined/ folder BEFORE segments
+        # execute. If the architecture says to DELETE or MODIFY a file that
+        # has already been quarantined, there's nothing for the Implementer
+        # to do — the quarantine already handled it. Skip the task.
+        # =====================================================================
+        if action == "modify":
+            _rel_norm = rel_path.replace("\\", "/")
+            # Check if the file description indicates a DELETE operation
+            _desc_lower = file_info.get("description", "").lower()
+            _is_delete = any(kw in _desc_lower for kw in [
+                "delete", "remove entirely", "superseded", "replaced by",
+                "no longer exists", "remove this file",
+            ])
+            # Also check if the architecture section says DELETE
+            if not _is_delete:
+                _file_section = extract_section_for_file(architecture_content, rel_path)
+                if _file_section:
+                    _sec_lower = _file_section.lower()
+                    _is_delete = any(phrase in _sec_lower for phrase in [
+                        "delete this file", "remove entirely", "removed entirely",
+                        "file is removed", "this file is superseded",
+                        "this file must be deleted", "must not exist",
+                        "no longer exists", "must be removed",
+                    ])
+            # Check if the file is already in quarantine
+            if _is_delete:
+                # Build quarantine path: parent_dir/.quarantined/filename
+                _path_parts = _rel_norm.rsplit("/", 1)
+                if len(_path_parts) == 2:
+                    _q_dir = f"{_path_parts[0]}/.quarantined"
+                    _q_file = _path_parts[1]
+                    _q_abs = _resolve_multi_root_path(f"{_q_dir}/{_q_file}", sandbox_base)
+                else:
+                    _q_abs = _resolve_multi_root_path(f".quarantined/{_rel_norm}", sandbox_base)
+                try:
+                    _q_check_cmd = (
+                        f'if (Test-Path -Path "{_q_abs}" -PathType Leaf) '
+                        f'{{ "QUARANTINED" }} else {{ "NONE" }}'
+                    )
+                    _q_check = client.shell_run(_q_check_cmd, timeout_seconds=10)
+                    if _q_check.stdout and "QUARANTINED" in _q_check.stdout:
+                        # File is in quarantine — also verify the original is gone
+                        _orig_check_cmd = (
+                            f'if (Test-Path -Path "{abs_path}" -PathType Leaf) '
+                            f'{{ "EXISTS" }} else {{ "GONE" }}'
+                        )
+                        _orig_check = client.shell_run(_orig_check_cmd, timeout_seconds=10)
+                        _orig_gone = _orig_check.stdout and "GONE" in _orig_check.stdout
+                        if _orig_gone:
+                            logger.info(
+                                "[arch_exec] v5.13 QUARANTINE SKIP: %s — file already quarantined at %s",
+                                rel_path, _q_abs,
+                            )
+                            print(
+                                f"[ARCH_EXEC] v5.13 ✓ SKIP (quarantined): {rel_path} — "
+                                f"already moved to .quarantined/ by package_quarantine"
+                            )
+                            add_trace("QUARANTINE_SKIP", "success", {
+                                "path": rel_path,
+                                "quarantine_path": _q_abs,
+                                "reason": "File quarantined by package_quarantine, no action needed",
+                            })
+                            # Count as success — the quarantine did the work
+                            files_modified_count += 1
+                            artifacts_written.append(abs_path)
+                            continue  # Skip to next task
+                except Exception as _q_err:
+                    logger.warning(
+                        "[arch_exec] v5.13 Quarantine check failed for %s: %s — proceeding normally",
+                        rel_path, _q_err,
+                    )
         
         # =====================================================================
         # Three-strike error loop
