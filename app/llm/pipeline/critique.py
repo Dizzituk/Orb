@@ -332,6 +332,7 @@ CRITICAL_CLAIMS must be the LAST block in your output."""
             messages=critique_messages,
             job_envelope=critic_envelope,
             max_tokens=critique_max_tokens,
+            timeout_seconds=180,  # v1.10: Large arch + spec inputs need room
         )
         
         if not result or not result.content:
@@ -560,6 +561,7 @@ async def call_gemini_critic(
             messages=critique_messages,
             job_envelope=critic_envelope,
             max_tokens=critique_max_tokens,
+            timeout_seconds=180,  # v1.10: Large arch + spec inputs need room
         )
 
         if not result:

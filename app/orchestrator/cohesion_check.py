@@ -580,7 +580,10 @@ def load_segment_architectures(
     """
     Load architecture files for the given segments.
 
-    Looks for arch_v3.md, arch_v2.md (revised) first, falls back to arch_v1.md.
+    v5.8: Dynamically finds the highest arch_v{N}.md instead of a hardcoded
+    fallback list.  This is consistent with segment_loop._find_latest_arch()
+    so that cohesion checking and execution always read the same version.
+
     Returns {segment_id: architecture_content} for segments that have architectures.
     """
     architectures = {}
@@ -588,20 +591,32 @@ def load_segment_architectures(
         seg_dir = os.path.join(job_dir, "segments", seg_id)
         arch_dir = os.path.join(seg_dir, "arch")
 
-        # Try latest version first, then fallback
-        for fname in ("arch_v3.md", "arch_v2.md", "arch_v1.md"):
-            arch_path = os.path.join(arch_dir, fname)
-            if os.path.isfile(arch_path):
+        if not os.path.isdir(arch_dir):
+            continue
+
+        # v5.8: Find the highest version dynamically
+        max_version = 0
+        best_path = None
+        for fname in os.listdir(arch_dir):
+            if fname.startswith("arch_v") and fname.endswith(".md"):
                 try:
-                    with open(arch_path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                    if content.strip():
-                        architectures[seg_id] = content
-                        logger.debug("[cohesion_check] Loaded %s for %s (%d chars)",
-                                     fname, seg_id, len(content))
-                        break
-                except Exception as e:
-                    logger.warning("[cohesion_check] Failed to read %s: %s", arch_path, e)
+                    v = int(fname.replace("arch_v", "").replace(".md", ""))
+                    if v > max_version:
+                        max_version = v
+                        best_path = os.path.join(arch_dir, fname)
+                except ValueError:
+                    pass
+
+        if best_path and os.path.isfile(best_path):
+            try:
+                with open(best_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                if content.strip():
+                    architectures[seg_id] = content
+                    logger.debug("[cohesion_check] Loaded %s for %s (%d chars)",
+                                 os.path.basename(best_path), seg_id, len(content))
+            except Exception as e:
+                logger.warning("[cohesion_check] Failed to read %s: %s", best_path, e)
 
     return architectures
 

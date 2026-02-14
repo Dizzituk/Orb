@@ -374,14 +374,19 @@ async def stream_anthropic(
 
     enhanced_prompt = enhance_system_prompt_with_reasoning(system_prompt, enable_reasoning)
 
-    client = anthropic.AsyncAnthropic(api_key=api_key)
+    # v0.19: Apply timeout — default 300s for long architecture docs, env override available
+    effective_timeout = timeout_seconds or _int_env("ANTHROPIC_TIMEOUT_SECONDS") or 300
+    client = anthropic.AsyncAnthropic(
+        api_key=api_key,
+        timeout=effective_timeout,
+    )
 
     prompt_tokens = None
     completion_tokens = None
 
     # Determine max tokens: explicit param > env var > default
     effective_max_tokens = max_tokens or _int_env("ANTHROPIC_MAX_TOKENS") or 4096
-    print(f"[STREAM_ANTHROPIC] Effective max_tokens={effective_max_tokens}")
+    print(f"[STREAM_ANTHROPIC] Effective max_tokens={effective_max_tokens}, timeout={effective_timeout}s")
     
     try:
         resp = await client.messages.create(
@@ -634,6 +639,7 @@ async def call_llm_text(
     enable_reasoning: bool = False,
     route: Optional[str] = None,
     max_tokens: Optional[int] = None,
+    timeout_seconds: Optional[int] = None,
 ) -> str:
     """
     Convenience helper for callers that want a single final string.
@@ -679,6 +685,7 @@ async def call_llm_text(
             enable_reasoning=enable_reasoning,
             route=route,
             max_tokens=max_tokens,
+            timeout_seconds=timeout_seconds,
         ):
             et = event.get("type")
             if et == "token":

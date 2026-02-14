@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-SPEC_RUNNER_BUILD_ID = "2026-02-14-v5.5-ac-name-reconciliation"
+SPEC_RUNNER_BUILD_ID = "2026-02-14-v5.6-size-analyzer-integration"
 print(f"[SPEC_RUNNER_LOADED] BUILD_ID={SPEC_RUNNER_BUILD_ID}")
 
 
@@ -1331,6 +1331,46 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
             )
             
             if _file_scope:
+                # v5.6: Pre-segmentation size analysis
+                # Reads source files, AST-parses them, identifies oversized
+                # blocks, and expands scope with decomposition sub-files.
+                _size_analysis = None
+                _size_metadata = {}  # flows to smart segmenter
+                try:
+                    from .size_analyzer import analyze_file_sizes
+                    _size_analysis = analyze_file_sizes(
+                        file_scope=_file_scope,
+                        spec_markdown=spot_markdown,
+                    )
+                    if _size_analysis.files_added:
+                        logger.info(
+                            "[spec_runner] v5.6 Size analysis expanded scope: "
+                            "%d → %d files (+%d decomposition)",
+                            len(_file_scope),
+                            len(_size_analysis.enriched_file_scope),
+                            len(_size_analysis.files_added),
+                        )
+                        print(
+                            f"[spec_runner] v5.6 SIZE ANALYSIS: "
+                            f"{len(_size_analysis.files_added)} file(s) added "
+                            f"from decomposition: {', '.join(_size_analysis.files_added)}"
+                        )
+                        _file_scope = _size_analysis.enriched_file_scope
+                    else:
+                        logger.info(
+                            "[spec_runner] v5.6 Size analysis: all %d files within caps",
+                            len(_file_scope),
+                        )
+                    _size_metadata = {
+                        est.rel_path: est.to_dict()
+                        for est in _size_analysis.estimates.values()
+                    } if _size_analysis.estimates else {}
+                except (ImportError, Exception) as _sa_err:
+                    logger.debug(
+                        "[spec_runner] Size analyzer unavailable: %s — continuing without",
+                        _sa_err,
+                    )
+
                 # v5.5: Try needle classifier first
                 _should_segment = False
                 _seg_reason = ""
@@ -1386,6 +1426,7 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
                                 file_scope=_file_scope,
                                 target_segments=_target_segs,
                                 requirements=_requirements,
+                                size_metadata=_size_metadata,
                             )
                             if _concept_groups:
                                 logger.info("[spec_runner] v5.5 Concept grouping: %d groups",

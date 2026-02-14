@@ -267,7 +267,7 @@ class ProviderRegistry:
         system_prompt: Optional[str] = None,
         temperature: float = 0.2,
         max_tokens: int = 2048,
-        timeout_seconds: int = 60,
+        timeout_seconds: int = 180,  # v2.1: Raised from 60 — 60s too tight for large inputs
         enable_web_search: bool = False,  # forbidden (ignored)
         enable_tools: bool = False,
         tool_names: Optional[List[str]] = None,
@@ -784,7 +784,7 @@ async def llm_call(
     system_prompt: Optional[str] = None,
     temperature: float = 0.2,
     max_tokens: int = 2048,
-    timeout_seconds: int = 60,
+    timeout_seconds: int = 180,  # v2.1: Raised from 60
     enable_web_search: bool = False,
     enable_tools: bool = False,
     tool_names: Optional[List[str]] = None,

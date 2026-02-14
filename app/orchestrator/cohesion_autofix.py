@@ -355,6 +355,7 @@ async def apply_tier2_fix(
             ),
             user_prompt=prompt,
             max_tokens=len(arch_text) // 2 + 2000,  # Enough for the full doc
+            timeout_seconds=300,  # v3.3: Large arch docs need more time
         )
 
         if not response or not response.strip():
@@ -378,7 +379,31 @@ async def apply_tier2_fix(
         logger.warning("[cohesion_autofix] LLM module not available for Tier 2")
         return arch_text, False, "LLM module not available", 0
     except Exception as e:
-        logger.warning("[cohesion_autofix] Tier 2 LLM call failed: %s", e)
+        # v3.3: Retry once on timeout errors
+        is_timeout = "timeout" in str(e).lower() or "ReadTimeout" in type(e).__name__
+        if is_timeout:
+            logger.warning("[cohesion_autofix] Tier 2 timeout, retrying once: %s", e)
+            try:
+                response = await call_llm_text(
+                    provider=provider,
+                    model=model,
+                    system_prompt=(
+                        "You are an architecture document editor. Apply ONLY the requested "
+                        "fix. Return the COMPLETE fixed document with no preamble."
+                    ),
+                    user_prompt=prompt,
+                    max_tokens=len(arch_text) // 2 + 2000,
+                    timeout_seconds=600,  # Double timeout on retry
+                )
+                if response and response.strip():
+                    fixed_text = response.strip()
+                    if len(fixed_text) >= len(arch_text) * 0.5:
+                        tokens_used = (len(prompt) + len(fixed_text)) // 4
+                        return fixed_text, True, f"Micro LLM patch applied (retry) via {provider}/{model}", tokens_used
+            except Exception as retry_err:
+                logger.warning("[cohesion_autofix] Tier 2 retry also failed: %s", retry_err)
+        else:
+            logger.warning("[cohesion_autofix] Tier 2 LLM call failed: %s", e)
         return arch_text, False, f"LLM call failed: {e}", 0
 
 
