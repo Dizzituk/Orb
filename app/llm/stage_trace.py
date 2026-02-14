@@ -452,10 +452,13 @@ def get_env_model_audit() -> dict:
     """Get current env var values for model selection audit."""
     return {
         "SPEC_GATE_PROVIDER": os.getenv("SPEC_GATE_PROVIDER", "<not set>"),
-        "OPENAI_SPEC_GATE_MODEL": os.getenv("OPENAI_SPEC_GATE_MODEL", "<not set>"),
-        "OPENAI_DEFAULT_MODEL": os.getenv("OPENAI_DEFAULT_MODEL", "<not set>"),
-        "ANTHROPIC_OPUS_MODEL": os.getenv("ANTHROPIC_OPUS_MODEL", "<not set>"),
-        "ANTHROPIC_SONNET_MODEL": os.getenv("ANTHROPIC_SONNET_MODEL", "<not set>"),
+        "SPEC_GATE_MODEL": os.getenv("SPEC_GATE_MODEL", "<not set>"),
+        "CRITICAL_PIPELINE_PROVIDER": os.getenv("CRITICAL_PIPELINE_PROVIDER", "<not set>"),
+        "CRITICAL_PIPELINE_MODEL": os.getenv("CRITICAL_PIPELINE_MODEL", "<not set>"),
+        "OVERWATCHER_PROVIDER": os.getenv("OVERWATCHER_PROVIDER", "<not set>"),
+        "OVERWATCHER_MODEL": os.getenv("OVERWATCHER_MODEL", "<not set>"),
+        "IMPLEMENTER_PROVIDER": os.getenv("IMPLEMENTER_PROVIDER", "<not set>"),
+        "IMPLEMENTER_MODEL": os.getenv("IMPLEMENTER_MODEL", "<not set>"),
     }
 
 

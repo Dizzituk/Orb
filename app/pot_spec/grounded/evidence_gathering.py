@@ -80,7 +80,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # v1.34 BUILD VERIFICATION
 # =============================================================================
-EVIDENCE_GATHERING_BUILD_ID = "2026-02-06-v2.1-hard-read-fail-and-evidence-gap-detection"
+EVIDENCE_GATHERING_BUILD_ID = "2026-02-12-v2.2-index-json-path-fallback"
 print(f"[EVIDENCE_GATHERING_LOADED] BUILD_ID={EVIDENCE_GATHERING_BUILD_ID}")
 logger.info(f"[evidence_gathering] Module loaded: BUILD_ID={EVIDENCE_GATHERING_BUILD_ID}")
 
@@ -697,6 +697,88 @@ def read_interface_signatures(
 # PATH RESOLUTION FUNCTIONS (v1.27 - MULTI-TARGET AWARE)
 # =============================================================================
 
+# v2.2: INDEX.json cache for fast lookups (loaded once, refreshed if stale)
+_INDEX_JSON_CACHE: Optional[Dict[str, List[str]]] = None  # {basename_lower: [abs_path, ...]}
+_INDEX_JSON_MTIME: float = 0.0
+
+
+def _resolve_via_index_json(ref_normalized: str) -> Optional[str]:
+    """
+    v2.2: Search INDEX.json for a file matching the bare filename or relative path.
+
+    INDEX.json lives at D:\\Orb\\.architecture\\INDEX.json and contains an entry
+    for every project file with its absolute path.  This function builds a
+    basename → [absolute_path, ...] lookup on first call, then matches:
+      1. Exact basename match  (e.g. "architecture_executor.py")
+      2. Suffix match          (e.g. "app\\overwatcher\\architecture_executor.py")
+
+    If multiple matches exist, prefer the one under EVIDENCE_ALLOWED_ROOTS.
+    Returns the absolute path or None.
+    """
+    global _INDEX_JSON_CACHE, _INDEX_JSON_MTIME
+
+    index_path = os.path.join("D:\\Orb", ".architecture", "INDEX.json")
+
+    # Load / refresh cache
+    try:
+        current_mtime = os.path.getmtime(index_path) if os.path.isfile(index_path) else 0.0
+    except OSError:
+        current_mtime = 0.0
+
+    if _INDEX_JSON_CACHE is None or current_mtime != _INDEX_JSON_MTIME:
+        _INDEX_JSON_CACHE = {}
+        _INDEX_JSON_MTIME = current_mtime
+        try:
+            import json as _json
+            with open(index_path, "r", encoding="utf-8") as fh:
+                index_data = _json.load(fh)
+            for entry in index_data.get("files", []):
+                abs_path = entry.get("path", "")
+                if abs_path:
+                    basename = os.path.basename(abs_path).lower()
+                    _INDEX_JSON_CACHE.setdefault(basename, []).append(abs_path)
+            logger.info(
+                "[evidence_gathering] v2.2 INDEX.json loaded: %d unique basenames, %d files",
+                len(_INDEX_JSON_CACHE),
+                sum(len(v) for v in _INDEX_JSON_CACHE.values()),
+            )
+        except Exception as exc:
+            logger.warning("[evidence_gathering] v2.2 Failed to load INDEX.json: %s", exc)
+            return None
+
+    if not _INDEX_JSON_CACHE:
+        return None
+
+    # Normalise the reference for matching
+    ref_lower = ref_normalized.replace("/", "\\").lower()
+    ref_basename = os.path.basename(ref_lower)
+
+    candidates = _INDEX_JSON_CACHE.get(ref_basename, [])
+    if not candidates:
+        return None
+
+    # If only one match, return it
+    if len(candidates) == 1:
+        return candidates[0]
+
+    # Multiple matches — try suffix match (e.g. ref="app\overwatcher\foo.py")
+    if "\\" in ref_lower:
+        suffix = "\\" + ref_lower  # prepend separator for safe endswith
+        for c in candidates:
+            if c.lower().endswith(suffix) or c.lower().endswith(ref_lower):
+                return c
+
+    # Prefer paths under EVIDENCE_ALLOWED_ROOTS (project files over random matches)
+    for c in candidates:
+        c_lower = c.lower()
+        for root in EVIDENCE_ALLOWED_ROOTS:
+            if c_lower.startswith(root.lower()):
+                return c
+
+    # Last resort: first candidate
+    return candidates[0]
+
+
 def resolve_path_enhanced(
     user_reference: str,
     anchor: Optional[str] = None,
@@ -866,7 +948,18 @@ def resolve_path_enhanced(
                     method, candidate
                 )
                 return candidate, method
-    
+
+    # v2.2: INDEX.json fallback — search the codebase index for bare filenames.
+    # When LLM requests just "architecture_executor.py" (no path), the root-level
+    # search above fails. INDEX.json has every project file with full absolute paths.
+    resolved_via_index = _resolve_via_index_json(ref_normalized)
+    if resolved_via_index:
+        logger.info(
+            "[evidence_gathering] v2.2 FOUND via INDEX.json: ref='%s' -> '%s'",
+            user_reference, resolved_via_index
+        )
+        return resolved_via_index, "index_json_lookup"
+
     logger.warning(
         "[evidence_gathering] v1.27 Path NOT FOUND: ref='%s', anchor='%s', subfolder='%s' (tried %d variants)",
         user_reference, anchor, subfolder, len(name_variants)

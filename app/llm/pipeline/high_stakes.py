@@ -160,7 +160,7 @@ except ImportError:
 
 # Stage models (env-driven model resolution)
 try:
-    from app.llm.stage_models import get_architecture_config
+    from app.llm.stage_models import get_critical_pipeline_config as get_architecture_config
     _STAGE_MODELS_AVAILABLE = True
 except ImportError:
     _STAGE_MODELS_AVAILABLE = False

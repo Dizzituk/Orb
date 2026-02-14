@@ -290,6 +290,18 @@ def build_pot_spec_markdown(spec: GroundedPOTSpec) -> str:
         lines.append("- (None discovered)")
     lines.append("")
     
+    # v2.1: Module size constraints — always injected
+    lines.append("### Module Size Policy (System-Enforced)")
+    lines.append("")
+    lines.append("The following constraints apply to ALL output files and are enforced by the pipeline:")
+    lines.append("")
+    lines.append("- **Hard cap:** No single output file may exceed **15 KB** (~400 lines). Target ≤ 10 KB.")
+    lines.append("- **One public function per file:** Each module should expose at most one public function or one tightly-coupled group of private helpers.")
+    lines.append("- **Decompose large functions:** If a function body exceeds **200 lines**, it MUST be split into sub-functions in separate modules.")
+    lines.append("- **Rationale:** Keeps files within LLM generation limits, improves RAG retrieval precision, and simplifies future refactoring.")
+    lines.append("- **If a planned file would exceed these limits:** The architecture phase MUST decompose it further before implementation begins.")
+    lines.append("")
+    
     # Evidence Used
     lines.append("## Evidence Used")
     lines.append("")

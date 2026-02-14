@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-SMART_SEGMENTATION_BUILD_ID = "2026-02-10-v1.0-concept-aware-segmentation"
+SMART_SEGMENTATION_BUILD_ID = "2026-02-14-v1.2-file-size-constraint"
 print(f"[SMART_SEGMENTATION_LOADED] BUILD_ID={SMART_SEGMENTATION_BUILD_ID}")
 
 
@@ -65,6 +65,12 @@ segment.
 
 5. Config/schema/migration files go with the feature they serve, not in their \
 own segment.
+
+6. OUTPUT FILE SIZE CONSTRAINT: No single output file should exceed 15 KB \
+(~400 lines). If a planned file would be very large (e.g. a main orchestrator \
+that coordinates many phases), it MUST be split into multiple smaller files \
+across separate segments. Thin orchestrators that call sub-modules are preferred \
+over monolithic files.
 
 RULES:
 - Every file in the input MUST appear in exactly one segment.
@@ -185,7 +191,21 @@ def _parse_grouping_response(
         files = seg.get("files", [])
         if not isinstance(files, list):
             return None
-        all_grouped_files.extend(files)
+        # v3.0: Deduplicate files within each segment (LLM sometimes repeats)
+        seen = set()
+        deduped = []
+        for f in files:
+            f_key = f.replace("\\", "/").lower()
+            if f_key not in seen:
+                seen.add(f_key)
+                deduped.append(f)
+        if len(deduped) < len(files):
+            logger.warning(
+                "[smart_seg] Deduplicated %d → %d files in segment '%s'",
+                len(files), len(deduped), seg.get("title", "?"),
+            )
+        seg["files"] = deduped
+        all_grouped_files.extend(deduped)
 
     scope_set = set(f.replace("\\", "/").lower() for f in file_scope)
     grouped_set = set(f.replace("\\", "/").lower() for f in all_grouped_files)

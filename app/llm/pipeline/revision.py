@@ -71,7 +71,7 @@ except ImportError:
 
 # Stage models (env-driven model resolution)
 try:
-    from app.llm.stage_models import get_revision_config, get_architecture_config
+    from app.llm.stage_models import get_revision_config, get_critical_pipeline_config as get_architecture_config
     _STAGE_MODELS_AVAILABLE = True
 except ImportError:
     _STAGE_MODELS_AVAILABLE = False
@@ -144,8 +144,13 @@ def build_spec_anchored_revision_prompt(
     spec_id: Optional[str] = None,
     spec_hash: Optional[str] = None,
     spec_markdown: Optional[str] = None,
+    segment_contract_markdown: Optional[str] = None,  # v2.1: skeleton contracts
+    env_context: Optional[Dict[str, Any]] = None,  # v2.1: tech stack context
 ) -> str:
     """Build revision prompt with spec-anchoring to prevent drift.
+    
+    v2.1: Now includes segment_contract_markdown and env_context so the
+    revision model has the same context as the draft and critique stages.
     
     This wrapper adds explicit spec verification instructions to ensure
     Claude Opus validates Gemini's suggestions against the authoritative spec
@@ -196,6 +201,31 @@ END OF AUTHORITATIVE SPEC
 ================================================================
 
 """
+        # v2.2: Extract and highlight acceptance criteria for regression check
+        ac_lines = []
+        in_ac = False
+        for line in spec_markdown.split('\n'):
+            line_lower = line.strip().lower()
+            if 'acceptance criteria' in line_lower or 'acceptance criterion' in line_lower:
+                in_ac = True
+                ac_lines.append(line)
+            elif in_ac:
+                if line.strip().startswith('#') and 'acceptance' not in line_lower:
+                    in_ac = False
+                else:
+                    ac_lines.append(line)
+        if ac_lines:
+            ac_block = '\n'.join(ac_lines)
+            prompt += f"""ACCEPTANCE CRITERIA CHECKLIST (extracted for regression verification):
+====================================================================
+You MUST verify your revision satisfies ALL of these. Fixing one while
+breaking another is the most common revision failure mode.
+
+{ac_block}
+
+====================================================================
+
+"""
     elif spec_json:
         prompt += f"""PoT SPEC (AUTHORITATIVE - DO NOT DEVIATE):
 ============================================
@@ -224,13 +254,36 @@ Summary: {critique.summary}
 
 """
 
+    # v2.1: Inject segment contract and env context (same data as draft/critique)
+    if segment_contract_markdown:
+        prompt += f"""SEGMENT INTERFACE CONTRACT (from skeleton — binding cross-segment bindings):
+====================================================================================
+{segment_contract_markdown}
+
+IMPORTANT: Your revision MUST NOT change any function names, signatures, or exports
+that are listed in this contract. Other segments depend on these exact interfaces.
+
+"""
+
+    if env_context:
+        import json as _json
+        prompt += f"""ENVIRONMENT CONTEXT (tech stack constraints):
+=============================================
+{_json.dumps(env_context, indent=2)}
+
+"""
+
     prompt += """YOUR TASK:
 ==========
 1. Review each blocking issue
 2. For each suggested fix, check: "Is this in the spec? Does this align with the spec?"
 3. If YES → Implement the fix
 4. If NO → Note that you're rejecting the suggestion because it's out-of-spec
-5. Output the complete revised architecture document
+5. MANDATORY REGRESSION CHECK: After making ALL fixes, re-read EVERY Acceptance Criterion
+   in the spec above. For each AC, verify your revised architecture still satisfies it.
+   If fixing one issue broke a different AC, fix that too before outputting.
+   This is critical — do NOT fix one criterion while silently breaking another.
+6. Output the complete revised architecture document
 
 """
 
@@ -268,8 +321,13 @@ async def call_revision(
     spec_markdown: Optional[str] = None,
     opus_model_id: str,
     envelope: JobEnvelope,
+    segment_contract_markdown: Optional[str] = None,  # v2.1
+    env_context: Optional[Dict[str, Any]] = None,  # v2.1
 ) -> Optional[str]:
     """Call revision model based on blocking issues.
+    
+    v2.1: Now accepts segment_contract_markdown and env_context to give
+    the revision model the same context as draft and critique stages.
     
     Uses REVISION_PROVIDER/REVISION_MODEL from env via stage_models.
     Uses spec-anchored prompt to prevent drift from reviewer suggestions.
@@ -278,9 +336,9 @@ async def call_revision(
     # Get config from stage_models (runtime lookup)
     revision_provider, revision_model, revision_max_tokens, revision_timeout = _get_revision_model_config()
     
-    # Allow override from caller (for backward compat)
-    if opus_model_id and opus_model_id != revision_model:
-        revision_model = opus_model_id
+    # v2.1: opus_model_id override REMOVED — REVISION_MODEL env var is authoritative.
+    # The old override was passing the DRAFT model (e.g. Sonnet) which stomped
+    # the user's REVISION_MODEL config. Stage_models handles this correctly now.
     
     # DEBUG: Log revision start
     print(f"[DEBUG] [revision] Starting revision: provider={revision_provider}, model={revision_model}")
@@ -296,6 +354,8 @@ async def call_revision(
         spec_id=spec_id,
         spec_hash=spec_hash,
         spec_markdown=spec_markdown,
+        segment_contract_markdown=segment_contract_markdown,  # v2.1
+        env_context=env_context,  # v2.1
     )
     
     revision_messages = [
@@ -448,6 +508,8 @@ async def run_revision_loop(
                 spec_markdown=spec_markdown,
                 opus_model_id=opus_model_id,
                 envelope=envelope,
+                segment_contract_markdown=segment_contract_markdown,  # v2.1
+                env_context=env_context,  # v2.1
             )
             
             if revised_content:
@@ -459,6 +521,8 @@ async def run_revision_loop(
                 new_arch_id = arch_id
                 new_hash = ""
                 if store_architecture_fn:
+                    # v2.1: Use actual revision model from config, not caller's draft model
+                    _rev_provider, _rev_model, _, _ = _get_revision_model_config()
                     new_arch_id, new_hash, _ = store_architecture_fn(
                         db=db,
                         job_id=job_id,
@@ -467,7 +531,7 @@ async def run_revision_loop(
                         spec_id=spec_id,
                         spec_hash=spec_hash,
                         arch_version=current_version,
-                        model=opus_model_id,
+                        model=_rev_model,
                         previous_arch_id=arch_id,
                     )
                 
@@ -483,7 +547,7 @@ async def run_revision_loop(
                             new_version=current_version,
                             new_hash=new_hash,
                             addressed_issues=[i.id for i in critique.blocking_issues],
-                            model=opus_model_id,
+                            model=_rev_model,
                         )
                     except Exception:
                         pass
@@ -556,9 +620,7 @@ async def call_opus_revision(
     # Get config from stage_models (runtime lookup)
     revision_provider, revision_model, revision_max_tokens, revision_timeout = _get_revision_model_config()
     
-    # Allow override from caller (for backward compat)
-    if opus_model_id and opus_model_id != revision_model:
-        revision_model = opus_model_id
+    # v2.1: opus_model_id override REMOVED — REVISION_MODEL env var is authoritative.
     
     print(f"[DEBUG] [revision-legacy] Using: provider={revision_provider}, model={revision_model}")
     

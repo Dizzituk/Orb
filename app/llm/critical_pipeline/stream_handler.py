@@ -380,6 +380,7 @@ async def generate_critical_pipeline_stream(
             spec_data, message, spec_id, spec_hash, spec_json, spec_markdown,
             job_id, job_kind, project_id, db, trace, conversation_id,
             pipeline_provider, pipeline_model, response_parts,
+            segment_context=segment_context,
         ):
             yield chunk
 
@@ -579,6 +580,7 @@ async def _handle_architecture(
     spec_data, message, spec_id, spec_hash, spec_json, spec_markdown,
     job_id, job_kind, project_id, db, trace, conversation_id,
     pipeline_provider, pipeline_model, response_parts,
+    segment_context: Optional[dict] = None,
 ):
     def _emit(text):
         response_parts.append(text)
@@ -701,10 +703,33 @@ async def _handle_architecture(
         if _si_contract:
             _si_parts.append(_si_contract)
 
+        # v2.2: Source file evidence (pre-loaded existing files for refactor jobs)
+        _si_source_files = segment_context.get("source_file_evidence", {})
+        if _si_source_files:
+            _si_parts.append("### Source File Evidence (EXISTING code — copy verbatim)\n")
+            _si_parts.append(
+                "**CRITICAL**: The following file(s) exist on disk and are being "
+                "refactored. You MUST copy all function signatures, constant values, "
+                "parameter names, and return types EXACTLY as they appear below. "
+                "Do NOT invent, guess, or approximate any values.\n"
+            )
+            for _sf_path, _sf_content in _si_source_files.items():
+                _si_parts.append(f"**`{_sf_path}`** ({len(_sf_content):,} chars)")
+                # Cap per-file injection at 120K chars to leave room for other context
+                _sf_inject = _sf_content[:120_000]
+                if len(_sf_content) > 120_000:
+                    _sf_inject += f"\n... (truncated from {len(_sf_content):,} chars)"
+                _si_parts.append(f"```python\n{_sf_inject}\n```\n")
+
         # Upstream evidence (completed segments' output)
         _si_evidence = segment_context.get("evidence", [])
         if _si_evidence:
             _si_parts.append("### Upstream Evidence (from completed segments)\n")
+            # Handle both list and dict forms of evidence
+            if isinstance(_si_evidence, dict):
+                _si_evidence = list(_si_evidence.values()) if _si_evidence else []
+            elif not isinstance(_si_evidence, list):
+                _si_evidence = []
             for _ev in _si_evidence[:10]:
                 if isinstance(_ev, dict):
                     _ev_path = _ev.get("file_path", _ev.get("path", ""))

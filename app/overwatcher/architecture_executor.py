@@ -1281,6 +1281,7 @@ async def run_architecture_execution(
     llm_call_fn: Optional[Callable] = None,
     artifact_root: str = "D:/Orb/jobs",
     interface_contract: str = "",
+    skip_boot_check: bool = False,
 ) -> Dict[str, Any]:
     """Supervise architecture-level spec execution.
     
@@ -1413,6 +1414,7 @@ async def run_architecture_execution(
     # would break all existing imports of stream_utils.
     # =========================================================================
     shadowing_blocked = []
+    shadowing_renamed = []  # v2.9: refactor-to-package auto-rename
     for file_info in new_files:
         new_path = file_info["path"]
         # If the new file lives inside a directory, check if a .py file
@@ -1432,6 +1434,7 @@ async def run_architecture_execution(
                     shadowing_blocked.append({
                         "new_path": new_path,
                         "shadows": existing_py,
+                        "dir_segment": dir_segment,
                         "reason": (
                             f"Creating '{new_path}' would create a package directory "
                             f"that shadows existing module '{existing_py}'. "
@@ -1444,6 +1447,49 @@ async def run_architecture_execution(
                 logger.warning("[arch_exec] v2.8 Shadow check failed for %s: %s", new_path, e)
 
     if shadowing_blocked:
+        # v2.9: Detect refactor-to-package — if the new files include an __init__.py
+        # for the shadowed directory, this is an intentional module→package conversion.
+        # In that case, rename the old .py file out of the way instead of blocking.
+        shadow_dirs = {b["dir_segment"] for b in shadowing_blocked}
+        new_paths_set = {f["path"].replace("\\", "/") for f in new_files}
+        for dir_seg in shadow_dirs:
+            init_path = dir_seg + "/__init__.py"
+            if init_path in new_paths_set:
+                # This is a refactor-to-package: rename old .py → .py.pre_refactor
+                existing_py = dir_seg + ".py"
+                resolved_old = _resolve_multi_root_path(existing_py, sandbox_base)
+                backup_path = resolved_old + ".pre_refactor"
+                try:
+                    rename_cmd = (
+                        f'if (Test-Path -Path "{resolved_old}") {{ '
+                        f'Rename-Item -Path "{resolved_old}" -NewName "{Path(backup_path).name}" -Force; '
+                        f'"RENAMED" }} else {{ "MISSING" }}'
+                    )
+                    rename_result = client.shell_run(rename_cmd, timeout_seconds=15)
+                    if rename_result.stdout and "RENAMED" in rename_result.stdout:
+                        shadowing_renamed.append(existing_py)
+                        logger.info(
+                            "[arch_exec] v2.9 REFACTOR-TO-PACKAGE: Renamed %s → %s",
+                            resolved_old, backup_path,
+                        )
+                        print(f"[ARCH_EXEC] \u2713 Refactor-to-package: renamed {existing_py} → {existing_py}.pre_refactor")
+                        add_trace("REFACTOR_TO_PACKAGE_RENAME", "success", {
+                            "old_file": existing_py,
+                            "backup": backup_path,
+                        })
+                    else:
+                        logger.warning("[arch_exec] v2.9 Rename failed for %s: %s", resolved_old, rename_result.stdout)
+                except Exception as e:
+                    logger.error("[arch_exec] v2.9 Rename error for %s: %s", existing_py, e)
+
+        # Remove successfully renamed entries from blocked list
+        if shadowing_renamed:
+            shadowing_blocked = [
+                b for b in shadowing_blocked
+                if b["shadows"] not in shadowing_renamed
+            ]
+
+        # Any remaining blocked entries are genuine conflicts (no __init__.py planned)
         for blocked in shadowing_blocked:
             logger.error(
                 "[arch_exec] v2.8 MODULE SHADOW BLOCKED: %s shadows %s",
@@ -1452,14 +1498,15 @@ async def run_architecture_execution(
             print(f"[ARCH_EXEC] \u2717 BLOCKED: {blocked['reason']}")
             add_trace("MODULE_SHADOW_BLOCKED", "fatal", blocked)
 
-        # Remove shadowing files from new_files so they don't get created
+        # Remove remaining shadowing files from new_files so they don't get created
         shadow_paths = {b["new_path"] for b in shadowing_blocked}
         original_count = len(new_files)
         new_files = [f for f in new_files if f["path"] not in shadow_paths]
-        logger.info(
-            "[arch_exec] v2.8 Removed %d shadowing files from task list",
-            original_count - len(new_files),
-        )
+        if original_count != len(new_files):
+            logger.info(
+                "[arch_exec] v2.8 Removed %d shadowing files from task list",
+                original_count - len(new_files),
+            )
 
     # =========================================================================
     # Step 4: Process all file tasks
@@ -2067,7 +2114,11 @@ async def run_architecture_execution(
                 return normalised
         return None
 
-    if success or total_succeeded > 0:
+    if skip_boot_check:
+        logger.info("[arch_exec] v3.2 Boot check SKIPPED (skip_boot_check=True, intermediate segment)")
+        print("[ARCH_EXEC] ⏭️ Boot check skipped (intermediate segment)")
+        add_trace("BOOT_CHECK_COMPLETE", "skipped_intermediate")
+    elif success or total_succeeded > 0:
         logger.info("[arch_exec] v2.9 Running backend boot check...")
         print("[ARCH_EXEC] 🔍 Running backend boot check...")
         add_trace("BOOT_CHECK_START", "running")

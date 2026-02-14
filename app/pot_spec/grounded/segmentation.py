@@ -47,7 +47,7 @@ from .file_verifier import verify_segment_files
 
 logger = logging.getLogger(__name__)
 
-SEGMENTATION_BUILD_ID = "2026-02-08-v1.1-gap-fixes"
+SEGMENTATION_BUILD_ID = "2026-02-13-v1.4-refactor-source-scope-fix"
 print(f"[SEGMENTATION_LOADED] BUILD_ID={SEGMENTATION_BUILD_ID}")
 
 
@@ -590,6 +590,9 @@ def _build_manifest_from_concepts(
             logger.warning("[segmentation] v5.5 File verification failed for %s: %s",
                            seg_id, verify_err)
 
+        # v3.0: Safety net — deduplicate file_scope
+        files = list(dict.fromkeys(files))  # preserves order, removes dupes
+
         segment = SegmentSpec(
             segment_id=seg_id,
             title=f"{title} — {len(files)} file(s)",
@@ -610,6 +613,130 @@ def _build_manifest_from_concepts(
         dep_ids = [index_to_seg_id[d] for d in dep_indices
                     if d in index_to_seg_id and d != idx]
         segments[idx].dependencies = dep_ids
+
+    # =========================================================================
+    # v1.4 FIX: Refactor source files belong in integration segment only
+    # =========================================================================
+    # In refactor-to-package jobs, the LLM grouper may put the original monolith
+    # file (and its neighbours like __init__.py) into a helper segment's
+    # file_scope. This causes Python file/directory naming conflicts: you can't
+    # have architecture_executor.py AND architecture_executor/ at the same level.
+    #
+    # Fix: Identify existing source files (from grounding_data.verified_files)
+    # and ensure they only appear in the integration segment (the one with the
+    # most dependencies — it runs last). In all other segments, move these files
+    # from file_scope → evidence_files so they're available as read-only context.
+    # =========================================================================
+    if len(segments) >= 2:
+        # Find the integration segment — most dependencies = runs last
+        _integration_seg = max(segments, key=lambda s: len(s.dependencies))
+        _integration_id = _integration_seg.segment_id
+
+        # Collect all verified (existing) files across all segments
+        _all_verified: set = set()
+        for seg in segments:
+            if seg.grounding_data and isinstance(seg.grounding_data, dict):
+                for vf in seg.grounding_data.get("verified_files", []):
+                    _vf_path = vf.get("path", "") if isinstance(vf, dict) else str(vf)
+                    if _vf_path:
+                        _all_verified.add(_vf_path.replace("\\", "/").lower())
+
+        if _all_verified:
+            _moved_count = 0
+            for seg in segments:
+                if seg.segment_id == _integration_id:
+                    continue  # Integration segment keeps everything
+
+                _new_scope = []
+                for f in seg.file_scope:
+                    _f_norm = f.replace("\\", "/").lower()
+                    if _f_norm in _all_verified:
+                        # Move to evidence_files instead
+                        if f not in seg.evidence_files:
+                            seg.evidence_files.append(f)
+                        _moved_count += 1
+                        logger.info(
+                            "[segmentation] v1.4 Moved existing file %s from %s file_scope → evidence_files",
+                            f, seg.segment_id,
+                        )
+                    else:
+                        _new_scope.append(f)
+
+                if len(_new_scope) < len(seg.file_scope):
+                    seg.file_scope = _new_scope
+                    seg.estimated_files = len(_new_scope)
+
+            if _moved_count > 0:
+                logger.info(
+                    "[segmentation] v1.4 Relocated %d existing file(s) to evidence — "
+                    "integration segment: %s",
+                    _moved_count, _integration_id,
+                )
+
+    # =========================================================================
+    # v1.2 FIX #1: Infer missing cross-segment dependencies for same-package files
+    # =========================================================================
+    # When all new files share a common package directory (refactor-to-package),
+    # the LLM segmenter often misses import dependencies between sub-modules.
+    # E.g., source_context.py imports from sandbox_helpers.py but the segmenter
+    # put them in different segments without declaring the dependency.
+    #
+    # Strategy: detect common package prefix, then for each segment that depends
+    # on ANY other segment, also add transitive dependencies (if A->B and B->C,
+    # then A should depend on C). For refactor-to-package jobs this ensures
+    # utility modules are always available before modules that use them.
+    # =========================================================================
+    _all_files = [f for seg in segments for f in seg.file_scope]
+    _normalised = [f.replace("\\", "/") for f in _all_files]
+    if len(_normalised) >= 2:
+        # Detect common package prefix (e.g. "app/overwatcher/architecture_executor/")
+        _parts_list = [f.rsplit("/", 1) for f in _normalised if "/" in f]
+        if _parts_list:
+            _dirs = [p[0] for p in _parts_list]
+            # Use majority directory (most files share it) rather than requiring ALL
+            # This handles refactor-to-package where the original monolith file sits
+            # in the parent dir while all new sub-modules sit in the package dir.
+            from collections import Counter as _Counter
+            _dir_counts = _Counter(_dirs)
+            _most_common_dir, _most_common_count = _dir_counts.most_common(1)[0]
+            # Trigger if ≥60% of files share the same directory
+            _common_dir = _most_common_dir if _most_common_count >= len(_dirs) * 0.6 else None
+            if _common_dir:
+                logger.info("[segmentation] v1.2 Common package detected: %s — applying transitive deps", _common_dir)
+                # Build file->segment index
+                _file_to_seg_idx: Dict[int, int] = {}  # file_index -> seg_index
+                for seg_idx, seg in enumerate(segments):
+                    for fp in seg.file_scope:
+                        _file_to_seg_idx[id(fp)] = seg_idx
+
+                # Apply transitive closure: if seg A depends on seg B,
+                # and seg B depends on seg C, then seg A should also depend on C.
+                _changed = True
+                _rounds = 0
+                while _changed and _rounds < 10:
+                    _changed = False
+                    _rounds += 1
+                    for seg in segments:
+                        _new_deps = set(seg.dependencies)
+                        for dep_id in list(seg.dependencies):
+                            _dep_seg = next((s for s in segments if s.segment_id == dep_id), None)
+                            if _dep_seg:
+                                for transitive_dep in _dep_seg.dependencies:
+                                    if transitive_dep not in _new_deps and transitive_dep != seg.segment_id:
+                                        _new_deps.add(transitive_dep)
+                                        _changed = True
+                        if len(_new_deps) > len(seg.dependencies):
+                            _added = _new_deps - set(seg.dependencies)
+                            logger.info("[segmentation] v1.2 Added transitive deps to %s: %s", seg.segment_id, list(_added))
+                            seg.dependencies = sorted(_new_deps)
+                            # Also update evidence_files for the new dependencies
+                            for added_dep_id in _added:
+                                _added_seg = next((s for s in segments if s.segment_id == added_dep_id), None)
+                                if _added_seg:
+                                    for dep_file in _added_seg.file_scope:
+                                        if dep_file not in seg.evidence_files and dep_file not in seg.file_scope:
+                                            seg.evidence_files.append(dep_file)
+                logger.info("[segmentation] v1.2 Transitive dependency closure complete (%d rounds)", _rounds)
 
     # Distribute requirements
     requirement_map = _distribute_requirements(requirements, segments)

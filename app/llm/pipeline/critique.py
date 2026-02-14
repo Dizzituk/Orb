@@ -150,6 +150,7 @@ async def call_json_critic(
     spec_markdown: Optional[str] = None,
     env_context: Optional[Dict[str, Any]] = None,
     envelope: JobEnvelope,
+    segment_contract_markdown: Optional[str] = None,
 ) -> CritiqueResult:
     """Call critic with JSON output schema. Returns structured CritiqueResult."""
     critique_provider, critique_model, critique_max_tokens = _get_critique_model_config()

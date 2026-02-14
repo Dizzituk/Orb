@@ -205,6 +205,21 @@ Reference these patterns when designing the architecture.
 """)
 
     parts.append("""
+## MODULE SIZE CONSTRAINTS (NON-NEGOTIABLE)
+
+These limits are HARD CONSTRAINTS enforced by the pipeline. Violating them will cause implementation failures.
+
+1. **15 KB / 400 line hard cap per file.** No single output file may exceed this. Target ≤ 10 KB.
+2. **One public function per module.** Each file should expose at most one public function or one closely-related group of private helpers.
+3. **200 line function body limit.** If a function body would exceed 200 lines, decompose it into sub-functions in separate modules that the parent calls.
+4. **Orchestrators must be thin.** If a file coordinates multiple phases/steps, each phase should be a separate module. The orchestrator imports and calls them in sequence.
+5. **Pre-flight size estimation:** Before finalising the File Inventory, estimate the line count of each planned file. If any file would exceed 400 lines, split it NOW — do not leave it to the implementer.
+6. **You MUST add files to meet these limits.** If a file in your scope would exceed the caps, you are REQUIRED to decompose it into sub-modules and add those new files to the File Inventory — even if those files were not in the original segment scope. The executor processes whatever files appear in the File Inventory. Example: if `executor.py` would be 800 lines, split it into `executor.py` (thin orchestrator, ~200 lines), `file_task_runner.py` (per-file processing), and `boot_check.py` (boot validation loop). Flag the additions with a DECISION block explaining the split.
+
+Rationale: The implementer LLM generates files in a single pass. Files exceeding ~500 lines risk truncation, causing build failures. Smaller files also improve RAG retrieval precision and simplify future refactoring.
+""")
+
+    parts.append("""
 ## OUTPUT FORMAT REQUIREMENTS
 
 Your architecture document MUST include a `## File Inventory` section with two markdown tables:

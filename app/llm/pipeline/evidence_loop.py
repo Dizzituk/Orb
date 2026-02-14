@@ -689,10 +689,18 @@ async def run_stage_with_evidence(
             max_files = min(scope.get("max_files", 500), 1000)  # Hard cap
 
             # Validate tool calls against stage allowlist
-            validated_calls = [
-                tc for tc in req.get("tool_calls", [])
-                if tool_allowed(tc.get("tool", ""), stage_name)
-            ]
+            # v2.4: Also filter out empty-arg read calls (Sonnet sometimes sends bare tool names)
+            validated_calls = []
+            for tc in req.get("tool_calls", []):
+                if not tool_allowed(tc.get("tool", ""), stage_name):
+                    continue
+                # Skip read_sandbox_file with no file_path — harmless no-op
+                if tc.get("tool") == "sandbox_inspector.read_sandbox_file":
+                    _fp = tc.get("args", {}).get("file_path") or tc.get("args", {}).get("path") or ""
+                    if not _fp.strip():
+                        logger.debug("[evidence_loop] Filtered empty read_sandbox_file call")
+                        continue
+                validated_calls.append(tc)
 
             # Execute validated tool calls
             call_results: List[Dict] = []

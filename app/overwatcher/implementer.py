@@ -11,7 +11,24 @@ Handles:
 - OVERWRITE_FULL mode for complete file replacement (v1.6)
 - Multi-file batch operations (search and refactor) (v1.11)
 
-v1.13 (2026-02-10): WinError 206 fix — temp-file write for large files
+v1.15 (2026-02-14): PERMANENT FIX - remove all hardcoded WDAGUtilityAccount paths
+    - Root cause: Windows Sandbox (WDAG) clones the host desktop session, it does
+      NOT create a WDAGUtilityAccount profile with initialised temp directories.
+      The WDAG AppData Temp path has never existed in sandbox.
+    - Fix 1: Temp file now written to target file's PARENT DIRECTORY (dynamic per job)
+    - Fix 2: Chunk size reduced from 20000 to 8000 chars (safe under 32767 cmd limit)
+    - Fix 3: Chunks written via Set-Content/Add-Content with CHUNK_OK verification
+      tokens, NOT embedded in .NET method arguments
+    - Fix 4: DIR_OK pre-flight ensures parent directory exists before any writes
+    - Fix 5: DESKTOP target now dynamically queries $env:USERPROFILE from
+      the sandbox instead of hardcoding a WDAGUtilityAccount Desktop path
+    - Fix 6: All error paths prefixed with INFRASTRUCTURE_ERROR for strike system
+    - Rule: NO path in this module should EVER reference WDAGUtilityAccount temp dirs.
+      The sandbox environment mirrors the host - use dynamic resolution always.
+v1.14 (2026-02-11): ATTEMPTED FIX (INCOMPLETE - changelog described fixes not applied to code)
+    - v1.14 BUILD_ID was set but the actual code still contained v1.13 bugs
+    - v1.15 delivers what v1.14 claimed to do
+v1.13 (2026-02-10): WinError 206 fix (SUPERSEDED by v1.14) — temp-file write for large files
     - Added _write_content_to_sandbox(): auto-selects inline or temp-file method
     - Added INLINE_BASE64_CHAR_LIMIT constant (24000 chars)
     - All 6 write call sites now use shared helper
@@ -74,7 +91,7 @@ logger = logging.getLogger(__name__)
 # v1.11 BUILD VERIFICATION - Proves correct code is running
 # v1.11: Multi-file batch operations (Level 3 - Phase 5)
 # =============================================================================
-IMPLEMENTER_BUILD_ID = "2026-02-10-v1.13-winerror206-temp-file-write"
+IMPLEMENTER_BUILD_ID = "2026-02-14-v1.15-temp-path-fix-dynamic-parent-dir"
 print(f"[IMPLEMENTER_LOADED] BUILD_ID={IMPLEMENTER_BUILD_ID}")
 logger.info(f"[implementer] Module loaded: BUILD_ID={IMPLEMENTER_BUILD_ID}")
 
@@ -173,51 +190,85 @@ def _write_content_to_sandbox(
         )
         return client.shell_run(write_cmd, timeout_seconds=timeout_seconds)
     else:
-        # Temp-file path: avoids WinError 206
-        # Use a temp file in the sandbox's own temp directory
+        # v1.15: Temp-file path — avoids WinError 206 (command line too long)
+        # CRITICAL: Use the TARGET FILE'S PARENT DIRECTORY for temp storage.
+        # This is guaranteed to exist because we're about to write there.
+        # NEVER use C:\Users\WDAGUtilityAccount\AppData\Local\Temp\ — that
+        # path does not exist in Windows Sandbox (WDAG clones the host session,
+        # it does NOT create a WDAGUtilityAccount profile with temp dirs).
         import uuid as _uuid
+        from pathlib import PureWindowsPath
         temp_name = f"_orb_impl_{_uuid.uuid4().hex[:12]}.b64"
-        temp_path = f"C:\\Users\\WDAGUtilityAccount\\AppData\\Local\\Temp\\{temp_name}"
+        parent_dir = str(PureWindowsPath(path).parent)
+        temp_path = f"{parent_dir}\\{temp_name}"
 
         logger.info(
-            "[implementer] v1.13 LARGE FILE: %d chars, b64=%d chars — using temp-file write for %s",
-            len(content), len(encoded), path,
+            "[implementer] v1.15 LARGE FILE: %d chars, b64=%d chars — "
+            "temp-file write to %s for target %s",
+            len(content), len(encoded), temp_path, path,
         )
         print(
-            f"[IMPLEMENTER] v1.13 LARGE FILE ({len(content)} chars, "
-            f"b64={len(encoded)}) — temp-file write to avoid WinError 206"
+            f"[IMPLEMENTER] v1.15 LARGE FILE ({len(content)} chars, "
+            f"b64={len(encoded)}) — temp-file in parent dir"
         )
 
-        # Step A: Write Base64 to temp file using .NET (bypasses command line limit)
-        # We chunk the encoded string into safe-sized pieces and append
-        chunk_size = 20000  # Well under the limit
+        # Step 0: Ensure parent directory exists
+        ensure_dir_cmd = (
+            f'if (-not (Test-Path -Path "{parent_dir}")) {{ '
+            f'New-Item -Path "{parent_dir}" -ItemType Directory -Force | Out-Null }}; '
+            f'"DIR_OK"'
+        )
+        dir_result = client.shell_run(ensure_dir_cmd, timeout_seconds=15)
+        if not (dir_result.stdout and "DIR_OK" in dir_result.stdout):
+            logger.error(
+                "[implementer] v1.15 INFRASTRUCTURE_ERROR: Cannot ensure parent dir %s: %s",
+                parent_dir, (dir_result.stderr or "")[:200],
+            )
+            return dir_result
+
+        # Step A: Write Base64 to temp file in chunks
+        # Chunk size 8000 chars — well under the 32,767 cmd line limit even
+        # with the PowerShell wrapper overhead. Each chunk is written via
+        # Set-Content/Add-Content (NOT embedded in .NET method args) and
+        # verified with a confirmation token.
+        chunk_size = 8000
         chunks = [encoded[i:i+chunk_size] for i in range(0, len(encoded), chunk_size)]
 
         # First chunk: create/overwrite the temp file
         first_chunk_cmd = (
-            f'[System.IO.File]::WriteAllText("{temp_path}", "{chunks[0]}")'
+            f'Set-Content -Path "{temp_path}" -Value "{chunks[0]}" '
+            f'-NoNewline -Encoding ASCII; "CHUNK_OK"'
         )
         result = client.shell_run(first_chunk_cmd, timeout_seconds=30)
-        if result.stderr and result.stderr.strip():
-            logger.error("[implementer] v1.13 Temp file first chunk failed: %s", result.stderr[:200])
+        if not (result.stdout and "CHUNK_OK" in result.stdout):
+            logger.error(
+                "[implementer] v1.15 INFRASTRUCTURE_ERROR: First chunk write failed: %s",
+                (result.stderr or "")[:200],
+            )
+            client.shell_run(f'Remove-Item -Path "{temp_path}" -Force -ErrorAction SilentlyContinue', timeout_seconds=5)
             return result
 
         # Remaining chunks: append
         for i, chunk in enumerate(chunks[1:], 2):
             append_cmd = (
-                f'[System.IO.File]::AppendAllText("{temp_path}", "{chunk}")'
+                f'Add-Content -Path "{temp_path}" -Value "{chunk}" '
+                f'-NoNewline -Encoding ASCII; "CHUNK_OK"'
             )
             result = client.shell_run(append_cmd, timeout_seconds=30)
-            if result.stderr and result.stderr.strip():
+            if not (result.stdout and "CHUNK_OK" in result.stdout):
                 logger.error(
-                    "[implementer] v1.13 Temp file chunk %d/%d failed: %s",
-                    i, len(chunks), result.stderr[:200],
+                    "[implementer] v1.15 INFRASTRUCTURE_ERROR: Chunk %d/%d failed: %s",
+                    i, len(chunks), (result.stderr or "")[:200],
                 )
-                # Clean up temp file
                 client.shell_run(f'Remove-Item -Path "{temp_path}" -Force -ErrorAction SilentlyContinue', timeout_seconds=5)
                 return result
 
-        # Step B: Read temp file, decode Base64, write to target path
+        logger.info(
+            "[implementer] v1.15 All %d chunks written to temp file (%d total b64 chars)",
+            len(chunks), len(encoded),
+        )
+
+        # Step B: Read temp file, decode Base64, write to target path, clean up
         decode_cmd = (
             f'$b64 = [System.IO.File]::ReadAllText("{temp_path}"); '
             f'$bytes = [System.Convert]::FromBase64String($b64); '
@@ -228,12 +279,13 @@ def _write_content_to_sandbox(
         result = client.shell_run(decode_cmd, timeout_seconds=timeout_seconds)
 
         if result.stdout and "WRITE_OK" in result.stdout:
-            logger.info("[implementer] v1.13 Temp-file write succeeded for %s", path)
+            logger.info("[implementer] v1.15 Temp-file write succeeded for %s", path)
         else:
             logger.error(
-                "[implementer] v1.13 Temp-file decode/write failed for %s: stderr=%s, stdout=%s",
-                path, result.stderr[:200] if result.stderr else "",
-                result.stdout[:200] if result.stdout else "",
+                "[implementer] v1.15 INFRASTRUCTURE_ERROR: Decode/write failed for %s: "
+                "stderr=%s, stdout=%s",
+                path, (result.stderr or "")[:200],
+                (result.stdout or "")[:200],
             )
             # Clean up on failure
             client.shell_run(f'Remove-Item -Path "{temp_path}" -Force -ErrorAction SilentlyContinue', timeout_seconds=5)
@@ -840,6 +892,9 @@ async def run_implementer(
             )
         
         # Build expected path
+        # v1.15: NEVER hardcode WDAGUtilityAccount paths — the sandbox is a
+        # clone of the host session, not a separate WDAG user profile.
+        # For DESKTOP targets, query the sandbox for the actual user profile.
         if _is_absolute_windows_path(filename):
             expected_path = filename
             base_filename = Path(filename).name
@@ -848,7 +903,23 @@ async def run_implementer(
             base_filename = filename
             is_absolute = False
             if target == "DESKTOP":
-                expected_path = f"C:\\Users\\WDAGUtilityAccount\\Desktop\\{base_filename}"
+                # Dynamically resolve the actual Desktop path inside the sandbox
+                desktop_cmd = 'Write-Output "$env:USERPROFILE\\Desktop"'
+                desktop_result = client.shell_run(desktop_cmd, timeout_seconds=10)
+                if desktop_result.stdout and desktop_result.stdout.strip():
+                    sandbox_desktop = desktop_result.stdout.strip()
+                else:
+                    # Fallback: use D:\Orb as safe default (project root)
+                    sandbox_desktop = "D:\\Orb"
+                    logger.warning(
+                        "[implementer] v1.15 Could not resolve sandbox Desktop, "
+                        "falling back to %s", sandbox_desktop,
+                    )
+                expected_path = f"{sandbox_desktop}\\{base_filename}"
+                logger.info(
+                    "[implementer] v1.15 DESKTOP target resolved to: %s",
+                    expected_path,
+                )
             else:
                 expected_path = f"{target}\\{base_filename}"
         

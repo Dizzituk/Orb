@@ -78,16 +78,18 @@ STAGE_DEFAULTS: Dict[str, Tuple[str, str, int, int]] = {
     "REVISION":           ("anthropic", "claude-opus-4-5-20251101",   60000, 300),
     "IMPLEMENTER":        ("anthropic", "claude-sonnet-4-5-20250929", 60000, 300),
     "OVERWATCHER":        ("openai",    "gpt-4.1",                    1200,  60),
-    "CRITICAL_PIPELINE":  ("anthropic", "claude-sonnet-4-5-20250929", 60000, 600),
+    "CRITICAL_PIPELINE":  ("openai",    "gpt-5.2",                    60000, 600),
     
     # Supervisor (Phase 2A — interface contracts between segments)
-    "CRITICAL_SUPERVISOR": ("anthropic", "claude-opus-4-5-20251101", 8000, 120),
-    "COHESION_CHECK":      ("anthropic", "claude-opus-4-5-20251101", 8000, 180),
+    "CRITICAL_SUPERVISOR": ("anthropic", "claude-opus-4-6", 8000, 120),
+    "COHESION_CHECK":      ("anthropic", "claude-opus-4-6", 4000, 120),
     "NEEDLE_CLASSIFIER":   ("openai",    "gpt-4.1-mini",               500,  30),
     "SMART_SEGMENTATION":  ("openai",    "gpt-4.1-mini",               2000, 45),
     # Phase 3C: Needle-based model tiers for architecture generation
-    "ARCH_TIER_LOW":       ("anthropic", "claude-sonnet-4-5-20250929",  16000, 300),
-    "ARCH_TIER_HIGH":      ("anthropic", "claude-opus-4-5-20251101",    16000, 600),
+    "ARCH_TIER_LOW":       ("openai",    "gpt-5.2",                     60000, 600),
+    "ARCH_TIER_HIGH":      ("openai",    "gpt-5.2",                     60000, 600),
+    # Phase 3D: Cohesion autofix micro-patch (cheap model for small targeted fixes)
+    "COHESION_MICRO_PATCH": ("openai",    "gpt-4.1-mini",              8000, 60),
     # Phase 4A: Post-write verification
     "JOB_CHECKER":         ("anthropic", "claude-sonnet-4-5-20250929",  1500, 45),
     # Phase 4C: Weaver conversation compaction

@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-SEGMENT_LOOP_BUILD_ID = "2026-02-10-v1.5-needle-model-grounding"
+SEGMENT_LOOP_BUILD_ID = "2026-02-13-v4.0-phase-checkout-boot-check"
 print(f"[SEGMENT_LOOP_LOADED] BUILD_ID={SEGMENT_LOOP_BUILD_ID}")
 
 # --- Internal imports ---
@@ -276,6 +276,72 @@ def build_evidence_bundle(
     }
 
 
+def _load_source_file_evidence(
+    manifest: "SegmentManifest",
+    project_roots: Optional[List[str]] = None,
+) -> Dict[str, str]:
+    """
+    v2.2: Pre-load existing source files for refactor jobs.
+
+    Scans ALL segments' file_scope entries across the manifest, finds files
+    that already exist on disk (i.e. source files being refactored, not
+    CREATE targets), reads their content, and returns it.
+
+    This ensures every segment has access to the original source code it's
+    extracting from — preventing the LLM from fabricating function signatures,
+    constant values, and API shapes.
+
+    Args:
+        manifest: The full segment manifest
+        project_roots: Project root directories to resolve relative paths.
+                       Defaults to ["D:\\Orb", "D:\\orb-desktop"].
+
+    Returns:
+        Dict of {relative_path: file_content} for files that exist on disk.
+        Content is capped at 250K chars per file.
+    """
+    if project_roots is None:
+        project_roots = ["D:\\Orb", "D:\\orb-desktop"]
+
+    MAX_SOURCE_CHARS = 250_000
+    source_files: Dict[str, str] = {}
+    seen_paths: set = set()
+
+    for seg in manifest.segments:
+        for rel_path in seg.file_scope:
+            normalised = rel_path.replace("/", os.sep).replace("\\", os.sep).lower()
+            if normalised in seen_paths:
+                continue
+            seen_paths.add(normalised)
+
+            # Try to find on disk under each project root
+            for root in project_roots:
+                abs_path = os.path.join(root, rel_path.replace("/", os.sep).replace("\\", os.sep))
+                if os.path.isfile(abs_path):
+                    try:
+                        with open(abs_path, "r", encoding="utf-8", errors="replace") as fh:
+                            content = fh.read(MAX_SOURCE_CHARS)
+                        source_files[rel_path] = content
+                        logger.info(
+                            "[segment_loop] v2.2 Source file pre-loaded: %s (%d chars)",
+                            rel_path, len(content),
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[segment_loop] v2.2 Failed to read source file %s: %s",
+                            abs_path, exc,
+                        )
+                    break
+
+    if source_files:
+        print(
+            f"[segment_loop] 📖 Pre-loaded {len(source_files)} source file(s) "
+            f"for refactor evidence: {', '.join(source_files.keys())}"
+        )
+
+    return source_files
+
+
 def verify_contracts_fulfilled(
     segment_id: str,
     state: JobState,
@@ -333,6 +399,7 @@ def build_segment_context(
     parent_spec: dict,
     job_dir_path: str,
     contract_set: Any = None,
+    source_file_evidence: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """
     Build the execution context for a segment.
@@ -386,6 +453,7 @@ def build_segment_context(
         "dependencies": segment.dependencies,
         "interface_contract": _contract_markdown,
         "_grounding_data": _grounding_data,
+        "source_file_evidence": source_file_evidence or {},
     }
 
 
@@ -401,6 +469,10 @@ async def run_segment_through_pipeline(
     db: Any,
     project_id: int,
     on_progress: ProgressCallback = None,
+    contract_set: Any = None,      # v2.0: Skeleton contract for pre-flight
+    job_dir_path: str = "",         # v2.0: Job dir for rejection persistence
+    manifest: Any = None,           # v2.0: Manifest for pre-flight context
+    parent_spec: Any = None,        # v2.0: SPoT spec for rejection context
 ) -> Dict[str, Any]:
     """
     Run a single segment through: Critical Pipeline → Critique → Overwatcher → Implementer.
@@ -497,15 +569,50 @@ async def run_segment_through_pipeline(
     except Exception as e:
         logger.warning("[SEGMENT_LOOP] Failed to save segment arch: %s", e)
 
-    # --- v3.0: Show File Inventory from architecture for transparency ---
+    # --- v3.0 / v3.1: Show File Inventory from architecture for transparency ---
+    # v3.1 FIX #3: Only extract from the actual File Inventory section, not from
+    # evidence tables or prose that happen to contain backtick-wrapped paths.
     try:
         import re as _re
         _file_lines = []
-        for _m in _re.finditer(r'\|\s*`([^`]+)`\s*\|\s*([^|]+)', arch_text):
-            _fp = _m.group(1).strip()
-            _desc = _m.group(2).strip()
-            if _fp and not _fp.startswith('---') and _fp.lower() != 'file':
-                _file_lines.append(f"    {'CREATE' if 'new' in _desc.lower() or 'create' in _desc.lower() or 'package' in _desc.lower() else 'MODIFY'}: `{_fp}` — {_desc[:80]}")
+        # Find the File Inventory section and extract only from it
+        _in_inventory = False
+        _past_header_row = False
+        for _line in arch_text.split("\n"):
+            _stripped = _line.strip()
+            # Detect section start
+            if _re.match(r'#{1,4}\s*.*[Ff]ile\s*[Ii]nventory', _stripped):
+                _in_inventory = True
+                _past_header_row = False
+                continue
+            # Detect section end (next heading or horizontal rule after table)
+            if _in_inventory and (_stripped.startswith('#') or _stripped == '---'):
+                if _past_header_row:  # Only stop if we've seen table rows
+                    _in_inventory = False
+                    continue
+            if not _in_inventory:
+                continue
+            # Skip non-table lines
+            if not _stripped.startswith('|'):
+                continue
+            # Skip separator rows and header rows
+            if _re.match(r'\|[-\s|]+\|', _stripped):
+                _past_header_row = True
+                continue
+            if 'File' in _stripped and 'Purpose' in _stripped:
+                continue
+            # Skip *(none)* / _(none)_ rows
+            _lower = _stripped.lower()
+            if '*(none' in _lower or '_(none' in _lower or '*(n/a' in _lower or '_(n/a' in _lower:
+                continue
+            # Extract file path from backtick-wrapped cell
+            _m = _re.search(r'\|\s*`([^`]+)`\s*\|\s*([^|]+)', _stripped)
+            if _m:
+                _fp = _m.group(1).strip()
+                _desc = _m.group(2).strip()
+                if _fp and _fp.lower() != 'file':
+                    _op = 'CREATE' if 'new' in _desc.lower() or 'create' in _desc.lower() or 'package' in _desc.lower() else 'MODIFY'
+                    _file_lines.append(f"    {_op}: `{_fp}` — {_desc[:80]}")
         if _file_lines:
             _emit(f"  📂 File Inventory ({len(_file_lines)} operations):")
             for _fl in _file_lines:
@@ -532,7 +639,7 @@ async def run_segment_through_pipeline(
         return result
 
     # =====================================================================
-    # Step 3: Overwatcher + Architecture Executor
+    # Step 3: Overwatcher Pre-Flight + Architecture Executor
     # Only reached if ASTRA_SEGMENT_AUTO_EXECUTE=1 or explicit approval
     # =====================================================================
     _emit(f"  🔧 Running Overwatcher for {seg_id}...")
@@ -542,6 +649,76 @@ async def run_segment_through_pipeline(
         result["success"] = True
         return result
 
+    # -----------------------------------------------------------------
+    # Step 3a: Overwatcher Coherence Pre-Flight (deterministic)
+    # Verifies architecture against skeleton contract BEFORE implementation.
+    # If this fails, route back to Critical Pipeline for this segment only.
+    # -----------------------------------------------------------------
+    try:
+        from app.overwatcher.preflight import (
+            run_segment_preflight,
+            save_rejection,
+        )
+        _seg_contract = segment_context.get("interface_contract", "")
+        _skeleton_json = None
+        if contract_set:
+            _skeleton_json = contract_set.to_json()
+
+        _manifest_dict = None
+        if manifest and hasattr(manifest, 'to_dict'):
+            _manifest_dict = manifest.to_dict()
+
+        _spec_md = ""
+        if isinstance(parent_spec, str):
+            _spec_md = parent_spec
+        elif parent_spec:
+            try:
+                _spec_md = json.dumps(parent_spec)
+            except Exception:
+                pass
+
+        _preflight_rejection = run_segment_preflight(
+            segment_id=seg_id,
+            architecture_content=arch_text,
+            skeleton_json=_skeleton_json,
+            manifest_dict=_manifest_dict,
+            job_id=job_id,
+            architecture_path=seg_arch_path,
+            skeleton_contract_markdown=_seg_contract,
+            spec_markdown=_spec_md,
+            attempt_number=segment_context.get("_attempt_number", 1),
+        )
+
+        if _preflight_rejection:
+            _emit(f"  ❌ PRE-FLIGHT FAILED for {seg_id}: {_preflight_rejection.summary}")
+            for _iss in _preflight_rejection.issues:
+                _emit(f"    🚫 [{_iss.get('category', '?')}] {_iss.get('description', '?')}")
+            _emit(f"  🔄 Route: back to Critical Pipeline (segment only)")
+
+            # Save rejection for Experience Database
+            try:
+                save_rejection(_preflight_rejection, job_dir_path)
+                _emit(f"  💾 Rejection saved: {_preflight_rejection.rejection_id}")
+            except Exception as _sav_err:
+                logger.warning("[execute_segment] Failed to save rejection: %s", _sav_err)
+
+            result["success"] = False
+            result["preflight_failed"] = True
+            result["rejection"] = _preflight_rejection.to_dict()
+            return result
+        else:
+            _emit(f"  ✅ Pre-flight PASSED for {seg_id}")
+
+    except ImportError:
+        logger.debug("[execute_segment] Preflight module not available — skipping")
+    except Exception as _pf_err:
+        logger.warning("[execute_segment] Pre-flight check error (non-fatal): %s", _pf_err)
+        _emit(f"  ⚠️ Pre-flight check error (non-fatal): {_pf_err}")
+
+    # -----------------------------------------------------------------
+    # Step 3b: Overwatcher Architecture Execution
+    # Pre-flight passed — proceed to implementation.
+    # -----------------------------------------------------------------
     try:
         # Resolve the spec (the parent SPoT spec)
         spec = resolve_latest_spec(project_id, db)
@@ -554,8 +731,9 @@ async def run_segment_through_pipeline(
         llm_call_fn = create_overwatcher_llm_fn()
 
         # Run architecture execution for this segment
-        # v5.5 PHASE 4A: Pass interface contract for Job Checker
         _seg_contract = segment_context.get("interface_contract", "")
+        # v4.0: Skip boot check — segments are intermediate builds.
+        # Boot check runs once at Phase Checkout after ALL segments complete.
         arch_result = await run_architecture_execution(
             spec=spec,
             architecture_content=arch_text,
@@ -564,6 +742,7 @@ async def run_segment_through_pipeline(
             llm_call_fn=llm_call_fn,
             artifact_root=os.getenv("ORB_JOB_ARTIFACT_ROOT", "D:/Orb/jobs"),
             interface_contract=_seg_contract,
+            skip_boot_check=True,
         )
 
         if arch_result.get("success", False):
@@ -723,49 +902,74 @@ async def run_segmented_job(
     # Multi-segment path (existing logic)
     # =================================================================
 
-    # --- v5.4 PHASE 2A: Critical Supervisor — Interface Contract Generation ---
-    # Before generating any architectures, call the Critical Supervisor to
-    # produce interface contracts. These contracts ensure independently
-    # generated segment architectures remain compatible.
+    # --- v5.6 SKELETON CONTRACTS — Deterministic Interface Binding ---
+    # Before generating any architectures, generate skeleton contracts
+    # deterministically from the manifest. Zero LLM calls.
+    # These contracts bind segments together by defining:
+    #   - File scope constraints (prevent scope creep)
+    #   - Export contracts (what downstream needs)
+    #   - Import contracts (what upstream provides)
     _contract_set = None
     try:
-        from app.orchestrator.critical_supervisor import (
-            generate_interface_contracts,
-            save_contracts,
-            load_contracts,
-            SupervisorContractSet,
+        from app.orchestrator.skeleton_contracts import (
+            generate_skeleton_contract,
+            save_skeleton_contract,
+            load_skeleton_contract,
         )
-        _SUPERVISOR_AVAILABLE = True
+        _SKELETON_AVAILABLE = True
     except ImportError:
-        _SUPERVISOR_AVAILABLE = False
-        logger.debug("[SEGMENT_LOOP] Critical Supervisor not available")
+        _SKELETON_AVAILABLE = False
+        logger.debug("[SEGMENT_LOOP] Skeleton contracts not available")
 
-    if _SUPERVISOR_AVAILABLE:
-        # Check if contracts already exist (crash recovery)
-        _contract_set = load_contracts(job_dir_path)
-        if _contract_set and _contract_set.boundaries:
-            _emit(f"📋 Loaded existing contracts: {len(_contract_set.boundaries)} boundary(ies)")
+    if _SKELETON_AVAILABLE:
+        # Check if skeleton already exists (crash recovery)
+        _contract_set = load_skeleton_contract(job_dir_path)
+        if _contract_set and _contract_set.skeletons:
+            _emit(f"🦴 Loaded existing skeleton contract: {_contract_set.total_segments} segment(s), "
+                  f"{len(_contract_set.cross_segment_bindings)} binding(s)")
         else:
-            _emit("🔗 Running Critical Supervisor — generating interface contracts...")
+            _emit("🦴 Generating skeleton contracts (deterministic)...")
             try:
-                _contract_set = await generate_interface_contracts(
-                    job_id=job_id,
-                    spec_markdown=parent_spec.get("spot_markdown", "") if parent_spec else "",
+                _contract_set = generate_skeleton_contract(
                     manifest_dict=manifest.to_dict(),
+                    job_id=job_id,
                 )
-                if _contract_set.boundaries:
-                    save_contracts(_contract_set, job_dir_path)
-                    _emit(f"✅ Generated {len(_contract_set.boundaries)} interface boundary(ies)")
-                    for _b in _contract_set.boundaries:
-                        _emit(f"  🔗 {_b.exposing_segment} → {', '.join(_b.consuming_segments)}: {_b.name} ({_b.kind})")
+                if _contract_set.skeletons:
+                    save_skeleton_contract(_contract_set, job_dir_path)
+                    _total_exports = sum(len(s.exports) for s in _contract_set.skeletons)
+                    _emit(f"🦴 Skeleton: {_contract_set.total_segments} segments, "
+                          f"{_total_exports} exports, "
+                          f"{len(_contract_set.cross_segment_bindings)} cross-segment bindings")
+                    for _binding in _contract_set.cross_segment_bindings:
+                        _emit(f"  🔗 {_binding['from_segment']} → {_binding['to_segment']}: "
+                              f"`{_binding['file_path']}` ({_binding['binding_type']})")
                 else:
-                    _emit("ℹ️ No cross-segment boundaries detected (segments may be independent)")
-                    if _contract_set.generation_notes:
-                        logger.info("[SEGMENT_LOOP] Supervisor notes: %s", _contract_set.generation_notes)
-            except Exception as sup_err:
-                logger.warning("[SEGMENT_LOOP] Critical Supervisor failed (non-fatal): %s", sup_err)
-                _emit(f"⚠️ Critical Supervisor failed (non-fatal): {sup_err}")
+                    _emit("ℹ️ No cross-segment bindings detected (segments may be independent)")
+            except Exception as skel_err:
+                logger.warning("[SEGMENT_LOOP] Skeleton generation failed (non-fatal): %s", skel_err)
+                _emit(f"⚠️ Skeleton generation failed (non-fatal): {skel_err}")
                 _contract_set = None
+
+    # --- v2.2: Pre-load source file evidence for refactor jobs ---
+    _source_evidence = _load_source_file_evidence(manifest)
+
+    # --- v2.2: Evidence Ledger — create/load and seed with source files ---
+    _ledger = None
+    try:
+        from app.orchestrator.evidence_ledger import (
+            create_ledger, load_ledger, save_ledger,
+            seed_ledger_with_source_files,
+        )
+        _ledger = load_ledger(job_dir_path)
+        if _ledger is None:
+            _ledger = create_ledger(job_id, job_dir_path)
+            if _source_evidence:
+                seed_ledger_with_source_files(_ledger, job_dir_path, _source_evidence)
+        else:
+            _emit(f"📚 Evidence ledger loaded: {_ledger.entry_count} entries")
+    except Exception as _ledger_err:
+        logger.warning("[SEGMENT_LOOP] Evidence ledger init failed (non-fatal): %s", _ledger_err)
+        _ledger = None
 
     # --- Initialise or resume state ---
     state = load_or_init_state(job_id, manifest)
@@ -837,6 +1041,13 @@ async def run_segmented_job(
                 arch_text = f.read()
             _emit(f"  📄 Loaded architecture: {arch_path} ({len(arch_text)} chars)")
 
+            # v2.2: Build segment context for approved-resume path
+            segment_context = build_segment_context(
+                seg_spec, state, parent_spec, job_dir_path,
+                contract_set=_contract_set,
+                source_file_evidence=_source_evidence,
+            )
+
             # Execute via Overwatcher + Implementer
             pipeline_result = {"success": False, "error": None, "output_files": []}
             try:
@@ -853,6 +1064,7 @@ async def run_segmented_job(
                         seg_job_id = f"{job_id}__{seg_id}"
                         # v5.5 PHASE 4A: Pass interface contract for Job Checker
                         _seg_contract_md = segment_context.get("interface_contract", "") if segment_context else ""
+                        # v4.0: Skip boot check — Phase Checkout handles it
                         arch_result = await run_architecture_execution(
                             spec=spec,
                             architecture_content=arch_text,
@@ -861,6 +1073,7 @@ async def run_segmented_job(
                             llm_call_fn=llm_call_fn,
                             artifact_root=os.getenv("ORB_JOB_ARTIFACT_ROOT", "D:/Orb/jobs"),
                             interface_contract=_seg_contract_md,
+                            skip_boot_check=True,
                         )
                         if arch_result.get("success", False):
                             pipeline_result["success"] = True
@@ -924,7 +1137,17 @@ async def run_segmented_job(
         segment_context = build_segment_context(
             seg_spec, state, parent_spec, job_dir_path,
             contract_set=_contract_set,
+            source_file_evidence=_source_evidence,
         )
+
+        # v2.3 FIX #2: Inject cohesion feedback for targeted regen
+        # If this segment was reset due to cohesion failure, inject the feedback
+        # so the architecture generator knows what to fix.
+        _seg_state = state.segments.get(seg_id)
+        if _seg_state and _seg_state.error and _seg_state.error.startswith("Cohesion regen:"):
+            segment_context["cohesion_feedback"] = _seg_state.error
+            logger.info("[SEGMENT_LOOP] v2.3 Injected cohesion feedback for %s regen", seg_id)
+            _emit(f"  🔄 Re-generating with cohesion feedback: {_seg_state.error[:120]}")
 
         # Run through pipeline
         try:
@@ -935,6 +1158,10 @@ async def run_segmented_job(
                 db=db,
                 project_id=project_id,
                 on_progress=on_progress,
+                contract_set=_contract_set,
+                job_dir_path=job_dir_path,
+                manifest=manifest,
+                parent_spec=parent_spec,
             )
         except Exception as e:
             pipeline_result = {
@@ -1004,9 +1231,9 @@ async def run_segmented_job(
                 save_cohesion_result,
             )
 
-            # Load contract JSON if available
+            # Load contract JSON if available (supports both skeleton and legacy supervisor)
             _cohesion_contract_json = None
-            if _contract_set and _contract_set.boundaries:
+            if _contract_set:
                 _cohesion_contract_json = _contract_set.to_json()
 
             _cohesion_result = await run_cohesion_check(
@@ -1014,25 +1241,59 @@ async def run_segmented_job(
                 job_dir=job_dir_path,
                 segment_ids=_approved_seg_ids,
                 contract_json=_cohesion_contract_json,
+                source_file_evidence=_source_evidence,
             )
             save_cohesion_result(_cohesion_result, job_dir_path)
 
+            # =============================================================
+            # v3.0 COHESION RESULT DISPLAY
+            # Auto-fix now runs INSIDE run_cohesion_check, so the result
+            # already reflects any Tier 1/2 fixes that were applied.
+            # =============================================================
+
+            # Show auto-fixed issues first
+            _auto_fixed = [ci for ci in _cohesion_result.issues if ci.auto_fixed or ci.severity == "resolved"]
+            if _auto_fixed:
+                _emit(f"🔧 Auto-fixed {len(_auto_fixed)} issue(s):")
+                for _ci in _auto_fixed:
+                    _tier_label = f"T{_ci.auto_fix_tier}" if _ci.auto_fix_tier else "?"
+                    _emit(f"  ✅ {_ci.issue_id} [{_tier_label}] {_ci.auto_fix_note or _ci.description[:100]}")
+
             if _cohesion_result.status == "pass":
-                _emit("✅ Cohesion check PASSED — all segments are compatible")
+                if _auto_fixed:
+                    _emit("✅ Cohesion check PASSED — all issues resolved by auto-fix!")
+                else:
+                    _emit("✅ Cohesion check PASSED — all segments are compatible")
             elif _cohesion_result.status == "fail":
                 _n_blocking = len(_cohesion_result.blocking_issues)
                 _n_warning = len(_cohesion_result.warning_issues)
                 _emit(f"❌ Cohesion check FAILED — {_n_blocking} blocking, {_n_warning} warning(s)")
+                if _auto_fixed:
+                    _emit(f"  (ℹ️ {len(_auto_fixed)} other issue(s) were auto-fixed)")
                 for _ci in _cohesion_result.blocking_issues:
-                    _emit(f"  🚫 {_ci.issue_id} [{_ci.category}] {_ci.source_segment} ↔ {_ci.related_segment}")
+                    _tier_label = f"T{_ci.auto_fix_tier}" if _ci.auto_fix_tier else "?"
+                    _emit(f"  🚫 {_ci.issue_id} [{_ci.category}/{_tier_label}] {_ci.source_segment} ↔ {_ci.related_segment}")
                     _emit(f"     {_ci.description}")
                     if _ci.suggested_fix:
                         _emit(f"     Fix: {_ci.suggested_fix}")
                 for _ci in _cohesion_result.warning_issues:
                     _emit(f"  ⚠️ {_ci.issue_id} [{_ci.category}] {_ci.description}")
+
+                # Mark remaining blocking segments for targeted regen (Tier 3)
                 _regen_segs = _cohesion_result.segments_needing_regen
                 if _regen_segs:
-                    _emit(f"\n  💡 Segment(s) needing re-generation: {', '.join(_regen_segs)}")
+                    _emit(f"\n  💡 Segment(s) needing re-generation (Tier 3): {', '.join(_regen_segs)}")
+                    for _regen_seg_id in _regen_segs:
+                        if _regen_seg_id in state.segments:
+                            state.segments[_regen_seg_id].status = SegmentStatus.PENDING.value
+                            state.segments[_regen_seg_id].error = f"Cohesion regen: {[ci.description[:100] for ci in _cohesion_result.blocking_issues if ci.source_segment == _regen_seg_id]}"
+                            logger.info("[SEGMENT_LOOP] v3.0 Marked %s for targeted regen", _regen_seg_id)
+                    _emit(f"  🔄 Marked {len(_regen_segs)} segment(s) for targeted re-generation")
+                    _emit(f"  💡 Say 'Astra, command: run segments' to regenerate only the failing segment(s)")
+                    try:
+                        save_state(state, get_job_dir(job_id))
+                    except Exception as _save_err:
+                        logger.warning("[SEGMENT_LOOP] Failed to save regen state: %s", _save_err)
             else:
                 _emit(f"⚠️ Cohesion check error: {_cohesion_result.notes or 'unknown'}")
 
@@ -1093,6 +1354,82 @@ async def run_segmented_job(
             _emit(f"[SEGMENT_LOOP] Integration check error: {e}")
             # Do NOT crash the segment loop — segments already completed
 
+    # --- v4.0 PHASE CHECKOUT (Placeholder for Stage 9) ---
+    # Boot check runs ONCE after ALL segments complete.
+    # This is where boot testing belongs — not inside individual segments.
+    # When the full Phase Checkout (Stage 9) is built, this will be replaced
+    # by the full verification: boot test + skeleton contract check + SPoT
+    # spec compliance + test bed execution.
+    all_segments_complete = all(
+        s.status == SegmentStatus.COMPLETE.value
+        for s in state.segments.values()
+    )
+    if all_segments_complete and total > 0:
+        _emit(f"\n{'='*50}")
+        _emit("🏁 PHASE CHECKOUT — Post-completion boot check...")
+        try:
+            from app.overwatcher.sandbox_client import get_sandbox_client
+
+            _pc_client = get_sandbox_client()
+            # Resolve sandbox base (same logic as architecture_executor)
+            _pc_sandbox_base = r"D:\Orb"  # Default; could resolve dynamically
+            for _candidate in [r"C:\Orb\Orb", r"C:\Orb", r"D:\Orb"]:
+                try:
+                    _test = _pc_client.shell_run(
+                        f'Test-Path -Path "{_candidate}\\main.py"',
+                        timeout_seconds=10,
+                    )
+                    if (_test.stdout or "").strip().lower() == "true":
+                        _pc_sandbox_base = _candidate
+                        break
+                except Exception:
+                    continue
+
+            _pc_venv = _pc_sandbox_base + "\\.venv\\Scripts\\python.exe"
+            _pc_cmd = (
+                f'cd "{_pc_sandbox_base}" ; '
+                f'& "{_pc_venv}" -c '
+                f'"import sys; sys.path.insert(0, r\'{_pc_sandbox_base}\'); '
+                f'from main import app; print(\'BOOT_CHECK_PASS\')"'
+            )
+            _pc_result = _pc_client.shell_run(_pc_cmd, timeout_seconds=30)
+            _pc_stdout = (_pc_result.stdout or "").strip()
+            _pc_stderr = (_pc_result.stderr or "").strip()
+
+            if "BOOT_CHECK_PASS" in _pc_stdout:
+                _emit("✅ Phase Checkout boot check PASSED — application starts cleanly")
+                logger.info("[SEGMENT_LOOP] v4.0 Phase Checkout boot check PASSED")
+                state.phase_checkout_boot = "pass"
+            else:
+                # Extract useful error info
+                _err_keywords = (
+                    'Error', 'Traceback', 'ImportError', 'ModuleNotFoundError',
+                    'SyntaxError', 'AttributeError', 'NameError', 'TypeError',
+                    'cannot import', 'No module named',
+                )
+                _err_lines = [
+                    ln.strip() for ln in (_pc_stdout + "\n" + _pc_stderr).split("\n")
+                    if any(kw in ln for kw in _err_keywords)
+                ]
+                _err_summary = "\n".join(_err_lines[:5]) or "Unknown boot failure"
+                _emit(f"❌ Phase Checkout boot check FAILED:\n{_err_summary}")
+                logger.error(
+                    "[SEGMENT_LOOP] v4.0 Phase Checkout boot check FAILED: %s",
+                    _err_summary[:300]
+                )
+                state.phase_checkout_boot = "fail"
+                state.phase_checkout_error = _err_summary[:500]
+                # NOTE: This does NOT mark segments as failed.
+                # The Phase Checkout failure is a separate concern.
+                # When full Stage 9 is built, it will diagnose and
+                # route fixes back to the Overwatcher.
+        except Exception as _pc_err:
+            logger.warning("[SEGMENT_LOOP] v4.0 Phase Checkout boot check error: %s", _pc_err)
+            _emit(f"⚠️ Phase Checkout boot check could not run: {_pc_err}")
+            state.phase_checkout_boot = "error"
+
+        save_state(state, job_dir_path)
+
     # --- Final summary ---
     state.overall_status = state.compute_overall_status()
     save_state(state, job_dir_path)
@@ -1115,6 +1452,12 @@ async def run_segmented_job(
         _emit(f"   Failed: {counts.get('failed', 0)}")
     if counts.get("blocked", 0):
         _emit(f"   Blocked: {counts.get('blocked', 0)}")
+    if state.phase_checkout_boot == "pass":
+        _emit(f"   🏁 Boot check: PASSED")
+    elif state.phase_checkout_boot == "fail":
+        _emit(f"   🏁 Boot check: FAILED")
+    elif state.phase_checkout_boot == "error":
+        _emit(f"   🏁 Boot check: ERROR (could not run)")
     _emit(f"{'='*50}")
 
     logger.info("[SEGMENT_LOOP] Job %s finished: %s", job_id, state.summary())

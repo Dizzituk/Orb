@@ -44,7 +44,7 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-NEEDLE_CLASSIFIER_BUILD_ID = "2026-02-10-v1.0-needle-classifier"
+NEEDLE_CLASSIFIER_BUILD_ID = "2026-02-14-v1.2-target-2-needles-per-segment"
 print(f"[NEEDLE_CLASSIFIER_LOADED] BUILD_ID={NEEDLE_CLASSIFIER_BUILD_ID}")
 
 
@@ -83,8 +83,11 @@ class NeedleEstimate:
         """How many segments to create (targeting 2-3 needles each)."""
         if self.needle_estimate <= 3:
             return 1
-        # Target 2-3 needles per segment, round up
-        return max(2, -(-self.needle_estimate // 3))  # ceil division
+        # v1.2: Target 2 needles per segment (was 3, but 3 is the upper danger
+        # zone — files in segments with 3 needles tend to be large and risk
+        # implementer truncation). 2 needles/segment keeps files small and
+        # gives the architecture model room to breathe.
+        return max(2, -(-self.needle_estimate // 2))  # ceil division by 2
 
     @property
     def difficulty_tier(self) -> str:
@@ -279,6 +282,7 @@ async def classify_needles(
         NeedleEstimate with counts and reasoning
     """
     file_scope = file_scope or []
+    file_count = len(file_scope)
 
     # Try deterministic first
     det = _deterministic_estimate(spec_markdown, file_scope)
@@ -366,6 +370,25 @@ Return ONLY the JSON object with blast_radius_count, concept_count, interface_co
             return _heuristic_fallback(spec_markdown, file_scope)
 
         estimate.model_used = f"{_provider}/{_model}"
+
+        # v1.1: Deterministic floor — LLM cannot underscore file count
+        # If the spec explicitly lists N files, blast_radius must be >= N.
+        # The LLM is non-deterministic and sometimes wildly underscores.
+        if file_count > estimate.blast_radius_count:
+            _orig_blast = estimate.blast_radius_count
+            logger.warning(
+                "[needle_classifier] LLM underscore: blast=%d but file_scope=%d — applying floor",
+                _orig_blast, file_count,
+            )
+            estimate.blast_radius_count = file_count
+            # Recalculate needle_estimate (it's max of the three counts)
+            estimate.needle_estimate = max(
+                estimate.blast_radius_count,
+                estimate.concept_count,
+                estimate.interface_count,
+            )
+            estimate.reasoning += f" [floor applied: blast {_orig_blast}→{file_count} from file_scope]"
+
         logger.info(
             "[needle_classifier] LLM result: blast=%d concept=%d interface=%d → needle=%d (%s)",
             estimate.blast_radius_count, estimate.concept_count,

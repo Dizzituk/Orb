@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-SPEC_RUNNER_BUILD_ID = "2026-02-10-v5.4-always-manifest-phase1a"
+SPEC_RUNNER_BUILD_ID = "2026-02-14-v5.5-ac-name-reconciliation"
 print(f"[SPEC_RUNNER_LOADED] BUILD_ID={SPEC_RUNNER_BUILD_ID}")
 
 
@@ -739,20 +739,50 @@ def _extract_file_scope_from_spec(
         r'(?:[\s`|,]|$)',
         re.MULTILINE,
     )
+    # v5.7: Get known project roots for absolute→relative conversion
+    _known_roots = []
+    try:
+        _disc = _discover_project_roots()
+        for _root in _disc.get('roots', []):
+            _nr = _root.replace('/', '\\').rstrip('\\').lower()
+            _known_roots.append(_nr)
+    except Exception:
+        pass
+    # Sort longest first so D:\Orb\app matches before D:\Orb
+    _known_roots.sort(key=len, reverse=True)
+
     for match in abs_pattern.finditer(spec_markdown):
         abs_path = match.group(1)
-        _add_path(abs_path)
-        # Also extract the relative portion for layer classification.
-        # e.g. D:\Orb\app\services\foo.py → app\services\foo.py
-        # This ensures classify_file_layer() works correctly since it
-        # matches on relative path patterns like "app/services/".
+        # v5.7: Convert absolute paths to relative using known project roots.
+        # This prevents duplicate entries where both absolute and relative forms
+        # of the same file end up in scope (e.g. D:\Orb\main.py AND main.py),
+        # which causes double-counting in segmentation and skeleton contracts.
         normalised = abs_path.replace('/', '\\')
-        for prefix in ('app\\', 'src\\'):
-            idx = normalised.lower().find(prefix)
-            if idx >= 0:
-                rel_part = normalised[idx:]
-                _add_path(rel_part)
+        _found_relative = False
+
+        # Strategy 1: Strip known project root prefix
+        # e.g. D:\Orb\main.py → main.py, D:\Orb\app\foo.py → app\foo.py
+        for _root in _known_roots:
+            if normalised.lower().startswith(_root + '\\'):
+                rel_part = normalised[len(_root) + 1:]  # +1 for the separator
+                if rel_part:  # Safety: don't add empty string
+                    _add_path(rel_part)
+                    _found_relative = True
                 break
+
+        # Strategy 2: Find known sub-directory prefix (fallback for unknown roots)
+        if not _found_relative:
+            for prefix in ('app\\', 'src\\', 'tests\\', 'scripts\\', 'config\\', 'orb-desktop\\'):
+                idx = normalised.lower().find(prefix)
+                if idx >= 0:
+                    rel_part = normalised[idx:]
+                    _add_path(rel_part)
+                    _found_relative = True
+                    break
+
+        # Only keep the absolute path if no relative portion could be extracted
+        if not _found_relative:
+            _add_path(abs_path)
     
     # Pattern 3: Extract from multi_file_op target files if available
     if multi_file_op:
@@ -839,6 +869,101 @@ def _extract_acceptance_from_spec(spec_markdown: Optional[str]) -> List[str]:
                 criteria.append(stripped.lstrip('- *').strip())
     
     return criteria
+
+
+def _reconcile_ac_names_against_source(
+    spec_markdown: str,
+    file_scope: List[str],
+) -> List[str]:
+    """
+    v5.5: Reconcile function/class names in acceptance criteria against source files.
+
+    Scans acceptance criteria for backtick-wrapped identifiers (e.g. `execute_architecture`)
+    and checks if they exist in the actual source files' __all__, def, or class declarations.
+
+    Returns a list of warning strings for names that don't match any source definition.
+    These warnings are appended to the spec as a reconciliation note.
+    """
+    warnings: List[str] = []
+    if not spec_markdown or not file_scope:
+        return warnings
+
+    # Step 1: Extract identifiers from acceptance criteria
+    ac_section = _extract_acceptance_from_spec(spec_markdown)
+    ac_text = ' '.join(ac_section)
+    # Find backtick-wrapped identifiers that look like Python names
+    ac_names = set(re.findall(r'`([a-zA-Z_][a-zA-Z0-9_]*)`', ac_text))
+    if not ac_names:
+        return warnings
+
+    # Filter to names that look like function/class names (not constants, not short)
+    ac_names = {n for n in ac_names if len(n) > 3 and not n.isupper()}
+    if not ac_names:
+        return warnings
+
+    # Step 2: Gather all defined names from source files
+    source_names: set = set()
+    discovery = _discover_project_roots()
+    roots = discovery.get('roots', [])
+
+    for rel_path in file_scope:
+        # Try to find the actual file
+        abs_paths_to_try = []
+        for root in roots:
+            candidate = os.path.join(root, rel_path.replace('/', os.sep))
+            abs_paths_to_try.append(candidate)
+        # Also try the path as-is (might already be absolute)
+        abs_paths_to_try.append(rel_path)
+
+        for abs_path in abs_paths_to_try:
+            if not os.path.isfile(abs_path):
+                continue
+            try:
+                with open(abs_path, 'r', encoding='utf-8', errors='replace') as f:
+                    content = f.read()
+                # Extract __all__ entries
+                all_match = re.search(r'__all__\s*=\s*\[([^\]]+)\]', content, re.DOTALL)
+                if all_match:
+                    all_entries = re.findall(r'["\']([a-zA-Z_][a-zA-Z0-9_]*)["\']', all_match.group(1))
+                    source_names.update(all_entries)
+                # Extract function defs
+                for m in re.finditer(r'^(?:async\s+)?def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(', content, re.MULTILINE):
+                    source_names.add(m.group(1))
+                # Extract class defs
+                for m in re.finditer(r'^class\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[:(]', content, re.MULTILINE):
+                    source_names.add(m.group(1))
+            except Exception:
+                continue
+            break  # Found the file, no need to try other roots
+
+    if not source_names:
+        return warnings  # Couldn't read any source files
+
+    # Step 3: Flag names in AC that don't exist in source
+    for ac_name in sorted(ac_names):
+        if ac_name not in source_names:
+            # Check for close matches (e.g. execute_architecture vs run_architecture_execution)
+            close = [s for s in source_names if ac_name.replace('_', '') in s.replace('_', '') or
+                     s.replace('_', '') in ac_name.replace('_', '')]
+            if close:
+                warnings.append(
+                    f"AC references `{ac_name}` but source defines `{close[0]}`. "
+                    f"Possible name mismatch — verify which is correct."
+                )
+            else:
+                warnings.append(
+                    f"AC references `{ac_name}` which was not found in any source file's "
+                    f"__all__, def, or class declarations."
+                )
+
+    if warnings:
+        logger.warning(
+            "[spec_runner] v5.5 AC name reconciliation: %d warning(s): %s",
+            len(warnings), '; '.join(warnings),
+        )
+        print(f"[spec_runner] v5.5 AC NAME RECONCILIATION: {len(warnings)} warning(s)")
+
+    return warnings
 
 
 def _write_segmentation_output(job_id: str, manifest) -> None:
@@ -1423,6 +1548,25 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
             "needle_estimate": _needle_estimate.to_dict() if _needle_estimate else None,
         }
         
+        # =================================================================
+        # v5.5: AC NAME RECONCILIATION — catch spec/source name mismatches
+        # =================================================================
+        if spot_markdown:
+            _recon_file_scope = _extract_file_scope_from_spec(
+                spot_markdown, grounding_data=None, multi_file_op=multi_file_op,
+            )
+            _recon_warnings = _reconcile_ac_names_against_source(spot_markdown, _recon_file_scope)
+            if _recon_warnings:
+                recon_note = "\n\n## ⚠️ AC Name Reconciliation Warnings\n\n"
+                recon_note += (
+                    "The following identifiers in Acceptance Criteria may not match "
+                    "the actual source code definitions. The Critical Pipeline should "
+                    "use the SOURCE CODE names, not the AC names, if they differ.\n\n"
+                )
+                for w in _recon_warnings:
+                    recon_note += f"- {w}\n"
+                spot_markdown += recon_note
+
         # =================================================================
         # v4.7: DEDUP EVIDENCE_REQUESTs before counting
         # =================================================================

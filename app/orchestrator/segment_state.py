@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-SEGMENT_STATE_BUILD_ID = "2026-02-08-v1.0-initial"
+SEGMENT_STATE_BUILD_ID = "2026-02-13-v1.1-phase-checkout-fields"
 print(f"[SEGMENT_STATE_LOADED] BUILD_ID={SEGMENT_STATE_BUILD_ID}")
 
 # Re-use the SegmentStatus enum from Phase 1 schemas
@@ -108,6 +108,8 @@ class JobState:
     last_updated: str = ""
     overall_status: str = "running"  # running | complete | partial | failed
     integration_check: Optional[Dict[str, Any]] = None  # Phase 3: cross-segment integration check result
+    phase_checkout_boot: Optional[str] = None  # v4.0: "pass" | "fail" | "error" | None
+    phase_checkout_error: Optional[str] = None  # v4.0: Error details if boot check failed
 
     def __post_init__(self):
         if not self.started_at:
@@ -127,6 +129,8 @@ class JobState:
             "last_updated": self.last_updated,
             "overall_status": self.overall_status,
             "integration_check": self.integration_check,
+            "phase_checkout_boot": self.phase_checkout_boot,
+            "phase_checkout_error": self.phase_checkout_error,
         }
 
     @classmethod
@@ -145,6 +149,8 @@ class JobState:
             last_updated=data.get("last_updated", ""),
             overall_status=data.get("overall_status", "running"),
             integration_check=data.get("integration_check"),
+            phase_checkout_boot=data.get("phase_checkout_boot"),
+            phase_checkout_error=data.get("phase_checkout_error"),
         )
 
     # --- Convenience accessors ---
