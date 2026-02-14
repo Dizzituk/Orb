@@ -560,6 +560,7 @@ def _handle_blocked_command(translation_result, stage_trace):
         CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB,
         CanonicalIntent.OVERWATCHER_EXECUTE_CHANGES,
         CanonicalIntent.SEND_TO_SPEC_GATE,
+        CanonicalIntent.IMPLEMENT_SEGMENTS,
     ):
         return None
     

@@ -870,14 +870,8 @@ INTENT_DEFINITIONS: Dict[CanonicalIntent, IntentDefinition] = {
             r"^[Rr]un\s+(?:the\s+)?implementations?$",
             r"^[Ii]mplement\s+(?:the\s+)?(?:approved\s+)?(?:architecture|arch)s?$",
         ],
-        requires_context=["job_id"],
-        requires_confirmation=True,
-        confirmation_prompt=(
-            "⚠️ IMPLEMENTATION\n"
-            "You are about to implement all APPROVED segments.\n"
-            "This will write files to your project via Overwatcher + Implementer.\n\n"
-            "Type 'confirm' or 'yes' to proceed."
-        ),
+        requires_context=[],
+        requires_confirmation=False,
         description="Implement approved segments through Overwatcher + Implementer",
         behavior=(
             "Execute APPROVED segments through implementation:\n"
