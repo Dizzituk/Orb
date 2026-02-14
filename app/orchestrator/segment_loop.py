@@ -1531,7 +1531,7 @@ async def run_segmented_job(
                             state.segments[_regen_seg_id].error = f"Cohesion regen: {[ci.description[:100] for ci in _cohesion_result.blocking_issues if ci.source_segment == _regen_seg_id]}"
                             logger.info("[SEGMENT_LOOP] v3.0 Marked %s for targeted regen", _regen_seg_id)
                     _emit(f"  🔄 Marked {len(_regen_segs)} segment(s) for targeted re-generation")
-                    _emit(f"  💡 Say 'Astra, command: run segments' to regenerate only the failing segment(s)")
+                    _emit(f"  💡 Say 'Astra, command: implement segments' to execute approved segments")
                     try:
                         save_state(state, get_job_dir(job_id))
                     except Exception as _save_err:
@@ -1690,7 +1690,7 @@ async def run_segmented_job(
     _emit(f"   Complete: {counts.get('complete', 0)}/{total}")
     if approved_count:
         _emit(f"   ⏸️ Approved (awaiting execution): {approved_count} segment(s)")
-        _emit(f"   Say 'Astra, command: run segments' to execute approved segments")
+        _emit(f"   Say 'Astra, command: implement segments' to execute approved segments")
     if counts.get("failed", 0):
         _emit(f"   Failed: {counts.get('failed', 0)}")
     if counts.get("blocked", 0):
