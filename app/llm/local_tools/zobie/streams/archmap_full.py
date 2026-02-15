@@ -56,6 +56,7 @@ from ..rag_helpers import (
     generate_signatures_json,
     generate_index_for_rag,
     generate_codebase_md,
+    signatures_to_db,
 )
 
 # Reuse the prompt builder from archmap_db
@@ -300,6 +301,26 @@ async def generate_full_architecture_map_stream(
         yield sse_token(f"   DB save failed: {e}\n")
     
     # ===========================================================================
+    # Phase 4.1: Write code signatures to RAG database
+    # ===========================================================================
+    yield sse_token("\n🔗 Phase 4.1: Writing code signatures to RAG database...\n")
+    
+    rag_scan_id = None
+    try:
+        rag_scan_id = signatures_to_db(db, contents_data, CODE_SCAN_ROOTS[0])
+        if rag_scan_id:
+            from app.rag.models import ArchCodeChunk
+            chunk_count = db.query(ArchCodeChunk).filter(
+                ArchCodeChunk.scan_id == rag_scan_id
+            ).count()
+            yield sse_token(f"   ✅ {chunk_count} code chunks written (rag_scan_id={rag_scan_id})\n")
+        else:
+            yield sse_token("   ⚠️ Signature DB write returned None (check logs)\n")
+    except Exception as e:
+        logger.exception(f"[full_archmap] Signature DB write failed: {e}")
+        yield sse_token(f"   ⚠️ Signature DB write failed (non-fatal): {e}\n")
+    
+    # ===========================================================================
     # Phase 4.5: Queue background embedding job (non-blocking)
     # ===========================================================================
     # Embeddings build in background after command returns.
@@ -316,16 +337,12 @@ async def generate_full_architecture_map_stream(
         if not EMBEDDING_AUTO_ENABLED:
             yield sse_token("   ⚠️ Auto-embedding disabled (ORB_EMBEDDING_AUTO=false)\n")
         else:
-            # get_db_session() returns a Session directly (not a generator)
-            # Pass it as the session factory callable
-            # NOTE: Do NOT pass scan_id here!
-            # ArchCodeChunk.scan_id references arch_scan_runs.id (RAG pipeline's scan tracking)
-            # but _save_scan_with_contents_to_db creates architecture_scan_runs.id
-            # These are different tables, so passing scan_id would filter out all chunks.
-            # Instead, embed ALL pending ArchCodeChunk rows regardless of origin.
+            # Pass rag_scan_id from Phase 4.1 so embedding job scopes to
+            # this scan's chunks only. Falls back to None (all chunks) if
+            # Phase 4.1 failed.
             embedding_queued = queue_embedding_job(
                 db_session_factory=get_db_session,
-                scan_id=None,  # Embed all pending chunks, not filtered by scan
+                scan_id=rag_scan_id,  # Scope to this scan's chunks
             )
             
             if embedding_queued:

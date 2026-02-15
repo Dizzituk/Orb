@@ -227,6 +227,24 @@ async def run_final_checkout(
     result = FinalCheckoutResult(job_id=job_id, total_phases=plan.total_phases)
     all_strike_records: List[StrikeRecord] = []
 
+    # Set journal context for stages that use journal_emit()
+    try:
+        from app.experience.context import set_job_context, journal_emit as _journal_emit
+        if not job_dir:
+            import os as _os
+            _jd = _os.path.join("D:/Orb/jobs/jobs", job_id)
+        else:
+            _jd = job_dir
+        set_job_context(job_id=job_id, job_dir=_jd)
+        _journal_emit(
+            stage="final_checkout",
+            event_type="stage_enter",
+            description="Final checkout starting",
+            details={"total_phases": plan.total_phases, "expected_files": len(original_file_scope)},
+        )
+    except Exception:
+        pass
+
     _emit(f"\n{'='*60}")
     _emit(">>> FINAL PROJECT CHECKOUT - Stage 10 (Autonomous Closer)")
     _emit(f"   {plan.total_phases} phase(s), {len(original_file_scope)} expected files")
@@ -1890,6 +1908,61 @@ def compile_pipeline_learning_report(
     except Exception as exc:
         _emit(f"  [ERROR] Failed to write report: {exc}")
         logger.warning("[final_checkout] v3.2 Report write failed: %s", exc)
+
+    # Journal: emit job completion summary for distillation
+    try:
+        from app.experience.context import journal_emit
+        journal_emit(
+            job_id=job_id,
+            job_dir=job_dir,
+            stage="final_checkout",
+            event_type="stage_exit",
+            severity="info",
+            description=f"Job {report.get('outcome', 'unknown')}: "
+                        f"{len(events)} events, "
+                        f"{len(report.get('strike_records', []))} strikes",
+            details={
+                "outcome": report.get("outcome"),
+                "total_segments": report.get("total_segments"),
+                "total_files": report.get("total_files"),
+                "duration_ms": report.get("duration_ms"),
+                "event_count": len(events),
+                "strike_count": len(report.get("strike_records", [])),
+            },
+        )
+    except Exception:
+        pass
+
+    # Trigger post-job distillation (journal → experience patterns)
+    try:
+        from app.experience.distillation import distill_job
+        from app.db import get_db_session
+        distill_db = get_db_session()
+        patterns = distill_job(distill_db, job_id, job_dir)
+        if patterns:
+            _emit(f"  [OK] Distilled {len(patterns)} experience pattern(s) from journal")
+            logger.info(
+                "[final_checkout] Distilled %d patterns for job %s",
+                len(patterns), job_id,
+            )
+        distill_db.close()
+    except Exception as distill_err:
+        logger.warning("[final_checkout] Distillation failed (non-fatal): %s", distill_err)
+
+    # Calibrate confidence scores based on job outcome
+    try:
+        from app.experience.calibration import calibrate_from_job
+        job_outcome = report.get("outcome", "unknown")
+        cal_db = get_db_session()
+        cal_stats = calibrate_from_job(cal_db, job_id, job_outcome)
+        if cal_stats.get("boosted") or cal_stats.get("penalised"):
+            _emit(
+                f"  [OK] Calibrated {cal_stats['boosted']} boosted, "
+                f"{cal_stats['penalised']} penalised patterns"
+            )
+        cal_db.close()
+    except Exception as cal_err:
+        logger.warning("[final_checkout] Calibration failed (non-fatal): %s", cal_err)
 
     return report
 

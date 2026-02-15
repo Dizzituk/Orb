@@ -8,7 +8,6 @@ No logic changes - exact same behavior and SSE output format.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 from datetime import datetime
@@ -37,12 +36,7 @@ from ..db_ops import (
     count_files_by_zone,
 )
 from ..filter_utils import filter_scan_results
-from ..signature_extract import (
-    extract_python_signatures,
-    extract_js_signatures,
-    strip_line_numbers,
-    map_kind_to_chunk_type,
-)
+from ..rag_helpers import signatures_to_db
 
 logger = logging.getLogger(__name__)
 
@@ -304,136 +298,23 @@ async def generate_sandbox_structure_scan_stream(
     yield sse_token("\n🔗 Phase 4: Extracting signatures for RAG...\n")
     
     chunks_created = 0
-    chunks_skipped = 0
     rag_scan_id = None
     
     if contents_data:
         try:
-            # Import RAG models
-            from app.rag.models import ArchScanRun, ArchCodeChunk
-            from app.rag.jobs.embedding_job import compute_content_hash
-            from sqlalchemy import and_
-            
-            # Create ArchScanRun entry for RAG pipeline tracking
-            # (This is separate from architecture_scan_runs used for file metadata)
-            rag_scan_run = ArchScanRun(
-                status="running",
-                signatures_file="",  # No file output for sandbox scan
-                index_file="",
-            )
-            db.add(rag_scan_run)
-            db.flush()  # Get the ID
-            rag_scan_id = rag_scan_run.id
-            
-            yield sse_token(f"   Created ArchScanRun (rag_scan_id={rag_scan_id})\n")
-            
-            # Process each file with content
-            for content_info in contents_data:
-                path = content_info.get("path", "")
-                content = content_info.get("content", "")
-                
-                if not path or not content:
-                    continue
-                if content_info.get("error"):
-                    continue
-                
-                # Strip line numbers if present (safety)
-                raw_content = strip_line_numbers(content)
-                
-                # Extract signatures based on file extension
-                ext = os.path.splitext(path)[1].lower()
-                signatures = []
-                
-                if ext in (".py", ".pyw", ".pyi"):
-                    signatures = extract_python_signatures(raw_content, path)
-                elif ext in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"):
-                    signatures = extract_js_signatures(raw_content, path)
-                
-                if not signatures:
-                    continue
-                
-                # ----------------------------------------------------------
-                # FAST DEDUPE: load existing keys ONCE per file_path
-                # Key = (chunk_name, content_hash)
-                # This avoids N+1 queries - we batch query per file
-                # ----------------------------------------------------------
-                existing_keys = set(
-                    db.query(ArchCodeChunk.chunk_name, ArchCodeChunk.content_hash)
-                      .filter(ArchCodeChunk.file_path == path)
-                      .all()
-                )
-                
-                # Create ArchCodeChunk for each signature (with dedup)
-                for sig in signatures:
-                    chunk_name = sig.get("name", "") or ""
-                    chunk_type = map_kind_to_chunk_type(sig.get("kind", "function"))
-                    
-                    # Build temp chunk to compute content_hash deterministically
-                    temp_chunk = ArchCodeChunk(
-                        scan_id=rag_scan_id,
-                        file_path=path,
-                        chunk_name=chunk_name,
-                        chunk_type=chunk_type,
-                        signature=sig.get("signature"),
-                        docstring=sig.get("docstring"),
-                    )
-                    
-                    # Compute content_hash (MUST BE DETERMINISTIC - no scan_id/timestamps)
-                    content_hash = compute_content_hash(temp_chunk)
-                    
-                    # Check if this (chunk_name, content_hash) already exists
-                    key = (chunk_name, content_hash)
-                    if key in existing_keys:
-                        chunks_skipped += 1
-                        continue
-                    
-                    # Also prevent duplicates within this scan run
-                    existing_keys.add(key)
-                    
-                    # Create the actual chunk
-                    chunk = ArchCodeChunk(
-                        scan_id=rag_scan_id,
-                        file_path=path,
-                        file_abs_path=path,  # Same for sandbox paths
-                        chunk_type=chunk_type,
-                        chunk_name=chunk_name,
-                        qualified_name=f"{path}::{chunk_name}",
-                        start_line=sig.get("line"),
-                        end_line=sig.get("end_line"),
-                        signature=sig.get("signature"),
-                        docstring=sig.get("docstring"),
-                        decorators_json=json.dumps(sig.get("decorators", [])) if sig.get("decorators") else None,
-                        parameters_json=json.dumps(sig.get("parameters", [])) if sig.get("parameters") else None,
-                        returns=sig.get("returns"),
-                        bases_json=json.dumps(sig.get("bases", [])) if sig.get("bases") else None,
-                        embedded=False,  # Will be embedded by background job
-                        content_hash=content_hash,
-                    )
-                    
-                    db.add(chunk)
-                    chunks_created += 1
-                
-                # Flush periodically to avoid memory buildup
-                if (chunks_created + chunks_skipped) % 500 == 0:
-                    db.flush()
-            
-            # Mark scan complete
-            rag_scan_run.status = "complete"
-            rag_scan_run.completed_at = datetime.utcnow()
-            rag_scan_run.chunks_extracted = chunks_created
-            
-            db.commit()
-            
-            yield sse_token(f"   ✅ Created {chunks_created} new chunks, skipped {chunks_skipped} duplicates\n")
-            logger.info(f"[SCAN_SANDBOX] chunks_written={chunks_created}, chunks_skipped={chunks_skipped}")
-            
-        except ImportError as ie:
-            logger.warning(f"[SCAN_SANDBOX] RAG models not available: {ie}")
-            yield sse_token(f"   ⚠️ RAG models not available: {ie}\n")
+            rag_scan_id = signatures_to_db(db, contents_data, SANDBOX_SCAN_ROOTS[0])
+            if rag_scan_id:
+                from app.rag.models import ArchCodeChunk
+                chunks_created = db.query(ArchCodeChunk).filter(
+                    ArchCodeChunk.scan_id == rag_scan_id
+                ).count()
+                yield sse_token(f"   ✅ {chunks_created} code chunks written (rag_scan_id={rag_scan_id})\n")
+                logger.info(f"[SCAN_SANDBOX] chunks_written={chunks_created}")
+            else:
+                yield sse_token("   ⚠️ Signature DB write returned None (check logs)\n")
         except Exception as e:
             logger.exception(f"[SCAN_SANDBOX] Signature extraction failed: {e}")
-            yield sse_token(f"   ⚠️ Signature extraction failed: {e}\n")
-            # Don't fail the whole scan - continue to summary
+            yield sse_token(f"   ⚠️ Signature extraction failed (non-fatal): {e}\n")
     else:
         yield sse_token("   ⏭️ No content to process - skipping signature extraction\n")
     

@@ -372,6 +372,19 @@ class OverwatcherCommandResult:
                 "details": details or {},
             }
         )
+        # Emit to Build Journal (fire-and-forget, never crashes pipeline)
+        try:
+            from app.experience.journal_writer import emit_from_trace
+            _job_dir = os.path.join(DEFAULT_ARTIFACT_ROOT, "jobs", self.job_id)
+            emit_from_trace(
+                job_id=self.job_id,
+                job_dir=_job_dir,
+                trace_stage=stage,
+                trace_status=status,
+                trace_details=details,
+            )
+        except Exception:
+            pass  # Journal must never crash the pipeline
 
 
 async def run_overwatcher_command(
@@ -403,6 +416,14 @@ async def run_overwatcher_command(
     """
     job_id = job_id or str(uuid4())
     result = OverwatcherCommandResult(success=False, job_id=job_id)
+
+    # Set journal context so all pipeline stages can emit entries
+    try:
+        from app.experience.context import set_job_context, clear_job_context
+        _job_dir = os.path.join(artifact_root, "jobs", job_id)
+        set_job_context(job_id=job_id, job_dir=_job_dir)
+    except Exception:
+        pass
 
     logger.info("[overwatcher_command] ========================================")
     logger.info(

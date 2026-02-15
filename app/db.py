@@ -123,6 +123,9 @@ def init_db():
     # v2.3: Import RAG models (semantic search and Q&A)
     from app.rag import models as rag_models  # noqa: F401
 
+    # v3.0: Import Experience Database models (Unified Memory System)
+    from app.experience import models as experience_models  # noqa: F401
+
     Base.metadata.create_all(bind=engine)
     
     # v2.4: Run schema migrations for existing tables

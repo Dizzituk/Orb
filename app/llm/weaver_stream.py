@@ -2061,6 +2061,17 @@ Remember:
 - When in doubt, it's a SpecGate directive, not a user question
 - Preserve the user's domain terminology"""
         
+        # v3.0: Inject user memory into Weaver system prompt
+        try:
+            from app.experience.user_memory import get_user_context_for_conversation
+            _user_conv_ctx = get_user_context_for_conversation(
+                db, query=user_prompt[:300], project_id=project_id,
+            )
+            if _user_conv_ctx:
+                system_prompt += f"\n\n{_user_conv_ctx}"
+        except Exception:
+            pass
+
         # Stream from LLM
         llm_messages = [
             {"role": "system", "content": system_prompt},

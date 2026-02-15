@@ -660,6 +660,39 @@ async def _handle_architecture(
     )
 
     # =====================================================================
+    # v3.0: Inject experience memory into architecture prompt
+    # =====================================================================
+    _memory_injection = ""
+    try:
+        from app.experience.retrieval import retrieve_for_stage, format_injection
+        _mem_patterns = retrieve_for_stage(
+            db, stage="critical_pipeline",
+            context=f"Generating architecture for: {original_request[:200]}",
+            job_type="refactor" if refactor else None,
+            max_results=8,
+        )
+        if _mem_patterns:
+            _memory_injection = format_injection(
+                _mem_patterns, stage="critical_pipeline"
+            )
+            if _memory_injection:
+                system_prompt += f"\n\n{_memory_injection}"
+                yield _emit(
+                    f"\U0001f9e0 **Experience memory:** {len(_mem_patterns)} pattern(s) injected\n"
+                )
+    except Exception as _mem_err:
+        logger.debug("[critical_pipeline] Memory injection skipped: %s", _mem_err)
+
+    # v3.0: Inject user memory context
+    try:
+        from app.experience.user_memory import get_user_context_for_pipeline
+        _user_ctx = get_user_context_for_pipeline(db, project_id=project_id)
+        if _user_ctx:
+            system_prompt += f"\n\n{_user_ctx}"
+    except Exception:
+        pass
+
+    # =====================================================================
     # v5.4 PHASE 2B: Inject segment scope + interface contract into prompt
     # =====================================================================
     _segment_injection = ""
@@ -860,6 +893,28 @@ async def _handle_architecture(
     final_version = routing.get('final_version', 1)
     critique_passed = routing.get('critique_passed', False)
     blocking_issues = routing.get('blocking_issues', 0)
+
+    # Journal: architecture + critique result
+    try:
+        from app.experience.context import journal_emit
+        journal_emit(
+            stage="critical_pipeline",
+            event_type="architecture_decision",
+            description=f"Architecture v{final_version} generated. "
+                        f"Critique {'passed' if critique_passed else f'failed ({blocking_issues} blockers)'}",
+            details={
+                "arch_id": arch_id,
+                "final_version": final_version,
+                "critique_passed": critique_passed,
+                "blocking_issues": blocking_issues,
+                "provider": getattr(result, 'provider', ''),
+                "model": getattr(result, 'model', ''),
+                "total_tokens": getattr(result, 'total_tokens', 0),
+                "cost_usd": getattr(result, 'cost_usd', 0),
+            },
+        )
+    except Exception:
+        pass
 
     yield _emit("\u2705 **Pipeline Complete**\n\n")
     yield _emit(

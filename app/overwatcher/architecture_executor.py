@@ -1290,6 +1290,16 @@ def _format_job_context(
 # Main Executor
 # =============================================================================
 
+def _infer_lang_from_path(path: str) -> Optional[str]:
+    """Infer language from file extension for memory retrieval."""
+    ext = os.path.splitext(path)[1].lower()
+    return {
+        ".py": "python", ".pyw": "python",
+        ".js": "javascript", ".jsx": "javascript",
+        ".ts": "typescript", ".tsx": "typescript",
+    }.get(ext)
+
+
 async def run_architecture_execution(
     *,
     spec: ResolvedSpec,
@@ -1328,6 +1338,19 @@ async def run_architecture_execution(
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "details": details or {},
         })
+        # Emit to Build Journal (fire-and-forget, never crashes pipeline)
+        try:
+            from app.experience.journal_writer import emit_from_trace
+            _job_dir = os.path.join(artifact_root, "jobs", job_id)
+            emit_from_trace(
+                job_id=job_id,
+                job_dir=_job_dir,
+                trace_stage=stage,
+                trace_status=status,
+                trace_details=details,
+            )
+        except Exception:
+            pass  # Journal must never crash the pipeline
     
     add_trace("ARCHITECTURE_EXECUTION_START", "started", {
         "spec_id": spec.spec_id,
@@ -1879,6 +1902,44 @@ async def run_architecture_execution(
                             f"Please fix the issue and try again."
                         )
                     
+                    # v3.0: Inject experience memory into implementer prompt
+                    try:
+                        from app.experience.retrieval import retrieve_for_stage, format_injection
+                        from app.db import get_db_session as _get_mem_db
+                        _mem_db = _get_mem_db()
+                        _impl_patterns = retrieve_for_stage(
+                            _mem_db, stage="implementer",
+                            context=f"Implementing {rel_path} ({action}): {file_context[:150]}",
+                            language=_infer_lang_from_path(rel_path),
+                            error_signature=None,  # TODO: wire error_sig from strike tracker
+                            max_results=5,
+                        )
+                        if _impl_patterns:
+                            _impl_memory = format_injection(_impl_patterns, stage="implementer")
+                            if _impl_memory:
+                                system_prompt += f"\n\n{_impl_memory}"
+                        _mem_db.close()
+                    except Exception:
+                        pass
+
+                    # v3.0: Inject codebase RAG context
+                    try:
+                        from app.rag.vector_store import retrieve_code_context
+                        from app.db import get_db_session as _get_rag_db
+                        _rag_db = _get_rag_db()
+                        _rag_context = retrieve_code_context(
+                            _rag_db,
+                            stage="implementer",
+                            context=f"{rel_path}: {file_context[:200]}",
+                            file_scope=[rel_path] if action == "modify" else None,
+                            max_results=3,
+                        )
+                        if _rag_context:
+                            system_prompt += f"\n\n{_rag_context}"
+                        _rag_db.close()
+                    except Exception:
+                        pass
+
                     llm_result = await llm_call_fn(
                         provider_id=impl_provider,
                         model_id=impl_model,

@@ -300,6 +300,19 @@ async def run_boot_test_with_fix_loop(
             elapsed = int((time.time() - start) * 1000)
             if attempt > 1:
                 _emit(f"  [OK] Boot PASSED after {attempt - 1} fix(es): {fixes_applied}")
+            # Journal: boot passed
+            try:
+                from app.experience.context import journal_emit
+                journal_emit(
+                    stage="phase_checkout",
+                    event_type="boot_pass",
+                    severity="info",
+                    description=f"Boot passed on attempt {attempt}",
+                    duration_ms=elapsed,
+                    details={"attempt": attempt, "fixes_applied": fixes_applied},
+                )
+            except Exception:
+                pass
             return BootTestResult(
                 status="pass", stdout=stdout, stderr=stderr,
                 duration_ms=elapsed,
@@ -314,6 +327,22 @@ async def run_boot_test_with_fix_loop(
             _emit(f"  [FAIL] Boot attempt {attempt} failed (new error): {error_summary[:150]}")
         else:
             _emit(f"  [FAIL] Boot attempt {attempt} failed (strike {strike}/{BOOT_STRIKE_LIMIT}): {error_summary[:150]}")
+
+        # Journal: boot failure
+        try:
+            from app.experience.context import journal_emit
+            journal_emit(
+                stage="phase_checkout",
+                event_type="boot_failure",
+                severity="error" if strike >= 2 else "warning",
+                description=error_summary[:300],
+                error_signature=sig,
+                file_scope=failing_file or "",
+                strike_number=strike,
+                details={"attempt": attempt, "stdout": (stdout or "")[:500], "stderr": (stderr or "")[:500]},
+            )
+        except Exception:
+            pass
 
         # Hard stop: same error hit strike limit
         if strike >= BOOT_STRIKE_LIMIT:
@@ -372,8 +401,38 @@ async def run_boot_test_with_fix_loop(
         if fix_applied:
             fixes_applied.append(f"{failing_file}: {fix_applied}")
             _emit(f"  [FIX] Applied: {fix_applied}")
+            # Journal: boot fix attempt
+            try:
+                from app.experience.context import journal_emit
+                journal_emit(
+                    stage="phase_checkout",
+                    event_type="boot_fix_attempt",
+                    severity="info",
+                    description=f"Fix applied to {failing_file}: {fix_applied}",
+                    resolution=fix_applied,
+                    error_signature=sig,
+                    file_scope=failing_file or "",
+                    strategy_used=fix_applied[:100],
+                    strike_number=strike,
+                )
+            except Exception:
+                pass
         else:
             _emit("  [ABORT] Could not generate a fix")
+            # Journal: fix failed
+            try:
+                from app.experience.context import journal_emit
+                journal_emit(
+                    stage="phase_checkout",
+                    event_type="boot_fix_failed",
+                    severity="error",
+                    description=f"Could not generate fix for {failing_file}",
+                    error_signature=sig,
+                    file_scope=failing_file or "",
+                    strike_number=strike,
+                )
+            except Exception:
+                pass
             break
 
     # All attempts exhausted
@@ -1138,6 +1197,25 @@ def _build_fix_prompt(
         content_display += f"\n\n... [truncated, {len(broken_content)} chars total]"
     stderr_display = full_stderr[:max_stderr]
 
+    # v3.0: Check experience memory for matching boot fix patterns
+    _memory_section = ""
+    try:
+        from app.experience.retrieval import retrieve_for_stage, format_injection
+        from app.db import get_db_session
+        from app.orchestrator.strike_tracker import _error_signature
+        _mem_db = get_db_session()
+        _boot_patterns = retrieve_for_stage(
+            _mem_db, stage="phase_checkout",
+            context=f"Boot fix for {failing_file}: {error_summary[:100]}",
+            error_signature=_error_signature(error_summary),
+            max_results=3,
+        )
+        if _boot_patterns:
+            _memory_section = "\n\n" + format_injection(_boot_patterns, stage="phase_checkout")
+        _mem_db.close()
+    except Exception:
+        pass
+
     return (
         f"## BOOT FIX REQUIRED\n\n"
         f"**Error type:** {error_type}\n"
@@ -1145,6 +1223,7 @@ def _build_fix_prompt(
         f"### Error Summary\n```\n{error_summary}\n```\n\n"
         f"### Full Traceback\n```\n{stderr_display}\n```\n\n"
         f"### Current File Content (broken)\n```python\n{content_display}\n```\n\n"
+        f"{_memory_section}\n\n"
         f"Output the complete fixed file now. Nothing else."
     )
 
