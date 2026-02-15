@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-SMART_SEGMENTATION_BUILD_ID = "2026-02-14-v1.3-size-metadata-integration"
+SMART_SEGMENTATION_BUILD_ID = "2026-02-15-v1.4-facade-terminal-dag-rules"
 print(f"[SMART_SEGMENTATION_LOADED] BUILD_ID={SMART_SEGMENTATION_BUILD_ID}")
 
 
@@ -78,7 +78,15 @@ RULES:
 - Each segment needs a short descriptive title (e.g., "Voice Transcription", \
 "Route Optimisation", "Core Data Models").
 - For each segment, list which other segments it depends on (by index).
-- Dependencies should form a DAG (no cycles).
+- Dependencies MUST form a DAG (directed acyclic graph). ABSOLUTELY NO CYCLES.
+- FACADE / __init__.py RULE: Any segment containing an __init__.py file that \
+re-exports from other modules is a FACADE segment. Facade segments are ALWAYS \
+terminal — they depend on the segments they re-export from, but NO other segment \
+may depend on the facade. The facade is always the LAST segment to execute. \
+This is a one-way dependency: modules → facade, never facade → modules.
+- CYCLE PREVENTION: If segment A depends on segment B, then segment B MUST NOT \
+depend on segment A (directly or transitively). Before outputting, verify your \
+dependency graph has no cycles. If in doubt, remove the dependency.
 
 OUTPUT FORMAT:
 Return ONLY a JSON object, no markdown:

@@ -47,7 +47,7 @@ from .file_verifier import verify_segment_files
 
 logger = logging.getLogger(__name__)
 
-SEGMENTATION_BUILD_ID = "2026-02-13-v1.4-refactor-source-scope-fix"
+SEGMENTATION_BUILD_ID = "2026-02-15-v1.5-cycle-breaking-and-facade-terminal"
 print(f"[SEGMENTATION_LOADED] BUILD_ID={SEGMENTATION_BUILD_ID}")
 
 
@@ -613,6 +613,144 @@ def _build_manifest_from_concepts(
         dep_ids = [index_to_seg_id[d] for d in dep_indices
                     if d in index_to_seg_id and d != idx]
         segments[idx].dependencies = dep_ids
+
+    # =========================================================================
+    # v1.5 FIX: Deterministic cycle breaking
+    # =========================================================================
+    # The LLM segmenter sometimes produces circular dependencies, most commonly
+    # between facade/__init__.py segments and the modules they re-export.
+    # (e.g. facade depends on executor, executor depends on facade)
+    #
+    # Strategy:
+    # 1. Detect facade/init segments — these contain __init__.py files and
+    #    exist to re-export from other modules. They are ALWAYS terminal
+    #    (nothing should depend on them; they depend on everything else).
+    # 2. Remove any edges where non-facade segments depend on facade segments.
+    # 3. Ensure facade segments depend on ALL non-facade segments.
+    # 4. Run a general Kahn’s-based cycle breaker for any remaining cycles:
+    #    find back-edges and remove them, preferring to cut the edge FROM
+    #    the segment with fewer dependencies (the "earlier" node).
+    # =========================================================================
+    if len(segments) >= 2:
+        # Step 1: Identify facade segments
+        _facade_ids: set = set()
+        for seg in segments:
+            _has_init = any(
+                f.replace("\\", "/").endswith("__init__.py")
+                for f in seg.file_scope
+            )
+            _title_lower = (seg.title or "").lower()
+            _is_facade = _has_init and any(
+                kw in _title_lower
+                for kw in ["facade", "fa\u00e7ade", "init", "package init", "re-export",
+                           "package initialization", "package entry"]
+            )
+            if _is_facade:
+                _facade_ids.add(seg.segment_id)
+                logger.info(
+                    "[segmentation] v1.5 Facade segment detected: %s — will be terminal",
+                    seg.segment_id,
+                )
+
+        # Step 2: Remove edges where non-facade depends on facade
+        if _facade_ids:
+            for seg in segments:
+                if seg.segment_id in _facade_ids:
+                    continue
+                _before = len(seg.dependencies)
+                seg.dependencies = [
+                    d for d in seg.dependencies if d not in _facade_ids
+                ]
+                if len(seg.dependencies) < _before:
+                    logger.info(
+                        "[segmentation] v1.5 Removed facade dependency from %s "
+                        "(facades are terminal, nothing depends on them)",
+                        seg.segment_id,
+                    )
+
+            # Step 3: Ensure facade segments depend on ALL non-facade segments
+            _non_facade_ids = [
+                s.segment_id for s in segments
+                if s.segment_id not in _facade_ids
+            ]
+            for seg in segments:
+                if seg.segment_id in _facade_ids:
+                    _existing = set(seg.dependencies)
+                    for nf_id in _non_facade_ids:
+                        if nf_id not in _existing:
+                            seg.dependencies.append(nf_id)
+                    seg.dependencies = sorted(set(seg.dependencies))
+                    logger.info(
+                        "[segmentation] v1.5 Facade %s now depends on %d segments (terminal)",
+                        seg.segment_id, len(seg.dependencies),
+                    )
+
+        # Step 4: General cycle breaker for any remaining cycles
+        # Uses iterative Kahn’s: find nodes with no unresolved predecessors,
+        # process them. Any nodes left over are in cycles — break cycles by
+        # removing the dependency edge from the node with fewer deps.
+        _seg_by_id = {s.segment_id: s for s in segments}
+        _max_rounds = len(segments)  # Worst case: one cycle break per segment
+        for _cycle_round in range(_max_rounds):
+            # Check for cycles using Kahn’s
+            _edges = {s.segment_id: list(s.dependencies) for s in segments}
+            _sorted = _topological_sort(set(_edges.keys()), _edges)
+            if _sorted is not None:
+                break  # No cycles remain
+
+            # Find nodes in cycle (unprocessed by Kahn’s)
+            _in_deg = {sid: 0 for sid in _edges}
+            _succs = {sid: [] for sid in _edges}
+            for sid, deps in _edges.items():
+                _in_deg[sid] = len(deps)
+                for d in deps:
+                    if d in _succs:
+                        _succs[d].append(sid)
+            _queue = [sid for sid, deg in _in_deg.items() if deg == 0]
+            _processed = set()
+            while _queue:
+                n = _queue.pop(0)
+                _processed.add(n)
+                for s in _succs.get(n, []):
+                    _in_deg[s] -= 1
+                    if _in_deg[s] == 0:
+                        _queue.append(s)
+            _in_cycle = set(_edges.keys()) - _processed
+
+            if not _in_cycle:
+                break  # Safety check
+
+            # Break cycle: find the edge between two cycle nodes where the
+            # dependency target has the fewest own dependencies (most upstream)
+            _best_edge = None
+            _best_score = float('inf')
+            for sid in _in_cycle:
+                _seg_obj = _seg_by_id[sid]
+                for dep in _seg_obj.dependencies:
+                    if dep in _in_cycle:
+                        # Score = how many deps the target has; lower = more upstream
+                        score = len(_seg_by_id[dep].dependencies)
+                        if score < _best_score:
+                            _best_score = score
+                            _best_edge = (sid, dep)
+
+            if _best_edge:
+                _from_seg, _to_seg = _best_edge
+                _seg_by_id[_from_seg].dependencies = [
+                    d for d in _seg_by_id[_from_seg].dependencies
+                    if d != _to_seg
+                ]
+                logger.warning(
+                    "[segmentation] v1.5 CYCLE BREAK: removed edge %s → %s "
+                    "(breaking cycle, round %d)",
+                    _from_seg, _to_seg, _cycle_round + 1,
+                )
+            else:
+                logger.error(
+                    "[segmentation] v1.5 Cannot find edge to break cycle in: %s",
+                    _in_cycle,
+                )
+                break  # Give up — validation will catch it
 
     # =========================================================================
     # v1.4 FIX: Refactor source files belong in integration segment only
