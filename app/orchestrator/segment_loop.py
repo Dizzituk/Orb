@@ -177,7 +177,7 @@ try:
 except ImportError as _ae:
     _ARCH_EXECUTOR_AVAILABLE = False
     logger.warning("[SEGMENT_LOOP] Architecture executor not available: %s", _ae)
-    print(f"[SEGMENT_LOOP] ⚠️ Architecture executor import failed: {_ae}")
+    print(f"[SEGMENT_LOOP] [WARNING] Architecture executor import failed: {_ae}")
 
 
 # Type alias for progress callback
@@ -1609,7 +1609,7 @@ async def run_segmented_job(
             from app.orchestrator.skeleton_contracts import load_skeleton_contract
 
             _skeleton = load_skeleton_contract(job_dir_path)
-            _checkout_result = run_phase_checkout(
+            _checkout_result = await run_phase_checkout(
                 job_id=job_id,
                 job_dir=job_dir_path,
                 state=state,

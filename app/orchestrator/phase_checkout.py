@@ -1,12 +1,16 @@
 # FILE: app/orchestrator/phase_checkout.py
 """
-Phase Checkout — Stage 9 Verification Orchestrator.
+Phase Checkout -- Stage 9 Verification Orchestrator.
 
 Runs all verification checks after a phase's segments complete, aggregates
 results, determines failure routing, and saves the outcome. The actual
 check implementations live in phase_checkout_checks.py.
 
-v1.0 (2026-02-14): Initial implementation — Stage 9.
+v2.0 (2026-02-15): Boot-fix loop. Size/contract checks become informational
+    warnings -- only boot test determines pass/fail. Boot test now attempts
+    deterministic fixes (bad imports, syntax) and retries up to 3 times
+    before failing.
+v1.0 (2026-02-14): Initial implementation -- Stage 9.
 """
 
 from __future__ import annotations
@@ -25,13 +29,13 @@ from .phase_checkout_models import (
 from .phase_checkout_checks import (
     check_output_file_sizes,
     check_skeleton_contracts,
-    run_boot_test,
+    run_boot_test_with_fix_loop,
     map_file_to_segment,
 )
 
 logger = logging.getLogger(__name__)
 
-PHASE_CHECKOUT_BUILD_ID = "2026-02-14-v1.0-initial"
+PHASE_CHECKOUT_BUILD_ID = "2026-02-15-v2.0-boot-fix-loop"
 print(f"[PHASE_CHECKOUT_LOADED] BUILD_ID={PHASE_CHECKOUT_BUILD_ID}")
 
 
@@ -39,7 +43,7 @@ print(f"[PHASE_CHECKOUT_LOADED] BUILD_ID={PHASE_CHECKOUT_BUILD_ID}")
 # MAIN ENTRY POINT
 # =============================================================================
 
-def run_phase_checkout(
+async def run_phase_checkout(
     job_id: str,
     job_dir: str,
     state: Any,  # JobState
@@ -53,7 +57,8 @@ def run_phase_checkout(
     Run full Phase Checkout (Stage 9) verification.
 
     Called from segment_loop.py after all segments complete.
-    Runs: size validation → contract check → boot test.
+    Runs: size validation (informational) -> contract check (informational)
+          -> boot test with fix loop (pass/fail gate).
     Returns PhaseCheckoutResult with pass/fail and routing decision.
     """
     start_time = time.time()
@@ -62,75 +67,93 @@ def run_phase_checkout(
     result = PhaseCheckoutResult(job_id=job_id, attempt=attempt)
 
     _emit(f"\n{'='*50}")
-    _emit(f"🏁 PHASE CHECKOUT — Stage 9 Verification (attempt {attempt}/3)")
+    _emit(f"[PHASE_CHECKOUT] Stage 9 Verification (attempt {attempt}/3)")
 
-    # --- Check 1: Output file size validation ---
-    _emit("📏 Check 1: Output file size validation...")
+    # --- Collect segment output files for scoping ---
+    segment_output_files = set()
+    for seg_id, seg_state in state.segments.items():
+        for f in (seg_state.output_files or []):
+            segment_output_files.add(f)
+
+    # --- Check 1: Output file size validation (INFORMATIONAL) ---
+    _emit("[CHECK 1] Output file size validation (informational)...")
     result.size_validation = check_output_file_sizes(state, sandbox_base)
     result.checks_run.append("size_validation")
 
     if result.size_validation.status == "fail":
         _emit(
-            f"  ❌ SIZE FAIL: {len(result.size_validation.violations)} file(s) "
-            f"exceed constraints"
+            f"  [WARNING] {len(result.size_validation.violations)} file(s) "
+            f"exceed size constraints (informational only)"
         )
         for v in result.size_validation.violations:
-            _emit(f"    • {v.file_path}: {v.line_count} lines / {v.kb_size} KB "
+            _emit(f"    - {v.file_path}: {v.line_count} lines / {v.kb_size} KB "
                   f"[{v.violation_type}] (seg: {v.produced_by_segment})")
     else:
-        _emit(f"  ✅ Size check passed ({result.size_validation.files_checked} files)")
+        _emit(f"  [OK] Size check passed ({result.size_validation.files_checked} files)")
 
-    # --- Check 2: Skeleton contract verification ---
+    # --- Check 2: Skeleton contract verification (INFORMATIONAL) ---
     if skeleton:
-        _emit("📋 Check 2: Skeleton contract verification...")
+        _emit("[CHECK 2] Skeleton contract verification (informational)...")
         result.contract_check = check_skeleton_contracts(state, skeleton, sandbox_base)
         result.checks_run.append("contract_check")
 
         if result.contract_check.status == "fail":
             _emit(
-                f"  ❌ CONTRACT FAIL: {len(result.contract_check.violations)} violation(s)"
+                f"  [WARNING] {len(result.contract_check.violations)} contract issue(s) "
+                f"(informational only)"
             )
             for v in result.contract_check.violations:
-                _emit(f"    • [{v.segment_id}] {v.violation_type}: {v.detail}")
+                _emit(f"    - [{v.segment_id}] {v.violation_type}: {v.detail}")
         else:
-            _emit("  ✅ Contract check passed")
+            _emit("  [OK] Contract check passed")
     else:
-        _emit("📋 Check 2: Skeleton contract verification — SKIPPED (no skeleton)")
+        _emit("[CHECK 2] Skeleton contract verification -- SKIPPED (no skeleton)")
 
-    # --- Check 3: Boot test ---
-    _emit("🔧 Check 3: Application boot test...")
-    result.boot_test = run_boot_test(sandbox_base)
+    # --- Check 3: Boot test with fix loop (PASS/FAIL GATE) ---
+    _emit("[CHECK 3] Application boot test (with fix loop)...")
+    result.boot_test = await run_boot_test_with_fix_loop(
+        sandbox_base=sandbox_base,
+        state=state,
+        emit=_emit,
+    )
     result.checks_run.append("boot_test")
 
     if result.boot_test.status == "pass":
-        _emit("  ✅ Boot test passed — application starts cleanly")
+        _emit("  [OK] Boot test passed -- application starts cleanly")
     elif result.boot_test.status == "fail":
-        _emit(f"  ❌ Boot test FAILED: {result.boot_test.error_summary}")
+        _emit(f"  [FAIL] Boot test FAILED after fix attempts: {result.boot_test.error_summary}")
         if result.boot_test.traceback_file:
             _emit(f"    Failing file: {result.boot_test.traceback_file}")
-            # Map to segment
             result.boot_test.traceback_segment = map_file_to_segment(
                 result.boot_test.traceback_file, state
             )
             if result.boot_test.traceback_segment:
                 _emit(f"    Produced by: {result.boot_test.traceback_segment}")
     else:
-        _emit(f"  ⚠️ Boot test error: {result.boot_test.error_summary}")
+        _emit(f"  [ERROR] Boot test error: {result.boot_test.error_summary}")
 
     # --- Aggregate and route ---
-    all_passed = (
-        (result.size_validation and result.size_validation.status == "pass")
-        and (not result.contract_check or result.contract_check.status == "pass")
-        and (result.boot_test and result.boot_test.status == "pass")
-    )
+    # v2.0: Only the boot test determines pass/fail.
+    # Size and contract checks are informational warnings -- earlier pipeline
+    # stages (architecture, critique, cohesion) enforce those constraints.
+    # Phase checkout's job is: does it boot? If not, can we fix it?
+    boot_passed = (result.boot_test and result.boot_test.status == "pass")
 
-    if all_passed:
+    if boot_passed:
         result.status = "pass"
-        _emit("\n✅ PHASE CHECKOUT PASSED — all checks green")
+        warnings = []
+        if result.size_validation and result.size_validation.status == "fail":
+            warnings.append(f"{len(result.size_validation.violations)} size warning(s)")
+        if result.contract_check and result.contract_check.status == "fail":
+            warnings.append(f"{len(result.contract_check.violations)} contract warning(s)")
+        if warnings:
+            _emit(f"\n[PASS] PHASE CHECKOUT PASSED (boot OK) with warnings: {', '.join(warnings)}")
+        else:
+            _emit("\n[PASS] PHASE CHECKOUT PASSED -- all checks green")
     else:
         result.status = "fail"
         result.routing = _determine_failure_routing(result, state)
-        _emit(f"\n❌ PHASE CHECKOUT FAILED → route to {result.routing.target_stage}")
+        _emit(f"\n[FAIL] PHASE CHECKOUT FAILED -> route to {result.routing.target_stage}")
         if result.routing.target_segment:
             _emit(f"  Target segment: {result.routing.target_segment}")
         _emit(f"  Reason: {result.routing.reason}")
@@ -154,36 +177,11 @@ def _determine_failure_routing(
     """
     Diagnose what failed and decide where to route the retry.
 
-    Priority: size violations → contract violations → boot failures.
+    v2.0: Only boot failures reach here (size/contract are warnings now).
     """
-    # Size violations → re-decompose at SpecGate
-    if result.size_validation and result.size_validation.violations:
-        worst = result.size_validation.violations[0]
-        return FailureRouting(
-            target_stage="stage_4_specgate",
-            target_segment=worst.produced_by_segment,
-            target_file=worst.file_path,
-            reason=(
-                f"File '{worst.file_path}' is {worst.line_count} lines "
-                f"(cap: {MAX_FILE_LINES}). Needs re-decomposition."
-            ),
-        )
-
-    # Contract violations → re-run architecture
-    if result.contract_check and result.contract_check.violations:
-        worst = result.contract_check.violations[0]
-        return FailureRouting(
-            target_stage="stage_5_critical",
-            target_segment=worst.segment_id,
-            reason=(
-                f"Contract violation in {worst.segment_id}: "
-                f"{worst.violation_type} — {worst.detail}"
-            ),
-        )
-
-    # Boot failures → route based on error type
+    # Boot failures -- route based on error type
     if result.boot_test and result.boot_test.status == "fail":
-        err = result.boot_test.error_summary.lower()
+        err = (result.boot_test.error_summary or "").lower()
         failing_seg = map_file_to_segment(
             result.boot_test.traceback_file, state
         )
@@ -196,6 +194,15 @@ def _determine_failure_routing(
                 reason=f"Syntax error in {result.boot_test.traceback_file}",
             )
 
+        if "modulenotfounderror" in err or "importerror" in err:
+            return FailureRouting(
+                target_stage="stage_8_overwatcher",
+                target_segment=failing_seg,
+                target_file=result.boot_test.traceback_file,
+                reason=f"Import error in {result.boot_test.traceback_file} "
+                       f"(fix loop exhausted): {result.boot_test.error_summary[:200]}",
+            )
+
         return FailureRouting(
             target_stage="stage_5_critical",
             target_segment=failing_seg,
@@ -205,7 +212,7 @@ def _determine_failure_routing(
 
     return FailureRouting(
         target_stage="stage_5_critical",
-        reason="Unknown failure — re-run architecture generation",
+        reason="Unknown failure -- re-run architecture generation",
     )
 
 
