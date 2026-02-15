@@ -305,8 +305,18 @@ async def run_boot_test_with_fix_loop(
 
         # --- Attempt to fix the error ---
         if not failing_file:
-            _emit("  [ABORT] Cannot identify failing file from traceback -- cannot auto-fix")
-            break
+            # v2.3: Try grepping the sandbox to find which file has the bad import
+            _emit("  [SEARCH] No file in traceback -- grepping sandbox for bad import...")
+            failing_file = await _grep_sandbox_for_bad_import(
+                client=client,
+                actual_base=actual_base,
+                error_summary=error_summary,
+                state=state,
+                emit=_emit,
+            )
+            if not failing_file:
+                _emit("  [ABORT] Cannot identify failing file from traceback or grep -- cannot auto-fix")
+                break
 
         _emit(f"  [FIX] Attempting fix on: {failing_file}")
 
@@ -363,6 +373,12 @@ def _run_single_boot(
     stderr = (shell_result.stderr or "").strip()
 
     if "BOOT_CHECK_PASS" in stdout:
+        # v2.3: Scan stderr for silent import failures in segment output files.
+        # The app may boot (caught in try/except) but still have broken imports.
+        # These are real bugs that need fixing.
+        silent_import_error = _check_stderr_for_silent_import_failures(stderr)
+        if silent_import_error:
+            return (False, stdout, stderr, silent_import_error, None)
         return (True, stdout, stderr, "", None)
 
     err_summary, failing_file = _parse_boot_failure(stdout, stderr)
@@ -582,6 +598,68 @@ async def _grep_sandbox_for_bad_import(
     except Exception as exc:
         _emit(f"  [GREP] Sandbox search failed: {exc}")
         return None
+
+
+# =============================================================================
+# SILENT IMPORT FAILURE DETECTION (v2.3)
+# =============================================================================
+
+# Import patterns that indicate real failures (not just warnings)
+_SILENT_IMPORT_PATTERNS = [
+    re.compile(r"No module named '([^']+)'"),
+    re.compile(r"cannot import name '([^']+)' from '([^']+)'"),
+    re.compile(r"ImportError: ([^\n]+)"),
+    re.compile(r"ModuleNotFoundError: ([^\n]+)"),
+]
+
+# Known pre-existing import failures to ignore (not from our segments)
+_KNOWN_PREEXISTING_FAILURES = {
+    "numpy",
+    "scipy",
+    "pandas",
+    "cv2",
+    "PIL",
+    "torch",
+    "tensorflow",
+}
+
+
+def _check_stderr_for_silent_import_failures(stderr: str) -> Optional[str]:
+    """
+    v2.3: Scan stderr for import failures that were silently caught.
+
+    The boot test passed (BOOT_CHECK_PASS in stdout) but stderr may contain
+    warnings about modules that failed to import. These are real bugs —
+    the module loaded but some functionality is broken.
+
+    Only flags import failures for project modules (app.*). Ignores
+    known pre-existing third-party failures (numpy, scipy, etc.).
+
+    Returns an error summary string if a silent failure is found, or None.
+    """
+    if not stderr:
+        return None
+
+    for pattern in _SILENT_IMPORT_PATTERNS:
+        for match in pattern.finditer(stderr):
+            full_match = match.group(0)
+            # Extract the module name that failed
+            module_name = match.group(1)
+
+            # Skip known pre-existing third-party failures
+            module_root = module_name.split(".")[0]
+            if module_root in _KNOWN_PREEXISTING_FAILURES:
+                continue
+
+            # Only flag project-internal imports (app.*, or relative imports)
+            if module_name.startswith("app.") or module_name.startswith("src."):
+                return full_match
+
+            # Also flag if stderr explicitly mentions our architecture executor
+            if "architecture_executor" in full_match.lower():
+                return full_match
+
+    return None
 
 
 def _try_reconciliation_import_fix(
