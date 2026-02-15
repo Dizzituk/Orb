@@ -334,6 +334,59 @@ def mark_dependents_blocked(
     return blocked_ids
 
 
+def unblock_recovered_segments(
+    state: JobState,
+    manifest: SegmentManifest,
+    job_dir_path: str,
+) -> List[str]:
+    """
+    Re-evaluate BLOCKED segments: if all their dependencies are now
+    COMPLETE (or at least no longer FAILED/BLOCKED), unblock them.
+
+    This handles the case where a failed segment is re-tried (e.g. via
+    cohesion regen or retry loop) and eventually succeeds — its
+    dependents should become runnable again.
+
+    Returns list of segment IDs that were unblocked.
+    """
+    unblocked_ids: List[str] = []
+
+    for seg in manifest.segments:
+        seg_state = state.segments.get(seg.segment_id)
+        if seg_state is None or seg_state.status != SegmentStatus.BLOCKED.value:
+            continue
+
+        # Check if ALL dependencies are now in a non-blocking state
+        still_blocked = False
+        for dep_id in seg.dependencies:
+            dep_state = state.segments.get(dep_id)
+            if dep_state and dep_state.status in (
+                SegmentStatus.FAILED.value, SegmentStatus.BLOCKED.value,
+            ):
+                still_blocked = True
+                break
+
+        if not still_blocked:
+            # Restore to APPROVED if architecture exists, else PENDING
+            _seg_dir = os.path.join(job_dir_path, "segments", seg.segment_id, "arch")
+            if os.path.isdir(_seg_dir) and any(f.endswith(".md") for f in os.listdir(_seg_dir)):
+                restore_status = SegmentStatus.APPROVED
+            else:
+                restore_status = SegmentStatus.PENDING
+
+            update_segment_status(
+                state, seg.segment_id, restore_status, job_dir_path,
+                error=None,
+            )
+            unblocked_ids.append(seg.segment_id)
+            logger.info(
+                "[SEGMENT_LOOP] v5.15 UNBLOCKED %s -> %s (blocker recovered)",
+                seg.segment_id, restore_status.value,
+            )
+
+    return unblocked_ids
+
+
 # =============================================================================
 # EVIDENCE COLLECTION & THREADING
 # =============================================================================
@@ -1222,6 +1275,15 @@ async def run_segmented_job(
         _pass_number += 1
         _progress_this_pass = 0
 
+        # v5.15: Re-evaluate BLOCKED segments at start of each pass.
+        # If a blocker was re-tried and succeeded, its dependents
+        # should become runnable again.
+        if _pass_number > 1:
+            _unblocked = unblock_recovered_segments(state, manifest, job_dir_path)
+            if _unblocked:
+                _emit(f"\n🔓 Unblocked {len(_unblocked)} segment(s) (blocker recovered): {_unblocked}")
+                _progress_this_pass += len(_unblocked)  # Count as progress to keep loop alive
+
         for idx, seg_id in enumerate(execution_order, 1):
             seg_state = state.segments.get(seg_id)
             seg_spec = manifest.get_segment(seg_id)
@@ -1235,10 +1297,22 @@ async def run_segmented_job(
                 _emit(f"⏭️ [{idx}/{total}] {seg_id}: already COMPLETE (skipping)")
                 continue
 
-            # --- Skip BLOCKED segments ---
+            # --- Skip BLOCKED segments (with inline recovery check) ---
             if seg_state.status == SegmentStatus.BLOCKED.value:
-                _emit(f"🚫 [{idx}/{total}] {seg_id}: BLOCKED — {seg_state.error or 'dependency failed'}")
-                continue
+                # v5.15: Check if blocker has recovered since we were marked BLOCKED
+                if not is_segment_blocked(seg_spec, state):
+                    # Blocker recovered! Determine restore status
+                    _seg_arch_dir = os.path.join(job_dir_path, "segments", seg_id, "arch")
+                    _has_arch = os.path.isdir(_seg_arch_dir) and any(f.endswith(".md") for f in os.listdir(_seg_arch_dir))
+                    _restore = SegmentStatus.APPROVED if _has_arch else SegmentStatus.PENDING
+                    update_segment_status(state, seg_id, _restore, job_dir_path, error=None)
+                    seg_state = state.segments[seg_id]  # refresh
+                    _emit(f"🔓 [{idx}/{total}] {seg_id}: UNBLOCKED (blocker recovered) -> {_restore.value}")
+                    logger.info("[SEGMENT_LOOP] v5.15 Inline unblock: %s -> %s", seg_id, _restore.value)
+                    # Fall through to be processed in this pass
+                else:
+                    _emit(f"🚫 [{idx}/{total}] {seg_id}: BLOCKED — {seg_state.error or 'dependency failed'}")
+                    continue
 
             # --- v3.0: APPROVED segments — skip architecture, go straight to execution ---
             if seg_state.status == SegmentStatus.APPROVED.value:

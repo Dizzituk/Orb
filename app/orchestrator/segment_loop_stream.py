@@ -43,7 +43,7 @@ except ImportError:
 
 # --- Spec service (to load the parent spec from DB) ---
 try:
-    from app.llm.specs_service import get_latest_validated_spec, get_spec
+    from app.specs.service import get_latest_validated_spec, get_spec
     _SPEC_SERVICE_AVAILABLE = True
 except ImportError:
     _SPEC_SERVICE_AVAILABLE = False

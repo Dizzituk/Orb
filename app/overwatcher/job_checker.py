@@ -31,7 +31,7 @@ from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
-JOB_CHECKER_BUILD_ID = "2026-02-14-v2.2-strike-contradiction-awareness"
+JOB_CHECKER_BUILD_ID = "2026-02-15-v2.3-absolute-import-verification"
 print(f"[JOB_CHECKER_LOADED] BUILD_ID={JOB_CHECKER_BUILD_ID}")
 
 
@@ -329,6 +329,79 @@ def _resolve_relative_imports(
                 entry["exists"] = False
                 unresolvable.append(entry)
                 logger.debug("[job_checker] IMPORT NOT FOUND: %s -> tried %s", import_ref, candidate_file)
+
+    # v2.3: Also verify ABSOLUTE imports (from app.xxx.yyy import ...)
+    # These are common in refactor jobs where decomposed modules import from
+    # outside their package (e.g. from app.overwatcher.implementer import ...).
+    # Without this, the LLM has no filesystem evidence and may reject valid imports.
+    abs_import_pattern = re.compile(
+        r'^\s*from\s+(app\.\w[\w.]*?)\s+import\s+',
+        re.MULTILINE,
+    )
+    _already_checked = {e["import_ref"] for e in verified + unresolvable}
+
+    for match in abs_import_pattern.finditer(file_content):
+        import_ref = match.group(1)  # e.g. "app.overwatcher.implementer"
+        import_line = match.group(0).strip()
+
+        if import_ref in _already_checked:
+            continue
+        _already_checked.add(import_ref)
+
+        # Convert dotted module path to file path
+        module_as_path = import_ref.replace(".", "/")
+        candidate_file = f"{module_as_path}.py"
+        candidate_pkg = f"{module_as_path}/__init__.py"
+
+        found = False
+        resolved = candidate_file
+        found_via = ""
+
+        # Check sandbox file list
+        _sandbox_files = existing_sandbox_files or set()
+        _candidate_fwd = candidate_file.replace("\\", "/")
+        _candidate_pkg_fwd = candidate_pkg.replace("\\", "/")
+        for sf in _sandbox_files:
+            sf_norm = sf.replace("\\", "/")
+            if sf_norm == _candidate_fwd or sf_norm == _candidate_pkg_fwd:
+                found = True
+                resolved = candidate_file
+                found_via = "sandbox_file_list"
+                break
+
+        # Fallback: host filesystem
+        if not found and _base:
+            abs_file = os.path.join(_base, candidate_file)
+            abs_pkg = os.path.join(_base, candidate_pkg)
+            if os.path.isfile(abs_file):
+                found = True
+                resolved = candidate_file
+                found_via = "host_filesystem"
+            elif os.path.isfile(abs_pkg):
+                found = True
+                resolved = candidate_pkg
+                found_via = "host_filesystem"
+
+        entry = {
+            "import_line": import_line,
+            "import_ref": import_ref,
+            "resolved_path": resolved,
+        }
+
+        if found:
+            entry["exists"] = True
+            entry["found_via"] = found_via
+            verified.append(entry)
+            logger.debug("[job_checker] v2.3 ABS IMPORT VERIFIED (%s): %s -> %s", found_via, import_ref, resolved)
+        else:
+            if not _base and not _sandbox_files:
+                entry["reason"] = "Cannot verify - no sandbox base path or file list available"
+                verified.append(entry)
+            else:
+                entry["reason"] = f"Module not found at {candidate_file} or {candidate_pkg}"
+                entry["exists"] = False
+                unresolvable.append(entry)
+                logger.debug("[job_checker] v2.3 ABS IMPORT NOT FOUND: %s -> tried %s", import_ref, candidate_file)
 
     return {"verified": verified, "unresolvable": unresolvable}
 

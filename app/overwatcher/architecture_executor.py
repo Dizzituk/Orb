@@ -88,7 +88,7 @@ from .sandbox_client import (
 
 logger = logging.getLogger(__name__)
 
-ARCHITECTURE_EXECUTOR_BUILD_ID = "2026-02-15-v5.13-quarantine-aware-modify-skip"
+ARCHITECTURE_EXECUTOR_BUILD_ID = "2026-02-15-v5.15-parent-module-evidence"
 print(f"[ARCHITECTURE_EXECUTOR_LOADED] BUILD_ID={ARCHITECTURE_EXECUTOR_BUILD_ID}")
 
 
@@ -160,9 +160,13 @@ def parse_file_inventory(architecture: str) -> Tuple[List[Dict[str, str]], List[
     # "New Files" in description prose earlier in the document (e.g. when the
     # architecture describes parse_file_inventory itself and mentions "New Files"
     # in its own documentation).
+    # v3.3 FIX: Require ^## at start-of-line to avoid matching inline mentions
+    # like `## File Inventory` inside backticks/prose. Without this, self-
+    # referential arch docs (e.g. seg-04 describing parse_file_inventory)
+    # would match example text like `| `path` | desc |` as real file entries.
     search_text = architecture
     inventory_match = re.search(
-        r'#+\s*File Inventory\b(.*?)(?=\n---\s*$|\n##\s+[^#F]|\Z)',
+        r'^##\s+File Inventory\s*\n(.*?)(?=\n---\s*$|\n##\s+[^#F]|\Z)',
         architecture, re.DOTALL | re.IGNORECASE | re.MULTILINE,
     )
     if inventory_match:
@@ -1585,8 +1589,40 @@ async def run_architecture_execution(
                 "[arch_exec] v5.11 Found %d existing .py files on sandbox for import validation: %s",
                 len(_existing_sandbox_files), sorted(_existing_sandbox_files),
             )
+        # v5.15: Also scan PARENT directories so the LLM knows what modules
+        # are available via relative `..` imports. Without this, the LLM sees
+        # sibling modules but not parent-level modules like implementer.py,
+        # spec_resolution.py, sandbox_client.py — and hallucinates absolute
+        # import paths instead of using the correct `from ..X import Y`.
+        _parent_module_files: set = set()
+        for _pkg_dir in _pkg_dirs:
+            _pkg_norm = _pkg_dir.replace("\\", "/")
+            _parent_parts = _pkg_norm.rsplit("/", 1)
+            if len(_parent_parts) == 2:
+                _parent_dir = _parent_parts[0]
+            else:
+                _parent_dir = "."
+            _abs_parent = os.path.join(sandbox_base, _parent_dir.replace("/", os.sep))
+            _parent_scan_cmd = (
+                f'if (Test-Path "{_abs_parent}" -PathType Container) {{ '
+                f'Get-ChildItem -Path "{_abs_parent}" -Filter "*.py" -File | '
+                f'ForEach-Object {{ $_.Name }} '
+                f'}} else {{ "" }}'
+            )
+            _parent_result = client.shell_run(_parent_scan_cmd, timeout_seconds=10)
+            if _parent_result.stdout:
+                for _fname in _parent_result.stdout.strip().split("\n"):
+                    _fname = _fname.strip()
+                    if _fname:
+                        _parent_module_files.add(f"{_parent_dir}/{_fname}")
+        if _parent_module_files:
+            logger.info(
+                "[arch_exec] v5.15 Found %d parent-level .py modules for `..` import evidence: %s",
+                len(_parent_module_files), sorted(_parent_module_files),
+            )
     except Exception as _scan_err:
         logger.warning("[arch_exec] v5.11 Sandbox file scan failed: %s", _scan_err)
+        _parent_module_files = set()
     
     # v5.12: Also add ALL files from this segment's task list as "planned".
     # When _executor.py imports from process_task_loop_part1.py (file [2/5]),
@@ -1600,22 +1636,42 @@ async def run_architecture_execution(
         "[arch_exec] v5.12 Total known files for import validation: %d (sandbox + planned)",
         len(_existing_sandbox_files),
     )
-    # v5.12: Build available-modules evidence string for Implementer prompts.
-    # This tells the LLM exactly which sibling modules exist (or will exist)
+    # v5.15: Build available-modules evidence string for Implementer prompts.
+    # This tells the LLM exactly which sibling AND parent modules exist
     # so it never invents imports to non-existent files.
     _available_modules_evidence = ""
-    if _existing_sandbox_files:
-        _sorted_modules = sorted(_existing_sandbox_files)
-        _mod_lines = [f"  - `{m}`" for m in _sorted_modules]
-        _available_modules_evidence = (
-            "\n\n## Available Modules (DO NOT invent imports to files not in this list)\n"
-            "The following modules exist or are being created in this package. "
-            "You may ONLY import from these modules. Do NOT create imports to any "
-            "file not listed here. Do NOT split your implementation into sub-files "
-            "that are not in this list.\n\n"
-            + "\n".join(_mod_lines)
-            + "\n"
+    if _existing_sandbox_files or _parent_module_files:
+        _evidence_parts = []
+        _evidence_parts.append(
+            "\n\n## Available Modules (DO NOT invent imports outside this list)\n"
         )
+        if _existing_sandbox_files:
+            _sorted_siblings = sorted(_existing_sandbox_files)
+            _sib_lines = [f"  - `{m}`" for m in _sorted_siblings]
+            _evidence_parts.append(
+                "### Sibling modules (use `from .module import ...`)\n"
+                "These are in the same package. Import with a single dot.\n\n"
+                + "\n".join(_sib_lines)
+                + "\n"
+            )
+        if _parent_module_files:
+            _sorted_parents = sorted(_parent_module_files)
+            _par_lines = [f"  - `{m}`" for m in _sorted_parents]
+            _evidence_parts.append(
+                "\n### Parent modules (use `from ..module import ...`)\n"
+                "These are in the parent package directory. Import with double dot `..`.\n"
+                "Do NOT use absolute imports like `from app.x.y import Z`. "
+                "Use RELATIVE imports: `from ..module_name import ClassName`.\n\n"
+                + "\n".join(_par_lines)
+                + "\n"
+            )
+        _evidence_parts.append(
+            "\n**CRITICAL**: Do NOT invent imports to files not listed above. "
+            "Do NOT use absolute imports (e.g. `from app.models.X`) when a relative "
+            "import from the parent package exists (e.g. `from ..X import Y`). "
+            "Every import MUST resolve to a file in one of these lists.\n"
+        )
+        _available_modules_evidence = "\n".join(_evidence_parts)
 
     # v2.5: Identify boundary between CREATE and MODIFY tasks for two-pass
     create_count = len(new_files)
