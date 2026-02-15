@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-SEGMENT_LOOP_BUILD_ID = "2026-02-15-v5.14-final-checkout-wiring"
+SEGMENT_LOOP_BUILD_ID = "2026-02-15-v5.16-cohesion-regen-loop"
 print(f"[SEGMENT_LOOP_LOADED] BUILD_ID={SEGMENT_LOOP_BUILD_ID}")
 
 
@@ -1221,38 +1221,45 @@ async def run_segmented_job(
     # must be quarantined BEFORE any segments execute. The per-segment shadow
     # check (arch_executor v2.9) can't handle this because __init__.py is
     # typically in a different segment than the files that need the directory.
+    # v5.15: Only quarantine during implement_only (implement segments),
+    # NOT during run segments (architecture design). Quarantining during
+    # architecture design breaks evidence gathering because the monolith
+    # gets moved before the Critical Pipeline can read it for grounding.
     _quarantine_result = None
-    try:
-        from app.orchestrator.package_quarantine import (
-            run_quarantine,
-            QuarantineResult,
-        )
-        from app.overwatcher.sandbox_client import get_sandbox_client
-
-        _q_client = get_sandbox_client()
-        # Resolve sandbox base the same way architecture_executor does
-        _q_sandbox_base = os.getenv("ORB_SANDBOX_BASE", "D:\\Orb")
-
-        _quarantine_result = run_quarantine(
-            manifest_dict=manifest.to_dict(),
-            sandbox_base=_q_sandbox_base,
-            client=_q_client,
-            on_progress=_emit,
-        )
-        if _quarantine_result.has_quarantined:
-            logger.info(
-                "[SEGMENT_LOOP] v5.7 Quarantine: %d file(s), %d dir(s)",
-                len([e for e in _quarantine_result.entries if e.status == 'quarantined']),
-                len(_quarantine_result.directories_created),
+    if not implement_only:
+        logger.debug("[SEGMENT_LOOP] v5.15 Skipping quarantine (run segments mode — architecture design only)")
+    else:
+        try:
+            from app.orchestrator.package_quarantine import (
+                run_quarantine,
+                QuarantineResult,
             )
-        if not _quarantine_result.all_ok:
-            for _q_err in _quarantine_result.errors:
-                _emit(f"  ⚠️ Quarantine warning: {_q_err}")
-    except ImportError:
-        logger.debug("[SEGMENT_LOOP] Package quarantine not available")
-    except Exception as _q_err:
-        logger.warning("[SEGMENT_LOOP] v5.7 Quarantine failed (non-fatal): %s", _q_err)
-        _emit(f"⚠️ Quarantine check failed (non-fatal): {_q_err}")
+            from app.overwatcher.sandbox_client import get_sandbox_client
+
+            _q_client = get_sandbox_client()
+            # Resolve sandbox base the same way architecture_executor does
+            _q_sandbox_base = os.getenv("ORB_SANDBOX_BASE", "D:\\Orb")
+
+            _quarantine_result = run_quarantine(
+                manifest_dict=manifest.to_dict(),
+                sandbox_base=_q_sandbox_base,
+                client=_q_client,
+                on_progress=_emit,
+            )
+            if _quarantine_result.has_quarantined:
+                logger.info(
+                    "[SEGMENT_LOOP] v5.7 Quarantine: %d file(s), %d dir(s)",
+                    len([e for e in _quarantine_result.entries if e.status == 'quarantined']),
+                    len(_quarantine_result.directories_created),
+                )
+            if not _quarantine_result.all_ok:
+                for _q_err in _quarantine_result.errors:
+                    _emit(f"  ⚠️ Quarantine warning: {_q_err}")
+        except ImportError:
+            logger.debug("[SEGMENT_LOOP] Package quarantine not available")
+        except Exception as _q_err:
+            logger.warning("[SEGMENT_LOOP] v5.7 Quarantine failed (non-fatal): %s", _q_err)
+            _emit(f"⚠️ Quarantine check failed (non-fatal): {_q_err}")
 
     # --- Initialise or resume state ---
     state = load_or_init_state(job_id, manifest)
@@ -1635,24 +1642,37 @@ async def run_segmented_job(
             logger.warning("[SEGMENT_LOOP] v5.12 Post-execution reconciliation error (non-fatal): %s", _recon_err)
             _emit(f"\u26a0\ufe0f Post-execution reconciliation error (non-fatal): {_recon_err}")
 
-    # --- v5.4 PHASE 2C: Cross-Segment Cohesion Check ---
-    # After architecture generation, before execution. Runs when 2+ segments
-    # have architectures (APPROVED or COMPLETE). Calls Opus 4.6 to verify
-    # all imports resolve, names match, data shapes are compatible.
-    _approved_seg_ids = [
-        sid for sid, ss in state.segments.items()
-        if ss.status in (SegmentStatus.APPROVED.value, SegmentStatus.COMPLETE.value)
-    ]
-    if len(_approved_seg_ids) >= 2:
+    # --- v5.16 PHASE 2C: Cohesion Check + Automated Regen Loop ---
+    # After architecture generation, run cohesion check. If blocking issues
+    # remain after auto-fix (Tier 1/2), automatically re-generate the flagged
+    # segments through Critical Pipeline with cohesion feedback, then re-check.
+    # Loop until cohesion passes or retries exhausted.
+    MAX_COHESION_RETRIES = 3
+    _cohesion_retry = 0
+    _cohesion_passed = False
+
+    while _cohesion_retry < MAX_COHESION_RETRIES and not _cohesion_passed:
+        _approved_seg_ids = [
+            sid for sid, ss in state.segments.items()
+            if ss.status in (SegmentStatus.APPROVED.value, SegmentStatus.COMPLETE.value)
+        ]
+
+        if len(_approved_seg_ids) < 2:
+            break
+
+        _cohesion_retry += 1
         _emit(f"\n{'='*50}")
-        _emit("🔍 Running cross-segment cohesion check...")
+        if _cohesion_retry == 1:
+            _emit("🔍 Running cross-segment cohesion check...")
+        else:
+            _emit(f"🔍 Cohesion re-check (attempt {_cohesion_retry}/{MAX_COHESION_RETRIES})...")
+
         try:
             from app.orchestrator.cohesion_check import (
                 run_cohesion_check,
                 save_cohesion_result,
             )
 
-            # Load contract JSON if available (supports both skeleton and legacy supervisor)
             _cohesion_contract_json = None
             if _contract_set:
                 _cohesion_contract_json = _contract_set.to_json()
@@ -1666,13 +1686,7 @@ async def run_segmented_job(
             )
             save_cohesion_result(_cohesion_result, job_dir_path)
 
-            # =============================================================
-            # v3.0 COHESION RESULT DISPLAY
-            # Auto-fix now runs INSIDE run_cohesion_check, so the result
-            # already reflects any Tier 1/2 fixes that were applied.
-            # =============================================================
-
-            # Show auto-fixed issues first
+            # Show auto-fixed issues
             _auto_fixed = [ci for ci in _cohesion_result.issues if ci.auto_fixed or ci.severity == "resolved"]
             if _auto_fixed:
                 _emit(f"🔧 Auto-fixed {len(_auto_fixed)} issue(s):")
@@ -1681,49 +1695,133 @@ async def run_segmented_job(
                     _emit(f"  ✅ {_ci.issue_id} [{_tier_label}] {_ci.auto_fix_note or _ci.description[:100]}")
 
             if _cohesion_result.status == "pass":
+                _cohesion_passed = True
                 if _auto_fixed:
                     _emit("✅ Cohesion check PASSED — all issues resolved by auto-fix!")
                 else:
                     _emit("✅ Cohesion check PASSED — all segments are compatible")
+
             elif _cohesion_result.status == "fail":
                 _n_blocking = len(_cohesion_result.blocking_issues)
                 _n_warning = len(_cohesion_result.warning_issues)
-                _emit(f"❌ Cohesion check FAILED — {_n_blocking} blocking, {_n_warning} warning(s)")
-                if _auto_fixed:
-                    _emit(f"  (ℹ️ {len(_auto_fixed)} other issue(s) were auto-fixed)")
-                for _ci in _cohesion_result.blocking_issues:
-                    _tier_label = f"T{_ci.auto_fix_tier}" if _ci.auto_fix_tier else "?"
-                    _emit(f"  🚫 {_ci.issue_id} [{_ci.category}/{_tier_label}] {_ci.source_segment} ↔ {_ci.related_segment}")
-                    _emit(f"     {_ci.description}")
-                    if _ci.suggested_fix:
-                        _emit(f"     Fix: {_ci.suggested_fix}")
-                for _ci in _cohesion_result.warning_issues:
-                    _emit(f"  ⚠️ {_ci.issue_id} [{_ci.category}] {_ci.description}")
 
-                # Mark remaining blocking segments for targeted regen (Tier 3)
-                _regen_segs = _cohesion_result.segments_needing_regen
-                if _regen_segs:
-                    _emit(f"\n  💡 Segment(s) needing re-generation (Tier 3): {', '.join(_regen_segs)}")
-                    for _regen_seg_id in _regen_segs:
-                        if _regen_seg_id in state.segments:
-                            state.segments[_regen_seg_id].status = SegmentStatus.PENDING.value
-                            state.segments[_regen_seg_id].error = f"Cohesion regen: {[ci.description[:100] for ci in _cohesion_result.blocking_issues if ci.source_segment == _regen_seg_id]}"
-                            logger.info("[SEGMENT_LOOP] v3.0 Marked %s for targeted regen", _regen_seg_id)
-                    _emit(f"  🔄 Marked {len(_regen_segs)} segment(s) for targeted re-generation")
-                    _emit(f"  💡 Say 'Astra, command: implement segments' to execute approved segments")
+                if _cohesion_retry >= MAX_COHESION_RETRIES:
+                    # Exhausted retries — report to user
+                    _emit(f"❌ Cohesion check FAILED after {MAX_COHESION_RETRIES} attempts — {_n_blocking} blocking, {_n_warning} warning(s)")
+                    for _ci in _cohesion_result.blocking_issues:
+                        _tier_label = f"T{_ci.auto_fix_tier}" if _ci.auto_fix_tier else "?"
+                        _emit(f"  🚫 {_ci.issue_id} [{_ci.category}/{_tier_label}] {_ci.source_segment} ↔ {_ci.related_segment}")
+                        _emit(f"     {_ci.description}")
+                        if _ci.suggested_fix:
+                            _emit(f"     Fix: {_ci.suggested_fix}")
+                    for _ci in _cohesion_result.warning_issues:
+                        _emit(f"  ⚠️ {_ci.issue_id} [{_ci.category}] {_ci.description}")
+
+                    _regen_segs = _cohesion_result.segments_needing_regen
+                    if _regen_segs:
+                        for _regen_seg_id in _regen_segs:
+                            if _regen_seg_id in state.segments:
+                                state.segments[_regen_seg_id].status = SegmentStatus.PENDING.value
+                                state.segments[_regen_seg_id].error = f"Cohesion regen: {[ci.description[:100] for ci in _cohesion_result.blocking_issues if ci.source_segment == _regen_seg_id]}"
+                        _emit(f"  🔄 Marked {len(_regen_segs)} segment(s) for manual re-generation")
+                        _emit(f"  💡 Say 'Astra, command: run segments' to retry architecture generation")
                     try:
                         save_state(state, get_job_dir(job_id))
                     except Exception as _save_err:
                         logger.warning("[SEGMENT_LOOP] Failed to save regen state: %s", _save_err)
+                else:
+                    # Still have retries — auto-regen the failing segments
+                    _regen_segs = _cohesion_result.segments_needing_regen
+                    if not _regen_segs:
+                        _emit(f"❌ Cohesion FAILED but no segments flagged for regen — cannot auto-fix")
+                        break
+
+                    _emit(f"🔄 Cohesion found {_n_blocking} blocking issue(s) — auto-regenerating {len(_regen_segs)} segment(s)...")
+
+                    # Mark flagged segments PENDING with cohesion feedback
+                    for _regen_seg_id in _regen_segs:
+                        if _regen_seg_id in state.segments:
+                            _feedback = f"Cohesion regen: {[ci.description[:100] for ci in _cohesion_result.blocking_issues if ci.source_segment == _regen_seg_id or ci.related_segment == _regen_seg_id]}"
+                            state.segments[_regen_seg_id].status = SegmentStatus.PENDING.value
+                            state.segments[_regen_seg_id].error = _feedback
+                            logger.info("[SEGMENT_LOOP] v5.16 Cohesion regen: marked %s PENDING", _regen_seg_id)
+                    save_state(state, get_job_dir(job_id))
+
+                    # Re-run flagged segments through Critical Pipeline
+                    for _regen_seg_id in _regen_segs:
+                        seg_spec = manifest.get_segment(_regen_seg_id)
+                        if seg_spec is None:
+                            continue
+
+                        if not can_execute_segment(seg_spec, state):
+                            _emit(f"  ⏳ {_regen_seg_id}: waiting on dependencies (skipping regen)")
+                            continue
+
+                        _emit(f"  🔄 Re-generating architecture for {_regen_seg_id}...")
+                        update_segment_status(state, _regen_seg_id, SegmentStatus.IN_PROGRESS, job_dir_path)
+
+                        segment_context = build_segment_context(
+                            seg_spec, state, parent_spec, job_dir_path,
+                            contract_set=_contract_set,
+                            source_file_evidence=_source_evidence,
+                        )
+
+                        # v5.16: Inject cohesion issues as architecture-only feedback.
+                        # Use "cohesion_issues" key (NOT "cohesion_feedback") because
+                        # "cohesion_feedback" triggers the approval gate bypass (line 816),
+                        # which would send it to the Overwatcher/Implementer. We only want
+                        # architecture regeneration here — approval gate must hold.
+                        _seg_state = state.segments.get(_regen_seg_id)
+                        if _seg_state and _seg_state.error and _seg_state.error.startswith("Cohesion regen:"):
+                            segment_context["cohesion_issues"] = _seg_state.error
+                            _emit(f"  🧩 Injected cohesion issues for {_regen_seg_id} (arch-only, no approval bypass)")
+
+                        try:
+                            pipeline_result = await run_segment_through_pipeline(
+                                segment=seg_spec,
+                                segment_context=segment_context,
+                                job_id=job_id,
+                                db=db,
+                                project_id=project_id,
+                                on_progress=on_progress,
+                                contract_set=_contract_set,
+                                job_dir_path=job_dir_path,
+                                manifest=manifest,
+                                parent_spec=parent_spec,
+                            )
+
+                            if pipeline_result.get("success"):
+                                if pipeline_result.get("awaiting_approval"):
+                                    update_segment_status(state, _regen_seg_id, SegmentStatus.APPROVED, job_dir_path)
+                                _emit(f"  ✅ {_regen_seg_id}: architecture re-generated")
+                            else:
+                                _emit(f"  ❌ {_regen_seg_id}: regen failed — {pipeline_result.get('error', 'unknown')}")
+
+                        except Exception as _regen_err:
+                            logger.exception("[SEGMENT_LOOP] v5.16 Regen failed for %s: %s", _regen_seg_id, _regen_err)
+                            _emit(f"  ❌ {_regen_seg_id}: regen error — {_regen_err}")
+
+                    save_state(state, get_job_dir(job_id))
+                    _emit(f"  🔄 Re-generation complete — re-running cohesion check...")
+                    # Loop continues → cohesion re-check at top of while
+
             else:
                 _emit(f"⚠️ Cohesion check error: {_cohesion_result.notes or 'unknown'}")
+                break
 
         except ImportError:
             logger.debug("[SEGMENT_LOOP] Cohesion check module not available")
+            break
         except Exception as _coh_err:
             logger.warning("[SEGMENT_LOOP] Cohesion check failed (non-fatal): %s", _coh_err)
             _emit(f"⚠️ Cohesion check error (non-fatal): {_coh_err}")
+            break
 
+    # Log final cohesion status
+    if _cohesion_passed:
+        logger.info("[SEGMENT_LOOP] v5.16 Cohesion passed after %d attempt(s)", _cohesion_retry)
+    elif _cohesion_retry > 0:
+        logger.warning("[SEGMENT_LOOP] v5.16 Cohesion not resolved after %d attempt(s)", _cohesion_retry)
     # --- Cross-segment integration check (Phase 3) ---
     any_segments_complete = any(
         s.status == SegmentStatus.COMPLETE.value

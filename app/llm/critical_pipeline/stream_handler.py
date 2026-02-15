@@ -774,6 +774,17 @@ async def _handle_architecture(
                     _si_parts.append(f"- {_ev}")
             _si_parts.append("")
 
+        # v5.16: Cohesion regen feedback injection
+        # When the cohesion check found issues and is re-generating this segment's
+        # architecture, inject the specific issues so the LLM knows what to fix.
+        _si_cohesion = segment_context.get("cohesion_issues", "")
+        if _si_cohesion:
+            _si_parts.append("### ⚠️ COHESION ISSUES (from previous architecture attempt)\n")
+            _si_parts.append("The previous architecture for this segment had cross-segment compatibility issues.")
+            _si_parts.append("You MUST fix these issues in this regeneration:\n")
+            _si_parts.append(f"{_si_cohesion}\n")
+            _si_parts.append("Ensure all import names, module names, and function signatures match what other segments expect.\n")
+
         _segment_injection = "\n".join(_si_parts)
 
     # v5.4 Phase 2B: Extract contract for critique injection
