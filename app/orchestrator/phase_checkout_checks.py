@@ -15,6 +15,10 @@ v2.0 (2026-02-15): Boot test is now a fix loop. When boot fails, the system:
     5. Retries boot (up to BOOT_MAX_FIX_ATTEMPTS times)
     Size check now only validates segment-produced output files, not
     pre-existing source files. Contract check resolves paths via sandbox.
+v2.4 (2026-02-15): Investigation step before abort. When failing file
+    not found in segment outputs, searches the wider sandbox codebase,
+    reads the importing file, and hands it to the LLM to investigate
+    and fix -- same as a human would do.
 v1.0 (2026-02-14): Extracted from phase_checkout.py for cap compliance.
 """
 
@@ -42,8 +46,8 @@ from .phase_checkout_models import (
 
 logger = logging.getLogger(__name__)
 
-BOOT_MAX_FIX_ATTEMPTS = 3
-BOOT_FIX_TIMEOUT = 120  # seconds per LLM fix call
+BOOT_MAX_FIX_ATTEMPTS = int(os.environ.get("PHASE_CHECKOUT_MAX_FIX_ATTEMPTS", "3"))
+BOOT_FIX_TIMEOUT = int(os.environ.get("PHASE_CHECKOUT_TIMEOUT_SECONDS", "180"))
 
 
 # =============================================================================
@@ -315,8 +319,25 @@ async def run_boot_test_with_fix_loop(
                 emit=_emit,
             )
             if not failing_file:
-                _emit("  [ABORT] Cannot identify failing file from traceback or grep -- cannot auto-fix")
-                break
+                # v2.4: Investigation step -- search the WIDER sandbox, not just segment outputs
+                _emit("  [INVESTIGATE] Segment outputs clean -- searching wider codebase...")
+                investigation_result = await _investigate_boot_error(
+                    client=client,
+                    actual_base=actual_base,
+                    error_summary=error_summary,
+                    full_stderr=stderr,
+                    emit=_emit,
+                )
+                if investigation_result:
+                    failing_file, fix_applied = investigation_result
+                    if fix_applied:
+                        fixes_applied.append(f"{failing_file}: {fix_applied}")
+                        _emit(f"  [INVESTIGATE] Fix applied: {fix_applied}")
+                        continue  # Re-boot without entering _attempt_boot_fix
+                    # investigation found the file but didn't fix it -- fall through to _attempt_boot_fix
+                else:
+                    _emit("  [ABORT] Cannot identify failing file from traceback, grep, or investigation")
+                    break
 
         _emit(f"  [FIX] Attempting fix on: {failing_file}")
 
@@ -468,7 +489,7 @@ async def _attempt_boot_fix(
                 {"role": "system", "content": _BOOT_FIX_SYSTEM_PROMPT},
                 {"role": "user", "content": fix_prompt},
             ],
-            max_tokens=8000,
+            max_tokens=_pick_boot_fix_max_tokens(),
             timeout_seconds=BOOT_FIX_TIMEOUT,
         )
 
@@ -598,6 +619,237 @@ async def _grep_sandbox_for_bad_import(
     except Exception as exc:
         _emit(f"  [GREP] Sandbox search failed: {exc}")
         return None
+
+
+# =============================================================================
+# INVESTIGATION STEP (v2.4)
+# =============================================================================
+
+async def _investigate_boot_error(
+    client: Any,
+    actual_base: str,
+    error_summary: str,
+    full_stderr: str,
+    emit: Any,
+) -> Optional[Tuple[str, Optional[str]]]:
+    """
+    v2.4: When the failing file is not in segment outputs, investigate the
+    wider sandbox codebase. This is what a human would do: search the whole
+    project for who imports the bad module, read that file, understand the
+    context, and decide what to fix.
+
+    Steps:
+    1. Search the ENTIRE sandbox (not just segment outputs) for the bad import
+    2. Read the file that imports it
+    3. Look at the target -- does the module exist? Was it renamed?
+    4. Hand everything to the LLM to decide the fix
+    5. Apply the fix
+
+    Returns (failing_file, fix_description) if fixed, (failing_file, None) if
+    file found but not fixed, or None if investigation found nothing.
+    """
+    _emit = emit or (lambda msg: None)
+
+    # Extract the bad module name
+    no_module = re.search(r"No module named '([^']+)'", error_summary)
+    cannot_import = re.search(r"cannot import name '([^']+)' from '([^']+)'", error_summary)
+
+    if not no_module and not cannot_import:
+        return None
+
+    if no_module:
+        bad_module = no_module.group(1)
+        search_term = bad_module
+    else:
+        bad_name = cannot_import.group(1)
+        bad_source = cannot_import.group(2)
+        search_term = bad_source
+
+    # Step 1: Search the ENTIRE sandbox for files importing this module
+    _emit(f"  [INVESTIGATE] Searching entire sandbox for imports of '{search_term}'...")
+    try:
+        # Recursive grep across all .py files in the sandbox
+        grep_cmd = (
+            f'Get-ChildItem -Path "{actual_base}" -Filter "*.py" -Recurse '
+            f'-ErrorAction SilentlyContinue '
+            f'| Select-String -Pattern "{search_term}" -SimpleMatch '
+            f'| Select-Object -First 5 -Property Path, LineNumber, Line '
+            f'| Format-List'
+        )
+        result = client.shell_run(grep_cmd, timeout_seconds=20)
+        grep_output = (result.stdout or "").strip()
+    except Exception as exc:
+        _emit(f"  [INVESTIGATE] Sandbox search failed: {exc}")
+        return None
+
+    if not grep_output:
+        _emit("  [INVESTIGATE] No files in entire sandbox reference this module")
+        return None
+
+    _emit(f"  [INVESTIGATE] Found references:\n{grep_output[:500]}")
+
+    # Step 2: Extract the file path(s) that import the bad module
+    path_matches = re.findall(r'Path\s*:\s*(.+?\.py)', grep_output)
+    if not path_matches:
+        _emit("  [INVESTIGATE] Could not parse file paths from search results")
+        return None
+
+    # Pick the first importing file (most likely the one causing the boot error)
+    importing_file_abs = path_matches[0].strip()
+    _emit(f"  [INVESTIGATE] Importing file: {importing_file_abs}")
+
+    # Read the importing file
+    importing_content = None
+    try:
+        result = client.shell_run(
+            f'Get-Content -Path "{importing_file_abs}" -Raw -Encoding UTF8',
+            timeout_seconds=15,
+        )
+        importing_content = (result.stdout or "").strip()
+    except Exception:
+        pass
+
+    if not importing_content:
+        _emit(f"  [INVESTIGATE] Cannot read {importing_file_abs}")
+        return None
+
+    # Step 3: Check if the target module/file exists (maybe it was renamed)
+    target_investigation = ""
+    if no_module:
+        # Convert module path to file path: app.logger_setup -> app/logger_setup.py
+        module_as_path = bad_module.replace(".", "\\") + ".py"
+        module_as_pkg = bad_module.replace(".", "\\") + "\\__init__.py"
+        target_file_path = f"{actual_base}\\{module_as_path}"
+        target_pkg_path = f"{actual_base}\\{module_as_pkg}"
+
+        # Check if target exists
+        try:
+            r1 = client.shell_run(f'Test-Path -Path "{target_file_path}" -PathType Leaf', timeout_seconds=10)
+            r2 = client.shell_run(f'Test-Path -Path "{target_pkg_path}" -PathType Leaf', timeout_seconds=10)
+            target_exists_file = (r1.stdout or "").strip().lower() == "true"
+            target_exists_pkg = (r2.stdout or "").strip().lower() == "true"
+        except Exception:
+            target_exists_file = False
+            target_exists_pkg = False
+
+        if target_exists_file or target_exists_pkg:
+            target_investigation += f"Target module file EXISTS at {target_file_path if target_exists_file else target_pkg_path}. The import should work -- investigate why it fails.\n"
+        else:
+            target_investigation += f"Target module file does NOT exist at {target_file_path} or {target_pkg_path}.\n"
+            # Look for similar files in the same directory
+            parent_dir = os.path.dirname(target_file_path)
+            try:
+                ls_result = client.shell_run(
+                    f'Get-ChildItem -Path "{parent_dir}" -Filter "*.py" -ErrorAction SilentlyContinue '
+                    f'| Select-Object -ExpandProperty Name',
+                    timeout_seconds=10,
+                )
+                nearby_files = (ls_result.stdout or "").strip()
+                if nearby_files:
+                    target_investigation += f"Files that DO exist in {parent_dir}:\n{nearby_files}\n"
+            except Exception:
+                pass
+
+    # Step 4: Hand everything to the LLM for investigation and fix
+    _emit("  [INVESTIGATE] Sending to LLM for analysis and fix...")
+
+    investigation_prompt = (
+        f"BOOT ERROR: {error_summary}\n\n"
+        f"FULL STDERR (last 2000 chars):\n{full_stderr[-2000:]}\n\n"
+        f"INVESTIGATION RESULTS:\n{target_investigation}\n"
+        f"IMPORTING FILE ({importing_file_abs}):\n"
+        f"```python\n{importing_content[:6000]}\n```\n\n"
+        f"YOUR TASK:\n"
+        f"1. Understand WHY this boot error is happening\n"
+        f"2. Determine the minimal fix needed\n"
+        f"3. Output the COMPLETE fixed file content\n\n"
+        f"Common causes:\n"
+        f"- Import references a module that was renamed or moved\n"
+        f"- Import is for a module that doesn't exist (hallucinated by code generator)\n"
+        f"- Import is wrapped in try/except but the except handler also fails\n"
+        f"- Import path is wrong (e.g. 'app.logger_setup' should be 'app.logging_config')\n\n"
+        f"Output ONLY the complete fixed file. No explanations, no markdown fences."
+    )
+
+    try:
+        from app.providers.registry import get_provider_registry
+        registry = get_provider_registry()
+
+        provider_id = _pick_boot_fix_provider()
+        model_id = _pick_boot_fix_model()
+        llm_result = await registry.llm_call(
+            provider_id=provider_id,
+            model_id=model_id,
+            messages=[
+                {"role": "system", "content": _BOOT_FIX_SYSTEM_PROMPT},
+                {"role": "user", "content": investigation_prompt},
+            ],
+            max_tokens=_pick_boot_fix_max_tokens(),
+            timeout_seconds=BOOT_FIX_TIMEOUT + 60,  # Extra time for investigation
+        )
+
+        fixed_content = _extract_fix_content(llm_result)
+        if not fixed_content or len(fixed_content) < 20:
+            _emit("  [INVESTIGATE] LLM investigation produced empty/minimal content")
+            # Return the file path so _attempt_boot_fix can try its own approach
+            rel_path = importing_file_abs.replace(actual_base + "\\", "").replace(actual_base + "/", "")
+            return (rel_path, None)
+
+        # Sanity check: don't let LLM destroy the file
+        if len(fixed_content) < len(importing_content) * 0.5:
+            _emit("  [INVESTIGATE] LLM fix removed too much content (>50% reduction) -- rejecting")
+            rel_path = importing_file_abs.replace(actual_base + "\\", "").replace(actual_base + "/", "")
+            return (rel_path, None)
+
+        # Write the fix to the sandbox
+        success = _write_file_to_sandbox_abs(client, importing_file_abs, fixed_content)
+        if success:
+            rel_path = importing_file_abs.replace(actual_base + "\\", "").replace(actual_base + "/", "")
+            _emit(f"  [INVESTIGATE] Fix written to {rel_path}")
+            return (rel_path, f"Investigation fix: {error_summary[:80]}")
+        else:
+            _emit("  [INVESTIGATE] Failed to write fix to sandbox")
+            return None
+
+    except Exception as exc:
+        _emit(f"  [INVESTIGATE] LLM investigation failed: {exc}")
+        logger.warning("[phase_checkout] Investigation LLM call failed: %s", exc)
+        rel_path = importing_file_abs.replace(actual_base + "\\", "").replace(actual_base + "/", "")
+        return (rel_path, None)
+
+
+def _write_file_to_sandbox_abs(
+    client: Any,
+    abs_path: str,
+    content: str,
+) -> bool:
+    """Write a file to sandbox using absolute path (for investigation fixes)."""
+    import base64
+    try:
+        b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
+        tmp_path = abs_path.rsplit("\\", 1)[0] + "\\_orb_phase_fix.b64"
+        # Write base64
+        chunk_size = 60000
+        for i in range(0, len(b64), chunk_size):
+            chunk = b64[i:i + chunk_size]
+            op = "-NoNewline" if i == 0 else "-Append -NoNewline"
+            client.shell_run(
+                f'Set-Content -Path "{tmp_path}" -Value "{chunk}" {op} -Encoding ASCII',
+                timeout_seconds=15,
+            )
+        # Decode and write
+        client.shell_run(
+            f'$b64 = [System.IO.File]::ReadAllText("{tmp_path}"); '
+            f'$bytes = [System.Convert]::FromBase64String($b64); '
+            f'[System.IO.File]::WriteAllBytes("{abs_path}", $bytes); '
+            f'Remove-Item -Path "{tmp_path}" -Force -ErrorAction SilentlyContinue; '
+            f'"WRITE_OK"',
+            timeout_seconds=15,
+        )
+        return True
+    except Exception as exc:
+        logger.warning("[phase_checkout] Write to sandbox failed: %s", exc)
+        return False
 
 
 # =============================================================================
@@ -808,16 +1060,18 @@ def _try_deterministic_import_fix(
 # =============================================================================
 
 def _pick_boot_fix_provider() -> str:
-    """Pick the LLM provider for boot fix. Env override or default."""
-    return os.environ.get("ASTRA_BOOT_FIX_PROVIDER", "anthropic")
+    """Pick the LLM provider for boot fix from env."""
+    return os.environ.get("PHASE_CHECKOUT_PROVIDER", "anthropic")
 
 
 def _pick_boot_fix_model() -> str:
-    """Pick the LLM model for boot fix. Env override or default.
-    Uses Claude Opus as default -- phase checkout needs a strong model
-    that can read tracebacks and surgically fix code.
-    """
-    return os.environ.get("ASTRA_BOOT_FIX_MODEL", "claude-opus-4-6")
+    """Pick the LLM model for boot fix from env."""
+    return os.environ.get("PHASE_CHECKOUT_MODEL", "claude-opus-4-6")
+
+
+def _pick_boot_fix_max_tokens() -> int:
+    """Pick the max output tokens for boot fix from env."""
+    return int(os.environ.get("PHASE_CHECKOUT_MAX_OUTPUT_TOKENS", "8000"))
 
 
 _BOOT_FIX_SYSTEM_PROMPT = """\

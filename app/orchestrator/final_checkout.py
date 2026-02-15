@@ -63,7 +63,7 @@ from app.pot_spec.grounded.size_models import MAX_FILE_LINES
 
 logger = logging.getLogger(__name__)
 
-FINAL_CHECKOUT_BUILD_ID = "2026-02-15-v3.2-pipeline-learning-report"
+FINAL_CHECKOUT_BUILD_ID = "2026-02-15-v3.3-investigation-model-upgrade"
 print(f"[FINAL_CHECKOUT_LOADED] BUILD_ID={FINAL_CHECKOUT_BUILD_ID}")
 
 
@@ -557,12 +557,12 @@ async def _generate_missing_file(
         )
 
         result = await llm_call(
-            provider_id=os.getenv("ASTRA_FIX_PROVIDER", "anthropic"),
-            model_id=os.getenv("ASTRA_FIX_MODEL", "claude-sonnet-4-5-20250929"),
+            provider_id=os.getenv("FINAL_CHECKOUT_PROVIDER", "anthropic"),
+            model_id=os.getenv("FINAL_CHECKOUT_MODEL", "claude-opus-4-6"),
             messages=[{"role": "user", "content": prompt}],
             system_prompt="You are a code generation agent. Output only file content.",
-            max_tokens=8192,
-            timeout_seconds=60,
+            max_tokens=int(os.getenv("FINAL_CHECKOUT_MAX_OUTPUT_TOKENS", "8000")),
+            timeout_seconds=int(os.getenv("FINAL_CHECKOUT_TIMEOUT_SECONDS", "240")),
         )
 
         content = result.content if result else None
@@ -1009,12 +1009,12 @@ async def _llm_fix_import(
         )
 
         result = await llm_call(
-            provider_id=os.getenv("ASTRA_FIX_PROVIDER", "anthropic"),
-            model_id=os.getenv("ASTRA_FIX_MODEL", "claude-sonnet-4-5-20250929"),
+            provider_id=os.getenv("FINAL_CHECKOUT_PROVIDER", "anthropic"),
+            model_id=os.getenv("FINAL_CHECKOUT_MODEL", "claude-opus-4-6"),
             messages=[{"role": "user", "content": prompt}],
             system_prompt="Fix the import. Output only the complete file content.",
-            max_tokens=8192,
-            timeout_seconds=60,
+            max_tokens=int(os.getenv("FINAL_CHECKOUT_MAX_OUTPUT_TOKENS", "8000")),
+            timeout_seconds=int(os.getenv("FINAL_CHECKOUT_TIMEOUT_SECONDS", "240")),
         )
 
         fixed_content = result.content if result else None
@@ -1084,9 +1084,6 @@ _REVIEW_PRIORITY_PATTERNS = [
 
 _MAX_REVIEW_FILES = 12       # Cap total files reviewed
 _MAX_REVIEW_CHARS = 8000     # Cap per-file content in prompt
-_REVIEW_MODEL = "claude-sonnet-4-5-20250929"  # Sonnet for cost efficiency
-
-
 async def _run_ai_review_with_fixes(
     original_spec: Optional[str],
     file_scope: List[str],
@@ -1229,16 +1226,16 @@ async def _run_ai_review_pass(
     try:
         from app.providers.registry import llm_call
 
-        provider_id = os.getenv("ASTRA_REVIEW_PROVIDER", "anthropic")
-        model_id = os.getenv("ASTRA_REVIEW_MODEL", _REVIEW_MODEL)
+        provider_id = os.getenv("FINAL_CHECKOUT_PROVIDER", "anthropic")
+        model_id = os.getenv("FINAL_CHECKOUT_MODEL", "claude-opus-4-6")
 
         llm_result = await llm_call(
             provider_id=provider_id,
             model_id=model_id,
             messages=[{"role": "user", "content": prompt}],
             system_prompt=_REVIEW_SYSTEM_PROMPT,
-            max_tokens=4096,
-            timeout_seconds=120,
+            max_tokens=int(os.getenv("FINAL_CHECKOUT_MAX_OUTPUT_TOKENS", "8000")),
+            timeout_seconds=int(os.getenv("FINAL_CHECKOUT_TIMEOUT_SECONDS", "240")),
         )
 
         response = llm_result.content if llm_result else None
@@ -1342,12 +1339,12 @@ async def _apply_ai_review_fix(
             )
 
             llm_result = await llm_call(
-                provider_id=os.getenv("ASTRA_FIX_PROVIDER", "anthropic"),
-                model_id=os.getenv("ASTRA_FIX_MODEL", "claude-sonnet-4-5-20250929"),
+                provider_id=os.getenv("FINAL_CHECKOUT_PROVIDER", "anthropic"),
+                model_id=os.getenv("FINAL_CHECKOUT_MODEL", "claude-opus-4-6"),
                 messages=[{"role": "user", "content": "\n".join(prompt_parts)}],
                 system_prompt=system,
-                max_tokens=8192,
-                timeout_seconds=60,
+                max_tokens=int(os.getenv("FINAL_CHECKOUT_MAX_OUTPUT_TOKENS", "8000")),
+                timeout_seconds=int(os.getenv("FINAL_CHECKOUT_TIMEOUT_SECONDS", "240")),
             )
 
             fixed_content = llm_result.content if llm_result else None
