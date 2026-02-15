@@ -15,6 +15,10 @@ v2.0 (2026-02-15): Boot test is now a fix loop. When boot fails, the system:
     5. Retries boot (up to BOOT_MAX_FIX_ATTEMPTS times)
     Size check now only validates segment-produced output files, not
     pre-existing source files. Contract check resolves paths via sandbox.
+v2.5 (2026-02-15): Strike-based boot fix loop. Different errors = progress,
+    keeps going. Same error repeating = strikes accumulate per error signature.
+    3 strikes on same error = hard stop. Safety cap of 12 total attempts.
+    Default raised from 3 to 12 max attempts.
 v2.4 (2026-02-15): Investigation step before abort. When failing file
     not found in segment outputs, searches the wider sandbox codebase,
     reads the importing file, and hands it to the LLM to investigate
@@ -46,8 +50,9 @@ from .phase_checkout_models import (
 
 logger = logging.getLogger(__name__)
 
-BOOT_MAX_FIX_ATTEMPTS = int(os.environ.get("PHASE_CHECKOUT_MAX_FIX_ATTEMPTS", "3"))
+BOOT_MAX_FIX_ATTEMPTS = int(os.environ.get("PHASE_CHECKOUT_MAX_FIX_ATTEMPTS", "12"))
 BOOT_FIX_TIMEOUT = int(os.environ.get("PHASE_CHECKOUT_TIMEOUT_SECONDS", "180"))
+BOOT_STRIKE_LIMIT = int(os.environ.get("PHASE_CHECKOUT_STRIKE_LIMIT", "3"))
 
 
 # =============================================================================
@@ -242,12 +247,19 @@ async def run_boot_test_with_fix_loop(
     """
     Run application boot test with automatic fix attempts.
 
-    v2.0: When boot fails, the system:
+    v2.5: Strike-based boot fix loop.
+    - Different errors each attempt = progress, keeps going.
+    - Same error repeating = stuck. Strikes accumulate per error signature.
+    - BOOT_STRIKE_LIMIT strikes on the same error = hard stop.
+    - BOOT_MAX_FIX_ATTEMPTS is a safety cap on total iterations.
+
+    When boot fails, the system:
     1. Parses the traceback to identify the failing file and error type
-    2. Reads the broken file from the sandbox
-    3. Sends the file + error to the LLM for a targeted surgical fix
-    4. Writes the fix back to the sandbox
-    5. Retries boot (up to BOOT_MAX_FIX_ATTEMPTS times)
+    2. Computes an error signature to track whether this is a new or repeated error
+    3. Reads the broken file from the sandbox
+    4. Sends the file + error to the LLM for a targeted surgical fix
+    5. Writes the fix back to the sandbox
+    6. Retries boot
 
     Only fixes deterministic errors: bad imports, syntax errors, missing
     attributes. Does NOT attempt to fix logic errors or runtime failures.
@@ -268,11 +280,16 @@ async def run_boot_test_with_fix_loop(
     # Discover actual sandbox base path
     actual_base = _discover_sandbox_base(client, sandbox_base)
 
-    last_error = None
-    same_error_count = 0
     fixes_applied = []
+    # v2.5: Strike tracking per error signature
+    # Different errors each time = progress, keep going.
+    # Same error repeating = stuck. 3 strikes on same signature = hard stop.
+    from app.orchestrator.strike_tracker import _error_signature
+    error_strike_counts: dict = {}   # {signature: strike_count}
+    total_attempts = 0
 
     for attempt in range(1, BOOT_MAX_FIX_ATTEMPTS + 1):
+        total_attempts = attempt
         _emit(f"  Boot attempt {attempt}/{BOOT_MAX_FIX_ATTEMPTS}...")
 
         passed, stdout, stderr, error_summary, failing_file = _run_single_boot(
@@ -288,23 +305,24 @@ async def run_boot_test_with_fix_loop(
                 duration_ms=elapsed,
             )
 
-        # Boot failed
-        _emit(f"  [FAIL] Boot attempt {attempt} failed: {error_summary[:150]}")
+        # Boot failed — compute error signature to track strikes
+        sig = _error_signature(error_summary)
+        strike = error_strike_counts.get(sig, 0) + 1
+        error_strike_counts[sig] = strike
 
-        # Track repeated errors -- if same error 2x, the fix didn't work
-        if error_summary == last_error:
-            same_error_count += 1
+        if strike == 1:
+            _emit(f"  [FAIL] Boot attempt {attempt} failed (new error): {error_summary[:150]}")
         else:
-            same_error_count = 1
-            last_error = error_summary
+            _emit(f"  [FAIL] Boot attempt {attempt} failed (strike {strike}/{BOOT_STRIKE_LIMIT}): {error_summary[:150]}")
 
-        if same_error_count >= 2:
-            _emit(f"  [ABORT] Same error repeated {same_error_count} times -- fix not working")
+        # Hard stop: same error hit strike limit
+        if strike >= BOOT_STRIKE_LIMIT:
+            _emit(f"  [ABORT] Strike {strike}/{BOOT_STRIKE_LIMIT} for same error — fix not working, hard stop")
             break
 
-        # Last attempt -- don't try to fix, just report
+        # Safety cap on total attempts
         if attempt >= BOOT_MAX_FIX_ATTEMPTS:
-            _emit(f"  [ABORT] Max fix attempts ({BOOT_MAX_FIX_ATTEMPTS}) reached")
+            _emit(f"  [ABORT] Max total attempts ({BOOT_MAX_FIX_ATTEMPTS}) reached")
             break
 
         # --- Attempt to fix the error ---
