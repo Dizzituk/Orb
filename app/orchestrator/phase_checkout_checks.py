@@ -665,19 +665,31 @@ async def _investigate_boot_error(
         bad_source = cannot_import.group(2)
         search_term = bad_source
 
-    # Step 1: Search the ENTIRE sandbox for files importing this module
-    _emit(f"  [INVESTIGATE] Searching entire sandbox for imports of '{search_term}'...")
+    # Step 1: Search the sandbox app directory for files importing this module
+    # Scoped to app/ only — excludes .venv, node_modules, etc. which cause timeouts
+    _emit(f"  [INVESTIGATE] Searching sandbox app directory for imports of '{search_term}'...")
     try:
-        # Recursive grep across all .py files in the sandbox
+        app_dir = f"{actual_base}\\app"
         grep_cmd = (
-            f'Get-ChildItem -Path "{actual_base}" -Filter "*.py" -Recurse '
+            f'Get-ChildItem -Path "{app_dir}" -Filter "*.py" -Recurse '
             f'-ErrorAction SilentlyContinue '
             f'| Select-String -Pattern "{search_term}" -SimpleMatch '
             f'| Select-Object -First 5 -Property Path, LineNumber, Line '
             f'| Format-List'
         )
-        result = client.shell_run(grep_cmd, timeout_seconds=20)
+        result = client.shell_run(grep_cmd, timeout_seconds=30)
         grep_output = (result.stdout or "").strip()
+
+        # If nothing in app/, also check main.py and top-level files
+        if not grep_output:
+            top_cmd = (
+                f'Select-String -Path "{actual_base}\\*.py" '
+                f'-Pattern "{search_term}" -SimpleMatch -ErrorAction SilentlyContinue '
+                f'| Select-Object -First 3 -Property Path, LineNumber, Line '
+                f'| Format-List'
+            )
+            result2 = client.shell_run(top_cmd, timeout_seconds=10)
+            grep_output = (result2.stdout or "").strip()
     except Exception as exc:
         _emit(f"  [INVESTIGATE] Sandbox search failed: {exc}")
         return None
