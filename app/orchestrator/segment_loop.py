@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-SEGMENT_LOOP_BUILD_ID = "2026-02-14-v5.11-multi-pass-loop"
+SEGMENT_LOOP_BUILD_ID = "2026-02-15-v5.12-interface-reconciliation"
 print(f"[SEGMENT_LOOP_LOADED] BUILD_ID={SEGMENT_LOOP_BUILD_ID}")
 
 
@@ -178,6 +178,17 @@ except ImportError as _ae:
     _ARCH_EXECUTOR_AVAILABLE = False
     logger.warning("[SEGMENT_LOOP] Architecture executor not available: %s", _ae)
     print(f"[SEGMENT_LOOP] [WARNING] Architecture executor import failed: {_ae}")
+
+# v5.12: Interface Reconciliation (Option A — prevent naming drift)
+try:
+    from app.orchestrator.interface_reconciliation import (
+        read_dependency_interfaces_from_sandbox,
+        inject_reconciliation_into_architecture,
+    )
+    _RECONCILIATION_AVAILABLE = True
+except ImportError:
+    _RECONCILIATION_AVAILABLE = False
+    logger.debug("[SEGMENT_LOOP] Interface reconciliation not available")
 
 
 # Type alias for progress callback
@@ -875,11 +886,42 @@ async def run_segment_through_pipeline(
             except Exception as _promo_err:
                 logger.warning("[SEGMENT_LOOP] v5.7 Quarantine promotion failed (non-fatal): %s", _promo_err)
 
+        # v5.12: Interface Reconciliation (Option A)
+        # Read actual interfaces from completed dependency segments
+        # and inject into architecture so Implementer uses correct names
+        _recon_arch_text = arch_text
+        if _RECONCILIATION_AVAILABLE and segment.dependencies:
+            try:
+                # Need access to state — get it from the caller's scope via segment_context
+                # The state isn't directly available here, but we can get completed segments
+                # from the evidence bundle
+                from app.orchestrator.segment_state import load_or_init_state
+                _job_dir = get_job_dir(job_id.split('__')[0])  # Strip segment suffix from job_id
+                _recon_state = load_or_init_state(job_id.split('__')[0], manifest) if manifest else None
+                if _recon_state:
+                    _recon_block = read_dependency_interfaces_from_sandbox(
+                        segment=segment,
+                        completed_segments=_recon_state.segments,
+                        manifest=manifest,
+                    )
+                    if _recon_block:
+                        _recon_arch_text = inject_reconciliation_into_architecture(
+                            arch_text, _recon_block,
+                        )
+                        _emit(f"  \U0001f9e9 Interface reconciliation: injected real interfaces from {len(segment.dependencies)} dependency segment(s)")
+                        logger.info(
+                            "[SEGMENT_LOOP] v5.12 Reconciliation injected for %s (%d chars added)",
+                            seg_id, len(_recon_block),
+                        )
+            except Exception as _recon_err:
+                logger.warning("[SEGMENT_LOOP] v5.12 Reconciliation failed (non-fatal): %s", _recon_err)
+                _emit(f"  \u26a0\ufe0f Interface reconciliation failed (non-fatal): {_recon_err}")
+
         # v4.0: Skip boot check — segments are intermediate builds.
         # Boot check runs once at Phase Checkout after ALL segments complete.
         arch_result = await run_architecture_execution(
             spec=spec,
-            architecture_content=arch_text,
+            architecture_content=_recon_arch_text,
             architecture_path=seg_arch_path,
             job_id=seg_job_id,
             llm_call_fn=llm_call_fn,
@@ -1273,10 +1315,34 @@ async def run_segmented_job(
                             seg_job_id = f"{job_id}__{seg_id}"
                             # v5.5 PHASE 4A: Pass interface contract for Job Checker
                             _seg_contract_md = segment_context.get("interface_contract", "") if segment_context else ""
+                            # v5.12: Interface Reconciliation (Option A)
+                            # Read actual interfaces from completed dependency segments
+                            # and inject into architecture so Implementer uses correct names
+                            _recon_arch_text = arch_text
+                            if _RECONCILIATION_AVAILABLE and seg_spec.dependencies:
+                                try:
+                                    _recon_block = read_dependency_interfaces_from_sandbox(
+                                        segment=seg_spec,
+                                        completed_segments=state.segments,
+                                        manifest=manifest,
+                                    )
+                                    if _recon_block:
+                                        _recon_arch_text = inject_reconciliation_into_architecture(
+                                            arch_text, _recon_block,
+                                        )
+                                        _emit(f"  \U0001f9e9 Interface reconciliation: injected real interfaces from {len(seg_spec.dependencies)} dependency segment(s)")
+                                        logger.info(
+                                            "[SEGMENT_LOOP] v5.12 Reconciliation injected for %s (%d chars added)",
+                                            seg_id, len(_recon_block),
+                                        )
+                                except Exception as _recon_err:
+                                    logger.warning("[SEGMENT_LOOP] v5.12 Reconciliation failed (non-fatal): %s", _recon_err)
+                                    _emit(f"  \u26a0\ufe0f Interface reconciliation failed (non-fatal): {_recon_err}")
+
                             # v4.0: Skip boot check — Phase Checkout handles it
                             arch_result = await run_architecture_execution(
                                 spec=spec,
-                                architecture_content=arch_text,
+                                architecture_content=_recon_arch_text,
                                 architecture_path=arch_path,
                                 job_id=seg_job_id,
                                 llm_call_fn=llm_call_fn,
