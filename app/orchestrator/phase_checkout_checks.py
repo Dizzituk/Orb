@@ -475,6 +475,113 @@ async def _attempt_boot_fix(
         return None
 
 
+async def _grep_sandbox_for_bad_import(
+    client: Any,
+    actual_base: str,
+    error_summary: str,
+    state: Any,
+    emit: Any,
+) -> Optional[str]:
+    """
+    v2.2: When _parse_boot_failure can't find a File path in the traceback,
+    grep the sandbox for files that contain the offending import.
+
+    Parses error_summary for patterns like:
+      - "No module named 'app.logger'"
+      - "cannot import name 'X' from 'Y'"
+
+    Then runs Select-String on the sandbox to find which .py file has that import.
+    Returns the relative file path, or None.
+    """
+    _emit = emit or (lambda msg: None)
+
+    # Extract the bad module name
+    no_module = re.search(r"No module named '([^']+)'", error_summary)
+    cannot_import = re.search(r"cannot import name '([^']+)' from '([^']+)'", error_summary)
+
+    search_pattern = None
+    if no_module:
+        bad_module = no_module.group(1)
+        # Search for 'from app.logger' or 'import app.logger'
+        search_pattern = bad_module.replace(".", r"\.")
+    elif cannot_import:
+        bad_name = cannot_import.group(1)
+        bad_source = cannot_import.group(2)
+        search_pattern = f"{bad_name}.*{bad_source.replace('.', r'\.')}|{bad_source.replace('.', r'\.')}.*{bad_name}"
+
+    if not search_pattern:
+        return None
+
+    _emit(f"  [GREP] Searching sandbox for files referencing '{search_pattern}'...")
+
+    # Grep across all segment output files on the sandbox
+    # Build a list of paths to search from the state
+    search_paths = []
+    for seg_id, seg_state in state.segments.items():
+        for rel_path in (seg_state.output_files or []):
+            if rel_path.endswith(".py"):
+                normed = rel_path.replace("/", "\\")
+                if not (normed.startswith("C:") or normed.startswith("D:")):
+                    search_paths.append(f"{actual_base}\\{normed}")
+                else:
+                    search_paths.append(normed)
+
+    if not search_paths:
+        _emit("  [GREP] No output files to search")
+        return None
+
+    # Run Select-String on the sandbox — batch the paths
+    # Use a simple grep command
+    paths_str = ",".join(f'"{p}"' for p in search_paths[:30])  # Cap at 30 files
+    cmd = (
+        f'Select-String -Path {paths_str} '
+        f'-Pattern "{search_pattern}" -SimpleMatch '
+        f'| Select-Object -First 3 -Property Filename, LineNumber, Line '
+        f'| Format-List'
+    )
+
+    try:
+        result = client.shell_run(cmd, timeout_seconds=15)
+        stdout = (result.stdout or "").strip()
+
+        if not stdout:
+            # SimpleMatch didn't find it — try without SimpleMatch for regex
+            cmd2 = (
+                f'Select-String -Path {paths_str} '
+                f'-Pattern "{search_pattern}" '
+                f'| Select-Object -First 3 -Property Filename, LineNumber, Line '
+                f'| Format-List'
+            )
+            result2 = client.shell_run(cmd2, timeout_seconds=15)
+            stdout = (result2.stdout or "").strip()
+
+        if not stdout:
+            _emit("  [GREP] No matches found on sandbox")
+            return None
+
+        _emit(f"  [GREP] Found: {stdout[:200]}")
+
+        # Extract filename from the result
+        fn_match = re.search(r'Filename\s*:\s*(\S+)', stdout)
+        if fn_match:
+            filename = fn_match.group(1)
+            # Find the full relative path from state
+            for seg_id, seg_state in state.segments.items():
+                for rel_path in (seg_state.output_files or []):
+                    if rel_path.endswith(filename):
+                        _emit(f"  [GREP] Identified offending file: {rel_path} (from {seg_id})")
+                        return rel_path
+            # Fallback: return just the filename
+            _emit(f"  [GREP] Found file {filename} but can't map to segment")
+            return filename
+
+        return None
+
+    except Exception as exc:
+        _emit(f"  [GREP] Sandbox search failed: {exc}")
+        return None
+
+
 def _try_reconciliation_import_fix(
     client: Any,
     actual_base: str,
