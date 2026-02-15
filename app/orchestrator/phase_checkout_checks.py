@@ -402,8 +402,20 @@ async def _attempt_boot_fix(
         _emit(f"    Cannot read broken file: {failing_file}")
         return None
 
-    # --- For import errors, try deterministic fix first (no LLM needed) ---
+    # --- For import errors, try smart reconciliation first (no LLM needed) ---
     if is_import_error:
+        # v2.1: Try post-execution reconciliation to find the correct import name
+        # instead of just commenting out the broken import.
+        recon_fix = _try_reconciliation_import_fix(
+            client, actual_base, failing_file, broken_content, error_summary, state, _emit,
+        )
+        if recon_fix:
+            fixed_content, fix_desc = recon_fix
+            success = _write_file_to_sandbox(client, failing_file, fixed_content, actual_base)
+            if success:
+                return fix_desc
+
+        # Fallback: comment out the broken import as a last resort
         deterministic_fix = _try_deterministic_import_fix(
             broken_content, error_summary, full_stderr
         )
@@ -461,6 +473,92 @@ async def _attempt_boot_fix(
         _emit(f"    LLM fix failed: {exc}")
         logger.warning("[phase_checkout] LLM boot fix failed: %s", exc)
         return None
+
+
+def _try_reconciliation_import_fix(
+    client: Any,
+    actual_base: str,
+    failing_file: str,
+    broken_content: str,
+    error_summary: str,
+    state: Any,
+    emit: Any,
+) -> Optional[Tuple[str, str]]:
+    """
+    v2.1: Use post-execution reconciliation to fix import errors smartly.
+
+    Instead of commenting out a broken import, this reads the target module
+    from the sandbox, extracts what it actually exports, and rewrites the
+    import line with the correct name.
+
+    e.g. "cannot import name 'collect_file_inventory' from 'init_files'"
+    -> reads init_files.py, finds it exports '_ensure_python_init_files'
+    -> rewrites the import line
+
+    Returns (fixed_content, description) or None.
+    """
+    _emit = emit or (lambda msg: None)
+
+    try:
+        from app.orchestrator.post_execution_reconciliation import (
+            _build_export_registry,
+            detect_import_mismatches,
+            apply_import_fixes,
+        )
+    except ImportError:
+        return None
+
+    # Parse the error to find what module was being imported from
+    cannot_import = re.search(r"cannot import name '([^']+)' from '([^']+)'", error_summary)
+    if not cannot_import:
+        return None
+
+    bad_name = cannot_import.group(1)
+    source_module = cannot_import.group(2)
+
+    # Find the source module's file on the sandbox
+    # The module path might be dotted: app.overwatcher.architecture_executor.init_files
+    module_stem = source_module.rsplit(".", 1)[-1]  # e.g. "init_files"
+
+    # Collect all segment output files to build registry
+    all_contents: Dict[str, str] = {}
+    for seg_id, seg_state in state.segments.items():
+        for rel_path in (seg_state.output_files or []):
+            if not rel_path.endswith(".py"):
+                continue
+            content = _read_file_via_sandbox(client, rel_path, actual_base)
+            if content:
+                all_contents[rel_path] = content
+
+    if not all_contents:
+        return None
+
+    # Build registry and detect mismatches
+    registry = _build_export_registry(all_contents)
+    fixes = detect_import_mismatches(
+        file_path=failing_file,
+        file_content=broken_content,
+        export_registry=registry,
+    )
+
+    # Filter to fixes for the specific error we're trying to fix
+    relevant_fixes = [f for f in fixes if f.wrong_name == bad_name]
+
+    if not relevant_fixes:
+        _emit(f"    [RECON] No match found for '{bad_name}' in module exports")
+        return None
+
+    # Apply the fix(es)
+    fixed_content = apply_import_fixes(broken_content, relevant_fixes)
+    if fixed_content == broken_content:
+        return None
+
+    fix_desc = "; ".join(
+        f"'{f.wrong_name}'->'{f.correct_name}' ({f.fix_method})"
+        for f in relevant_fixes
+    )
+    _emit(f"    [RECON] Smart fix: {fix_desc}")
+    return (fixed_content, f"Reconciliation: {fix_desc}")
 
 
 def _try_deterministic_import_fix(
