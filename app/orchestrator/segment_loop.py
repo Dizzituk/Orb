@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-SEGMENT_LOOP_BUILD_ID = "2026-02-15-v5.12-interface-reconciliation"
+SEGMENT_LOOP_BUILD_ID = "2026-02-15-v5.14-final-checkout-wiring"
 print(f"[SEGMENT_LOOP_LOADED] BUILD_ID={SEGMENT_LOOP_BUILD_ID}")
 
 
@@ -1753,6 +1753,52 @@ async def run_segmented_job(
             state.phase_checkout_boot = "error"
 
         save_state(state, job_dir_path)
+
+    # --- v5.14 FINAL CHECKOUT — Stage 10 (Autonomous Closer + Learning Report) ---
+    # Runs after Phase Checkout passes. Performs its own boot test, spec coverage
+    # check, AI review, and compiles the Pipeline Learning Report for RAG.
+    if all_segments_complete and total > 0 and state.phase_checkout_boot == "pass":
+        _emit(f"\n{'='*50}")
+        _emit("🏁 Running Final Checkout (Stage 10)...")
+        try:
+            from app.orchestrator.final_checkout import run_final_checkout
+
+            # Try to load original spec for AI review
+            _original_spec = None
+            if isinstance(parent_spec, dict):
+                _original_spec = parent_spec.get("spec_markdown") or parent_spec.get("content", "")
+                if not _original_spec:
+                    try:
+                        _original_spec = json.dumps(parent_spec)[:8000]
+                    except Exception:
+                        pass
+            elif isinstance(parent_spec, str):
+                _original_spec = parent_spec
+
+            _final_result = await run_final_checkout(
+                job_id=job_id,
+                job_dir=job_dir_path,
+                sandbox_base=os.getenv("ORB_SANDBOX_BASE", r"D:\Orb"),
+                original_spec=_original_spec,
+                state=state,
+                manifest=manifest,
+                emit=_emit,
+            )
+
+            state.integration_check = state.integration_check or {}
+            state.integration_check["final_checkout"] = _final_result.to_dict()
+            save_state(state, job_dir_path)
+
+            if _final_result.status == "pass":
+                _emit("🏁 Final Checkout PASSED")
+            else:
+                _emit(f"🏁 Final Checkout FAILED — see final_checkout_result.json")
+
+        except ImportError:
+            logger.debug("[SEGMENT_LOOP] Final Checkout module not available")
+        except Exception as _fc_err:
+            logger.warning("[SEGMENT_LOOP] v5.14 Final Checkout error: %s", _fc_err)
+            _emit(f"⚠️ Final Checkout could not run: {_fc_err}")
 
     # --- v5.7 QUARANTINE CLEANUP / ROLLBACK ---
     if _quarantine_result and _quarantine_result.has_quarantined:

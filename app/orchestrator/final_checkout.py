@@ -63,7 +63,7 @@ from app.pot_spec.grounded.size_models import MAX_FILE_LINES
 
 logger = logging.getLogger(__name__)
 
-FINAL_CHECKOUT_BUILD_ID = "2026-02-15-v3.0-autonomous-closer"
+FINAL_CHECKOUT_BUILD_ID = "2026-02-15-v3.2-pipeline-learning-report"
 print(f"[FINAL_CHECKOUT_LOADED] BUILD_ID={FINAL_CHECKOUT_BUILD_ID}")
 
 
@@ -179,9 +179,9 @@ class FinalCheckoutResult:
 
 async def run_final_checkout(
     job_id: str,
-    plan: ConstructionPlan,
-    original_file_scope: List[str],
-    job_dir: str,
+    plan: Optional[ConstructionPlan] = None,
+    original_file_scope: Optional[List[str]] = None,
+    job_dir: str = "",
     sandbox_base: str = r"D:\Orb",
     original_spec: Optional[str] = None,
     state: Optional[Any] = None,
@@ -211,6 +211,19 @@ async def run_final_checkout(
     """
     start = time.time()
     _emit = emit or (lambda msg: None)
+
+    # v3.2: Build file scope from manifest if not provided
+    if not original_file_scope and manifest:
+        _all_scope = []
+        for seg in manifest.segments:
+            _all_scope.extend(seg.file_scope)
+        original_file_scope = list(set(_all_scope))
+    original_file_scope = original_file_scope or []
+
+    # v3.2: Build a minimal ConstructionPlan from manifest if not provided
+    if plan is None:
+        plan = _build_plan_from_manifest(job_id, manifest)
+
     result = FinalCheckoutResult(job_id=job_id, total_phases=plan.total_phases)
     all_strike_records: List[StrikeRecord] = []
 
@@ -380,6 +393,26 @@ async def run_final_checkout(
     _emit(f"   Duration: {result.duration_ms}ms")
 
     _save_result(result, job_dir)
+
+    # ---------------------------------------------------------------
+    # CHECK 6: Pipeline Learning Report (absolute last thing)
+    # ---------------------------------------------------------------
+    _phase_checkout_dict = None
+    if state and hasattr(state, 'integration_check') and state.integration_check:
+        _phase_checkout_dict = state.integration_check.get("phase_checkout")
+
+    compile_pipeline_learning_report(
+        job_id=job_id,
+        job_dir=job_dir,
+        state=state,
+        manifest=manifest,
+        final_result=result,
+        phase_checkout_result=_phase_checkout_dict,
+        original_spec=original_spec,
+        emit=_emit,
+    )
+    result.checks_run.append("pipeline_learning_report")
+
     return result
 
 
@@ -1610,6 +1643,258 @@ def _build_minimal_state_from_plan(
         state.segments[phase.phase_id] = _MinimalSegState(phase.file_scope)
 
     return state
+
+
+def _build_plan_from_manifest(
+    job_id: str,
+    manifest: Any,
+) -> ConstructionPlan:
+    """
+    v3.2: Build a minimal ConstructionPlan from a SegmentManifest.
+
+    When Final Checkout is called from the segment loop (which doesn't
+    have a formal multi-phase plan), we synthesise one from the manifest
+    so all existing plan-based checks work unchanged.
+    """
+    from .construction_planner_models import PhaseDefinition, PhaseContract
+
+    all_files = []
+    if manifest:
+        for seg in manifest.segments:
+            all_files.extend(seg.file_scope)
+
+    phase = PhaseDefinition(
+        phase_id="phase-1",
+        phase_number=1,
+        title="Segmented execution (single phase)",
+        file_scope=list(set(all_files)),
+        status="complete",
+        contract=PhaseContract(
+            phase_id="phase-1",
+            exports=list(set(all_files)),
+        ),
+    )
+
+    return ConstructionPlan(
+        job_id=job_id,
+        total_phases=1,
+        phases=[phase],
+        is_multi_phase=False,
+        total_files=len(set(all_files)),
+        estimated_total_segments=manifest.total_segments if manifest else 0,
+    )
+
+
+# =============================================================================
+# CHECK 6: PIPELINE LEARNING REPORT (RAG)
+# =============================================================================
+
+
+def compile_pipeline_learning_report(
+    job_id: str,
+    job_dir: str,
+    state: Any,
+    manifest: Any,
+    final_result: FinalCheckoutResult,
+    phase_checkout_result: Optional[Dict[str, Any]] = None,
+    original_spec: Optional[str] = None,
+    emit: Optional[Callable] = None,
+) -> Dict[str, Any]:
+    """
+    v3.2: Compile the Pipeline Learning Report for RAG ingestion.
+
+    This is the ABSOLUTE LAST thing written at the end of a job.
+    It gathers every error-fix pair from every pipeline stage into
+    a single JSON file that the RAG system can index.
+
+    Data sources:
+    - Phase Checkout boot fix logs (from state)
+    - Final Checkout strike records (from final_result)
+    - Cohesion check results (from job dir)
+    - Integration check results (from state)
+    - Execution traces per segment (from job dir)
+    - Post-execution reconciliation fixes
+
+    The report is written to:
+      {job_dir}/pipeline_learning_report.json
+
+    Returns the report dict.
+    """
+    _emit = emit or (lambda msg: None)
+    _emit("\n[CHECK 6] Compiling Pipeline Learning Report...")
+
+    report: Dict[str, Any] = {
+        "schema_version": "1.0",
+        "job_id": job_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "outcome": final_result.status,  # "pass" or "fail"
+        "total_segments": manifest.total_segments if manifest else 0,
+        "total_files": len(final_result.spec_coverage.missing_files) + final_result.total_files_built if final_result.spec_coverage else 0,
+        "duration_ms": final_result.duration_ms,
+        "spec_summary": (original_spec or "")[:500],
+        "pipeline_events": [],
+        "strike_records": final_result.strike_records,
+        "stage_summaries": {},
+    }
+
+    events = report["pipeline_events"]
+
+    # --- 1. Cohesion check findings ---
+    try:
+        cohesion_path = os.path.join(job_dir, "cohesion_result.json")
+        if os.path.isfile(cohesion_path):
+            with open(cohesion_path, "r", encoding="utf-8") as f:
+                cohesion_data = json.load(f)
+            for issue in cohesion_data.get("issues", []):
+                events.append({
+                    "stage": "cohesion_check",
+                    "event_type": "cohesion_finding",
+                    "severity": issue.get("severity", "unknown"),
+                    "category": issue.get("category", ""),
+                    "description": issue.get("description", "")[:200],
+                    "source_segment": issue.get("source_segment", ""),
+                    "related_segment": issue.get("related_segment", ""),
+                    "auto_fixed": issue.get("auto_fixed", False),
+                    "auto_fix_tier": issue.get("auto_fix_tier"),
+                    "auto_fix_note": issue.get("auto_fix_note", "")[:200],
+                })
+            report["stage_summaries"]["cohesion_check"] = {
+                "status": cohesion_data.get("status"),
+                "total_issues": len(cohesion_data.get("issues", [])),
+                "auto_fixed": sum(1 for i in cohesion_data.get("issues", []) if i.get("auto_fixed")),
+            }
+    except Exception as exc:
+        logger.debug("[learning_report] cohesion: %s", exc)
+
+    # --- 2. Integration check results ---
+    if state and hasattr(state, 'integration_check') and state.integration_check:
+        ic = state.integration_check
+        if isinstance(ic, dict):
+            for issue in ic.get("tier1_issues", []):
+                events.append({
+                    "stage": "integration_check",
+                    "event_type": "integration_finding",
+                    "severity": issue.get("severity", "unknown"),
+                    "check_type": issue.get("check_type", ""),
+                    "message": issue.get("message", "")[:200],
+                    "file_a": issue.get("file_a", ""),
+                    "file_b": issue.get("file_b", ""),
+                })
+            report["stage_summaries"]["integration_check"] = {
+                "status": ic.get("status"),
+                "error_count": ic.get("error_count", 0),
+                "warning_count": ic.get("warning_count", 0),
+            }
+
+    # --- 3. Phase checkout boot fix events ---
+    if phase_checkout_result:
+        pc = phase_checkout_result
+        boot_info = pc.get("boot_test", {})
+        if boot_info:
+            report["stage_summaries"]["phase_checkout"] = {
+                "boot_status": boot_info.get("status"),
+                "boot_attempts": boot_info.get("attempts", 0),
+                "error_summary": boot_info.get("error_summary", "")[:200],
+            }
+            # Fix attempts from phase checkout
+            for fix in boot_info.get("fix_attempts", []):
+                events.append({
+                    "stage": "phase_checkout",
+                    "event_type": "boot_fix",
+                    "error": fix.get("error", "")[:200],
+                    "strategy": fix.get("strategy", ""),
+                    "resolved": fix.get("resolved", False),
+                    "file": fix.get("file", ""),
+                })
+
+    # --- 4. Per-segment execution traces ---
+    if manifest:
+        segments_dir = os.path.join(job_dir, "segments")
+        for seg in manifest.segments:
+            trace_path = os.path.join(
+                segments_dir, seg.segment_id, "execution_trace", "trace.json"
+            )
+            if os.path.isfile(trace_path):
+                try:
+                    with open(trace_path, "r", encoding="utf-8") as f:
+                        trace_data = json.load(f)
+                    events.append({
+                        "stage": "execution",
+                        "event_type": "execution_failure",
+                        "segment_id": seg.segment_id,
+                        "error": trace_data.get("error", "")[:200],
+                        "success": trace_data.get("success", False),
+                        "artifacts_written": len(trace_data.get("artifacts_written", [])),
+                        "trace_event_count": len(trace_data.get("trace_events", [])),
+                    })
+                except Exception:
+                    pass
+
+    # --- 5. Post-execution reconciliation ---
+    try:
+        recon_path = os.path.join(job_dir, "reconciliation_result.json")
+        if os.path.isfile(recon_path):
+            with open(recon_path, "r", encoding="utf-8") as f:
+                recon_data = json.load(f)
+            for fix in recon_data.get("fixes_applied", []):
+                events.append({
+                    "stage": "post_execution_reconciliation",
+                    "event_type": "import_fix",
+                    "file": fix.get("file", ""),
+                    "old_import": fix.get("old_import", "")[:100],
+                    "new_import": fix.get("new_import", "")[:100],
+                    "resolved": True,
+                })
+            report["stage_summaries"]["reconciliation"] = {
+                "files_fixed": recon_data.get("files_fixed", 0),
+                "total_fixes": len(recon_data.get("fixes_applied", [])),
+            }
+    except Exception as exc:
+        logger.debug("[learning_report] reconciliation: %s", exc)
+
+    # --- 6. Final checkout strike records (already in final_result) ---
+    report["stage_summaries"]["final_checkout"] = {
+        "status": final_result.status,
+        "boot_test_status": final_result.boot_test_status,
+        "spec_coverage_status": final_result.spec_coverage.status if final_result.spec_coverage else None,
+        "ai_review_score": final_result.ai_review.overall_score if final_result.ai_review else None,
+        "checks_run": final_result.checks_run,
+        "files_generated_by_checkout": (
+            final_result.spec_coverage.files_generated if final_result.spec_coverage else []
+        ),
+    }
+
+    # --- 7. Segment-level summary ---
+    segment_summaries = []
+    if state and hasattr(state, 'segments'):
+        for seg_id, seg_state in state.segments.items():
+            seg_summary = {
+                "segment_id": seg_id,
+                "status": seg_state.status if hasattr(seg_state, 'status') else str(seg_state),
+                "output_files": len(seg_state.output_files) if hasattr(seg_state, 'output_files') else 0,
+            }
+            if hasattr(seg_state, 'error') and seg_state.error:
+                seg_summary["error"] = seg_state.error[:200]
+            segment_summaries.append(seg_summary)
+    report["segment_summaries"] = segment_summaries
+
+    # --- Write report ---
+    report_path = os.path.join(job_dir, "pipeline_learning_report.json")
+    try:
+        os.makedirs(job_dir, exist_ok=True)
+        with open(report_path, "w", encoding="utf-8") as f:
+            json.dump(report, f, indent=2, ensure_ascii=False, default=str)
+        _emit(f"  [OK] Pipeline Learning Report written: {report_path}")
+        _emit(f"       {len(events)} pipeline event(s), {len(report['strike_records'])} strike record(s)")
+        logger.info(
+            "[final_checkout] v3.2 Pipeline Learning Report: %s (%d events)",
+            report_path, len(events),
+        )
+    except Exception as exc:
+        _emit(f"  [ERROR] Failed to write report: {exc}")
+        logger.warning("[final_checkout] v3.2 Report write failed: %s", exc)
+
+    return report
 
 
 # =============================================================================
