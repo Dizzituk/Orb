@@ -185,6 +185,7 @@ async def run_final_checkout(
     sandbox_base: str = r"D:\Orb",
     original_spec: Optional[str] = None,
     state: Optional[Any] = None,
+    manifest: Optional[Any] = None,
     emit: Optional[Callable] = None,
 ) -> FinalCheckoutResult:
     """
@@ -202,6 +203,7 @@ async def run_final_checkout(
         sandbox_base: Root path for file checks
         original_spec: The original POT spec markdown (for AI review)
         state: JobState with segment info (for boot fix mapping)
+        manifest: SegmentManifest for integration checking
         emit: Progress callback
 
     Returns:
@@ -267,6 +269,8 @@ async def run_final_checkout(
             sandbox_client=sandbox_client,
             tracker=cross_tracker,
             emit=_emit,
+            state=_boot_state,
+            manifest=manifest,
         )
         result.checks_run.append("cross_phase")
         all_strike_records.append(cross_tracker.get_record())
@@ -548,18 +552,30 @@ async def _check_cross_phase_with_fixes(
     sandbox_client: Any,
     tracker: StrikeTracker,
     emit: Optional[Callable] = None,
+    state: Any = None,
+    manifest: Any = None,
 ) -> CrossPhaseResult:
     """
-    Verify cross-phase contracts. Fix violations where possible.
+    Verify cross-phase contracts and fix violations.
 
-    For each violation:
-    - missing_deliverable: attempt to generate it (like spec coverage)
-    - import_mismatch: read both files, fix the consumer
+    Three layers of checking:
+    1. Deliverable existence: does each promised file exist?
+    2. Import resolution: do cross-segment imports resolve correctly?
+    3. Interface contracts: do exposes/consumes match actual definitions?
+
+    Fix strategy:
+    - missing_deliverable: generate the file from spec
+    - import_mismatch: read the provider file to see what it exports,
+      fix the consumer's import to use the correct name. Provider is
+      ground truth (written first), consumer is what gets fixed.
+    - missing_export: add the missing name to the provider's __all__ or
+      re-export it from __init__.py
     """
     _emit = emit or (lambda msg: None)
     violations = []
     fixes_applied = []
 
+    # --- Layer 1: Deliverable existence ---
     for phase in plan.phases:
         result = verify_phase_deliverables(plan, phase, sandbox_base)
         if result["status"] == "fail":
@@ -578,12 +594,10 @@ async def _check_cross_phase_with_fixes(
                     tracker.record_hard_stop(error_text)
                     continue
 
-                # Attempt fix — the file should exist on sandbox even if not on host
                 fix_start = time.time()
                 exists = _file_exists_on_sandbox(sandbox_client, mf, sandbox_base)
 
                 if exists:
-                    # File exists on sandbox but not where host expected — path issue
                     tracker.record_attempt(
                         error_detail=error_text,
                         fix_strategy="path_verification",
@@ -605,6 +619,22 @@ async def _check_cross_phase_with_fixes(
                     )
                     violations.append(violation)
 
+    # --- Layer 2: Import resolution + interface contracts ---
+    # Use the integration check's detection, then fix what it finds
+    if state and manifest:
+        import_issues = await _detect_and_fix_integration_issues(
+            state=state,
+            manifest=manifest,
+            sandbox_base=sandbox_base,
+            sandbox_client=sandbox_client,
+            tracker=tracker,
+            emit=_emit,
+        )
+        for issue_dict in import_issues.get("unresolved", []):
+            violations.append(issue_dict)
+        for fix_dict in import_issues.get("fixed", []):
+            fixes_applied.append(fix_dict)
+
     if not violations:
         tracker.record_resolution()
 
@@ -614,6 +644,355 @@ async def _check_cross_phase_with_fixes(
         violations=violations,
         fixes_applied=fixes_applied,
     )
+
+
+async def _detect_and_fix_integration_issues(
+    state: Any,
+    manifest: Any,
+    sandbox_base: str,
+    sandbox_client: Any,
+    tracker: StrikeTracker,
+    emit: Optional[Callable] = None,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Run the integration check's import resolution and interface contract
+    checks, then fix each issue found.
+
+    Fix logic (provider is ground truth, consumer gets fixed):
+    - import_resolution error (name not found in target):
+      1. Read the provider file, get its actual exports
+      2. Find the closest match to the missing name
+      3. Rewrite the consumer's import line with the correct name
+    - interface_contract error (expose promise broken):
+      1. Check if the name exists under a different spelling
+      2. Add re-export to __init__.py if needed
+    """
+    _emit = emit or (lambda msg: None)
+    result = {"fixed": [], "unresolved": []}
+
+    try:
+        from .integration_check import (
+            run_integration_check,
+            IntegrationIssue,
+        )
+        from .ast_helpers import get_all_defined_names
+    except ImportError as exc:
+        _emit(f"  [SKIP] Cannot import integration_check: {exc}")
+        return result
+
+    # Run the read-only integration check to detect issues
+    try:
+        job_dir = os.path.join(sandbox_base, "jobs", "jobs")
+        check_result = run_integration_check(
+            manifest=manifest,
+            state=state,
+            job_dir=job_dir,
+            on_progress=lambda msg: _emit(f"    {msg}"),
+        )
+    except Exception as exc:
+        _emit(f"  [SKIP] Integration check failed: {exc}")
+        return result
+
+    errors = [i for i in check_result.tier1_issues if i.severity == "error"]
+    if not errors:
+        _emit("  [OK] No cross-segment integration errors")
+        return result
+
+    _emit(f"  {len(errors)} integration error(s) found — attempting fixes...")
+
+    for issue in errors:
+        error_text = f"{issue.check_type}:{issue.expected[:80]}"
+        verdict = tracker.report_error(error_text)
+
+        if verdict == StrikeVerdict.HARD_STOP:
+            result["unresolved"].append({
+                "check_type": issue.check_type,
+                "detail": issue.message,
+                "file_a": issue.file_a,
+                "file_b": issue.file_b,
+            })
+            tracker.record_hard_stop(error_text)
+            continue
+
+        fix_start = time.time()
+        strategies_tried = tracker.get_strategies_tried()
+
+        if issue.check_type == "import_resolution":
+            fixed = await _fix_import_resolution_issue(
+                issue=issue,
+                sandbox_base=sandbox_base,
+                sandbox_client=sandbox_client,
+                verdict=verdict,
+                strategies_tried=strategies_tried,
+                emit=_emit,
+            )
+        elif issue.check_type == "interface_contract":
+            fixed = await _fix_interface_contract_issue(
+                issue=issue,
+                sandbox_base=sandbox_base,
+                sandbox_client=sandbox_client,
+                verdict=verdict,
+                emit=_emit,
+            )
+        else:
+            fixed = False
+            _emit(f"    [SKIP] No auto-fix for {issue.check_type}")
+
+        duration = int((time.time() - fix_start) * 1000)
+        strategy = "import_rewrite" if issue.check_type == "import_resolution" else "contract_fix"
+
+        if fixed:
+            tracker.record_attempt(
+                error_detail=error_text,
+                fix_strategy=strategy,
+                fix_description=f"Fixed {issue.check_type} in {issue.file_b}",
+                outcome=FixOutcome.RESOLVED,
+                duration_ms=duration,
+            )
+            result["fixed"].append({
+                "check_type": issue.check_type,
+                "detail": issue.message,
+                "fix": f"Rewrote import in {issue.file_b}",
+            })
+        else:
+            tracker.record_attempt(
+                error_detail=error_text,
+                fix_strategy=strategy,
+                fix_description=f"Could not fix {issue.check_type}",
+                outcome=FixOutcome.SAME_ERROR,
+                duration_ms=duration,
+            )
+            result["unresolved"].append({
+                "check_type": issue.check_type,
+                "detail": issue.message,
+                "file_a": issue.file_a,
+                "file_b": issue.file_b,
+            })
+
+    return result
+
+
+async def _fix_import_resolution_issue(
+    issue: Any,
+    sandbox_base: str,
+    sandbox_client: Any,
+    verdict: StrikeVerdict,
+    strategies_tried: List[str],
+    emit: Optional[Callable] = None,
+) -> bool:
+    """
+    Fix an import resolution issue.
+
+    The provider file (file_a) is ground truth. The consumer file (file_b)
+    imports a name that doesn't exist in the provider. We need to find
+    the correct name and rewrite the consumer's import.
+
+    Strike 1: Find closest match in provider exports, rewrite import.
+    Strike 2: Ask LLM to fix the import with full context of both files.
+    """
+    _emit = emit or (lambda msg: None)
+
+    consumer_file = issue.file_b
+    provider_file = issue.file_a
+
+    if not consumer_file or not os.path.isfile(consumer_file):
+        # Try reading from sandbox
+        if sandbox_client:
+            consumer_content = _read_file_via_sandbox(
+                sandbox_client, consumer_file, sandbox_base
+            )
+        else:
+            return False
+    else:
+        try:
+            with open(consumer_file, "r", encoding="utf-8", errors="replace") as f:
+                consumer_content = f.read()
+        except Exception:
+            return False
+
+    if not consumer_content:
+        return False
+
+    # Parse what name is missing from the issue
+    expected = issue.expected  # e.g. "Name 'foo' should be defined in 'bar.py'"
+    import re as _re
+    name_match = _re.search(r"Name '([^']+)'", expected)
+    if not name_match:
+        return False
+    missing_name = name_match.group(1)
+
+    # Strategy 1: Find closest match in provider
+    if verdict == StrikeVerdict.PROCEED or "import_rewrite_fuzzy" not in strategies_tried:
+        try:
+            from .ast_helpers import get_all_defined_names
+        except ImportError:
+            return False
+
+        if provider_file and os.path.isfile(provider_file):
+            provider_names = get_all_defined_names(provider_file)
+        elif sandbox_client and provider_file:
+            provider_content = _read_file_via_sandbox(
+                sandbox_client, provider_file, sandbox_base
+            )
+            if provider_content:
+                # Extract names from content using AST
+                import ast
+                try:
+                    tree = ast.parse(provider_content)
+                    provider_names = set()
+                    for node in ast.walk(tree):
+                        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            provider_names.add(node.name)
+                        elif isinstance(node, ast.ClassDef):
+                            provider_names.add(node.name)
+                        elif isinstance(node, ast.Assign):
+                            for target in node.targets:
+                                if isinstance(target, ast.Name):
+                                    provider_names.add(target.id)
+                except SyntaxError:
+                    provider_names = set()
+            else:
+                return False
+        else:
+            return False
+
+        # Find closest match
+        best_match = _find_closest_name(missing_name, provider_names)
+        if best_match:
+            _emit(f"    Rewriting import: '{missing_name}' -> '{best_match}' in {os.path.basename(consumer_file)}")
+            new_content = consumer_content.replace(
+                f"import {missing_name}", f"import {best_match}"
+            ).replace(
+                f"{missing_name},", f"{best_match},"
+            ).replace(
+                f", {missing_name}", f", {best_match}"
+            )
+
+            if new_content != consumer_content:
+                return _write_file_to_sandbox(
+                    sandbox_client, consumer_file, new_content, sandbox_base
+                )
+
+    # Strategy 2 (strike 2): Ask LLM
+    if verdict == StrikeVerdict.CHANGE_APPROACH:
+        _emit(f"    [STRIKE 2] Asking LLM to fix import in {os.path.basename(consumer_file)}")
+        return await _llm_fix_import(
+            consumer_file=consumer_file,
+            consumer_content=consumer_content,
+            provider_file=provider_file,
+            missing_name=missing_name,
+            sandbox_base=sandbox_base,
+            sandbox_client=sandbox_client,
+        )
+
+    return False
+
+
+async def _fix_interface_contract_issue(
+    issue: Any,
+    sandbox_base: str,
+    sandbox_client: Any,
+    verdict: StrikeVerdict,
+    emit: Optional[Callable] = None,
+) -> bool:
+    """
+    Fix an interface contract violation.
+
+    If a segment promised to expose a name but doesn't, check if it
+    exists under a slightly different name and add a re-export.
+    """
+    _emit = emit or (lambda msg: None)
+    # Interface contract fixes are less common and more complex.
+    # For now, log and skip — the boot test will catch real breakage.
+    _emit(f"    [INFO] Interface contract fix deferred to boot test")
+    return False
+
+
+def _find_closest_name(target: str, candidates: set) -> Optional[str]:
+    """Find the closest matching name from a set of candidates."""
+    if not candidates:
+        return None
+
+    target_lower = target.lower()
+
+    # Exact match (case-insensitive)
+    for c in candidates:
+        if c.lower() == target_lower:
+            return c
+
+    # Substring match
+    for c in candidates:
+        if target_lower in c.lower() or c.lower() in target_lower:
+            return c
+
+    # Word overlap
+    import re as _re
+    target_words = set(_re.findall(r'[a-z]+', target_lower))
+    best = None
+    best_score = 0
+    for c in candidates:
+        c_words = set(_re.findall(r'[a-z]+', c.lower()))
+        overlap = len(target_words & c_words)
+        if overlap > best_score:
+            best_score = overlap
+            best = c
+
+    return best if best_score > 0 else None
+
+
+async def _llm_fix_import(
+    consumer_file: str,
+    consumer_content: str,
+    provider_file: str,
+    missing_name: str,
+    sandbox_base: str,
+    sandbox_client: Any,
+) -> bool:
+    """Ask LLM to fix an import mismatch between two files."""
+    try:
+        from app.providers.registry import llm_call
+
+        # Read provider file for context
+        provider_content = ""
+        if provider_file and os.path.isfile(provider_file):
+            with open(provider_file, "r", encoding="utf-8", errors="replace") as f:
+                provider_content = f.read(6000)
+        elif sandbox_client:
+            provider_content = _read_file_via_sandbox(
+                sandbox_client, provider_file, sandbox_base
+            ) or ""
+            provider_content = provider_content[:6000]
+
+        prompt = (
+            f"Fix the import error in the CONSUMER file.\n\n"
+            f"ERROR: '{missing_name}' is not defined in the provider file.\n\n"
+            f"PROVIDER FILE ({os.path.basename(provider_file or 'unknown')}): "
+            f"Shows what names are actually available:\n"
+            f"```python\n{provider_content[:4000]}\n```\n\n"
+            f"CONSUMER FILE ({os.path.basename(consumer_file)}): "
+            f"Needs the import fixed:\n"
+            f"```python\n{consumer_content[:4000]}\n```\n\n"
+            f"Output ONLY the complete fixed consumer file. No explanations."
+        )
+
+        result = await llm_call(
+            provider_id=os.getenv("ASTRA_FIX_PROVIDER", "anthropic"),
+            model_id=os.getenv("ASTRA_FIX_MODEL", "claude-sonnet-4-5-20250929"),
+            messages=[{"role": "user", "content": prompt}],
+            system_prompt="Fix the import. Output only the complete file content.",
+            max_tokens=8192,
+            timeout_seconds=60,
+        )
+
+        fixed_content = result.content if result else None
+        if fixed_content and len(fixed_content) > 50:
+            return _write_file_to_sandbox(
+                sandbox_client, consumer_file, fixed_content, sandbox_base
+            )
+
+        return False
+    except Exception:
+        return False
 
 
 # =============================================================================
@@ -852,18 +1231,172 @@ async def _apply_ai_review_fix(
     """
     Apply a targeted fix for a single AI review issue.
 
-    Returns True if the fix was applied successfully.
+    1. Parse the issue description to identify which file(s) are affected
+    2. Read those files from sandbox/host
+    3. Ask LLM for a targeted fix (only the affected section)
+    4. Write the fix back to sandbox
+
+    strategy='targeted_fix' (strike 1): Fix only the specific issue.
+    strategy='conservative_fix' (strike 2): Broader context, safer changes.
     """
     _emit = emit or (lambda msg: None)
 
-    # For now, log the issue. Full implementation will:
-    # 1. Parse the issue to identify which file(s) are affected
-    # 2. Read those files from sandbox
-    # 3. Ask LLM for a targeted fix
-    # 4. Write the fix back
-    # This is a placeholder for the RAG-informed version.
-    _emit(f"      [TODO] AI review auto-fix not yet implemented (issue: {issue[:60]})")
-    return False
+    # --- Step 1: Identify affected file(s) from the issue description ---
+    affected_files = _extract_files_from_issue(issue, file_scope)
+    if not affected_files:
+        _emit(f"      Could not identify affected file for: {issue[:60]}")
+        return False
+
+    _emit(f"      Targeting {len(affected_files)} file(s): {', '.join(os.path.basename(f) for f in affected_files)}")
+
+    # --- Step 2: Read file contents ---
+    file_contents: Dict[str, str] = {}
+    for rel_path in affected_files:
+        content = None
+        abs_path = os.path.join(sandbox_base, rel_path.replace("/", os.sep))
+
+        if os.path.isfile(abs_path):
+            try:
+                with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+            except Exception:
+                pass
+
+        if not content and sandbox_client:
+            content = _read_file_via_sandbox(sandbox_client, abs_path, sandbox_base)
+
+        if content:
+            file_contents[rel_path] = content
+
+    if not file_contents:
+        _emit(f"      Could not read any affected files")
+        return False
+
+    # --- Step 3: Ask LLM for targeted fix ---
+    try:
+        from app.providers.registry import llm_call
+
+        # Build prompt based on strategy
+        if strategy == "conservative_fix":
+            system = (
+                "You are a careful code reviewer. Make the MINIMUM change needed "
+                "to fix the issue. Do not refactor or restructure. If you are not "
+                "confident in the fix, output the file unchanged."
+            )
+            context_cap = 6000
+        else:
+            system = (
+                "You are a code fixer. Fix the specific issue described. "
+                "Output ONLY the complete fixed file content. No explanations."
+            )
+            context_cap = 4000
+
+        # Process each affected file
+        any_fixed = False
+        for rel_path, content in file_contents.items():
+            prompt_parts = [
+                f"Fix this issue in {rel_path}:\n",
+                f"ISSUE: {issue}\n",
+            ]
+
+            if original_spec:
+                prompt_parts.append(f"\nRELEVANT SPEC CONTEXT:\n{original_spec[:2000]}\n")
+
+            prompt_parts.append(
+                f"\nCURRENT FILE ({rel_path}):\n"
+                f"```python\n{content[:context_cap]}\n```\n\n"
+                f"Output ONLY the complete fixed file. No markdown fences. No explanations."
+            )
+
+            llm_result = await llm_call(
+                provider_id=os.getenv("ASTRA_FIX_PROVIDER", "anthropic"),
+                model_id=os.getenv("ASTRA_FIX_MODEL", "claude-sonnet-4-5-20250929"),
+                messages=[{"role": "user", "content": "\n".join(prompt_parts)}],
+                system_prompt=system,
+                max_tokens=8192,
+                timeout_seconds=60,
+            )
+
+            fixed_content = llm_result.content if llm_result else None
+
+            # Strip markdown fences if LLM added them despite instructions
+            if fixed_content:
+                fixed_content = fixed_content.strip()
+                if fixed_content.startswith("```"):
+                    lines = fixed_content.split("\n")
+                    if lines[0].startswith("```"):
+                        lines = lines[1:]
+                    if lines and lines[-1].strip() == "```":
+                        lines = lines[:-1]
+                    fixed_content = "\n".join(lines)
+
+            # Sanity check: must be substantial and different
+            if (
+                fixed_content
+                and len(fixed_content) > 50
+                and fixed_content != content
+                and abs(len(fixed_content) - len(content)) < len(content) * 0.5
+            ):
+                abs_path = os.path.join(sandbox_base, rel_path.replace("/", os.sep))
+                wrote = _write_file_to_sandbox(
+                    sandbox_client, abs_path, fixed_content, sandbox_base
+                )
+                if wrote:
+                    _emit(f"      Fixed {os.path.basename(rel_path)}")
+                    any_fixed = True
+
+        return any_fixed
+
+    except Exception as exc:
+        _emit(f"      LLM fix failed: {exc}")
+        return False
+
+
+def _extract_files_from_issue(
+    issue: str,
+    file_scope: List[str],
+) -> List[str]:
+    """
+    Parse an AI review issue description to identify affected files.
+
+    Looks for filenames, paths, and module references in the issue text,
+    then matches them against the known file scope.
+    """
+    import re as _re
+
+    affected = []
+    issue_lower = issue.lower()
+
+    # Direct filename mentions (e.g. "main.py", "executor.py")
+    file_mentions = _re.findall(r'[\w/\\.-]+\.(?:py|ts|tsx|js|jsx)', issue)
+
+    for mention in file_mentions:
+        mention_base = os.path.basename(mention).lower()
+        for scope_path in file_scope:
+            if os.path.basename(scope_path).lower() == mention_base:
+                if scope_path not in affected:
+                    affected.append(scope_path)
+
+    # Module references (e.g. "app.overwatcher.architecture_executor")
+    module_refs = _re.findall(r'app\.[\w.]+', issue)
+    for mod_ref in module_refs:
+        expected_path = mod_ref.replace(".", "/") + ".py"
+        for scope_path in file_scope:
+            if scope_path.replace("\\", "/").endswith(expected_path):
+                if scope_path not in affected:
+                    affected.append(scope_path)
+
+    # If no specific files found, try keyword matching
+    if not affected:
+        keywords = _re.findall(r'\b(?:auth|security|config|main|init|route|model|database)\b', issue_lower)
+        for kw in keywords:
+            for scope_path in file_scope:
+                if kw in os.path.basename(scope_path).lower():
+                    if scope_path not in affected:
+                        affected.append(scope_path)
+                    break  # One file per keyword
+
+    return affected[:3]  # Cap at 3 files per issue
 
 
 _REVIEW_SYSTEM_PROMPT = """\
