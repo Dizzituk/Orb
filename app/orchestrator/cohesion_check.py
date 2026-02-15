@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-COHESION_CHECK_BUILD_ID = "2026-02-14-v3.2-side-effect-arch-annotation"
+COHESION_CHECK_BUILD_ID = "2026-02-15-v3.3-post-execution-import-fixes"
 print(f"[COHESION_CHECK_LOADED] BUILD_ID={COHESION_CHECK_BUILD_ID}")
 
 
@@ -842,6 +842,9 @@ def _classify_fix_tier(issue: CohesionIssue) -> int:
            "relative import" in desc_lower or \
            "'..' prefix" in fix_lower:
             return 1
+        # v3.3: Import name mismatch with both names known
+        if issue.expected and issue.actual:
+            return 1
 
     # Missing stdlib imports (logging, os, etc.)
     if cat == "missing_import":
@@ -1008,7 +1011,18 @@ def _apply_tier1_fix(issue: CohesionIssue, arch_text: str) -> Optional[str]:
     if cat == "naming_mismatch" and issue.expected and issue.actual:
         if issue.actual in arch_text:
             patched = arch_text.replace(issue.actual, issue.expected)
-            issue.auto_fix_note = f"Tier 1: Renamed '{issue.actual}' → '{issue.expected}'"
+            issue.auto_fix_note = f"Tier 1: Renamed '{issue.actual}' \u2192 '{issue.expected}'"
+            return patched
+        return None
+
+    # --- Import name mismatch (v3.3: post-execution cohesion) ---
+    # When the cohesion checker identifies a specific wrong→correct name pair
+    # in an import statement, fix it deterministically.
+    if cat == "import_mismatch" and issue.expected and issue.actual:
+        # issue.actual = wrong import name, issue.expected = correct name
+        if issue.actual in arch_text:
+            patched = arch_text.replace(issue.actual, issue.expected)
+            issue.auto_fix_note = f"Tier 1: Fixed import '{issue.actual}' \u2192 '{issue.expected}'"
             return patched
         return None
 

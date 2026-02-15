@@ -1522,6 +1522,45 @@ async def run_segmented_job(
                 break
             _emit(f"\n🔄 Pass {_pass_number} complete ({_progress_this_pass} progressed, {_remaining} remaining) — continuing...\n")
 
+    # --- v5.12 POST-EXECUTION RECONCILIATION (Option B fallback) ---
+    # After execution completes, scan all implemented files on the sandbox
+    # for import mismatches and surgically fix them. This catches anything
+    # that Option A (pre-execution interface injection) missed.
+    _any_complete = any(
+        ss.status == SegmentStatus.COMPLETE.value
+        for ss in state.segments.values()
+    )
+    _any_failed = any(
+        ss.status == SegmentStatus.FAILED.value
+        for ss in state.segments.values()
+    )
+    if _any_complete and implement_only:
+        try:
+            from app.orchestrator.post_execution_reconciliation import (
+                run_post_execution_reconciliation,
+            )
+            _emit(f"\n{'='*50}")
+            _recon_result = run_post_execution_reconciliation(
+                manifest=manifest,
+                state=state,
+                on_progress=_emit,
+            )
+            if _recon_result.fixes_applied:
+                logger.info(
+                    "[SEGMENT_LOOP] v5.12 Post-execution reconciliation: %d fix(es) in %d file(s)",
+                    len(_recon_result.fixes_applied), _recon_result.files_fixed,
+                )
+                # If fixes were applied to a FAILED segment's files, consider
+                # re-checking if the segment might now succeed
+                if _any_failed:
+                    _emit("  \U0001f4a1 Fixes applied to files from failed segment(s) — "
+                          "these may resolve the failure on retry")
+        except ImportError:
+            logger.debug("[SEGMENT_LOOP] Post-execution reconciliation not available")
+        except Exception as _recon_err:
+            logger.warning("[SEGMENT_LOOP] v5.12 Post-execution reconciliation error (non-fatal): %s", _recon_err)
+            _emit(f"\u26a0\ufe0f Post-execution reconciliation error (non-fatal): {_recon_err}")
+
     # --- v5.4 PHASE 2C: Cross-Segment Cohesion Check ---
     # After architecture generation, before execution. Runs when 2+ segments
     # have architectures (APPROVED or COMPLETE). Calls Opus 4.6 to verify
