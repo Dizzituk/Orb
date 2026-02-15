@@ -127,7 +127,7 @@ def _error_signature(error_text: str) -> str:
     normalized = re.sub(r'\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}', 'TIMESTAMP', normalized)
 
     # Remove Windows paths but keep the filename
-    normalized = re.sub(r'[A-Z]:\\[\w\\.-]+\\', 'PATH\\', normalized)
+    normalized = re.sub(r'[A-Z]:\\[\w\\.-]+\\', r'PATH\\', normalized)
 
     # Keep only the last line (the actual error message) for signature
     lines = [l.strip() for l in normalized.splitlines() if l.strip()]
