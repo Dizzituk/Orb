@@ -321,6 +321,7 @@ RULES:
     - The ONLY changes allowed: removing code that stays in the source file, and updating relative import paths if the new file is in a different directory
 11. DO NOT GUESS: If you are unsure about any import path, module name, function signature, or implementation detail, follow the architecture specification exactly. Do NOT invent module names, file paths, or helper functions that are not in the spec or the Available Modules list. Every import must resolve to a real file.
 12. FILE SIZE: Keep files focused and under 20 KB (~500 lines) where possible. If the architecture asks you to write a file that seems too large, implement it fully anyway — file decomposition is the architecture's responsibility, not yours.
+13. NO EMOJI: Do NOT use emoji characters (Unicode above U+FFFF) anywhere in Python source code — not in strings, print statements, comments, docstrings, or log messages. Use plain ASCII text only. Emoji cause UnicodeEncodeError on Windows console environments.
 """
 
 IMPLEMENTER_MODIFY_FILE_SYSTEM = """You are a code implementation agent. You receive an existing file and modification instructions from an architecture specification. You output the COMPLETE modified file.
@@ -339,6 +340,7 @@ RULES:
 11. GITIGNORE SAFETY: For .gitignore modifications, be conservative. NEVER add broad glob patterns like *.json, *.md, *.txt, *.yaml, *.yml that would exclude tracked project files. Only add specific paths or narrow patterns (e.g. dist/, node_modules/, *.pyc).
 12. API URL PATHS: When adding or modifying frontend API calls (fetch, axios, etc.), use the EXACT endpoint paths from the "Resolved API Endpoints" section in the cross-file context if provided. Do NOT invent URL prefixes — the resolved paths show the actual backend URLs including any router prefix.
 13. DO NOT GUESS: Do NOT invent module names, file paths, or helper functions that are not referenced in the architecture spec, the existing file, or the Available Modules list. Every import must resolve to a real file.
+14. NO EMOJI: Do NOT use emoji characters (Unicode above U+FFFF) anywhere in Python source code — not in strings, print statements, comments, docstrings, or log messages. Use plain ASCII text only. Emoji cause UnicodeEncodeError on Windows console environments.
 """
 
 
@@ -377,6 +379,7 @@ RULES:
 10. CROSS-FILE REFERENCES: If "Files Already Created in This Job" is provided, use EXACT import paths from those files.
 11. IMPORT PATTERNS: Follow existing import patterns shown in the "Existing Imports" section.
 12. Order edits from top-of-file to bottom-of-file.
+13. NO EMOJI: Do NOT use emoji characters in any new_text content. Use plain ASCII only.
 """
 
 

@@ -345,7 +345,9 @@ def _run_single_boot(
     Run a single boot test. Returns (passed, stdout, stderr, error_summary, failing_file).
     """
     venv = actual_base + r"\.venv\Scripts\python.exe"
+    # v2.2: Force UTF-8 to prevent UnicodeEncodeError from emoji in generated code
     cmd = (
+        f'$env:PYTHONIOENCODING="utf-8" ; '
         f'cd "{actual_base}" ; '
         f'& "{venv}" -c '
         f'"import sys; sys.path.insert(0, r\'{actual_base}\'); '
