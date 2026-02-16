@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-COHESION_CHECK_BUILD_ID = "2026-02-16-v3.4-markdown-aware-import-parsing"
+COHESION_CHECK_BUILD_ID = "2026-02-16-v3.5-cascade-tier1-to-tier2"
 print(f"[COHESION_CHECK_LOADED] BUILD_ID={COHESION_CHECK_BUILD_ID}")
 
 
@@ -1351,19 +1351,17 @@ async def attempt_auto_fixes(
                 "[cohesion_auto_fix] Tier 1 SKIP: %s in %s — pattern not found in arch text",
                 issue.issue_id, seg_id,
             )
-            # v3.2: Escalate failed missing_import fixes to blocking.
-            # A missing `import logging` / `logger = ...` is a guaranteed NameError
-            # at runtime. If Tier 1 couldn't patch it, don't let it slide as a warning.
+            # v5.20: When Tier 1 fails for missing_import, cascade to Tier 2
+            # instead of immediately escalating to blocking (which triggers
+            # expensive Opus regen). Tier 2 can often patch it for ~500 tokens.
             if issue.category == "missing_import" and issue.severity == "warning":
-                issue.severity = "blocking"
-                issue.auto_fix_note = (
-                    "Tier 1 fix FAILED (pattern not found) — escalated to blocking. "
-                    "Missing import will cause NameError at runtime."
-                )
-                logger.warning(
-                    "[cohesion_auto_fix] ⚠️ ESCALATED %s to blocking — missing import is a runtime crash",
-                    issue.issue_id,
-                )
+                if issue not in tier2_issues:
+                    issue.auto_fix_tier = 2
+                    tier2_issues.append(issue)
+                    logger.info(
+                        "[cohesion_auto_fix] Tier 1→2 CASCADE: %s — will attempt micro-LLM fix",
+                        issue.issue_id,
+                    )
 
     print(f"[cohesion_auto_fix] Tier 1: {tier1_fixed}/{len(tier1_issues)} fixes applied")
 
@@ -1415,6 +1413,20 @@ async def attempt_auto_fixes(
         f"[cohesion_auto_fix] Tier 2: {tier2_fixed}/{len(tier2_issues)} fixes applied "
         f"({tier2_calls} LLM call(s))"
     )
+
+    # v5.20: Escalate any missing_import issues that BOTH Tier 1 and Tier 2 failed to fix.
+    # These are guaranteed NameErrors at runtime and must trigger regen.
+    for issue in tier2_issues:
+        if not issue.auto_fixed and issue.category == "missing_import" and issue.severity == "warning":
+            issue.severity = "blocking"
+            issue.auto_fix_note = (
+                "Tier 1+2 fix FAILED \u2014 escalated to blocking. "
+                "Missing import will cause NameError at runtime."
+            )
+            logger.warning(
+                "[cohesion_auto_fix] \u26a0\ufe0f ESCALATED %s to blocking \u2014 Tier 1+2 both failed",
+                issue.issue_id,
+            )
 
     # =========================================================================
     # Step 4: Save patched architectures to disk

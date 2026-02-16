@@ -205,6 +205,19 @@ Reference these patterns when designing the architecture.
 """)
 
     parts.append("""
+## IMPORT COHERENCE RULES (NON-NEGOTIABLE)
+
+A downstream cohesion checker will verify these rules DETERMINISTICALLY. Violations cause expensive regen cycles. Get them right FIRST TIME.
+
+1. **Every cross-module reference needs an explicit import statement.** If module A calls `_now_iso()` from module B, the architecture for A MUST include `from ._utils import _now_iso` (or equivalent). Never assume imports are implicit.
+2. **Every import must resolve to a declared dependency.** If segment-03 imports from segment-01, then segment-01 MUST be in segment-03's dependency list.
+3. **Every exported symbol must actually exist.** If the `__init__.py` re-exports `run_segmented_job`, it must be defined in exactly one sub-module.
+4. **Include stdlib imports.** If a module uses `logging.getLogger()`, it must import `logging`. If it uses `os.path`, it must import `os`. Never assume these are inherited.
+5. **Facade modules must re-export ALL public names.** The `__init__.py` must import and re-export every function, class, and constant that external code currently imports from the original module. Missing re-exports break callers.
+6. **No circular imports.** The dependency graph between sub-modules must be a DAG. If A imports from B, B must NOT import from A (directly or transitively).
+
+For each file in your architecture, include a `## Imports` section listing every import statement the file needs. This is NOT optional.
+
 ## MODULE SIZE CONSTRAINTS (NON-NEGOTIABLE)
 
 These limits are HARD CONSTRAINTS enforced by the pipeline. Violating them will cause implementation failures.

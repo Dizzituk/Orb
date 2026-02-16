@@ -37,8 +37,8 @@ MODIFY_EDIT_MODE_THRESHOLD = 20000
 INTERFACE_SUMMARY_MAX_CHARS = 50000
 
 # Frontend configuration
-FRONTEND_PREFIX = "frontend/"
-FRONTEND_ROOT = "frontend"
+FRONTEND_PREFIX = "orb-desktop/"
+FRONTEND_ROOT = r"D:\orb-desktop"
 
 # LLM system prompts
 

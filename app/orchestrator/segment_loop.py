@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-SEGMENT_LOOP_BUILD_ID = "2026-02-16-v5.19-quarantine-guard-partial-checkout"
+SEGMENT_LOOP_BUILD_ID = "2026-02-16-v5.21-enriched-skeleton-augmentation"
 print(f"[SEGMENT_LOOP_LOADED] BUILD_ID={SEGMENT_LOOP_BUILD_ID}")
 
 
@@ -1300,6 +1300,33 @@ async def run_segmented_job(
             _emit(f"⚠️ Segment enrichment failed (non-fatal): {enrich_err}")
             _enrichment_data = {}
 
+    # --- v5.21 POST-ENRICHMENT SKELETON AUGMENTATION ---
+    # Enrichment extracted function names/signatures per segment. Wire them
+    # into the skeleton contracts so the architecture generator knows EXACTLY
+    # which symbols each file must export (not just which files are consumed).
+    # This prevents the #1 source of cohesion failures: missing_symbol errors
+    # where seg-05 imports build_evidence_bundle from seg-04 but seg-04's
+    # architecture never defined it.
+    if _enrichment_data and _contract_set and _SKELETON_AVAILABLE:
+        try:
+            from app.orchestrator.skeleton_contracts import augment_skeleton_with_enrichment
+            _augmented = augment_skeleton_with_enrichment(
+                contract_set=_contract_set,
+                enrichment_data=_enrichment_data,
+                job_dir=job_dir_path,
+            )
+            if _augmented:
+                _emit(f"🦴 Skeleton augmented: {_augmented} export binding(s) now have named symbols")
+                logger.info(
+                    "[SEGMENT_LOOP] v5.21 Skeleton augmented with %d enriched export binding(s)",
+                    _augmented,
+                )
+            else:
+                logger.debug("[SEGMENT_LOOP] v5.21 No export bindings to augment")
+        except Exception as _aug_err:
+            logger.warning("[SEGMENT_LOOP] v5.21 Skeleton augmentation failed (non-fatal): %s", _aug_err)
+            _emit(f"⚠️ Skeleton augmentation failed (non-fatal): {_aug_err}")
+
     # --- v2.2: Evidence Ledger — create/load and seed with source files ---
     _ledger = None
     try:
@@ -2149,9 +2176,11 @@ async def run_segmented_job(
             logger.warning("[SEGMENT_LOOP] v5.14 Final Checkout error: %s", _fc_err)
             _emit(f"⚠️ Final Checkout could not run: {_fc_err}")
 
-    # --- v5.16: ALWAYS distill journal (learn from both success AND failure) ---
-    # v5.19: Run on partial completion too — learn from what happened.
-    if _implementation_pass_done:
+    # --- v5.20: ALWAYS distill journal — no matter how the job ends ---
+    # Even if the job failed, crashed mid-segment, or only got through
+    # architecture generation, any data in the journal is worth ingesting.
+    # The distill function handles empty journals gracefully.
+    if total > 0:
         try:
             from app.experience.distillation import distill_job
             from app.db import get_db_session

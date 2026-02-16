@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-SKELETON_CONTRACTS_BUILD_ID = "2026-02-14-v1.1-peer-segment-imports"
+SKELETON_CONTRACTS_BUILD_ID = "2026-02-16-v2.0-enriched-export-names"
 print(f"[SKELETON_CONTRACTS_LOADED] BUILD_ID={SKELETON_CONTRACTS_BUILD_ID}")
 
 
@@ -45,15 +45,30 @@ class ExportBinding:
     """A file that this segment creates and downstream segments depend on."""
     file_path: str
     consumed_by: List[str] = field(default_factory=list)
+    # v2.0: Named symbols this file MUST export (populated from enrichment).
+    # When non-empty, the architecture generator is told explicitly which
+    # functions/classes/constants to define, and the cohesion checker validates
+    # their presence.  Empty means "export contract unknown — LLM decides."
+    names: List[str] = field(default_factory=list)
+    # v2.0: Full signatures for exported functions (optional — richer context).
+    # Format: ["def func_name(arg: Type) -> ReturnType", ...]
+    signatures: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"file_path": self.file_path, "consumed_by": self.consumed_by}
+        d: Dict[str, Any] = {"file_path": self.file_path, "consumed_by": self.consumed_by}
+        if self.names:
+            d["names"] = self.names
+        if self.signatures:
+            d["signatures"] = self.signatures
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ExportBinding":
         return cls(
             file_path=data.get("file_path", ""),
             consumed_by=data.get("consumed_by", []),
+            names=data.get("names", []),
+            signatures=data.get("signatures", []),
         )
 
 
@@ -183,6 +198,20 @@ class SkeletonContractSet:
             for exp in skeleton.exports:
                 consumers = ", ".join(f"`{c}`" for c in exp.consumed_by)
                 parts.append(f"  - `{exp.file_path}` → consumed by {consumers}")
+                # v2.0: Show required export names and signatures
+                if exp.names:
+                    parts.append(f"    **MUST EXPORT these symbols** (downstream segments depend on them):")
+                    # Pair names with signatures where available
+                    _sig_map = {}
+                    for sig in exp.signatures:
+                        # Extract function name from signature like "def foo(args) -> ret"
+                        _sig_name = sig.split("(")[0].replace("def ", "").replace("class ", "").strip()
+                        _sig_map[_sig_name] = sig
+                    for name in exp.names:
+                        if name in _sig_map:
+                            parts.append(f"      - `{_sig_map[name]}`")
+                        else:
+                            parts.append(f"      - `{name}`")
             parts.append("")
 
         # --- Imports ---
@@ -190,10 +219,21 @@ class SkeletonContractSet:
             parts.append("### This Segment IMPORTS FROM\n")
             parts.append("These files are created by upstream segments. "
                         "When you need functionality from them, import from these exact paths.\n")
+            # v2.0: Build a lookup of upstream export names by file path
+            _upstream_exports: Dict[str, ExportBinding] = {}
+            for _other_skel in self.skeletons:
+                for _exp in _other_skel.exports:
+                    if _exp.names:
+                        _upstream_exports[_exp.file_path] = _exp
             for upstream_seg, files in skeleton.imports_from.items():
                 parts.append(f"  From `{upstream_seg}`:")
                 for fp in files:
-                    parts.append(f"    - `{fp}`")
+                    _exp_info = _upstream_exports.get(fp)
+                    if _exp_info and _exp_info.names:
+                        _avail = ", ".join(f"`{n}`" for n in _exp_info.names)
+                        parts.append(f"    - `{fp}` — available symbols: {_avail}")
+                    else:
+                        parts.append(f"    - `{fp}`")
             parts.append("")
 
         # --- Peer imports (v1.1) ---
@@ -400,6 +440,173 @@ def generate_skeleton_contract(
 
 
 # =============================================================================
+# POST-ENRICHMENT AUGMENTATION
+# =============================================================================
+
+
+def augment_skeleton_with_enrichment(
+    contract_set: SkeletonContractSet,
+    enrichment_data: Dict[str, Any],
+    job_dir: Optional[str] = None,
+) -> int:
+    """
+    v2.0: Wire enrichment-extracted symbol names into skeleton export bindings.
+
+    The skeleton is generated BEFORE enrichment (deterministic, zero LLM calls).
+    Enrichment runs AFTER (AST extraction + optional LLM resolution).
+    This function bridges the gap: it reads the enrichment's `exports` and
+    `functions` lists and populates each ExportBinding's `names` and
+    `signatures` fields.
+
+    This means the architecture generator prompt will now say:
+        "_evidence.py must export: build_evidence_bundle, verify_contracts_fulfilled"
+    instead of just:
+        "_evidence.py is consumed by seg-05, seg-06, seg-07"
+
+    Args:
+        contract_set: The skeleton contract set to augment (modified in place).
+        enrichment_data: Dict of {segment_id: enrichment_dict} from enrich_segments().
+        job_dir: Optional job directory — if provided, re-saves the augmented skeleton.
+
+    Returns:
+        Number of export bindings that were augmented with names.
+    """
+    augmented_count = 0
+
+    for skeleton in contract_set.skeletons:
+        seg_id = skeleton.segment_id
+        seg_enrichment = enrichment_data.get(seg_id)
+        if not seg_enrichment:
+            continue
+
+        # Get the enrichment's exports list (symbol names) and functions list
+        enriched_exports: List[str] = seg_enrichment.get("exports", [])
+        enriched_functions: List[Dict[str, Any]] = seg_enrichment.get("functions", [])
+        enriched_classes: List[Dict[str, Any]] = seg_enrichment.get("classes", [])
+        enriched_constants: List[Dict[str, Any]] = seg_enrichment.get("constants", [])
+
+        if not enriched_exports:
+            continue
+
+        # Build a signature lookup: name -> signature string
+        sig_lookup: Dict[str, str] = {}
+        for func in enriched_functions:
+            fname = func.get("name", "")
+            fsig = func.get("signature", "")
+            if fname and fsig:
+                sig_lookup[fname] = fsig
+        for cls in enriched_classes:
+            cname = cls.get("name", "")
+            if cname:
+                sig_lookup[cname] = f"class {cname}"
+
+        # Now determine which exports belong to which file in this segment.
+        # Enrichment gives us a flat list of export names for the segment,
+        # and the skeleton has per-file ExportBindings.  For single-file
+        # segments (most common), all exports go to that one file.  For
+        # multi-file segments, we use the function's source_file or line_range
+        # to match.
+        if len(skeleton.exports) == 1:
+            # Simple case: all exports belong to the single exported file
+            binding = skeleton.exports[0]
+            binding.names = enriched_exports[:]
+            binding.signatures = [
+                sig_lookup[name] for name in enriched_exports
+                if name in sig_lookup
+            ]
+            augmented_count += 1
+            logger.info(
+                "[skeleton_contracts] v2.0 Augmented %s: %s with %d export name(s)",
+                seg_id, binding.file_path, len(binding.names),
+            )
+        elif len(skeleton.exports) > 1:
+            # Multi-file segment: try to assign exports to specific files.
+            # Use function body/line_range to guess which file each symbol
+            # belongs to.  Enrichment functions have a 'line_range' field
+            # and the skeleton has file_scope.  If we can't determine the
+            # file, distribute evenly (better than nothing).
+            #
+            # Build file -> function-name mapping from enrichment functions.
+            # Each function has a source context but no explicit file assignment
+            # (they all come from the monolith).  The segment's file_scope tells
+            # us which files this segment owns.  For refactor jobs, each file
+            # typically handles one responsibility area.
+            #
+            # Heuristic: match function names to file names.
+            # e.g. "build_evidence_bundle" -> "_evidence.py" (contains "evidence")
+            # First pass: try strong matches (name contains file stem or vice versa)
+            _assigned_names: set = set()
+            for binding in skeleton.exports:
+                _file_stem = os.path.splitext(os.path.basename(binding.file_path))[0]
+                _file_stem_clean = _file_stem.lstrip("_").lower()
+                matched_names = []
+                matched_sigs = []
+                for name in enriched_exports:
+                    _name_lower = name.lower()
+                    if _file_stem_clean in _name_lower or _name_lower in _file_stem_clean:
+                        matched_names.append(name)
+                        _assigned_names.add(name)
+                        if name in sig_lookup:
+                            matched_sigs.append(sig_lookup[name])
+
+                if matched_names:
+                    binding.names = matched_names
+                    binding.signatures = matched_sigs
+                    augmented_count += 1
+                    logger.info(
+                        "[skeleton_contracts] v2.0 Augmented %s: %s with %d export name(s)",
+                        seg_id, binding.file_path, len(binding.names),
+                    )
+
+            # Second pass: distribute remaining unassigned exports
+            _unassigned = [n for n in enriched_exports if n not in _assigned_names]
+            if _unassigned:
+                # Put unassigned on the first export binding that has no names yet,
+                # or the first binding if all already have names
+                _target = None
+                for binding in skeleton.exports:
+                    if not binding.names:
+                        _target = binding
+                        break
+                if _target is None:
+                    _target = skeleton.exports[0]
+                _target.names = list(set(_target.names + _unassigned))
+                _target.signatures = list(set(_target.signatures + [
+                    sig_lookup[n] for n in _unassigned if n in sig_lookup
+                ]))
+                if _target not in [b for b in skeleton.exports if b.names and b != _target]:
+                    augmented_count += 1
+
+            # If heuristic didn't match anything, put all exports on the first binding
+            # as a fallback (still better than empty)
+            _any_matched = any(exp.names for exp in skeleton.exports)
+            if not _any_matched and skeleton.exports:
+                skeleton.exports[0].names = enriched_exports[:]
+                skeleton.exports[0].signatures = [
+                    sig_lookup[name] for name in enriched_exports
+                    if name in sig_lookup
+                ]
+                augmented_count += 1
+                logger.info(
+                    "[skeleton_contracts] v2.0 Fallback augment %s: all %d exports on %s",
+                    seg_id, len(enriched_exports), skeleton.exports[0].file_path,
+                )
+
+    # Re-save if job_dir provided
+    if job_dir and augmented_count > 0:
+        try:
+            save_skeleton_contract(contract_set, job_dir)
+            logger.info(
+                "[skeleton_contracts] v2.0 Re-saved augmented skeleton: %d binding(s) enriched",
+                augmented_count,
+            )
+        except Exception as e:
+            logger.warning("[skeleton_contracts] v2.0 Failed to re-save augmented skeleton: %s", e)
+
+    return augmented_count
+
+
+# =============================================================================
 # PERSISTENCE
 # =============================================================================
 
@@ -436,6 +643,7 @@ __all__ = [
     "SegmentSkeleton",
     "SkeletonContractSet",
     "generate_skeleton_contract",
+    "augment_skeleton_with_enrichment",
     "save_skeleton_contract",
     "load_skeleton_contract",
     "SKELETON_CONTRACTS_BUILD_ID",

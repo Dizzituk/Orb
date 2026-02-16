@@ -185,7 +185,7 @@ async def run_architecture_execution(
     # =========================================================================
     # Step 3: Resolve sandbox base path (READ-ONLY check)
     # =========================================================================
-    sandbox_base = await _resolve_sandbox_base(client)
+    sandbox_base = _resolve_sandbox_base(client)
     logger.info("[arch_exec] Sandbox base: %s", sandbox_base)
     add_trace("SANDBOX_BASE_RESOLVED", "success", {"base_path": sandbox_base})
     
@@ -939,6 +939,75 @@ async def run_architecture_execution(
             except Exception as _jc_err:
                 logger.warning("[arch_exec] v5.5 Job checker error (non-fatal): %s", _jc_err)
             
+            # --- v5.22 PHASE 4B: Deterministic Signature Verification ---
+            # Layer 3 safety net: after the LLM-based job checker, run a
+            # deterministic AST comparison of function signatures against
+            # the skeleton contract.  Zero LLM calls.  Catches the exact
+            # class of bug that broke the architecture executor refactor.
+            try:
+                from ..signature_checker import (
+                    check_file_signatures,
+                    extract_contract_signatures_for_file,
+                )
+                _contract_sigs = extract_contract_signatures_for_file(
+                    interface_contract, rel_path,
+                )
+                if _contract_sigs:
+                    _sig_result = check_file_signatures(
+                        file_content=file_content,
+                        file_path=rel_path,
+                        contract_signatures=_contract_sigs,
+                    )
+                    if not _sig_result.passed:
+                        _mismatch_details = []
+                        for _mm in _sig_result.mismatches:
+                            _mismatch_details.append(
+                                f"SIGNATURE MISMATCH: {_mm.function_name}\n"
+                                f"  Contract requires: {_mm.expected_signature}\n"
+                                f"  Implementation has: {_mm.actual_signature}\n"
+                                f"  Differences: {'; '.join(_mm.differences)}"
+                            )
+                        for _mf in _sig_result.missing_functions:
+                            _mismatch_details.append(
+                                f"MISSING FUNCTION: {_mf} — required by contract but not found"
+                            )
+                        _sig_error = (
+                            f"Signature checker FAILED: "
+                            f"{len(_sig_result.mismatches)} mismatch(es), "
+                            f"{len(_sig_result.missing_functions)} missing.\n"
+                            + "\n".join(_mismatch_details)
+                        )
+                        last_error = _sig_error
+                        _job_checker_strike_errors.append(_sig_error)
+                        logger.warning(
+                            "[arch_exec] v5.22 Sig check strike %d: %s",
+                            strike, _sig_error[:200],
+                        )
+                        print(
+                            f"[ARCH_EXEC] v5.22 SIG_CHECK FAIL: {rel_path} — "
+                            f"{len(_sig_result.mismatches)} mismatch(es), "
+                            f"{len(_sig_result.missing_functions)} missing"
+                        )
+                        add_trace("SIGNATURE_CHECK_FAIL", f"strike_{strike}", {
+                            "path": rel_path,
+                            "mismatches": len(_sig_result.mismatches),
+                            "missing": len(_sig_result.missing_functions),
+                            "details": [m.to_dict() for m in _sig_result.mismatches[:5]],
+                        })
+                        continue  # Triggers next strike with exact signature in error
+                    else:
+                        logger.debug(
+                            "[arch_exec] v5.22 Sig check PASSED for %s (%d sigs verified)",
+                            rel_path, len(_contract_sigs),
+                        )
+                        add_trace("SIGNATURE_CHECK_PASS", "verified", {
+                            "path": rel_path,
+                            "signatures_checked": len(_contract_sigs),
+                        })
+            except ImportError:
+                logger.debug("[arch_exec] v5.22 signature_checker not available — skipping")
+            except Exception as _sc_err:
+                logger.warning("[arch_exec] v5.22 Signature check error (non-fatal): %s", _sc_err)
             # SUCCESS â€” all checks passed
             task_success = True
             break
