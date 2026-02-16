@@ -289,6 +289,16 @@ def _find_best_match(
                 return (best_candidate, "word_overlap", min(confidence, 0.85))
 
     # Strategy 3: Fuzzy match
+    # v1.1: Constants (ALL_CAPS_NAMES) are NOT safe to fuzzy-match. They represent
+    # distinct values (timeouts, IDs, limits), not renamed functions. Fuzzy-matching
+    # ARCHITECTURE_EXECUTOR_BUILD_ID -> ARCHITECTURE_LOG_PREFIX is semantically wrong.
+    # For constants, only exact or case-insensitive matches are safe (Strategy 1).
+    _is_constant = bool(re.match(r'^[A-Z][A-Z0-9_]+$', wrong_name))
+    if _is_constant:
+        # Constants: skip fuzzy matching entirely — return None so the caller
+        # knows the symbol is genuinely missing, not just renamed
+        return None
+
     matches = get_close_matches(wrong_name, list(available_names), n=1, cutoff=cutoff)
     if matches:
         return (matches[0], "fuzzy_match", 0.7)

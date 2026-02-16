@@ -15,11 +15,16 @@ v2.0 (2026-02-15): Boot test is now a fix loop. When boot fails, the system:
     5. Retries boot (up to BOOT_MAX_FIX_ATTEMPTS times)
     Size check now only validates segment-produced output files, not
     pre-existing source files. Contract check resolves paths via sandbox.
-v2.7 (2026-02-16): Silent import failure detection hardened. Boot check
-    now scans BOTH stdout and stderr for import warnings (not just stderr).
-    Fixes regex group mismatch: "cannot import name X from Y" now correctly
-    checks Y (the module path) for app.* prefix, not X (the symbol name).
-    Journal emit on silent import failure for learning system.
+v2.7 (2026-02-16): Three boot-fix hardening improvements:
+    1. Silent import detection: scans BOTH stdout+stderr (not just stderr),
+       fixes regex group mismatch for "cannot import name X from Y",
+       journals silent failures for learning system.
+    2. Grep error tolerance: -ErrorAction SilentlyContinue on Select-String
+       so quarantined/missing files don't abort the entire search.
+    3. Investigation priority: searches segment output files FIRST before
+       wider codebase, and prefers segment files when multiple matches found.
+       Prevents infrastructure files (phase_checkout_checks.py) being picked
+       over the actual broken segment file (__init__.py).
 v2.6 (2026-02-15): Relative import awareness. When boot fails with
     "cannot import name 'X' from 'a.b.c.module'", grep and investigation
     now also search for relative import forms like "from .module import X".
@@ -556,6 +561,16 @@ async def _attempt_boot_fix(
             if success:
                 return fix_desc
 
+        # v2.7: If the error is a missing constant from a constants module,
+        # try to recover the definition from the quarantined original file.
+        # This handles the recurring pattern where the LLM generates constants.py
+        # but omits some constants that existed in the original monolith.
+        quarantine_fix = _try_quarantine_constant_recovery(
+            client, actual_base, error_summary, state, _emit,
+        )
+        if quarantine_fix:
+            return quarantine_fix
+
         # Fallback: comment out the broken import as a last resort
         deterministic_fix = _try_deterministic_import_fix(
             broken_content, error_summary, full_stderr
@@ -684,7 +699,7 @@ async def _grep_sandbox_for_bad_import(
     paths_str = ",".join(f'"{p}"' for p in search_paths[:30])  # Cap at 30 files
     cmd = (
         f'Select-String -Path {paths_str} '
-        f'-Pattern "{search_pattern}" -SimpleMatch '
+        f'-Pattern "{search_pattern}" -SimpleMatch -ErrorAction SilentlyContinue '
         f'| Select-Object -First 3 -Property Filename, LineNumber, Line '
         f'| Format-List'
     )
@@ -697,7 +712,7 @@ async def _grep_sandbox_for_bad_import(
             # SimpleMatch didn't find it — try without SimpleMatch for regex
             cmd2 = (
                 f'Select-String -Path {paths_str} '
-                f'-Pattern "{search_pattern}" '
+                f'-Pattern "{search_pattern}" -ErrorAction SilentlyContinue '
                 f'| Select-Object -First 3 -Property Filename, LineNumber, Line '
                 f'| Format-List'
             )
@@ -778,48 +793,84 @@ async def _investigate_boot_error(
         rel_module = bad_source.rsplit(".", 1)[-1]
         rel_search_term = f".{rel_module}"
 
-    # Step 1: Search the sandbox app directory for files importing this module
-    # Scoped to app/ only — excludes .venv, node_modules, etc. which cause timeouts
-    _emit(f"  [INVESTIGATE] Searching sandbox app directory for imports of '{search_term}' (and relative '{rel_search_term}')...")
-    try:
-        app_dir = f"{actual_base}\\app"
-        grep_cmd = (
-            f'Get-ChildItem -Path "{app_dir}" -Filter "*.py" -Recurse '
-            f'-ErrorAction SilentlyContinue '
-            f'| Select-String -Pattern "{search_term}" -SimpleMatch '
-            f'| Select-Object -First 5 -Property Path, LineNumber, Line '
-            f'| Format-List'
-        )
-        result = client.shell_run(grep_cmd, timeout_seconds=30)
-        grep_output = (result.stdout or "").strip()
+    # Step 1: Search segment output files FIRST (most likely to contain the bug),
+    # then fall back to the wider codebase. v2.7: Prioritise segment outputs.
+    _emit(f"  [INVESTIGATE] Searching sandbox for imports of '{search_term}'...")
+    grep_output = ""
 
-        # v2.6: If nothing found with absolute path, try relative import form
-        if not grep_output and cannot_import:
-            rel_grep_cmd = (
+    # v2.7: First search segment output files directly (highest priority)
+    if hasattr(state, 'segments') and state.segments:
+        seg_output_paths = []
+        for _sid, _ss in state.segments.items():
+            for _rp in (_ss.output_files or []):
+                if _rp.endswith(".py"):
+                    _normed = _rp.replace("/", "\\")
+                    if not (_normed.startswith("C:") or _normed.startswith("D:")):
+                        seg_output_paths.append(f"{actual_base}\\{_normed}")
+                    else:
+                        seg_output_paths.append(_normed)
+        if seg_output_paths:
+            seg_paths_str = ",".join(f'"{p}"' for p in seg_output_paths[:30])
+            # Search for both absolute and relative import patterns
+            for _sp in [search_term, rel_search_term if cannot_import else None]:
+                if not _sp or grep_output:
+                    continue
+                try:
+                    _cmd = (
+                        f'Select-String -Path {seg_paths_str} '
+                        f'-Pattern "{_sp}" -SimpleMatch -ErrorAction SilentlyContinue '
+                        f'| Select-Object -First 5 -Property Path, LineNumber, Line '
+                        f'| Format-List'
+                    )
+                    _res = client.shell_run(_cmd, timeout_seconds=15)
+                    grep_output = (_res.stdout or "").strip()
+                    if grep_output:
+                        _emit(f"  [INVESTIGATE] Found in segment output files (pattern: '{_sp}')")
+                except Exception:
+                    pass
+
+    # Fall back to wider codebase search if segment outputs didn't match
+    if not grep_output:
+        _emit(f"  [INVESTIGATE] Segment outputs clean -- searching wider codebase...")
+        try:
+            app_dir = f"{actual_base}\\app"
+            grep_cmd = (
                 f'Get-ChildItem -Path "{app_dir}" -Filter "*.py" -Recurse '
                 f'-ErrorAction SilentlyContinue '
-                f'| Select-String -Pattern "{rel_search_term}" -SimpleMatch '
+                f'| Select-String -Pattern "{search_term}" -SimpleMatch '
                 f'| Select-Object -First 5 -Property Path, LineNumber, Line '
                 f'| Format-List'
             )
-            result_rel = client.shell_run(rel_grep_cmd, timeout_seconds=30)
-            grep_output = (result_rel.stdout or "").strip()
-            if grep_output:
-                _emit(f"  [INVESTIGATE] Found via relative import pattern '{rel_search_term}'")
+            result = client.shell_run(grep_cmd, timeout_seconds=30)
+            grep_output = (result.stdout or "").strip()
 
-        # If nothing in app/, also check main.py and top-level files
-        if not grep_output:
-            top_cmd = (
-                f'Select-String -Path "{actual_base}\\*.py" '
-                f'-Pattern "{search_term}" -SimpleMatch -ErrorAction SilentlyContinue '
-                f'| Select-Object -First 3 -Property Path, LineNumber, Line '
-                f'| Format-List'
-            )
-            result2 = client.shell_run(top_cmd, timeout_seconds=10)
-            grep_output = (result2.stdout or "").strip()
-    except Exception as exc:
-        _emit(f"  [INVESTIGATE] Sandbox search failed: {exc}")
-        return None
+            # v2.6: If nothing found with absolute path, try relative import form
+            if not grep_output and cannot_import:
+                rel_grep_cmd = (
+                    f'Get-ChildItem -Path "{app_dir}" -Filter "*.py" -Recurse '
+                    f'-ErrorAction SilentlyContinue '
+                    f'| Select-String -Pattern "{rel_search_term}" -SimpleMatch '
+                    f'| Select-Object -First 5 -Property Path, LineNumber, Line '
+                    f'| Format-List'
+                )
+                result_rel = client.shell_run(rel_grep_cmd, timeout_seconds=30)
+                grep_output = (result_rel.stdout or "").strip()
+                if grep_output:
+                    _emit(f"  [INVESTIGATE] Found via relative import pattern '{rel_search_term}'")
+
+            # If nothing in app/, also check main.py and top-level files
+            if not grep_output:
+                top_cmd = (
+                    f'Select-String -Path "{actual_base}\\*.py" '
+                    f'-Pattern "{search_term}" -SimpleMatch -ErrorAction SilentlyContinue '
+                    f'| Select-Object -First 3 -Property Path, LineNumber, Line '
+                    f'| Format-List'
+                )
+                result2 = client.shell_run(top_cmd, timeout_seconds=10)
+                grep_output = (result2.stdout or "").strip()
+        except Exception as exc:
+            _emit(f"  [INVESTIGATE] Sandbox search failed: {exc}")
+            return None
 
     if not grep_output:
         _emit("  [INVESTIGATE] No files in entire sandbox reference this module")
@@ -833,8 +884,22 @@ async def _investigate_boot_error(
         _emit("  [INVESTIGATE] Could not parse file paths from search results")
         return None
 
-    # Pick the first importing file (most likely the one causing the boot error)
-    importing_file_abs = path_matches[0].strip()
+    # v2.7: Prefer segment output files over infrastructure files.
+    # If we found multiple matches, prioritise files that are in segment outputs.
+    seg_output_set = set()
+    if hasattr(state, 'segments') and state.segments:
+        for _sid, _ss in state.segments.items():
+            for _rp in (_ss.output_files or []):
+                seg_output_set.add(os.path.normpath(_rp))
+                if not (_rp.startswith("C:") or _rp.startswith("D:")):
+                    seg_output_set.add(os.path.normpath(f"{actual_base}\\{_rp}"))
+
+    importing_file_abs = path_matches[0].strip()  # default: first match
+    for _pm in path_matches:
+        _pm_clean = _pm.strip()
+        if os.path.normpath(_pm_clean) in seg_output_set:
+            importing_file_abs = _pm_clean
+            break
     _emit(f"  [INVESTIGATE] Importing file: {importing_file_abs}")
 
     # Read the importing file
@@ -1153,6 +1218,141 @@ def _try_reconciliation_import_fix(
     )
     _emit(f"    [RECON] Smart fix: {fix_desc}")
     return (fixed_content, f"Reconciliation: {fix_desc}")
+
+
+def _try_quarantine_constant_recovery(
+    client: Any,
+    actual_base: str,
+    error_summary: str,
+    state: Any,
+    emit: Any,
+) -> Optional[str]:
+    """
+    v2.7: When a constant is missing from a generated constants module,
+    recover its definition from the quarantined original file.
+
+    Pattern: "cannot import name 'VERIFY_READ_TIMEOUT' from
+    'app.overwatcher.architecture_executor.constants'"
+
+    The quarantined monolith (.quarantined/architecture_executor.py) contains
+    the original constant definition. We extract it and append it to the
+    generated constants.py.
+
+    Returns fix description if successful, None otherwise.
+    """
+    _emit = emit or (lambda msg: None)
+
+    # Only handle "cannot import name" errors
+    cannot_import = re.search(r"cannot import name '([^']+)' from '([^']+)'", error_summary)
+    if not cannot_import:
+        return None
+
+    bad_name = cannot_import.group(1)
+    bad_source = cannot_import.group(2)
+
+    # Only handle constants (ALL_CAPS names) from constants-like modules
+    if not re.match(r'^[A-Z][A-Z0-9_]+$', bad_name):
+        return None
+
+    _emit(f"    [QUARANTINE_RECOVERY] Missing constant '{bad_name}' — searching quarantined files...")
+
+    # Find the quarantine directory — look for .quarantined/ in the parent
+    # of the target module. E.g. for app.overwatcher.architecture_executor.constants,
+    # the quarantine is at app/overwatcher/.quarantined/architecture_executor.py
+    module_parts = bad_source.replace(".", "/")  # app/overwatcher/architecture_executor/constants
+    parent_parts = "/".join(module_parts.split("/")[:-2])  # app/overwatcher
+
+    # Search for .quarantined files in the parent directory
+    quarantine_dir = f"{actual_base}\\{parent_parts.replace('/', chr(92))}\\.quarantined"
+    try:
+        result = client.shell_run(
+            f'Get-ChildItem -Path "{quarantine_dir}" -Filter "*.py" -ErrorAction SilentlyContinue '
+            f'| Select-Object -ExpandProperty Name',
+            timeout_seconds=10,
+        )
+        quarantined_files = [f.strip() for f in (result.stdout or "").strip().split("\n") if f.strip()]
+    except Exception:
+        quarantined_files = []
+
+    if not quarantined_files:
+        _emit(f"    [QUARANTINE_RECOVERY] No quarantined files found in {quarantine_dir}")
+        return None
+
+    _emit(f"    [QUARANTINE_RECOVERY] Found quarantined file(s): {quarantined_files}")
+
+    # Read the quarantined file and grep for the constant definition
+    for qf in quarantined_files:
+        qf_path = f"{quarantine_dir}\\{qf}"
+        try:
+            # Use Select-String to find the constant definition line(s)
+            grep_result = client.shell_run(
+                f'Select-String -Path "{qf_path}" -Pattern "^{bad_name}\\s*=" '
+                f'-ErrorAction SilentlyContinue '
+                f'| Select-Object -ExpandProperty Line',
+                timeout_seconds=10,
+            )
+            found_lines = (grep_result.stdout or "").strip()
+        except Exception:
+            continue
+
+        if not found_lines:
+            continue
+
+        # We found the constant definition — now append it to the target constants file
+        # The target is the constants module: bad_source -> file path
+        constants_rel = bad_source.replace(".", "/").replace("/", "\\") + ".py"
+        if not constants_rel.startswith("D:") and not constants_rel.startswith("C:"):
+            constants_abs = f"{actual_base}\\{constants_rel}"
+        else:
+            constants_abs = constants_rel
+
+        _emit(f"    [QUARANTINE_RECOVERY] Found definition in quarantined file: {found_lines[:120]}")
+        _emit(f"    [QUARANTINE_RECOVERY] Appending to {constants_rel}...")
+
+        # Read current constants file
+        try:
+            current_result = client.shell_run(
+                f'Get-Content -Path "{constants_abs}" -Raw -Encoding UTF8',
+                timeout_seconds=10,
+            )
+            current_content = (current_result.stdout or "").strip()
+        except Exception:
+            _emit(f"    [QUARANTINE_RECOVERY] Cannot read {constants_abs}")
+            return None
+
+        if not current_content:
+            _emit(f"    [QUARANTINE_RECOVERY] Constants file is empty")
+            return None
+
+        # Append the missing constant(s)
+        # Take the first definition line (in case grep returned multiple)
+        definition = found_lines.split("\n")[0].strip()
+        patched = f"{current_content}\n\n# Recovered from quarantined original (boot fix v2.7)\n{definition}\n"
+
+        success = _write_file_to_sandbox(client, constants_abs, patched, actual_base)
+        if success:
+            fix_desc = f"Quarantine recovery: added '{bad_name}' to {constants_rel} from original monolith"
+            _emit(f"    [QUARANTINE_RECOVERY] ✓ {fix_desc}")
+
+            # Journal the recovery for learning
+            try:
+                from app.experience.context import journal_emit
+                journal_emit(
+                    stage="boot_fix",
+                    event_type="quarantine_constant_recovery",
+                    severity="info",
+                    description=fix_desc,
+                    error_signature=f"missing_constant:{bad_name}",
+                    root_cause="LLM omitted constant from generated constants.py",
+                    resolution=f"Recovered definition '{definition[:80]}' from quarantined monolith",
+                )
+            except Exception:
+                pass
+
+            return fix_desc
+
+    _emit(f"    [QUARANTINE_RECOVERY] Could not find '{bad_name}' in quarantined files")
+    return None
 
 
 def _try_deterministic_import_fix(

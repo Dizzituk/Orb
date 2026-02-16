@@ -338,6 +338,101 @@ def run_skeleton_compliance(
                     suggested_fix="Add 'import logging' and 'logger = logging.getLogger(__name__)' to the module",
                 ))
 
+    # =========================================================================
+    # Check 6 (v2.7): Cross-segment symbol verification
+    # =========================================================================
+    # When segment A's architecture has "from .constants import X, Y, Z" and
+    # segment B owns constants.py, verify that X, Y, Z are actually defined
+    # in segment B's architecture. This catches the recurring pattern where
+    # the LLM generates constants.py but omits some constants.
+    if manifest_dict and len(architectures) > 1:
+        import re as _re
+
+        # Build a map of module_name -> (segment_id, exported_symbols)
+        # exported_symbols = set of names defined in that module's architecture
+        _module_to_segment: Dict[str, str] = {}
+        _module_exports: Dict[str, Set[str]] = {}
+
+        for _seg_data in manifest_dict.get("segments", []):
+            _sid = _seg_data.get("segment_id", "")
+            for _fp in _seg_data.get("file_scope", []):
+                _mod_name = _fp.replace("\\", "/").rsplit("/", 1)[-1].replace(".py", "").lower()
+                _module_to_segment[_mod_name] = _sid
+
+        # Extract symbols defined in each segment's architecture
+        # Look for: def func_name, class ClassName, CONSTANT_NAME =, async def func_name
+        for seg_id, arch_content in architectures.items():
+            _defined = set()
+            # Function/method definitions
+            for _m in _re.finditer(r'(?:async\s+)?def\s+(\w+)\s*\(', arch_content):
+                _defined.add(_m.group(1))
+            # Class definitions
+            for _m in _re.finditer(r'class\s+(\w+)\s*[\(:]', arch_content):
+                _defined.add(_m.group(1))
+            # Constants (ALL_CAPS = value)
+            for _m in _re.finditer(r'^([A-Z][A-Z0-9_]+)\s*=', arch_content, _re.MULTILINE):
+                _defined.add(_m.group(1))
+            # Also check for constants in prose: "defines CONSTANT_NAME"
+            for _m in _re.finditer(r'(?:defines?|contains?|exports?|provides?)\s+`?([A-Z][A-Z0-9_]+)`?', arch_content):
+                _defined.add(_m.group(1))
+
+            # Map to modules owned by this segment
+            _seg_files = set()
+            _seg_data = next((s for s in manifest_dict.get("segments", []) if s.get("segment_id") == seg_id), None)
+            if _seg_data:
+                _seg_files = {
+                    f.replace("\\", "/").rsplit("/", 1)[-1].replace(".py", "").lower()
+                    for f in _seg_data.get("file_scope", [])
+                }
+            for _mod in _seg_files:
+                _module_exports.setdefault(_mod, set()).update(_defined)
+
+        # Now check: for each segment's imports from other modules,
+        # verify the imported symbols exist in the target module's exports
+        for seg_id, arch_content in architectures.items():
+            # Extract: from .module import name1, name2, name3
+            for _m in _re.finditer(
+                r'from\s+\.(\w+)\s+import\s+([^(\n]+)',
+                arch_content,
+            ):
+                _target_mod = _m.group(1).lower()
+                _imports_str = _m.group(2).strip().rstrip("\\")
+                _imported_names = [n.strip().split(" as ")[0] for n in _imports_str.split(",") if n.strip()]
+
+                # Only check cross-segment imports
+                _target_seg = _module_to_segment.get(_target_mod)
+                if not _target_seg or _target_seg == seg_id:
+                    continue
+
+                _available = _module_exports.get(_target_mod, set())
+                if not _available:
+                    continue  # Can't verify if we don't know the exports
+
+                for _imp_name in _imported_names:
+                    _imp_name = _imp_name.strip()
+                    if not _imp_name or _imp_name.startswith("#") or _imp_name.startswith(")"):
+                        continue
+                    if _imp_name not in _available:
+                        issue_counter += 1
+                        issues.append(CohesionIssue(
+                            issue_id=f"SKEL-{issue_counter:03d}",
+                            severity="blocking",
+                            category="missing_symbol",
+                            description=(
+                                f"{seg_id} imports '{_imp_name}' from '.{_target_mod}' "
+                                f"(owned by {_target_seg}), but '{_imp_name}' is not "
+                                f"defined in {_target_seg}'s architecture. Available: "
+                                f"{sorted(list(_available))[:8]}"
+                            ),
+                            source_segment=seg_id,
+                            related_segment=_target_seg,
+                            file_path=f"{_target_mod}.py",
+                            suggested_fix=(
+                                f"Add '{_imp_name}' to {_target_seg}'s architecture "
+                                f"for {_target_mod}.py, or fix the import in {seg_id}"
+                            ),
+                        ))
+
     return issues
 
 
@@ -860,6 +955,11 @@ def _classify_fix_tier(issue: CohesionIssue) -> int:
 
     # Missing exports that need context-aware insertion
     if cat == "missing_export" and issue.suggested_fix:
+        return 2
+
+    # v2.7: Missing symbol (cross-segment import of undefined name)
+    # Tier 2: LLM adds the missing definition to the target architecture
+    if cat == "missing_symbol" and issue.suggested_fix:
         return 2
 
     # Contract violations with clear fix description
