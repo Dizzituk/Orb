@@ -15,6 +15,11 @@ v2.0 (2026-02-15): Boot test is now a fix loop. When boot fails, the system:
     5. Retries boot (up to BOOT_MAX_FIX_ATTEMPTS times)
     Size check now only validates segment-produced output files, not
     pre-existing source files. Contract check resolves paths via sandbox.
+v2.6 (2026-02-15): Relative import awareness. When boot fails with
+    "cannot import name 'X' from 'a.b.c.module'", grep and investigation
+    now also search for relative import forms like "from .module import X".
+    Previously only searched for the full dotted absolute path, which missed
+    __init__.py files and sibling modules using relative imports.
 v2.5 (2026-02-15): Strike-based boot fix loop. Different errors = progress,
     keeps going. Same error repeating = strikes accumulate per error signature.
     3 strikes on same error = hard stop. Safety cap of 12 total attempts.
@@ -623,7 +628,15 @@ async def _grep_sandbox_for_bad_import(
     elif cannot_import:
         bad_name = cannot_import.group(1)
         bad_source = cannot_import.group(2)
-        search_pattern = f"{bad_name}.*{bad_source.replace('.', r'\.')}|{bad_source.replace('.', r'\.')}.*{bad_name}"
+        # v2.6: Also search for RELATIVE imports (e.g. "from .constants import X")
+        # When bad_source is "app.overwatcher.architecture_executor.constants",
+        # the file doing the import might use "from .constants import X" (relative).
+        rel_module = bad_source.rsplit(".", 1)[-1]  # "constants"
+        search_pattern = (
+            f"{bad_name}.*{bad_source.replace('.', r'\.')}|"
+            f"{bad_source.replace('.', r'\.')}.*{bad_name}|"
+            f"from \\.{rel_module}.*import.*{bad_name}"
+        )
 
     if not search_pattern:
         return None
@@ -741,10 +754,13 @@ async def _investigate_boot_error(
         bad_name = cannot_import.group(1)
         bad_source = cannot_import.group(2)
         search_term = bad_source
+        # v2.6: Also search for relative import form
+        rel_module = bad_source.rsplit(".", 1)[-1]
+        rel_search_term = f".{rel_module}"
 
     # Step 1: Search the sandbox app directory for files importing this module
     # Scoped to app/ only — excludes .venv, node_modules, etc. which cause timeouts
-    _emit(f"  [INVESTIGATE] Searching sandbox app directory for imports of '{search_term}'...")
+    _emit(f"  [INVESTIGATE] Searching sandbox app directory for imports of '{search_term}' (and relative '{rel_search_term}')...")
     try:
         app_dir = f"{actual_base}\\app"
         grep_cmd = (
@@ -756,6 +772,20 @@ async def _investigate_boot_error(
         )
         result = client.shell_run(grep_cmd, timeout_seconds=30)
         grep_output = (result.stdout or "").strip()
+
+        # v2.6: If nothing found with absolute path, try relative import form
+        if not grep_output and cannot_import:
+            rel_grep_cmd = (
+                f'Get-ChildItem -Path "{app_dir}" -Filter "*.py" -Recurse '
+                f'-ErrorAction SilentlyContinue '
+                f'| Select-String -Pattern "{rel_search_term}" -SimpleMatch '
+                f'| Select-Object -First 5 -Property Path, LineNumber, Line '
+                f'| Format-List'
+            )
+            result_rel = client.shell_run(rel_grep_cmd, timeout_seconds=30)
+            grep_output = (result_rel.stdout or "").strip()
+            if grep_output:
+                _emit(f"  [INVESTIGATE] Found via relative import pattern '{rel_search_term}'")
 
         # If nothing in app/, also check main.py and top-level files
         if not grep_output:
