@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-SEGMENT_LOOP_BUILD_ID = "2026-02-16-v5.18-architecture-sanitiser"
+SEGMENT_LOOP_BUILD_ID = "2026-02-16-v5.19-quarantine-guard-partial-checkout"
 print(f"[SEGMENT_LOOP_LOADED] BUILD_ID={SEGMENT_LOOP_BUILD_ID}")
 
 
@@ -1327,45 +1327,69 @@ async def run_segmented_job(
     # NOT during run segments (architecture design). Quarantining during
     # architecture design breaks evidence gathering because the monolith
     # gets moved before the Critical Pipeline can read it for grounding.
+    # --- Initialise or resume state ---
+    # v5.19: Moved BEFORE quarantine so we can check segment readiness.
+    state = load_or_init_state(job_id, manifest)
+    _emit(f"📊 State: {state.summary()}")
+
     _quarantine_result = None
     if not implement_only:
         logger.debug("[SEGMENT_LOOP] v5.15 Skipping quarantine (run segments mode — architecture design only)")
     else:
-        try:
-            from app.orchestrator.package_quarantine import (
-                run_quarantine,
-                QuarantineResult,
+        # v5.19: Only quarantine when ALL segments are ready for implementation
+        # (APPROVED or COMPLETE). If any are still PENDING (e.g. blocked by
+        # cohesion failures), quarantining the monolith would break the app
+        # because the replacement modules don't all exist yet.
+        _all_ready = all(
+            s.status in (SegmentStatus.APPROVED.value, SegmentStatus.COMPLETE.value)
+            for s in state.segments.values()
+        )
+        if not _all_ready:
+            _pending = [
+                sid for sid, s in state.segments.items()
+                if s.status not in (SegmentStatus.APPROVED.value, SegmentStatus.COMPLETE.value)
+            ]
+            logger.warning(
+                "[SEGMENT_LOOP] v5.19 Quarantine SKIPPED — %d segment(s) not ready: %s",
+                len(_pending), _pending[:5],
             )
-            from app.overwatcher.sandbox_client import get_sandbox_client
-
-            _q_client = get_sandbox_client()
-            # Resolve sandbox base the same way architecture_executor does
-            _q_sandbox_base = os.getenv("ORB_SANDBOX_BASE", "D:\\Orb")
-
-            _quarantine_result = run_quarantine(
-                manifest_dict=manifest.to_dict(),
-                sandbox_base=_q_sandbox_base,
-                client=_q_client,
-                on_progress=_emit,
+            _emit(
+                f"⚠️ Quarantine skipped: {len(_pending)} segment(s) not ready for implementation "
+                f"({', '.join(_pending[:3])}{'...' if len(_pending) > 3 else ''}). "
+                f"Original file left in place."
             )
-            if _quarantine_result.has_quarantined:
-                logger.info(
-                    "[SEGMENT_LOOP] v5.7 Quarantine: %d file(s), %d dir(s)",
-                    len([e for e in _quarantine_result.entries if e.status == 'quarantined']),
-                    len(_quarantine_result.directories_created),
+        else:
+            try:
+                from app.orchestrator.package_quarantine import (
+                    run_quarantine,
+                    QuarantineResult,
                 )
-            if not _quarantine_result.all_ok:
-                for _q_err in _quarantine_result.errors:
-                    _emit(f"  ⚠️ Quarantine warning: {_q_err}")
-        except ImportError:
-            logger.debug("[SEGMENT_LOOP] Package quarantine not available")
-        except Exception as _q_err:
-            logger.warning("[SEGMENT_LOOP] v5.7 Quarantine failed (non-fatal): %s", _q_err)
-            _emit(f"⚠️ Quarantine check failed (non-fatal): {_q_err}")
+                from app.overwatcher.sandbox_client import get_sandbox_client
 
-    # --- Initialise or resume state ---
-    state = load_or_init_state(job_id, manifest)
-    _emit(f"📊 State: {state.summary()}")
+                _q_client = get_sandbox_client()
+                # Resolve sandbox base the same way architecture_executor does
+                _q_sandbox_base = os.getenv("ORB_SANDBOX_BASE", "D:\\Orb")
+
+                _quarantine_result = run_quarantine(
+                    manifest_dict=manifest.to_dict(),
+                    sandbox_base=_q_sandbox_base,
+                    client=_q_client,
+                    on_progress=_emit,
+                )
+                if _quarantine_result.has_quarantined:
+                    logger.info(
+                        "[SEGMENT_LOOP] v5.7 Quarantine: %d file(s), %d dir(s)",
+                        len([e for e in _quarantine_result.entries if e.status == 'quarantined']),
+                        len(_quarantine_result.directories_created),
+                    )
+                if not _quarantine_result.all_ok:
+                    for _q_err in _quarantine_result.errors:
+                        _emit(f"  ⚠️ Quarantine warning: {_q_err}")
+            except ImportError:
+                logger.debug("[SEGMENT_LOOP] Package quarantine not available")
+            except Exception as _q_err:
+                logger.warning("[SEGMENT_LOOP] v5.7 Quarantine failed (non-fatal): %s", _q_err)
+                _emit(f"⚠️ Quarantine check failed (non-fatal): {_q_err}")
 
     # --- Process segments in dependency order (multi-pass) ---
     # v5.11: The loop repeats until no further progress is made.
@@ -2006,7 +2030,34 @@ async def run_segmented_job(
         s.status == SegmentStatus.COMPLETE.value
         for s in state.segments.values()
     )
-    if all_segments_complete and total > 0:
+    # v5.19: Also trigger Phase Checkout when implementation pass has finished
+    # (at least 1 COMPLETE) even if some segments are still PENDING/BLOCKED.
+    # This ensures boot check + state save happen for partial implementations.
+    _any_complete = any(
+        s.status == SegmentStatus.COMPLETE.value
+        for s in state.segments.values()
+    )
+    _no_in_progress = not any(
+        s.status == SegmentStatus.IN_PROGRESS.value
+        for s in state.segments.values()
+    )
+    _implementation_pass_done = _any_complete and _no_in_progress and total > 0
+    _incomplete_segments = [
+        sid for sid, s in state.segments.items()
+        if s.status != SegmentStatus.COMPLETE.value
+    ]
+    if _implementation_pass_done and _incomplete_segments and not all_segments_complete:
+        logger.info(
+            "[SEGMENT_LOOP] v5.19 Partial completion: %d/%d complete, %d incomplete — "
+            "running Phase Checkout anyway for boot verification",
+            total - len(_incomplete_segments), total, len(_incomplete_segments),
+        )
+        _emit(
+            f"\n⚠️ {len(_incomplete_segments)} segment(s) incomplete "
+            f"({', '.join(_incomplete_segments[:3])}{'...' if len(_incomplete_segments) > 3 else ''}) "
+            f"— running Phase Checkout on completed segments"
+        )
+    if _implementation_pass_done:
         try:
             from app.orchestrator.phase_checkout import run_phase_checkout
             from app.orchestrator.skeleton_contracts import load_skeleton_contract
@@ -2099,7 +2150,8 @@ async def run_segmented_job(
             _emit(f"⚠️ Final Checkout could not run: {_fc_err}")
 
     # --- v5.16: ALWAYS distill journal (learn from both success AND failure) ---
-    if all_segments_complete and total > 0:
+    # v5.19: Run on partial completion too — learn from what happened.
+    if _implementation_pass_done:
         try:
             from app.experience.distillation import distill_job
             from app.db import get_db_session

@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-COHESION_CHECK_BUILD_ID = "2026-02-15-v3.3-post-execution-import-fixes"
+COHESION_CHECK_BUILD_ID = "2026-02-16-v3.4-markdown-aware-import-parsing"
 print(f"[COHESION_CHECK_LOADED] BUILD_ID={COHESION_CHECK_BUILD_ID}")
 
 
@@ -396,8 +396,8 @@ def run_skeleton_compliance(
                 arch_content,
             ):
                 _target_mod = _m.group(1).lower()
-                _imports_str = _m.group(2).strip().rstrip("\\")
-                _imported_names = [n.strip().split(" as ")[0] for n in _imports_str.split(",") if n.strip()]
+                _imports_str = _m.group(2).strip().rstrip("\\").strip('`')
+                _imported_names = [n.strip().strip('`').split(" as ")[0] for n in _imports_str.split(",") if n.strip()]
 
                 # Only check cross-segment imports
                 _target_seg = _module_to_segment.get(_target_mod)
@@ -409,8 +409,11 @@ def run_skeleton_compliance(
                     continue  # Can't verify if we don't know the exports
 
                 for _imp_name in _imported_names:
-                    _imp_name = _imp_name.strip()
+                    _imp_name = _imp_name.strip().strip('`').strip()
                     if not _imp_name or _imp_name.startswith("#") or _imp_name.startswith(")"):
+                        continue
+                    # v3.4: Skip non-identifier garbage from prose line captures
+                    if not _re.match(r'^[a-zA-Z_]\w*$', _imp_name):
                         continue
                     if _imp_name not in _available:
                         issue_counter += 1
