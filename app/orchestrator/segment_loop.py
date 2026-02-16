@@ -1049,6 +1049,13 @@ async def run_segmented_job(
 
     job_dir_path = get_job_dir(job_id)
 
+    # v5.16: Set journal context so all pipeline stages can emit learning entries
+    try:
+        from app.experience.context import set_job_context
+        set_job_context(job_id=job_id, job_dir=job_dir_path, job_type="segmented")
+    except Exception:
+        pass  # Non-fatal — journal is optional
+
     # --- Load manifest ---
     logger.info("[SEGMENT_LOOP] Starting segmented execution for job %s", job_id)
     _emit(f"📋 Loading manifest from {manifest_path}...")
@@ -1972,6 +1979,20 @@ async def run_segmented_job(
             logger.warning("[SEGMENT_LOOP] v5.14 Final Checkout error: %s", _fc_err)
             _emit(f"⚠️ Final Checkout could not run: {_fc_err}")
 
+    # --- v5.16: ALWAYS distill journal (learn from both success AND failure) ---
+    if all_segments_complete and total > 0:
+        try:
+            from app.experience.distillation import distill_job
+            from app.db import get_db_session
+            _distill_db = get_db_session()
+            _patterns = distill_job(_distill_db, job_id, job_dir_path)
+            if _patterns:
+                _emit(f"🧠 Distilled {len(_patterns)} experience pattern(s) from journal")
+                logger.info("[SEGMENT_LOOP] Distilled %d patterns for job %s", len(_patterns), job_id)
+            _distill_db.close()
+        except Exception as _distill_err:
+            logger.debug("[SEGMENT_LOOP] Distillation skipped: %s", _distill_err)
+
     # --- v5.7 QUARANTINE CLEANUP / ROLLBACK ---
     if _quarantine_result and _quarantine_result.has_quarantined:
         _final_status = state.compute_overall_status()
@@ -2028,5 +2049,12 @@ async def run_segmented_job(
 
     logger.info("[SEGMENT_LOOP] Job %s finished: %s", job_id, state.summary())
     print(f"[SEGMENT_LOOP] DONE: {state.summary()}")
+
+    # v5.16: Clear journal context
+    try:
+        from app.experience.context import clear_job_context
+        clear_job_context()
+    except Exception:
+        pass
 
     return state

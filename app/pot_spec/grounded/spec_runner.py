@@ -691,7 +691,7 @@ def _extract_file_scope_from_spec(
     
     Looks for patterns like:
     - Relative paths: `app/foo/bar.py`, `src/components/Foo.tsx`
-    - Absolute Windows paths: `D:\Orb\app\foo.py`, `D:/Orb/app/foo.py`
+    - Absolute Windows paths: `D:\\Orb\\app\\foo.py`, `D:/Orb/app/foo.py`
     - Backtick-wrapped paths in markdown
     - Paths from multi_file_op target files
     - Paths from grounding_data if available
@@ -729,6 +729,43 @@ def _extract_file_scope_from_spec(
     )
     for match in rel_pattern.finditer(spec_markdown):
         _add_path(match.group(1).replace('/', os.sep))
+    
+    # Pattern 1b: Sub-package paths without app/ prefix (v5.16)
+    # Specs often reference paths like "overwatcher/executor.py" instead of
+    # "app/overwatcher/executor.py". Detect known app/ subdirectories used
+    # as path prefixes and prepend "app/" so segmentation triggers correctly.
+    _app_subdirs = set()
+    try:
+        _app_root = None
+        # Discover project roots to find app/ directory
+        _disc = _discover_project_roots()
+        for _r in _disc.get('roots', []):
+            _candidate = os.path.join(_r, 'app')
+            if os.path.isdir(_candidate):
+                _app_root = _candidate
+                break
+        if _app_root:
+            _app_subdirs = {
+                d.lower() for d in os.listdir(_app_root)
+                if os.path.isdir(os.path.join(_app_root, d)) and not d.startswith('_')
+            }
+    except Exception:
+        pass
+    
+    if _app_subdirs:
+        # Match paths starting with known app subdirs (e.g. overwatcher/foo.py)
+        _subdir_pattern_str = '|'.join(re.escape(d) for d in sorted(_app_subdirs))
+        subpkg_pattern = re.compile(
+            r'(?:^|[\s`|])'
+            r'((?:' + _subdir_pattern_str + r')[/\\]'
+            r'[\w/\\.-]+\.(?:py|ts|tsx|js|jsx|json|yaml|yml|md|css))'
+            r'(?:[\s`|,]|$)',
+            re.MULTILINE,
+        )
+        for match in subpkg_pattern.finditer(spec_markdown):
+            raw = match.group(1).replace('/', os.sep)
+            # Prepend app/ since these are app subdirectory paths
+            _add_path(f"app{os.sep}{raw}")
     
     # Pattern 2: Absolute Windows paths (D:\Orb\app\foo.py or D:/Orb/app/foo.py)
     # Grounded CREATE specs from simple_create.py use full absolute paths.
@@ -1330,6 +1367,9 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
                 spot_markdown, grounding_data=None, multi_file_op=multi_file_op,
             )
             
+            logger.info("[spec_runner] v5.16 File scope: %d file(s) extracted", len(_file_scope))
+            print(f"[spec_runner] v5.16 FILE_SCOPE: {len(_file_scope)} file(s): {_file_scope[:5]}")
+
             if _file_scope:
                 # v5.6: Pre-segmentation size analysis
                 # Reads source files, AST-parses them, identifies oversized

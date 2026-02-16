@@ -15,6 +15,11 @@ v2.0 (2026-02-15): Boot test is now a fix loop. When boot fails, the system:
     5. Retries boot (up to BOOT_MAX_FIX_ATTEMPTS times)
     Size check now only validates segment-produced output files, not
     pre-existing source files. Contract check resolves paths via sandbox.
+v2.7 (2026-02-16): Silent import failure detection hardened. Boot check
+    now scans BOTH stdout and stderr for import warnings (not just stderr).
+    Fixes regex group mismatch: "cannot import name X from Y" now correctly
+    checks Y (the module path) for app.* prefix, not X (the symbol name).
+    Journal emit on silent import failure for learning system.
 v2.6 (2026-02-15): Relative import awareness. When boot fails with
     "cannot import name 'X' from 'a.b.c.module'", grep and investigation
     now also search for relative import forms like "from .module import X".
@@ -476,11 +481,26 @@ def _run_single_boot(
     stderr = (shell_result.stderr or "").strip()
 
     if "BOOT_CHECK_PASS" in stdout:
-        # v2.3: Scan stderr for silent import failures in segment output files.
+        # v2.7: Scan BOTH stdout and stderr for silent import failures.
         # The app may boot (caught in try/except) but still have broken imports.
-        # These are real bugs that need fixing.
-        silent_import_error = _check_stderr_for_silent_import_failures(stderr)
+        # These are real bugs that need fixing. Warnings appear in stdout (via
+        # print) and/or stderr (via logger.warning).
+        silent_import_error = _check_stderr_for_silent_import_failures(stderr, stdout)
         if silent_import_error:
+            # v2.7: Journal the silent failure so the learning system captures it
+            try:
+                from app.experience.context import journal_emit
+                journal_emit(
+                    stage="phase_checkout",
+                    event_type="silent_import_failure",
+                    severity="error",
+                    description=f"Boot passed but critical import failed silently: {silent_import_error[:200]}",
+                    error_signature=silent_import_error[:100],
+                    root_cause="LLM-generated code imports a symbol that does not exist in the target module",
+                    resolution="Boot check now treats silent import failures as boot failures",
+                )
+            except Exception:
+                pass
             return (False, stdout, stderr, silent_import_error, None)
         return (True, stdout, stderr, "", None)
 
@@ -995,40 +1015,56 @@ _KNOWN_PREEXISTING_FAILURES = {
 }
 
 
-def _check_stderr_for_silent_import_failures(stderr: str) -> Optional[str]:
+def _check_stderr_for_silent_import_failures(
+    stderr: str,
+    stdout: str = "",
+) -> Optional[str]:
     """
-    v2.3: Scan stderr for import failures that were silently caught.
+    v2.7: Scan boot output for import failures that were silently caught.
 
-    The boot test passed (BOOT_CHECK_PASS in stdout) but stderr may contain
+    The boot test passed (BOOT_CHECK_PASS in stdout) but output may contain
     warnings about modules that failed to import. These are real bugs —
     the module loaded but some functionality is broken.
+
+    v2.7 changes:
+    - Also scans stdout (print-based warnings, not just logging stderr)
+    - Fixes regex group mismatch: for "cannot import name X from Y",
+      now correctly checks Y (the module) not X (the name) for app.* prefix
+    - Checks both group(1) and group(2) where available
 
     Only flags import failures for project modules (app.*). Ignores
     known pre-existing third-party failures (numpy, scipy, etc.).
 
     Returns an error summary string if a silent failure is found, or None.
     """
-    if not stderr:
+    # Scan both stderr and stdout — import warnings can appear in either
+    combined = f"{stderr or ''}\n{stdout or ''}"
+    if not combined.strip():
         return None
 
     for pattern in _SILENT_IMPORT_PATTERNS:
-        for match in pattern.finditer(stderr):
+        for match in pattern.finditer(combined):
             full_match = match.group(0)
-            # Extract the module name that failed
-            module_name = match.group(1)
 
-            # Skip known pre-existing third-party failures
-            module_root = module_name.split(".")[0]
-            if module_root in _KNOWN_PREEXISTING_FAILURES:
-                continue
+            # Collect all captured groups as potential module references
+            groups = [g for g in match.groups() if g]
 
-            # Only flag project-internal imports (app.*, or relative imports)
-            if module_name.startswith("app.") or module_name.startswith("src."):
-                return full_match
+            # Check if ANY captured group references a project module
+            is_project_module = False
+            for g in groups:
+                g_root = g.split(".")[0]
+                if g_root in _KNOWN_PREEXISTING_FAILURES:
+                    break  # Known third-party — skip entire match
+                if g.startswith("app.") or g.startswith("src."):
+                    is_project_module = True
+            else:
+                # Loop completed without break (not a known pre-existing failure)
+                if is_project_module:
+                    return full_match
 
-            # Also flag if stderr explicitly mentions our architecture executor
-            if "architecture_executor" in full_match.lower():
-                return full_match
+                # Also flag if output explicitly mentions architecture_executor
+                if "architecture_executor" in full_match.lower():
+                    return full_match
 
     return None
 
