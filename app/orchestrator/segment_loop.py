@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-SEGMENT_LOOP_BUILD_ID = "2026-02-15-v5.16-cohesion-regen-loop"
+SEGMENT_LOOP_BUILD_ID = "2026-02-16-v5.18-architecture-sanitiser"
 print(f"[SEGMENT_LOOP_LOADED] BUILD_ID={SEGMENT_LOOP_BUILD_ID}")
 
 
@@ -570,6 +570,7 @@ def build_segment_context(
     job_dir_path: str,
     contract_set: Any = None,
     source_file_evidence: Optional[Dict[str, str]] = None,
+    enrichment: Optional[Dict[str, Any]] = None,  # v5.17: Stage 4B enrichment data
 ) -> Dict[str, Any]:
     """
     Build the execution context for a segment.
@@ -624,6 +625,7 @@ def build_segment_context(
         "interface_contract": _contract_markdown,
         "_grounding_data": _grounding_data,
         "source_file_evidence": source_file_evidence or {},
+        "enrichment": enrichment,  # v5.17: Stage 4B enrichment bundle
     }
 
 
@@ -726,6 +728,51 @@ async def run_segment_through_pipeline(
         result["error"] = f"Critical Pipeline failed for {seg_id}: {e}"
         logger.exception("[SEGMENT_LOOP] Critical Pipeline error for %s", seg_id)
         return result
+
+    # --- v5.18: Architecture Sanitiser (deterministic post-generation cleanup) ---
+    # Catches known LLM hallucination patterns BEFORE architecture hits disk:
+    #   1. Package self-naming (foo/foo.py alongside foo/__init__.py)
+    #   2. Out-of-scope files not in this segment's file_scope
+    #   3. Paths previously flagged as hallucinated by segmentation
+    try:
+        from app.orchestrator.architecture_sanitiser import sanitise_architecture
+        _sanitiser_scope = segment_context.get("file_scope", segment.file_scope)
+        arch_text, _san_result = sanitise_architecture(
+            arch_text=arch_text,
+            file_scope=_sanitiser_scope,
+            segment_id=seg_id,
+        )
+        if _san_result.had_fixes:
+            _emit(f"  🧹 Architecture sanitiser: {_san_result.fix_count} fix(es) applied")
+            for _fix in _san_result.fixes_applied:
+                _emit(f"    🔧 [{_fix['type']}] {_fix['description'][:120]}")
+            logger.info(
+                "[SEGMENT_LOOP] v5.18 Sanitiser applied %d fix(es) for %s",
+                _san_result.fix_count, seg_id,
+            )
+            # Persist sanitiser result alongside architecture
+            try:
+                import json as _json_san
+                _san_path = os.path.join(
+                    get_job_dir(job_id), "segments", seg_id, "arch", "sanitiser_result.json",
+                )
+                os.makedirs(os.path.dirname(_san_path), exist_ok=True)
+                with open(_san_path, "w", encoding="utf-8") as _sf:
+                    _json_san.dump({
+                        "segment_id": seg_id,
+                        "original_length": _san_result.original_length,
+                        "sanitised_length": _san_result.sanitised_length,
+                        "fixes": _san_result.fixes_applied,
+                    }, _sf, indent=2)
+            except Exception:
+                pass  # Non-fatal — logging is sufficient
+        else:
+            logger.debug("[SEGMENT_LOOP] v5.18 Sanitiser: no issues for %s", seg_id)
+    except ImportError:
+        logger.debug("[SEGMENT_LOOP] v5.18 Architecture sanitiser not available")
+    except Exception as _san_err:
+        logger.warning("[SEGMENT_LOOP] v5.18 Sanitiser error (non-fatal): %s", _san_err)
+        _emit(f"  ⚠️ Architecture sanitiser error (non-fatal): {_san_err}")
 
     # --- Save architecture per-segment on disk ---
     seg_arch_dir = os.path.join(
@@ -1205,6 +1252,54 @@ async def run_segmented_job(
     # --- v2.2: Pre-load source file evidence for refactor jobs ---
     _source_evidence = _load_source_file_evidence(manifest)
 
+    # --- v5.17 Stage 4B: SEGMENT ENRICHMENT ---
+    # Enrich segments with AST-extracted source code, cross-segment symbol
+    # maps, and LLM implementation intelligence BEFORE architecture generation.
+    # Non-fatal — if enrichment fails, pipeline continues as before.
+    _enrichment_data = {}
+    if _source_evidence and manifest.total_segments > 1:
+        try:
+            from app.orchestrator.segment_enrichment import enrich_segments
+            _emit("🔬 Running segment enrichment (Stage 4B)...")
+            _enrichment_data = await enrich_segments(
+                manifest=manifest,
+                source_evidence=_source_evidence,
+                job_dir_path=job_dir_path,
+                db=db,
+                project_id=project_id,
+            )
+            if _enrichment_data:
+                _n_enriched = len(_enrichment_data)
+                _total_symbols = sum(
+                    e.get("extraction_stats", {}).get("constants", 0)
+                    + e.get("extraction_stats", {}).get("functions", 0)
+                    + e.get("extraction_stats", {}).get("classes", 0)
+                    for e in _enrichment_data.values()
+                )
+                _n_unresolved = sum(
+                    len(e.get("unresolved", []))
+                    for e in _enrichment_data.values()
+                )
+                _emit(f"🔬 Segment enrichment complete: {_n_enriched} segment(s), "
+                      f"{_total_symbols} symbol(s) extracted")
+                if _n_unresolved:
+                    _emit(f"  ⚠️ {_n_unresolved} unresolved symbol(s) detected")
+                # Show per-segment summary
+                for _seg_id, _seg_enrich in _enrichment_data.items():
+                    _stats = _seg_enrich.get("extraction_stats", {})
+                    _risk = _seg_enrich.get("risk_level", "low")
+                    _order = _seg_enrich.get("implementation_order", 0)
+                    _risk_icon = "🔴" if _risk == "high" else "🟡" if _risk == "medium" else "🟢"
+                    _emit(f"  {_risk_icon} {_seg_id}: "
+                          f"{_stats.get('constants', 0)}C/{_stats.get('functions', 0)}F/{_stats.get('classes', 0)}Cl "
+                          f"risk={_risk} order={_order}")
+            else:
+                _emit("🔬 Segment enrichment: no data produced (pipeline continues as before)")
+        except Exception as enrich_err:
+            logger.warning("[SEGMENT_LOOP] Segment enrichment failed (non-fatal): %s", enrich_err)
+            _emit(f"⚠️ Segment enrichment failed (non-fatal): {enrich_err}")
+            _enrichment_data = {}
+
     # --- v2.2: Evidence Ledger — create/load and seed with source files ---
     _ledger = None
     try:
@@ -1380,11 +1475,33 @@ async def run_segmented_job(
                     arch_text = f.read()
                 _emit(f"  📄 Loaded architecture: {arch_path} ({len(arch_text)} chars)")
 
+                # v5.18: Sanitise loaded architecture before execution
+                try:
+                    from app.orchestrator.architecture_sanitiser import sanitise_architecture
+                    arch_text, _san_result = sanitise_architecture(
+                        arch_text=arch_text,
+                        file_scope=seg_spec.file_scope,
+                        segment_id=seg_id,
+                    )
+                    if _san_result.had_fixes:
+                        _emit(f"  🧹 Sanitiser: {_san_result.fix_count} fix(es) applied to loaded architecture")
+                        # Re-save the sanitised version
+                        try:
+                            with open(arch_path, "w", encoding="utf-8") as _sf:
+                                _sf.write(arch_text)
+                        except Exception:
+                            pass
+                except ImportError:
+                    pass
+                except Exception as _san_err:
+                    logger.warning("[SEGMENT_LOOP] v5.18 Sanitiser error on load (non-fatal): %s", _san_err)
+
                 # v2.2: Build segment context for approved-resume path
                 segment_context = build_segment_context(
                     seg_spec, state, parent_spec, job_dir_path,
                     contract_set=_contract_set,
                     source_file_evidence=_source_evidence,
+                    enrichment=_enrichment_data.get(seg_spec.segment_id),  # v5.17
                 )
 
                 # Execute via Overwatcher + Implementer
@@ -1514,6 +1631,7 @@ async def run_segmented_job(
                 seg_spec, state, parent_spec, job_dir_path,
                 contract_set=_contract_set,
                 source_file_evidence=_source_evidence,
+                enrichment=_enrichment_data.get(seg_spec.segment_id),  # v5.17
             )
 
             # v2.3 FIX #2: Inject cohesion feedback for targeted regen
@@ -1771,6 +1889,7 @@ async def run_segmented_job(
                             seg_spec, state, parent_spec, job_dir_path,
                             contract_set=_contract_set,
                             source_file_evidence=_source_evidence,
+                            enrichment=_enrichment_data.get(seg_spec.segment_id),  # v5.17
                         )
 
                         # v5.16: Inject cohesion issues as architecture-only feedback.

@@ -754,6 +754,83 @@ async def _handle_architecture(
                     _sf_inject += f"\n... (truncated from {len(_sf_content):,} chars)"
                 _si_parts.append(f"```python\n{_sf_inject}\n```\n")
 
+        # v5.17: Stage 4B Segment Enrichment — grounded evidence from AST parsing
+        _enrichment = segment_context.get("enrichment")
+        if _enrichment:
+            _si_parts.append("### Segment Enrichment (Stage 4B \u2014 Grounded Evidence)\n")
+            _si_parts.append(
+                "**CRITICAL**: The following symbols were extracted from the original source "
+                "file using AST parsing. You MUST include ALL of them in your architecture. "
+                "Missing any symbol will cause boot failure.\n"
+            )
+
+            # Constants \u2014 exact definitions
+            _enrich_constants = _enrichment.get("constants", [])
+            if _enrich_constants:
+                _si_parts.append("#### Constants (MUST preserve exact names and values)")
+                for _ec in _enrich_constants:
+                    _ec_val = _ec.get("value", "")
+                    if _ec_val:
+                        _si_parts.append(f"```python\n{_ec_val}\n```")
+                    else:
+                        _si_parts.append(f"- `{_ec.get('name', '?')}`")
+                _si_parts.append("")
+
+            # Function signatures
+            _enrich_functions = _enrichment.get("functions", [])
+            if _enrich_functions:
+                _si_parts.append("#### Functions (MUST preserve exact signatures)")
+                for _ef in _enrich_functions:
+                    _sig = _ef.get("signature", _ef.get("name", "?"))
+                    _si_parts.append(f"- `{_sig}`")
+                _si_parts.append("")
+
+            # Classes
+            _enrich_classes = _enrichment.get("classes", [])
+            if _enrich_classes:
+                _si_parts.append("#### Classes (MUST preserve)")
+                for _ecl in _enrich_classes:
+                    _si_parts.append(f"- `class {_ecl.get('name', '?')}` "
+                                     f"(methods: {', '.join(_ecl.get('methods', [])[:10])})")
+                _si_parts.append("")
+
+            # Cross-segment contract \u2014 who imports what from this segment
+            _enrich_consumed_by = _enrichment.get("consumed_by", {})
+            if _enrich_consumed_by:
+                _si_parts.append("#### Cross-Segment Contract (other segments import these from YOU)")
+                for _cb_seg, _cb_syms in _enrich_consumed_by.items():
+                    if isinstance(_cb_syms, list):
+                        _si_parts.append(f"- **{_cb_seg}** imports: {', '.join(f'`{s}`' for s in _cb_syms)}")
+                _si_parts.append("")
+
+            # What this segment needs from others
+            _enrich_consumes = _enrichment.get("consumes", {})
+            if _enrich_consumes:
+                _si_parts.append("#### Dependencies (symbols YOU need from other segments)")
+                for _cn_seg, _cn_syms in _enrich_consumes.items():
+                    if isinstance(_cn_syms, list):
+                        _si_parts.append(f"- From **{_cn_seg}**: {', '.join(f'`{s}`' for s in _cn_syms)}")
+                _si_parts.append("")
+
+            # Design guidance from LLM intelligence
+            _enrich_guidance = _enrichment.get("design_guidance", "")
+            if _enrich_guidance:
+                _si_parts.append(f"#### Design Guidance\n{_enrich_guidance}\n")
+
+            # Risk flags
+            _enrich_risk = _enrichment.get("risk_level", "low")
+            if _enrich_risk in ("medium", "high"):
+                _enrich_risk_notes = _enrichment.get("risk_notes", "")
+                _si_parts.append(f"\u26a0\ufe0f **Risk: {_enrich_risk.upper()}** \u2014 {_enrich_risk_notes}\n")
+
+            # Unresolved symbols warning
+            _enrich_unresolved = _enrichment.get("unresolved", [])
+            if _enrich_unresolved:
+                _si_parts.append("\u274c **UNRESOLVED SYMBOLS (will cause boot failure):**")
+                for _eu in _enrich_unresolved:
+                    _si_parts.append(f"- {_eu}")
+                _si_parts.append("")
+
         # Upstream evidence (completed segments' output)
         _si_evidence = segment_context.get("evidence", [])
         if _si_evidence:
@@ -880,6 +957,7 @@ async def _handle_architecture(
             spec_markdown=spec_markdown,
             use_json_critique=True,
             segment_contract_markdown=_segment_contract_for_critique or None,
+            segment_file_scope=segment_context.get("file_scope") if segment_context else None,
         )
     except Exception as e:
         logger.exception("[critical_pipeline] Pipeline failed: %s", e)

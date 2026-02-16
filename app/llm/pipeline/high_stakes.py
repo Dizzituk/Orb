@@ -626,6 +626,7 @@ async def run_high_stakes_with_critique(
     spec_markdown: Optional[str] = None,  # v5.0: Full POT spec with grounded evidence
     use_json_critique: bool = True,
     segment_contract_markdown: Optional[str] = None,  # v5.4 Phase 2B: Interface contract for critique
+    segment_file_scope: Optional[List[str]] = None,  # v5.18: File scope for architecture sanitiser
 ) -> LLMResult:
     """Run high-stakes critique pipeline.
     
@@ -1063,6 +1064,30 @@ END OF POT SPEC - Architecture must implement EXACTLY the above
         job_id = str(envelope.job_id)
         project_id = int(getattr(envelope, "project_id", 0))
         
+        # v5.18: Sanitise draft BEFORE storing and BEFORE critique loop.
+        # This catches hallucinated paths (package self-naming, out-of-scope files,
+        # phantom evidence references) so the critique loop doesn't waste iterations
+        # trying to fix structurally invalid architectures.
+        _sanitised_draft = draft.content
+        try:
+            from app.orchestrator.architecture_sanitiser import sanitise_architecture
+            _sanitised_draft, _san_result = sanitise_architecture(
+                arch_text=draft.content,
+                file_scope=segment_file_scope,
+                segment_id=str(getattr(envelope, 'job_id', 'unknown')),
+            )
+            if _san_result.had_fixes:
+                draft.content = _sanitised_draft
+                logger.info(
+                    "[high_stakes] v5.18 Sanitiser applied %d fix(es) before critique loop",
+                    _san_result.fix_count,
+                )
+                print(f"[DEBUG] [high_stakes] v5.18 Sanitiser: {_san_result.summary()}")
+        except ImportError:
+            pass  # Sanitiser not available — continue without it
+        except Exception as _san_err:
+            logger.warning("[high_stakes] v5.18 Sanitiser error (non-fatal): %s", _san_err)
+
         # Store initial architecture (Block 4)
         arch_id, arch_hash, _ = store_architecture_artifact(
             db=db,
