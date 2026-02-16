@@ -151,6 +151,7 @@ async def call_json_critic(
     env_context: Optional[Dict[str, Any]] = None,
     envelope: JobEnvelope,
     segment_contract_markdown: Optional[str] = None,
+    enrichment_markdown: Optional[str] = None,  # v5.18: AST-extracted symbols
 ) -> CritiqueResult:
     """Call critic with JSON output schema. Returns structured CritiqueResult."""
     critique_provider, critique_model, critique_max_tokens = _get_critique_model_config()
@@ -224,6 +225,7 @@ async def call_json_critic(
         spec_json=spec_json,
         spec_markdown=spec_markdown,
         env_context=env_context,
+        enrichment_markdown=enrichment_markdown,
     )
     
     system_message = """You are a critical architecture reviewer. Output ONLY valid JSON.

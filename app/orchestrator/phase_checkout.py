@@ -35,7 +35,7 @@ from .phase_checkout_checks import (
 
 logger = logging.getLogger(__name__)
 
-PHASE_CHECKOUT_BUILD_ID = "2026-02-15-v2.0-boot-fix-loop"
+PHASE_CHECKOUT_BUILD_ID = "2026-02-16-v2.8-boot-fix-hardening"
 print(f"[PHASE_CHECKOUT_LOADED] BUILD_ID={PHASE_CHECKOUT_BUILD_ID}")
 
 

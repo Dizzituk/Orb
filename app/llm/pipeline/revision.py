@@ -146,8 +146,12 @@ def build_spec_anchored_revision_prompt(
     spec_markdown: Optional[str] = None,
     segment_contract_markdown: Optional[str] = None,  # v2.1: skeleton contracts
     env_context: Optional[Dict[str, Any]] = None,  # v2.1: tech stack context
+    enrichment_markdown: Optional[str] = None,  # v5.18: AST-extracted symbols
 ) -> str:
     """Build revision prompt with spec-anchoring to prevent drift.
+    
+    v5.18: Now includes enrichment_markdown so revision has the same
+    symbol knowledge as the draft stage.
     
     v2.1: Now includes segment_contract_markdown and env_context so the
     revision model has the same context as the draft and critique stages.
@@ -273,6 +277,19 @@ that are listed in this contract. Other segments depend on these exact interface
 
 """
 
+    if enrichment_markdown:
+        prompt += f"""SEGMENT ENRICHMENT (AST-extracted symbols from source file):
+============================================================
+The following symbols were extracted from the original source file.
+This list is NOT exhaustive — the source may contain additional
+functions not captured by AST extraction. If a symbol logically
+belongs in this segment, include it even if not listed below.
+
+{enrichment_markdown}
+============================================================
+
+"""
+
     prompt += """YOUR TASK:
 ==========
 1. Review each blocking issue
@@ -323,9 +340,11 @@ async def call_revision(
     envelope: JobEnvelope,
     segment_contract_markdown: Optional[str] = None,  # v2.1
     env_context: Optional[Dict[str, Any]] = None,  # v2.1
+    enrichment_markdown: Optional[str] = None,  # v5.18: AST-extracted symbols
 ) -> Optional[str]:
     """Call revision model based on blocking issues.
     
+    v5.18: Now accepts enrichment_markdown for symbol awareness.
     v2.1: Now accepts segment_contract_markdown and env_context to give
     the revision model the same context as draft and critique stages.
     
@@ -356,6 +375,7 @@ async def call_revision(
         spec_markdown=spec_markdown,
         segment_contract_markdown=segment_contract_markdown,  # v2.1
         env_context=env_context,  # v2.1
+        enrichment_markdown=enrichment_markdown,  # v5.18
     )
     
     revision_messages = [
@@ -424,6 +444,7 @@ async def run_revision_loop(
     envelope: JobEnvelope,
     env_context: Optional[Dict[str, Any]] = None,
     segment_contract_markdown: Optional[str] = None,  # v5.4 Phase 2B
+    enrichment_markdown: Optional[str] = None,  # v5.18: AST-extracted symbols
     # Callback to store revised architecture
     store_architecture_fn=None,
 ) -> Tuple[str, int, bool, CritiqueResult]:
@@ -471,6 +492,7 @@ async def run_revision_loop(
             spec_markdown=spec_markdown,
             env_context=env_context,
             segment_contract_markdown=segment_contract_markdown,
+            enrichment_markdown=enrichment_markdown,
             envelope=envelope,
         )
         
@@ -510,6 +532,7 @@ async def run_revision_loop(
                 envelope=envelope,
                 segment_contract_markdown=segment_contract_markdown,  # v2.1
                 env_context=env_context,  # v2.1
+                enrichment_markdown=enrichment_markdown,  # v5.18
             )
             
             if revised_content:

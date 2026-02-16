@@ -445,6 +445,16 @@ def sandbox_read_file(path: str, max_chars: int = 8000) -> Tuple[bool, Optional[
         exists, file_info = sandbox_path_exists(path)
         if exists and file_info:
             actual_path = file_info.get("actual_path", path)
+        elif not exists:
+            # v2.3 FIX: If sandbox_path_exists says file doesn't exist, don't
+            # attempt reads that will fail and produce misleading HARD READ FAIL
+            # errors. This commonly happens when GPT's evidence loop requests reads
+            # of files that are CREATE targets (not yet implemented).
+            logger.info(
+                "[evidence_gathering] v2.3 sandbox_read_file: path does not exist, skipping: %s",
+                path,
+            )
+            return False, None
         else:
             actual_path = path
         

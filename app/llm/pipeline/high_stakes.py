@@ -627,6 +627,7 @@ async def run_high_stakes_with_critique(
     use_json_critique: bool = True,
     segment_contract_markdown: Optional[str] = None,  # v5.4 Phase 2B: Interface contract for critique
     segment_file_scope: Optional[List[str]] = None,  # v5.18: File scope for architecture sanitiser
+    enrichment_markdown: Optional[str] = None,  # v5.18: AST-extracted symbols for critique/revision
 ) -> LLMResult:
     """Run high-stakes critique pipeline.
     
@@ -1127,6 +1128,7 @@ END OF POT SPEC - Architecture must implement EXACTLY the above
             env_context=env_context,
             store_architecture_fn=store_architecture_artifact,
             segment_contract_markdown=segment_contract_markdown,
+            enrichment_markdown=enrichment_markdown,
         )
         
         if trace:

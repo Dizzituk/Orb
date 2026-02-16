@@ -15,6 +15,16 @@ v2.0 (2026-02-15): Boot test is now a fix loop. When boot fails, the system:
     5. Retries boot (up to BOOT_MAX_FIX_ATTEMPTS times)
     Size check now only validates segment-produced output files, not
     pre-existing source files. Contract check resolves paths via sandbox.
+v2.8 (2026-02-16): Four boot-fix fixes from sg-38070318 post-mortem:
+    1. FIX: _investigate_boot_error now receives `state` parameter —
+       previously crashed with NameError when searching segment outputs.
+    2. FIX: Pre-existing error detection — when grep finds zero matches
+       in segment outputs AND BOOT_CHECK_PASS was in stdout, treat as
+       PASS (the error is pre-existing, not caused by this refactor).
+    3. FIX: Grep file list now filters out quarantined/non-existent
+       paths before passing to Select-String.
+    4. FIX: Boot check token detection — checks stdout for BOOT_CHECK_PASS
+       before treating stderr as failure.
 v2.7 (2026-02-16): Three boot-fix hardening improvements:
     1. Silent import detection: scans BOTH stdout+stderr (not just stderr),
        fixes regex group mismatch for "cannot import name X from Y",
@@ -381,6 +391,32 @@ async def run_boot_test_with_fix_loop(
                 emit=_emit,
             )
             if not failing_file:
+                # v2.8: PRE-EXISTING ERROR DETECTION
+                # If grep found NOTHING in segment outputs, check if the app
+                # actually booted successfully. The error may be pre-existing
+                # and non-fatal (caught by try/except in the codebase).
+                if "BOOT_CHECK_PASS" in (stdout or ""):
+                    _emit("  [PRE-EXISTING] Error not in segment outputs but BOOT_CHECK_PASS present")
+                    _emit(f"  [PRE-EXISTING] Treating as pre-existing non-fatal error: {error_summary[:120]}")
+                    # Journal the pre-existing error for awareness
+                    try:
+                        from app.experience.context import journal_emit
+                        journal_emit(
+                            stage="phase_checkout",
+                            event_type="pre_existing_error_detected",
+                            severity="info",
+                            description=f"Boot error is pre-existing (not in segment outputs): {error_summary[:200]}",
+                            error_signature=sig,
+                        )
+                    except Exception:
+                        pass
+                    # Treat as PASS since the app actually booted
+                    elapsed = int((time.time() - start) * 1000)
+                    return BootTestResult(
+                        status="pass", stdout=stdout, stderr=stderr,
+                        duration_ms=elapsed,
+                    )
+
                 # v2.4: Investigation step -- search the WIDER sandbox, not just segment outputs
                 _emit("  [INVESTIGATE] Segment outputs clean -- searching wider codebase...")
                 investigation_result = await _investigate_boot_error(
@@ -388,6 +424,7 @@ async def run_boot_test_with_fix_loop(
                     actual_base=actual_base,
                     error_summary=error_summary,
                     full_stderr=stderr,
+                    state=state,
                     emit=_emit,
                 )
                 if investigation_result:
@@ -398,6 +435,10 @@ async def run_boot_test_with_fix_loop(
                         continue  # Re-boot without entering _attempt_boot_fix
                     # investigation found the file but didn't fix it -- fall through to _attempt_boot_fix
                 else:
+                    # v2.8: Even without BOOT_CHECK_PASS, if grep AND investigation
+                    # both found nothing in our segments, this is likely pre-existing.
+                    _emit("  [PRE-EXISTING] Error not found in segment outputs or wider codebase")
+                    _emit("  [INCONCLUSIVE] Cannot determine if error is from our changes or pre-existing")
                     _emit("  [ABORT] Cannot identify failing file from traceback, grep, or investigation")
                     break
 
@@ -680,19 +721,42 @@ async def _grep_sandbox_for_bad_import(
 
     # Grep across all segment output files on the sandbox
     # Build a list of paths to search from the state
+    # v2.8: Validate each path exists on sandbox before including it.
+    # Quarantined files (e.g. original monolith moved to .quarantined/)
+    # no longer exist at their original path and cause Select-String errors.
     search_paths = []
     for seg_id, seg_state in state.segments.items():
         for rel_path in (seg_state.output_files or []):
             if rel_path.endswith(".py"):
                 normed = rel_path.replace("/", "\\")
                 if not (normed.startswith("C:") or normed.startswith("D:")):
-                    search_paths.append(f"{actual_base}\\{normed}")
+                    abs_p = f"{actual_base}\\{normed}"
                 else:
-                    search_paths.append(normed)
+                    abs_p = normed
+                # v2.8: Skip paths that contain .quarantined
+                if ".quarantined" in abs_p:
+                    continue
+                search_paths.append(abs_p)
 
     if not search_paths:
         _emit("  [GREP] No output files to search")
         return None
+
+    # v2.8: Validate paths exist on sandbox in one batch call
+    # This prevents Select-String errors for quarantined/moved files
+    try:
+        test_paths_str = "; ".join(
+            f'if (Test-Path "{p}") {{ "{p}" }}'
+            for p in search_paths[:30]
+        )
+        validate_result = client.shell_run(test_paths_str, timeout_seconds=15)
+        valid_stdout = (validate_result.stdout or "").strip()
+        if valid_stdout:
+            validated_paths = [p.strip() for p in valid_stdout.split("\n") if p.strip()]
+            if validated_paths:
+                search_paths = validated_paths
+    except Exception:
+        pass  # Fall through to use unvalidated paths with -ErrorAction SilentlyContinue
 
     # Run Select-String on the sandbox — batch the paths
     # Use a simple grep command
@@ -755,6 +819,7 @@ async def _investigate_boot_error(
     actual_base: str,
     error_summary: str,
     full_stderr: str,
+    state: Any,
     emit: Any,
 ) -> Optional[Tuple[str, Optional[str]]]:
     """

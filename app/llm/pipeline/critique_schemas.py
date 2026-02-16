@@ -403,8 +403,12 @@ def build_json_critique_prompt(
     spec_markdown: Optional[str] = None,
     env_context: Optional[Dict[str, Any]] = None,
     segment_contract_markdown: Optional[str] = None,
+    enrichment_markdown: Optional[str] = None,  # v5.18: AST-extracted symbols for grounded critique
 ) -> str:
     """Build prompt for structured JSON critique output.
+    
+    v5.18 (2026-02-16): Now accepts enrichment_markdown — AST-extracted symbols
+    so critique knows which functions/constants exist in the source.
     
     v1.2 (2026-02-02): Now accepts spec_markdown for grounded critique.
     The POT spec markdown contains VERIFIED evidence (file paths, line numbers).
@@ -541,6 +545,28 @@ with category "contract_violation" and reference the specific contract term.
 
 """
 
+    # v5.18: Enrichment context for grounded critique
+    _enrichment_section = ""
+    if enrichment_markdown:
+        _enrichment_section = f"""
+SEGMENT ENRICHMENT (AST-extracted symbols from source file):
+{'='*60}
+The following symbols were extracted from the original source file
+using deterministic AST parsing. This list is NOT exhaustive but
+represents the symbols we could confidently identify.
+
+When critiquing completeness:
+- If a function listed here is MISSING from the architecture, that
+  MAY be blocking (check if the spec requires it).
+- If a function NOT listed here appears in the architecture, that
+  is NOT a problem — the AST extraction may have missed it.
+- Do NOT flag functions as "missing" solely because they aren't in
+  this enrichment list.
+
+{enrichment_markdown}
+{'='*60}
+"""
+
     return f"""You are a senior architecture reviewer. Critique the following architecture document.
 {pot_spec_section}
 
@@ -596,7 +622,7 @@ RULES:
 6. overall_pass is derived: true if blocking_issues is empty, false otherwise
 7. spec_coverage maps each spec requirement to: covered, partial, missing, or not_applicable
 
-{_contract_section}ORIGINAL REQUEST:
+{_contract_section}{_enrichment_section}ORIGINAL REQUEST:
 {original_request}
 {spec_section}{env_section}
 ARCHITECTURE DOCUMENT TO CRITIQUE:

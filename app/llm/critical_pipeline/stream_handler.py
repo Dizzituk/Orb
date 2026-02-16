@@ -122,6 +122,60 @@ def _save_to_memory(
 # Main Stream Generator
 # =============================================================================
 
+def _format_enrichment_for_critique(enrichment: dict) -> str:
+    """Format enrichment data into concise markdown for critique/revision.
+
+    v5.18: Gives Gemini critique and Opus revision the same symbol
+    awareness that GPT draft gets, so they don't flag missing functions
+    that simply weren't in the AST extraction list.
+    """
+    if not enrichment:
+        return ""
+    parts = []
+
+    constants = enrichment.get("constants", [])
+    if constants:
+        parts.append("**Constants:**")
+        for c in constants:
+            parts.append(f"- `{c.get('name', '?')}`")
+
+    functions = enrichment.get("functions", [])
+    if functions:
+        parts.append("**Functions:**")
+        for f in functions:
+            sig = f.get("signature", f.get("name", "?"))
+            parts.append(f"- `{sig}`")
+
+    classes = enrichment.get("classes", [])
+    if classes:
+        parts.append("**Classes:**")
+        for cl in classes:
+            methods = ", ".join(cl.get("methods", [])[:10])
+            parts.append(f"- `class {cl.get('name', '?')}` (methods: {methods})")
+
+    consumed_by = enrichment.get("consumed_by", {})
+    if consumed_by:
+        parts.append("**Other segments import from this segment:**")
+        for seg_id, syms in consumed_by.items():
+            if isinstance(syms, list):
+                parts.append(f"- {seg_id}: {', '.join(f'`{s}`' for s in syms)}")
+
+    consumes = enrichment.get("consumes", {})
+    if consumes:
+        parts.append("**This segment imports from:**")
+        for seg_id, syms in consumes.items():
+            if isinstance(syms, list):
+                parts.append(f"- {seg_id}: {', '.join(f'`{s}`' for s in syms)}")
+
+    guidance = enrichment.get("design_guidance", "")
+    if guidance:
+        parts.append(f"**Design guidance:** {guidance}")
+
+    if not parts:
+        return ""
+    return "\n".join(parts)
+
+
 async def generate_critical_pipeline_stream(
     project_id: int,
     message: str,
@@ -759,9 +813,13 @@ async def _handle_architecture(
         if _enrichment:
             _si_parts.append("### Segment Enrichment (Stage 4B \u2014 Grounded Evidence)\n")
             _si_parts.append(
-                "**CRITICAL**: The following symbols were extracted from the original source "
+                "**IMPORTANT**: The following symbols were extracted from the original source "
                 "file using AST parsing. You MUST include ALL of them in your architecture. "
-                "Missing any symbol will cause boot failure.\n"
+                "However, this list may NOT be exhaustive \u2014 the source file may contain "
+                "additional functions, classes, or helpers that were not captured by AST "
+                "extraction. If your segment logically needs a symbol that is not listed "
+                "below but exists in the source file, INCLUDE it. Do NOT exclude functions "
+                "just because they are absent from this list.\n"
             )
 
             # Constants \u2014 exact definitions
@@ -958,6 +1016,7 @@ async def _handle_architecture(
             use_json_critique=True,
             segment_contract_markdown=_segment_contract_for_critique or None,
             segment_file_scope=segment_context.get("file_scope") if segment_context else None,
+            enrichment_markdown=_format_enrichment_for_critique(segment_context.get("enrichment")) if segment_context and segment_context.get("enrichment") else None,
         )
     except Exception as e:
         logger.exception("[critical_pipeline] Pipeline failed: %s", e)
