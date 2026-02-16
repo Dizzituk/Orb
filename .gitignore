@@ -29,3 +29,11 @@ data/orb_memory.db
 /app/llm/__pycache__
 *.md
 .env
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Local DB
+data/*.db
+
