@@ -26,7 +26,7 @@ __all__ = [
 ]
 
 # Build metadata
-ARCHITECTURE_EXECUTOR_BUILD_ID = "ae-v3.0-segmented"
+ARCHITECTURE_EXECUTOR_BUILD_ID = "ae-v3.1-prohibitive-contract-prompts"
 
 # Numeric limits and thresholds
 MAX_STRIKES_PER_TASK = 3

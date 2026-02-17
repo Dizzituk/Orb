@@ -31,7 +31,7 @@ from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
-JOB_CHECKER_BUILD_ID = "2026-02-15-v2.3-absolute-import-verification"
+JOB_CHECKER_BUILD_ID = "2026-02-17-v2.4-re-export-and-forward-ref-tolerance"
 print(f"[JOB_CHECKER_LOADED] BUILD_ID={JOB_CHECKER_BUILD_ID}")
 
 
@@ -109,7 +109,11 @@ types, and return types are correct.
 (based on the architecture). Flag imports to clearly non-existent local modules.
 
 4. CONTRACT COMPLIANCE: If an interface contract is provided, every "MUST EXPOSE" \
-boundary exists with the exact name, signature, and return type specified.
+boundary exists with the exact name, signature, and return type specified. \
+A symbol counts as "exported" if it is importable from this file — this includes \
+both locally defined functions AND re-exports via `from .other_module import symbol`. \
+Do NOT reject a file for re-exporting a symbol that was defined in another module \
+within the same package. Re-exporting is a valid and common Python pattern.
 
 5. COMPLETENESS: No TODO, FIXME, NotImplementedError, or "pass" placeholders \
 in critical paths. Stub implementations are acceptable ONLY for genuinely \
@@ -121,6 +125,12 @@ RULES:
 - Severity "blocking" = would cause import errors, type errors, or runtime \
 failures in OTHER files. Severity "warning" = might cause issues, worth noting.
 - Be precise. Quote the exact name/signature that's wrong.
+- Forward reference strings in type hints (e.g. `param: "ClassName"`) are valid Python \
+and do NOT require the class to be imported at module level. Using `from __future__ import \
+annotations` or string annotations avoids circular imports. Do NOT flag forward references \
+as blocking issues unless you are certain the referenced type does not exist anywhere.
+- If a type annotation references a class from a verified import (in the VERIFIED list), \
+do NOT flag the import as missing regardless of whether quotes are used.
 
 OUTPUT FORMAT:
 Return ONLY a JSON object:

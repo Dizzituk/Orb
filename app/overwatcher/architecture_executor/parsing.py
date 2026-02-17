@@ -18,6 +18,36 @@ from typing import Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
+# v5.22: Invalid filesystem characters and placeholder patterns
+_INVALID_PATH_CHARS = set('*?<>|"')
+_PLACEHOLDER_PATTERNS = {'none', 'n/a', 'na', 'tbd', 'placeholder', 'empty', 'nil', 'null'}
+
+
+def _is_valid_file_path(path: str) -> bool:
+    """Check if a parsed path is a real file path, not a placeholder or invalid.
+
+    Rejects:
+      - Paths containing invalid filesystem chars: * ? < > | "
+      - Markdown formatting artifacts: *(none)*, _(n/a)_
+      - Common placeholder words: none, n/a, tbd, empty
+      - Paths with no file extension (bare words)
+    """
+    if not path:
+        return False
+    # Strip markdown emphasis wrappers
+    stripped = path.strip('*_()').lower()
+    if stripped in _PLACEHOLDER_PATTERNS:
+        return False
+    # Any invalid filesystem character → reject
+    if _INVALID_PATH_CHARS & set(path):
+        logger.debug("[parsing] v5.22 Skipped invalid path: %s", path)
+        return False
+    # Must contain at least one dot (file extension) or slash (directory)
+    if '.' not in path and '/' not in path and '\\' not in path:
+        return False
+    return True
+
+
 def parse_file_inventory(architecture: str) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
     """
     Parse the File Inventory section of an architecture document.
@@ -57,7 +87,7 @@ def parse_file_inventory(architecture: str) -> Tuple[List[Dict[str, str]], List[
             if len(parts) >= 2:
                 path_part = parts[0].strip('`').strip()
                 desc_part = parts[1].strip() if len(parts) > 1 else ""
-                if path_part:
+                if path_part and _is_valid_file_path(path_part):
                     new_files.append({"path": path_part, "description": desc_part})
 
     # Parse "Modified Files" table
@@ -76,7 +106,7 @@ def parse_file_inventory(architecture: str) -> Tuple[List[Dict[str, str]], List[
             if len(parts) >= 2:
                 path_part = parts[0].strip('`').strip()
                 desc_part = parts[1].strip() if len(parts) > 1 else ""
-                if path_part:
+                if path_part and _is_valid_file_path(path_part):
                     modified_files.append({"path": path_part, "description": desc_part})
 
     # Fallback: parse heading-based lists if tables are not found

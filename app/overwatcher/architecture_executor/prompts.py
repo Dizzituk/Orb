@@ -29,8 +29,9 @@ RULES:
 9. COMPLETENESS: If the architecture specification or consuming code (in cross-file context) references factory functions (e.g. get_model_manager()), singleton accessors (e.g. TranscriptionService.get_instance()), or module-level convenience functions, you MUST implement them. Do NOT create only classes when the architecture or other files expect callable module-level functions. Every symbol that another file imports must actually exist.
 10. SOURCE FILE EXTRACTION (v3.0 CRITICAL): If a "SOURCE FILES" section is provided, the code in it is the REAL implementation being extracted/decomposed into this new file. You MUST:
     - Copy function bodies, class definitions, constants, and imports VERBATIM from the source
-    - Preserve the EXACT function signatures (same parameter names, types, defaults)
-    - Preserve the EXACT import paths (same module references)
+    - DO NOT rename functions. If the source has `_find_latest_arch`, you must write `_find_latest_arch` — never `find_latest_architecture` or any synonym.
+    - DO NOT change parameter names or types. If the source says `seg_dir: str`, never write `job_dir: Path` or `segment_dir: str`.
+    - DO NOT change return types. If the source returns `int`, never return `None`.
     - Preserve ALL logic, debug prints, logger calls, and comments
     - Do NOT import from non-existent modules — use the same imports as the source file
     - The ONLY changes allowed: removing code that stays in the source file, and updating relative import paths if the new file is in a different directory

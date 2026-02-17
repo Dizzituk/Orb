@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-SEGMENT_LOOP_BUILD_ID = "2026-02-16-v5.21-enriched-skeleton-augmentation"
+SEGMENT_LOOP_BUILD_ID = "2026-02-17-v5.26-facade-deferral-until-complete"
 print(f"[SEGMENT_LOOP_LOADED] BUILD_ID={SEGMENT_LOOP_BUILD_ID}")
 
 
@@ -204,16 +204,28 @@ def _now_iso() -> str:
 # =============================================================================
 
 
-def can_execute_segment(segment: SegmentSpec, state: JobState) -> bool:
+def can_execute_segment(
+    segment: SegmentSpec,
+    state: JobState,
+    require_complete: bool = False,
+) -> bool:
     """
-    Check if all dependencies of a segment are COMPLETE.
+    Check if all dependencies of a segment are met.
 
-    Returns True if the segment has no dependencies, or all dependencies
-    have status COMPLETE. Returns False if any dependency is PENDING,
-    IN_PROGRESS, FAILED, or BLOCKED.
+    By default, APPROVED or COMPLETE both count as met (for architecture
+    generation where we just need the spec, not the files on disk).
+
+    When require_complete=True, only COMPLETE counts (for facade segments
+    that need actual files from their dependencies).
+
+    v5.26: Added require_complete parameter for facade deferral.
     """
     if not segment.dependencies:
         return True
+
+    _allowed = {SegmentStatus.COMPLETE.value}
+    if not require_complete:
+        _allowed.add(SegmentStatus.APPROVED.value)
 
     for dep_id in segment.dependencies:
         dep_state = state.segments.get(dep_id)
@@ -223,12 +235,28 @@ def can_execute_segment(segment: SegmentSpec, state: JobState) -> bool:
                 segment.segment_id, dep_id,
             )
             return False
-        # v3.0: APPROVED counts as dependency-met for architecture generation,
-        # and COMPLETE counts for execution. Both allow the next segment to proceed.
-        if dep_state.status not in (SegmentStatus.COMPLETE.value, SegmentStatus.APPROVED.value):
+        if dep_state.status not in _allowed:
             return False
 
     return True
+
+
+def _is_facade_segment(segment: SegmentSpec, manifest: SegmentManifest) -> bool:
+    """
+    v5.26: Detect facade segments — segments that depend on ALL other segments.
+
+    A facade is the last segment to build. It ties everything together by
+    importing from all other segments. Its architecture should only be
+    generated AFTER all dependencies are COMPLETE (files on disk), not just
+    APPROVED, because it needs actual export data to produce correct imports.
+    """
+    if not segment.dependencies:
+        return False
+    other_ids = {
+        s.segment_id for s in manifest.segments
+        if s.segment_id != segment.segment_id
+    }
+    return other_ids.issubset(set(segment.dependencies))
 
 
 def is_segment_blocked(segment: SegmentSpec, state: JobState) -> bool:
@@ -677,6 +705,41 @@ async def run_segment_through_pipeline(
     seg_job_id = f"{job_id}__{seg_id}"
 
     # =====================================================================
+    # Step 0.5: v5.25 Load previous implementation failure feedback (if any)
+    # When a previous attempt failed at the Implementer stage, the execution
+    # trace contains the exact strike errors. Inject these into segment_context
+    # so the Critical Pipeline can avoid producing architectures that cause
+    # the same implementation failures.
+    # =====================================================================
+    try:
+        _prev_trace_path = os.path.join(
+            get_job_dir(job_id), "segments", seg_id, "execution_trace", "trace.json",
+        )
+        if os.path.isfile(_prev_trace_path):
+            with open(_prev_trace_path, "r", encoding="utf-8") as _tf:
+                _prev_trace = json.load(_tf)
+            if not _prev_trace.get("success", True):
+                _feedback_parts = []
+                _feedback_parts.append(f"Overall error: {_prev_trace.get('error', 'Unknown')}")
+                for _evt in _prev_trace.get("trace_events", []):
+                    if _evt.get("stage", "") in ("FILE_TASK_STRIKE", "FILE_TASK_FAILED", "JOB_CHECK_FAIL", "SIGNATURE_CHECK_FAIL"):
+                        _det = _evt.get("details", {})
+                        _path = _det.get("path", "")
+                        _err = _det.get("error", _det.get("last_error", ""))
+                        if _err:
+                            _feedback_parts.append(f"- [{_evt['stage']}] {_path}: {_err[:300]}")
+                if len(_feedback_parts) > 1:  # More than just the overall error
+                    _impl_feedback = "\n".join(_feedback_parts)
+                    segment_context["implementation_feedback"] = _impl_feedback
+                    _emit(f"  📊 Loaded previous implementation failure feedback ({len(_feedback_parts)-1} issue(s))")
+                    logger.info(
+                        "[SEGMENT_LOOP] v5.25 Implementation feedback loaded for %s: %d issue(s)",
+                        seg_id, len(_feedback_parts) - 1,
+                    )
+    except Exception as _fb_err:
+        logger.warning("[SEGMENT_LOOP] v5.25 Failed to load implementation feedback (non-fatal): %s", _fb_err)
+
+    # =====================================================================
     # Step 1: Critical Pipeline (architecture generation + critique)
     # =====================================================================
     _emit(f"  📝 Running Critical Pipeline for {seg_id}...")
@@ -861,8 +924,10 @@ async def run_segment_through_pipeline(
     # =====================================================================
     auto_execute = os.getenv("ASTRA_SEGMENT_AUTO_EXECUTE", "0").strip()
     _is_cohesion_regen = bool(segment_context and segment_context.get("cohesion_feedback"))
+    # v5.26: Facade segments bypass approval when triggered from implement_only
+    _is_facade_auto = bool(segment_context and segment_context.get("_facade_auto_execute"))
 
-    if auto_execute != "1" and not _is_cohesion_regen:
+    if auto_execute != "1" and not _is_cohesion_regen and not _is_facade_auto:
         _emit(f"  ⏸️ AWAITING APPROVAL: Architecture ready for {seg_id}")
         _emit(f"  📄 Review: jobs/{os.path.basename(get_job_dir(job_id))}/segments/{seg_id}/arch/arch_v1.md")
         _emit(f"  💡 To implement: say 'Astra, command: implement segments'")
@@ -870,6 +935,10 @@ async def run_segment_through_pipeline(
         result["awaiting_approval"] = True
         result["architecture_path"] = seg_arch_path
         return result
+
+    if _is_facade_auto:
+        _emit(f"  🏗️ Facade auto-execute — bypassing approval gate (implement_only mode)")
+        logger.info("[SEGMENT_LOOP] v5.26 Facade approval bypass for %s", seg_id)
 
     if _is_cohesion_regen:
         _emit(f"  🧩 Cohesion regen — bypassing approval gate (was previously approved)")
@@ -1363,9 +1432,43 @@ async def run_segmented_job(
     if not implement_only:
         logger.debug("[SEGMENT_LOOP] v5.15 Skipping quarantine (run segments mode — architecture design only)")
     else:
+        # v5.22: Auto-recover FAILED/BLOCKED segments on retry.
+        # When the user says 'implement segments' after a failure, they're
+        # explicitly retrying. Segments that have architectures should be
+        # restored to APPROVED so quarantine doesn't skip and shadow
+        # detection doesn't block every file operation.
+        _failed_or_blocked = [
+            (sid, s) for sid, s in state.segments.items()
+            if s.status in (SegmentStatus.FAILED.value, SegmentStatus.BLOCKED.value)
+        ]
+        if _failed_or_blocked:
+            _recovered = []
+            for _fb_sid, _fb_state in _failed_or_blocked:
+                _fb_arch_dir = os.path.join(job_dir_path, "segments", _fb_sid, "arch")
+                _has_arch = (
+                    os.path.isdir(_fb_arch_dir)
+                    and any(f.endswith(".md") for f in os.listdir(_fb_arch_dir))
+                )
+                if _has_arch:
+                    _fb_state.status = SegmentStatus.APPROVED.value
+                    _fb_state.error = None
+                    _fb_state.started_at = None
+                    _fb_state.completed_at = None
+                    _recovered.append(_fb_sid)
+                    logger.info(
+                        "[SEGMENT_LOOP] v5.22 Auto-recovered %s: FAILED/BLOCKED -> APPROVED (retry)",
+                        _fb_sid,
+                    )
+            if _recovered:
+                save_state(state, job_dir_path)
+                _emit(
+                    f"🔄 Auto-recovered {len(_recovered)} segment(s) for retry: "
+                    f"{', '.join(_recovered[:5])}{'...' if len(_recovered) > 5 else ''}"
+                )
+
         # v5.19: Only quarantine when ALL segments are ready for implementation
-        # (APPROVED or COMPLETE). If any are still PENDING (e.g. blocked by
-        # cohesion failures), quarantining the monolith would break the app
+        # (APPROVED or COMPLETE). If any are still PENDING (e.g. no architecture
+        # generated yet), quarantining the monolith would break the app
         # because the replacement modules don't all exist yet.
         _all_ready = all(
             s.status in (SegmentStatus.APPROVED.value, SegmentStatus.COMPLETE.value)
@@ -1648,11 +1751,117 @@ async def run_segmented_job(
                         _emit(f"  🚫 STOPPING: Blocked {len(blocked)} dependent segment(s): {blocked}")
                         print(f"[SEGMENT_LOOP] v3.1 🚫 BLOCKED dependents: {blocked}")
                 continue  # v3.1: CRITICAL — must continue after APPROVED handling to avoid fall-through
-            # --- v5.13: In implement_only mode, skip PENDING segments ---
-            # They need architecture generation first (via 'run segments')
+            # --- v5.13 / v5.26: In implement_only mode, skip PENDING segments ---
+            # They need architecture generation first (via 'run segments').
+            #
+            # v5.26 EXCEPTION: Facade segments (depend on ALL other segments) should
+            # auto-generate their architecture during implement_only if all deps are
+            # COMPLETE. This is because facades need real interface data from completed
+            # segments — running 'run segments' separately would generate architecture
+            # without that data, leading to truncation/MODIFY failures.
             if implement_only and seg_state.status == SegmentStatus.PENDING.value:
-                _emit(f"⏭️ [{idx}/{total}] {seg_id}: PENDING — needs architecture first (run 'run segments')")
-                continue
+                if _is_facade_segment(seg_spec, manifest):
+                    # Check if all deps are COMPLETE
+                    if can_execute_segment(seg_spec, state, require_complete=True):
+                        _emit(f"\n🏗️ [{idx}/{total}] {seg_id}: FACADE — all deps COMPLETE, auto-generating architecture + implementing")
+                        _emit(f"  Files: {', '.join(seg_spec.file_scope[:5])}")
+                        update_segment_status(state, seg_id, SegmentStatus.IN_PROGRESS, job_dir_path)
+
+                        # Build context with real interface data from completed segments
+                        segment_context = build_segment_context(
+                            seg_spec, state, parent_spec, job_dir_path,
+                            contract_set=_contract_set,
+                            source_file_evidence=_source_evidence,
+                            enrichment=_enrichment_data.get(seg_spec.segment_id),
+                        )
+
+                        # v5.26: Flag for approval gate bypass — facades in implement_only
+                        # go straight through since we're already in the implement phase
+                        segment_context["_facade_auto_execute"] = True
+
+                        # v5.26: Pre-read dependency output files and inject their
+                        # contents into source_file_evidence. The facade needs to
+                        # see the ACTUAL code it's importing from, not just paths.
+                        _dep_file_contents: Dict[str, str] = {}
+                        for _dep_id in seg_spec.dependencies:
+                            _dep_state = state.segments.get(_dep_id)
+                            if _dep_state and _dep_state.status == SegmentStatus.COMPLETE.value:
+                                for _dep_file in (_dep_state.output_files or []):
+                                    try:
+                                        with open(_dep_file, "r", encoding="utf-8", errors="replace") as _df:
+                                            _dep_content = _df.read(60_000)  # Cap at 60K per file
+                                        # Convert absolute path to relative for the prompt
+                                        _rel_path = _dep_file
+                                        for _root in ["D:\\Orb\\", "D:\\orb-desktop\\", "D:/Orb/", "D:/orb-desktop/"]:
+                                            if _dep_file.startswith(_root):
+                                                _rel_path = _dep_file[len(_root):]
+                                                break
+                                        _dep_file_contents[_rel_path] = _dep_content
+                                    except Exception as _read_err:
+                                        logger.warning(
+                                            "[SEGMENT_LOOP] v5.26 Failed to read dep file %s: %s",
+                                            _dep_file, _read_err,
+                                        )
+                        if _dep_file_contents:
+                            # Merge into source_file_evidence so the architecture
+                            # model sees both the original monolith AND the new modules
+                            _existing = segment_context.get("source_file_evidence", {})
+                            _existing.update(_dep_file_contents)
+                            segment_context["source_file_evidence"] = _existing
+                            _emit(f"  📚 Injected {len(_dep_file_contents)} dependency file(s) as evidence")
+                            for _dfp in sorted(_dep_file_contents.keys()):
+                                _emit(f"    → {_dfp} ({len(_dep_file_contents[_dfp]):,} chars)")
+                            logger.info(
+                                "[SEGMENT_LOOP] v5.26 Facade evidence: %d dep files injected for %s",
+                                len(_dep_file_contents), seg_id,
+                            )
+
+                        # Run full pipeline: architecture generation → implementation
+                        try:
+                            pipeline_result = await run_segment_through_pipeline(
+                                segment=seg_spec,
+                                segment_context=segment_context,
+                                job_id=job_id,
+                                db=db,
+                                project_id=project_id,
+                                on_progress=on_progress,
+                                contract_set=_contract_set,
+                                job_dir_path=job_dir_path,
+                                manifest=manifest,
+                                parent_spec=parent_spec,
+                                quarantine_result=_quarantine_result,
+                            )
+                        except Exception as e:
+                            pipeline_result = {"success": False, "error": str(e), "output_files": []}
+                            logger.exception("[SEGMENT_LOOP] v5.26 Facade pipeline error for %s", seg_id)
+
+                        # Handle result
+                        if pipeline_result.get("success"):
+                            if pipeline_result.get("awaiting_approval"):
+                                update_segment_status(state, seg_id, SegmentStatus.APPROVED, job_dir_path)
+                                _emit(f"  ✅ {seg_id}: APPROVED (facade architecture ready)")
+                            else:
+                                output_files = pipeline_result.get("output_files", [])
+                                update_segment_status(
+                                    state, seg_id, SegmentStatus.COMPLETE, job_dir_path,
+                                    output_files=output_files,
+                                )
+                                _emit(f"  ✅ {seg_id}: COMPLETE ({len(output_files)} output file(s))")
+                                _progress_this_pass += 1
+                        else:
+                            error_msg = pipeline_result.get("error", "Unknown")
+                            update_segment_status(
+                                state, seg_id, SegmentStatus.FAILED, job_dir_path,
+                                error=error_msg,
+                            )
+                            _emit(f"  ❌ {seg_id}: FAILED — {error_msg}")
+                        continue
+                    else:
+                        _emit(f"⏳ [{idx}/{total}] {seg_id}: FACADE — waiting for all dependencies to be COMPLETE")
+                        continue
+                else:
+                    _emit(f"⏭️ [{idx}/{total}] {seg_id}: PENDING — needs architecture first (run 'run segments')")
+                    continue
 
             # --- Check if segment should be blocked ---
             if is_segment_blocked(seg_spec, state):
@@ -1664,8 +1873,15 @@ async def run_segmented_job(
                 continue
 
             # --- Check dependencies ---
-            if not can_execute_segment(seg_spec, state):
-                _emit(f"⏳ [{idx}/{total}] {seg_id}: waiting on dependencies (skipping)")
+            # v5.26: Facade segments must wait for deps to be COMPLETE (files on disk),
+            # not just APPROVED. This ensures the architecture generator has access to
+            # actual exported interfaces, not just spec promises.
+            _facade = _is_facade_segment(seg_spec, manifest)
+            if not can_execute_segment(seg_spec, state, require_complete=_facade):
+                if _facade:
+                    _emit(f"⏳ [{idx}/{total}] {seg_id}: FACADE — waiting for all dependencies to be COMPLETE")
+                else:
+                    _emit(f"⏳ [{idx}/{total}] {seg_id}: waiting on dependencies (skipping)")
                 continue
 
             # --- Execute segment ---
@@ -2193,28 +2409,22 @@ async def run_segmented_job(
         except Exception as _distill_err:
             logger.debug("[SEGMENT_LOOP] Distillation skipped: %s", _distill_err)
 
-    # --- v5.7 QUARANTINE CLEANUP / ROLLBACK ---
+    # --- v5.7 / v5.26 QUARANTINE STATUS REPORT (NO AUTO-DELETE) ---
+    # v5.26: NEVER auto-delete or auto-rollback quarantine backups.
+    # All file deletion/restoration must be human-instigated.
+    # The system reports status but does not act.
     if _quarantine_result and _quarantine_result.has_quarantined:
         _final_status = state.compute_overall_status()
         if _final_status == "complete":
-            # All segments succeeded — delete quarantine backups
-            try:
-                from app.orchestrator.package_quarantine import cleanup_quarantine
-                cleanup_quarantine(_quarantine_result, _q_client, _emit)
-            except Exception as _cleanup_err:
-                logger.warning("[SEGMENT_LOOP] v5.7 Quarantine cleanup failed: %s", _cleanup_err)
+            _emit("\n📦 Quarantine: All segments COMPLETE.")
+            _emit("  Original files preserved in .quarantined/ folders.")
+            _emit("  To clean up: manually delete .quarantined/ dirs when satisfied.")
+            _emit("  To rollback: 'Astra, command: rollback quarantine'")
+            logger.info("[SEGMENT_LOOP] v5.26 Quarantine preserved (human cleanup required)")
         elif _final_status == "failed":
-            # Job failed — rollback quarantined files
-            try:
-                from app.orchestrator.package_quarantine import rollback_quarantine
-                _rollback_ok = rollback_quarantine(_quarantine_result, _q_client, _emit)
-                if _rollback_ok:
-                    _emit("✅ Quarantine rollback complete — original files restored")
-                else:
-                    _emit("⚠️ Quarantine rollback had issues — check manually")
-            except Exception as _rollback_err:
-                logger.error("[SEGMENT_LOOP] v5.7 Quarantine rollback failed: %s", _rollback_err)
-                _emit(f"❌ Quarantine rollback error: {_rollback_err}")
+            _emit("\n📦 Quarantine: Job FAILED — original files safe in .quarantined/ folders.")
+            _emit("  To rollback: 'Astra, command: rollback quarantine'")
+            logger.info("[SEGMENT_LOOP] v5.26 Quarantine preserved after failure (human rollback required)")
         # else: partial/running — leave quarantine in place for resume
 
     # --- Final summary ---

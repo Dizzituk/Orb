@@ -43,7 +43,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
-BUILD_ID = "2026-02-16-v1.1-empty-scope-warning"
+BUILD_ID = "2026-02-17-v1.2-multi-stem-bidirectional-match"
 print(f"[SEGMENT_ENRICHMENT_LOADED] BUILD_ID={BUILD_ID}")
 
 # =============================================================================
@@ -582,7 +582,7 @@ def _assign_symbols_deterministic(
 
     # Build a lookup of what text is associated with each segment
     seg_text_map: Dict[str, str] = {}
-    seg_filename_map: Dict[str, str] = {}  # segment_id -> target filename stem
+    seg_filename_map: Dict[str, List[str]] = {}  # segment_id -> target filename stems
     constants_segment_id: Optional[str] = None
     facade_segment_id: Optional[str] = None
 
@@ -593,10 +593,12 @@ def _assign_symbols_deterministic(
         text_parts.extend(ac.lower() for ac in seg.acceptance_criteria)
         seg_text_map[seg.segment_id] = " ".join(text_parts)
 
-        # Extract the target filename stem (e.g. "constants", "sandbox_helpers")
+        # Extract the target filename stems (e.g. "constants", "sandbox_helpers")
+        # v1.2: Collect ALL filename stems for multi-file segments
+        seg_filename_map[seg.segment_id] = []
         for fpath in seg.file_scope:
             fname = os.path.basename(fpath).replace(".py", "").lower()
-            seg_filename_map[seg.segment_id] = fname
+            seg_filename_map[seg.segment_id].append(fname)
 
             # Detect constants segment
             if "constant" in fname:
@@ -650,28 +652,45 @@ def _assign_symbols_deterministic(
     # --- Pass 3: Filename stem heuristic ---
     # If a function name contains the target filename stem, assign it there.
     # e.g. _resolve_path → path_resolution segment, _sandbox_write → sandbox_helpers
+    # v1.2: Iterates ALL filename stems for multi-file segments, and adds
+    # bidirectional matching (function words checked against stem too).
     for func in all_symbols["functions"]:
         if func["name"] in assigned_names:
             continue
         name_lower = func["name"].lower().lstrip("_")
-        for seg_id, fname_stem in seg_filename_map.items():
-            if not fname_stem or fname_stem in ("__init__", "constants"):
-                continue
-            # Check if the function name contains significant words from the
-            # filename stem.  Split stem on underscores and check each word.
-            stem_words = [w for w in fname_stem.split("_") if len(w) > 2]
-            if not stem_words:
-                continue
-            # Require at least one significant stem word to appear in the func name
-            matches = sum(1 for w in stem_words if w in name_lower)
-            if matches >= 1 and len(stem_words) <= 3:
-                assignments[seg_id].append(func["name"])
-                assigned_names.add(func["name"])
+        # v1.2: Split function name into words for bidirectional matching
+        func_words = [w for w in func["name"].lower().lstrip("_").split("_") if len(w) > 2]
+        _matched = False
+        for seg_id, fname_stems in seg_filename_map.items():
+            if _matched:
                 break
-            elif matches >= 2:
-                assignments[seg_id].append(func["name"])
-                assigned_names.add(func["name"])
-                break
+            for fname_stem in fname_stems:
+                if not fname_stem or fname_stem in ("__init__", "constants"):
+                    continue
+                # Check if the function name contains significant words from the
+                # filename stem.  Split stem on underscores and check each word.
+                stem_words = [w for w in fname_stem.split("_") if len(w) > 2]
+                if not stem_words:
+                    continue
+                # Forward match: stem word appears in function name
+                fwd_matches = sum(1 for w in stem_words if w in name_lower)
+                # v1.2: Reverse match: function word appears in filename stem
+                # (e.g. "update" in func matches "updates" in _state_updates)
+                rev_matches = sum(
+                    1 for fw in func_words
+                    if any(fw in sw or sw in fw for sw in stem_words)
+                )
+                total_matches = max(fwd_matches, rev_matches)
+                if total_matches >= 1 and len(stem_words) <= 3:
+                    assignments[seg_id].append(func["name"])
+                    assigned_names.add(func["name"])
+                    _matched = True
+                    break
+                elif total_matches >= 2:
+                    assignments[seg_id].append(func["name"])
+                    assigned_names.add(func["name"])
+                    _matched = True
+                    break
 
     # --- Pass 4: Module-level code → facade/__init__ segment ---
     if facade_segment_id:
@@ -1093,8 +1112,13 @@ Pay special attention to:
 - Constants/config modules: EVERY constant must be included (this is the #1 failure mode)
 - Facade/init modules: Must re-export exactly the right symbols
 - Modules with many cross-segment consumers: High risk if they miss exports
-- For symbol_assignments: assign each unassigned symbol to the most appropriate segment
-  based on the function's purpose, the segment's target filename, and the segment descriptions
+- For symbol_assignments: assign each unassigned symbol to the segment whose TARGET FILE
+  will DEFINE (contain) the function implementation — NOT the segment that calls/uses it.
+  Example: if 'can_execute_segment' is a dependency-checking helper that will live in
+  '_dependencies.py', assign it to the segment targeting '_dependencies.py' even though
+  it is called by the main orchestration segment.
+  Key principle: each function belongs to the segment responsible for DEFINING it.
+  The consuming segment will import it — it does not need to own it.
 """)
 
     return "\n".join(parts)

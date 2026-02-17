@@ -577,6 +577,123 @@ async def run_architecture_execution(
                 use_edit_mode = False  # v1.13: default, overridden in MODIFY branch for large files
                 verbatim_content = None  # v1.13: set if verbatim extraction succeeds
                 
+                # =============================================================
+                # v5.23: Extract contract signatures for this specific file
+                # and inject them directly into the Implementer prompt.
+                # This is the PRIMARY fix for seg-06 failures: the Implementer
+                # now sees the exact required signatures from the skeleton
+                # contract, not just the architecture's paraphrase.
+                # =============================================================
+                _per_file_contract_block = ""
+                try:
+                    from ..signature_checker import extract_contract_signatures_for_file as _extract_sigs
+                    _file_contract_sigs = _extract_sigs(interface_contract, rel_path)
+                    # v5.23b: Also extract bare export names (no def prefix)
+                    # These are equally important — e.g. "execute_approved_segment_architecture"
+                    _bare_export_names = []
+                    try:
+                        import re as _re
+                        _fc_lines = interface_contract.split("\n")
+                        _in_file = False
+                        _in_exports = False
+                        _file_norm = rel_path.replace("\\", "/").strip()
+                        for _cl in _fc_lines:
+                            _cs = _cl.strip()
+                            # Use original indentation to distinguish file entries (2-space)
+                            # from export symbols (6-space)
+                            _indent = len(_cl) - len(_cl.lstrip())
+                            # v5.24: Normalise backslashes in contract line (skeleton stores Windows paths)
+                            _cs_norm = _cs.replace("\\", "/")
+                            if f"`{_file_norm}`" in _cs_norm and _indent <= 4:
+                                _in_file = True
+                                _in_exports = False
+                                continue
+                            if _in_file:
+                                if "MUST EXPORT" in _cs:
+                                    _in_exports = True
+                                    continue
+                                if _cs.startswith("###") or _cs.startswith("## "):
+                                    _in_file = False
+                                    _in_exports = False
+                                    continue
+                                # Detect new file entry (low indent, contains a path)
+                                if _indent <= 4 and _cs.startswith("- `"):
+                                    _cm = _re.match(r'^-\s*`([^`]+)`', _cs)
+                                    if _cm:
+                                        _cv = _cm.group(1).strip().replace("\\", "/")
+                                        _is_fp = ("/" in _cv or _cv.endswith(".py"))
+                                        if _is_fp and _cv != _file_norm:
+                                            _in_file = False
+                                            _in_exports = False
+                                            continue
+                                # Collect bare export names (high indent, no def prefix)
+                                if _in_exports and _indent >= 4 and _cs.startswith("- `"):
+                                    _cm = _re.match(r'^-\s*`([^`]+)`', _cs)
+                                    if _cm:
+                                        _cv = _cm.group(1).strip()
+                                        if not (_cv.startswith("def ") or _cv.startswith("async def ")):
+                                            # Skip if it looks like a file path
+                                            if "/" not in _cv and not _cv.endswith(".py"):
+                                                _bare_export_names.append(_cv)
+                    except Exception:
+                        pass  # Bare name extraction is best-effort
+                    if _file_contract_sigs or _bare_export_names:
+                        _sig_lines = []
+                        _sig_lines.append("## BINDING CONTRACT — Required Exports (NON-NEGOTIABLE)")
+                        _sig_lines.append("")
+                        _sig_lines.append(f"The following exports are REQUIRED for `{rel_path}`.")
+                        _sig_lines.append("The downstream signature checker will reject any deviation.")
+                        _sig_lines.append("")
+                        if _file_contract_sigs:
+                            _sig_lines.append("### Required Function Signatures (copy EXACTLY)")
+                            _sig_lines.append("```python")
+                            for _sig in _file_contract_sigs:
+                                _sig_lines.append(f"{_sig}")
+                                _sig_lines.append("    ...")
+                                _sig_lines.append("")
+                            _sig_lines.append("```")
+                            _sig_lines.append("")
+                        if _bare_export_names:
+                            _sig_lines.append("### Required Export Names (MUST be defined/importable)")
+                            _sig_lines.append("These symbols must be importable from this file:")
+                            for _bn in _bare_export_names:
+                                _sig_lines.append(f"  - `{_bn}` (define as a function, class, or top-level variable)")
+                            _sig_lines.append("")
+                        _sig_lines.append("**STRICT RULES — violations cause automatic rejection:**")
+                        _sig_lines.append("1. DO NOT rename functions. `_find_latest_arch` must be `_find_latest_arch`, never `find_latest_architecture` or any other name.")
+                        _sig_lines.append("2. DO NOT change parameter names. If the signature says `seg_dir: str`, never write `job_dir`, `segment_dir`, or `directory`.")
+                        _sig_lines.append("3. DO NOT change parameter types. If the signature says `str`, never use `Path`. If it says `dict`, never use `Dict[str, Any]`.")
+                        _sig_lines.append("4. DO NOT change return types. If the signature says `-> int`, never return `None`. If it says `-> Optional[str]`, never return `Optional[Path]`.")
+                        _sig_lines.append("5. NEVER add `async` to a sync function or remove `async` from an async function.")
+                        _sig_lines.append("6. DO NOT import these functions from sibling modules and pass them off as your own — define them directly in this file, UNLESS the architecture specification explicitly instructs you to re-export them from another module in this package.")
+                        _sig_lines.append("7. NEVER omit required constants or variables listed in the contract. If `SEGMENT_LOOP_BUILD_ID` is required, it must be defined.")
+                        _sig_lines.append("8. These names come from an existing codebase being refactored. They are not suggestions — they are the actual names used by callers. Renaming them will break all call sites.")
+                        _sig_lines.append("")
+                        _per_file_contract_block = "\n".join(_sig_lines)
+                        logger.info(
+                            "[arch_exec] v5.23 CONTRACT_INJECT for %s: %d signature(s) + %d bare name(s)",
+                            rel_path, len(_file_contract_sigs), len(_bare_export_names),
+                        )
+                        print(
+                            f"[ARCH_EXEC] v5.23 CONTRACT_INJECT: {rel_path} — "
+                            f"{len(_file_contract_sigs)} sig(s), {len(_bare_export_names)} bare name(s)"
+                        )
+                        add_trace("CONTRACT_INJECT", "injected", {
+                            "path": rel_path,
+                            "signatures": _file_contract_sigs,
+                            "bare_names": _bare_export_names,
+                            "count": len(_file_contract_sigs) + len(_bare_export_names),
+                        })
+                    else:
+                        logger.debug(
+                            "[arch_exec] v5.23 No contract exports for %s",
+                            rel_path,
+                        )
+                except ImportError:
+                    logger.debug("[arch_exec] v5.23 signature_checker not available for contract injection")
+                except Exception as _ci_err:
+                    logger.warning("[arch_exec] v5.23 Contract injection failed (non-fatal): %s", _ci_err)
+
                 if action == "create":
                     # v1.13: Try verbatim extraction before LLM call
                     verbatim_content = _extract_verbatim_code_from_architecture(
@@ -595,10 +712,11 @@ async def run_architecture_execution(
                             "path": rel_path, "chars": len(verbatim_content),
                         })
                     
-                    user_prompt = (
-                        f"Generate the complete content for a new file: `{rel_path}`\n\n"
-                        f"## Architecture Specification\n\n{file_context}\n\n"
-                    )
+                    # v5.23: Build prompt with contract signatures FIRST (highest priority)
+                    user_prompt = f"Generate the complete content for a new file: `{rel_path}`\n\n"
+                    if _per_file_contract_block:
+                        user_prompt += f"{_per_file_contract_block}\n\n"
+                    user_prompt += f"## Architecture Specification\n\n{file_context}\n\n"
                     if job_context_section:
                         user_prompt += f"{job_context_section}\n\n"
                     
@@ -662,6 +780,9 @@ async def run_architecture_execution(
                                 f"```\n{existing_imports}\n```\n\n"
                             )
                         
+                        # v5.23: Inject contract signatures for MODIFY edit-mode path
+                        if _per_file_contract_block:
+                            user_prompt += f"{_per_file_contract_block}\n\n"
                         user_prompt += f"## Modification Instructions\n\n{file_context}\n\n"
                         if job_context_section:
                             user_prompt += f"{job_context_section}\n\n"
@@ -687,6 +808,9 @@ async def run_architecture_execution(
                                 f"```\n{existing_imports}\n```\n\n"
                             )
                         
+                        # v5.23: Inject contract signatures for MODIFY path
+                        if _per_file_contract_block:
+                            user_prompt += f"{_per_file_contract_block}\n\n"
                         user_prompt += f"## Modification Instructions\n\n{file_context}\n\n"
                         if job_context_section:
                             user_prompt += f"{job_context_section}\n\n"
@@ -710,13 +834,29 @@ async def run_architecture_execution(
                             rel_path,
                         )
                         verbatim_content = None  # Don't retry verbatim
-                    
-                    # Add error context for retry strikes
+                    # v5.23: Add error context for retry strikes — PROMINENTLY at the top
+                    # Previous version appended errors at the END of the prompt where
+                    # they were buried under architecture context. Now we prepend them.
                     if strike > 1 and last_error:
-                        user_prompt += (
-                            f"\n\n## Previous Attempt Failed\n"
-                            f"Error from previous attempt: {last_error}\n"
-                            f"Please fix the issue and try again."
+                        _strike_error_block = (
+                            f"## STRIKE {strike}/{MAX_STRIKES_PER_TASK} — LAST CHANCE, FIX NOW\n\n"
+                            f"Your previous attempt was REJECTED. The exact error was:\n\n"
+                            f"```\n{last_error}\n```\n\n"
+                            f"DO NOT repeat this mistake. The checker runs automatically and will reject you again for the same issue.\n\n"
+                            f"If the error says a function name is wrong: DO NOT rename functions. Use the name from the BINDING CONTRACT section above, character for character.\n"
+                            f"If the error says a parameter type is wrong: DO NOT change types. If the contract says `str`, never use `Path`.\n"
+                            f"If the error says a constant is missing: you MUST define it as a top-level variable in this file.\n"
+                            f"If the error says a signature does not match: copy the ENTIRE `def` line from the BINDING CONTRACT section and do not alter a single character.\n\n"
+                        )
+                        # Prepend error to the beginning of user_prompt (after the file name line)
+                        _first_newline = user_prompt.find("\n\n")
+                        if _first_newline > 0:
+                            user_prompt = user_prompt[:_first_newline + 2] + _strike_error_block + user_prompt[_first_newline + 2:]
+                        else:
+                            user_prompt = _strike_error_block + user_prompt
+                        logger.info(
+                            "[arch_exec] v5.23 Strike %d error prepended to prompt for %s (%d chars)",
+                            strike, rel_path, len(_strike_error_block),
                         )
                     
                     # v3.0: Inject experience memory into implementer prompt

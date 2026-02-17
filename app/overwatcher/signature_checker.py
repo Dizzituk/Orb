@@ -35,7 +35,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-SIGNATURE_CHECKER_BUILD_ID = "2026-02-16-v1.0-layer3-safety-net"
+SIGNATURE_CHECKER_BUILD_ID = "2026-02-17-v1.2-backslash-path-normalisation"
 print(f"[SIGNATURE_CHECKER_LOADED] BUILD_ID={SIGNATURE_CHECKER_BUILD_ID}")
 
 
@@ -157,6 +157,44 @@ def _normalise_type(type_str: Optional[str]) -> Optional[str]:
     # No-op since we already mapped to lowercase
 
     return t
+
+
+def _extract_base_type(normalised: Optional[str]) -> Optional[str]:
+    """Extract the base type, stripping generic parameters.
+
+    ``dict[str, Any]`` → ``dict``, ``list[int]`` → ``list``.
+
+    v1.1: Prevents false-positive mismatches for ``Dict[str, Any]`` vs ``dict``.
+    """
+    if not normalised:
+        return None
+    idx = normalised.find('[')
+    return normalised[:idx].strip() if idx > 0 else normalised
+
+
+# v1.1: Builtin container types whose parameterised forms are equivalent
+# to their bare form (e.g. ``dict`` matches ``dict[str, Any]``).
+_CONTAINER_BUILTINS = {'dict', 'list', 'tuple', 'set', 'frozenset', 'type'}
+
+
+def _types_match(req_norm: Optional[str], act_norm: Optional[str]) -> bool:
+    """Compare two normalised type strings with base-type leniency.
+
+    Rules:
+      - Exact match after normalisation → pass
+      - Both resolve to the same base builtin container → pass
+        (e.g. ``dict`` vs ``dict[str, Any]``)
+      - Different base types → fail (e.g. ``str`` vs ``Path``)
+    """
+    if not req_norm or not act_norm:
+        return True  # One side unannotated
+    if req_norm == act_norm:
+        return True
+    req_base = _extract_base_type(req_norm)
+    act_base = _extract_base_type(act_norm)
+    if req_base == act_base and req_base in _CONTAINER_BUILTINS:
+        return True
+    return False
 
 
 # =============================================================================
@@ -602,7 +640,7 @@ def compare_signatures(
             if req_type and act_type:
                 req_norm = _normalise_type(req_type)
                 act_norm = _normalise_type(act_type)
-                if req_norm and act_norm and req_norm != act_norm:
+                if req_norm and act_norm and not _types_match(req_norm, act_norm):
                     req_name = req_positional[i] if i < len(req_positional) else f"param_{i}"
                     act_name = act_positional[i] if i < len(act_positional) else f"param_{i}"
                     differences.append(
@@ -613,7 +651,7 @@ def compare_signatures(
     # 4. Return type
     req_ret = _normalise_type(required.return_type)
     act_ret = _normalise_type(actual.return_type)
-    if req_ret and act_ret and req_ret != act_ret:
+    if req_ret and act_ret and not _types_match(req_ret, act_ret):
         differences.append(
             f"Return type: expected `{required.return_type}`, got `{actual.return_type}`"
         )
@@ -632,7 +670,7 @@ def compare_signatures(
                 if req_type and act_type:
                     req_norm = _normalise_type(req_type)
                     act_norm = _normalise_type(act_type)
-                    if req_norm == act_norm:
+                    if _types_match(req_norm, act_norm):
                         continue  # Same type, different name — cosmetic, skip
                 name_diffs.append(
                     f"Parameter {i} name: expected `{req_positional[i]}`, "
@@ -701,7 +739,9 @@ def extract_contract_signatures_for_file(
         stripped = line.strip()
 
         # Detect file path line: "  - `path/to/file.py` → consumed by ..."
-        if f"`{file_path_norm}`" in stripped:
+        # v1.2: Normalise backslashes in contract line too (skeleton stores Windows paths)
+        stripped_norm = stripped.replace("\\", "/")
+        if f"`{file_path_norm}`" in stripped_norm:
             in_file_section = True
             in_exports = False
             continue
@@ -724,12 +764,12 @@ def extract_contract_signatures_for_file(
             if stripped.startswith("- `") and "`" in stripped[3:]:
                 match = re.match(r'^-\s*`([^`]+)`', stripped)
                 if match:
-                    candidate = match.group(1).strip()
+                    candidate = match.group(1).strip().replace("\\", "/")
                     # File paths contain '/' or end with '.py'; signatures start with 'def '/'async def '
                     is_file_path = ("/" in candidate or candidate.endswith(".py"))
                     is_signature = candidate.startswith("def ") or candidate.startswith("async def ")
                     if is_file_path and not is_signature:
-                        if candidate.replace("\\", "/") != file_path_norm:
+                        if candidate != file_path_norm:
                             in_file_section = False
                             in_exports = False
                             continue

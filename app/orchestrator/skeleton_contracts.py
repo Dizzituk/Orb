@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-SKELETON_CONTRACTS_BUILD_ID = "2026-02-16-v2.0-enriched-export-names"
+SKELETON_CONTRACTS_BUILD_ID = "2026-02-17-v2.2-no-blind-export-assignment"
 print(f"[SKELETON_CONTRACTS_LOADED] BUILD_ID={SKELETON_CONTRACTS_BUILD_ID}")
 
 
@@ -196,8 +196,11 @@ class SkeletonContractSet:
             parts.append("The following files are consumed by downstream segments. "
                         "You MUST create/modify them with stable, importable interfaces.\n")
             for exp in skeleton.exports:
-                consumers = ", ".join(f"`{c}`" for c in exp.consumed_by)
-                parts.append(f"  - `{exp.file_path}` → consumed by {consumers}")
+                if exp.consumed_by == ["__self__"]:
+                    parts.append(f"  - `{exp.file_path}` → (contract-enforced exports)")
+                else:
+                    consumers = ", ".join(f"`{c}`" for c in exp.consumed_by)
+                    parts.append(f"  - `{exp.file_path}` → consumed by {consumers}")
                 # v2.0: Show required export names and signatures
                 if exp.names:
                     parts.append(f"    **MUST EXPORT these symbols** (downstream segments depend on them):")
@@ -506,6 +509,25 @@ def augment_skeleton_with_enrichment(
         # segments (most common), all exports go to that one file.  For
         # multi-file segments, we use the function's source_file or line_range
         # to match.
+
+        # v2.1: Terminal segments (no downstream consumers) have zero
+        # ExportBindings from generate_skeleton_contract().  But they still
+        # need contract enforcement — especially for segments like the main
+        # orchestration loop that define critical functions.  Create
+        # self-referencing ExportBindings for each file in scope so the
+        # contract injection system can enforce function signatures.
+        if len(skeleton.exports) == 0 and enriched_exports:
+            for fp in skeleton.file_scope:
+                skeleton.exports.append(ExportBinding(
+                    file_path=fp,
+                    consumed_by=["__self__"],
+                ))
+            logger.info(
+                "[skeleton_contracts] v2.1 Created %d self-referencing export(s) "
+                "for terminal segment %s",
+                len(skeleton.exports), seg_id,
+            )
+
         if len(skeleton.exports) == 1:
             # Simple case: all exports belong to the single exported file
             binding = skeleton.exports[0]
@@ -558,24 +580,24 @@ def augment_skeleton_with_enrichment(
                         seg_id, binding.file_path, len(binding.names),
                     )
 
-            # Second pass: distribute remaining unassigned exports
+            # Second pass: log unassigned exports but DO NOT blindly assign them.
+            # v2.2 FIX: The previous logic dumped unmatched function names onto
+            # whatever file binding happened to be empty or first. This caused
+            # functions defined in one file (e.g. cohesion.py) to appear as
+            # required exports of a different file (e.g. job_runner.py), which
+            # then failed signature checking because the function was only
+            # re-imported, not defined there.
+            #
+            # If a function name doesn't match any file stem, we simply skip it.
+            # The function is still enforced on the file where it IS matched by
+            # the first-pass heuristic or by the single-file fast path.
             _unassigned = [n for n in enriched_exports if n not in _assigned_names]
             if _unassigned:
-                # Put unassigned on the first export binding that has no names yet,
-                # or the first binding if all already have names
-                _target = None
-                for binding in skeleton.exports:
-                    if not binding.names:
-                        _target = binding
-                        break
-                if _target is None:
-                    _target = skeleton.exports[0]
-                _target.names = list(set(_target.names + _unassigned))
-                _target.signatures = list(set(_target.signatures + [
-                    sig_lookup[n] for n in _unassigned if n in sig_lookup
-                ]))
-                if _target not in [b for b in skeleton.exports if b.names and b != _target]:
-                    augmented_count += 1
+                logger.info(
+                    "[skeleton_contracts] v2.2 %d unassigned export(s) for %s "
+                    "(skipped, not blindly assigned): %s",
+                    len(_unassigned), seg_id, _unassigned,
+                )
 
             # If heuristic didn't match anything, put all exports on the first binding
             # as a fallback (still better than empty)

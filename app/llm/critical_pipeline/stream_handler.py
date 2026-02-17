@@ -920,6 +920,23 @@ async def _handle_architecture(
             _si_parts.append(f"{_si_cohesion}\n")
             _si_parts.append("Ensure all import names, module names, and function signatures match what other segments expect.\n")
 
+        # v5.25: Implementation failure feedback injection
+        # When a previous implementation attempt failed (strike-out), inject
+        # the specific failure reasons so the architecture LLM can avoid
+        # producing designs that cause the same implementation failures.
+        _si_impl_feedback = segment_context.get("implementation_feedback", "")
+        if _si_impl_feedback:
+            _si_parts.append("### PREVIOUS IMPLEMENTATION FAILED\n")
+            _si_parts.append("The previous architecture for this segment was implemented but the Implementer")
+            _si_parts.append("failed to produce working code. The specific failure reasons were:\n")
+            _si_parts.append(f"{_si_impl_feedback}\n")
+            _si_parts.append("DO NOT repeat the design patterns that caused these failures.")
+            _si_parts.append("If the failure was 'No edits could be applied', the architecture likely asked")
+            _si_parts.append("to MODIFY a large file with edit pairs that did not match. Consider using a")
+            _si_parts.append("different file operation strategy (e.g. CREATE a new file instead of MODIFY).")
+            _si_parts.append("If the failure was a wrong function name or signature, ensure this architecture")
+            _si_parts.append("uses the EXACT names from the skeleton contract.\n")
+
         _segment_injection = "\n".join(_si_parts)
 
     # v5.4 Phase 2B: Extract contract for critique injection
