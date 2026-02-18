@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-SEGMENT_STATE_BUILD_ID = "2026-02-13-v1.1-phase-checkout-fields"
+SEGMENT_STATE_BUILD_ID = "2026-02-18-v1.2-type-coercion-and-reset-utility"
 print(f"[SEGMENT_STATE_LOADED] BUILD_ID={SEGMENT_STATE_BUILD_ID}")
 
 # Re-use the SegmentStatus enum from Phase 1 schemas
@@ -85,14 +85,24 @@ class SegmentState:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SegmentState":
+        # v1.2: Coerce list fields — prevents manual-edit errors where
+        # "" or null is used instead of [].  Without this, .append()
+        # calls crash with AttributeError.
+        output_files = data.get("output_files", [])
+        if not isinstance(output_files, list):
+            output_files = [] if not output_files else [output_files]
+        evidence_provided_to = data.get("evidence_provided_to", [])
+        if not isinstance(evidence_provided_to, list):
+            evidence_provided_to = [] if not evidence_provided_to else [evidence_provided_to]
+
         return cls(
             segment_id=data.get("segment_id", ""),
             status=data.get("status", SegmentStatus.PENDING.value),
             started_at=data.get("started_at"),
             completed_at=data.get("completed_at"),
             error=data.get("error"),
-            output_files=data.get("output_files", []),
-            evidence_provided_to=data.get("evidence_provided_to", []),
+            output_files=output_files,
+            evidence_provided_to=evidence_provided_to,
         )
 
 
@@ -337,4 +347,61 @@ def load_or_init_state(job_id: str, manifest: SegmentManifest) -> JobState:
     # First run — create fresh state
     state = init_state(job_id, manifest)
     save_state(state, job_dir_path)
+    return state
+
+
+def reset_job_state(
+    job_id: str,
+    reset_segments: Optional[List[str]] = None,
+) -> JobState:
+    """
+    v1.2: Safely reset a job's state for retry.
+
+    If reset_segments is None, resets ALL segments.
+    If provided, resets only the named segments.
+
+    Correctly initialises list fields to [] (not ""), optional fields
+    to None, and status to APPROVED — preventing the manual-edit
+    type corruption that caused AttributeError at runtime.
+
+    Args:
+        job_id: The job to reset.
+        reset_segments: Optional list of segment IDs to reset.
+            If None, all segments are reset.
+
+    Returns:
+        The updated JobState (already persisted to disk).
+
+    Raises:
+        FileNotFoundError: If no state.json exists for this job.
+    """
+    job_dir_path = get_job_dir(job_id)
+    state = load_state(job_dir_path)
+    if state is None:
+        raise FileNotFoundError(f"No state.json found for job {job_id}")
+
+    targets = reset_segments or list(state.segments.keys())
+    reset_count = 0
+
+    for seg_id in targets:
+        if seg_id not in state.segments:
+            logger.warning("[SEGMENT_STATE] reset: segment %s not found, skipping", seg_id)
+            continue
+        seg = state.segments[seg_id]
+        seg.status = SegmentStatus.APPROVED.value
+        seg.started_at = None
+        seg.completed_at = None
+        seg.error = None
+        seg.output_files = []               # NOT ""
+        seg.evidence_provided_to = []       # NOT ""
+        reset_count += 1
+
+    state.overall_status = "pending"
+    state.phase_checkout_boot = None
+    state.phase_checkout_error = None
+    state.integration_check = None
+    save_state(state, job_dir_path)
+
+    logger.info("[SEGMENT_STATE] v1.2 Reset %d segment(s) for job %s", reset_count, job_id)
+    print(f"[SEGMENT_STATE] Reset {reset_count} segment(s) for job {job_id}")
     return state

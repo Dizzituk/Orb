@@ -1087,6 +1087,33 @@ async def _handle_architecture(
                     if isinstance(_cn_syms, list):
                         _si_parts.append(f"- From **{_cn_seg}**: {', '.join(f'`{s}`' for s in _cn_syms)}")
                 _si_parts.append("")
+                # v5.30: Prohibitive instruction — prevent function duplication
+                # across segments. This is the #1 source of cohesion failures.
+                _all_dep_symbols = []
+                for _cn_syms_list in _enrich_consumes.values():
+                    if isinstance(_cn_syms_list, list):
+                        _all_dep_symbols.extend(_cn_syms_list)
+                if _all_dep_symbols:
+                    _si_parts.append("#### ⛔ DUPLICATE FUNCTION PROHIBITION (v5.30)")
+                    _si_parts.append(
+                        "The following symbols are ALREADY DEFINED in your dependency "
+                        "segments. You MUST import them — NEVER redefine, copy, or "
+                        "re-implement them in your files. Defining a function that "
+                        "already exists in a dependency segment creates duplicate "
+                        "definitions and breaks the package."
+                    )
+                    _si_parts.append("")
+                    _si_parts.append("**DO NOT define any of these in your code:**")
+                    for _ds in _all_dep_symbols:
+                        _si_parts.append(f"  - ❌ `{_ds}` — import it, do NOT redefine it")
+                    _si_parts.append("")
+                    _si_parts.append(
+                        "If your function body needs to call `can_execute_segment()`, "
+                        "write `from ._dependencies import can_execute_segment` (or "
+                        "the appropriate sibling module). NEVER copy the function body "
+                        "from the source monolith into your file."
+                    )
+                    _si_parts.append("")
 
             # Design guidance from LLM intelligence
             _enrich_guidance = _enrichment.get("design_guidance", "")

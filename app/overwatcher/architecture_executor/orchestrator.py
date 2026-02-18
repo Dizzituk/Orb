@@ -75,6 +75,7 @@ async def run_architecture_execution(
     artifact_root: str = "D:/Orb/jobs",
     interface_contract: str = "",
     skip_boot_check: bool = False,
+    manifest_all_files: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
     """Supervise architecture-level spec execution.
     
@@ -381,6 +382,13 @@ async def run_architecture_execution(
     # This allows the Job Checker to verify imports against files that were
     # created by previously completed segments, not just the host filesystem.
     _existing_sandbox_files: set = set()
+    # v5.32: Seed with manifest files so import checker knows about future segments
+    if manifest_all_files:
+        _existing_sandbox_files.update(manifest_all_files)
+        logger.info(
+            "[arch_exec] v5.32 Seeded %d manifest file(s) as expected imports",
+            len(manifest_all_files),
+        )
     try:
         # Scan the package directory if we're working inside one
         _all_task_paths = [t["info"]["path"] for t in all_tasks]

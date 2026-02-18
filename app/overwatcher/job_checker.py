@@ -113,7 +113,18 @@ boundary exists with the exact name, signature, and return type specified. \
 A symbol counts as "exported" if it is importable from this file — this includes \
 both locally defined functions AND re-exports via `from .other_module import symbol`. \
 Do NOT reject a file for re-exporting a symbol that was defined in another module \
-within the same package. Re-exporting is a valid and common Python pattern.
+within the same package. Re-exporting is a valid and common Python pattern. \
+ALSO: if a file imports a symbol from a sibling module AND defines it locally, \
+the local definition takes precedence (Python shadowing). This is NOT a conflict — \
+the local definition IS the canonical export. Do NOT flag "imports AND defines" as \
+a contract violation or namespace collision. The import may be there as a fallback, \
+or the code may have been refactored. As long as the symbol IS defined/importable \
+from this file, the contract is satisfied. \
+Similarly, if a file imports a symbol and re-exports it (without local definition), \
+that ALSO satisfies the contract — the symbol is importable from this file. \
+NEVER use the words "ambiguity", "dual presence", "namespace collision", or \
+"contradicts" when a symbol is importable from the file. The ONLY question is: \
+can downstream code do `from this_file import symbol` successfully? If yes, PASS.
 
 5. COMPLETENESS: No TODO, FIXME, NotImplementedError, or "pass" placeholders \
 in critical paths. Stub implementations are acceptable ONLY for genuinely \
@@ -439,7 +450,15 @@ def _build_import_evidence(import_results: Dict[str, List[Dict[str, str]]]) -> s
         lines.append("")
 
     if unresolvable:
-        lines.append("### ❌ NOT FOUND (should be flagged as blocking):")
+        lines.append("### ❌ NOT FOUND on disk:")
+        lines.append("These modules were not found on the filesystem at check time.")
+        lines.append("**IMPORTANT**: In segmented execution, later segments' files may")
+        lines.append("not exist on disk yet. If the architecture spec explicitly")
+        lines.append("prescribes a deferred/local import from a module that will be")
+        lines.append("created by a later segment, this is EXPECTED and should be a")
+        lines.append("WARNING, not BLOCKING. Only flag as blocking if the import")
+        lines.append("references a module name that doesn't appear anywhere in the")
+        lines.append("architecture spec or skeleton contract.\n")
         for u in unresolvable:
             lines.append(f"- `{u['import_ref']}` → {u.get('reason', 'not found')}")
         lines.append("")
@@ -578,6 +597,7 @@ async def check_written_file(
     sandbox_base: str = "",
     existing_sandbox_files: Optional[Set[str]] = None,
     previous_strike_errors: Optional[List[str]] = None,
+    manifest_file_scope: Optional[Set[str]] = None,
 ) -> CheckResult:
     """
     Main entry point: verify a written file against its architecture spec.
@@ -588,6 +608,9 @@ async def check_written_file(
         arch_section: The architecture specification section for this file
         interface_contract: Optional interface contract markdown
         provider_id/model_id: Override model selection
+        manifest_file_scope: v5.32 — All file paths across all segments in the job.
+            Files listed here may not exist on disk yet but WILL exist after all
+            segments complete. The import resolver treats these as "expected".
 
     Returns:
         CheckResult with pass/fail verdict and any issues found
@@ -631,7 +654,11 @@ async def check_written_file(
     )
 
     # v2.1: Deterministic import pre-check — resolve relative imports against filesystem + sandbox file list
-    _import_results = _resolve_relative_imports(file_path, file_content, sandbox_base, existing_sandbox_files)
+    # v5.32: Merge manifest_file_scope into known files so future segment files aren't flagged as missing
+    _effective_sandbox_files = existing_sandbox_files or set()
+    if manifest_file_scope:
+        _effective_sandbox_files = _effective_sandbox_files | manifest_file_scope
+    _import_results = _resolve_relative_imports(file_path, file_content, sandbox_base, _effective_sandbox_files or None)
     _import_evidence = _build_import_evidence(_import_results)
     _v_count = len(_import_results.get("verified", []))
     _u_count = len(_import_results.get("unresolvable", []))

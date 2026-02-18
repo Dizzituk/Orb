@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-SKELETON_CONTRACTS_BUILD_ID = "2026-02-17-v2.2-no-blind-export-assignment"
+SKELETON_CONTRACTS_BUILD_ID = "2026-02-18-v2.3-re-export-awareness"
 print(f"[SKELETON_CONTRACTS_LOADED] BUILD_ID={SKELETON_CONTRACTS_BUILD_ID}")
 
 
@@ -53,6 +53,12 @@ class ExportBinding:
     # v2.0: Full signatures for exported functions (optional — richer context).
     # Format: ["def func_name(arg: Type) -> ReturnType", ...]
     signatures: List[str] = field(default_factory=list)
+    # v2.3: Symbols that should be re-exported from a sibling module rather
+    # than defined locally.  Populated by augment_skeleton_with_enrichment()
+    # when a symbol is canonically defined in an upstream segment's file_scope.
+    # Format: [(symbol_name, source_module_path), ...]
+    # e.g. [("_save_execution_trace", "app/orchestrator/segment_loop/_arch_utils.py")]
+    re_exports: List[List[str]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {"file_path": self.file_path, "consumed_by": self.consumed_by}
@@ -60,6 +66,8 @@ class ExportBinding:
             d["names"] = self.names
         if self.signatures:
             d["signatures"] = self.signatures
+        if self.re_exports:
+            d["re_exports"] = self.re_exports
         return d
 
     @classmethod
@@ -69,6 +77,7 @@ class ExportBinding:
             consumed_by=data.get("consumed_by", []),
             names=data.get("names", []),
             signatures=data.get("signatures", []),
+            re_exports=data.get("re_exports", []),
         )
 
 
@@ -201,20 +210,49 @@ class SkeletonContractSet:
                 else:
                     consumers = ", ".join(f"`{c}`" for c in exp.consumed_by)
                     parts.append(f"  - `{exp.file_path}` → consumed by {consumers}")
-                # v2.0: Show required export names and signatures
+                # v2.0 / v2.3: Show required export names and signatures.
+                # v2.3: Distinguish locally-defined exports from re-exports.
+                # Re-exports are symbols canonically defined in another
+                # segment's file_scope — this segment should import and
+                # re-export them, NOT redefine them.
                 if exp.names:
-                    parts.append(f"    **MUST EXPORT these symbols** (downstream segments depend on them):")
-                    # Pair names with signatures where available
+                    # Build lookup maps
                     _sig_map = {}
                     for sig in exp.signatures:
-                        # Extract function name from signature like "def foo(args) -> ret"
-                        _sig_name = sig.split("(")[0].replace("def ", "").replace("class ", "").strip()
+                        _sig_name = sig.split("(")[0].replace("def ", "").replace("class ", "").replace("async def ", "").strip()
                         _sig_map[_sig_name] = sig
-                    for name in exp.names:
-                        if name in _sig_map:
-                            parts.append(f"      - `{_sig_map[name]}`")
-                        else:
-                            parts.append(f"      - `{name}`")
+                    _re_export_map = {}
+                    for _re in exp.re_exports:
+                        if len(_re) >= 2:
+                            _re_export_map[_re[0]] = _re[1]
+
+                    # Separate into local defines and re-exports
+                    _local_names = [n for n in exp.names if n not in _re_export_map]
+                    _reexp_names = [n for n in exp.names if n in _re_export_map]
+
+                    if _local_names:
+                        parts.append(f"    **MUST DEFINE AND EXPORT these symbols** (downstream segments depend on them):")
+                        for name in _local_names:
+                            if name in _sig_map:
+                                parts.append(f"      - `{_sig_map[name]}`")
+                            else:
+                                parts.append(f"      - `{name}`")
+                    if _reexp_names:
+                        parts.append(f"    **MUST RE-EXPORT these symbols** (defined in another module, import and expose):")
+                        for name in _reexp_names:
+                            _src = _re_export_map[name]
+                            _src_stem = os.path.splitext(os.path.basename(_src))[0]
+                            parts.append(f"      - `{name}` — import from `.{_src_stem}` and re-export")
+                            parts.append(f"        Pattern: `from .{_src_stem} import {name}`")
+                            parts.append(f"        Do NOT redefine this function locally. It is canonical in `{_src}`.")
+                    if not _local_names and not _reexp_names:
+                        # Fallback: all names, no classification
+                        parts.append(f"    **MUST EXPORT these symbols** (downstream segments depend on them):")
+                        for name in exp.names:
+                            if name in _sig_map:
+                                parts.append(f"      - `{_sig_map[name]}`")
+                            else:
+                                parts.append(f"      - `{name}`")
             parts.append("")
 
         # --- Imports ---
@@ -288,6 +326,24 @@ class SkeletonContractSet:
             parts.append("- Files importing from a SIBLING sub-package use: `from ..subpkg.module import ...`")
             parts.append("")
 
+        # --- v5.32: Complete Package Module Map ---
+        # Prevents the architecture model from guessing filenames (e.g. ._main
+        # instead of ._loop). Lists every file across every segment so the
+        # model always knows exact import targets for deferred/circular imports.
+        parts.append("### Complete Package Module Map (ALL segments)\n")
+        parts.append("**Every file in this job, grouped by segment.** "
+                     "When writing imports — including deferred/circular imports to "
+                     "later segments — use ONLY these exact filenames. "
+                     "NEVER invent module names like `_main.py` if the map shows `_loop.py`.\n")
+        for _map_skel in self.skeletons:
+            _marker = " ← (this segment)" if _map_skel.segment_id == segment_id else ""
+            parts.append(f"  **{_map_skel.segment_id}**{_marker}:")
+            for _map_fp in _map_skel.file_scope:
+                _map_basename = os.path.basename(_map_fp)
+                _map_stem = _map_basename.replace(".py", "")
+                parts.append(f"    - `{_map_fp}` → import as `from .{_map_stem} import ...`")
+        parts.append("")
+
         # --- Rules ---
         parts.append("### Rules\n")
         parts.append("1. Your file inventory MUST only contain files listed in File Scope Constraint above.")
@@ -297,6 +353,7 @@ class SkeletonContractSet:
                      f"not more, not fewer.")
         parts.append("5. If you need to import from upstream segments, use the exact file paths listed above.")
         parts.append("6. Use correct relative import depth — see Import Path Rules above if present.")
+        parts.append("7. NEVER invent module filenames. Use ONLY names from the Package Module Map.")
         parts.append("")
 
         return "\n".join(parts)
@@ -476,6 +533,63 @@ def augment_skeleton_with_enrichment(
     """
     augmented_count = 0
 
+    # v2.3: Build a cross-segment symbol ownership map.
+    # For each function/class in every segment's enrichment, record which
+    # segment's file_scope it canonically belongs to. This lets us detect
+    # when a segment's "export" is actually a re-export from a sibling.
+    # Key: symbol_name, Value: (owning_segment_id, canonical_file_path)
+    _symbol_ownership: Dict[str, tuple] = {}
+    for _map_skel in contract_set.skeletons:
+        _map_enr = enrichment_data.get(_map_skel.segment_id)
+        if not _map_enr:
+            continue
+        _map_funcs = _map_enr.get("functions", [])
+        _map_classes = _map_enr.get("classes", [])
+        # For each function/class, check if its name matches a file in this
+        # segment's file_scope (the canonical home after refactor).
+        # We also check enrichment-level source_file if available.
+        for _sym in (_map_funcs + _map_classes):
+            _sym_name = _sym.get("name", "")
+            if not _sym_name:
+                continue
+            # If this symbol is already owned by another segment, the
+            # first-registered owner wins (earlier segments take priority
+            # since they're upstream).
+            if _sym_name in _symbol_ownership:
+                continue
+            _symbol_ownership[_sym_name] = (
+                _map_skel.segment_id,
+                _map_skel.file_scope[0] if len(_map_skel.file_scope) == 1 else "",
+            )
+    # For multi-file segments, try to refine the canonical file using
+    # the file-stem heuristic (e.g. "build_evidence_bundle" → "_evidence.py")
+    for _map_skel in contract_set.skeletons:
+        if len(_map_skel.file_scope) <= 1:
+            continue
+        _map_enr = enrichment_data.get(_map_skel.segment_id)
+        if not _map_enr:
+            continue
+        for _sym in (_map_enr.get("functions", []) + _map_enr.get("classes", [])):
+            _sym_name = _sym.get("name", "")
+            if not _sym_name:
+                continue
+            if _symbol_ownership.get(_sym_name, ("",))[0] != _map_skel.segment_id:
+                continue  # Only refine if we own this symbol
+            # Try file-stem match
+            _name_lower = _sym_name.lower()
+            for _fp in _map_skel.file_scope:
+                _stem = os.path.splitext(os.path.basename(_fp))[0].lstrip("_").lower()
+                if _stem in _name_lower or _name_lower in _stem:
+                    _symbol_ownership[_sym_name] = (_map_skel.segment_id, _fp)
+                    break
+
+    if _symbol_ownership:
+        logger.info(
+            "[skeleton_contracts] v2.3 Symbol ownership map: %d symbol(s) across %d segment(s)",
+            len(_symbol_ownership),
+            len(set(v[0] for v in _symbol_ownership.values())),
+        )
+
     for skeleton in contract_set.skeletons:
         seg_id = skeleton.segment_id
         seg_enrichment = enrichment_data.get(seg_id)
@@ -536,10 +650,21 @@ def augment_skeleton_with_enrichment(
                 sig_lookup[name] for name in enriched_exports
                 if name in sig_lookup
             ]
+            # v2.3: Detect re-exports — symbols canonically owned by another segment
+            binding.re_exports = []
+            for _name in enriched_exports:
+                _owner = _symbol_ownership.get(_name)
+                if _owner and _owner[0] != seg_id and _owner[1]:
+                    binding.re_exports.append([_name, _owner[1]])
+                    logger.info(
+                        "[skeleton_contracts] v2.3 %s/%s: '%s' is re-export from %s (%s)",
+                        seg_id, binding.file_path, _name, _owner[0], _owner[1],
+                    )
             augmented_count += 1
             logger.info(
-                "[skeleton_contracts] v2.0 Augmented %s: %s with %d export name(s)",
-                seg_id, binding.file_path, len(binding.names),
+                "[skeleton_contracts] v2.0 Augmented %s: %s with %d export name(s)"
+                " (%d re-export(s))",
+                seg_id, binding.file_path, len(binding.names), len(binding.re_exports),
             )
         elif len(skeleton.exports) > 1:
             # Multi-file segment: try to assign exports to specific files.
@@ -574,10 +699,18 @@ def augment_skeleton_with_enrichment(
                 if matched_names:
                     binding.names = matched_names
                     binding.signatures = matched_sigs
+                    # v2.3: Detect re-exports for multi-file segments
+                    binding.re_exports = []
+                    for _name in matched_names:
+                        _owner = _symbol_ownership.get(_name)
+                        if _owner and _owner[0] != seg_id and _owner[1]:
+                            binding.re_exports.append([_name, _owner[1]])
                     augmented_count += 1
                     logger.info(
-                        "[skeleton_contracts] v2.0 Augmented %s: %s with %d export name(s)",
+                        "[skeleton_contracts] v2.0 Augmented %s: %s with %d export name(s)"
+                        " (%d re-export(s))",
                         seg_id, binding.file_path, len(binding.names),
+                        len(binding.re_exports),
                     )
 
             # Second pass: log unassigned exports but DO NOT blindly assign them.

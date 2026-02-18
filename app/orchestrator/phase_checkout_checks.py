@@ -230,11 +230,18 @@ def check_skeleton_contracts(
                 ))
 
         # v2.0: Scope check -- allow package paths that extend the original scope
+        # v3.0: Strip absolute path prefix before comparison. Output files have
+        # absolute Windows paths (D:\Orb\app\...) while file_scope has relative
+        # paths (app/...). Without stripping, every file is a false positive.
         seg_state = state.segments.get(seg_id)
         if seg_state and seg_state.output_files:
             scope_set = {_norm(f) for f in skel.file_scope}
+            _base_prefix = _norm(sandbox_base).rstrip("/") + "/"
             for out_file in seg_state.output_files:
                 normed = _norm(out_file)
+                # v3.0: Strip sandbox base prefix to get relative path
+                if normed.startswith(_base_prefix):
+                    normed = normed[len(_base_prefix):]
                 if normed not in scope_set:
                     # v2.0: Check if this is a package expansion -- if the file
                     # is under a directory that matches a scope entry (minus .py),

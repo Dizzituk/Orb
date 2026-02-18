@@ -106,6 +106,13 @@ def distill_job(
         if pattern:
             patterns_created.append(pattern)
 
+    # === Extract cohesion patterns (v5.29) ===
+    cohesion_patterns = _extract_cohesion_patterns(entries, job_id)
+    for cp in cohesion_patterns:
+        pattern = _deduplicate_and_store(db, cp)
+        if pattern:
+            patterns_created.append(pattern)
+
     db.commit()
 
     logger.info(
@@ -280,6 +287,82 @@ def _extract_strategy_patterns(
             "source_job_id": job_id,
             "language": entry.language or _infer_language(entry.file_scope),
             "initial_confidence": INITIAL_CONFIDENCE_STRATEGY,
+        })
+
+    return patterns
+
+
+# =============================================================================
+# COHESION PATTERN EXTRACTION (v5.29)
+# =============================================================================
+
+def _extract_cohesion_patterns(
+    entries: List[BuildJournalEntry],
+    job_id: str,
+) -> List[Dict[str, Any]]:
+    """
+    Extract cohesion check patterns — cross-segment mismatches and fixes.
+
+    These teach the architecture generator and segmenter what kinds of
+    inter-segment issues occur so future jobs can avoid them. Patterns
+    include:
+    - Missing exports that downstream segments expected
+    - Naming drift between what was promised and what was produced
+    - Interface shape mismatches (wrong signatures, wrong types)
+    - Auto-fix resolutions that worked (so the system can preempt)
+    """
+    cohesion_events = {
+        JournalEventType.COHESION_MISMATCH,
+        JournalEventType.COHESION_NAMING_DRIFT,
+        JournalEventType.COHESION_INTERFACE_BREAK,
+    }
+
+    patterns = []
+    seen_keys: set = set()
+
+    for entry in entries:
+        if entry.event_type not in cohesion_events:
+            continue
+        if not entry.description:
+            continue
+
+        # Deduplicate within this job by (category, segment, file)
+        _dedup_key = f"{entry.root_cause}:{entry.segment_id}:{entry.file_scope}"
+        if _dedup_key in seen_keys:
+            continue
+        seen_keys.add(_dedup_key)
+
+        # Determine category based on event type
+        _category = "architecture_decision"  # cohesion issues inform architecture
+        if entry.event_type == JournalEventType.COHESION_INTERFACE_BREAK:
+            _category = "architecture_decision"
+        elif entry.event_type == JournalEventType.COHESION_NAMING_DRIFT:
+            _category = "architecture_decision"
+
+        # Build description with expected/actual from details
+        _details = entry.details or {}
+        _desc = entry.description[:200]
+        _expected = _details.get("expected", "")
+        _actual = _details.get("actual", "")
+        if _expected and _actual:
+            _desc += f" | expected: {_expected[:80]} | actual: {_actual[:80]}"
+
+        _resolution = entry.resolution or ""
+        _was_auto_fixed = _details.get("auto_fixed", False)
+        if _was_auto_fixed and _resolution:
+            _resolution = f"[auto-fixed] {_resolution}"
+
+        patterns.append({
+            "category": _category,
+            "stage": "cohesion_check",
+            "description": _desc[:400],
+            "root_cause": entry.root_cause or entry.event_type.value,
+            "resolution": _resolution[:300],
+            "error_signature": f"cohesion:{entry.root_cause}:{entry.segment_id}",
+            "file_scope": entry.file_scope,
+            "source_job_id": job_id,
+            "language": entry.language or _infer_language(entry.file_scope),
+            "initial_confidence": 0.5,
         })
 
     return patterns

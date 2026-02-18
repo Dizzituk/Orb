@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-SEGMENT_LOOP_BUILD_ID = "2026-02-17-v5.26-facade-deferral-until-complete"
+SEGMENT_LOOP_BUILD_ID = "2026-02-18-v5.33-re-export-awareness-cohesion-feedback"
 print(f"[SEGMENT_LOOP_LOADED] BUILD_ID={SEGMENT_LOOP_BUILD_ID}")
 
 
@@ -1121,6 +1121,12 @@ async def run_segment_through_pipeline(
 
         # v4.0: Skip boot check — segments are intermediate builds.
         # Boot check runs once at Phase Checkout after ALL segments complete.
+        # v5.32: Pass manifest files for import validation
+        _manifest_all_files2 = set()
+        if manifest:
+            for _ms2 in manifest.segments:
+                for _mf2 in _ms2.file_scope:
+                    _manifest_all_files2.add(_mf2.replace("\\", "/"))
         arch_result = await run_architecture_execution(
             spec=spec,
             architecture_content=_recon_arch_text,
@@ -1130,6 +1136,7 @@ async def run_segment_through_pipeline(
             artifact_root=os.getenv("ORB_JOB_ARTIFACT_ROOT", "D:/Orb/jobs"),
             interface_contract=_seg_contract,
             skip_boot_check=True,
+            manifest_all_files=_manifest_all_files2 if _manifest_all_files2 else None,
         )
 
         if arch_result.get("success", False):
@@ -1499,60 +1506,12 @@ async def run_segmented_job(
                     f"{', '.join(_recovered[:5])}{'...' if len(_recovered) > 5 else ''}"
                 )
 
-        # v5.19: Only quarantine when ALL segments are ready for implementation
-        # (APPROVED or COMPLETE). If any are still PENDING (e.g. no architecture
-        # generated yet), quarantining the monolith would break the app
-        # because the replacement modules don't all exist yet.
-        _all_ready = all(
-            s.status in (SegmentStatus.APPROVED.value, SegmentStatus.COMPLETE.value)
-            for s in state.segments.values()
-        )
-        if not _all_ready:
-            _pending = [
-                sid for sid, s in state.segments.items()
-                if s.status not in (SegmentStatus.APPROVED.value, SegmentStatus.COMPLETE.value)
-            ]
-            logger.warning(
-                "[SEGMENT_LOOP] v5.19 Quarantine SKIPPED — %d segment(s) not ready: %s",
-                len(_pending), _pending[:5],
-            )
-            _emit(
-                f"⚠️ Quarantine skipped: {len(_pending)} segment(s) not ready for implementation "
-                f"({', '.join(_pending[:3])}{'...' if len(_pending) > 3 else ''}). "
-                f"Original file left in place."
-            )
-        else:
-            try:
-                from app.orchestrator.package_quarantine import (
-                    run_quarantine,
-                    QuarantineResult,
-                )
-                from app.overwatcher.sandbox_client import get_sandbox_client
-
-                _q_client = get_sandbox_client()
-                # Resolve sandbox base the same way architecture_executor does
-                _q_sandbox_base = os.getenv("ORB_SANDBOX_BASE", "D:\\Orb")
-
-                _quarantine_result = run_quarantine(
-                    manifest_dict=manifest.to_dict(),
-                    sandbox_base=_q_sandbox_base,
-                    client=_q_client,
-                    on_progress=_emit,
-                )
-                if _quarantine_result.has_quarantined:
-                    logger.info(
-                        "[SEGMENT_LOOP] v5.7 Quarantine: %d file(s), %d dir(s)",
-                        len([e for e in _quarantine_result.entries if e.status == 'quarantined']),
-                        len(_quarantine_result.directories_created),
-                    )
-                if not _quarantine_result.all_ok:
-                    for _q_err in _quarantine_result.errors:
-                        _emit(f"  ⚠️ Quarantine warning: {_q_err}")
-            except ImportError:
-                logger.debug("[SEGMENT_LOOP] Package quarantine not available")
-            except Exception as _q_err:
-                logger.warning("[SEGMENT_LOOP] v5.7 Quarantine failed (non-fatal): %s", _q_err)
-                _emit(f"⚠️ Quarantine check failed (non-fatal): {_q_err}")
+        # v5.31: Quarantine DEFERRED to just before Phase Checkout (Stage 9).
+        # Previously ran here (before segment execution), but this caused
+        # the monolith to be moved before strike-loop retries could re-read
+        # it as source evidence. The monolith is only needed gone for the
+        # boot test, so we defer quarantine until all segments are complete.
+        logger.info("[SEGMENT_LOOP] v5.31 Quarantine deferred to Phase Checkout")
 
     # --- Process segments in dependency order (multi-pass) ---
     # v5.11: The loop repeats until no further progress is made.
@@ -1761,6 +1720,12 @@ async def run_segmented_job(
                                 logger.warning("[SEGMENT_LOOP] v5.26 Extraction binding failed (non-fatal): %s", _eb_err)
                                 _emit(f"  ⚠️ Extraction binding failed (non-fatal): {_eb_err}")
                             # v4.0: Skip boot check — Phase Checkout handles it
+                            # v5.32: Pass all manifest file paths so job checker
+                            # treats future segment files as expected imports
+                            _manifest_all_files = set()
+                            for _ms in manifest.segments:
+                                for _mf in _ms.file_scope:
+                                    _manifest_all_files.add(_mf.replace("\\", "/"))
                             arch_result = await run_architecture_execution(
                                 spec=spec,
                                 architecture_content=_recon_arch_text,
@@ -1770,6 +1735,7 @@ async def run_segmented_job(
                                 artifact_root=os.getenv("ORB_JOB_ARTIFACT_ROOT", "D:/Orb/jobs"),
                                 interface_contract=_seg_contract_md,
                                 skip_boot_check=True,
+                                manifest_all_files=_manifest_all_files,
                             )
                             if arch_result.get("success", False):
                                 pipeline_result["success"] = True
@@ -2140,6 +2106,46 @@ async def run_segmented_job(
             )
             save_cohesion_result(_cohesion_result, job_dir_path)
 
+            # v5.29: Emit cohesion issues to journal for experience distillation
+            try:
+                from app.experience.journal_writer import emit_journal_entry
+                from app.experience.schemas import JournalEventType
+                for _ci in _cohesion_result.issues:
+                    # Map category to event type
+                    _evt_map = {
+                        "import_mismatch": JournalEventType.COHESION_MISMATCH,
+                        "missing_export": JournalEventType.COHESION_MISMATCH,
+                        "naming_mismatch": JournalEventType.COHESION_NAMING_DRIFT,
+                        "shape_mismatch": JournalEventType.COHESION_INTERFACE_BREAK,
+                        "contract_violation": JournalEventType.COHESION_INTERFACE_BREAK,
+                        "scope_violation": JournalEventType.COHESION_MISMATCH,
+                        "phantom_segment": JournalEventType.COHESION_MISMATCH,
+                        "endpoint_mismatch": JournalEventType.COHESION_INTERFACE_BREAK,
+                    }
+                    _evt = _evt_map.get(_ci.category, JournalEventType.COHESION_MISMATCH)
+                    emit_journal_entry(
+                        job_id,
+                        job_dir_path,
+                        stage="cohesion_check",
+                        event_type=_evt.value,
+                        severity="blocking" if _ci.severity == "blocking" else "warning",
+                        description=_ci.description[:300],
+                        root_cause=_ci.category,
+                        resolution=_ci.auto_fix_note if _ci.auto_fixed else _ci.suggested_fix,
+                        file_scope=_ci.file_path,
+                        segment_id=_ci.source_segment,
+                        details={
+                            "issue_id": _ci.issue_id,
+                            "expected": _ci.expected[:200] if _ci.expected else "",
+                            "actual": _ci.actual[:200] if _ci.actual else "",
+                            "related_segment": _ci.related_segment,
+                            "auto_fixed": _ci.auto_fixed,
+                            "auto_fix_tier": _ci.auto_fix_tier,
+                        },
+                    )
+            except Exception as _jrn_err:
+                logger.debug("[SEGMENT_LOOP] v5.29 cohesion journal emit failed: %s", _jrn_err)
+
             # Show auto-fixed issues
             _auto_fixed = [ci for ci in _cohesion_result.issues if ci.auto_fixed or ci.severity == "resolved"]
             if _auto_fixed:
@@ -2175,8 +2181,22 @@ async def run_segmented_job(
                     if _regen_segs:
                         for _regen_seg_id in _regen_segs:
                             if _regen_seg_id in state.segments:
+                                # v5.33: Structured feedback (same as retry path)
+                                _fb_parts = []
+                                for ci in _cohesion_result.blocking_issues:
+                                    if ci.source_segment != _regen_seg_id and ci.related_segment != _regen_seg_id:
+                                        continue
+                                    _part = f"[{ci.issue_id}] {ci.category}: {ci.description}"
+                                    if ci.expected:
+                                        _part += f" | Expected: {ci.expected[:200]}"
+                                    if ci.actual:
+                                        _part += f" | Actual: {ci.actual[:200]}"
+                                    if ci.suggested_fix:
+                                        _part += f" | Fix: {ci.suggested_fix[:200]}"
+                                    _fb_parts.append(_part)
+                                _feedback = "Cohesion regen:\n" + "\n".join(_fb_parts) if _fb_parts else f"Cohesion regen: blocking issues for {_regen_seg_id}"
                                 state.segments[_regen_seg_id].status = SegmentStatus.PENDING.value
-                                state.segments[_regen_seg_id].error = f"Cohesion regen: {[ci.description[:100] for ci in _cohesion_result.blocking_issues if ci.source_segment == _regen_seg_id]}"
+                                state.segments[_regen_seg_id].error = _feedback
                         _emit(f"  🔄 Marked {len(_regen_segs)} segment(s) for manual re-generation")
                         _emit(f"  💡 Say 'Astra, command: run segments' to retry architecture generation")
                     try:
@@ -2193,12 +2213,29 @@ async def run_segmented_job(
                     _emit(f"🔄 Cohesion found {_n_blocking} blocking issue(s) — auto-regenerating {len(_regen_segs)} segment(s)...")
 
                     # Mark flagged segments PENDING with cohesion feedback
+                    # v5.33: Structured feedback — include issue ID, category,
+                    # expected/actual values, suggested fix, and autofix failure
+                    # notes so the regen prompt has full context.
                     for _regen_seg_id in _regen_segs:
                         if _regen_seg_id in state.segments:
-                            _feedback = f"Cohesion regen: {[ci.description[:100] for ci in _cohesion_result.blocking_issues if ci.source_segment == _regen_seg_id or ci.related_segment == _regen_seg_id]}"
+                            _fb_parts = []
+                            for ci in _cohesion_result.blocking_issues:
+                                if ci.source_segment != _regen_seg_id and ci.related_segment != _regen_seg_id:
+                                    continue
+                                _part = f"[{ci.issue_id}] {ci.category}: {ci.description}"
+                                if ci.expected:
+                                    _part += f" | Expected: {ci.expected[:200]}"
+                                if ci.actual:
+                                    _part += f" | Actual: {ci.actual[:200]}"
+                                if ci.suggested_fix:
+                                    _part += f" | Fix: {ci.suggested_fix[:200]}"
+                                if ci.auto_fix_note and "FAILED" in ci.auto_fix_note:
+                                    _part += f" | Autofix FAILED: {ci.auto_fix_note}"
+                                _fb_parts.append(_part)
+                            _feedback = "Cohesion regen:\n" + "\n".join(_fb_parts) if _fb_parts else f"Cohesion regen: blocking issues for {_regen_seg_id}"
                             state.segments[_regen_seg_id].status = SegmentStatus.PENDING.value
                             state.segments[_regen_seg_id].error = _feedback
-                            logger.info("[SEGMENT_LOOP] v5.16 Cohesion regen: marked %s PENDING", _regen_seg_id)
+                            logger.info("[SEGMENT_LOOP] v5.33 Cohesion regen: marked %s PENDING with %d issue detail(s)", _regen_seg_id, len(_fb_parts))
                     save_state(state, get_job_dir(job_id))
 
                     # Re-run flagged segments through Critical Pipeline
@@ -2327,6 +2364,49 @@ async def run_segmented_job(
             logger.exception("[SEGMENT_LOOP] Integration check failed to run: %s", e)
             _emit(f"[SEGMENT_LOOP] Integration check error: {e}")
             # Do NOT crash the segment loop — segments already completed
+
+    # --- v5.31 DEFERRED QUARANTINE — Just Before Phase Checkout ---
+    # Moves monolith out of the way so the boot test imports from the
+    # new subpackage. Deferred from pre-execution to here so that
+    # strike-loop retries can still read the monolith as source evidence.
+    if implement_only and _quarantine_result is None:
+        _all_impl_done = all(
+            s.status in (SegmentStatus.COMPLETE.value, SegmentStatus.FAILED.value,
+                         SegmentStatus.BLOCKED.value)
+            for s in state.segments.values()
+        )
+        if _all_impl_done:
+            try:
+                from app.orchestrator.package_quarantine import (
+                    run_quarantine,
+                    QuarantineResult,
+                )
+                from app.overwatcher.sandbox_client import get_sandbox_client
+
+                _q_client = get_sandbox_client()
+                _q_sandbox_base = os.getenv("ORB_SANDBOX_BASE", "D:\\Orb")
+
+                _quarantine_result = run_quarantine(
+                    manifest_dict=manifest.to_dict(),
+                    sandbox_base=_q_sandbox_base,
+                    client=_q_client,
+                    on_progress=_emit,
+                )
+                if _quarantine_result.has_quarantined:
+                    logger.info(
+                        "[SEGMENT_LOOP] v5.31 Deferred quarantine: %d file(s), %d dir(s)",
+                        len([e for e in _quarantine_result.entries if e.status == 'quarantined']),
+                        len(_quarantine_result.directories_created),
+                    )
+                    _emit(f"📦 Quarantine: monolith moved aside for boot test")
+                if not _quarantine_result.all_ok:
+                    for _q_err in _quarantine_result.errors:
+                        _emit(f"  ⚠️ Quarantine warning: {_q_err}")
+            except ImportError:
+                logger.debug("[SEGMENT_LOOP] Package quarantine not available")
+            except Exception as _q_err:
+                logger.warning("[SEGMENT_LOOP] v5.31 Deferred quarantine failed (non-fatal): %s", _q_err)
+                _emit(f"⚠️ Quarantine check failed (non-fatal): {_q_err}")
 
     # --- v5.0 PHASE CHECKOUT — Stage 9 Full Verification ---
     # Replaces the v4.0 boot check stub with comprehensive verification:
