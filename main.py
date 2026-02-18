@@ -19,6 +19,9 @@ v0.16.0 Changes (Log Introspection):
 Previous versions: See git history
 """
 import os
+from pathlib import Path
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent / ".env")  # Load .env from project root before anything reads os.getenv
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles

@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-SKELETON_CONTRACTS_BUILD_ID = "2026-02-18-v2.3-re-export-awareness"
+SKELETON_CONTRACTS_BUILD_ID = "2026-02-18-v2.4-do-not-define-prohibition"
 print(f"[SKELETON_CONTRACTS_LOADED] BUILD_ID={SKELETON_CONTRACTS_BUILD_ID}")
 
 
@@ -275,7 +275,33 @@ class SkeletonContractSet:
                         parts.append(f"    - `{fp}` — available symbols: {_avail}")
                     else:
                         parts.append(f"    - `{fp}`")
+        # --- v2.4: DO NOT DEFINE section ---
+        # Lists all symbols exported by upstream segments that this segment
+        # imports from. These functions MUST be imported, NEVER redefined
+        # locally. This is the #1 cause of implementation failures: the LLM
+        # sees the function body in source evidence and copies it in instead
+        # of importing from the upstream segment module.
+        _do_not_define: List[tuple] = []  # (symbol_name, source_module, source_segment)
+        if skeleton.imports_from:
+            for upstream_seg, files in skeleton.imports_from.items():
+                for fp in files:
+                    _exp_info = _upstream_exports.get(fp)
+                    if _exp_info and _exp_info.names:
+                        _src_stem = os.path.splitext(os.path.basename(fp))[0]
+                        for _sym_name in _exp_info.names:
+                            _do_not_define.append((_sym_name, f".{_src_stem}", upstream_seg))
+        if _do_not_define:
+            parts.append("### ⛔ DO NOT DEFINE These Functions (v2.4)\n")
+            parts.append("The following symbols are ALREADY DEFINED in upstream segment modules. "
+                        "You MUST `import` them — NEVER redefine, copy, or re-implement them "
+                        "in your files. Defining a function that already exists in an upstream "
+                        "segment creates duplicate definitions, burns strikes, and breaks the package.\n")
+            for _sym, _src, _seg in _do_not_define:
+                parts.append(f"  - ❌ `{_sym}` — defined in `{_seg}`, import via `from {_src} import {_sym}`")
             parts.append("")
+            parts.append("If your code needs to CALL any of these functions, write the import statement. "
+                        "Do NOT copy the function body from the source monolith evidence.\n")
+        parts.append("")
 
         # --- Peer imports (v1.1) ---
         if skeleton.peer_imports_from:

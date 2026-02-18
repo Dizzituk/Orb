@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-COHESION_CHECK_BUILD_ID = "2026-02-16-v3.5-cascade-tier1-to-tier2"
+COHESION_CHECK_BUILD_ID = "2026-02-18-v3.6-safe-tier1-import-replacement"
 print(f"[COHESION_CHECK_LOADED] BUILD_ID={COHESION_CHECK_BUILD_ID}")
 
 
@@ -944,11 +944,22 @@ def _classify_fix_tier(issue: CohesionIssue) -> int:
     # ----- TIER 1: Deterministic -----
 
     # Import depth: from .X → from ..X
+    # v3.6: Tightened — only Tier 1 if SAME module name at different depths.
+    # Previously matched whenever description had 'from .' and fix had 'from ..'
+    # which caused false positives when they referred to DIFFERENT modules
+    # (e.g. description mentions 'from ._utils' and fix mentions 'from ..segment_state').
+    # v3.7: Removed unconditional "relative import" early return — it bypassed
+    # the module-name safety check and allowed different-module replacements
+    # (e.g. ._utils → ..segment_state) to be classified as safe Tier 1.
     if cat == "import_mismatch":
-        if ("from ." in desc_lower and "from .." in fix_lower) or \
-           "relative import" in desc_lower or \
-           "'..' prefix" in fix_lower:
-            return 1
+        # Only Tier 1 if we can confirm same module name at different depths
+        if "from ." in desc_lower and "from .." in fix_lower:
+            _old_mod = re.search(r"from\s+\.(\w+)\s+import", issue.description)
+            _new_mod = re.search(r"from\s+\.{2,}(\w+)\s+import", issue.suggested_fix)
+            if _old_mod and _new_mod and _old_mod.group(1) == _new_mod.group(1):
+                return 1  # Same module, different depth -> safe Tier 1
+            if _old_mod and _new_mod and _old_mod.group(1) != _new_mod.group(1):
+                return 2  # Different modules -> needs LLM judgement
         # v3.3: Import name mismatch with both names known
         if issue.expected and issue.actual:
             return 1
@@ -999,21 +1010,30 @@ def _extract_import_replacements(issue: CohesionIssue) -> List[tuple]:
 
     # Pattern 1: 'from .X import' → 'from ..X import'
     # Matches: "Change 'from .implementer import ...' to 'from ..implementer import ...'"
+    # v3.7: Added module-name guard — only match if the module name is the
+    # same at both depths.  Without this, a suggested_fix like
+    # "Change 'from ._utils import' to 'from ..segment_state import'"
+    # would produce a cross-module replacement that corrupts the architecture.
     pairs = re.findall(
-        r"['\"]from\s+(\.\w+)\s+import[^'\"]*['\"]\s*(?:to|→|->)\s*['\"]from\s+(\.{2,}\w+)\s+import",
+        r"['\"]from\s+(\.+)(\w+)\s+import[^'\"]*['\"]\s*(?:to|→|->)\s*['\"]from\s+(\.{2,})(\w+)\s+import",
         combined,
     )
-    for old_mod, new_mod in pairs:
-        replacements.append((f"from {old_mod} import", f"from {new_mod} import"))
+    for old_dots, old_name, new_dots, new_name in pairs:
+        if old_name == new_name:  # v3.7: Same module at different depth — safe
+            replacements.append((f"from {old_dots}{old_name} import", f"from {new_dots}{new_name} import"))
 
     # Pattern 2: Explicit "from .X" / "from ..X" in suggested_fix
+    # v3.6: Only pair if the module name matches (different depth of SAME module).
+    # Previously paired any single-dot module with any double-dot module,
+    # which corrupted architectures when description and fix mentioned
+    # different modules (e.g. ._utils in desc, ..segment_state in fix).
     if not replacements:
-        old_match = re.search(r"from\s+(\.\w+)\s+import", issue.description)
-        new_match = re.search(r"from\s+(\.{2,}\w+)\s+import", issue.suggested_fix)
-        if old_match and new_match:
+        old_match = re.search(r"from\s+(\.)(\w+)\s+import", issue.description)
+        new_match = re.search(r"from\s+(\.{2,})(\w+)\s+import", issue.suggested_fix)
+        if old_match and new_match and old_match.group(2) == new_match.group(2):
             replacements.append((
-                f"from {old_match.group(1)} import",
-                f"from {new_match.group(1)} import",
+                f"from {old_match.group(1)}{old_match.group(2)} import",
+                f"from {new_match.group(1)}{new_match.group(2)} import",
             ))
 
     # Pattern 3: General ".module" → "..module" mentioned anywhere

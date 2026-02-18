@@ -913,7 +913,9 @@ async def run_architecture_execution(
                             f"If the error says a function name is wrong: DO NOT rename functions. Use the name from the BINDING CONTRACT section above, character for character.\n"
                             f"If the error says a parameter type is wrong: DO NOT change types. If the contract says `str`, never use `Path`.\n"
                             f"If the error says a constant is missing: you MUST define it as a top-level variable in this file.\n"
-                            f"If the error says a signature does not match: copy the ENTIRE `def` line from the BINDING CONTRACT section and do not alter a single character.\n\n"
+                            f"If the error says a signature does not match: copy the ENTIRE `def` line from the BINDING CONTRACT section and do not alter a single character.\n"
+                            f"If the error says a function is 'defined locally but should be imported': DELETE the function definition from your code and add an import statement instead. The function belongs to an upstream segment module — you MUST import it, not copy its body from the source evidence.\n"
+                            f"If the error mentions 'contract_violation' about a locally-defined function: this means you copied a function from the source that belongs to another segment. REMOVE your definition and IMPORT it from the correct sibling module.\n\n"
                         )
                         # Prepend error to the beginning of user_prompt (after the file name line)
                         _first_newline = user_prompt.find("\n\n")

@@ -998,6 +998,30 @@ async def _handle_architecture(
                 "when the source uses `SegmentStatus.COMPLETE`). Import the enum from its "
                 "original module and use it exactly as the source does.\n"
             )
+            # v5.34: Source evidence ownership warning — annotate which functions
+            # in the monolith belong to OTHER segments.  The LLM sees the source
+            # evidence as "copy verbatim", which overrides the DO NOT DEFINE
+            # prohibition. This annotation bridges that gap by telling the LLM
+            # which functions to import rather than copy.
+            _si_other_seg_symbols = set()
+            _enrich_for_ownership = segment_context.get("enrichment", {})
+            _consumes_for_ownership = _enrich_for_ownership.get("consumes", {}) if _enrich_for_ownership else {}
+            for _own_seg, _own_syms in _consumes_for_ownership.items():
+                if isinstance(_own_syms, list):
+                    _si_other_seg_symbols.update(_own_syms)
+            if _si_other_seg_symbols:
+                _si_parts.append("#### ⚠️ Source Evidence Ownership Warning (v5.34)\n")
+                _si_parts.append(
+                    "The source file below contains functions that belong to "
+                    "**OTHER segments**, not yours. When you see these functions "
+                    "in the source code, do NOT copy their bodies into your file. "
+                    "Instead, IMPORT them from the upstream segment module.\n"
+                )
+                _si_parts.append("**Functions in source that you must IMPORT, not copy:**")
+                for _own_sym in sorted(_si_other_seg_symbols):
+                    _si_parts.append(f"  - `{_own_sym}` — IMPORT this, do NOT copy its body")
+                _si_parts.append("")
+
             for _sf_path, _sf_content in _si_source_files.items():
                 _si_parts.append(f"**`{_sf_path}`** ({len(_sf_content):,} chars)")
                 # Cap per-file injection at 120K chars to leave room for other context
