@@ -1455,6 +1455,70 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
                     _requirements = _extract_requirements_from_spec(spot_markdown)
                     _acceptance = _extract_acceptance_from_spec(spot_markdown)
                     
+                    # v5.18 PHASE 3D: External consumer exclusion for file→package refactors
+                    # When a monolith (e.g. segment_loop.py) is being refactored into a
+                    # package (segment_loop/), external files that only need import-path
+                    # updates (e.g. cohesion_check.py, phase_loop.py) should NOT be in
+                    # segment scope. They waste segments on MODIFY operations that fail
+                    # on large files. Post-recon handles their imports mechanically.
+                    _deferred_consumers: List[str] = []
+                    _refactor_packages: Dict[str, str] = {}  # package_dir -> monolith_path
+                    _norm_scope = [f.replace("\\", "/") for f in _file_scope]
+
+                    # Detect file→package pattern: both "foo.py" and "foo/_bar.py" in scope
+                    for _fp in _norm_scope:
+                        if _fp.endswith(".py") and "/" in _fp:
+                            _stem = _fp.rsplit("/", 1)[-1].replace(".py", "")
+                            _parent = _fp.rsplit("/", 1)[0]
+                            _pkg_prefix = f"{_parent}/{_stem}/"
+                            # Check if any other file lives inside this package
+                            _has_pkg_files = any(
+                                _other.startswith(_pkg_prefix) for _other in _norm_scope if _other != _fp
+                            )
+                            if _has_pkg_files:
+                                _refactor_packages[_pkg_prefix] = _fp
+
+                    if _refactor_packages:
+                        _products = set()
+                        for _pkg_prefix, _mono_path in _refactor_packages.items():
+                            # The monolith itself is a product (gets quarantined)
+                            _products.add(_mono_path)
+                            # All files inside the package dir are products
+                            for _fp2 in _norm_scope:
+                                if _fp2.startswith(_pkg_prefix):
+                                    _products.add(_fp2)
+
+                        # Files NOT in any product set are external consumers
+                        for _fp3 in _norm_scope:
+                            if _fp3 not in _products:
+                                # Check if file exists on disk (it's being modified, not created)
+                                _abs_check = None
+                                for _root in (_disc.get('roots', []) if '_disc' in dir() else ["D:\\Orb"]):
+                                    _candidate = os.path.join(_root, _fp3.replace("/", os.sep))
+                                    if os.path.isfile(_candidate):
+                                        _abs_check = _candidate
+                                        break
+                                if _abs_check:
+                                    _deferred_consumers.append(_fp3)
+
+                        if _deferred_consumers:
+                            # Remove consumers from file scope
+                            _file_scope = [
+                                f for f in _file_scope
+                                if f.replace("\\", "/") not in set(_deferred_consumers)
+                            ]
+                            logger.info(
+                                "[spec_runner] v5.18 External consumer exclusion: "
+                                "deferred %d file(s) to post-recon: %s",
+                                len(_deferred_consumers),
+                                _deferred_consumers,
+                            )
+                            print(
+                                f"[spec_runner] v5.18 CONSUMER EXCLUSION: "
+                                f"{len(_deferred_consumers)} external file(s) deferred to post-recon: "
+                                f"{', '.join(_deferred_consumers)}"
+                            )
+
                     # v5.5 PHASE 3B: Try concept-aware grouping first
                     _concept_groups = None
                     _target_segs = _needle_estimate.recommended_segment_count if _needle_estimate else 0
@@ -1487,6 +1551,14 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
                     )
                     
                     if segmentation_manifest:
+                        # v5.18: Attach deferred consumer files to manifest
+                        if _deferred_consumers:
+                            segmentation_manifest.deferred_consumer_files = _deferred_consumers
+                            logger.info(
+                                "[spec_runner] v5.18 Attached %d deferred consumer(s) to manifest",
+                                len(_deferred_consumers),
+                            )
+
                         # Write manifest and segment specs to job directory
                         _write_segmentation_output(job_id, segmentation_manifest)
                         logger.info(

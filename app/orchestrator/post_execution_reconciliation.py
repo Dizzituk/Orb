@@ -35,7 +35,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
-POST_RECON_BUILD_ID = "2026-02-15-v1.0-initial"
+POST_RECON_BUILD_ID = "2026-02-18-v2.0-deferred-consumer-recon"
 print(f"[POST_EXECUTION_RECON_LOADED] BUILD_ID={POST_RECON_BUILD_ID}")
 
 
@@ -637,6 +637,161 @@ def run_post_execution_reconciliation(
 
 
 # =============================================================================
+# v5.18: DEFERRED CONSUMER IMPORT RECONCILIATION
+# =============================================================================
+
+def reconcile_deferred_consumers(
+    manifest: Any,
+    sandbox_base: str = "D:\\Orb",
+    dry_run: bool = False,
+    on_progress: Any = None,
+) -> ReconciliationResult:
+    """
+    Fix import paths in external consumer files after a file->package refactor.
+
+    When a monolith (e.g. segment_loop.py) is refactored into a package
+    (segment_loop/), external files that imported from the monolith need
+    their imports updated. These files were excluded from segment scope
+    (v5.18 consumer exclusion) and are listed in manifest.deferred_consumer_files.
+
+    The fix is mechanical: the __init__.py facade should re-export everything,
+    so most imports like `from .segment_loop import X` still work. But if
+    the monolith was `from app.orchestrator.segment_loop import X` and the
+    monolith has been quarantined, we need to ensure the package __init__.py
+    actually re-exports X.
+
+    This function:
+    1. Reads deferred consumer file list from manifest
+    2. Builds export registry from new package __init__.py
+    3. Scans each consumer for imports from the old monolith path
+    4. Verifies each imported name exists in the package exports
+    5. Reports (or fixes) any missing re-exports
+
+    Returns ReconciliationResult with fix details.
+    """
+    _emit = on_progress or (lambda msg: None)
+    result = ReconciliationResult()
+
+    deferred = getattr(manifest, 'deferred_consumer_files', []) or []
+    if not deferred:
+        _emit("🔧 [CONSUMER-RECON] No deferred consumer files — skipping")
+        return result
+
+    _emit(f"🔧 [CONSUMER-RECON] Processing {len(deferred)} deferred consumer file(s)...")
+
+    # Detect which packages were created (monolith -> package pattern)
+    # Look for quarantined monoliths or package __init__.py files
+    _package_exports: Dict[str, Set[str]] = {}  # dotted_module -> {exported_names}
+
+    for seg in manifest.segments:
+        for rel_path in seg.file_scope:
+            norm = rel_path.replace("\\", "/")
+            if norm.endswith("/__init__.py"):
+                # This is a package init — read its exports
+                abs_path = os.path.join(sandbox_base, norm.replace("/", os.sep))
+                if os.path.isfile(abs_path):
+                    try:
+                        with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                            init_content = f.read()
+                        # Parse exports from __init__.py
+                        _pkg_dir = norm.rsplit("/", 1)[0]  # e.g. "app/orchestrator/segment_loop"
+                        _dotted = _pkg_dir.replace("/", ".")
+                        # Get names from __all__ or from imports
+                        try:
+                            tree = ast.parse(init_content)
+                            names: Set[str] = set()
+                            for node in ast.walk(tree):
+                                if isinstance(node, ast.ImportFrom):
+                                    for alias in (node.names or []):
+                                        names.add(alias.asname or alias.name)
+                                elif isinstance(node, ast.Assign):
+                                    for target in node.targets:
+                                        if isinstance(target, ast.Name) and target.id == "__all__":
+                                            if isinstance(node.value, (ast.List, ast.Tuple)):
+                                                for elt in node.value.elts:
+                                                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                                                        names.add(elt.value)
+                            _package_exports[_dotted] = names
+                            logger.info(
+                                "[consumer_recon] Package %s exports %d name(s)",
+                                _dotted, len(names),
+                            )
+                        except SyntaxError:
+                            logger.warning("[consumer_recon] Cannot parse %s", abs_path)
+                    except Exception as e:
+                        logger.warning("[consumer_recon] Cannot read %s: %s", abs_path, e)
+
+    if not _package_exports:
+        _emit("🔧 [CONSUMER-RECON] No package __init__.py exports found — skipping")
+        return result
+
+    # Process each deferred consumer file
+    _missing_reexports: Dict[str, List[str]] = {}  # package -> [missing_names]
+
+    for consumer_path in deferred:
+        abs_path = os.path.join(sandbox_base, consumer_path.replace("/", os.sep))
+        if not os.path.isfile(abs_path):
+            logger.warning("[consumer_recon] Deferred consumer not found: %s", abs_path)
+            continue
+
+        try:
+            with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                consumer_content = f.read()
+        except Exception as e:
+            logger.warning("[consumer_recon] Cannot read %s: %s", abs_path, e)
+            continue
+
+        result.files_scanned += 1
+
+        # Find imports that reference any of our refactored packages
+        for line_no, line in enumerate(consumer_content.splitlines(), 1):
+            stripped = line.strip()
+            if not stripped.startswith(("from ", "import ")):
+                continue
+
+            for pkg_dotted, pkg_names in _package_exports.items():
+                # Match: from app.orchestrator.segment_loop import X, Y
+                # Or:    from .segment_loop import X, Y  (relative)
+                _rel_dotted = "." + pkg_dotted.rsplit(".", 1)[-1] if "." in pkg_dotted else pkg_dotted
+                if pkg_dotted in stripped or _rel_dotted in stripped:
+                    # Extract imported names
+                    _import_match = re.match(
+                        r'from\s+[\w.]+\s+import\s+(.+)',
+                        stripped.rstrip("\\").rstrip(),
+                    )
+                    if _import_match:
+                        _imported = [
+                            n.strip().split(" as ")[0].strip()
+                            for n in _import_match.group(1).split(",")
+                            if n.strip() and n.strip() != "\\"
+                        ]
+                        for _name in _imported:
+                            if _name and _name not in pkg_names and _name != "*":
+                                _missing_reexports.setdefault(pkg_dotted, []).append(_name)
+                                logger.warning(
+                                    "[consumer_recon] %s:%d imports '%s' from %s "
+                                    "but __init__.py does not re-export it",
+                                    consumer_path, line_no, _name, pkg_dotted,
+                                )
+
+    # Report findings
+    if _missing_reexports:
+        for pkg, names in _missing_reexports.items():
+            unique_names = sorted(set(names))
+            _emit(
+                f"⚠️ [CONSUMER-RECON] Package {pkg} missing re-exports: "
+                f"{', '.join(unique_names)}"
+            )
+            result.errors.append(
+                f"Package {pkg} __init__.py must re-export: {', '.join(unique_names)}"
+            )
+    else:
+        _emit("✅ [CONSUMER-RECON] All deferred consumer imports are satisfied")
+
+    return result
+
+
+# =============================================================================
 # EXPORTS
 # =============================================================================
 
@@ -647,4 +802,5 @@ __all__ = [
     "detect_import_mismatches",
     "apply_import_fixes",
     "POST_RECON_BUILD_ID",
+    "reconcile_deferred_consumers",
 ]

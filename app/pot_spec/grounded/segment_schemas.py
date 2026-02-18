@@ -393,6 +393,11 @@ class SegmentManifest:
     generated_at: str = ""
     manifest_version: str = "1.0"
 
+    # v5.18: External consumer files deferred to post-recon
+    # Files that only need import-path updates after a file->package refactor.
+    # These are NOT included in any segment's file_scope.
+    deferred_consumer_files: List[str] = field(default_factory=list)
+
     def __post_init__(self):
         if not self.generated_at:
             self.generated_at = datetime.now(timezone.utc).isoformat()
@@ -411,6 +416,7 @@ class SegmentManifest:
             "total_files": self.total_files,
             "generated_at": self.generated_at,
             "manifest_version": self.manifest_version,
+            "deferred_consumer_files": self.deferred_consumer_files,
         }
 
     @classmethod
@@ -418,6 +424,7 @@ class SegmentManifest:
         return cls(
             parent_spec_id=data.get("parent_spec_id"),
             parent_spec_hash=data.get("parent_spec_hash"),
+            deferred_consumer_files=data.get("deferred_consumer_files", []),
             segments=[SegmentSpec.from_dict(s) for s in data.get("segments", [])],
             requirement_map=data.get("requirement_map", {}),
             total_segments=data.get("total_segments", 0),

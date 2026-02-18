@@ -2062,6 +2062,31 @@ async def run_segmented_job(
             logger.warning("[SEGMENT_LOOP] v5.12 Post-execution reconciliation error (non-fatal): %s", _recon_err)
             _emit(f"\u26a0\ufe0f Post-execution reconciliation error (non-fatal): {_recon_err}")
 
+    # --- v5.18 DEFERRED CONSUMER RECONCILIATION ---
+    # After post-recon, check deferred consumer files for missing re-exports.
+    # These are external files (e.g. cohesion_check.py, phase_loop.py) that
+    # were excluded from segment scope but import from the refactored package.
+    _deferred = getattr(manifest, 'deferred_consumer_files', []) or []
+    if _deferred and _any_complete and implement_only:
+        try:
+            from app.orchestrator.post_execution_reconciliation import reconcile_deferred_consumers
+            _consumer_result = reconcile_deferred_consumers(
+                manifest=manifest,
+                on_progress=_emit,
+            )
+            if _consumer_result.errors:
+                logger.warning(
+                    "[SEGMENT_LOOP] v5.18 Deferred consumer issues: %s",
+                    _consumer_result.errors,
+                )
+        except ImportError:
+            logger.debug("[SEGMENT_LOOP] Deferred consumer recon not available")
+        except Exception as _dc_err:
+            logger.warning(
+                "[SEGMENT_LOOP] v5.18 Deferred consumer recon error (non-fatal): %s",
+                _dc_err,
+            )
+
     # --- v5.16 PHASE 2C: Cohesion Check + Automated Regen Loop ---
     # After architecture generation, run cohesion check. If blocking issues
     # remain after auto-fix (Tier 1/2), automatically re-generate the flagged

@@ -1203,6 +1203,13 @@ def _apply_llm_assignments(
     const_by_name = {c["name"]: c for c in all_symbols["constants"]}
     valid_seg_ids = {seg.segment_id for seg in segments}
 
+    # v1.3: Build reverse lookup of existing deterministic assignments
+    # so we can detect conflicts where the LLM overrides a good assignment.
+    _det_assigned: Dict[str, str] = {}  # symbol -> segment that deterministic placed it
+    for _da_seg, _da_syms in assignments.items():
+        for _da_sym in _da_syms:
+            _det_assigned[_da_sym] = _da_seg
+
     for symbol_name, target_seg_id in llm_assignments.items():
         if target_seg_id not in valid_seg_ids:
             logger.warning(
@@ -1210,6 +1217,39 @@ def _apply_llm_assignments(
                 symbol_name, target_seg_id,
             )
             continue
+
+        # v1.3: If deterministic already assigned this symbol, keep the
+        # deterministic assignment — it's more reliable than LLM bulk guessing.
+        if symbol_name in _det_assigned:
+            _existing = _det_assigned[symbol_name]
+            if _existing != target_seg_id:
+                logger.info(
+                    "[SEGMENT_ENRICHMENT] v1.3 LLM wants '%s' in %s but "
+                    "deterministic already placed it in %s — keeping deterministic",
+                    symbol_name, target_seg_id, _existing,
+                )
+                continue
+
+        # v1.3: Validate target file affinity — check that at least one
+        # word (>3 chars) from the function name appears in the target
+        # segment's file stems or title. If zero overlap, log a warning
+        # but still accept (the LLM may know something we don't).
+        _target_seg = next((s for s in segments if s.segment_id == target_seg_id), None)
+        if _target_seg and symbol_name in func_by_name:
+            _sym_words = {w for w in symbol_name.lower().lstrip("_").split("_") if len(w) > 3}
+            _seg_words = set()
+            for _fp in _target_seg.file_scope:
+                _stem = os.path.basename(_fp).replace(".py", "").lower().lstrip("_")
+                _seg_words.update(w for w in _stem.split("_") if len(w) > 3)
+            _seg_words.update(w for w in _target_seg.title.lower().split() if len(w) > 3)
+            _overlap = _sym_words & _seg_words
+            if not _overlap and _sym_words:
+                logger.warning(
+                    "[SEGMENT_ENRICHMENT] v1.3 LOW AFFINITY: '%s' → %s "
+                    "(no word overlap between function and target files/title). "
+                    "Words: func=%s, seg=%s",
+                    symbol_name, target_seg_id, _sym_words, _seg_words,
+                )
 
         # Add to assignments
         if symbol_name not in assignments.get(target_seg_id, []):
