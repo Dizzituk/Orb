@@ -375,6 +375,15 @@ def run_skeleton_compliance(
             # Also check for constants in prose: "defines CONSTANT_NAME"
             for _m in _re.finditer(r'(?:defines?|contains?|exports?|provides?)\s+`?([A-Z][A-Z0-9_]+)`?', arch_content):
                 _defined.add(_m.group(1))
+            # v3.6: Backtick-quoted function signatures in prose
+            # Catches patterns like: `_now_iso() -> str`, `_find_latest_arch(seg_dir: str)`
+            for _m in _re.finditer(r'`(\w+)\s*\(', arch_content):
+                _name = _m.group(1)
+                if _name not in ('import', 'from', 'class', 'def', 'async', 'return', 'if', 'for', 'while', 'with', 'try', 'except'):
+                    _defined.add(_name)
+            # v3.6: Prose export/import lists: "export _func_name", "imports `_func`"
+            for _m in _re.finditer(r'(?:exports?|imports?|provides?|defines?)\s+`(\w+)`', arch_content):
+                _defined.add(_m.group(1))
 
             # Map to modules owned by this segment
             _seg_files = set()

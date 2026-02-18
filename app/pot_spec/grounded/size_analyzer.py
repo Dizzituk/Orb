@@ -48,7 +48,7 @@ from .size_decomposition import estimate_from_source_blocks, suggest_decompositi
 
 logger = logging.getLogger(__name__)
 
-SIZE_ANALYZER_BUILD_ID = "2026-02-14-v1.1-split-submodules"
+SIZE_ANALYZER_BUILD_ID = "2026-02-17-v1.2-skip-spec-owned-decomposition"
 print(f"[SIZE_ANALYZER_LOADED] BUILD_ID={SIZE_ANALYZER_BUILD_ID}")
 
 
@@ -128,6 +128,74 @@ def analyze_file_sizes(
             files_exceeding_cap=[],
             source_files_analyzed=0,
             is_refactor=False,
+        )
+
+    # =========================================================================
+    # v1.2: Skip decomposition when spec already defines output submodules
+    # =========================================================================
+    # If the spec's file_scope already contains multiple NEW output files in the
+    # same package as a source monolith, the spec has already planned the
+    # decomposition. Adding mechanical loop_at_line_* splits would contradict
+    # the spec and confuse the segmenter.
+    #
+    # Detection: count files in scope that DON'T exist on disk (= spec-planned
+    # output files). If there are 3+ such files sharing a common parent dir
+    # with a source file, the spec owns the decomposition.
+    _spec_planned_outputs = [f for f in file_scope if f not in source_contents]
+    _spec_has_decomposition = False
+    if len(_spec_planned_outputs) >= 3:
+        # Check if planned outputs share a directory with (or are children of)
+        # a source file's parent
+        _source_dirs = {
+            os.path.dirname(s.replace("\\", "/")).lower()
+            for s in source_contents
+        }
+        _output_dirs = {
+            os.path.dirname(f.replace("\\", "/")).lower()
+            for f in _spec_planned_outputs
+        }
+        # Match if output dir is source_dir/subpackage (one level deeper) or same dir
+        for _od in _output_dirs:
+            for _sd in _source_dirs:
+                if _od == _sd or _od.startswith(_sd + "/"):
+                    _spec_has_decomposition = True
+                    break
+            if _spec_has_decomposition:
+                break
+
+    if _spec_has_decomposition:
+        logger.info(
+            "[size_analyzer] v1.2 SKIP: Spec already defines %d output files — "
+            "decomposition owned by spec, not size analyzer",
+            len(_spec_planned_outputs),
+        )
+        print(
+            f"[size_analyzer] ✅ Spec-owned decomposition: "
+            f"{len(_spec_planned_outputs)} output file(s) already planned — "
+            f"skipping mechanical splits"
+        )
+        # Still build estimates for metadata but don't add decomposition files
+        for rel_path in file_scope:
+            if rel_path in source_contents:
+                content = source_contents[rel_path]
+                estimates[rel_path] = FileSizeEstimate(
+                    rel_path=rel_path,
+                    estimated_lines=content.count("\n") + 1,
+                    estimated_kb=round(len(content) / 1024, 1),
+                    source_file=rel_path,
+                )
+            else:
+                estimates[rel_path] = _estimate_output_file_size(
+                    rel_path, spec_markdown, {},
+                )
+        return SizeAnalysisResult(
+            original_file_scope=list(file_scope),
+            enriched_file_scope=list(file_scope),
+            estimates=estimates,
+            files_added=[],
+            files_exceeding_cap=[],
+            source_files_analyzed=len(source_contents),
+            is_refactor=is_refactor,
         )
 
     logger.info(

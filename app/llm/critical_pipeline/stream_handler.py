@@ -14,7 +14,7 @@ import asyncio
 import json
 import logging
 import os
-from typing import Optional, Any
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -116,6 +116,158 @@ def _save_to_memory(
             )
         except Exception as e:
             logger.warning("[critical_pipeline] Failed to save to memory: %s", e)
+
+
+# =============================================================================
+# Segment-Scoped Spec Builder (v5.26)
+# =============================================================================
+
+def _build_segment_critique_spec(
+    segment_context: Dict[str, Any],
+    parent_spec_markdown: Optional[str] = None,
+) -> str:
+    """Build a segment-scoped spec for critique evaluation.
+
+    When processing a segment within a segmented job, the critique must
+    evaluate the architecture against THIS segment's contract, not the
+    parent job spec. The parent spec describes the whole job (e.g.
+    'refactor this file, no new files') which may contradict what
+    individual segments need to do.
+
+    The segment-scoped spec:
+    1. Defines the segment's own requirements and acceptance criteria
+    2. Lists the segment's file_scope (what files it owns)
+    3. Describes what other segments handle (so critique doesn't flag
+       'missing' functionality that lives in sibling segments)
+    4. Preserves parent spec context as reference, clearly scoped
+
+    v5.26: Fixes critique false-positives where segment architectures
+    were flagged for violating parent-level constraints that don't
+    apply at the segment level.
+    """
+    seg_id = segment_context.get("segment_id", "unknown")
+    seg_spec = segment_context.get("segment_spec", {})
+    file_scope = segment_context.get("file_scope", [])
+    requirements = segment_context.get("requirements", [])
+    acceptance_criteria = segment_context.get("acceptance_criteria", [])
+    dependencies = segment_context.get("dependencies", [])
+    exposes = segment_context.get("exposes")
+    consumes = segment_context.get("consumes")
+
+    parts: List[str] = []
+
+    # Header — make it clear this is a segment, not a standalone job
+    parts.append(f"# Segment Spec: {seg_id}")
+    parts.append(f"**Title:** {seg_spec.get('title', seg_id)}")
+    parts.append("")
+    parts.append(
+        "This is ONE SEGMENT within a segmented job. The architecture "
+        "should be evaluated against THIS segment's requirements below, "
+        "NOT against the parent job spec. Other segments handle other "
+        "parts of the work."
+    )
+    parts.append("")
+
+    # Goal — the segment's actual job
+    parts.append("## Goal")
+    parts.append(seg_spec.get("title", "Implement this segment's file scope."))
+    parts.append("")
+
+    # File scope — authoritative list of files this segment owns
+    if file_scope:
+        parts.append("## File Scope (ONLY these files)")
+        parts.append(
+            "This segment is responsible for ONLY these files. "
+            "Creating, modifying, or referencing other files is acceptable "
+            "if they are dependencies or standard library imports."
+        )
+        for f in file_scope:
+            parts.append(f"- `{f}`")
+        parts.append("")
+
+    # Requirements — the segment's own requirements
+    if requirements:
+        parts.append("## Requirements")
+        for r in requirements:
+            parts.append(f"- {r}")
+        parts.append("")
+
+    # Acceptance criteria — what the segment must achieve
+    if acceptance_criteria:
+        parts.append("## Acceptance Criteria")
+        for ac in acceptance_criteria:
+            parts.append(f"- {ac}")
+        parts.append("")
+
+    # Dependencies — what other segments this one depends on
+    if dependencies:
+        parts.append("## Dependencies")
+        parts.append(
+            "This segment depends on the following sibling segments. "
+            "Their output files already exist or will exist when this "
+            "segment executes. Importing from them is EXPECTED and CORRECT."
+        )
+        for dep in dependencies:
+            parts.append(f"- `{dep}`")
+        parts.append("")
+
+    # v5.27: Available symbols from dependencies (from enrichment)
+    # Prevents critique false-positives like "imports X from seg-02
+    # but X is not in available exports" by giving the full symbol list.
+    _enrichment = segment_context.get("enrichment")
+    if _enrichment:
+        _consumes = _enrichment.get("consumes", {})
+        if _consumes:
+            parts.append("## Available Symbols from Dependencies")
+            parts.append(
+                "These symbols are confirmed available from sibling segments "
+                "(extracted from the source monolith via AST parsing). "
+                "Importing any of these is CORRECT and should NOT be flagged."
+            )
+            for _dep_seg, _dep_syms in _consumes.items():
+                if isinstance(_dep_syms, list) and _dep_syms:
+                    parts.append(f"- From **{_dep_seg}**: {', '.join(f'`{s}`' for s in _dep_syms)}")
+            parts.append("")
+
+    if exposes:
+        parts.append("## Exposes (what this segment provides to others)")
+        if isinstance(exposes, dict):
+            for k, v in exposes.items():
+                parts.append(f"- **{k}**: {v}")
+        else:
+            parts.append(str(exposes))
+        parts.append("")
+
+    if consumes:
+        parts.append("## Consumes (what this segment needs from dependencies)")
+        if isinstance(consumes, dict):
+            for k, v in consumes.items():
+                parts.append(f"- **{k}**: {v}")
+        else:
+            parts.append(str(consumes))
+        parts.append("")
+
+    # Parent spec as REFERENCE (not authoritative for this segment)
+    if parent_spec_markdown:
+        parts.append("## Parent Job Spec (REFERENCE ONLY)")
+        parts.append(
+            "The following is the parent job spec for context. "
+            "Constraints in the parent spec (e.g. 'no new files', "
+            "'refactor single file') apply to the OVERALL job, not "
+            "to this individual segment. This segment may legitimately "
+            "create new files, import from sibling-created modules, or "
+            "perform operations that appear to violate parent-level "
+            "constraints but are correct at the segment level."
+        )
+        parts.append("")
+        # Include truncated parent spec for context
+        _parent_truncated = parent_spec_markdown[:4000]
+        if len(parent_spec_markdown) > 4000:
+            _parent_truncated += f"\n... (truncated from {len(parent_spec_markdown):,} chars)"
+        parts.append(_parent_truncated)
+        parts.append("")
+
+    return "\n".join(parts)
 
 
 # =============================================================================
@@ -763,12 +915,50 @@ async def _handle_architecture(
         _si_parts.append(
             "**IMPORTANT**: You are generating architecture for ONE SEGMENT "
             "of a multi-segment job, not the full specification. Only design "
-            "and produce code for the files listed below.\n"
+            "and produce code for the files listed below. "
+            "Files marked CREATE do not exist on disk yet — do NOT emit "
+            "EVIDENCE_REQUEST to read them. All source code you need is provided "
+            "in the Source File Evidence and Segment Enrichment sections below.\n"
         )
         if _si_files:
             _si_parts.append("### Files in Scope (ONLY these files)")
+            # v5.27: Mark files as CREATE or MODIFY so the model doesn't
+            # try to read files that don't exist yet via EVIDENCE_REQUEST.
+            # v5.28: Detect the refactor source monolith and mark it READ-ONLY.
+            # In a file->package refactor, the monolith is in source_file_evidence
+            # as reference material. Segments should extract FROM it, not MODIFY it.
+            # The facade segment handles the monolith replacement.
+            _si_source_evidence = segment_context.get("source_file_evidence", {})
+            _si_source_evidence_norm = {
+                k.replace("\\", "/"): v for k, v in _si_source_evidence.items()
+            }
             for _f in _si_files:
-                _si_parts.append(f"- `{_f}`")
+                _f_norm = _f.replace("\\", "/")
+                _exists = _f_norm in _si_source_evidence_norm or any(
+                    k == _f_norm for k in _si_source_evidence_norm
+                )
+                if _exists:
+                    # v5.28: Is this the refactor source (monolith)?
+                    # If the file is in source_file_evidence AND other files in
+                    # file_scope are inside a subpackage of the same stem, this
+                    # is the monolith being decomposed — mark READ-ONLY.
+                    _f_stem = _f_norm.rsplit(".py", 1)[0]  # e.g. "app/orchestrator/segment_loop"
+                    _is_monolith_source = any(
+                        other_f.replace("\\", "/").startswith(_f_stem + "/")
+                        for other_f in _si_files if other_f != _f
+                    )
+                    if _is_monolith_source:
+                        _si_parts.append(
+                            f"- `{_f}` — **READ-ONLY** (source monolith being refactored — "
+                            f"provided as evidence only. Do NOT include in File Inventory. "
+                            f"Do NOT generate MODIFY operations for this file.)"
+                        )
+                    else:
+                        _op = "MODIFY"
+                        _si_parts.append(f"- `{_f}` — **{_op}** (exists on disk)")
+                else:
+                    _op = "CREATE"
+                    _si_parts.append(f"- `{_f}` — **{_op}** (new file — do NOT try to read)")
             _si_parts.append("")
         if _si_reqs:
             _si_parts.append("### Segment Requirements")
@@ -799,6 +989,14 @@ async def _handle_architecture(
                 "refactored. You MUST copy all function signatures, constant values, "
                 "parameter names, and return types EXACTLY as they appear below. "
                 "Do NOT invent, guess, or approximate any values.\n"
+            )
+            _si_parts.append(
+                "**ENUM/TYPE PRESERVATION**: If the source code uses an enum like "
+                "`SegmentStatus.COMPLETE.value` or `SegmentStatus.FAILED`, you MUST "
+                "use that same enum in your output. Do NOT replace enums with invented "
+                "string constants (e.g. never create `SEGMENT_COMPLETE_STATUS = \"complete\"` "
+                "when the source uses `SegmentStatus.COMPLETE`). Import the enum from its "
+                "original module and use it exactly as the source does.\n"
             )
             for _sf_path, _sf_content in _si_source_files.items():
                 _si_parts.append(f"**`{_sf_path}`** ({len(_sf_content):,} chars)")
@@ -834,13 +1032,33 @@ async def _handle_architecture(
                         _si_parts.append(f"- `{_ec.get('name', '?')}`")
                 _si_parts.append("")
 
-            # Function signatures
+            # Function signatures + structure
+            # v5.27: Include line counts and internal helpers so the architecture
+            # model knows actual sizes and doesn't create phantom helper files.
             _enrich_functions = _enrichment.get("functions", [])
             if _enrich_functions:
                 _si_parts.append("#### Functions (MUST preserve exact signatures)")
+                _si_parts.append(
+                    "Each function's line count is from AST analysis of the source. "
+                    "Use these to judge whether a function fits in the target file. "
+                    "Do NOT create extra helper files to split a function — keep it "
+                    "whole in the target module unless the spec explicitly says otherwise."
+                )
                 for _ef in _enrich_functions:
                     _sig = _ef.get("signature", _ef.get("name", "?"))
-                    _si_parts.append(f"- `{_sig}`")
+                    _line_range = _ef.get("line_range")
+                    _body = _ef.get("body", "")
+                    _line_count = 0
+                    if _line_range and len(_line_range) == 2:
+                        _line_count = _line_range[1] - _line_range[0] + 1
+                    elif _body:
+                        _line_count = _body.count("\n") + 1
+                    _is_async = _ef.get("is_async", False)
+                    _async_tag = " (async)" if _is_async else ""
+                    if _line_count:
+                        _si_parts.append(f"- `{_sig}`{_async_tag} — **{_line_count} lines**")
+                    else:
+                        _si_parts.append(f"- `{_sig}`{_async_tag}")
                 _si_parts.append("")
 
             # Classes
@@ -874,6 +1092,25 @@ async def _handle_architecture(
             _enrich_guidance = _enrichment.get("design_guidance", "")
             if _enrich_guidance:
                 _si_parts.append(f"#### Design Guidance\n{_enrich_guidance}\n")
+
+            # Source extract structure summary
+            # v5.27: If source_extract exists, show total lines being transplanted
+            # so the architecture model can plan file sizes accurately.
+            _source_extract = _enrichment.get("source_extract")
+            if _source_extract and isinstance(_source_extract, dict):
+                _total_source_lines = sum(
+                    v.count("\n") + 1 for v in _source_extract.values() if isinstance(v, str)
+                )
+                if _total_source_lines > 0:
+                    _si_parts.append(f"#### Source Size Budget")
+                    _si_parts.append(
+                        f"Total source code being transplanted into this segment: "
+                        f"**{_total_source_lines} lines** across {len(_source_extract)} function(s). "
+                        f"The target file(s) will also need imports, module docstring, and "
+                        f"type annotations, so budget ~{int(_total_source_lines * 1.15)} lines total. "
+                        f"This FITS in a single file — do NOT split into helper submodules."
+                    )
+                    _si_parts.append("")
 
             # Risk flags
             _enrich_risk = _enrichment.get("risk_level", "low")
@@ -1005,6 +1242,24 @@ async def _handle_architecture(
         needs_tools=[],
     )
 
+    # --- v5.26: Build segment-scoped spec for critique ---
+    # When processing a segment, the critique must evaluate against the
+    # SEGMENT's contract, not the parent spec. The parent spec describes
+    # the whole job ("refactor this file, no new files") which contradicts
+    # what individual segments need to do. Each segment has its own
+    # requirements, file_scope, and acceptance_criteria — THOSE are the
+    # authoritative contract for that segment's architecture.
+    _critique_spec_markdown = spec_markdown  # Default: use parent spec
+    if segment_context:
+        _critique_spec_markdown = _build_segment_critique_spec(
+            segment_context=segment_context,
+            parent_spec_markdown=spec_markdown,
+        )
+        logger.info(
+            "[critical_pipeline] v5.26 Segment-scoped spec built for critique (%d chars, was %d)",
+            len(_critique_spec_markdown), len(spec_markdown or ""),
+        )
+
     # --- Run pipeline ---
     yield _emit(f"\ud83c\udfd7\ufe0f **Starting Block 4-6 Pipeline with {pipeline_model}...**\n\n")
     yield _emit("This may take 2-5 minutes. Stages:\n")
@@ -1029,7 +1284,7 @@ async def _handle_architecture(
             spec_id=spec_id,
             spec_hash=spec_hash,
             spec_json=spec_json,
-            spec_markdown=spec_markdown,
+            spec_markdown=_critique_spec_markdown,
             use_json_critique=True,
             segment_contract_markdown=_segment_contract_for_critique or None,
             segment_file_scope=segment_context.get("file_scope") if segment_context else None,

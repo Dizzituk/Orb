@@ -1086,6 +1086,39 @@ async def run_segment_through_pipeline(
                 logger.warning("[SEGMENT_LOOP] v5.12 Reconciliation failed (non-fatal): %s", _recon_err)
                 _emit(f"  \u26a0\ufe0f Interface reconciliation failed (non-fatal): {_recon_err}")
 
+        # v5.26: Extraction Binding — inject enrichment source extractions
+        # so the Implementer gets the exact function bodies to transplant.
+        try:
+            from app.orchestrator.extraction_binding import (
+                load_segment_enrichment,
+                build_extraction_block,
+                build_facade_export_map,
+                inject_extraction_into_architecture,
+            )
+            _parent_job_id = job_id.split('__')[0]
+            _eb_job_dir = get_job_dir(_parent_job_id)
+            _eb_enrichment = load_segment_enrichment(_eb_job_dir, seg_id)
+            if _eb_enrichment:
+                _is_facade = _is_facade_segment(segment, manifest) if manifest else False
+                if _is_facade and manifest:
+                    _eb_block = build_facade_export_map(
+                        _eb_job_dir, manifest.segments, seg_id,
+                    )
+                else:
+                    _eb_block = build_extraction_block(_eb_enrichment, seg_id)
+                if _eb_block:
+                    _recon_arch_text = inject_extraction_into_architecture(
+                        _recon_arch_text, _eb_block,
+                    )
+                    _emit(f"  🧬 Extraction binding: injected source code for {seg_id} ({len(_eb_block)} chars)")
+                    logger.info(
+                        "[SEGMENT_LOOP] v5.26 Extraction binding for %s (%d chars)",
+                        seg_id, len(_eb_block),
+                    )
+        except Exception as _eb_err:
+            logger.warning("[SEGMENT_LOOP] v5.26 Extraction binding failed (non-fatal): %s", _eb_err)
+            _emit(f"  ⚠️ Extraction binding failed (non-fatal): {_eb_err}")
+
         # v4.0: Skip boot check — segments are intermediate builds.
         # Boot check runs once at Phase Checkout after ALL segments complete.
         arch_result = await run_architecture_execution(
@@ -1698,6 +1731,35 @@ async def run_segmented_job(
                                     logger.warning("[SEGMENT_LOOP] v5.12 Reconciliation failed (non-fatal): %s", _recon_err)
                                     _emit(f"  \u26a0\ufe0f Interface reconciliation failed (non-fatal): {_recon_err}")
 
+                            # v5.26: Extraction Binding (call site 2 — implement_only path)
+                            try:
+                                from app.orchestrator.extraction_binding import (
+                                    load_segment_enrichment,
+                                    build_extraction_block,
+                                    build_facade_export_map,
+                                    inject_extraction_into_architecture,
+                                )
+                                _eb_enrichment = load_segment_enrichment(job_dir_path, seg_id)
+                                if _eb_enrichment:
+                                    _is_facade = _is_facade_segment(seg_spec, manifest) if manifest else False
+                                    if _is_facade and manifest:
+                                        _eb_block = build_facade_export_map(
+                                            job_dir_path, manifest.segments, seg_id,
+                                        )
+                                    else:
+                                        _eb_block = build_extraction_block(_eb_enrichment, seg_id)
+                                    if _eb_block:
+                                        _recon_arch_text = inject_extraction_into_architecture(
+                                            _recon_arch_text, _eb_block,
+                                        )
+                                        _emit(f"  🧬 Extraction binding: injected source code for {seg_id} ({len(_eb_block)} chars)")
+                                        logger.info(
+                                            "[SEGMENT_LOOP] v5.26 Extraction binding for %s (%d chars)",
+                                            seg_id, len(_eb_block),
+                                        )
+                            except Exception as _eb_err:
+                                logger.warning("[SEGMENT_LOOP] v5.26 Extraction binding failed (non-fatal): %s", _eb_err)
+                                _emit(f"  ⚠️ Extraction binding failed (non-fatal): {_eb_err}")
                             # v4.0: Skip boot check — Phase Checkout handles it
                             arch_result = await run_architecture_execution(
                                 spec=spec,

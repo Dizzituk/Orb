@@ -47,7 +47,7 @@ from .file_verifier import verify_segment_files
 
 logger = logging.getLogger(__name__)
 
-SEGMENTATION_BUILD_ID = "2026-02-15-v1.5-cycle-breaking-and-facade-terminal"
+SEGMENTATION_BUILD_ID = "2026-02-18-v1.6-monolith-replacement-facade-detection"
 print(f"[SEGMENTATION_LOADED] BUILD_ID={SEGMENTATION_BUILD_ID}")
 
 
@@ -633,23 +633,64 @@ def _build_manifest_from_concepts(
     # =========================================================================
     if len(segments) >= 2:
         # Step 1: Identify facade segments
+        # v1.6: Also detect the original monolith file in file→package refactors.
+        # When segment_loop.py is being converted to segment_loop/__init__.py,
+        # the segment containing segment_loop.py IS the facade even though it
+        # doesn't have __init__.py in its file_scope.
         _facade_ids: set = set()
+
+        # Collect all subpackage dirs: if any segment has dir/file.py, record 'dir'
+        _all_files_normalised = []
+        for seg in segments:
+            for f in seg.file_scope:
+                _all_files_normalised.append(f.replace("\\", "/"))
+        _subpackage_dirs = set()
+        for _fnorm in _all_files_normalised:
+            _parts = _fnorm.rsplit("/", 1)
+            if len(_parts) == 2:
+                _subpackage_dirs.add(_parts[0])
+
         for seg in segments:
             _has_init = any(
                 f.replace("\\", "/").endswith("__init__.py")
                 for f in seg.file_scope
             )
+
+            # v1.6: Detect original monolith being replaced by subpackage.
+            # If this segment has 'foo.py' and another segment has 'foo/__init__.py'
+            # or 'foo/bar.py', then 'foo.py' is the monolith being replaced.
+            _has_monolith_being_replaced = False
+            for f in seg.file_scope:
+                _fn = f.replace("\\", "/")
+                if _fn.endswith(".py") and not _fn.endswith("__init__.py"):
+                    # Check if there's a subpackage with the same stem
+                    _stem = _fn[:-3]  # strip .py
+                    if _stem in _subpackage_dirs:
+                        _has_monolith_being_replaced = True
+                        logger.info(
+                            "[segmentation] v1.6 Monolith replacement detected: "
+                            "%s → %s/ subpackage",
+                            _fn, _stem,
+                        )
+                        break
+
             _title_lower = (seg.title or "").lower()
-            _is_facade = _has_init and any(
+            _title_has_facade_keyword = any(
                 kw in _title_lower
                 for kw in ["facade", "fa\u00e7ade", "init", "package init", "re-export",
-                           "package initialization", "package entry"]
+                           "package initialization", "package entry",
+                           "stream", "integration"]
+            )
+            _is_facade = (
+                (_has_init and _title_has_facade_keyword)
+                or _has_monolith_being_replaced
             )
             if _is_facade:
                 _facade_ids.add(seg.segment_id)
                 logger.info(
-                    "[segmentation] v1.5 Facade segment detected: %s — will be terminal",
-                    seg.segment_id,
+                    "[segmentation] v1.6 Facade segment detected: %s — will be terminal"
+                    " (init=%s, monolith_replace=%s)",
+                    seg.segment_id, _has_init, _has_monolith_being_replaced,
                 )
 
         # Step 2: Remove edges where non-facade depends on facade

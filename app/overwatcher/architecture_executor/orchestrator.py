@@ -1,4 +1,4 @@
-﻿"""
+"""
 Main orchestrator for architecture execution.
 
 Contains run_architecture_execution() — the primary entry point that
@@ -221,11 +221,70 @@ async def run_architecture_execution(
     # =========================================================================
     shadowing_blocked = []
     shadowing_renamed = []  # v2.9: refactor-to-package auto-rename
+
+    # v3.2: Detect file->package refactors. If the segment job is creating
+    # an __init__.py inside a directory that shadows an existing .py module,
+    # this is an intentional conversion (e.g. segment_loop.py -> segment_loop/).
+    # The original .py is quarantined AFTER all submodules are written.
+    # Skip the shadow check for all files in that package.
+    # v3.3: Also check if __init__.py already exists on disk (created by a
+    # prior segment in this job). The package dir already exists, so later
+    # segments adding files to it should also skip the shadow check.
+    _refactor_package_dirs: set = set()
+    _all_new_paths = {f["path"].replace("\\", "/") for f in new_files}
+    for _np in _all_new_paths:
+        if _np.endswith("/__init__.py"):
+            _pkg_dir = _np.rsplit("/", 1)[0]
+            _refactor_package_dirs.add(_pkg_dir)
+    # v3.3: Check on-disk __init__.py for packages that prior segments created
+    if not _refactor_package_dirs:
+        for file_info in new_files:
+            _fp = file_info["path"].replace("\\", "/")
+            _parts = _fp.split("/")
+            for _depth in range(1, len(_parts)):
+                _dir_seg = "/".join(_parts[:_depth])
+                _init_path = _dir_seg + "/__init__.py"
+                _shadow_py = _dir_seg + ".py"
+                # If both __init__.py exists AND the shadow .py exists,
+                # a prior segment already started the file->package conversion
+                try:
+                    _check_init = client.shell_run(
+                        f'if (Test-Path -Path "{_resolve_multi_root_path(_init_path, sandbox_base)}") '
+                        f'{{ "EXISTS" }} else {{ "NONE" }}',
+                        timeout_seconds=10,
+                    )
+                    _check_shadow = client.shell_run(
+                        f'if (Test-Path -Path "{_resolve_multi_root_path(_shadow_py, sandbox_base)}") '
+                        f'{{ "EXISTS" }} else {{ "NONE" }}',
+                        timeout_seconds=10,
+                    )
+                    if (_check_init.stdout and "EXISTS" in _check_init.stdout
+                            and _check_shadow.stdout and "EXISTS" in _check_shadow.stdout):
+                        _refactor_package_dirs.add(_dir_seg)
+                except Exception:
+                    pass
+    if _refactor_package_dirs:
+        logger.info(
+            "[arch_exec] v3.2 File->package refactor detected: %s — shadow check skipped for package contents",
+            _refactor_package_dirs,
+        )
+
     for file_info in new_files:
         new_path = file_info["path"]
         # If the new file lives inside a directory, check if a .py file
         # with the same name as that directory already exists
         parts = new_path.replace("\\", "/").split("/")
+
+        # v3.2: Skip shadow check if this file is inside a deliberate
+        # file->package refactor (the package has an __init__.py planned)
+        _new_path_norm = new_path.replace("\\", "/")
+        _skip_shadow = any(
+            _new_path_norm.startswith(pkg_dir + "/")
+            for pkg_dir in _refactor_package_dirs
+        )
+        if _skip_shadow:
+            continue
+
         for depth in range(1, len(parts)):
             dir_segment = "/".join(parts[:depth])
             existing_py = dir_segment + ".py"

@@ -51,7 +51,7 @@ print(f"[SEGMENT_ENRICHMENT_LOADED] BUILD_ID={BUILD_ID}")
 # =============================================================================
 
 ENRICHMENT_PROVIDER = os.getenv("SEGMENT_ENRICHMENT_PROVIDER", "anthropic")
-ENRICHMENT_MODEL = os.getenv("SEGMENT_ENRICHMENT_MODEL", "claude-sonnet-4-5-20250929")
+ENRICHMENT_MODEL = os.getenv("SEGMENT_ENRICHMENT_MODEL", "claude-sonnet-4-6")
 ENRICHMENT_MAX_TOKENS = int(os.getenv("SEGMENT_ENRICHMENT_MAX_OUTPUT_TOKENS", "16000"))
 ENRICHMENT_TIMEOUT = int(os.getenv("SEGMENT_ENRICHMENT_TIMEOUT_SECONDS", "180"))
 
