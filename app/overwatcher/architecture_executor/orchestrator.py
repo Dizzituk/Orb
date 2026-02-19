@@ -56,7 +56,7 @@ from .context import (
     _extract_router_registrations,
     _build_resolved_endpoints,
 )
-from .helpers import _extract_llm_content, _strip_markdown_fences
+from .helpers import _extract_llm_content, _strip_markdown_fences, _sanitise_python_content, _check_python_syntax
 from .sandbox_ops import _verify_file_via_sandbox, _resolve_sandbox_base
 from .path_resolution import _resolve_multi_root_path, _ensure_python_init_files, _infer_lang_from_path
 from .source_extraction import _detect_source_files_from_architecture
@@ -1001,6 +1001,33 @@ async def run_architecture_execution(
                 })
                 continue
             
+            # --- v1.1 PHASE 3B: Deterministic Python Syntax Guard ---
+            # Before writing ANY .py file, sanitise markdown preamble and
+            # verify the content is valid Python via ast.parse().
+            # This catches the exact bug from sg-8d29f79f where the
+            # Implementer wrote markdown commentary into a .py file.
+            if rel_path.endswith('.py') and not use_edit_mode:
+                # Step 1: Strip non-Python preamble (markdown headings, bold text, etc.)
+                file_content, _sanitise_warnings = _sanitise_python_content(file_content, rel_path)
+                for _sw in _sanitise_warnings:
+                    logger.warning("[arch_exec] %s", _sw)
+                    print(f"[ARCH_EXEC] {_sw[:120]}")
+                    add_trace("SANITISE_PYTHON", "stripped_preamble", {
+                        "path": rel_path, "warning": _sw[:300],
+                    })
+
+                # Step 2: Run ast.parse() — zero-cost deterministic syntax check
+                _syntax_error = _check_python_syntax(file_content, rel_path)
+                if _syntax_error:
+                    last_error = f"Syntax guard FAILED: {_syntax_error}"
+                    _job_checker_strike_errors.append(last_error)
+                    logger.warning("[arch_exec] v1.1 Strike %d: %s", strike, last_error[:200])
+                    print(f"[ARCH_EXEC] v1.1 SYNTAX_GUARD FAIL: {rel_path} — {_syntax_error[:120]}")
+                    add_trace("SYNTAX_GUARD_FAIL", f"strike_{strike}", {
+                        "path": rel_path, "error": _syntax_error[:500],
+                    })
+                    continue  # Triggers next strike — don't even write the file
+
             # --- Delegate write to Implementer ---
             try:
                 if use_edit_mode:

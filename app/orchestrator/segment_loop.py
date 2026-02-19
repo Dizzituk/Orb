@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-SEGMENT_LOOP_BUILD_ID = "2026-02-18-v5.33-re-export-awareness-cohesion-feedback"
+SEGMENT_LOOP_BUILD_ID = "2026-02-19-v5.34-cohesion-halt-gate"
 print(f"[SEGMENT_LOOP_LOADED] BUILD_ID={SEGMENT_LOOP_BUILD_ID}")
 
 
@@ -2339,12 +2339,41 @@ async def run_segmented_job(
         logger.info("[SEGMENT_LOOP] v5.16 Cohesion passed after %d attempt(s)", _cohesion_retry)
     elif _cohesion_retry > 0:
         logger.warning("[SEGMENT_LOOP] v5.16 Cohesion not resolved after %d attempt(s)", _cohesion_retry)
+
+    # --- v5.34 COHESION HALT GATE ---
+    # If cohesion ran and FAILED with unresolved blocking issues, HALT the
+    # pipeline. Do NOT proceed to integration check, quarantine, Phase Checkout,
+    # or Final Checkout. The implementations on disk may have stale architectures
+    # and spending tokens on boot tests is wasteful when cohesion says the
+    # segments don't fit together.
+    #
+    # The user must resolve cohesion issues (via 'run segments' to regen
+    # architectures, then 'implement segments' to re-implement) before the
+    # pipeline will proceed past this point.
+    _cohesion_halted = False
+    if _cohesion_retry > 0 and not _cohesion_passed:
+        _cohesion_halted = True
+        _emit(f"\n{'='*50}")
+        _emit("🛑 PIPELINE HALTED: Cohesion check has unresolved blocking issues.")
+        _emit("   Phase Checkout, boot test, and Final Checkout are SKIPPED.")
+        _emit("   Resolve cohesion issues first, then re-run.")
+        _emit(f"{'='*50}")
+        logger.warning(
+            "[SEGMENT_LOOP] v5.34 COHESION HALT GATE — skipping all downstream stages "
+            "(%d retry attempt(s) exhausted without resolution)",
+            _cohesion_retry,
+        )
+        # Save state so the cohesion failure is recorded
+        state.overall_status = "cohesion_failed"
+        state.phase_checkout_boot = "skipped"
+        save_state(state, job_dir_path)
+
     # --- Cross-segment integration check (Phase 3) ---
     any_segments_complete = any(
         s.status == SegmentStatus.COMPLETE.value
         for s in state.segments.values()
     )
-    if any_segments_complete:
+    if any_segments_complete and not _cohesion_halted:
         _emit(f"\n{'='*50}")
         _emit("🔗 Running cross-segment integration check...")
 
@@ -2394,7 +2423,9 @@ async def run_segmented_job(
     # Moves monolith out of the way so the boot test imports from the
     # new subpackage. Deferred from pre-execution to here so that
     # strike-loop retries can still read the monolith as source evidence.
-    if implement_only and _quarantine_result is None:
+    # v5.34: Skip if cohesion halted — no point quarantining for a boot
+    # test that won't run.
+    if implement_only and _quarantine_result is None and not _cohesion_halted:
         _all_impl_done = all(
             s.status in (SegmentStatus.COMPLETE.value, SegmentStatus.FAILED.value,
                          SegmentStatus.BLOCKED.value)
@@ -2456,7 +2487,7 @@ async def run_segmented_job(
         sid for sid, s in state.segments.items()
         if s.status != SegmentStatus.COMPLETE.value
     ]
-    if _implementation_pass_done and _incomplete_segments and not all_segments_complete:
+    if _implementation_pass_done and _incomplete_segments and not all_segments_complete and not _cohesion_halted:
         logger.info(
             "[SEGMENT_LOOP] v5.19 Partial completion: %d/%d complete, %d incomplete — "
             "running Phase Checkout anyway for boot verification",
@@ -2467,7 +2498,7 @@ async def run_segmented_job(
             f"({', '.join(_incomplete_segments[:3])}{'...' if len(_incomplete_segments) > 3 else ''}) "
             f"— running Phase Checkout on completed segments"
         )
-    if _implementation_pass_done:
+    if _implementation_pass_done and not _cohesion_halted:
         try:
             from app.orchestrator.phase_checkout import run_phase_checkout
             from app.orchestrator.skeleton_contracts import load_skeleton_contract
@@ -2516,7 +2547,7 @@ async def run_segmented_job(
     # --- v5.14 FINAL CHECKOUT — Stage 10 (Autonomous Closer + Learning Report) ---
     # Runs after Phase Checkout passes. Performs its own boot test, spec coverage
     # check, AI review, and compiles the Pipeline Learning Report for RAG.
-    if all_segments_complete and total > 0 and state.phase_checkout_boot == "pass":
+    if all_segments_complete and total > 0 and state.phase_checkout_boot == "pass" and not _cohesion_halted:
         _emit(f"\n{'='*50}")
         _emit("🏁 Running Final Checkout (Stage 10)...")
         try:
@@ -2620,6 +2651,8 @@ async def run_segmented_job(
         _emit(f"   🏁 Boot check: PASSED")
     elif state.phase_checkout_boot == "fail":
         _emit(f"   🏁 Boot check: FAILED")
+    elif state.phase_checkout_boot == "skipped":
+        _emit(f"   🏁 Boot check: SKIPPED (cohesion unresolved)")
     elif state.phase_checkout_boot == "error":
         _emit(f"   🏁 Boot check: ERROR (could not run)")
     _emit(f"{'='*50}")

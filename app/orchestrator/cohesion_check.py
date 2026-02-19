@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-COHESION_CHECK_BUILD_ID = "2026-02-18-v3.6-safe-tier1-import-replacement"
+COHESION_CHECK_BUILD_ID = "2026-02-18-v3.7-sectional-tier2-fix"
 print(f"[COHESION_CHECK_LOADED] BUILD_ID={COHESION_CHECK_BUILD_ID}")
 
 
@@ -444,6 +444,180 @@ def run_skeleton_compliance(
                                 f"for {_target_mod}.py, or fix the import in {seg_id}"
                             ),
                         ))
+
+    # =========================================================================
+    # Check 7 (v4.0 Fix 2): Duplicate function detection across segments
+    # =========================================================================
+    # If the same function name is defined in multiple segments' architectures,
+    # it should be assigned to exactly one segment and imported by the others.
+    # This catches the sg-8d29f79f bug where run_segmented_job (280+ lines)
+    # was placed in both _loop.py (seg-02) and _utils.py (seg-06).
+    if len(architectures) > 1:
+        import re as _re
+
+        # Build: function_name -> [(segment_id, file_path, line_count_estimate)]
+        _func_locations: Dict[str, List[tuple]] = {}
+
+        for seg_id, arch_content in architectures.items():
+            # Get this segment's file scope from manifest
+            _seg_files = set()
+            if manifest_dict:
+                _seg_data = next(
+                    (s for s in manifest_dict.get("segments", [])
+                     if s.get("segment_id") == seg_id), None
+                )
+                if _seg_data:
+                    _seg_files = set(_seg_data.get("file_scope", []))
+
+            # Extract function definitions from architecture
+            # Match: def func_name( or async def func_name(
+            for _m in _re.finditer(
+                r'(?:async\s+)?def\s+(\w+)\s*\(',
+                arch_content,
+            ):
+                _fname = _m.group(1)
+                # Skip dunder methods and test functions
+                if _fname.startswith('__') and _fname.endswith('__'):
+                    continue
+                if _fname.startswith('test_'):
+                    continue
+
+                # Estimate function size by counting lines until next def/class
+                _start = _m.start()
+                _next_def = _re.search(
+                    r'\n(?:async\s+)?def\s+\w+\s*\(|\nclass\s+\w+',
+                    arch_content[_start + 10:],
+                )
+                _line_count = 0
+                if _next_def:
+                    _chunk = arch_content[_start:_start + 10 + _next_def.start()]
+                    _line_count = _chunk.count('\n')
+                else:
+                    _line_count = arch_content[_start:].count('\n')
+
+                _func_locations.setdefault(_fname, []).append(
+                    (seg_id, ", ".join(sorted(_seg_files)[:3]), _line_count)
+                )
+
+        # Flag functions that appear in more than one segment
+        for _fname, _locs in _func_locations.items():
+            _unique_segs = set(loc[0] for loc in _locs)
+            if len(_unique_segs) <= 1:
+                continue
+
+            # Get max estimated line count
+            _max_lines = max(loc[2] for loc in _locs)
+            _severity = "blocking" if _max_lines > 100 else "warning"
+            _seg_list = ", ".join(sorted(_unique_segs))
+
+            issue_counter += 1
+            issues.append(CohesionIssue(
+                issue_id=f"SKEL-{issue_counter:03d}",
+                severity=_severity,
+                category="duplicate_function",
+                description=(
+                    f"Function '{_fname}' is defined in {len(_unique_segs)} segments: "
+                    f"{_seg_list}. Estimated {_max_lines}+ lines. "
+                    f"It should be defined in exactly one segment and imported by others."
+                ),
+                source_segment=sorted(_unique_segs)[0],
+                related_segment=sorted(_unique_segs)[1] if len(_unique_segs) > 1 else "",
+                suggested_fix=(
+                    f"Assign '{_fname}' to one segment only. The other segment(s) "
+                    f"should import it via 'from .module import {_fname}'."
+                ),
+            ))
+            logger.warning(
+                "[cohesion_check] v4.0 DUPLICATE FUNCTION: '%s' in segments %s (~%d lines)",
+                _fname, _seg_list, _max_lines,
+            )
+
+    # =========================================================================
+    # Check 8 (v4.0 Fix 3): Cross-segment missing symbol with monolith check
+    # =========================================================================
+    # Extends Check 6: when a symbol isn't found in the producing segment's
+    # architecture, also check if it exists in the source monolith. If it
+    # doesn't exist anywhere, flag as blocking on the CONSUMING segment
+    # (the one that invented the import), not the producing segment.
+    if manifest_dict and len(architectures) > 1:
+        import re as _re
+
+        # Try to load source file evidence for monolith verification
+        _monolith_symbols: set = set()
+        _job_dir_segments = os.path.join(job_dir, "segments") if 'job_dir' in dir() else ""
+        # Check if source_file_evidence was passed to the parent function
+        # (it's available via the cohesion_check caller but not directly here).
+        # We'll scan the manifest for evidence_files and try to load them.
+        _evidence_paths: set = set()
+        for _seg_data in manifest_dict.get("segments", []):
+            for _ef in _seg_data.get("evidence_files", []):
+                _evidence_paths.add(_ef)
+
+        # Try loading evidence files to extract defined symbols
+        for _ef_path in _evidence_paths:
+            # Try common base paths
+            for _base in ["D:\\Orb", "D:/Orb"]:
+                _full = os.path.join(_base, _ef_path.replace("/", os.sep))
+                if os.path.isfile(_full):
+                    try:
+                        with open(_full, "r", encoding="utf-8") as _f:
+                            _src = _f.read()
+                        # Extract all defined names
+                        for _m in _re.finditer(r'(?:async\s+)?def\s+(\w+)\s*\(', _src):
+                            _monolith_symbols.add(_m.group(1))
+                        for _m in _re.finditer(r'class\s+(\w+)\s*[\(:]', _src):
+                            _monolith_symbols.add(_m.group(1))
+                        for _m in _re.finditer(r'^([A-Z][A-Z0-9_]+)\s*=', _src, _re.MULTILINE):
+                            _monolith_symbols.add(_m.group(1))
+                    except Exception:
+                        pass
+                    break
+
+        if _monolith_symbols:
+            logger.info(
+                "[cohesion_check] v4.0 Loaded %d symbols from evidence/monolith files",
+                len(_monolith_symbols),
+            )
+
+        # Now re-check the missing_symbol issues from Check 6
+        # For any missing symbol that ALSO doesn't exist in the monolith,
+        # upgrade to blocking and target the consuming segment for regen
+        for _issue in list(issues):
+            if _issue.category != "missing_symbol":
+                continue
+            # Extract the symbol name from the description
+            _sym_match = _re.search(r"imports '(\w+)'", _issue.description)
+            if not _sym_match:
+                continue
+            _sym_name = _sym_match.group(1)
+
+            if _sym_name in _monolith_symbols:
+                # Symbol exists in monolith — downgrade to warning
+                # The producing segment just needs to include it
+                _issue.severity = "warning"
+                _issue.auto_fix_note = (
+                    f"Symbol '{_sym_name}' exists in source monolith — "
+                    f"producing segment should extract it"
+                )
+            else:
+                # Symbol doesn't exist ANYWHERE — the consuming segment
+                # invented this import. Flag as blocking on consumer.
+                _issue.severity = "blocking"
+                _issue.source_segment = _issue.source_segment  # Consumer
+                _issue.suggested_fix = (
+                    f"Symbol '{_sym_name}' does not exist anywhere — "
+                    f"not in the producing segment's architecture and not in "
+                    f"the source monolith. Remove this import or use an "
+                    f"alternative that actually exists."
+                )
+                _issue.auto_fix_note = (
+                    f"v4.0: Symbol '{_sym_name}' verified absent from monolith"
+                )
+                logger.warning(
+                    "[cohesion_check] v4.0 PHANTOM SYMBOL: '%s' does not exist "
+                    "anywhere — consuming segment %s invented this import",
+                    _sym_name, _issue.source_segment,
+                )
 
     return issues
 
@@ -1171,11 +1345,11 @@ async def _apply_tier2_fix(
     """
     Apply a micro-LLM Tier 2 fix to architecture text.
 
-    Sends a small, focused prompt with only the relevant section of the
-    architecture and the specific fix instruction. Typically ~500-1000
-    tokens in, ~500-2000 tokens out.
+    v3.7: Sends only the relevant SECTION of the architecture (not the
+    full document) to minimise tokens and avoid API timeouts. The LLM
+    returns just the patched section, which is spliced back in.
 
-    Returns patched text or None if fix couldn't be applied.
+    Returns patched full text or None if fix couldn't be applied.
     """
     try:
         from app.providers.registry import llm_call
@@ -1183,8 +1357,60 @@ async def _apply_tier2_fix(
         logger.warning("[cohesion_auto_fix] LLM not available for Tier 2 fix")
         return None
 
-    # Build a tiny, focused prompt
-    prompt = f"""You are a code architecture editor. Fix ONE specific issue in this architecture document.
+    # =====================================================================
+    # v3.7: Extract relevant section instead of sending full architecture.
+    # Find section boundaries using markdown headers (## or ###).
+    # The issue description usually references a section name or keyword.
+    # =====================================================================
+    arch_lines = arch_text.split("\n")
+    _issue_keywords = set()
+    for _word in (issue.description + " " + issue.suggested_fix).lower().split():
+        _clean = _word.strip("(),.:'\"`")
+        if len(_clean) > 3 and _clean not in {"from", "import", "this", "that", "with", "should", "must", "the", "and", "for"}:
+            _issue_keywords.add(_clean)
+
+    # Find section headers and score them by keyword overlap
+    _sections: list = []  # [(start_line, end_line, header_text, score)]
+    _header_lines: list = []
+    for i, line in enumerate(arch_lines):
+        if line.strip().startswith("#"):
+            _header_lines.append(i)
+
+    for idx, hdr_line in enumerate(_header_lines):
+        _end = _header_lines[idx + 1] if idx + 1 < len(_header_lines) else len(arch_lines)
+        _section_text = "\n".join(arch_lines[hdr_line:_end]).lower()
+        _score = sum(1 for kw in _issue_keywords if kw in _section_text)
+        _sections.append((hdr_line, _end, arch_lines[hdr_line].strip(), _score))
+
+    # Pick the best-matching section(s). Include sections with score > 0.
+    _sections.sort(key=lambda s: s[3], reverse=True)
+    _best_sections = [s for s in _sections if s[3] > 0]
+
+    if _best_sections and len(arch_text) > 4000:
+        # Use sectional approach — extract top 1-2 sections
+        _selected = _best_sections[:2]
+        _selected.sort(key=lambda s: s[0])  # Keep original order
+
+        _extract_start = max(0, _selected[0][0] - 2)
+        _extract_end = min(len(arch_lines), _selected[-1][1] + 2)
+        _section_text = "\n".join(arch_lines[_extract_start:_extract_end])
+        _prefix = "\n".join(arch_lines[:_extract_start])
+        _suffix = "\n".join(arch_lines[_extract_end:])
+        _using_section = True
+
+        logger.info(
+            "[cohesion_auto_fix] Tier 2 sectional: lines %d-%d of %d (%.0f%% of doc)",
+            _extract_start, _extract_end, len(arch_lines),
+            100 * (_extract_end - _extract_start) / max(1, len(arch_lines)),
+        )
+    else:
+        # Small document or no good section match — send the whole thing
+        _section_text = arch_text
+        _prefix = ""
+        _suffix = ""
+        _using_section = False
+
+    prompt = f"""Fix ONE specific issue in this architecture {'section' if _using_section else 'document'}.
 
 ISSUE ({issue.category}, {issue.severity}):
 {issue.description}
@@ -1194,44 +1420,56 @@ SUGGESTED FIX:
 
 SEGMENT: {seg_id}
 
-ARCHITECTURE DOCUMENT:
-{arch_text}
+{'ARCHITECTURE SECTION' if _using_section else 'ARCHITECTURE DOCUMENT'}:
+{_section_text}
 
 INSTRUCTIONS:
 - Apply ONLY the fix described above. Change nothing else.
-- Return the COMPLETE architecture document with the fix applied.
-- Do NOT add commentary, explanations, or markdown fences around the whole document.
+- Return the {'COMPLETE SECTION' if _using_section else 'COMPLETE DOCUMENT'} with the fix applied.
+- Do NOT add commentary, explanations, or markdown fences.
 - Preserve ALL existing content, formatting, and structure.
 """
 
     try:
         _system = (
             "You are a precise architecture editor. Apply the requested fix "
-            "and return the complete document. No commentary."
+            "and return the complete " + ("section" if _using_section else "document") + ". No commentary."
         )
+        _out_budget = min(len(_section_text) // 2 + 2000, 8000)
         response = await llm_call(
             provider_id=provider,
             model_id=model,
             messages=[{"role": "user", "content": prompt}],
             system_prompt=_system,
-            max_tokens=min(len(arch_text) // 2 + 2000, 16000),
-            timeout_seconds=120,
+            max_tokens=_out_budget,
+            timeout_seconds=300,
         )
 
-        patched = response.content if response else None
+        patched_section = response.content if response else None
 
-        if patched and len(patched) > len(arch_text) * 0.5:
+        if patched_section and len(patched_section) > len(_section_text) * 0.3:
             # Strip any wrapping markdown fences the LLM might add
-            patched = patched.strip()
-            if patched.startswith("```") and patched.endswith("```"):
-                # Remove outer fences
-                first_nl = patched.index("\n") + 1
-                patched = patched[first_nl:-3].strip()
+            patched_section = patched_section.strip()
+            if patched_section.startswith("```") and patched_section.endswith("```"):
+                first_nl = patched_section.index("\n") + 1
+                patched_section = patched_section[first_nl:-3].strip()
+
+            # Reassemble full document if we used sectional approach
+            if _using_section:
+                parts = []
+                if _prefix:
+                    parts.append(_prefix)
+                parts.append(patched_section)
+                if _suffix:
+                    parts.append(_suffix)
+                patched = "\n".join(parts)
+            else:
+                patched = patched_section
 
             issue.auto_fix_note = f"Tier 2: LLM micro-patch ({provider}/{model})"
             logger.info(
-                "[cohesion_auto_fix] Tier 2 fix applied for %s in %s (%d→%d chars)",
-                issue.issue_id, seg_id, len(arch_text), len(patched),
+                "[cohesion_auto_fix] Tier 2 fix applied for %s in %s (%d→%d chars, sectional=%s)",
+                issue.issue_id, seg_id, len(arch_text), len(patched), _using_section,
             )
             return patched
         else:
