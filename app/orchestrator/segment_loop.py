@@ -2419,19 +2419,33 @@ async def run_segmented_job(
             _emit(f"[SEGMENT_LOOP] Integration check error: {e}")
             # Do NOT crash the segment loop — segments already completed
 
-    # --- v5.31 DEFERRED QUARANTINE — Just Before Phase Checkout ---
+    # --- v5.35 DEFERRED QUARANTINE — Just Before Phase Checkout ---
     # Moves monolith out of the way so the boot test imports from the
     # new subpackage. Deferred from pre-execution to here so that
     # strike-loop retries can still read the monolith as source evidence.
     # v5.34: Skip if cohesion halted — no point quarantining for a boot
     # test that won't run.
+    # v5.35: ONLY quarantine when ALL segments are COMPLETE. If any
+    # segment FAILED or is BLOCKED, the package is incomplete and
+    # quarantining the monolith would leave the codebase broken.
+    # Phase Checkout will still run (for partial status reporting) but
+    # without quarantine, it boots against the original monolith.
     if implement_only and _quarantine_result is None and not _cohesion_halted:
-        _all_impl_done = all(
-            s.status in (SegmentStatus.COMPLETE.value, SegmentStatus.FAILED.value,
-                         SegmentStatus.BLOCKED.value)
+        _all_segments_fully_complete = all(
+            s.status == SegmentStatus.COMPLETE.value
             for s in state.segments.values()
         )
-        if _all_impl_done:
+        _any_failed_or_blocked = any(
+            s.status in (SegmentStatus.FAILED.value, SegmentStatus.BLOCKED.value)
+            for s in state.segments.values()
+        )
+        if _any_failed_or_blocked:
+            logger.info(
+                "[SEGMENT_LOOP] v5.35 Quarantine SKIPPED — incomplete job "
+                "(failed/blocked segments). Monolith stays in place."
+            )
+            _emit("📦 Quarantine: SKIPPED — not all segments complete, monolith preserved")
+        if _all_segments_fully_complete:
             try:
                 from app.orchestrator.package_quarantine import (
                     run_quarantine,

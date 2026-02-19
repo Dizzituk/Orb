@@ -1009,12 +1009,33 @@ async def run_architecture_execution(
             if rel_path.endswith('.py') and not use_edit_mode:
                 # Step 1: Strip non-Python preamble (markdown headings, bold text, etc.)
                 file_content, _sanitise_warnings = _sanitise_python_content(file_content, rel_path)
+                _all_prose_rejected = False
                 for _sw in _sanitise_warnings:
                     logger.warning("[arch_exec] %s", _sw)
                     print(f"[ARCH_EXEC] {_sw[:120]}")
+                    if "ALL_PROSE_REJECTED" in _sw:
+                        _all_prose_rejected = True
                     add_trace("SANITISE_PYTHON", "stripped_preamble", {
                         "path": rel_path, "warning": _sw[:300],
                     })
+
+                # v1.2: If content was 100% prose, fail with a clear message
+                # that tells the Implementer EXACTLY what went wrong.
+                if _all_prose_rejected or (not file_content or not file_content.strip()):
+                    last_error = (
+                        f"ALL_PROSE_REJECTED: You wrote markdown/architecture "
+                        f"instructions instead of Python code for {rel_path}. "
+                        f"Output ONLY valid Python source code — no prose, no "
+                        f"markdown headings, no export lists, no instructions. "
+                        f"Start with imports or a module docstring."
+                    )
+                    _job_checker_strike_errors.append(last_error)
+                    logger.error("[arch_exec] v1.2 Strike %d: %s", strike, last_error)
+                    print(f"[ARCH_EXEC] v1.2 ALL_PROSE_REJECTED: {rel_path}")
+                    add_trace("ALL_PROSE_REJECTED", f"strike_{strike}", {
+                        "path": rel_path, "error": last_error,
+                    })
+                    continue  # Triggers next strike with clear error context
 
                 # Step 2: Run ast.parse() — zero-cost deterministic syntax check
                 _syntax_error = _check_python_syntax(file_content, rel_path)

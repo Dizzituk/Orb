@@ -2022,25 +2022,32 @@ async def run_implementer_task(
         )
     
     # Step 3: Read back to verify
+    # v1.16: Compare stripped content only. PowerShell's Get-Content -Raw
+    # appends a trailing newline, causing a consistent +1 byte mismatch.
+    # The .strip() comparison is the authoritative check — if stripped
+    # content matches, the write succeeded. No length-based warning needed.
     verified = False
     try:
         read_cmd = f'Get-Content -Path "{path}" -Raw -Encoding UTF8'
         read_result = client.shell_run(read_cmd, timeout_seconds=30)
         
         if read_result.stdout is not None:
-            # Compare (strip to handle trailing newline differences)
-            if read_result.stdout.strip() == content.strip():
+            _written_stripped = content.strip()
+            _readback_stripped = read_result.stdout.strip()
+            if _readback_stripped == _written_stripped:
                 verified = True
-                logger.info("[implementer] v1.12 Verified: %s", path)
+                logger.info("[implementer] v1.16 Verified: %s (%d chars)", path, len(content))
             else:
+                # Genuine mismatch — log both stripped lengths for debugging
                 logger.warning(
-                    "[implementer] v1.12 Verify mismatch for %s (wrote %d, read %d)",
-                    path, len(content), len(read_result.stdout),
+                    "[implementer] v1.16 Verify MISMATCH for %s "
+                    "(wrote_stripped=%d, read_stripped=%d)",
+                    path, len(_written_stripped), len(_readback_stripped),
                 )
         else:
-            logger.warning("[implementer] v1.12 Verify read returned None for %s", path)
+            logger.warning("[implementer] v1.16 Verify read returned None for %s", path)
     except Exception as e:
-        logger.warning("[implementer] v1.12 Verify exception for %s: %s", path, e)
+        logger.warning("[implementer] v1.16 Verify exception for %s: %s", path, e)
     
     print(
         f"[IMPLEMENTER_TASK] {'✓' if verified else '⚠'} "
