@@ -43,7 +43,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
-BUILD_ID = "2026-02-17-v1.2-multi-stem-bidirectional-match"
+BUILD_ID = "2026-02-18-v1.3-llm-assignment-conflict-guard"
 print(f"[SEGMENT_ENRICHMENT_LOADED] BUILD_ID={BUILD_ID}")
 
 # =============================================================================
@@ -269,6 +269,70 @@ async def enrich_segments(
         logger.info(
             "[SEGMENT_ENRICHMENT] Layer 3: LLM resolved %d additional symbol(s)",
             len(llm_intelligence.get("symbol_assignments", {})),
+        )
+
+    # =====================================================================
+    # v1.4: POST-ASSIGNMENT DUPLICATE FUNCTION DETECTION
+    # After both deterministic and LLM assignments, check for functions
+    # that appear in more than one segment. This prevents the exact bug
+    # from sg-8d29f79f where run_segmented_job was placed in both
+    # seg-02 (_loop.py) AND seg-06 (_utils.py).
+    # =====================================================================
+    _seen_functions: Dict[str, List[str]] = {}  # func_name -> [seg_id, ...]
+    for _seg_id, _seg_symbols in assignments.items():
+        for _sym_name in _seg_symbols:
+            # Only check functions (not constants/classes — those may legitimately
+            # appear as re-exports or shared types)
+            _is_func = any(f["name"] == _sym_name for f in all_symbols.get("functions", []))
+            if _is_func:
+                _seen_functions.setdefault(_sym_name, []).append(_seg_id)
+
+    _duplicates = {k: v for k, v in _seen_functions.items() if len(v) > 1}
+    if _duplicates:
+        for _dup_name, _dup_segs in _duplicates.items():
+            # Find the function's line count to assess severity
+            _func_info = next(
+                (f for f in all_symbols.get("functions", []) if f["name"] == _dup_name),
+                None,
+            )
+            _line_count = 0
+            if _func_info and "body" in _func_info:
+                _line_count = _func_info["body"].count("\n") + 1
+
+            _severity = "BLOCKING" if _line_count > 100 else "WARNING"
+            logger.warning(
+                "[SEGMENT_ENRICHMENT] v1.4 DUPLICATE FUNCTION %s: '%s' (%d lines) "
+                "assigned to segments: %s. Only the first segment should own it; "
+                "others should import it.",
+                _severity, _dup_name, _line_count, _dup_segs,
+            )
+            print(
+                f"[SEGMENT_ENRICHMENT] v1.4 {_severity}: '{_dup_name}' ({_line_count} lines) "
+                f"duplicated across: {', '.join(_dup_segs)}"
+            )
+
+            # Auto-fix: keep the function in the FIRST segment only,
+            # remove from all subsequent segments.
+            _owner_seg = _dup_segs[0]
+            for _remove_seg in _dup_segs[1:]:
+                if _dup_name in assignments.get(_remove_seg, []):
+                    assignments[_remove_seg].remove(_dup_name)
+                    logger.info(
+                        "[SEGMENT_ENRICHMENT] v1.4 Removed '%s' from %s (owner: %s)",
+                        _dup_name, _remove_seg, _owner_seg,
+                    )
+                # Also remove from per_segment_extractions
+                _rse = per_segment_extractions.get(_remove_seg, {})
+                if "functions" in _rse:
+                    _rse["functions"] = [
+                        f for f in _rse["functions"] if f["name"] != _dup_name
+                    ]
+
+        # Rebuild symbol map after dedup
+        symbol_map = _build_symbol_map(segments, per_segment_extractions)
+        logger.info(
+            "[SEGMENT_ENRICHMENT] v1.4 Dedup complete: %d duplicate(s) resolved",
+            len(_duplicates),
         )
 
     # =====================================================================

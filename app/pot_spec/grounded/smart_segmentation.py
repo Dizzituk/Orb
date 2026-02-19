@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-SMART_SEGMENTATION_BUILD_ID = "2026-02-15-v1.4-facade-terminal-dag-rules"
+SMART_SEGMENTATION_BUILD_ID = "2026-02-18-v1.5-pre-manifest-cycle-detection"
 print(f"[SMART_SEGMENTATION_LOADED] BUILD_ID={SMART_SEGMENTATION_BUILD_ID}")
 
 
@@ -263,6 +263,53 @@ def _parse_grouping_response(
     for seg in segments:
         deps = seg.get("depends_on", [])
         seg["depends_on"] = [d for d in deps if isinstance(d, int) and 0 <= d < n]
+
+    # v1.5: Deterministic cycle detection and removal.
+    # LLMs frequently produce dependency cycles despite prompt instructions.
+    # Use iterative topological sort — any back-edges are removed.
+    _max_cycle_rounds = n + 1
+    for _round in range(_max_cycle_rounds):
+        # Build adjacency and in-degree
+        _in_degree = [0] * n
+        _adj: dict = {i: [] for i in range(n)}
+        for i, seg in enumerate(segments):
+            for d in seg.get("depends_on", []):
+                _adj[d].append(i)
+                _in_degree[i] += 1
+
+        # Kahn's algorithm
+        _queue = [i for i in range(n) if _in_degree[i] == 0]
+        _order = []
+        _visited_in = list(_in_degree)
+        while _queue:
+            node = _queue.pop(0)
+            _order.append(node)
+            for nb in _adj[node]:
+                _visited_in[nb] -= 1
+                if _visited_in[nb] == 0:
+                    _queue.append(nb)
+
+        if len(_order) == n:
+            break  # No cycle — DAG is valid
+
+        # Cycle detected — find nodes not in _order and break one edge
+        _in_cycle = [i for i in range(n) if i not in set(_order)]
+        if not _in_cycle:
+            break
+
+        # Remove the last dependency of the first cycle node (heuristic)
+        _break_node = _in_cycle[0]
+        _deps = segments[_break_node].get("depends_on", [])
+        if _deps:
+            _removed = _deps.pop()
+            logger.warning(
+                "[smart_seg] v1.5 CYCLE BREAK: removed dep %d from segment %d "
+                "'%s' (round %d)",
+                _removed, _break_node,
+                segments[_break_node].get("title", "?"), _round + 1,
+            )
+        else:
+            break  # Can't fix — no deps to remove
 
     return segments
 

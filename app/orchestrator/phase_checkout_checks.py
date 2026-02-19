@@ -596,6 +596,29 @@ async def _attempt_boot_fix(
         _emit(f"    Cannot read broken file: {failing_file}")
         return None
 
+    # --- v4.0 Fix 4: For SyntaxError, try deterministic sanitise+parse first ---
+    if is_syntax_error and failing_file.endswith('.py'):
+        try:
+            from app.overwatcher.architecture_executor.helpers import (
+                _sanitise_python_content, _check_python_syntax,
+            )
+            sanitised, warnings = _sanitise_python_content(broken_content, failing_file)
+            if warnings:
+                _emit(f"    [SYNTAX_FIX] Stripped non-Python preamble: {len(warnings)} warning(s)")
+                for w in warnings[:3]:
+                    _emit(f"      {w[:120]}")
+                # Check if sanitised version passes syntax
+                syntax_err = _check_python_syntax(sanitised, failing_file)
+                if syntax_err is None:
+                    # Sanitisation fixed it! Write back without LLM.
+                    success = _write_file_to_sandbox(client, failing_file, sanitised, actual_base)
+                    if success:
+                        return f"Deterministic syntax fix: stripped markdown preamble ({len(warnings)} patterns)"
+                else:
+                    _emit(f"    [SYNTAX_FIX] Sanitisation wasn't enough: {syntax_err[:120]}")
+        except ImportError:
+            pass  # helpers not available, fall through to LLM
+
     # --- For import errors, try smart reconciliation first (no LLM needed) ---
     if is_import_error:
         # v2.1: Try post-execution reconciliation to find the correct import name
