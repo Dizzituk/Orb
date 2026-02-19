@@ -80,6 +80,21 @@ def setup_file_logging(level: int = logging.DEBUG) -> str:
         console.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT))
         root.addHandler(console)
 
+    # ── v1.1 Suppress noisy third-party HTTP transport logs ──────────
+    # These flood the file with TLS handshakes, request headers, etc.
+    # WARNING+ still passes through (those indicate real problems).
+    for _noisy in (
+        "httpcore",
+        "httpcore.connection",
+        "httpcore.http11",
+        "httpx",
+        "anthropic._base_client",
+        "openai._base_client",
+        "urllib3",
+        "urllib3.connectionpool",
+    ):
+        logging.getLogger(_noisy).setLevel(logging.WARNING)
+
     # Log the setup itself
     logger = logging.getLogger(__name__)
     logger.info("File logging initialised: %s (max %d MB x %d backups)", LOG_FILE, MAX_BYTES // (1024*1024), BACKUP_COUNT)

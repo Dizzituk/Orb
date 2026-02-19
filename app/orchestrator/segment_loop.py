@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-SEGMENT_LOOP_BUILD_ID = "2026-02-19-v5.34-cohesion-halt-gate"
+SEGMENT_LOOP_BUILD_ID = "2026-02-19-v5.40-complexity-sort-import-gate"
 print(f"[SEGMENT_LOOP_LOADED] BUILD_ID={SEGMENT_LOOP_BUILD_ID}")
 
 
@@ -914,6 +914,120 @@ async def run_segment_through_pipeline(
         pass  # Non-fatal
 
     # =====================================================================
+    # Step 1b: Deterministic Import Validator — HARD GATE (Fix 15, v5.38)
+    # Zero-LLM-cost check: every cross-segment import must reference a
+    # symbol that actually exists in a sibling segment's enrichment.
+    # If violations found, inject feedback and regenerate (max 1 retry).
+    # =====================================================================
+    _MAX_IMPORT_REGEN = 1  # One retry attempt with feedback
+    _import_regen_count = 0
+
+    try:
+        from app.orchestrator.import_validator import validate_architecture_imports
+
+        # Derive parent job dir from job_id (strip __seg-* suffix)
+        _parent_jid = job_id.split("__")[0] if "__" in job_id else job_id
+        _artifact_root = os.getenv("ORB_JOB_ARTIFACT_ROOT", "jobs")
+        _parent_job_dir = os.path.join(_artifact_root, "jobs", _parent_jid)
+
+        _import_result = validate_architecture_imports(
+            arch_text=arch_text,
+            segment_id=seg_id,
+            parent_job_dir=_parent_job_dir,
+        )
+
+        if _import_result.passed:
+            _emit(f"  ✅ Import validation: {_import_result.symbols_checked} cross-segment import(s) verified")
+        else:
+            _emit(f"  ❌ Import validation: {len(_import_result.violations)} violation(s) found")
+            for _v in _import_result.violations:
+                _emit(f"    ⚠️ {_v.symbol_name}: {_v.message}")
+
+            # v5.38 HARD GATE: Regenerate architecture with violation feedback
+            if _import_regen_count < _MAX_IMPORT_REGEN:
+                _import_regen_count += 1
+                _emit(f"  🔄 Import validation regen {_import_regen_count}/{_MAX_IMPORT_REGEN} — regenerating architecture...")
+                logger.info(
+                    "[SEGMENT_LOOP] v5.38 Import validation regen %d/%d for %s: %d violation(s)",
+                    _import_regen_count, _MAX_IMPORT_REGEN, seg_id, len(_import_result.violations),
+                )
+
+                # Inject feedback into segment_context for the LLM
+                segment_context["import_validation_feedback"] = _import_result.format_feedback()
+
+                # Re-run Critical Pipeline with feedback
+                arch_content_parts_regen: List[str] = []
+                done_metadata_regen: Dict[str, Any] = {}
+                try:
+                    async for event in generate_critical_pipeline_stream(
+                        project_id=project_id,
+                        message=json.dumps(segment_context.get("segment_spec", {})),
+                        db=db,
+                        job_id=seg_job_id,
+                        segment_context=segment_context,
+                    ):
+                        if not isinstance(event, str):
+                            continue
+                        for line in event.split("\n"):
+                            if not line.startswith("data: "):
+                                continue
+                            try:
+                                payload = json.loads(line[6:])
+                            except (json.JSONDecodeError, ValueError):
+                                continue
+                            evt_type = payload.get("type")
+                            if evt_type == "token":
+                                arch_content_parts_regen.append(payload.get("content", ""))
+                            elif evt_type == "done":
+                                done_metadata_regen = payload
+
+                    if arch_content_parts_regen:
+                        arch_text = "".join(arch_content_parts_regen)
+                        _emit(f"  ✅ Architecture regenerated ({len(arch_text)} chars)")
+
+                        # Re-validate
+                        _import_result_2 = validate_architecture_imports(
+                            arch_text=arch_text,
+                            segment_id=seg_id,
+                            parent_job_dir=_parent_job_dir,
+                        )
+                        if _import_result_2.passed:
+                            _emit(f"  ✅ Import validation (regen): {_import_result_2.symbols_checked} import(s) verified")
+                        else:
+                            _emit(f"  ⚠️ Import validation (regen): {len(_import_result_2.violations)} violation(s) remain")
+                            for _v2 in _import_result_2.violations:
+                                _emit(f"    ⚠️ {_v2.symbol_name}: {_v2.message}")
+                            logger.warning(
+                                "[SEGMENT_LOOP] v5.38 Import regen still has %d violation(s) for %s — proceeding",
+                                len(_import_result_2.violations), seg_id,
+                            )
+
+                        # Re-save the regenerated architecture
+                        try:
+                            with open(seg_arch_path, "w", encoding="utf-8") as f:
+                                f.write(arch_text)
+                            _emit(f"  💾 Regenerated architecture saved")
+                        except Exception as _save_err:
+                            logger.warning("[SEGMENT_LOOP] v5.38 Failed to save regen arch: %s", _save_err)
+                    else:
+                        _emit(f"  ⚠️ Regen produced no output — keeping original")
+                except Exception as _regen_err:
+                    _emit(f"  ⚠️ Regen failed: {_regen_err} — keeping original")
+                    logger.warning("[SEGMENT_LOOP] v5.38 Import regen failed for %s: %s", seg_id, _regen_err)
+
+                # Clear feedback so it doesn't persist to next stages
+                segment_context.pop("import_validation_feedback", None)
+            else:
+                logger.warning(
+                    "[SEGMENT_LOOP] v5.38 Import validation failed for %s (no regen left): %d violation(s)",
+                    seg_id, len(_import_result.violations),
+                )
+    except ImportError:
+        logger.debug("[SEGMENT_LOOP] import_validator not available — skipping")
+    except Exception as _iv_err:
+        logger.warning("[SEGMENT_LOOP] v5.38 Import validator error (non-fatal): %s", _iv_err)
+
+    # =====================================================================
     # Step 2: Human Approval Gate (v3.0)
     # Architecture is generated and critique-approved. STOP here and
     # wait for explicit human approval before executing any writes.
@@ -1519,12 +1633,55 @@ async def run_segmented_job(
     # their dependencies aren't COMPLETE yet (e.g. seg-01 depends on seg-02..seg-09).
     # Also handles PENDING segments that get architectures generated and need
     # a second pass to execute once approved.
-    execution_order = manifest.get_execution_order()
+    _raw_order = manifest.get_execution_order()
+
+    # v5.40 (Fix 21): Complexity-aware ordering within dependency tiers.
+    # Segments with fewer dependencies are simpler and should run first
+    # within their tier. This means when a complex segment runs, all
+    # simpler siblings already have architectures/enrichment available,
+    # giving the LLM maximum data and minimum need to hallucinate.
+    def _complexity_sort(order: List[str]) -> List[str]:
+        """Re-sort execution order: within each dependency tier, simple first."""
+        # Build tiers: group by depth (number of transitive deps resolved)
+        completed: set = set()
+        tiers: List[List[str]] = []
+        remaining = list(order)
+
+        while remaining:
+            # Segments whose deps are all in 'completed'
+            ready = [
+                sid for sid in remaining
+                if all(
+                    d in completed
+                    for d in (manifest.get_segment(sid).dependencies or [])
+                )
+            ]
+            if not ready:
+                # Shouldn't happen — safety fallback, keep original order
+                tiers.append(remaining)
+                break
+            # Sort this tier by dependency count ascending (simple first)
+            ready.sort(key=lambda sid: len(manifest.get_segment(sid).dependencies or []))
+            tiers.append(ready)
+            completed.update(ready)
+            remaining = [sid for sid in remaining if sid not in completed]
+
+        flat = []
+        for tier in tiers:
+            flat.extend(tier)
+        return flat
+
+    execution_order = _complexity_sort(_raw_order)
     total = len(execution_order)
     _pass_number = 0
     MAX_PASSES = 5  # Safety limit to prevent infinite loops
 
-    _emit(f"🔄 Processing {total} segment(s) in dependency order...\n")
+    # Log if order changed
+    if execution_order != _raw_order:
+        _emit(f"\u2699\ufe0f v5.40 Complexity-sorted order: {' \u2192 '.join(s.split('-', 2)[-1][:20] for s in execution_order)}")
+        logger.info("[SEGMENT_LOOP] v5.40 Complexity-sorted: %s", execution_order)
+
+    _emit(f"\ud83d\udd04 Processing {total} segment(s) in dependency order...\n")
 
     while _pass_number < MAX_PASSES:
         _pass_number += 1
@@ -1905,6 +2062,16 @@ async def run_segmented_job(
             # not just APPROVED. This ensures the architecture generator has access to
             # actual exported interfaces, not just spec promises.
             _facade = _is_facade_segment(seg_spec, manifest)
+
+            # v5.39 (Fix 13): Defer facade entirely during design phase.
+            # The facade can't have complete data until all siblings are
+            # implemented. Skip it now — it gets built during implement_only
+            # via the v5.26 auto-generate path (line ~1904).
+            if _facade and not implement_only:
+                _emit(f"⏭️ [{idx}/{total}] {seg_id}: FACADE — deferred to implementation phase")
+                logger.info("[SEGMENT_LOOP] v5.39 Facade %s deferred to implementation phase", seg_id)
+                continue
+
             if not can_execute_segment(seg_spec, state, require_complete=_facade):
                 if _facade:
                     _emit(f"⏳ [{idx}/{total}] {seg_id}: FACADE — waiting for all dependencies to be COMPLETE")

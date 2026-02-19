@@ -314,6 +314,7 @@ async def apply_tier2_fix(
     issue,
     arch_text: str,
     segment_id: str,
+    job_dir: str = "",
 ) -> Tuple[str, bool, str, int]:
     """
     Apply a micro LLM patch to fix a specific issue.
@@ -339,8 +340,8 @@ async def apply_tier2_fix(
         provider = "openai"
         model = "gpt-4.1-mini"
 
-    # Build focused prompt
-    prompt = _build_micro_patch_prompt(issue, arch_text, segment_id)
+    # Build focused prompt (v3.8: now includes sibling export evidence)
+    prompt = _build_micro_patch_prompt(issue, arch_text, segment_id, job_dir=job_dir)
 
     try:
         from app.llm.streaming import call_llm_text
@@ -407,8 +408,15 @@ async def apply_tier2_fix(
         return arch_text, False, f"LLM call failed: {e}", 0
 
 
-def _build_micro_patch_prompt(issue, arch_text: str, segment_id: str) -> str:
-    """Build a focused prompt for micro LLM patching."""
+def _build_micro_patch_prompt(
+    issue, arch_text: str, segment_id: str, job_dir: str = "",
+) -> str:
+    """Build a focused prompt for micro LLM patching.
+
+    v3.8 (Fix 10): Now includes sibling export map and skeleton context
+    so the fix LLM has evidence to make correct decisions about which
+    segment owns which symbol.
+    """
     parts = [
         f"# Fix Required for Segment: {segment_id}\n",
         f"## Issue: {issue.issue_id} [{issue.category}]\n",
@@ -421,6 +429,27 @@ def _build_micro_patch_prompt(issue, arch_text: str, segment_id: str) -> str:
     if issue.actual:
         parts.append(f"**Actual:** {issue.actual}")
 
+    # ── v3.8 (Fix 10): Inject sibling export map evidence ──────────
+    # Gives the fix LLM visibility into what symbols exist across all
+    # segments, so it can resolve duplicates and phantoms correctly.
+    if job_dir:
+        try:
+            _export_lines = _build_sibling_export_context(job_dir, segment_id)
+            if _export_lines:
+                parts.append("\n---\n")
+                parts.append("## Sibling Export Map (ground truth)\n")
+                parts.append(
+                    "These are the REAL function/constant names exported by "
+                    "each sibling segment. Use this to determine which segment "
+                    "owns which symbol. If resolving a duplicate, KEEP the "
+                    "function in the segment listed here and REMOVE it from "
+                    "the other. If resolving a missing import, check this map "
+                    "to find where the symbol actually lives.\n"
+                )
+                parts.append("\n".join(_export_lines))
+        except Exception as _e:
+            logger.debug("[cohesion_autofix] v3.8 Export map injection failed: %s", _e)
+
     parts.append("\n---\n")
     parts.append("## Architecture Document (apply the fix to this)\n")
     parts.append(arch_text)
@@ -431,6 +460,63 @@ def _build_micro_patch_prompt(issue, arch_text: str, segment_id: str) -> str:
     )
 
     return "\n".join(parts)
+
+
+def _build_sibling_export_context(
+    job_dir: str, current_segment_id: str,
+) -> List[str]:
+    """Build export context lines from sibling enrichment files.
+
+    v3.8 (Fix 10): Provides the auto-fix LLM with ground truth about
+    which segment exports which symbols.
+    """
+    import json as _json
+
+    # Derive parent job dir (strip __seg-* suffix)
+    _parent_jid = os.path.basename(job_dir)
+    if "__" in _parent_jid:
+        _parent_jid = _parent_jid.split("__")[0]
+        _parent_dir = os.path.join(os.path.dirname(job_dir), _parent_jid)
+    else:
+        _parent_dir = job_dir
+
+    _segments_dir = os.path.join(_parent_dir, "segments")
+    if not os.path.isdir(_segments_dir):
+        return []
+
+    lines: List[str] = []
+    for _seg_name in sorted(os.listdir(_segments_dir)):
+        _enrich_path = os.path.join(_segments_dir, _seg_name, "enrichment.json")
+        if not os.path.isfile(_enrich_path):
+            continue
+
+        try:
+            with open(_enrich_path, "r", encoding="utf-8") as _f:
+                _enrich = _json.load(_f)
+        except Exception:
+            continue
+
+        _symbols: list = []
+        for _exp in _enrich.get("exports", []):
+            if isinstance(_exp, str):
+                _symbols.append(_exp)
+            elif isinstance(_exp, dict) and _exp.get("name"):
+                _symbols.append(_exp["name"])
+        for _func in _enrich.get("functions", []):
+            _name = _func.get("name", "") if isinstance(_func, dict) else str(_func)
+            if _name and _name not in _symbols:
+                _symbols.append(_name)
+        for _const in _enrich.get("constants", []):
+            _name = _const.get("name", "") if isinstance(_const, dict) else str(_const)
+            if _name and _name not in _symbols:
+                _symbols.append(_name)
+
+        if _symbols:
+            _is_self = " **(THIS SEGMENT)**" if _seg_name == current_segment_id else ""
+            _sym_str = ", ".join(f"`{s}`" for s in _symbols)
+            lines.append(f"- **{_seg_name}**{_is_self} exports: {_sym_str}")
+
+    return lines
 
 
 # =============================================================================
@@ -537,7 +623,7 @@ async def run_autofix(
 
         arch_text = patched_archs[seg_id]
         fixed_text, success, change_desc, tokens = await apply_tier2_fix(
-            issue, arch_text, seg_id,
+            issue, arch_text, seg_id, job_dir=job_dir,
         )
 
         attempt = AutofixAttempt(

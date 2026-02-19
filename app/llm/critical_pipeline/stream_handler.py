@@ -1208,6 +1208,18 @@ async def _handle_architecture(
             _si_parts.append(f"{_si_cohesion}\n")
             _si_parts.append("Ensure all import names, module names, and function signatures match what other segments expect.\n")
 
+        # v5.38 (Fix 15): Import validation failure feedback injection
+        # When the deterministic import validator found phantom/wrong-module
+        # imports, inject the specific violations so the LLM fixes them.
+        _si_import_feedback = segment_context.get("import_validation_feedback", "")
+        if _si_import_feedback:
+            _si_parts.append("### ❌ IMPORT VALIDATION FAILED (deterministic check)\n")
+            _si_parts.append("The previous architecture for this segment contained cross-segment imports")
+            _si_parts.append(" that reference symbols which DO NOT EXIST in the target modules.")
+            _si_parts.append(" You MUST fix every violation listed below. Only import symbols that")
+            _si_parts.append(" appear in the sibling export map provided above.\n")
+            _si_parts.append(f"{_si_import_feedback}\n")
+
         # v5.25: Implementation failure feedback injection
         # When a previous implementation attempt failed (strike-out), inject
         # the specific failure reasons so the architecture LLM can avoid
@@ -1239,7 +1251,11 @@ async def _handle_architecture(
         # =============================================================
         try:
             _job_artifact_root = os.getenv("ORB_JOB_ARTIFACT_ROOT", "jobs")
-            _job_dir_for_siblings = os.path.join(_job_artifact_root, "jobs", job_id)
+            # v5.36 fix: job_id here is the sub-job ID (e.g. "sg-xxx__seg-04-...")
+            # but the segments directory lives under the PARENT job ("sg-xxx").
+            # Strip the "__seg-*" suffix to get the parent job dir.
+            _parent_job_id = job_id.split("__")[0] if "__" in job_id else job_id
+            _job_dir_for_siblings = os.path.join(_job_artifact_root, "jobs", _parent_job_id)
             _segments_dir = os.path.join(_job_dir_for_siblings, "segments")
             _sibling_exports: Dict[str, List[str]] = {}  # seg_id -> [symbol_names]
             _current_seg_id = segment_context.get("segment_id", "")
