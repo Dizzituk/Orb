@@ -93,6 +93,14 @@ def on_startup():
     os.makedirs("data", exist_ok=True)
     os.makedirs("data/files", exist_ok=True)
     
+    # v0.18.0: File logging — all logger.* calls written to D:\Orb\logs\astra.log
+    try:
+        from app.logging_config import setup_file_logging
+        _log_path = setup_file_logging()
+        print(f"[startup] File logging: [OK] {_log_path}")
+    except Exception as e:
+        print(f"[startup] File logging: [WARN] failed to init: {e}")
+    
     print("[startup] Initializing encryption...")
     from app.crypto import require_master_key_or_exit, is_master_key_initialized
     require_master_key_or_exit()

@@ -1225,6 +1225,91 @@ async def _handle_architecture(
             _si_parts.append("If the failure was a wrong function name or signature, ensure this architecture")
             _si_parts.append("uses the EXACT names from the skeleton contract.\n")
 
+        # =============================================================
+        # v5.36: COMPLETE SIBLING EXPORT MAP
+        # When a segment's own `consumes` map is empty (enrichment didn't
+        # assign cross-segment dependencies), the architecture LLM has no
+        # grounded evidence of what functions exist in sibling segments.
+        # It then invents function names like `can_execute_segment` that
+        # don't exist, causing phantom-symbol cohesion failures.
+        #
+        # Fix: Load ALL sibling segments' enrichment from disk and inject
+        # every exported symbol. The LLM can then pick the correct real
+        # names instead of guessing.
+        # =============================================================
+        try:
+            _job_artifact_root = os.getenv("ORB_JOB_ARTIFACT_ROOT", "jobs")
+            _job_dir_for_siblings = os.path.join(_job_artifact_root, "jobs", job_id)
+            _segments_dir = os.path.join(_job_dir_for_siblings, "segments")
+            _sibling_exports: Dict[str, List[str]] = {}  # seg_id -> [symbol_names]
+            _current_seg_id = segment_context.get("segment_id", "")
+
+            if os.path.isdir(_segments_dir):
+                for _sib_dir_name in sorted(os.listdir(_segments_dir)):
+                    if _sib_dir_name == _current_seg_id:
+                        continue  # Skip self
+                    _sib_enrich_path = os.path.join(
+                        _segments_dir, _sib_dir_name, "enrichment.json"
+                    )
+                    if not os.path.isfile(_sib_enrich_path):
+                        continue
+                    try:
+                        with open(_sib_enrich_path, "r", encoding="utf-8") as _sef:
+                            _sib_enrich = json.load(_sef)
+                        # Collect exports (explicit list)
+                        _sib_symbols = list(_sib_enrich.get("exports", []))
+                        # Also collect function names from enrichment
+                        for _sf in _sib_enrich.get("functions", []):
+                            _fn_name = _sf.get("name", "")
+                            if _fn_name and _fn_name not in _sib_symbols:
+                                _sib_symbols.append(_fn_name)
+                        # Also collect constant names
+                        for _sc in _sib_enrich.get("constants", []):
+                            _cn_name = _sc.get("name", "")
+                            if _cn_name and _cn_name not in _sib_symbols:
+                                _sib_symbols.append(_cn_name)
+                        if _sib_symbols:
+                            _sibling_exports[_sib_dir_name] = _sib_symbols
+                    except Exception:
+                        pass  # Skip unreadable enrichment files
+
+            if _sibling_exports:
+                _si_parts.append("#### \U0001f4cb Complete Sibling Export Map (v5.36)")
+                _si_parts.append("")
+                _si_parts.append(
+                    "**REFERENCE**: These are ALL real function/constant names "
+                    "exported by sibling segments, extracted from the source "
+                    "monolith via AST parsing. When your code needs to call a "
+                    "function that lives in another segment, pick from THIS "
+                    "list \u2014 do NOT invent function names that are not here."
+                )
+                _si_parts.append("")
+                _total_sib_symbols = 0
+                for _sib_id, _sib_syms in _sibling_exports.items():
+                    _si_parts.append(
+                        f"- **{_sib_id}** exports: "
+                        f"{', '.join(f'`{s}`' for s in _sib_syms)}"
+                    )
+                    _total_sib_symbols += len(_sib_syms)
+                _si_parts.append("")
+                _si_parts.append(
+                    "If the function you need is NOT in this list, it either "
+                    "doesn\u2019t exist (define it yourself) or belongs to a stdlib/"
+                    "third-party module (import normally). NEVER invent a sibling "
+                    "import to a symbol not listed above."
+                )
+                _si_parts.append("")
+                logger.info(
+                    "[stream_handler] v5.36 Sibling export map injected for %s: "
+                    "%d segment(s), %d total symbol(s)",
+                    _current_seg_id, len(_sibling_exports), _total_sib_symbols,
+                )
+        except Exception as _sib_err:
+            logger.warning(
+                "[stream_handler] v5.36 Sibling export map failed (non-fatal): %s",
+                _sib_err,
+            )
+
         _segment_injection = "\n".join(_si_parts)
 
     # v5.4 Phase 2B: Extract contract for critique injection

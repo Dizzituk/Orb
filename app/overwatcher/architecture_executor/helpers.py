@@ -4,6 +4,12 @@ Helper utilities for architecture executor.
 Provides low-level text processing functions used across the executor package.
 These functions are pure utilities with no external dependencies (stdlib only).
 
+v1.2 (2026-02-19): All-prose rejection in _sanitise_python_content.
+  When the entire LLM output is markdown/prose with zero Python, the
+  sanitiser now returns empty string + ALL_PROSE warning instead of
+  passing the content through to waste 3 syntax-guard strikes.
+  Fixes job sg-41756d01 where the Implementer wrote architecture
+  instructions into _evidence.py 3 times.
 v1.1 (2026-02-19): Added _sanitise_python_content and _check_python_syntax
   for deterministic pre-write validation of LLM-generated Python files.
   Fixes job sg-8d29f79f where the Implementer wrote markdown commentary
@@ -177,8 +183,38 @@ def _sanitise_python_content(content: str, file_path: str = "") -> Tuple[str, li
         continue
 
     if not found_python_start:
-        # No recognisable Python found — return unchanged so the syntax
-        # checker can produce a proper error
+        # v1.2: Detect if content is ALL prose/markdown.
+        # Count how many lines look like markdown vs unknown.
+        non_blank_lines = [l for l in lines if l.strip()]
+        markdown_count = sum(
+            1 for l in non_blank_lines
+            if any(p.match(l) for p in _MARKDOWN_LINE_PATTERNS)
+        )
+        # Heuristic: if >30% of non-blank lines are markdown, or if we
+        # see common prose indicators, treat this as all-prose output.
+        _content_lower = content.lower()
+        _prose_indicators = [
+            "the following", "copy implementation", "exports:",
+            "do not rename", "must define", "this file",
+            "source files are being", "## ", "**",
+        ]
+        _has_prose_markers = any(ind in _content_lower for ind in _prose_indicators)
+        _high_markdown_ratio = (
+            len(non_blank_lines) > 0
+            and (markdown_count / len(non_blank_lines)) > 0.3
+        )
+        if _has_prose_markers or _high_markdown_ratio or len(non_blank_lines) > 3:
+            # This is 100% prose — reject it entirely
+            warning = (
+                f"v1.2 ALL_PROSE_REJECTED: {file_path} — content is 100% "
+                f"markdown/prose with no Python code detected "
+                f"({len(non_blank_lines)} lines, {markdown_count} markdown). "
+                f"The Implementer wrote architecture instructions instead of "
+                f"Python source code. First line: {non_blank_lines[0][:100] if non_blank_lines else '(empty)'}..."
+            )
+            logger.error("[helpers] %s", warning)
+            return "", [warning]
+        # Truly empty or trivial content — return unchanged for syntax check
         return content, []
 
     if preamble_end > 0:
