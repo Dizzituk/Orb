@@ -315,6 +315,9 @@ class SegmentSpec:
     # Grounding — verified evidence from file_verifier
     grounding_data: Optional[GroundingData] = None
 
+    # v6.1: Deterministic refactor flag — set by refactor_pipeline
+    deterministic_refactor: bool = False
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "segment_id": self.segment_id,
@@ -329,6 +332,7 @@ class SegmentSpec:
             "acceptance_criteria": self.acceptance_criteria,
             "estimated_files": self.estimated_files,
             "grounding_data": self.grounding_data.to_dict() if self.grounding_data else None,
+            "deterministic_refactor": self.deterministic_refactor,
         }
 
     @classmethod
@@ -349,6 +353,7 @@ class SegmentSpec:
             acceptance_criteria=data.get("acceptance_criteria", []),
             estimated_files=data.get("estimated_files", 0),
             grounding_data=GroundingData.from_dict(grounding_data) if grounding_data else None,
+            deterministic_refactor=data.get("deterministic_refactor", False),
         )
 
     def to_json(self, indent: int = 2) -> str:
@@ -398,6 +403,11 @@ class SegmentManifest:
     # These are NOT included in any segment's file_scope.
     deferred_consumer_files: List[str] = field(default_factory=list)
 
+    # v6.1: Deterministic refactor source file
+    # When set, indicates this manifest was produced by the deterministic
+    # refactor pipeline. Value is the source monolith path.
+    deterministic_source: Optional[str] = None
+
     def __post_init__(self):
         if not self.generated_at:
             self.generated_at = datetime.now(timezone.utc).isoformat()
@@ -417,6 +427,7 @@ class SegmentManifest:
             "generated_at": self.generated_at,
             "manifest_version": self.manifest_version,
             "deferred_consumer_files": self.deferred_consumer_files,
+            "deterministic_source": self.deterministic_source,
         }
 
     @classmethod
@@ -431,6 +442,7 @@ class SegmentManifest:
             total_files=data.get("total_files", 0),
             generated_at=data.get("generated_at", ""),
             manifest_version=data.get("manifest_version", "1.0"),
+            deterministic_source=data.get("deterministic_source"),
         )
 
     def to_json(self, indent: int = 2) -> str:

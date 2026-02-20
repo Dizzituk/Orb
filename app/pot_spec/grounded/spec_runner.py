@@ -1447,6 +1447,182 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
                     logger.debug("[spec_runner] Needle classifier unavailable: %s — using legacy", _nc_err)
                     _should_segment, _seg_reason = needs_segmentation(_file_scope)
 
+                # =============================================================
+                # v6.1: DETERMINISTIC REFACTOR CHECK
+                # Before LLM segmentation, check if this is a refactor job.
+                # If the spec mentions refactoring an existing file that exists
+                # on disk, use the deterministic pipeline instead of the LLM.
+                # =============================================================
+                _deterministic_manifest = None
+                try:
+                    from app.orchestrator.refactor_pipeline import (
+                        is_refactor_job,
+                        run_deterministic_refactor,
+                    )
+                    from app.pot_spec.grounded.segment_schemas import (
+                        SegmentManifest,
+                        SegmentSpec as _DetSegSpec,
+                    )
+
+                    _is_refactor, _refactor_reason = is_refactor_job(
+                        spot_markdown, _file_scope,
+                    )
+                    # v6.1 FIX 6: Log detection result regardless of outcome
+                    logger.info(
+                        "[spec_runner] v6.1 Refactor detection: is_refactor=%s, reason=%s, file_scope=%d files",
+                        _is_refactor, _refactor_reason, len(_file_scope),
+                    )
+
+                    if _is_refactor:
+                        logger.info(
+                            "[spec_runner] v6.1 DETERMINISTIC REFACTOR detected: %s",
+                            _refactor_reason,
+                        )
+                        print(f"[spec_runner] v6.1 DETERMINISTIC REFACTOR: {_refactor_reason}")
+
+                        # Find the source monolith and target package
+                        # v6.1 FIX 5: Improved source/target identification.
+                        # Strategy 1: Exact stem match (file.py → file/ package)
+                        # Strategy 2: Source .py exists on disk + any __init__.py
+                        #             in a subdir of the same parent (LLM may have
+                        #             chosen a different package name).
+                        _source_file = None
+                        _target_pkg = None
+
+                        # Normalise all paths once
+                        _scope_norm = [fp.replace("\\", "/") for fp in _file_scope]
+
+                        # Strategy 1: Exact stem match (sandbox_build_validator.py → sandbox_build_validator/)
+                        for _fp_norm in _scope_norm:
+                            if _fp_norm.endswith(".py") and "/" in _fp_norm:
+                                _stem = _fp_norm.rsplit("/", 1)[-1].replace(".py", "")
+                                _parent = _fp_norm.rsplit("/", 1)[0]
+                                _pkg_prefix = f"{_parent}/{_stem}/"
+                                _has_pkg = any(
+                                    f2.startswith(_pkg_prefix)
+                                    for f2 in _scope_norm if f2 != _fp_norm
+                                )
+                                _on_disk = os.path.isfile(
+                                    os.path.join("D:\\Orb", _fp_norm.replace("/", os.sep))
+                                )
+                                if _has_pkg and _on_disk:
+                                    _source_file = _fp_norm
+                                    _target_pkg = _pkg_prefix
+                                    logger.info(
+                                        "[spec_runner] v6.1 Strategy 1 match: %s -> %s",
+                                        _source_file, _target_pkg,
+                                    )
+                                    break
+                                elif _on_disk and not _has_pkg:
+                                    logger.info(
+                                        "[spec_runner] v6.1 Strategy 1 miss: %s exists on disk but no package at %s",
+                                        _fp_norm, _pkg_prefix,
+                                    )
+
+                        # v6.1 FIX 7: Strategy 2 with logging
+                        # Source .py on disk + any __init__.py in child dir
+                        # Handles case where LLM renamed the package
+                        if not _source_file:
+                            logger.info("[spec_runner] v6.1 Strategy 1 failed, trying Strategy 2")
+                            for _fp_norm in _scope_norm:
+                                if not _fp_norm.endswith(".py") or "/" not in _fp_norm:
+                                    continue
+                                if not os.path.isfile(
+                                    os.path.join("D:\\Orb", _fp_norm.replace("/", os.sep))
+                                ):
+                                    continue
+                                _parent = _fp_norm.rsplit("/", 1)[0]
+                                # Look for any __init__.py in a subdir of the same parent
+                                for _f2 in _scope_norm:
+                                    if _f2 == _fp_norm:
+                                        continue
+                                    if _f2.startswith(_parent + "/") and "__init__.py" in _f2:
+                                        # Found a package dir
+                                        _pkg_dir = _f2.rsplit("__init__.py", 1)[0]
+                                        _source_file = _fp_norm
+                                        _target_pkg = _pkg_dir
+                                        logger.info(
+                                            "[spec_runner] v6.1 Strategy 2 match: %s -> %s",
+                                            _source_file, _target_pkg,
+                                        )
+                                        break
+                                if _source_file:
+                                    break
+                            if not _source_file:
+                                logger.info(
+                                    "[spec_runner] v6.1 Strategy 2 failed: no .py on disk with __init__.py in sibling subdir",
+                                )
+
+                        if _source_file and _target_pkg:
+                            _det_job_dir = _get_job_dir_for_segmentation(job_id)
+                            logger.info(
+                                "[spec_runner] v6.1 Running deterministic refactor: %s -> %s",
+                                _source_file, _target_pkg,
+                            )
+
+                            # Build a synthetic file inventory from file_scope
+                            # (the architecture_file_inventory parameter expects
+                            # markdown with a File Inventory table)
+                            _inv_lines = ["## File Inventory\n"]
+                            _inv_lines.append("| File | Operation | Purpose |")
+                            _inv_lines.append("|---|---|---|")
+                            for _sf in _file_scope:
+                                _sf_norm = _sf.replace("\\", "/")
+                                if _sf_norm.startswith(_target_pkg):
+                                    _inv_lines.append(f"| `{_sf_norm}` | CREATE | Submodule |")
+                                elif _sf_norm == _source_file:
+                                    _inv_lines.append(f"| `{_sf_norm}` | QUARANTINE | Source monolith |")
+                            _inv_text = "\n".join(_inv_lines)
+
+                            _det_plan, _det_archs, _det_manifest_data = run_deterministic_refactor(
+                                source_file_path=_source_file,
+                                architecture_file_inventory=_inv_text,
+                                target_package=_target_pkg,
+                                job_dir=_det_job_dir,
+                                spec_id=f"sg-{uuid.uuid4().hex[:12]}",
+                            )
+
+                            # Convert to SegmentManifest
+                            _det_segments = []
+                            for _seg_data in _det_manifest_data["segments"]:
+                                _det_segments.append(_DetSegSpec.from_dict(_seg_data))
+
+                            _deterministic_manifest = SegmentManifest(
+                                segments=_det_segments,
+                                total_segments=len(_det_segments),
+                                total_files=sum(len(s.file_scope) for s in _det_segments),
+                                deterministic_source=_source_file,
+                            )
+
+                            logger.info(
+                                "[spec_runner] v6.1 Deterministic manifest: %d segments, %d files",
+                                len(_det_segments),
+                                sum(len(s.file_scope) for s in _det_segments),
+                            )
+                            print(
+                                f"[spec_runner] v6.1 DETERMINISTIC: "
+                                f"{len(_det_segments)} segments, "
+                                f"{sum(len(s.file_scope) for s in _det_segments)} files"
+                            )
+                        else:
+                            logger.info(
+                                "[spec_runner] v6.1 Refactor detected but couldn't identify source/target — falling back to LLM",
+                            )
+                except ImportError:
+                    logger.debug("[spec_runner] v6.1 refactor_pipeline not available")
+                except Exception as _det_err:
+                    logger.warning(
+                        "[spec_runner] v6.1 Deterministic refactor error (falling back to LLM): %s",
+                        _det_err,
+                    )
+
+                if _deterministic_manifest:
+                    # Use deterministic manifest — skip LLM segmentation entirely
+                    segmentation_manifest = _deterministic_manifest
+                    _should_segment = True
+                    _seg_reason = f"Deterministic refactor: {_refactor_reason}"
+                    logger.info("[spec_runner] v6.1 Using deterministic manifest")
+
                 if _should_segment:
                     logger.info("[spec_runner] v5.5 Segmentation triggered: %s", _seg_reason)
                     print(f"[spec_runner] v5.5 SEGMENTATION: {_seg_reason}")
@@ -1522,7 +1698,7 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
                     # v5.5 PHASE 3B: Try concept-aware grouping first
                     _concept_groups = None
                     _target_segs = _needle_estimate.recommended_segment_count if _needle_estimate else 0
-                    if _target_segs >= 2:
+                    if _target_segs >= 2 and not _deterministic_manifest:  # v6.1: skip for deterministic:
                         try:
                             from .smart_segmentation import generate_concept_segments
                             _concept_groups = await generate_concept_segments(
@@ -1541,14 +1717,15 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
                         except (ImportError, Exception) as _cg_err:
                             logger.debug("[spec_runner] Smart segmentation unavailable: %s", _cg_err)
                     
-                    segmentation_manifest = generate_segments(
-                        file_scope=_file_scope,
-                        requirements=_requirements,
-                        acceptance_criteria=_acceptance,
-                        parent_spec_id=f"sg-{uuid.uuid4().hex[:12]}",
-                        parent_spec_hash=hashlib.sha256(spot_markdown.encode()).hexdigest() if spot_markdown else None,
-                        concept_groups=_concept_groups,
-                    )
+                    if not _deterministic_manifest:  # v6.1: skip LLM segmenter for deterministic
+                        segmentation_manifest = generate_segments(
+                            file_scope=_file_scope,
+                            requirements=_requirements,
+                            acceptance_criteria=_acceptance,
+                            parent_spec_id=f"sg-{uuid.uuid4().hex[:12]}",
+                            parent_spec_hash=hashlib.sha256(spot_markdown.encode()).hexdigest() if spot_markdown else None,
+                            concept_groups=_concept_groups,
+                        )
                     
                     if segmentation_manifest:
                         # v5.18: Attach deferred consumer files to manifest

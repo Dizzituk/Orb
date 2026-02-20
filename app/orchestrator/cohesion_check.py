@@ -914,12 +914,16 @@ async def run_cohesion_check(
     provider_id: Optional[str] = None,
     model_id: Optional[str] = None,
     source_file_evidence: Optional[Dict[str, str]] = None,
+    skip_llm_layer: bool = False,
 ) -> CohesionResult:
     """
     Run the cross-segment cohesion check (both layers).
 
     Layer 1: Deterministic skeleton compliance (always runs, free)
     Layer 2: LLM-based cross-segment analysis (runs if Layer 1 passes)
+
+    v6.1: skip_llm_layer=True for deterministic refactor jobs — the
+    architecture was generated from scan data so Layer 2 adds no value.
 
     Args:
         job_id: Job identifier
@@ -1006,6 +1010,14 @@ async def run_cohesion_check(
     # =========================================================================
     # LAYER 2: LLM-based cross-segment cohesion
     # =========================================================================
+    # v6.1: Skip LLM layer for deterministic refactor jobs
+    if skip_llm_layer:
+        logger.info("[cohesion_check] Layer 2: SKIPPED (deterministic refactor — skip_llm_layer=True)")
+        if result.status != "fail":
+            result.status = "pass"
+            result.notes = (result.notes + " | Layer 2 skipped (deterministic refactor)").strip(" | ")
+        return result
+
     logger.info("[cohesion_check] Layer 2: Running LLM cohesion check")
 
     # Resolve provider/model

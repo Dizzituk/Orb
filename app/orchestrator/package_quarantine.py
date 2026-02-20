@@ -99,6 +99,11 @@ def detect_file_to_package_refactors(
       2. At least one segment creates X/__init__.py
       3. X.py currently exists (checked later via sandbox)
 
+    v6.1 FIX 8: For deterministic refactor jobs (manifest has
+    'deterministic_source'), the source monolith path is explicit.
+    We use it directly instead of deriving from the package name,
+    which handles the case where the LLM renamed the package.
+
     Args:
         manifest_dict: The full manifest dict with 'segments' key.
 
@@ -126,6 +131,34 @@ def detect_file_to_package_refactors(
 
     if not init_owners:
         return []
+
+    # v6.1 FIX 8: deterministic_source override.
+    # The manifest tells us exactly which file to quarantine.
+    # Map it to the package dir by finding the __init__.py owner.
+    det_source = manifest_dict.get("deterministic_source")
+    if det_source:
+        det_source_norm = det_source.replace("\\", "/").rstrip(".py")
+        # The source stem might not match the package dir name (LLM rename).
+        # But there should be exactly one __init__.py owner — use it.
+        if len(init_owners) == 1:
+            dir_segment, init_seg_id = next(iter(init_owners.items()))
+            logger.info(
+                "[quarantine] v6.1 Deterministic source override: quarantine %s (package: %s)",
+                det_source, dir_segment,
+            )
+            return [(dir_segment, init_seg_id)]
+        elif len(init_owners) > 1:
+            # Multiple packages — find the one whose parent matches
+            det_parent = det_source_norm.rsplit("/", 1)[0] if "/" in det_source_norm else ""
+            for dir_segment, init_seg_id in init_owners.items():
+                pkg_parent = dir_segment.rsplit("/", 1)[0] if "/" in dir_segment else ""
+                if pkg_parent == det_parent:
+                    logger.info(
+                        "[quarantine] v6.1 Deterministic source override (multi-pkg): "
+                        "quarantine %s (package: %s)",
+                        det_source, dir_segment,
+                    )
+                    return [(dir_segment, init_seg_id)]
 
     # For each directory that gets an __init__.py, check if other segments
     # also write files into it (confirming it's a real package, not just
@@ -183,8 +216,20 @@ def run_quarantine(
     )
     _emit(f"[quarantine] Detected {len(refactors)} file->package refactor(s)")
 
+    # v6.1 FIX 8: deterministic_source tells us the actual file to quarantine
+    # (may differ from dir_segment + ".py" when LLM renamed the package).
+    det_source = manifest_dict.get("deterministic_source")
+
     for dir_segment, init_seg_id in refactors:
-        module_py = dir_segment + ".py"
+        # v6.1: Use deterministic_source if available, otherwise derive from package name
+        if det_source:
+            module_py = det_source.replace("\\", "/")
+            logger.info(
+                "[quarantine] v6.1 Using deterministic_source for quarantine: %s (package: %s)",
+                module_py, dir_segment,
+            )
+        else:
+            module_py = dir_segment + ".py"
         abs_original = _resolve_path(module_py, sandbox_base)
         abs_package_dir = _resolve_path(dir_segment, sandbox_base)
 

@@ -77,7 +77,41 @@ async def run_phase_checkout(
 
     # --- Check 1: Output file size validation (INFORMATIONAL) ---
     _emit("[CHECK 1] Output file size validation (informational)...")
-    result.size_validation = check_output_file_sizes(state, sandbox_base)
+
+    # v6.1 FIX 3: Build baseline function sizes for deterministic refactor jobs
+    _baseline_fn_sizes = None
+    try:
+        _manifest_path = os.path.join(job_dir, "segments", "manifest.json")
+        if os.path.isfile(_manifest_path):
+            import json as _json
+            with open(_manifest_path, "r", encoding="utf-8") as _mf:
+                _manifest_data = _json.load(_mf)
+            _det_source = _manifest_data.get("deterministic_source")
+            if _det_source:
+                # Scan the source file for baseline function sizes
+                _source_abs = os.path.join(sandbox_base, _det_source.replace("/", os.sep))
+                if os.path.isfile(_source_abs):
+                    import ast as _ast
+                    with open(_source_abs, "r", encoding="utf-8") as _sf:
+                        _src = _sf.read()
+                    try:
+                        _tree = _ast.parse(_src)
+                        _baseline_fn_sizes = {}
+                        for _n in _ast.walk(_tree):
+                            if isinstance(_n, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                                if hasattr(_n, "end_lineno") and _n.end_lineno:
+                                    _baseline_fn_sizes[_n.name] = _n.end_lineno - _n.lineno + 1
+                        if _baseline_fn_sizes:
+                            logger.info(
+                                "[phase_checkout] v6.1 Loaded %d baseline function sizes from %s",
+                                len(_baseline_fn_sizes), _det_source,
+                            )
+                    except SyntaxError:
+                        pass
+    except Exception as _bl_err:
+        logger.debug("[phase_checkout] v6.1 Baseline sizes unavailable: %s", _bl_err)
+
+    result.size_validation = check_output_file_sizes(state, sandbox_base, _baseline_fn_sizes)
     result.checks_run.append("size_validation")
 
     if result.size_validation.status == "fail":

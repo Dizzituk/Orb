@@ -87,12 +87,17 @@ BOOT_STRIKE_LIMIT = int(os.environ.get("PHASE_CHECKOUT_STRIKE_LIMIT", "3"))
 def check_output_file_sizes(
     state: Any,
     sandbox_base: str,
+    baseline_function_sizes: Optional[Dict[str, int]] = None,
 ) -> SizeValidationResult:
     """
     Scan segment-produced output files for size constraint violations.
 
     v2.0: Only checks files that segments actually produced (output_files).
     Pre-existing source files that are being replaced/decomposed are NOT checked.
+
+    v6.1 FIX 3: baseline_function_sizes is a dict of {function_name: line_count}
+    from the source monolith scan. If a transplanted function is <= its baseline
+    size, it's a pre-existing violation, not a new one. Skip it.
 
     Checks:
     - File line count <= MAX_FILE_LINES (400)
@@ -150,13 +155,26 @@ def check_output_file_sizes(
             if rel_path.endswith(".py"):
                 max_fn_lines, max_fn_name = _find_largest_function(content)
                 if max_fn_lines > MAX_FUNCTION_LINES:
-                    violations.append(SizeViolation(
-                        file_path=rel_path, line_count=line_count,
-                        kb_size=kb_size, max_function_lines=max_fn_lines,
-                        max_function_name=max_fn_name,
-                        produced_by_segment=seg_id,
-                        violation_type="function_too_large",
-                    ))
+                    # v6.1 FIX 3: Check if this is a pre-existing oversized function
+                    _is_baseline = False
+                    if baseline_function_sizes and max_fn_name:
+                        _baseline_size = baseline_function_sizes.get(max_fn_name, 0)
+                        if _baseline_size > 0 and max_fn_lines <= _baseline_size:
+                            _is_baseline = True
+                            logger.info(
+                                "[phase_checkout] v6.1 Skipping pre-existing size violation: "
+                                "%s (%d lines, baseline %d)",
+                                max_fn_name, max_fn_lines, _baseline_size,
+                            )
+
+                    if not _is_baseline:
+                        violations.append(SizeViolation(
+                            file_path=rel_path, line_count=line_count,
+                            kb_size=kb_size, max_function_lines=max_fn_lines,
+                            max_function_name=max_fn_name,
+                            produced_by_segment=seg_id,
+                            violation_type="function_too_large",
+                        ))
 
     return SizeValidationResult(
         status="fail" if violations else "pass",

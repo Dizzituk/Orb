@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-SEGMENT_LOOP_BUILD_ID = "2026-02-19-v5.40-complexity-sort-import-gate"
+SEGMENT_LOOP_BUILD_ID = "2026-02-20-v6.0-implementation-compiler-wired"
 print(f"[SEGMENT_LOOP_LOADED] BUILD_ID={SEGMENT_LOOP_BUILD_ID}")
 
 
@@ -796,55 +796,89 @@ async def run_segment_through_pipeline(
     # =====================================================================
     # Step 1: Critical Pipeline (architecture generation + critique)
     # =====================================================================
-    _emit(f"  📝 Running Critical Pipeline for {seg_id}...")
 
-    if not _CRITICAL_PIPELINE_AVAILABLE:
-        result["error"] = "Critical Pipeline not available"
-        return result
+    # v6.1: DETERMINISTIC REFACTOR BYPASS
+    # If this segment was produced by the deterministic refactor pipeline,
+    # the architecture is already pre-generated and saved to disk.
+    # Skip the LLM Critical Pipeline entirely — zero cost.
+    _is_deterministic = segment_context.get("segment_spec", {}).get("deterministic_refactor", False)
 
-    arch_content_parts: List[str] = []
-    done_metadata: Dict[str, Any] = {}
+    if _is_deterministic:
+        _emit(f"  ⚡ Deterministic refactor path for {seg_id} — skipping LLM architecture")
+        logger.info("[SEGMENT_LOOP] v6.1 Deterministic refactor bypass for %s", seg_id)
 
-    try:
-        async for event in generate_critical_pipeline_stream(
-            project_id=project_id,
-            message=json.dumps(segment_context.get("segment_spec", {})),
-            db=db,
-            job_id=seg_job_id,
-            segment_context=segment_context,
-        ):
-            if not isinstance(event, str):
-                continue
-            # Parse SSE events: each is "data: {json}\n\n"
-            for line in event.split("\n"):
-                if not line.startswith("data: "):
-                    continue
-                try:
-                    payload = json.loads(line[6:])
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                evt_type = payload.get("type")
-                if evt_type == "token":
-                    arch_content_parts.append(payload.get("content", ""))
-                elif evt_type == "done":
-                    done_metadata = payload
+        # Load pre-generated architecture from disk
+        _pre_arch_path = os.path.join(
+            get_job_dir(job_id), "segments", seg_id, "arch", "arch_v1.md",
+        )
+        if os.path.isfile(_pre_arch_path):
+            with open(_pre_arch_path, "r", encoding="utf-8") as _af:
+                arch_text = _af.read()
+            critique_passed = True  # Deterministic architecture needs no LLM critique
+            _emit(f"  ✅ Pre-generated architecture loaded ({len(arch_text)} chars)")
+            logger.info(
+                "[SEGMENT_LOOP] v6.1 Loaded deterministic arch for %s: %d chars",
+                seg_id, len(arch_text),
+            )
+        else:
+            # Fallback: architecture wasn't pre-generated — run LLM path
+            logger.warning(
+                "[SEGMENT_LOOP] v6.1 Deterministic flag set but no pre-generated arch at %s — falling back to LLM",
+                _pre_arch_path,
+            )
+            _is_deterministic = False  # Fall through to LLM path below
 
-        if not arch_content_parts:
-            result["error"] = f"Critical Pipeline produced no output for {seg_id}"
+    if not _is_deterministic:
+        # --- Original LLM architecture generation path ---
+        _emit(f"  📝 Running Critical Pipeline for {seg_id}...")
+
+        if not _CRITICAL_PIPELINE_AVAILABLE:
+            result["error"] = "Critical Pipeline not available"
             return result
 
-        arch_text = "".join(arch_content_parts)
-        critique_passed = done_metadata.get("critique_passed", False)
-        arch_id = done_metadata.get("arch_id", "unknown")
+        arch_content_parts: List[str] = []
+        done_metadata: Dict[str, Any] = {}
 
-        _emit(f"  ✅ Architecture generated for {seg_id} ({len(arch_text)} chars, arch_id={arch_id})")
-        if not critique_passed:
-            _emit(f"  ⚠️ Critique did not fully pass — proceeding with caution")
+        try:
+            async for event in generate_critical_pipeline_stream(
+                project_id=project_id,
+                message=json.dumps(segment_context.get("segment_spec", {})),
+                db=db,
+                job_id=seg_job_id,
+                segment_context=segment_context,
+            ):
+                if not isinstance(event, str):
+                    continue
+                # Parse SSE events: each is "data: {json}\n\n"
+                for line in event.split("\n"):
+                    if not line.startswith("data: "):
+                        continue
+                    try:
+                        payload = json.loads(line[6:])
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    evt_type = payload.get("type")
+                    if evt_type == "token":
+                        arch_content_parts.append(payload.get("content", ""))
+                    elif evt_type == "done":
+                        done_metadata = payload
 
-    except Exception as e:
-        result["error"] = f"Critical Pipeline failed for {seg_id}: {e}"
-        logger.exception("[SEGMENT_LOOP] Critical Pipeline error for %s", seg_id)
-        return result
+            if not arch_content_parts:
+                result["error"] = f"Critical Pipeline produced no output for {seg_id}"
+                return result
+
+            arch_text = "".join(arch_content_parts)
+            critique_passed = done_metadata.get("critique_passed", False)
+            arch_id = done_metadata.get("arch_id", "unknown")
+
+            _emit(f"  ✅ Architecture generated for {seg_id} ({len(arch_text)} chars, arch_id={arch_id})")
+            if not critique_passed:
+                _emit(f"  ⚠️ Critique did not fully pass — proceeding with caution")
+
+        except Exception as e:
+            result["error"] = f"Critical Pipeline failed for {seg_id}: {e}"
+            logger.exception("[SEGMENT_LOOP] Critical Pipeline error for %s", seg_id)
+            return result
 
     # --- v5.18: Architecture Sanitiser (deterministic post-generation cleanup) ---
     # Catches known LLM hallucination patterns BEFORE architecture hits disk:
@@ -972,11 +1006,20 @@ async def run_segment_through_pipeline(
     # Zero-LLM-cost check: every cross-segment import must reference a
     # symbol that actually exists in a sibling segment's enrichment.
     # If violations found, inject feedback and regenerate (max 1 retry).
+    # v6.1: Skip for deterministic refactor segments — imports are computed
+    # from the codebase scan, not hallucinated by an LLM.
     # =====================================================================
     _MAX_IMPORT_REGEN = 1  # One retry attempt with feedback
     _import_regen_count = 0
 
+    if _is_deterministic:
+        _emit(f"  ⚡ Skipping import validation (deterministic imports)")
+        logger.info("[SEGMENT_LOOP] v6.1 Skipping import validator for deterministic segment %s", seg_id)
+
     try:
+        if _is_deterministic:
+            raise ImportError("v6.1: Deterministic segment — skip import validation")
+
         from app.orchestrator.import_validator import validate_architecture_imports
 
         # Derive parent job dir from job_id (strip __seg-* suffix)
@@ -1223,69 +1266,194 @@ async def run_segment_through_pipeline(
             except Exception as _promo_err:
                 logger.warning("[SEGMENT_LOOP] v5.7 Quarantine promotion failed (non-fatal): %s", _promo_err)
 
-        # v5.12: Interface Reconciliation (Option A)
-        # Read actual interfaces from completed dependency segments
-        # and inject into architecture so Implementer uses correct names
+        # =================================================================
+        # v6.0: Implementation Compiler + Brief Validator
+        # Replaces the patchwork of v5.12 reconciliation injection and
+        # v5.26 extraction binding injection with a unified compilation
+        # step that produces per-file briefs.
+        #
+        # The old injections bolted data onto the architecture text as
+        # separate appendices. The compiler produces structured briefs
+        # where source code leads, not trails.
+        # =================================================================
         _recon_arch_text = arch_text
-        if _RECONCILIATION_AVAILABLE and segment.dependencies:
-            try:
-                # Need access to state — get it from the caller's scope via segment_context
-                # The state isn't directly available here, but we can get completed segments
-                # from the evidence bundle
-                from app.orchestrator.segment_state import load_or_init_state
-                _job_dir = get_job_dir(job_id.split('__')[0])  # Strip segment suffix from job_id
-                _recon_state = load_or_init_state(job_id.split('__')[0], manifest) if manifest else None
-                if _recon_state:
-                    _recon_block = read_dependency_interfaces_from_sandbox(
-                        segment=segment,
-                        completed_segments=_recon_state.segments,
-                        manifest=manifest,
-                    )
-                    if _recon_block:
-                        _recon_arch_text = inject_reconciliation_into_architecture(
-                            arch_text, _recon_block,
-                        )
-                        _emit(f"  \U0001f9e9 Interface reconciliation: injected real interfaces from {len(segment.dependencies)} dependency segment(s)")
-                        logger.info(
-                            "[SEGMENT_LOOP] v5.12 Reconciliation injected for %s (%d chars added)",
-                            seg_id, len(_recon_block),
-                        )
-            except Exception as _recon_err:
-                logger.warning("[SEGMENT_LOOP] v5.12 Reconciliation failed (non-fatal): %s", _recon_err)
-                _emit(f"  \u26a0\ufe0f Interface reconciliation failed (non-fatal): {_recon_err}")
-
-        # v5.26: Extraction Binding — inject enrichment source extractions
-        # so the Implementer gets the exact function bodies to transplant.
         try:
-            from app.orchestrator.extraction_binding import (
-                load_segment_enrichment,
-                build_extraction_block,
-                build_facade_export_map,
-                inject_extraction_into_architecture,
+            from app.orchestrator.implementation_compiler import (
+                compile_implementation_briefs,
+                save_compilation_result,
             )
+            from app.orchestrator.brief_validator import (
+                validate_and_fix_briefs,
+                save_fix_log,
+            )
+
+            # Gather enrichment data (same source as old v5.26 extraction binding)
             _parent_job_id = job_id.split('__')[0]
-            _eb_job_dir = get_job_dir(_parent_job_id)
-            _eb_enrichment = load_segment_enrichment(_eb_job_dir, seg_id)
-            if _eb_enrichment:
-                _is_facade = _is_facade_segment(segment, manifest) if manifest else False
-                if _is_facade and manifest:
-                    _eb_block = build_facade_export_map(
-                        _eb_job_dir, manifest.segments, seg_id,
-                    )
-                else:
-                    _eb_block = build_extraction_block(_eb_enrichment, seg_id)
-                if _eb_block:
-                    _recon_arch_text = inject_extraction_into_architecture(
-                        _recon_arch_text, _eb_block,
-                    )
-                    _emit(f"  🧬 Extraction binding: injected source code for {seg_id} ({len(_eb_block)} chars)")
-                    logger.info(
-                        "[SEGMENT_LOOP] v5.26 Extraction binding for %s (%d chars)",
-                        seg_id, len(_eb_block),
-                    )
-        except Exception as _eb_err:
-            logger.warning("[SEGMENT_LOOP] v5.26 Extraction binding failed (non-fatal): %s", _eb_err)
-            _emit(f"  ⚠️ Extraction binding failed (non-fatal): {_eb_err}")
+            _compiler_job_dir = get_job_dir(_parent_job_id)
+            _compiler_enrichment = segment_context.get("enrichment")
+
+            if not _compiler_enrichment:
+                try:
+                    from app.orchestrator.extraction_binding import load_segment_enrichment
+                    _compiler_enrichment = load_segment_enrichment(_compiler_job_dir, seg_id)
+                except Exception:
+                    pass
+
+            # Gather reconciliation data (same source as old v5.12)
+            _compiler_recon = ""
+            if _RECONCILIATION_AVAILABLE and segment.dependencies:
+                try:
+                    _recon_state = load_or_init_state(job_id.split('__')[0], manifest) if manifest else None
+                    if _recon_state:
+                        _recon_block = read_dependency_interfaces_from_sandbox(
+                            segment=segment,
+                            completed_segments=_recon_state.segments,
+                            manifest=manifest,
+                        )
+                        if _recon_block:
+                            _compiler_recon = _recon_block
+                except Exception as _cr_err:
+                    logger.warning("[SEGMENT_LOOP] v6.0 Reconciliation gather failed (non-fatal): %s", _cr_err)
+
+            # Gather sibling enrichments for cross-segment validation
+            _sibling_enrichments = {}
+            try:
+                from app.orchestrator.extraction_binding import load_segment_enrichment as _load_sib_enrich
+                if manifest:
+                    for _sib_seg in manifest.segments:
+                        if _sib_seg.segment_id != seg_id:
+                            _sib_e = _load_sib_enrich(_compiler_job_dir, _sib_seg.segment_id)
+                            if _sib_e:
+                                _sibling_enrichments[_sib_seg.segment_id] = _sib_e
+            except Exception:
+                pass
+
+            # Compile briefs
+            _compilation = compile_implementation_briefs(
+                architecture_text=arch_text,
+                enrichment=_compiler_enrichment,
+                segment_id=seg_id,
+                source_file_evidence=segment_context.get("source_file_evidence"),
+                interface_contract=segment_context.get("interface_contract", ""),
+                sibling_interfaces=segment_context.get("sibling_interfaces", ""),
+                cohesion_feedback=segment_context.get("cohesion_feedback", ""),
+                implementation_feedback=segment_context.get("implementation_feedback", ""),
+                import_validation_feedback=segment_context.get("import_validation_feedback", ""),
+                sibling_enrichments=_sibling_enrichments,
+            )
+
+            _emit(
+                f"  📦 Implementation compiler: {len(_compilation.briefs)} brief(s), "
+                f"{_compilation.total_functions} function(s), "
+                f"~{_compilation.total_estimated_lines} lines "
+                f"(profile={_compilation.profile.value})"
+            )
+
+            # Validate and auto-fix briefs
+            _fixed_briefs, _fix_log = validate_and_fix_briefs(
+                briefs=_compilation.briefs,
+                enrichment=_compiler_enrichment,
+                sibling_enrichments=_sibling_enrichments,
+            )
+            _compilation.briefs = _fixed_briefs
+
+            if _fix_log.had_fixes:
+                _emit(f"  🔧 Brief validator: {_fix_log.issues_found} issue(s) found and auto-fixed")
+                for _fix in _fix_log.fixes:
+                    _emit(f"    [{_fix.check}] {_fix.description}")
+            else:
+                _emit(f"  ✅ Brief validator: all checks passed")
+
+            # Persist compilation artifacts
+            save_compilation_result(_compilation, _compiler_job_dir, seg_id)
+            save_fix_log(_fix_log, _compiler_job_dir, seg_id)
+
+            # Inject compiled briefs into architecture text
+            # Each brief becomes a structured section that the Implementer
+            # sees BEFORE the old-style architecture prose.
+            if _compilation.briefs:
+                _brief_sections = []
+                _brief_sections.append("\n\n---\n")
+                _brief_sections.append("## IMPLEMENTATION BRIEFS (v6.0 — Compiler Output)\n")
+                _brief_sections.append(
+                    "The following per-file briefs were compiled from enrichment data, "
+                    "source extractions, and interface contracts. **These briefs are the "
+                    "primary instruction for implementation.** Follow the directive in each "
+                    "brief. If a brief says TRANSPLANT VERBATIM, copy the provided source "
+                    "code exactly — do not rewrite, simplify, or reimagine.\n"
+                )
+                for _brief in _compilation.briefs:
+                    _brief_sections.append(_brief.to_markdown())
+                    _brief_sections.append("\n---\n")
+
+                _briefs_text = "\n".join(_brief_sections)
+                # Prepend briefs BEFORE the architecture so they're seen first
+                _recon_arch_text = _briefs_text + "\n\n" + arch_text
+                _emit(f"  📄 Injected {len(_compilation.briefs)} compiled brief(s) ({len(_briefs_text)} chars)")
+                logger.info(
+                    "[SEGMENT_LOOP] v6.0 Implementation compiler: %d brief(s), %d chars for %s",
+                    len(_compilation.briefs), len(_briefs_text), seg_id,
+                )
+
+            # Also inject reconciliation if available (for non-refactor jobs
+            # where the compiler may not have all the data)
+            if _compiler_recon and _compiler_recon not in _recon_arch_text:
+                _recon_arch_text = inject_reconciliation_into_architecture(
+                    _recon_arch_text, _compiler_recon,
+                )
+                _emit(f"  🧩 Interface reconciliation: supplementary injection ({len(_compiler_recon)} chars)")
+
+        except ImportError as _comp_imp_err:
+            logger.info("[SEGMENT_LOOP] v6.0 Implementation compiler not available: %s — falling back to legacy injections", _comp_imp_err)
+            _emit(f"  ⚠️ Compiler not available — using legacy injection path")
+
+            # ===== LEGACY FALLBACK: v5.12 + v5.26 injection path =====
+            if _RECONCILIATION_AVAILABLE and segment.dependencies:
+                try:
+                    _job_dir = get_job_dir(job_id.split('__')[0])
+                    _recon_state = load_or_init_state(job_id.split('__')[0], manifest) if manifest else None
+                    if _recon_state:
+                        _recon_block = read_dependency_interfaces_from_sandbox(
+                            segment=segment,
+                            completed_segments=_recon_state.segments,
+                            manifest=manifest,
+                        )
+                        if _recon_block:
+                            _recon_arch_text = inject_reconciliation_into_architecture(
+                                arch_text, _recon_block,
+                            )
+                except Exception as _recon_err:
+                    logger.warning("[SEGMENT_LOOP] v5.12 Legacy reconciliation failed: %s", _recon_err)
+
+            try:
+                from app.orchestrator.extraction_binding import (
+                    load_segment_enrichment,
+                    build_extraction_block,
+                    build_facade_export_map,
+                    inject_extraction_into_architecture,
+                )
+                _parent_job_id = job_id.split('__')[0]
+                _eb_job_dir = get_job_dir(_parent_job_id)
+                _eb_enrichment = load_segment_enrichment(_eb_job_dir, seg_id)
+                if _eb_enrichment:
+                    _is_facade = _is_facade_segment(segment, manifest) if manifest else False
+                    if _is_facade and manifest:
+                        _eb_block = build_facade_export_map(
+                            _eb_job_dir, manifest.segments, seg_id,
+                        )
+                    else:
+                        _eb_block = build_extraction_block(_eb_enrichment, seg_id)
+                    if _eb_block:
+                        _recon_arch_text = inject_extraction_into_architecture(
+                            _recon_arch_text, _eb_block,
+                        )
+            except Exception as _eb_err:
+                logger.warning("[SEGMENT_LOOP] v5.26 Legacy extraction binding failed: %s", _eb_err)
+
+        except Exception as _comp_err:
+            logger.warning("[SEGMENT_LOOP] v6.0 Implementation compiler error (non-fatal): %s", _comp_err)
+            _emit(f"  ⚠️ Compiler error (non-fatal): {_comp_err} — using raw architecture")
+            _recon_arch_text = arch_text
 
         # v4.0: Skip boot check — segments are intermediate builds.
         # Boot check runs once at Phase Checkout after ALL segments complete.
@@ -1637,7 +1805,44 @@ async def run_segmented_job(
     _emit(f"📊 State: {state.summary()}")
 
     _quarantine_result = None
-    if not implement_only:
+
+    # v6.1 FIX 9: For deterministic refactor jobs, quarantine immediately
+    # regardless of implement_only flag. Deterministic architectures are
+    # pre-generated so there's no "design only" phase that needs the monolith.
+    # The monolith must be gone before the Implementer writes the facade.
+    if manifest.deterministic_source:
+        logger.info(
+            "[SEGMENT_LOOP] v6.1 Deterministic job — quarantine before execution: %s",
+            manifest.deterministic_source,
+        )
+        try:
+            from app.orchestrator.package_quarantine import run_quarantine
+            from app.overwatcher.sandbox_client import get_sandbox_client
+
+            _q_client = get_sandbox_client()
+            _q_sandbox_base = os.getenv("ORB_SANDBOX_BASE", "D:\\Orb")
+
+            _quarantine_result = run_quarantine(
+                manifest_dict=manifest.to_dict(),
+                sandbox_base=_q_sandbox_base,
+                client=_q_client,
+                on_progress=_emit,
+            )
+            if _quarantine_result.has_quarantined:
+                logger.info(
+                    "[SEGMENT_LOOP] v6.1 Quarantine complete: %d file(s), %d dir(s)",
+                    len([e for e in _quarantine_result.entries if e.status == 'quarantined']),
+                    len(_quarantine_result.directories_created),
+                )
+                _emit("📦 v6.1 Quarantine: monolith moved before execution")
+            else:
+                logger.info("[SEGMENT_LOOP] v6.1 Quarantine ran but nothing to move")
+        except ImportError:
+            logger.debug("[SEGMENT_LOOP] Package quarantine not available")
+        except Exception as _q_err:
+            logger.warning("[SEGMENT_LOOP] v6.1 Quarantine failed (non-fatal): %s", _q_err)
+            _emit(f"⚠️ Quarantine failed (non-fatal): {_q_err}")
+    elif not implement_only:
         logger.debug("[SEGMENT_LOOP] v5.15 Skipping quarantine (run segments mode — architecture design only)")
     else:
         # v5.22: Auto-recover FAILED/BLOCKED segments on retry.
@@ -1674,11 +1879,9 @@ async def run_segmented_job(
                     f"{', '.join(_recovered[:5])}{'...' if len(_recovered) > 5 else ''}"
                 )
 
-        # v5.31: Quarantine DEFERRED to just before Phase Checkout (Stage 9).
-        # Previously ran here (before segment execution), but this caused
-        # the monolith to be moved before strike-loop retries could re-read
-        # it as source evidence. The monolith is only needed gone for the
-        # boot test, so we defer quarantine until all segments are complete.
+        # v5.31: Quarantine DEFERRED to just before Phase Checkout (Stage 9)
+        # for greenfield jobs — the monolith is only needed gone for the boot test.
+        # v6.1 FIX 9: Deterministic jobs are handled above (before this block).
         logger.info("[SEGMENT_LOOP] v5.31 Quarantine deferred to Phase Checkout")
 
     # --- Process segments in dependency order (multi-pass) ---
@@ -1877,59 +2080,112 @@ async def run_segmented_job(
                             seg_job_id = f"{job_id}__{seg_id}"
                             # v5.5 PHASE 4A: Pass interface contract for Job Checker
                             _seg_contract_md = segment_context.get("interface_contract", "") if segment_context else ""
-                            # v5.12: Interface Reconciliation (Option A)
-                            # Read actual interfaces from completed dependency segments
-                            # and inject into architecture so Implementer uses correct names
+                            # v6.0: Implementation Compiler (call site 2 — implement_only path)
                             _recon_arch_text = arch_text
-                            if _RECONCILIATION_AVAILABLE and seg_spec.dependencies:
-                                try:
-                                    _recon_block = read_dependency_interfaces_from_sandbox(
-                                        segment=seg_spec,
-                                        completed_segments=state.segments,
-                                        manifest=manifest,
-                                    )
-                                    if _recon_block:
-                                        _recon_arch_text = inject_reconciliation_into_architecture(
-                                            arch_text, _recon_block,
-                                        )
-                                        _emit(f"  \U0001f9e9 Interface reconciliation: injected real interfaces from {len(seg_spec.dependencies)} dependency segment(s)")
-                                        logger.info(
-                                            "[SEGMENT_LOOP] v5.12 Reconciliation injected for %s (%d chars added)",
-                                            seg_id, len(_recon_block),
-                                        )
-                                except Exception as _recon_err:
-                                    logger.warning("[SEGMENT_LOOP] v5.12 Reconciliation failed (non-fatal): %s", _recon_err)
-                                    _emit(f"  \u26a0\ufe0f Interface reconciliation failed (non-fatal): {_recon_err}")
-
-                            # v5.26: Extraction Binding (call site 2 — implement_only path)
                             try:
-                                from app.orchestrator.extraction_binding import (
-                                    load_segment_enrichment,
-                                    build_extraction_block,
-                                    build_facade_export_map,
-                                    inject_extraction_into_architecture,
+                                from app.orchestrator.implementation_compiler import (
+                                    compile_implementation_briefs,
+                                    save_compilation_result,
                                 )
-                                _eb_enrichment = load_segment_enrichment(job_dir_path, seg_id)
-                                if _eb_enrichment:
-                                    _is_facade = _is_facade_segment(seg_spec, manifest) if manifest else False
-                                    if _is_facade and manifest:
-                                        _eb_block = build_facade_export_map(
-                                            job_dir_path, manifest.segments, seg_id,
+                                from app.orchestrator.brief_validator import (
+                                    validate_and_fix_briefs,
+                                    save_fix_log,
+                                )
+
+                                _compiler_enrichment2 = segment_context.get("enrichment") if segment_context else None
+                                if not _compiler_enrichment2:
+                                    try:
+                                        from app.orchestrator.extraction_binding import load_segment_enrichment
+                                        _compiler_enrichment2 = load_segment_enrichment(job_dir_path, seg_id)
+                                    except Exception:
+                                        pass
+
+                                _sibling_enrichments2 = {}
+                                try:
+                                    from app.orchestrator.extraction_binding import load_segment_enrichment as _lse2
+                                    for _sib2 in manifest.segments:
+                                        if _sib2.segment_id != seg_id:
+                                            _se2 = _lse2(job_dir_path, _sib2.segment_id)
+                                            if _se2:
+                                                _sibling_enrichments2[_sib2.segment_id] = _se2
+                                except Exception:
+                                    pass
+
+                                _comp2 = compile_implementation_briefs(
+                                    architecture_text=arch_text,
+                                    enrichment=_compiler_enrichment2,
+                                    segment_id=seg_id,
+                                    source_file_evidence=segment_context.get("source_file_evidence") if segment_context else None,
+                                    interface_contract=segment_context.get("interface_contract", "") if segment_context else "",
+                                    sibling_interfaces=segment_context.get("sibling_interfaces", "") if segment_context else "",
+                                    sibling_enrichments=_sibling_enrichments2,
+                                )
+
+                                _fixed2, _flog2 = validate_and_fix_briefs(
+                                    briefs=_comp2.briefs,
+                                    enrichment=_compiler_enrichment2,
+                                    sibling_enrichments=_sibling_enrichments2,
+                                )
+                                _comp2.briefs = _fixed2
+
+                                _emit(
+                                    f"  📦 Compiler: {len(_comp2.briefs)} brief(s), "
+                                    f"{_comp2.total_functions} func(s) (profile={_comp2.profile.value})"
+                                )
+                                if _flog2.had_fixes:
+                                    _emit(f"  🔧 Validator: {_flog2.issues_found} issue(s) auto-fixed")
+
+                                save_compilation_result(_comp2, job_dir_path, seg_id)
+                                save_fix_log(_flog2, job_dir_path, seg_id)
+
+                                if _comp2.briefs:
+                                    _bs2 = ["\n\n---\n", "## IMPLEMENTATION BRIEFS (v6.0)\n"]
+                                    _bs2.append(
+                                        "Per-file briefs compiled from enrichment and contracts. "
+                                        "**Follow each brief's directive.**\n"
+                                    )
+                                    for _b2 in _comp2.briefs:
+                                        _bs2.append(_b2.to_markdown())
+                                        _bs2.append("\n---\n")
+                                    _bt2 = "\n".join(_bs2)
+                                    _recon_arch_text = _bt2 + "\n\n" + arch_text
+                                    _emit(f"  📄 Injected {len(_comp2.briefs)} brief(s) ({len(_bt2)} chars)")
+
+                            except ImportError:
+                                logger.info("[SEGMENT_LOOP] v6.0 Compiler not available — legacy fallback")
+                                # Legacy v5.12 + v5.26 fallback
+                                if _RECONCILIATION_AVAILABLE and seg_spec.dependencies:
+                                    try:
+                                        _recon_block = read_dependency_interfaces_from_sandbox(
+                                            segment=seg_spec,
+                                            completed_segments=state.segments,
+                                            manifest=manifest,
                                         )
-                                    else:
-                                        _eb_block = build_extraction_block(_eb_enrichment, seg_id)
-                                    if _eb_block:
-                                        _recon_arch_text = inject_extraction_into_architecture(
-                                            _recon_arch_text, _eb_block,
-                                        )
-                                        _emit(f"  🧬 Extraction binding: injected source code for {seg_id} ({len(_eb_block)} chars)")
-                                        logger.info(
-                                            "[SEGMENT_LOOP] v5.26 Extraction binding for %s (%d chars)",
-                                            seg_id, len(_eb_block),
-                                        )
-                            except Exception as _eb_err:
-                                logger.warning("[SEGMENT_LOOP] v5.26 Extraction binding failed (non-fatal): %s", _eb_err)
-                                _emit(f"  ⚠️ Extraction binding failed (non-fatal): {_eb_err}")
+                                        if _recon_block:
+                                            _recon_arch_text = inject_reconciliation_into_architecture(
+                                                arch_text, _recon_block,
+                                            )
+                                    except Exception:
+                                        pass
+                                try:
+                                    from app.orchestrator.extraction_binding import (
+                                        load_segment_enrichment, build_extraction_block,
+                                        build_facade_export_map, inject_extraction_into_architecture,
+                                    )
+                                    _eb_enrichment = load_segment_enrichment(job_dir_path, seg_id)
+                                    if _eb_enrichment:
+                                        _is_facade = _is_facade_segment(seg_spec, manifest) if manifest else False
+                                        if _is_facade and manifest:
+                                            _eb_block = build_facade_export_map(job_dir_path, manifest.segments, seg_id)
+                                        else:
+                                            _eb_block = build_extraction_block(_eb_enrichment, seg_id)
+                                        if _eb_block:
+                                            _recon_arch_text = inject_extraction_into_architecture(_recon_arch_text, _eb_block)
+                                except Exception:
+                                    pass
+                            except Exception as _comp2_err:
+                                logger.warning("[SEGMENT_LOOP] v6.0 Compiler error (implement_only): %s", _comp2_err)
+                                _recon_arch_text = arch_text
                             # v4.0: Skip boot check — Phase Checkout handles it
                             # v5.32: Pass all manifest file paths so job checker
                             # treats future segment files as expected imports
@@ -2343,12 +2599,20 @@ async def run_segmented_job(
             if _contract_set:
                 _cohesion_contract_json = _contract_set.to_json()
 
+            # v6.1: Detect if this is a deterministic refactor job
+            _is_deterministic_job = False
+            try:
+                _is_deterministic_job = manifest_data.get("deterministic_source") is not None
+            except NameError:
+                pass  # manifest_data not available in this code path
+
             _cohesion_result = await run_cohesion_check(
                 job_id=job_id,
                 job_dir=job_dir_path,
                 segment_ids=_approved_seg_ids,
                 contract_json=_cohesion_contract_json,
                 source_file_evidence=_source_evidence,
+                skip_llm_layer=_is_deterministic_job,
             )
             save_cohesion_result(_cohesion_result, job_dir_path)
 
