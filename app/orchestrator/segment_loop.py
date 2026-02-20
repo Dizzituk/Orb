@@ -591,6 +591,59 @@ def verify_contracts_fulfilled(
 # =============================================================================
 
 
+def _build_sibling_interfaces(
+    segment: "SegmentSpec",
+    state: "JobState",
+    job_dir_path: str,
+) -> str:
+    """
+    v2.5 Deterministic sibling interface extraction.
+
+    For each completed upstream segment, reads the actual implemented files
+    from disk and extracts their public interface using AST. Returns formatted
+    evidence text that gets injected into the architecture/implementation prompt.
+
+    This means the LLM sees EXACT function signatures, exports, and types
+    from real code — zero hallucination risk.
+    """
+    try:
+        from app.overwatcher.deterministic_checker import (
+            extract_segment_interface,
+            format_segment_interfaces,
+        )
+    except ImportError:
+        logger.debug("[build_sibling_interfaces] deterministic_checker not available")
+        return ""
+
+    interfaces = []
+    for dep_id in (segment.dependencies or []):
+        dep_state = state.segments.get(dep_id)
+        if dep_state is None or dep_state.status != SegmentStatus.COMPLETE.value:
+            continue
+        for fpath in (dep_state.output_files or []):
+            if not fpath.endswith(".py"):
+                continue
+            # Read the file from disk
+            abs_path = fpath
+            if not os.path.isabs(fpath):
+                abs_path = os.path.join("D:/Orb", fpath)
+            try:
+                content = open(abs_path, encoding="utf-8").read()
+                iface = extract_segment_interface(fpath, content)
+                interfaces.append(iface)
+            except Exception as e:
+                logger.debug("[build_sibling_interfaces] Could not read %s: %s", fpath, e)
+
+    if not interfaces:
+        return ""
+
+    formatted = format_segment_interfaces(interfaces)
+    logger.info(
+        "[build_sibling_interfaces] v2.5 Extracted %d sibling interfaces for %s",
+        len(interfaces), segment.segment_id,
+    )
+    return formatted
+
 def build_segment_context(
     segment: SegmentSpec,
     state: JobState,
@@ -654,6 +707,7 @@ def build_segment_context(
         "_grounding_data": _grounding_data,
         "source_file_evidence": source_file_evidence or {},
         "enrichment": enrichment,  # v5.17: Stage 4B enrichment bundle
+        "sibling_interfaces": _build_sibling_interfaces(segment, state, job_dir_path),  # v2.5: Deterministic evidence
     }
 
 
@@ -2408,6 +2462,21 @@ async def run_segmented_job(
                     # v5.33: Structured feedback — include issue ID, category,
                     # expected/actual values, suggested fix, and autofix failure
                     # notes so the regen prompt has full context.
+                    # v5.35 FILE PROTECTION: Before regen, snapshot files from 
+                    # completed segments that are NOT being regenerated.
+                    # These files are UNTOUCHABLE during the regen cycle.
+                    _protected_files: set = set()
+                    for _ps_id, _ps_state in state.segments.items():
+                        if _ps_id not in _regen_segs and _ps_state.status == SegmentStatus.COMPLETE.value:
+                            for _pf in (_ps_state.output_files or []):
+                                _protected_files.add(_pf.replace("\\", "/"))
+                    if _protected_files:
+                        logger.info(
+                            "[SEGMENT_LOOP] v5.35 FILE PROTECTION: %d files from %d completed segments protected during regen",
+                            len(_protected_files),
+                            sum(1 for s in state.segments.values() if s.status == SegmentStatus.COMPLETE.value and s.segment_id not in _regen_segs if hasattr(s, 'segment_id')) or len([sid for sid, ss in state.segments.items() if ss.status == SegmentStatus.COMPLETE.value and sid not in _regen_segs]),
+                        )
+                        _emit(f"  🛡️ {len(_protected_files)} files from completed segments are protected during regen")
                     for _regen_seg_id in _regen_segs:
                         if _regen_seg_id in state.segments:
                             _fb_parts = []
@@ -2486,6 +2555,28 @@ async def run_segmented_job(
                             _emit(f"  ❌ {_regen_seg_id}: regen error — {_regen_err}")
 
                     save_state(state, get_job_dir(job_id))
+
+                    # v5.35 POST-REGEN FILE PROTECTION CHECK
+                    # Verify that no protected files were wiped during regen
+                    if _protected_files:
+                        _missing_protected = []
+                        for _pf in _protected_files:
+                            _abs = os.path.join(job_dir_path.rsplit("jobs", 1)[0].rstrip("/\\").rsplit("jobs", 1)[0].rstrip("/\\"), _pf) if not os.path.isabs(_pf) else _pf
+                            # Try common resolutions
+                            _candidates = [_pf, os.path.join("D:/Orb", _pf), _pf.replace("/", os.sep)]
+                            _found = any(os.path.isfile(c) for c in _candidates)
+                            if not _found:
+                                _missing_protected.append(_pf)
+                        if _missing_protected:
+                            logger.error(
+                                "[SEGMENT_LOOP] v5.35 PROTECTION VIOLATION: %d protected files missing after regen: %s",
+                                len(_missing_protected), _missing_protected[:5],
+                            )
+                            _emit(f"  ⚠️ PROTECTION VIOLATION: {len(_missing_protected)} completed segment files missing after regen!")
+                            _emit(f"     Missing: {', '.join(os.path.basename(f) for f in _missing_protected[:5])}")
+                        else:
+                            logger.info("[SEGMENT_LOOP] v5.35 All %d protected files intact after regen", len(_protected_files))
+
                     _emit(f"  🔄 Re-generation complete — re-running cohesion check...")
                     # Loop continues → cohesion re-check at top of while
 

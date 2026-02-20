@@ -980,6 +980,15 @@ async def _handle_architecture(
         if _si_contract:
             _si_parts.append(_si_contract)
 
+        # v2.5: Deterministic sibling interface evidence (AST-extracted)
+        _si_sibling_ifaces = segment_context.get("sibling_interfaces", "")
+        if _si_sibling_ifaces:
+            _si_parts.append(_si_sibling_ifaces)
+            logger.info(
+                "[stream_handler] v2.5 Injected %d chars of deterministic sibling interface evidence",
+                len(_si_sibling_ifaces),
+            )
+
         # v2.2: Source file evidence (pre-loaded existing files for refactor jobs)
         _si_source_files = segment_context.get("source_file_evidence", {})
         if _si_source_files:

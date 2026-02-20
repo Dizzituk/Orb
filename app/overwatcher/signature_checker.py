@@ -613,9 +613,15 @@ def compare_signatures(
         got = "async def" if actual.is_async else "def"
         differences.append(f"Expected {expected}, got {got}")
 
-    # 2. Parameter count (filter out *args/**kwargs for positional count)
-    req_positional = [n for n in required.param_names if not n.startswith("*")]
-    act_positional = [n for n in actual.param_names if not n.startswith("*")]
+    # 2. Parameter count (filter out *args/**kwargs and bare * for positional count)
+    # v1.3: Also filter param_types in sync to avoid index misalignment.
+    # Contract parser includes bare `*` as a param (keyword-only separator),
+    # but AST extraction strips it. Without synced filtering, type comparison
+    # uses wrong indices and produces false mismatches.
+    req_positional = [n for n in required.param_names if not n.startswith("*") and n != "*"]
+    act_positional = [n for n in actual.param_names if not n.startswith("*") and n != "*"]
+    req_types_filtered = [t for n, t in zip(required.param_names, required.param_types) if not n.startswith("*") and n != "*"]
+    act_types_filtered = [t for n, t in zip(actual.param_names, actual.param_types) if not n.startswith("*") and n != "*"]
 
     if len(req_positional) != len(act_positional):
         differences.append(
@@ -632,10 +638,12 @@ def compare_signatures(
                     differences.append(f"Extra parameter: {actual.params[i]}")
 
     # 3. Parameter types (when counts match)
+    # v1.3: Use filtered type lists (synced with positional names) to avoid
+    # index misalignment from bare `*` keyword-only separator.
     if len(req_positional) == len(act_positional):
         for i in range(len(req_positional)):
-            req_type = required.param_types[i] if i < len(required.param_types) else None
-            act_type = actual.param_types[i] if i < len(actual.param_types) else None
+            req_type = req_types_filtered[i] if i < len(req_types_filtered) else None
+            act_type = act_types_filtered[i] if i < len(act_types_filtered) else None
 
             if req_type and act_type:
                 req_norm = _normalise_type(req_type)
@@ -665,8 +673,9 @@ def compare_signatures(
         for i in range(len(req_positional)):
             if req_positional[i] != act_positional[i]:
                 # Check if both have types and they're the same — if so, name diff is cosmetic
-                req_type = required.param_types[i] if i < len(required.param_types) else None
-                act_type = actual.param_types[i] if i < len(actual.param_types) else None
+                # v1.3: Use filtered type lists for correct alignment
+                req_type = req_types_filtered[i] if i < len(req_types_filtered) else None
+                act_type = act_types_filtered[i] if i < len(act_types_filtered) else None
                 if req_type and act_type:
                     req_norm = _normalise_type(req_type)
                     act_norm = _normalise_type(act_type)
@@ -730,7 +739,12 @@ def extract_contract_signatures_for_file(
     signatures = []
     file_path_norm = file_path.replace("\\", "/").strip()
 
-    # State machine: find the file path line, then collect signatures
+    # State machine: find the file path line, then collect signatures.
+    # v1.3 (Fix 23): The file path can appear MULTIPLE times in the contract
+    # markdown — once in "File Scope Constraint", once in "This Segment EXPORTS",
+    # and again in "Package Module Map". The extractor must NOT give up after
+    # the first occurrence exits without finding signatures. Instead, when a
+    # file section ends, we keep scanning so subsequent occurrences are found.
     lines = interface_contract.split("\n")
     in_file_section = False
     in_exports = False
@@ -742,13 +756,17 @@ def extract_contract_signatures_for_file(
         # v1.2: Normalise backslashes in contract line too (skeleton stores Windows paths)
         stripped_norm = stripped.replace("\\", "/")
         if f"`{file_path_norm}`" in stripped_norm:
+            # v1.3: Re-enter file section even if we already exited a previous one.
+            # This handles the file appearing in File Scope first, then Exports later.
             in_file_section = True
             in_exports = False
             continue
 
         if in_file_section:
             # Detect MUST EXPORT header
-            if "MUST EXPORT" in stripped:
+            # v1.3: Match all variants: "MUST EXPORT", "MUST DEFINE AND EXPORT",
+            # "MUST RE-EXPORT". The common signal is both "MUST" and "EXPORT" present.
+            if "MUST" in stripped and "EXPORT" in stripped:
                 in_exports = True
                 continue
 
@@ -757,7 +775,7 @@ def extract_contract_signatures_for_file(
             if stripped.startswith("###") or stripped.startswith("## "):
                 in_file_section = False
                 in_exports = False
-                continue
+                continue  # v1.3: keep scanning — file may appear in a later section
 
             # New file entry: starts with "- `", contains a file path (has /)
             # but is NOT a function signature (doesn't contain 'def ')
@@ -772,7 +790,7 @@ def extract_contract_signatures_for_file(
                         if candidate != file_path_norm:
                             in_file_section = False
                             in_exports = False
-                            continue
+                            continue  # v1.3: keep scanning
 
             # Collect signature lines
             if in_exports and stripped.startswith("- `"):

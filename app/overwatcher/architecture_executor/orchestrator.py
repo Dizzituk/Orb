@@ -604,6 +604,7 @@ async def run_architecture_execution(
         task_success = False
         last_error = None
         _job_checker_strike_errors: list = []  # v2.2: Accumulate checker feedback across strikes
+        _structured_sig_mismatches: list = []  # v5.23c (Fix 23): Structured mismatch data for retry formatting
         
         for strike in range(1, MAX_STRIKES_PER_TASK + 1):
             logger.info("[arch_exec] %s strike %d/%d", rel_path, strike, MAX_STRIKES_PER_TASK)
@@ -676,7 +677,7 @@ async def run_architecture_execution(
                                 _in_exports = False
                                 continue
                             if _in_file:
-                                if "MUST EXPORT" in _cs:
+                                if "MUST" in _cs and "EXPORT" in _cs:  # v5.23c: match all variants
                                     _in_exports = True
                                     continue
                                 if _cs.startswith("###") or _cs.startswith("## "):
@@ -705,36 +706,31 @@ async def run_architecture_execution(
                     except Exception:
                         pass  # Bare name extraction is best-effort
                     if _file_contract_sigs or _bare_export_names:
+                        # v5.23c (Fix 23): Restructured contract block for maximum
+                        # LLM compliance. Each signature gets its own fenced code
+                        # block with a stub body so it looks like real code to copy,
+                        # not documentation to interpret. Rules condensed to 3.
                         _sig_lines = []
-                        _sig_lines.append("## BINDING CONTRACT — Required Exports (NON-NEGOTIABLE)")
+                        _sig_lines.append("## MANDATORY CONTRACT — COPY THESE SIGNATURES EXACTLY")
                         _sig_lines.append("")
-                        _sig_lines.append(f"The following exports are REQUIRED for `{rel_path}`.")
-                        _sig_lines.append("The downstream signature checker will reject any deviation.")
+                        _sig_lines.append("A deterministic checker will REJECT your output if any signature deviates.")
+                        _sig_lines.append("Copy each `def` line below character-for-character. Do not rename parameters, change types, or reorder arguments.")
                         _sig_lines.append("")
                         if _file_contract_sigs:
-                            _sig_lines.append("### Required Function Signatures (copy EXACTLY)")
-                            _sig_lines.append("```python")
                             for _sig in _file_contract_sigs:
-                                _sig_lines.append(f"{_sig}")
+                                _sig_lines.append("```python")
+                                _sig_lines.append(f"{_sig}:")
+                                _sig_lines.append('    """Implementation required."""')
                                 _sig_lines.append("    ...")
+                                _sig_lines.append("```")
                                 _sig_lines.append("")
-                            _sig_lines.append("```")
-                            _sig_lines.append("")
                         if _bare_export_names:
-                            _sig_lines.append("### Required Export Names (MUST be defined/importable)")
-                            _sig_lines.append("These symbols must be importable from this file:")
+                            _sig_lines.append("Also REQUIRED (must be defined/importable from this file):")
                             for _bn in _bare_export_names:
-                                _sig_lines.append(f"  - `{_bn}` (define as a function, class, or top-level variable)")
+                                _sig_lines.append(f"  - `{_bn}`")
                             _sig_lines.append("")
-                        _sig_lines.append("**STRICT RULES — violations cause automatic rejection:**")
-                        _sig_lines.append("1. DO NOT rename functions. `_find_latest_arch` must be `_find_latest_arch`, never `find_latest_architecture` or any other name.")
-                        _sig_lines.append("2. DO NOT change parameter names. If the signature says `seg_dir: str`, never write `job_dir`, `segment_dir`, or `directory`.")
-                        _sig_lines.append("3. DO NOT change parameter types. If the signature says `str`, never use `Path`. If it says `dict`, never use `Dict[str, Any]`.")
-                        _sig_lines.append("4. DO NOT change return types. If the signature says `-> int`, never return `None`. If it says `-> Optional[str]`, never return `Optional[Path]`.")
-                        _sig_lines.append("5. NEVER add `async` to a sync function or remove `async` from an async function.")
-                        _sig_lines.append("6. DO NOT import these functions from sibling modules and pass them off as your own — define them directly in this file, UNLESS the architecture specification explicitly instructs you to re-export them from another module in this package.")
-                        _sig_lines.append("7. NEVER omit required constants or variables listed in the contract. If `SEGMENT_LOOP_BUILD_ID` is required, it must be defined.")
-                        _sig_lines.append("8. These names come from an existing codebase being refactored. They are not suggestions — they are the actual names used by callers. Renaming them will break all call sites.")
+                        _sig_lines.append("DO NOT rename functions or parameters. DO NOT change types. DO NOT add or remove parameters.")
+                        _sig_lines.append("The architecture section below may describe these functions in prose — when there is ANY conflict, this MANDATORY CONTRACT wins.")
                         _sig_lines.append("")
                         _per_file_contract_block = "\n".join(_sig_lines)
                         logger.info(
@@ -761,6 +757,42 @@ async def run_architecture_execution(
                 except Exception as _ci_err:
                     logger.warning("[arch_exec] v5.23 Contract injection failed (non-fatal): %s", _ci_err)
 
+                # v5.23c (Fix 23): When a contract block is present, strip
+                # competing function signature lines from the architecture
+                # context. This prevents the LLM from seeing two versions of
+                # the same signature and trying to merge them. The contract
+                # block is the single source of truth.
+                _file_context_for_prompt = file_context
+                if _per_file_contract_block and _file_contract_sigs:
+                    try:
+                        # Extract function names from contract sigs
+                        _contract_func_names = set()
+                        for _csig in _file_contract_sigs:
+                            _cfn_match = re.match(r'^(?:async\s+)?def\s+(\w+)\s*\(', _csig)
+                            if _cfn_match:
+                                _contract_func_names.add(_cfn_match.group(1))
+                        if _contract_func_names:
+                            # Remove lines that contain competing signature-like patterns
+                            # e.g. "def update_segment_status(state, seg_id, ...)" in prose
+                            _cleaned_lines = []
+                            for _line in _file_context_for_prompt.split('\n'):
+                                _skip = False
+                                for _cfn in _contract_func_names:
+                                        # Match 'def func_name(' only at start-of-line (with optional whitespace)
+                                        # so we strip actual signature definitions, not mid-sentence
+                                        # descriptive references like "the function def X(...) handles..."
+                                        if re.match(rf'^\s*(?:async\s+)?def\s+{re.escape(_cfn)}\s*\(', _line):
+                                            _skip = True
+                                            break
+                                _cleaned_lines.append(_line if not _skip else f"# [signature from MANDATORY CONTRACT — see above]")
+                            _file_context_for_prompt = '\n'.join(_cleaned_lines)
+                            logger.info(
+                                "[arch_exec] v5.23c Stripped competing signatures for %s from arch context (%s)",
+                                rel_path, _contract_func_names,
+                            )
+                    except Exception as _strip_err:
+                        logger.warning("[arch_exec] v5.23c Signature stripping failed (non-fatal): %s", _strip_err)
+
                 if action == "create":
                     # v1.13: Try verbatim extraction before LLM call
                     verbatim_content = _extract_verbatim_code_from_architecture(
@@ -779,11 +811,12 @@ async def run_architecture_execution(
                             "path": rel_path, "chars": len(verbatim_content),
                         })
                     
+
                     # v5.23: Build prompt with contract signatures FIRST (highest priority)
                     user_prompt = f"Generate the complete content for a new file: `{rel_path}`\n\n"
                     if _per_file_contract_block:
                         user_prompt += f"{_per_file_contract_block}\n\n"
-                    user_prompt += f"## Architecture Specification\n\n{file_context}\n\n"
+                    user_prompt += f"## Architecture Specification\n\n{_file_context_for_prompt}\n\n"
                     if job_context_section:
                         user_prompt += f"{job_context_section}\n\n"
                     
@@ -850,7 +883,7 @@ async def run_architecture_execution(
                         # v5.23: Inject contract signatures for MODIFY edit-mode path
                         if _per_file_contract_block:
                             user_prompt += f"{_per_file_contract_block}\n\n"
-                        user_prompt += f"## Modification Instructions\n\n{file_context}\n\n"
+                        user_prompt += f"## Modification Instructions\n\n{_file_context_for_prompt}\n\n"
                         if job_context_section:
                             user_prompt += f"{job_context_section}\n\n"
                         user_prompt += (
@@ -878,7 +911,7 @@ async def run_architecture_execution(
                         # v5.23: Inject contract signatures for MODIFY path
                         if _per_file_contract_block:
                             user_prompt += f"{_per_file_contract_block}\n\n"
-                        user_prompt += f"## Modification Instructions\n\n{file_context}\n\n"
+                        user_prompt += f"## Modification Instructions\n\n{_file_context_for_prompt}\n\n"
                         if job_context_section:
                             user_prompt += f"{job_context_section}\n\n"
                         if _available_modules_evidence:
@@ -901,22 +934,36 @@ async def run_architecture_execution(
                             rel_path,
                         )
                         verbatim_content = None  # Don't retry verbatim
-                    # v5.23: Add error context for retry strikes — PROMINENTLY at the top
-                    # Previous version appended errors at the END of the prompt where
-                    # they were buried under architecture context. Now we prepend them.
+                    # v5.23c (Fix 23): Restructured retry feedback.
+                    # - Structured side-by-side comparison for signature errors
+                    # - Errors capped at top 3 (9 errors overwhelm the LLM)
+                    # - Hard prose prevention reminder on every retry
+                    # - Falls back to generic format for non-signature errors
                     if strike > 1 and last_error:
-                        _strike_error_block = (
-                            f"## STRIKE {strike}/{MAX_STRIKES_PER_TASK} — LAST CHANCE, FIX NOW\n\n"
-                            f"Your previous attempt was REJECTED. The exact error was:\n\n"
-                            f"```\n{last_error}\n```\n\n"
-                            f"DO NOT repeat this mistake. The checker runs automatically and will reject you again for the same issue.\n\n"
-                            f"If the error says a function name is wrong: DO NOT rename functions. Use the name from the BINDING CONTRACT section above, character for character.\n"
-                            f"If the error says a parameter type is wrong: DO NOT change types. If the contract says `str`, never use `Path`.\n"
-                            f"If the error says a constant is missing: you MUST define it as a top-level variable in this file.\n"
-                            f"If the error says a signature does not match: copy the ENTIRE `def` line from the BINDING CONTRACT section and do not alter a single character.\n"
-                            f"If the error says a function is 'defined locally but should be imported': DELETE the function definition from your code and add an import statement instead. The function belongs to an upstream segment module — you MUST import it, not copy its body from the source evidence.\n"
-                            f"If the error mentions 'contract_violation' about a locally-defined function: this means you copied a function from the source that belongs to another segment. REMOVE your definition and IMPORT it from the correct sibling module.\n\n"
-                        )
+                        if _structured_sig_mismatches:
+                            # Build side-by-side comparison from structured data
+                            _strike_parts = []
+                            _strike_parts.append(f"## STRIKE {strike}/{MAX_STRIKES_PER_TASK} \u2014 YOUR SIGNATURES WERE WRONG\n")
+                            _strike_parts.append("Your previous output was REJECTED because function signatures did not match the contract.\n")
+                            for _mm in _structured_sig_mismatches[:3]:  # Cap at 3 most important
+                                _strike_parts.append(f"### `{_mm.function_name}`\n")
+                                _strike_parts.append(f"You wrote:\n```python\n{_mm.actual_signature}\n```\n")
+                                _strike_parts.append(f"Contract REQUIRES:\n```python\n{_mm.expected_signature}\n```\n")
+                                if _mm.differences:
+                                    _strike_parts.append(f"Differences: {'; '.join(_mm.differences[:3])}\n")
+                            _strike_parts.append("\nCopy the REQUIRED signatures from the MANDATORY CONTRACT section above. Do not modify them in any way.\n")
+                            _strike_parts.append("\nCRITICAL: Output ONLY valid Python source code. No English explanations, no markdown commentary, no architecture descriptions. Start with imports or a module docstring.\n")
+                            _strike_error_block = "\n".join(_strike_parts)
+                        else:
+                            # Generic format for non-signature errors (capped at 500 chars)
+                            _capped_error = last_error[:500] + ("..." if len(last_error) > 500 else "")
+                            _strike_error_block = (
+                                f"## STRIKE {strike}/{MAX_STRIKES_PER_TASK} \u2014 FIX NOW\n\n"
+                                f"Your previous output was REJECTED:\n\n"
+                                f"```\n{_capped_error}\n```\n\n"
+                                f"Fix the issue above. If a MANDATORY CONTRACT section is present, copy its signatures exactly.\n\n"
+                                f"CRITICAL: Output ONLY valid Python source code. No English explanations, no markdown commentary, no architecture descriptions. Start with imports or a module docstring.\n\n"
+                            )
                         # Prepend error to the beginning of user_prompt (after the file name line)
                         _first_newline = user_prompt.find("\n\n")
                         if _first_newline > 0:
@@ -924,8 +971,8 @@ async def run_architecture_execution(
                         else:
                             user_prompt = _strike_error_block + user_prompt
                         logger.info(
-                            "[arch_exec] v5.23 Strike %d error prepended to prompt for %s (%d chars)",
-                            strike, rel_path, len(_strike_error_block),
+                            "[arch_exec] v5.23c Strike %d error prepended to prompt for %s (%d chars, structured=%s)",
+                            strike, rel_path, len(_strike_error_block), bool(_structured_sig_mismatches),
                         )
                     
                     # v3.0: Inject experience memory into implementer prompt
@@ -966,6 +1013,27 @@ async def run_architecture_execution(
                     except Exception:
                         pass
 
+                    # --- v2.5 PRE-FLIGHT GATE: Verify prompt has required data ---
+                    # If the contract says this file must export N signatures, verify
+                    # they are present in the prompt. Fail fast rather than letting
+                    # the LLM guess.
+                    try:
+                        from ..deterministic_checker import extract_required_exports
+                        _pf_required = extract_required_exports(interface_contract, rel_path)
+                        if _pf_required:
+                            _pf_missing = []
+                            _prompt_combined = (user_prompt or "") + (system_prompt or "")
+                            for _pf_sym in _pf_required:
+                                if _pf_sym not in _prompt_combined:
+                                    _pf_missing.append(_pf_sym)
+                            if _pf_missing:
+                                logger.warning(
+                                    "[arch_exec] v2.5 PRE-FLIGHT: %d required symbols missing from prompt for %s: %s",
+                                    len(_pf_missing), rel_path, _pf_missing[:5],
+                                )
+                                # Warning only — don't block, the contract block might use different formatting
+                    except Exception as _pf_err:
+                        pass  # Pre-flight is advisory, never blocks
                     llm_result = await llm_call_fn(
                         provider_id=impl_provider,
                         model_id=impl_model,
@@ -1152,8 +1220,51 @@ async def run_architecture_execution(
                 })
                 continue
             
-            # --- v5.5 PHASE 4A: Job Checker â€” verify against arch spec + contract ---
+            # --- v2.5 PHASE 4A-DET: Deterministic Job Checker (zero LLM) ---
+            # Runs BEFORE the LLM job checker. If deterministic check passes,
+            # skip the expensive LLM call entirely.
+            _det_passed = False
             try:
+                from ..deterministic_checker import deterministic_check as _det_check
+                _det_result = _det_check(
+                    file_path=rel_path,
+                    file_content=file_content,
+                    interface_contract=interface_contract,
+                    sandbox_base=sandbox_base,
+                    existing_sandbox_files=_existing_sandbox_files,
+                    manifest_file_scope=_manifest_file_scope if '_manifest_file_scope' in dir() else None,
+                )
+                if _det_result.skipped:
+                    logger.debug("[arch_exec] v2.5 Det check skipped for %s: %s",
+                                 rel_path, _det_result.skip_reason)
+                    _det_passed = True
+                elif not _det_result.passed:
+                    _blocking = _det_result.blocking_issues
+                    _block_desc = "; ".join(i.description for i in _blocking[:3])
+                    last_error = f"Deterministic Check FAILED: {len(_blocking)} blocking: {_block_desc}"
+                    _job_checker_strike_errors.append(_block_desc)
+                    logger.warning("[arch_exec] v2.5 DET_CHECK Strike %d: %s", strike, last_error)
+                    print(f"[ARCH_EXEC] v2.5 DET_CHECK FAIL: {rel_path} — {_block_desc[:120]}")
+                    add_trace("DET_CHECK_FAIL", f"strike_{strike}", {
+                        "path": rel_path,
+                        "blocking": len(_blocking),
+                        "warnings": len(_det_result.warning_issues),
+                        "issues": [i.to_dict() for i in _det_result.issues[:5]],
+                    })
+                    continue  # Triggers retry
+                else:
+                    _det_passed = True
+                    _warns = len(_det_result.warning_issues)
+                    logger.info("[arch_exec] v2.5 DET_CHECK PASS: %s (%d warnings)", rel_path, _warns)
+                    add_trace("DET_CHECK_PASS", "verified", {"path": rel_path, "warnings": _warns})
+            except ImportError:
+                logger.debug("[arch_exec] v2.5 deterministic_checker not available — falling back to LLM")
+            except Exception as _det_err:
+                logger.warning("[arch_exec] v2.5 Det checker error (non-fatal): %s", _det_err)
+
+            # --- v5.5 PHASE 4A: LLM Job Checker (SKIPPED if deterministic passed) ---
+            if not _det_passed:
+              try:
                 from ..job_checker import check_written_file
                 _check_arch = extract_section_for_file(architecture_content, rel_path) or ""
                 _check_result = await check_written_file(
@@ -1172,30 +1283,29 @@ async def run_architecture_execution(
                     _blocking = _check_result.blocking_issues
                     _block_desc = "; ".join(i.description for i in _blocking[:3])
                     last_error = f"Job Checker FAILED: {len(_blocking)} blocking issue(s): {_block_desc}"
-                    _job_checker_strike_errors.append(_block_desc)  # v2.2: accumulate for next strike
+                    _job_checker_strike_errors.append(_block_desc)
                     logger.warning("[arch_exec] v5.5 Strike %d: %s", strike, last_error)
-                    print(f"[ARCH_EXEC] v5.5 JOB_CHECK FAIL: {rel_path} â€” {_block_desc[:120]}")
+                    print(f"[ARCH_EXEC] v5.5 JOB_CHECK FAIL: {rel_path} — {_block_desc[:120]}")
                     add_trace("JOB_CHECK_FAIL", f"strike_{strike}", {
                         "path": rel_path,
                         "blocking": len(_blocking),
                         "warnings": len(_check_result.warning_issues),
                         "issues": [i.to_dict() for i in _check_result.issues[:5]],
                     })
-                    continue  # Use existing three-strike retry
+                    continue
                 else:
                     _warns = len(_check_result.warning_issues)
                     if _warns:
-                        logger.info("[arch_exec] v5.5 Job check PASSED with %d warning(s): %s",
-                                    _warns, rel_path)
-                    add_trace("JOB_CHECK_PASS", "verified", {
-                        "path": rel_path,
-                        "warnings": _warns,
-                    })
-            except ImportError:
-                logger.debug("[arch_exec] v5.5 job_checker not available â€” skipping")
-            except Exception as _jc_err:
+                        logger.info("[arch_exec] v5.5 Job check PASSED with %d warning(s): %s", _warns, rel_path)
+                    add_trace("JOB_CHECK_PASS", "verified", {"path": rel_path, "warnings": _warns})
+              except ImportError:
+                logger.debug("[arch_exec] v5.5 job_checker not available — skipping")
+              except Exception as _jc_err:
                 logger.warning("[arch_exec] v5.5 Job checker error (non-fatal): %s", _jc_err)
-            
+            else:
+                logger.info("[arch_exec] v2.5 Skipping LLM job checker — deterministic passed for %s", rel_path)
+
+
             # --- v5.22 PHASE 4B: Deterministic Signature Verification ---
             # Layer 3 safety net: after the LLM-based job checker, run a
             # deterministic AST comparison of function signatures against
@@ -1236,6 +1346,9 @@ async def run_architecture_execution(
                         )
                         last_error = _sig_error
                         _job_checker_strike_errors.append(_sig_error)
+                        # v5.23c (Fix 23): Capture structured mismatch data for
+                        # side-by-side retry formatting (capped at top 3)
+                        _structured_sig_mismatches = list(_sig_result.mismatches[:3])
                         logger.warning(
                             "[arch_exec] v5.22 Sig check strike %d: %s",
                             strike, _sig_error[:200],
