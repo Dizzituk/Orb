@@ -86,28 +86,33 @@ async def run_phase_checkout(
             import json as _json
             with open(_manifest_path, "r", encoding="utf-8") as _mf:
                 _manifest_data = _json.load(_mf)
-            _det_source = _manifest_data.get("deterministic_source")
-            if _det_source:
-                # Scan the source file for baseline function sizes
-                _source_abs = os.path.join(sandbox_base, _det_source.replace("/", os.sep))
-                if os.path.isfile(_source_abs):
-                    import ast as _ast
-                    with open(_source_abs, "r", encoding="utf-8") as _sf:
-                        _src = _sf.read()
-                    try:
-                        _tree = _ast.parse(_src)
-                        _baseline_fn_sizes = {}
-                        for _n in _ast.walk(_tree):
-                            if isinstance(_n, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
-                                if hasattr(_n, "end_lineno") and _n.end_lineno:
-                                    _baseline_fn_sizes[_n.name] = _n.end_lineno - _n.lineno + 1
-                        if _baseline_fn_sizes:
-                            logger.info(
-                                "[phase_checkout] v6.1 Loaded %d baseline function sizes from %s",
-                                len(_baseline_fn_sizes), _det_source,
-                            )
-                    except SyntaxError:
-                        pass
+            # v6.1 FIX 13: Support multi-file (deterministic_sources list)
+            _det_sources = _manifest_data.get("deterministic_sources", [])
+            if not _det_sources:
+                _single = _manifest_data.get("deterministic_source")
+                if _single:
+                    _det_sources = [_single]
+            if _det_sources:
+                import ast as _ast
+                _baseline_fn_sizes = {}
+                for _det_source in _det_sources:
+                    _source_abs = os.path.join(sandbox_base, _det_source.replace("/", os.sep))
+                    if os.path.isfile(_source_abs):
+                        with open(_source_abs, "r", encoding="utf-8") as _sf:
+                            _src = _sf.read()
+                        try:
+                            _tree = _ast.parse(_src)
+                            for _n in _ast.walk(_tree):
+                                if isinstance(_n, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                                    if hasattr(_n, "end_lineno") and _n.end_lineno:
+                                        _baseline_fn_sizes[_n.name] = _n.end_lineno - _n.lineno + 1
+                        except SyntaxError:
+                            pass
+                if _baseline_fn_sizes:
+                    logger.info(
+                        "[phase_checkout] v6.1 Loaded %d baseline function sizes from %d source(s)",
+                        len(_baseline_fn_sizes), len(_det_sources),
+                    )
     except Exception as _bl_err:
         logger.debug("[phase_checkout] v6.1 Baseline sizes unavailable: %s", _bl_err)
 

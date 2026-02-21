@@ -838,6 +838,123 @@ def _make_segment(
 
 
 # =============================================================================
+# v6.1 FIX 14b: AUTO-GENERATE FILE LAYOUT
+# =============================================================================
+
+def _auto_generate_file_layout(
+    symbols: List["Symbol"],
+    target_package: str,
+    source_file: str,
+) -> Dict[str, "FileNode"]:
+    """
+    Auto-generate a file layout when no architecture File Inventory exists.
+
+    Groups symbols by kind into sensible files:
+    - constants + dataclasses/namedtuples → models.py
+    - Remaining functions split into groups by estimated size,
+      keeping each file under ~500 lines. Groups named by
+      the first function's prefix or 'core'.
+    - __init__.py facade that re-exports everything.
+
+    Returns dict of {file_path: FileNode}.
+    """
+    if not symbols:
+        return {}
+
+    nodes: Dict[str, FileNode] = {}
+    pkg = target_package.rstrip("/")
+
+    # Separate symbols by kind
+    constants = [s for s in symbols if s.kind in (SymbolKind.CONSTANT, SymbolKind.DATA_STRUCTURE)]
+    classes = [s for s in symbols if s.kind == SymbolKind.CLASS]
+    functions = [s for s in symbols if s.kind == SymbolKind.FUNCTION]
+
+    # Models file: constants + classes
+    if constants or classes:
+        models_path = f"{pkg}/models.py"
+        nodes[models_path] = FileNode(
+            file_path=models_path,
+            file_stem="models",
+            description="Constants, data structures, and class definitions",
+        )
+
+    # Split functions into groups of ~400 lines each
+    MAX_LINES_PER_FILE = 400
+    if functions:
+        groups: List[List] = []
+        current_group: List = []
+        current_lines = 0
+
+        for fn in functions:
+            fn_lines = fn.estimated_lines or 20
+            if current_lines + fn_lines > MAX_LINES_PER_FILE and current_group:
+                groups.append(current_group)
+                current_group = []
+                current_lines = 0
+            current_group.append(fn)
+            current_lines += fn_lines
+        if current_group:
+            groups.append(current_group)
+
+        if len(groups) == 1:
+            # Single group → core.py
+            core_path = f"{pkg}/core.py"
+            nodes[core_path] = FileNode(
+                file_path=core_path,
+                file_stem="core",
+                description="Core functions",
+            )
+        else:
+            # Multiple groups → name by common prefix or index
+            for idx, group in enumerate(groups):
+                # Try to find a common prefix for naming
+                names = [fn.name.lower() for fn in group]
+                prefix = _find_common_prefix(names)
+                if prefix and len(prefix) > 3:
+                    stem = prefix.rstrip("_")
+                else:
+                    stem = f"group_{idx + 1}"
+                file_path = f"{pkg}/{stem}.py"
+                # Avoid collision with models.py
+                if file_path in nodes:
+                    file_path = f"{pkg}/{stem}_funcs.py"
+                    stem = f"{stem}_funcs"
+                nodes[file_path] = FileNode(
+                    file_path=file_path,
+                    file_stem=stem,
+                    description=f"Functions: {', '.join(fn.name for fn in group[:3])}...",
+                )
+
+    # Facade __init__.py
+    init_path = f"{pkg}/__init__.py"
+    nodes[init_path] = FileNode(
+        file_path=init_path,
+        file_stem="__init__",
+        description="Package facade — re-exports all public symbols",
+        is_facade=True,
+    )
+
+    logger.info(
+        "[refactor_segmenter] v6.1 Auto-generated %d file nodes for %s",
+        len(nodes), source_file,
+    )
+    return nodes
+
+
+def _find_common_prefix(names: List[str]) -> str:
+    """Find the longest common prefix among a list of names."""
+    if not names:
+        return ""
+    prefix = names[0]
+    for name in names[1:]:
+        while not name.startswith(prefix):
+            prefix = prefix[:-1]
+            if not prefix:
+                return ""
+    return prefix
+
+
+# =============================================================================
 # MAIN ENTRY POINT
 # =============================================================================
 
@@ -876,8 +993,14 @@ def build_refactor_plan(
     # Step 2: Build file nodes from architecture
     nodes = build_file_nodes(architecture_text, target_package)
     if not nodes:
-        plan.warnings.append("No files found in architecture File Inventory")
-        return plan
+        # v6.1 FIX 14b: Auto-generate file layout when no inventory provided.
+        # This happens with Strategy 0 (direct source detection) where
+        # the LLM didn't propose a package structure.
+        nodes = _auto_generate_file_layout(symbols, target_package, source_file)
+        if not nodes:
+            plan.warnings.append("No files found in architecture and auto-layout failed")
+            return plan
+        plan.warnings.append(f"Auto-generated {len(nodes)} file nodes (Strategy 0)")
 
     # Detect facade
     if facade_file:

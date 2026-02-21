@@ -18,11 +18,14 @@ from typing import Any, Dict, List, Optional
 # CONSTANTS — shared size policy (single source of truth)
 # =============================================================================
 
-MAX_FILE_LINES = 400
-MAX_FILE_KB = 15
+# v6.1 FIX 11: Updated to match Taz's file size discipline.
+# Target: 20KB. Hard max: 30KB. Data-heavy files (constants,
+# templates, schemas) can exceed if logic portion is small.
+MAX_FILE_LINES = 600
+MAX_FILE_KB = 20
 MAX_FUNCTION_LINES = 200
-ABSOLUTE_FILE_KB_CEILING = 20
-TARGET_FILE_KB = 10
+ABSOLUTE_FILE_KB_CEILING = 30
+TARGET_FILE_KB = 20
 
 # Heuristic: average chars per line in generated code
 AVG_CHARS_PER_LINE = 55

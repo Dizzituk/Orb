@@ -91,6 +91,9 @@ def _parse_file_inventory(architecture_text: str) -> List[Dict[str, str]]:
                 desc_lower = desc.lower()
                 if 'modify' in desc_lower or 'update' in desc_lower or 'edit' in desc_lower:
                     operation = "MODIFY"
+                # v6.1 FIX 10: Recognise QUARANTINE as a facade file
+                elif 'quarantine' in desc_lower:
+                    operation = "FACADE"
                 files.append({
                     "path": fpath,
                     "operation": operation,
@@ -232,6 +235,43 @@ def compile_implementation_briefs(
     for file_entry in file_inventory:
         fpath = file_entry["path"]
         operation = file_entry["operation"]
+
+        # v6.1 FIX 10: FACADE files get a minimal re-export brief.
+        # The architecture contains the exact facade code in its
+        # design notes section — extract and use it directly.
+        if operation == "FACADE":
+            design_notes = _extract_file_design_notes(architecture_text, fpath)
+            logger.info(
+                "[IMPL_COMPILER] v6.1 Facade file: %s (design_notes=%d chars)",
+                fpath, len(design_notes),
+            )
+            facade_instruction = (
+                "**FACADE MODE — REPLACE ENTIRE FILE**\n\n"
+                "This file is a backward-compatibility facade. It must contain "
+                "ONLY re-exports from the new subpackage. Do NOT transplant "
+                "any function bodies — just re-export.\n\n"
+                "The exact facade code is specified in the Design Notes below. "
+                "Write EXACTLY that code and nothing else."
+            )
+            brief = FileBrief(
+                file_path=fpath,
+                operation="CREATE",
+                segment_id=segment_id,
+                functions=[],
+                imports=[],
+                exports=[],
+                consumed_by=[],
+                consumes_from=[],
+                instruction=facade_instruction,
+                feedback=[],
+                design_notes=design_notes,
+                estimated_lines=10,
+                profile="facade",
+            )
+            briefs.append(brief)
+            total_lines += 10
+            continue
+
         functions = file_function_map.get(fpath, [])
         total_functions += len(functions)
 
@@ -319,12 +359,17 @@ def _assign_functions_to_files(
     """
     result: Dict[str, List[FileFunction]] = {
         entry["path"]: [] for entry in file_inventory
+        # v6.1 FIX 10b: Exclude FACADE files from function assignment.
+        # Facade files must only contain re-exports, not transplanted code.
+        if entry.get("operation") != "FACADE"
     }
 
     assigned: Set[str] = set()
     file_stems: Dict[str, str] = {}
 
     for entry in file_inventory:
+        if entry.get("operation") == "FACADE":
+            continue
         fpath = entry["path"]
         stem = os.path.basename(fpath).replace(".py", "").lower().lstrip("_")
         file_stems[stem] = fpath

@@ -132,33 +132,42 @@ def detect_file_to_package_refactors(
     if not init_owners:
         return []
 
-    # v6.1 FIX 8: deterministic_source override.
-    # The manifest tells us exactly which file to quarantine.
-    # Map it to the package dir by finding the __init__.py owner.
-    det_source = manifest_dict.get("deterministic_source")
-    if det_source:
-        det_source_norm = det_source.replace("\\", "/").rstrip(".py")
-        # The source stem might not match the package dir name (LLM rename).
-        # But there should be exactly one __init__.py owner — use it.
-        if len(init_owners) == 1:
-            dir_segment, init_seg_id = next(iter(init_owners.items()))
-            logger.info(
-                "[quarantine] v6.1 Deterministic source override: quarantine %s (package: %s)",
-                det_source, dir_segment,
-            )
-            return [(dir_segment, init_seg_id)]
-        elif len(init_owners) > 1:
-            # Multiple packages — find the one whose parent matches
+    # v6.1 FIX 8 + FIX 13: deterministic_source(s) override.
+    # The manifest tells us exactly which file(s) to quarantine.
+    # Support both list (deterministic_sources) and single (deterministic_source).
+    det_sources = manifest_dict.get("deterministic_sources", [])
+    if not det_sources:
+        _single = manifest_dict.get("deterministic_source")
+        if _single:
+            det_sources = [_single]
+
+    if det_sources:
+        _pairs = []
+        for det_source in det_sources:
+            det_source_norm = det_source.replace("\\", "/")
             det_parent = det_source_norm.rsplit("/", 1)[0] if "/" in det_source_norm else ""
+            # Find the package dir whose parent matches this source's parent
+            _matched = False
             for dir_segment, init_seg_id in init_owners.items():
                 pkg_parent = dir_segment.rsplit("/", 1)[0] if "/" in dir_segment else ""
                 if pkg_parent == det_parent:
                     logger.info(
-                        "[quarantine] v6.1 Deterministic source override (multi-pkg): "
-                        "quarantine %s (package: %s)",
+                        "[quarantine] v6.1 Deterministic source override: quarantine %s (package: %s)",
                         det_source, dir_segment,
                     )
-                    return [(dir_segment, init_seg_id)]
+                    _pairs.append((dir_segment, init_seg_id))
+                    _matched = True
+                    break
+            if not _matched and len(init_owners) == 1:
+                # Fallback: single package, assume it's the target
+                dir_segment, init_seg_id = next(iter(init_owners.items()))
+                logger.info(
+                    "[quarantine] v6.1 Deterministic source fallback: quarantine %s (package: %s)",
+                    det_source, dir_segment,
+                )
+                _pairs.append((dir_segment, init_seg_id))
+        if _pairs:
+            return _pairs
 
     # For each directory that gets an __init__.py, check if other segments
     # also write files into it (confirming it's a real package, not just
@@ -216,16 +225,36 @@ def run_quarantine(
     )
     _emit(f"[quarantine] Detected {len(refactors)} file->package refactor(s)")
 
-    # v6.1 FIX 8: deterministic_source tells us the actual file to quarantine
-    # (may differ from dir_segment + ".py" when LLM renamed the package).
-    det_source = manifest_dict.get("deterministic_source")
+    # v6.1 FIX 8 + FIX 13: Build a lookup from package dir -> source file.
+    # For multi-file refactors, each package has its own source monolith.
+    det_sources = manifest_dict.get("deterministic_sources", [])
+    if not det_sources:
+        _single = manifest_dict.get("deterministic_source")
+        if _single:
+            det_sources = [_single]
+
+    # Build map: parent_dir -> source_file (for matching packages to sources)
+    _source_by_parent: Dict[str, str] = {}
+    for ds in det_sources:
+        ds_norm = ds.replace("\\", "/")
+        ds_parent = ds_norm.rsplit("/", 1)[0] if "/" in ds_norm else ""
+        _source_by_parent[ds_parent] = ds_norm
 
     for dir_segment, init_seg_id in refactors:
-        # v6.1: Use deterministic_source if available, otherwise derive from package name
-        if det_source:
-            module_py = det_source.replace("\\", "/")
+        # v6.1: Use deterministic source matched by parent dir, else derive
+        pkg_parent = dir_segment.rsplit("/", 1)[0] if "/" in dir_segment else ""
+        _matched_source = _source_by_parent.get(pkg_parent)
+        if _matched_source:
+            module_py = _matched_source
             logger.info(
                 "[quarantine] v6.1 Using deterministic_source for quarantine: %s (package: %s)",
+                module_py, dir_segment,
+            )
+        elif det_sources and len(det_sources) == 1:
+            # Single source fallback
+            module_py = det_sources[0].replace("\\", "/")
+            logger.info(
+                "[quarantine] v6.1 Using single deterministic_source fallback: %s (package: %s)",
                 module_py, dir_segment,
             )
         else:

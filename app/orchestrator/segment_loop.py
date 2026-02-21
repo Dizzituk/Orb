@@ -1806,14 +1806,20 @@ async def run_segmented_job(
 
     _quarantine_result = None
 
-    # v6.1 FIX 9: For deterministic refactor jobs, quarantine immediately
+    # v6.1 FIX 9 + FIX 13: For deterministic refactor jobs, quarantine immediately
     # regardless of implement_only flag. Deterministic architectures are
     # pre-generated so there's no "design only" phase that needs the monolith.
     # The monolith must be gone before the Implementer writes the facade.
-    if manifest.deterministic_source:
+    # FIX 13: Support multi-file — check deterministic_sources (list).
+    print(f"[QUARANTINE_DEBUG] det_sources={manifest.deterministic_sources}, bool={bool(manifest.deterministic_sources)}, implement_only={implement_only}")
+    logger.info(
+        "[SEGMENT_LOOP] v6.1 FIX 16 quarantine gate: det_sources=%s, implement_only=%s",
+        manifest.deterministic_sources, implement_only,
+    )
+    if manifest.deterministic_sources:
         logger.info(
             "[SEGMENT_LOOP] v6.1 Deterministic job — quarantine before execution: %s",
-            manifest.deterministic_source,
+            manifest.deterministic_sources,
         )
         try:
             from app.orchestrator.package_quarantine import run_quarantine
@@ -1987,9 +1993,14 @@ async def run_segmented_job(
             if seg_state.status == SegmentStatus.APPROVED.value:
                 # v5.13: If NOT in implement_only mode, skip APPROVED segments.
                 # They need a separate "implement segments" command to execute.
-                if not implement_only:
+                # v6.1 FIX 15: Deterministic refactor jobs skip the two-phase flow.
+                # Their architectures are pre-generated, so APPROVED = ready to execute.
+                _is_det = bool(manifest.deterministic_sources)
+                if not implement_only and not _is_det:
                     _emit(f"⏸️ [{idx}/{total}] {seg_id}: APPROVED — awaiting 'implement segments' command")
                     continue
+                if _is_det and not implement_only:
+                    _emit(f"⚡ [{idx}/{total}] {seg_id}: Deterministic — auto-executing (skip two-phase)")
                 # v3.1: Check if dependencies failed/blocked BEFORE executing
                 if is_segment_blocked(seg_spec, state):
                     update_segment_status(
@@ -2602,7 +2613,11 @@ async def run_segmented_job(
             # v6.1: Detect if this is a deterministic refactor job
             _is_deterministic_job = False
             try:
-                _is_deterministic_job = manifest_data.get("deterministic_source") is not None
+                # v6.1 FIX 13: Check both list and single forms
+                _is_deterministic_job = bool(
+                    manifest_data.get("deterministic_sources")
+                    or manifest_data.get("deterministic_source")
+                )
             except NameError:
                 pass  # manifest_data not available in this code path
 

@@ -1486,127 +1486,183 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
                         # Strategy 2: Source .py exists on disk + any __init__.py
                         #             in a subdir of the same parent (LLM may have
                         #             chosen a different package name).
-                        _source_file = None
-                        _target_pkg = None
+                        # v6.1 FIX 13: Multi-file refactor support.
+                        # Collect ALL source/target pairs, not just the first.
+                        _refactor_pairs = []  # List of (source_file, target_pkg)
+                        _matched_sources = set()  # Track already-matched to avoid dupes
 
                         # Normalise all paths once
                         _scope_norm = [fp.replace("\\", "/") for fp in _file_scope]
 
-                        # Strategy 1: Exact stem match (sandbox_build_validator.py → sandbox_build_validator/)
+                        # v6.1 FIX 14: Strategy 0 — Direct source detection.
+                        # Don't rely on the LLM's file_scope having package patterns.
+                        # Any existing .py file on disk that's in file_scope is a
+                        # refactor source. Auto-generate its target package path.
                         for _fp_norm in _scope_norm:
-                            if _fp_norm.endswith(".py") and "/" in _fp_norm:
-                                _stem = _fp_norm.rsplit("/", 1)[-1].replace(".py", "")
-                                _parent = _fp_norm.rsplit("/", 1)[0]
-                                _pkg_prefix = f"{_parent}/{_stem}/"
-                                _has_pkg = any(
-                                    f2.startswith(_pkg_prefix)
-                                    for f2 in _scope_norm if f2 != _fp_norm
-                                )
-                                _on_disk = os.path.isfile(
-                                    os.path.join("D:\\Orb", _fp_norm.replace("/", os.sep))
-                                )
-                                if _has_pkg and _on_disk:
-                                    _source_file = _fp_norm
-                                    _target_pkg = _pkg_prefix
-                                    logger.info(
-                                        "[spec_runner] v6.1 Strategy 1 match: %s -> %s",
-                                        _source_file, _target_pkg,
-                                    )
-                                    break
-                                elif _on_disk and not _has_pkg:
-                                    logger.info(
-                                        "[spec_runner] v6.1 Strategy 1 miss: %s exists on disk but no package at %s",
-                                        _fp_norm, _pkg_prefix,
-                                    )
-
-                        # v6.1 FIX 7: Strategy 2 with logging
-                        # Source .py on disk + any __init__.py in child dir
-                        # Handles case where LLM renamed the package
-                        if not _source_file:
-                            logger.info("[spec_runner] v6.1 Strategy 1 failed, trying Strategy 2")
-                            for _fp_norm in _scope_norm:
-                                if not _fp_norm.endswith(".py") or "/" not in _fp_norm:
+                            if not _fp_norm.endswith(".py") or "/" not in _fp_norm:
+                                continue
+                            if _fp_norm.endswith("__init__.py"):
+                                continue
+                            _abs = os.path.join("D:\\Orb", _fp_norm.replace("/", os.sep))
+                            if not os.path.isfile(_abs):
+                                continue
+                            # Check file size — only refactor files that are actually large
+                            try:
+                                _fsize = os.path.getsize(_abs)
+                                if _fsize < 10_000:  # < 10KB, not worth refactoring
                                     continue
-                                if not os.path.isfile(
-                                    os.path.join("D:\\Orb", _fp_norm.replace("/", os.sep))
-                                ):
-                                    continue
-                                _parent = _fp_norm.rsplit("/", 1)[0]
-                                # Look for any __init__.py in a subdir of the same parent
-                                for _f2 in _scope_norm:
-                                    if _f2 == _fp_norm:
-                                        continue
-                                    if _f2.startswith(_parent + "/") and "__init__.py" in _f2:
-                                        # Found a package dir
-                                        _pkg_dir = _f2.rsplit("__init__.py", 1)[0]
-                                        _source_file = _fp_norm
-                                        _target_pkg = _pkg_dir
-                                        logger.info(
-                                            "[spec_runner] v6.1 Strategy 2 match: %s -> %s",
-                                            _source_file, _target_pkg,
-                                        )
-                                        break
-                                if _source_file:
-                                    break
-                            if not _source_file:
-                                logger.info(
-                                    "[spec_runner] v6.1 Strategy 2 failed: no .py on disk with __init__.py in sibling subdir",
-                                )
-
-                        if _source_file and _target_pkg:
-                            _det_job_dir = _get_job_dir_for_segmentation(job_id)
+                            except OSError:
+                                continue
+                            _stem = _fp_norm.rsplit("/", 1)[-1].replace(".py", "")
+                            _parent = _fp_norm.rsplit("/", 1)[0]
+                            _auto_pkg = f"{_parent}/{_stem}/"
+                            _refactor_pairs.append((_fp_norm, _auto_pkg))
+                            _matched_sources.add(_fp_norm)
                             logger.info(
-                                "[spec_runner] v6.1 Running deterministic refactor: %s -> %s",
-                                _source_file, _target_pkg,
+                                "[spec_runner] v6.1 Strategy 0 (direct): %s -> %s (%d bytes)",
+                                _fp_norm, _auto_pkg, _fsize,
                             )
 
-                            # Build a synthetic file inventory from file_scope
-                            # (the architecture_file_inventory parameter expects
-                            # markdown with a File Inventory table)
-                            _inv_lines = ["## File Inventory\n"]
-                            _inv_lines.append("| File | Operation | Purpose |")
-                            _inv_lines.append("|---|---|---|")
-                            for _sf in _file_scope:
-                                _sf_norm = _sf.replace("\\", "/")
-                                if _sf_norm.startswith(_target_pkg):
-                                    _inv_lines.append(f"| `{_sf_norm}` | CREATE | Submodule |")
-                                elif _sf_norm == _source_file:
-                                    _inv_lines.append(f"| `{_sf_norm}` | QUARANTINE | Source monolith |")
-                            _inv_text = "\n".join(_inv_lines)
-
-                            _det_plan, _det_archs, _det_manifest_data = run_deterministic_refactor(
-                                source_file_path=_source_file,
-                                architecture_file_inventory=_inv_text,
-                                target_package=_target_pkg,
-                                job_dir=_det_job_dir,
-                                spec_id=f"sg-{uuid.uuid4().hex[:12]}",
+                        if _refactor_pairs:
+                            logger.info(
+                                "[spec_runner] v6.1 Strategy 0 found %d pair(s) — skipping Strategy 1/2",
+                                len(_refactor_pairs),
                             )
 
-                            # Convert to SegmentManifest
-                            _det_segments = []
-                            for _seg_data in _det_manifest_data["segments"]:
-                                _det_segments.append(_DetSegSpec.from_dict(_seg_data))
+                        # Strategy 1 & 2: Legacy fallbacks — only if Strategy 0 found nothing.
+                        # These check the LLM's file_scope for package patterns,
+                        # which only works if the LLM happened to propose a package layout.
+                        if not _refactor_pairs:
+                            for _fp_norm in _scope_norm:
+                                if _fp_norm.endswith(".py") and "/" in _fp_norm:
+                                    _stem = _fp_norm.rsplit("/", 1)[-1].replace(".py", "")
+                                    _parent = _fp_norm.rsplit("/", 1)[0]
+                                    _pkg_prefix = f"{_parent}/{_stem}/"
+                                    _has_pkg = any(
+                                        f2.startswith(_pkg_prefix)
+                                        for f2 in _scope_norm if f2 != _fp_norm
+                                    )
+                                    _on_disk = os.path.isfile(
+                                        os.path.join("D:\\Orb", _fp_norm.replace("/", os.sep))
+                                    )
+                                    if _has_pkg and _on_disk:
+                                        _refactor_pairs.append((_fp_norm, _pkg_prefix))
+                                        _matched_sources.add(_fp_norm)
+                                        logger.info(
+                                            "[spec_runner] v6.1 Strategy 1 match: %s -> %s",
+                                            _fp_norm, _pkg_prefix,
+                                        )
+                                    elif _on_disk and not _has_pkg:
+                                        logger.info(
+                                            "[spec_runner] v6.1 Strategy 1 miss: %s exists on disk but no package at %s",
+                                            _fp_norm, _pkg_prefix,
+                                        )
+
+                        if not _refactor_pairs:
+                            # Strategy 2: Source .py on disk + __init__.py in child dir
+                            _unmatched = [
+                                fp for fp in _scope_norm
+                                if fp.endswith(".py") and "/" in fp and fp not in _matched_sources
+                                and os.path.isfile(os.path.join("D:\\Orb", fp.replace("/", os.sep)))
+                            ]
+                            if _unmatched:
+                                logger.info(
+                                    "[spec_runner] v6.1 Strategy 2 checking %d unmatched file(s)",
+                                    len(_unmatched),
+                                )
+                                for _fp_norm in _unmatched:
+                                    _parent = _fp_norm.rsplit("/", 1)[0]
+                                    for _f2 in _scope_norm:
+                                        if _f2 == _fp_norm:
+                                            continue
+                                        if _f2.startswith(_parent + "/") and "__init__.py" in _f2:
+                                            _pkg_dir = _f2.rsplit("__init__.py", 1)[0]
+                                            _refactor_pairs.append((_fp_norm, _pkg_dir))
+                                            _matched_sources.add(_fp_norm)
+                                            logger.info(
+                                                "[spec_runner] v6.1 Strategy 2 match: %s -> %s",
+                                                _fp_norm, _pkg_dir,
+                                            )
+                                            break
+
+                        if not _refactor_pairs:
+                            logger.info(
+                                "[spec_runner] v6.1 Refactor detected but couldn't identify any source/target pairs — falling back to LLM",
+                            )
+
+                        logger.info(
+                            "[spec_runner] v6.1 Found %d refactor pair(s): %s",
+                            len(_refactor_pairs),
+                            [(s, t) for s, t in _refactor_pairs],
+                        )
+
+                        # Run deterministic pipeline for EACH pair and merge segments
+                        if _refactor_pairs:
+                            _det_job_dir = _get_job_dir_for_segmentation(job_id)
+                            _all_segments = []
+                            _all_sources = []
+
+                            for _src, _tgt in _refactor_pairs:
+                                logger.info(
+                                    "[spec_runner] v6.1 Running deterministic refactor: %s -> %s",
+                                    _src, _tgt,
+                                )
+
+                                # v6.1 FIX 14c: Build file inventory for this pair.
+                                # Only include CREATE entries from file_scope that match
+                                # the target package prefix. If none match (Strategy 0
+                                # auto-generated packages), pass empty inventory so the
+                                # auto-layout in build_refactor_plan generates files.
+                                _create_entries = [
+                                    sf.replace("\\", "/") for sf in _file_scope
+                                    if sf.replace("\\", "/").startswith(_tgt)
+                                ]
+                                if _create_entries:
+                                    _inv_lines = ["## File Inventory\n"]
+                                    _inv_lines.append("| File | Operation | Purpose |")
+                                    _inv_lines.append("|---|---|---|")
+                                    for _ce in _create_entries:
+                                        _inv_lines.append(f"| `{_ce}` | CREATE | Submodule |")
+                                    _inv_lines.append(f"| `{_src}` | QUARANTINE | Source monolith |")
+                                    _inv_text = "\n".join(_inv_lines)
+                                else:
+                                    # Strategy 0: no LLM-proposed package files.
+                                    # Pass empty so auto-layout generates the file structure.
+                                    _inv_text = ""
+
+                                _det_plan, _det_archs, _det_manifest_data = run_deterministic_refactor(
+                                    source_file_path=_src,
+                                    architecture_file_inventory=_inv_text,
+                                    target_package=_tgt,
+                                    job_dir=_det_job_dir,
+                                    spec_id=f"sg-{uuid.uuid4().hex[:12]}",
+                                )
+
+                                # Convert segments and stamp each with its source
+                                for _seg_data in _det_manifest_data["segments"]:
+                                    _seg = _DetSegSpec.from_dict(_seg_data)
+                                    _seg.deterministic_source = _src
+                                    _all_segments.append(_seg)
+                                _all_sources.append(_src)
 
                             _deterministic_manifest = SegmentManifest(
-                                segments=_det_segments,
-                                total_segments=len(_det_segments),
-                                total_files=sum(len(s.file_scope) for s in _det_segments),
-                                deterministic_source=_source_file,
+                                segments=_all_segments,
+                                total_segments=len(_all_segments),
+                                total_files=sum(len(s.file_scope) for s in _all_segments),
+                                deterministic_sources=_all_sources,
                             )
 
                             logger.info(
-                                "[spec_runner] v6.1 Deterministic manifest: %d segments, %d files",
-                                len(_det_segments),
-                                sum(len(s.file_scope) for s in _det_segments),
+                                "[spec_runner] v6.1 Deterministic manifest: %d segments, %d files, %d source(s)",
+                                len(_all_segments),
+                                sum(len(s.file_scope) for s in _all_segments),
+                                len(_all_sources),
                             )
                             print(
                                 f"[spec_runner] v6.1 DETERMINISTIC: "
-                                f"{len(_det_segments)} segments, "
-                                f"{sum(len(s.file_scope) for s in _det_segments)} files"
-                            )
-                        else:
-                            logger.info(
-                                "[spec_runner] v6.1 Refactor detected but couldn't identify source/target — falling back to LLM",
+                                f"{len(_all_segments)} segments, "
+                                f"{sum(len(s.file_scope) for s in _all_segments)} files, "
+                                f"{len(_all_sources)} source(s)"
                             )
                 except ImportError:
                     logger.debug("[spec_runner] v6.1 refactor_pipeline not available")
