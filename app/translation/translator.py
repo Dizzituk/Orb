@@ -138,6 +138,23 @@ class Translator:
             should_execute=False,
         )
         
+        # Step 0: Intercept confirmation responses before mode classification
+        # Confirmation messages ("Confirmed: ...") would otherwise be classified
+        # as CHAT mode and fall through to the chat handler.
+        confirm_key = self.user_id
+        if self._confirmation_state.has_pending(confirm_key):
+            confirmed, intent, context = self._confirmation_state.check_confirmation(
+                confirm_key, text
+            )
+            if confirmed and intent:
+                logger.info(f"[translator] Confirmation accepted for {intent.value}")
+                result.mode = TranslationMode.COMMAND_CAPABLE
+                result.resolved_intent = intent
+                result.should_execute = True
+                result.latency_tier = LatencyTier.TIER_0_RULES
+                self._confirmation_state.clear_pending(confirm_key)
+                return result
+        
         # Step 1: Mode Classification
         mode, wake_phrase, remaining_text = classify_mode_with_ui(text, ui_context)
         result.mode = mode
@@ -319,15 +336,15 @@ class Translator:
             intent=intent,
             context=extracted,
             confirmation_state=self._confirmation_state,
-            confirmation_id=conversation_id,
+            confirmation_id=self.user_id,
         )
         result.confirmation_gate = confirmation_result
         
         if confirmation_result.requires_confirmation and not confirmation_result.passed:
             # Request confirmation
-            if conversation_id:
+            if self.user_id:
                 self._confirmation_state.request_confirmation(
-                    confirmation_id=conversation_id,
+                    confirmation_id=self.user_id,
                     intent=intent,
                     context=extracted,
                 )
@@ -352,7 +369,7 @@ class Translator:
             (confirmed, intent, context) if confirmed
             (False, None, None) if not confirmed
         """
-        return self._confirmation_state.check_confirmation(conversation_id, response)
+        return self._confirmation_state.check_confirmation(self.user_id, response)
     
     async def _handle_feedback(
         self,
