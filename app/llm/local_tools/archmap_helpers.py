@@ -18,6 +18,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 from app.memory import service as memory_service, schemas as memory_schemas
+from app.llm.local_tools._archmap_helpers_utils_2 import ARCHMAP_MAX_CONTINUATION_ROUNDS, ARCHMAP_PROVIDER, _ARCHMAP_TRIGGER_SET, _DENY_FILE_PATTERNS, _UPDATE_ARCH_TRIGGER_SET, _read_controller_addr_txt, _safe_read_text, default_zobie_mapper_out_dir
 
 logger = logging.getLogger(__name__)
 
@@ -81,17 +82,6 @@ def default_sandbox_cache_root(start_file: Optional[str] = None) -> str:
     return str((rr / "_sandbox_cache").resolve())
 
 
-def _read_controller_addr_txt(cache_root: Path) -> Optional[str]:
-    addr_file = cache_root / "controller_addr.txt"
-    try:
-        if addr_file.exists():
-            v = addr_file.read_text(encoding="utf-8", errors="replace").strip()
-            return v or None
-    except Exception:
-        return None
-    return None
-
-
 def default_controller_base_url(start_file: Optional[str] = None) -> str:
     """Controller base URL resolution.
 
@@ -118,43 +108,9 @@ def default_controller_base_url(start_file: Optional[str] = None) -> str:
     return "http://192.168.250.2:8765"
 
 
-def default_zobie_mapper_out_dir(start_file: Optional[str] = None) -> str:
-    """Default mapper output dir.
-
-    If legacy D:\\tools\\zobie_mapper\\out exists, keep using it.
-    Otherwise store mapper artifacts under repo-local cache.
-    """
-    legacy = Path(r"D:\tools\zobie_mapper\out")
-    try:
-        if legacy.exists():
-            return str(legacy.resolve())
-    except Exception:
-        pass
-
-    cache_root = Path(default_sandbox_cache_root(start_file))
-    return str((cache_root / "zobie_mapper_out").resolve())
-
-
 # =============================================================================
 # TRIGGER SETS
 # =============================================================================
-
-_UPDATE_ARCH_TRIGGER_SET = {
-    "update architecture",
-    "update arch",
-    "update your architecture",
-    "/update_architecture",
-    "/update_arch",
-}
-
-_ARCHMAP_TRIGGER_SET = {
-    "create architecture map",
-    "arch map",
-    "architecture map",
-    "/arch_map",
-    "/architecture_map",
-    "/create_architecture_map",
-}
 
 # =============================================================================
 # STORAGE PATHS
@@ -175,7 +131,6 @@ ARCHMAP_OUTPUT_FILE = "ARCHITECTURE_MAP.md"  # Single file, always overwritten
 # UPDATE ARCHITECTURE: No LLM needed (just scan)
 
 # CREATE ARCHITECTURE MAP: Use Claude Opus 4.5
-ARCHMAP_PROVIDER = os.getenv("ORB_ARCHMAP_PROVIDER", "anthropic")
 ARCHMAP_MODEL = os.getenv("ORB_ARCHMAP_MODEL", "claude-opus-4-5-20251101")
 
 # Fallback if Opus unavailable
@@ -211,7 +166,6 @@ ARCHMAP_TEMPERATURE = float(os.getenv("ORB_ARCHMAP_TEMPERATURE", "0.7"))
 ARCHMAP_SENTINEL = "<!-- ARCHMAP_END -->"
 
 # Maximum continuation rounds before giving up
-ARCHMAP_MAX_CONTINUATION_ROUNDS = 6
 
 # Characters to include from end of partial file for continuation context
 ARCHMAP_CONTINUATION_CONTEXT_CHARS = 2000
@@ -219,22 +173,6 @@ ARCHMAP_CONTINUATION_CONTEXT_CHARS = 2000
 # =============================================================================
 # DENY PATTERNS (security)
 # =============================================================================
-
-_DENY_FILE_PATTERNS = [
-    r"(^|/)\.env$",               # Block .env only (allow .env.example)
-    r"\.pem$",
-    r"\.key$",
-    r"\.pfx$",
-    r"\.p12$",
-    r"\.p8$",
-    r"(^|/)\.git($|/)",
-    r"(^|/)id_rsa($|/)",
-    r"(^|/)known_hosts($|/)",
-    r"(^|/)secrets?(/|$)",
-    r"(^|/)credentials?(/|$)",
-    r"(^|/)tokens?(/|$)",
-    r"(^|/)api[_-]?keys?(/|$)",
-]
 
 
 def _is_denied_repo_path(p: str) -> bool:
@@ -333,14 +271,6 @@ def load_architecture_imports() -> Dict[str, Any]:
 # =============================================================================
 # UTILITY HELPERS
 # =============================================================================
-
-def _safe_read_text(path: str, max_bytes: int = 2_000_000) -> str:
-    try:
-        with open(path, "rb") as f:
-            b = f.read(max_bytes)
-        return b.decode("utf-8", errors="replace")
-    except Exception as e:
-        return f"<<failed to read {path}: {e}>>"
 
 
 def _controller_http_json(url: str) -> Dict[str, Any]:

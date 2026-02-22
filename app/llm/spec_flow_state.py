@@ -31,6 +31,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, Optional, Any, List, Tuple, Set
 from enum import Enum
+from app.llm._spec_flow_state_utils_6 import clear_confirmed_design_prefs, clear_flow_state, clear_weave_checkpoint, clear_woven_user_hashes, get_confirmed_design_prefs, get_spot_for_project, get_weave_checkpoint, get_woven_user_hashes
+from app.llm._spec_flow_state_utils_7 import cancel_flow, check_weaver_answer_keywords, clear_weaver_design_questions, complete_flow, get_weaver_design_state, should_route_to_critical_pipeline, should_route_to_overwatcher, should_route_to_spec_gate
+from app.llm._spec_flow_state_utils_8 import advance_to_awaiting_overwatcher, advance_to_spec_gate_questions, advance_to_spec_validated, capture_weaver_answers, save_confirmed_design_prefs, save_weave_checkpoint, save_woven_user_hashes, should_route_to_weaver_continuation
 
 logger = logging.getLogger(__name__)
 
@@ -187,13 +190,6 @@ def set_flow_state(state: SpecFlowState) -> None:
     logger.debug(f"[spec_flow] Set state for project {state.project_id}: {state.stage.value}")
 
 
-def clear_flow_state(project_id: int) -> None:
-    """Clear flow state for a project."""
-    if project_id in _FLOW_STATES:
-        del _FLOW_STATES[project_id]
-        logger.debug(f"[spec_flow] Cleared state for project {project_id}")
-
-
 def start_weaver_flow(
     project_id: int,
     weaver_spec_id: str,
@@ -318,329 +314,24 @@ def set_weaver_design_questions(
     return state
 
 
-def check_weaver_answer_keywords(
-    project_id: int,
-    message: str,
-) -> Tuple[bool, Dict[str, str]]:
-    """
-    Check if user message contains answer keywords for pending questions.
-    
-    Args:
-        project_id: Project ID
-        message: User's message
-    
-    Returns:
-        Tuple of (has_any_keywords, captured_answers_dict)
-        captured_answers_dict maps question_type → matched keyword
-    """
-    state = _FLOW_STATES.get(project_id)
-    if not state or state.stage != SpecFlowStage.WEAVER_DESIGN_QUESTIONS:
-        return False, {}
-    
-    msg_lower = message.lower()
-    captured = {}
-    
-    for q_type, keywords in state.weaver_answer_keywords.items():
-        # Skip if already answered
-        if q_type in state.weaver_captured_answers:
-            continue
-        
-        # Check each keyword
-        for kw in keywords:
-            # Match as whole word or phrase
-            # Handle both "sidebar" and "side bar" variants
-            kw_variants = [kw, kw.replace(" ", ""), kw.replace("-", " ")]
-            
-            for variant in kw_variants:
-                if variant in msg_lower:
-                    captured[q_type] = kw  # Store original keyword
-                    print(f"[FLOW_STATE] Captured answer for {q_type}: '{kw}' (matched '{variant}')")
-                    break
-            
-            if q_type in captured:
-                break
-    
-    has_any = len(captured) > 0
-    return has_any, captured
-
-
-def capture_weaver_answers(
-    project_id: int,
-    answers: Dict[str, str],
-) -> Optional[SpecFlowState]:
-    """
-    Store captured answers in flow state.
-    
-    Args:
-        project_id: Project ID
-        answers: Dict mapping question_type → captured answer
-    
-    Returns:
-        Updated flow state or None if no active flow
-    """
-    state = _FLOW_STATES.get(project_id)
-    if not state:
-        return None
-    
-    # Merge new answers with existing
-    state.weaver_captured_answers.update(answers)
-    
-    # Remove answered questions from pending
-    for q_type in answers:
-        if q_type in state.weaver_pending_questions:
-            del state.weaver_pending_questions[q_type]
-    
-    set_flow_state(state)
-    
-    remaining = len(state.weaver_pending_questions)
-    print(f"[FLOW_STATE] Captured {len(answers)} answers, {remaining} questions remaining")
-    
-    return state
-
-
-def get_weaver_design_state(project_id: int) -> Optional[Dict[str, Any]]:
-    """
-    Get current weaver design question state.
-    
-    Returns dict with:
-        - pending_questions: questions not yet answered
-        - captured_answers: answers already captured
-        - all_answered: bool whether all questions are answered
-    """
-    state = _FLOW_STATES.get(project_id)
-    if not state or state.stage != SpecFlowStage.WEAVER_DESIGN_QUESTIONS:
-        return None
-    
-    return {
-        "pending_questions": state.weaver_pending_questions,
-        "captured_answers": state.weaver_captured_answers,
-        "answer_keywords": state.weaver_answer_keywords,
-        "all_answered": len(state.weaver_pending_questions) == 0,
-    }
-
-
-def clear_weaver_design_questions(project_id: int) -> None:
-    """Clear weaver design question state (after weave completes)."""
-    state = _FLOW_STATES.get(project_id)
-    if state:
-        state.weaver_pending_questions = {}
-        state.weaver_answer_keywords = {}
-        state.weaver_captured_answers = {}
-        # Don't change stage here - let weaver do that
-        set_flow_state(state)
-        print(f"[FLOW_STATE] Cleared weaver design questions for project {project_id}")
-
-
 # =============================================================================
 # CONFIRMED DESIGN PREFS (v1.2) - Persist across weave runs
 # =============================================================================
-
-def save_confirmed_design_prefs(
-    project_id: int,
-    prefs: Dict[str, str],
-) -> Optional[SpecFlowState]:
-    """
-    Save confirmed design prefs that persist across weave runs.
-    
-    These are NOT cleared when weave completes - they stick for the project.
-    """
-    state = _FLOW_STATES.get(project_id)
-    if not state:
-        state = SpecFlowState(project_id=project_id, stage=SpecFlowStage.AWAITING_SPEC_GATE_CONFIRM)
-    
-    # Merge with existing prefs (new values override)
-    state.confirmed_design_prefs.update(prefs)
-    set_flow_state(state)
-    
-    print(f"[FLOW_STATE] Saved confirmed design prefs for project {project_id}: {prefs}")
-    return state
-
-
-def get_confirmed_design_prefs(project_id: int) -> Dict[str, str]:
-    """
-    Get confirmed design prefs for a project.
-    
-    Returns empty dict if no prefs saved.
-    """
-    state = _FLOW_STATES.get(project_id)
-    if not state:
-        return {}
-    return state.confirmed_design_prefs.copy()
-
-
-def clear_confirmed_design_prefs(project_id: int) -> None:
-    """
-    Clear confirmed design prefs (e.g., when starting a completely new job).
-    """
-    state = _FLOW_STATES.get(project_id)
-    if state:
-        state.confirmed_design_prefs = {}
-        set_flow_state(state)
-        print(f"[FLOW_STATE] Cleared confirmed design prefs for project {project_id}")
 
 
 # =============================================================================
 # WEAVE CHECKPOINT (v1.2) - For incremental weaving
 # =============================================================================
 
-def save_weave_checkpoint(
-    project_id: int,
-    message_count: int,
-    weave_output: str,
-) -> Optional[SpecFlowState]:
-    """
-    Save checkpoint after weave completes.
-    
-    This allows subsequent weaves to only process NEW messages.
-    NOTE: v1.3 uses hash-based tracking instead of message_count for delta detection.
-    """
-    state = _FLOW_STATES.get(project_id)
-    if not state:
-        state = SpecFlowState(project_id=project_id, stage=SpecFlowStage.AWAITING_SPEC_GATE_CONFIRM)
-    
-    state.last_weave_message_count = message_count
-    state.last_weave_output = weave_output
-    set_flow_state(state)
-    
-    print(f"[FLOW_STATE] Saved weave checkpoint for project {project_id}: {message_count} messages")
-    return state
-
-
-def get_weave_checkpoint(project_id: int) -> Optional[Dict[str, Any]]:
-    """
-    Get weave checkpoint for a project.
-    
-    Returns dict with:
-        - message_count: how many messages were in last weave
-        - last_output: the previous woven job description
-    
-    Returns None if no checkpoint exists.
-    """
-    state = _FLOW_STATES.get(project_id)
-    if not state or state.last_weave_message_count == 0:
-        return None
-    
-    return {
-        "message_count": state.last_weave_message_count,
-        "last_output": state.last_weave_output,
-    }
-
-
-def clear_weave_checkpoint(project_id: int) -> None:
-    """
-    Clear weave checkpoint (e.g., when starting a completely new job).
-    """
-    state = _FLOW_STATES.get(project_id)
-    if state:
-        state.last_weave_message_count = 0
-        state.last_weave_output = None
-        set_flow_state(state)
-        print(f"[FLOW_STATE] Cleared weave checkpoint for project {project_id}")
-
 
 # =============================================================================
 # WOVEN USER HASHES (v1.3) - Hash-based delta tracking
 # =============================================================================
 
-def save_woven_user_hashes(
-    project_id: int,
-    hashes: Set[str],
-) -> Optional[SpecFlowState]:
-    """
-    Save the set of user message hashes that have been woven.
-    
-    This provides durable tracking of which messages are already in the spec,
-    regardless of message ordering or count drift.
-    """
-    state = _FLOW_STATES.get(project_id)
-    if not state:
-        state = SpecFlowState(project_id=project_id, stage=SpecFlowStage.AWAITING_SPEC_GATE_CONFIRM)
-    
-    # Union with existing hashes (don't replace - accumulate)
-    state.woven_user_hashes = state.woven_user_hashes.union(hashes)
-    set_flow_state(state)
-    
-    print(f"[FLOW_STATE] Saved woven user hashes for project {project_id}: {len(state.woven_user_hashes)} total")
-    return state
-
-
-def get_woven_user_hashes(project_id: int) -> Set[str]:
-    """
-    Get the set of user message hashes that have been woven.
-    
-    Returns empty set if no hashes saved.
-    """
-    state = _FLOW_STATES.get(project_id)
-    if not state:
-        return set()
-    return state.woven_user_hashes.copy()
-
-
-def clear_woven_user_hashes(project_id: int) -> None:
-    """
-    Clear woven user hashes (e.g., when starting a completely new job).
-    """
-    state = _FLOW_STATES.get(project_id)
-    if state:
-        state.woven_user_hashes = set()
-        set_flow_state(state)
-        print(f"[FLOW_STATE] Cleared woven user hashes for project {project_id}")
-
-
-def should_route_to_weaver_continuation(project_id: int) -> bool:
-    """Check if message should route to Weaver continuation (mid-design-questions)."""
-    state = get_active_flow(project_id)
-    if not state:
-        return False
-    return state.stage == SpecFlowStage.WEAVER_DESIGN_QUESTIONS
-
 
 # =============================================================================
 # SPEC GATE FLOW FUNCTIONS (existing)
 # =============================================================================
-
-def advance_to_spec_gate_questions(
-    project_id: int,
-    job_id: str,
-    spec_id: str,
-    spec_hash: str,
-    questions: list,
-    clarification_round: int = 1,
-) -> Optional[SpecFlowState]:
-    """Advance flow to Spec Gate questions stage."""
-    state = _FLOW_STATES.get(project_id)
-    if not state:
-        # Create new state if none exists
-        state = SpecFlowState(project_id=project_id, stage=SpecFlowStage.SPEC_GATE_QUESTIONS)
-    
-    state.stage = SpecFlowStage.SPEC_GATE_QUESTIONS
-    state.job_id = job_id
-    state.spec_id = spec_id
-    state.spec_hash = spec_hash
-    state.open_questions = questions
-    state.clarification_round = clarification_round
-    set_flow_state(state)
-    return state
-
-
-def advance_to_spec_validated(
-    project_id: int,
-    spec_id: str,
-    spec_hash: str,
-    spec_version: int = 1,
-) -> Optional[SpecFlowState]:
-    """Advance flow to spec validated stage (SPoT ready)."""
-    state = _FLOW_STATES.get(project_id)
-    if not state:
-        state = SpecFlowState(project_id=project_id, stage=SpecFlowStage.SPEC_VALIDATED)
-    
-    state.stage = SpecFlowStage.SPEC_VALIDATED
-    state.spec_id = spec_id
-    state.spec_hash = spec_hash
-    state.spec_version = spec_version
-    state.open_questions = []
-    set_flow_state(state)
-    return state
 
 
 def advance_to_spec_segmented(
@@ -671,75 +362,9 @@ def advance_to_spec_segmented(
     return state
 
 
-def advance_to_awaiting_overwatcher(
-    project_id: int,
-    work_artifacts: Dict[str, Any],
-) -> Optional[SpecFlowState]:
-    """Advance flow to awaiting Overwatcher stage."""
-    state = _FLOW_STATES.get(project_id)
-    if not state:
-        return None
-    
-    state.stage = SpecFlowStage.AWAITING_OVERWATCHER
-    state.work_artifacts = work_artifacts
-    set_flow_state(state)
-    return state
-
-
-def complete_flow(project_id: int) -> None:
-    """Mark flow as complete."""
-    state = _FLOW_STATES.get(project_id)
-    if state:
-        state.stage = SpecFlowStage.COMPLETE
-        set_flow_state(state)
-
-
-def cancel_flow(project_id: int) -> None:
-    """Cancel/abandon flow."""
-    state = _FLOW_STATES.get(project_id)
-    if state:
-        state.stage = SpecFlowStage.CANCELLED
-        set_flow_state(state)
-
-
 # =============================================================================
 # ROUTING HELPERS
 # =============================================================================
-
-def should_route_to_spec_gate(project_id: int) -> bool:
-    """Check if message should route to Spec Gate (mid-clarification)."""
-    state = get_active_flow(project_id)
-    if not state:
-        return False
-    return state.stage == SpecFlowStage.SPEC_GATE_QUESTIONS
-
-
-def should_route_to_critical_pipeline(project_id: int) -> bool:
-    """Check if message should route to Critical Pipeline."""
-    state = get_active_flow(project_id)
-    if not state:
-        return False
-    return state.stage == SpecFlowStage.SPEC_VALIDATED
-
-
-def should_route_to_overwatcher(project_id: int) -> bool:
-    """Check if message should route to Overwatcher."""
-    state = get_active_flow(project_id)
-    if not state:
-        return False
-    return state.stage == SpecFlowStage.AWAITING_OVERWATCHER
-
-
-def get_spot_for_project(project_id: int) -> Optional[Dict[str, Any]]:
-    """Get SPoT (spec_id, spec_hash) for a project if available."""
-    state = get_active_flow(project_id)
-    if not state or not state.spec_id:
-        return None
-    return {
-        "spec_id": state.spec_id,
-        "spec_hash": state.spec_hash,
-        "spec_version": state.spec_version,
-    }
 
 
 __all__ = [

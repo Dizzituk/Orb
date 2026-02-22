@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 import re
-from .file_discovery import DISCOVERY_DEFAULT_ROOTS, DiscoveryResult, discover_files
+from .file_discovery import DEFAULT_ROOTS as DISCOVERY_DEFAULT_ROOTS, DiscoveryResult, discover_files
 from .refactor_classifier import build_refactor_plan
 from .refactor_formatter import format_confirmation_message, format_human_readable, format_machine_readable
 from .refactor_schemas import RawMatch, RefactorPlan
