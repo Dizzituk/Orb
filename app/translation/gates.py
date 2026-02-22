@@ -626,7 +626,7 @@ class ConfirmationState:
         
         # Check for explicit "Yes" confirmation
         response = user_response.strip().lower()
-        if response in ("yes", "y", "confirm", "confirmed") or response.startswith("confirmed:"):
+        if response in ("yes", "y", "confirm", "confirmed"):
             # Remove from pending and return confirmed
             del self._pending[confirmation_id]
             return True, pending["intent"], pending["context"]

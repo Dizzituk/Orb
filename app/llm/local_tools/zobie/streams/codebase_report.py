@@ -21,7 +21,6 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import (
-from app.llm.local_tools.zobie.streams._codebase_report_utils import ABSOLUTE_PATH_PATTERNS, CODEBASE_REPORT_OUTPUT_DIR, FULL_MAX_MATCHES_PER_FILE, _count_lines_fast, _detect_duplicate_filenames, _detect_floating_files, _should_exclude_file, _should_exclude_folder
     AsyncGenerator,
     Dict,
     List,
@@ -51,6 +50,7 @@ CODEBASE_REPORT_ROOTS: List[Path] = [
 ]
 
 # Output directory (OUTSIDE repos)
+CODEBASE_REPORT_OUTPUT_DIR = Path(r"D:\Orb.architecture")
 
 # State file (inside Orb data folder)
 CODEBASE_REPORT_STATE_FILE = Path(r"D:\Orb\data\codebase_report_state.json")
@@ -71,6 +71,7 @@ FILE_LINES_CRITICAL = 2500
 
 # FULL mode content caps
 FULL_MAX_BYTES_PER_FILE = 64 * 1024  # 64 KB
+FULL_MAX_MATCHES_PER_FILE = 50
 
 # Top N for reports
 TOP_N_LARGEST = 30
@@ -160,6 +161,11 @@ EXPECTED_ROOT_ITEMS_DESKTOP: Set[str] = {
 }
 
 # Absolute path patterns to detect in FULL mode
+ABSOLUTE_PATH_PATTERNS = [
+    re.compile(r'[A-Za-z]:\\(?:[^\s"\'<>|*?\n]+)'),  # Windows: C:\path\to\file
+    re.compile(r'\\\\[A-Za-z0-9._-]+\\[^\s"\'<>|*?\n]+'),  # UNC: \\server\share
+    re.compile(r'/(?:mnt|home)/[^\s"\'<>|*?\n]+'),  # Unix: /mnt/ or /home/
+]
 
 # Policy violation patterns (blocked folder references)
 BLOCKED_FOLDER_REFS: Set[str] = {
@@ -282,6 +288,15 @@ def _compute_incremental(
 # SCANNING FUNCTIONS
 # =============================================================================
 
+def _should_exclude_folder(folder_name: str) -> bool:
+    """Check if folder should be excluded."""
+    return folder_name.lower() in {n.lower() for n in EXCLUDE_FOLDER_NAMES}
+
+
+def _should_exclude_file(path: Path) -> bool:
+    """Check if file should be excluded."""
+    return path.suffix.lower() in EXCLUDE_FILE_EXTENSIONS
+
 
 def _is_text_file(path: Path) -> bool:
     """Check if file is text-like (for line counting)."""
@@ -291,6 +306,18 @@ def _is_text_file(path: Path) -> bool:
     if ext == "" and name in {"dockerfile", "makefile", "jenkinsfile", "vagrantfile"}:
         return True
     return ext in TEXT_EXTENSIONS
+
+
+def _count_lines_fast(path: Path, max_bytes: int = 1_000_000) -> Optional[int]:
+    """Count lines in a text file (fast, with byte limit)."""
+    try:
+        size = path.stat().st_size
+        if size > max_bytes:
+            return None  # Too large for fast counting
+        with open(path, "rb") as f:
+            return sum(1 for _ in f)
+    except Exception:
+        return None
 
 
 def _scan_directory(
@@ -363,6 +390,23 @@ def _scan_directory(
     return files, suspect_folders, extension_counts
 
 
+def _detect_floating_files(root: Path, expected: Set[str]) -> List[str]:
+    """Detect unexpected files/folders at root level."""
+    floating = []
+    if not root.exists():
+        return floating
+    
+    expected_lower = {e.lower() for e in expected}
+    
+    for item in root.iterdir():
+        if item.name.lower() not in expected_lower:
+            # Exclude common generated files
+            if not item.name.endswith((".backup", ".bak", ".log")):
+                floating.append(item.name)
+    
+    return floating
+
+
 # =============================================================================
 # FULL MODE: CONTENT SCANNING
 # =============================================================================
@@ -431,6 +475,20 @@ def _scan_file_for_blocked_refs(
         pass
     
     return refs
+
+
+def _detect_duplicate_filenames(files: List[FileEntry], threshold: int = 6) -> Dict[str, List[str]]:
+    """Detect filenames that appear too many times."""
+    name_to_paths: Dict[str, List[str]] = {}
+    
+    for f in files:
+        name = f.path.name.lower()
+        if name not in name_to_paths:
+            name_to_paths[name] = []
+        name_to_paths[name].append(f.relative_path)
+    
+    # Filter to those over threshold
+    return {name: paths for name, paths in name_to_paths.items() if len(paths) >= threshold}
 
 
 # =============================================================================

@@ -37,7 +37,6 @@ from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .segment_schemas import (
-from app.pot_spec.grounded._segmentation_utils import BACKEND_PATH_INDICATORS, FILE_COUNT_THRESHOLD, FRONTEND_PATH_INDICATORS, MAX_FILES_PER_SEGMENT, MIN_FILES_PER_SEGMENT, SEGMENTATION_BUILD_ID, _generate_segment_id, _resolve_to_absolute
     CreateTarget,
     GroundingData,
     InterfaceContract,
@@ -47,6 +46,8 @@ from app.pot_spec.grounded._segmentation_utils import BACKEND_PATH_INDICATORS, F
 from .file_verifier import verify_segment_files
 
 logger = logging.getLogger(__name__)
+
+SEGMENTATION_BUILD_ID = "2026-02-18-v1.6-monolith-replacement-facade-detection"
 print(f"[SEGMENTATION_LOADED] BUILD_ID={SEGMENTATION_BUILD_ID}")
 
 
@@ -55,14 +56,36 @@ print(f"[SEGMENTATION_LOADED] BUILD_ID={SEGMENTATION_BUILD_ID}")
 # =============================================================================
 
 # File count threshold above which segmentation is triggered
+FILE_COUNT_THRESHOLD = 15
 
 # Minimum files per segment (merge tiny segments into adjacent ones)
+MIN_FILES_PER_SEGMENT = 2
 
 # Maximum files per segment (split large clusters)
+MAX_FILES_PER_SEGMENT = 15
 
 # Backend path indicators
+BACKEND_PATH_INDICATORS = {
+    "app/", "app\\",
+    "routers/", "routers\\",
+    "services/", "services\\",
+    "endpoints/", "endpoints\\",
+    "models/", "models\\",
+    "main.py",
+}
 
 # Frontend path indicators
+FRONTEND_PATH_INDICATORS = {
+    "src/components/", "src\\components\\",
+    "src/hooks/", "src\\hooks\\",
+    "src/services/", "src\\services\\",
+    "src/types/", "src\\types\\",
+    "src/styles/", "src\\styles\\",
+    ".tsx", ".jsx",
+    "main.js",
+    "main.tsx",
+    "App.tsx",
+}
 
 
 # =============================================================================
@@ -198,6 +221,10 @@ def group_files_by_layer(file_scope: List[str]) -> Dict[str, List[str]]:
 # =============================================================================
 # SEGMENT GENERATION
 # =============================================================================
+
+def _generate_segment_id(index: int, layer: str) -> str:
+    """Generate a segment ID like 'seg-01-backend-services'."""
+    return f"seg-{index:02d}-{layer}"
 
 
 def _infer_layer_dependencies(layers_present: List[str]) -> Dict[str, List[str]]:
@@ -360,6 +387,28 @@ def _load_architecture_file_list() -> List[str]:
     except Exception as e:
         logger.warning("[segmentation] v1.1 Failed to load INDEX.json: %s", e)
         return []
+
+
+def _resolve_to_absolute(path: str, known_paths: List[str]) -> Optional[str]:
+    """
+    Resolve a relative path to its absolute form using the architecture index.
+    
+    If the path is already absolute and exists, return it directly.
+    Otherwise, search known_paths for a match on the relative suffix.
+    """
+    # Already absolute?
+    if os.path.isabs(path):
+        return path if os.path.exists(path) else path  # Return as-is even if missing
+    
+    # Normalise for matching
+    path_norm = path.replace('/', '\\').lower()
+    
+    for known in known_paths:
+        known_norm = known.replace('/', '\\').lower()
+        if known_norm.endswith(path_norm):
+            return known
+    
+    return None
 
 
 # =============================================================================

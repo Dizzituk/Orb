@@ -2408,3 +2408,529 @@
 2026-02-22 20:27:01 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1667ms. Oversized: 56 (leaf=56, branch=0, root=0)
 2026-02-22 20:27:03 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1534ms. Oversized: 56 (leaf=56, branch=0, root=0)
 2026-02-22 20:27:04 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1720ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:06 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1709ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:08 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1618ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:09 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1619ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:11 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1511ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:13 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1735ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:14 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1485ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:16 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1857ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:17 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1597ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:19 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1690ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:21 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1759ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:23 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1671ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:24 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1675ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:26 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1762ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:28 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1656ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:29 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1514ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:31 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1676ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:32 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1590ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:34 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1618ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:36 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1853ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:38 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1748ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:40 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 2073ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:42 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1981ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:44 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1968ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:46 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 2091ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:48 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 2004ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:50 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 2033ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:52 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 2097ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:54 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 2137ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:56 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1973ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:58 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 2055ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:28:00 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1885ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:28:02 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1939ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:28:04 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 2042ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:28:06 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 2138ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:28:08 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1906ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:28:10 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 2042ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:28:12 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1878ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:28:14 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1853ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:33:28 [INFO   ] app.logging_config: File logging initialised: D:\Orb\logs\astra.log (max 10 MB x 5 backups)
+2026-02-22 20:33:28 [DEBUG  ] app.db: [db_migrate] arch_code_chunks schema is up to date
+2026-02-22 20:33:28 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 1 projects
+2026-02-22 20:33:28 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 notes
+2026-02-22 20:33:28 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 8 messages
+2026-02-22 20:33:28 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 jobs
+2026-02-22 20:33:28 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 global prefs
+2026-02-22 20:34:53 [DEBUG  ] asyncio: Using proactor: IocpProactor
+2026-02-22 20:34:53 [DEBUG  ] app.translation.translator: Mode: command, wake_phrase: Astra, command:
+2026-02-22 20:34:53 [DEBUG  ] app.translation.tier1_classifier: [LightweightLLMClient] Registry loaded successfully
+2026-02-22 20:34:53 [ERROR  ] app.providers.registry: [registry] llm_call failed: Error code: 401 - {'error': {'message': 'Incorrect API key provided: sk-proj-********************************************************************************************************************************************************skUA. You can find your API key at https://platform.openai.com/account/api-keys.', 'type': 'invalid_request_error', 'code': 'invalid_api_key', 'param': None}, 'status': 401}
+Traceback (most recent call last):
+  File "D:\Orb\app\providers\registry.py", line 242, in llm_call
+    return await self._call_openai(
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<10 lines>...
+    )
+    ^
+  File "D:\Orb\app\providers\registry.py", line 395, in _call_openai
+    resp = await _create_chat_completion()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Orb\app\providers\registry.py", line 354, in _create_chat_completion
+    return await client.chat.completions.create(**base_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Orb\.venv\Lib\site-packages\openai\resources\chat\completions\completions.py", line 2672, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+    ...<49 lines>...
+    )
+    ^
+  File "D:\Orb\.venv\Lib\site-packages\openai\_base_client.py", line 1794, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Orb\.venv\Lib\site-packages\openai\_base_client.py", line 1594, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.AuthenticationError: Error code: 401 - {'error': {'message': 'Incorrect API key provided: sk-proj-********************************************************************************************************************************************************skUA. You can find your API key at https://platform.openai.com/account/api-keys.', 'type': 'invalid_request_error', 'code': 'invalid_api_key', 'param': None}, 'status': 401}
+2026-02-22 20:34:53 [DEBUG  ] app.translation.translator: Low confidence classification, defaulting to chat
+2026-02-22 20:34:53 [DEBUG  ] app.llm.translation_routing: [translation] Mode=command, Intent=CHAT_ONLY, Execute=False, Tier=tier_1
+2026-02-22 20:34:53 [INFO   ] app.llm.stage_trace: [stage_trace] COMMAND_START: type=CHAT_ONLY, id=cmd_4aef4e7406ec, project=1
+2026-02-22 20:34:53 [DEBUG  ] app.llm.stream_router: [translation] Command blocked: Low classifier confidence (0.50 < 0.7)
+2026-02-22 20:34:53 [WARNING] app.llm.stage_trace: [stage_trace] ROUTING_FAILURE: Command blocked: Low classifier confidence (0.50 < 0.7) (cmd=cmd_4aef4e7406ec)
+2026-02-22 20:34:54 [WARNING] app.capabilities.loader: Capabilities file not found at D:\Orb\config\astra_capabilities.json, using fallback
+2026-02-22 20:38:46 [INFO   ] app.logging_config: File logging initialised: D:\Orb\logs\astra.log (max 10 MB x 5 backups)
+2026-02-22 20:38:46 [DEBUG  ] app.db: [db_migrate] arch_code_chunks schema is up to date
+2026-02-22 20:38:46 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 1 projects
+2026-02-22 20:38:46 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 notes
+2026-02-22 20:38:46 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 8 messages
+2026-02-22 20:38:46 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 jobs
+2026-02-22 20:38:46 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 global prefs
+2026-02-22 20:38:54 [DEBUG  ] asyncio: Using proactor: IocpProactor
+2026-02-22 20:38:54 [DEBUG  ] app.translation.translator: Mode: command, wake_phrase: Astra, command:
+2026-02-22 20:38:54 [DEBUG  ] app.translation.tier1_classifier: [LightweightLLMClient] Registry loaded successfully
+2026-02-22 20:39:03 [DEBUG  ] app.translation.translator: Low confidence classification, defaulting to chat
+2026-02-22 20:39:03 [DEBUG  ] app.llm.translation_routing: [translation] Mode=command, Intent=CHAT_ONLY, Execute=False, Tier=tier_1
+2026-02-22 20:39:03 [INFO   ] app.llm.stage_trace: [stage_trace] COMMAND_START: type=CHAT_ONLY, id=cmd_f61af624fd64, project=1
+2026-02-22 20:39:03 [DEBUG  ] app.llm.stream_router: [translation] Command blocked: Low classifier confidence (0.65 < 0.7)
+2026-02-22 20:39:03 [WARNING] app.llm.stage_trace: [stage_trace] ROUTING_FAILURE: Command blocked: Low classifier confidence (0.65 < 0.7) (cmd=cmd_f61af624fd64)
+2026-02-22 20:39:05 [WARNING] app.capabilities.loader: Capabilities file not found at D:\Orb\config\astra_capabilities.json, using fallback
+2026-02-22 20:43:10 [INFO   ] app.logging_config: File logging initialised: D:\Orb\logs\astra.log (max 10 MB x 5 backups)
+2026-02-22 20:43:10 [DEBUG  ] app.db: [db_migrate] arch_code_chunks schema is up to date
+2026-02-22 20:43:10 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 1 projects
+2026-02-22 20:43:10 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 notes
+2026-02-22 20:43:10 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 9 messages
+2026-02-22 20:43:10 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 jobs
+2026-02-22 20:43:10 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 global prefs
+2026-02-22 20:43:20 [DEBUG  ] asyncio: Using proactor: IocpProactor
+2026-02-22 20:43:20 [DEBUG  ] app.translation.translator: Mode: command, wake_phrase: Astra, command:
+2026-02-22 20:43:20 [DEBUG  ] app.translation.tier1_classifier: [LightweightLLMClient] Registry loaded successfully
+2026-02-22 20:43:27 [INFO   ] app.translation.phrase_cache: Added to phrase cache: 'refactor codebas' -> REFACTOR_CODEBASE
+2026-02-22 20:43:27 [DEBUG  ] app.llm.translation_routing: [translation] Mode=command, Intent=REFACTOR_CODEBASE, Execute=False, Tier=tier_1
+2026-02-22 20:44:41 [INFO   ] app.logging_config: File logging initialised: D:\Orb\logs\astra.log (max 10 MB x 5 backups)
+2026-02-22 20:44:41 [DEBUG  ] app.db: [db_migrate] arch_code_chunks schema is up to date
+2026-02-22 20:44:41 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 1 projects
+2026-02-22 20:44:41 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 notes
+2026-02-22 20:44:41 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 9 messages
+2026-02-22 20:44:41 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 jobs
+2026-02-22 20:44:41 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 global prefs
+2026-02-22 20:45:32 [DEBUG  ] asyncio: Using proactor: IocpProactor
+2026-02-22 20:45:32 [DEBUG  ] app.translation.translator: Mode: command, wake_phrase: Astra, command:
+2026-02-22 20:45:32 [DEBUG  ] app.translation.tier1_classifier: [LightweightLLMClient] Registry loaded successfully
+2026-02-22 20:45:40 [INFO   ] app.translation.phrase_cache: Added to phrase cache: 'refactor codebas' -> REFACTOR_CODEBASE
+2026-02-22 20:45:40 [DEBUG  ] app.llm.translation_routing: [translation] Mode=command, Intent=REFACTOR_CODEBASE, Execute=False, Tier=tier_1
+2026-02-22 20:45:40 [INFO   ] app.llm.stage_trace: [stage_trace] COMMAND_START: type=REFACTOR_CODEBASE, id=cmd_618e365b5d56, project=1
+2026-02-22 20:45:41 [INFO   ] app.llm.stream_router: [stream_router] Confirmed intent bypass: REFACTOR_CODEBASE
+2026-02-22 20:45:41 [INFO   ] app.llm.stage_trace: [stage_trace] COMMAND_START: type=REFACTOR_CODEBASE, id=cmd_e5eaece21bcd, project=1
+2026-02-22 20:45:41 [DEBUG  ] app.llm.stage_models: [stage_models] SPEC_GATE: anthropic/claude-opus-4-6
+2026-02-22 20:45:41 [DEBUG  ] app.llm.stage_models: [stage_models] WEAVER: openai/gpt-5.2
+2026-02-22 20:45:41 [DEBUG  ] app.llm.stage_models: [stage_models] CRITICAL_PIPELINE: openai/gpt-5.2
+2026-02-22 20:45:41 [DEBUG  ] app.llm.stage_models: [stage_models] OVERWATCHER: anthropic/claude-opus-4-6
+2026-02-22 20:45:41 [DEBUG  ] app.llm.translation_routing: [translation_routing] SpecGate: SPEC_GATE: anthropic/claude-opus-4-6
+2026-02-22 20:45:41 [DEBUG  ] app.llm.translation_routing: [translation_routing] Weaver: WEAVER: openai/gpt-5.2
+2026-02-22 20:45:41 [DEBUG  ] app.llm.translation_routing: [translation_routing] CriticalPipeline: CRITICAL_PIPELINE: openai/gpt-5.2
+2026-02-22 20:45:41 [DEBUG  ] app.llm.translation_routing: [translation_routing] Overwatcher: OVERWATCHER: anthropic/claude-opus-4-6
+2026-02-22 20:45:41 [INFO   ] app.llm.stage_trace: [stage_trace] STAGE_ENTER: refactor_loop (cmd=cmd_e5eaece21bcd, provider=None, model=None)
+2026-02-22 20:45:43 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1369ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:45:43 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (68 lines, 2357 chars) from D:\Orb\app\astra_memory\service.py → D:\Orb\app\astra_memory\_service_utils.py
+2026-02-22 20:45:44 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 1: BOOT FAILED for D:\Orb\app\astra_memory\service.py. Rolled back.
+2026-02-22 20:45:45 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1233ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:45:45 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (121 lines, 4828 chars) from D:\Orb\app\llm\routing\core.py → D:\Orb\app\llm\routing\_core_utils.py
+2026-02-22 20:45:46 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 2: BOOT FAILED for D:\Orb\app\llm\routing\core.py. Rolled back.
+2026-02-22 20:45:47 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1241ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:45:47 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 7 symbols (326 lines, 12033 chars) from D:\Orb\app\llm\streaming.py → D:\Orb\app\llm\_streaming_utils.py
+2026-02-22 20:45:48 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 3: BOOT FAILED for D:\Orb\app\llm\streaming.py. Rolled back.
+2026-02-22 20:45:49 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1404ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:45:49 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (151 lines, 4547 chars) from D:\Orb\app\pot_spec\evidence_collector.py → D:\Orb\app\pot_spec\_evidence_collector_utils.py
+2026-02-22 20:45:50 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 4: BOOT FAILED for D:\Orb\app\pot_spec\evidence_collector.py. Rolled back.
+2026-02-22 20:45:52 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1234ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:45:52 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (89 lines, 2361 chars) from D:\Orb\app\llm\token_budgeting.py → D:\Orb\app\llm\_token_budgeting_utils.py
+2026-02-22 20:45:52 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 5: BOOT FAILED for D:\Orb\app\llm\token_budgeting.py. Rolled back.
+2026-02-22 20:45:54 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1323ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:45:54 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 23)
+2026-02-22 20:45:54 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\orchestrator\implementation_compiler.py
+2026-02-22 20:45:54 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 6: No extraction possible for D:\Orb\app\orchestrator\implementation_compiler.py: No extractable symbols found
+2026-02-22 20:45:55 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1454ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:45:55 [DEBUG  ] app.orchestrator.surgical_extractor: [surgical] Skipping large assignment NON_DIRECTIVE_PATTERNS (81 lines) — too big to copy
+2026-02-22 20:45:55 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (345 lines, 11456 chars) from D:\Orb\app\translation\gates.py → D:\Orb\app\translation\_gates_utils.py
+2026-02-22 20:45:56 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 7: BOOT FAILED for D:\Orb\app\translation\gates.py. Rolled back.
+2026-02-22 20:45:58 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1358ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:45:58 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 7 symbols (347 lines, 11878 chars) from D:\Orb\app\llm\gemini_vision.py → D:\Orb\app\llm\_gemini_vision_utils.py
+2026-02-22 20:45:58 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 8: BOOT FAILED for D:\Orb\app\llm\gemini_vision.py. Rolled back.
+2026-02-22 20:46:00 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1284ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:00 [WARNING] app.orchestrator.surgical_extractor: [surgical] No extractable candidates in D:\Orb\app\pot_spec\spec_gate_grounded.py
+2026-02-22 20:46:00 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 9: No extraction possible for D:\Orb\app\pot_spec\spec_gate_grounded.py: No extractable symbols found
+2026-02-22 20:46:01 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1373ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:01 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (162 lines, 6623 chars) from D:\Orb\app\astra_memory\retrieval.py → D:\Orb\app\astra_memory\_retrieval_utils.py
+2026-02-22 20:46:02 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 10: BOOT FAILED for D:\Orb\app\astra_memory\retrieval.py. Rolled back.
+2026-02-22 20:46:03 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1297ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:03 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (155 lines, 5050 chars) from D:\Orb\app\llm\audit_logger.py → D:\Orb\app\llm\_audit_logger_utils.py
+2026-02-22 20:46:04 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 11: BOOT FAILED for D:\Orb\app\llm\audit_logger.py. Rolled back.
+2026-02-22 20:46:06 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1275ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:06 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (125 lines, 4073 chars) from D:\Orb\app\llm\policy.py → D:\Orb\app\llm\_policy_utils.py
+2026-02-22 20:46:07 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 12: BOOT FAILED for D:\Orb\app\llm\policy.py. Rolled back.
+2026-02-22 20:46:08 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1307ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:08 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 45)
+2026-02-22 20:46:08 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\overwatcher\pot_spec_executor.py
+2026-02-22 20:46:08 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 13: No extraction possible for D:\Orb\app\overwatcher\pot_spec_executor.py: No extractable symbols found
+2026-02-22 20:46:09 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1403ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:09 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 30)
+2026-02-22 20:46:09 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\overwatcher\executor.py
+2026-02-22 20:46:09 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 14: No extraction possible for D:\Orb\app\overwatcher\executor.py: No extractable symbols found
+2026-02-22 20:46:11 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1263ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:11 [WARNING] app.orchestrator.surgical_extractor: [surgical] No extractable candidates in D:\Orb\app\llm\weaver_stream.py
+2026-02-22 20:46:11 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 15: No extraction possible for D:\Orb\app\llm\weaver_stream.py: No extractable symbols found
+2026-02-22 20:46:12 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1367ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:12 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (474 lines, 20944 chars) from D:\Orb\app\llm\local_tools\zobie\streams\___archmap_full_utils_utils_1_utils.py → D:\Orb\app\llm\local_tools\zobie\streams\____archmap_full_utils_utils_1_utils_utils.py
+2026-02-22 20:46:12 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] Pass 16: Spawn guard — extracted module ____archmap_full_utils_utils_1_utils_utils.py is 22.2KB (still oversized). Rolling back.
+2026-02-22 20:46:13 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1269ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:13 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (111 lines, 3317 chars) from D:\Orb\app\llm\fallbacks.py → D:\Orb\app\llm\_fallbacks_utils.py
+2026-02-22 20:46:14 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 17: BOOT FAILED for D:\Orb\app\llm\fallbacks.py. Rolled back.
+2026-02-22 20:46:15 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1368ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:15 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (413 lines, 22763 chars) from D:\Orb\app\pot_spec\grounded\___simple_create_utils_6_utils_utils.py → D:\Orb\app\pot_spec\grounded\____simple_create_utils_6_utils_utils_utils.py
+2026-02-22 20:46:15 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] Pass 18: Spawn guard — extracted module ____simple_create_utils_6_utils_utils_utils.py is 23.1KB (still oversized). Rolling back.
+2026-02-22 20:46:17 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1684ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:17 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (542 lines, 23830 chars) from D:\Orb\app\rag\jobs\___embedding_job_utils_3_utils_utils.py → D:\Orb\app\rag\jobs\____embedding_job_utils_3_utils_utils_utils.py
+2026-02-22 20:46:17 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] Pass 19: Spawn guard — extracted module ____embedding_job_utils_3_utils_utils_utils.py is 24.5KB (still oversized). Rolling back.
+2026-02-22 20:46:19 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1463ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:19 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 4 symbols (343 lines, 13034 chars) from D:\Orb\app\llm\local_tools\zobie\fs_live_ops.py → D:\Orb\app\llm\local_tools\zobie\_fs_live_ops_utils.py
+2026-02-22 20:46:19 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 20: BOOT FAILED for D:\Orb\app\llm\local_tools\zobie\fs_live_ops.py. Rolled back.
+2026-02-22 20:46:21 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1283ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:21 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (23 lines, 815 chars) from D:\Orb\app\llm\high_stakes_stream.py → D:\Orb\app\llm\_high_stakes_stream_utils.py
+2026-02-22 20:46:24 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 21: BOOT FAILED for D:\Orb\app\llm\high_stakes_stream.py. Rolled back.
+2026-02-22 20:46:26 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1582ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:26 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (174 lines, 5651 chars) from D:\Orb\app\llm\preprocessor.py → D:\Orb\app\llm\_preprocessor_utils.py
+2026-02-22 20:46:27 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 22: BOOT FAILED for D:\Orb\app\llm\preprocessor.py. Rolled back.
+2026-02-22 20:46:28 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1486ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:28 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (189 lines, 6222 chars) from D:\Orb\app\llm\file_classifier.py → D:\Orb\app\llm\_file_classifier_utils.py
+2026-02-22 20:46:29 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 23: BOOT FAILED for D:\Orb\app\llm\file_classifier.py. Rolled back.
+2026-02-22 20:46:30 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1349ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:30 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 4 symbols (55 lines, 2139 chars) from D:\Orb\app\llm\routing\command_dispatch.py → D:\Orb\app\llm\routing\_command_dispatch_utils.py
+2026-02-22 20:46:34 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 24: BOOT FAILED for D:\Orb\app\llm\routing\command_dispatch.py. Rolled back.
+2026-02-22 20:46:35 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1455ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:35 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 27)
+2026-02-22 20:46:35 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\orchestrator\codebase_scanner.py
+2026-02-22 20:46:35 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 25: No extraction possible for D:\Orb\app\orchestrator\codebase_scanner.py: No extractable symbols found
+2026-02-22 20:46:36 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1295ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:36 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (509 lines, 26193 chars) from D:\Orb\app\orchestrator\___cohesion_check_utils_4_utils_utils.py → D:\Orb\app\orchestrator\____cohesion_check_utils_4_utils_utils_utils.py
+2026-02-22 20:46:36 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] Pass 26: Spawn guard — extracted module ____cohesion_check_utils_4_utils_utils_utils.py is 26.4KB (still oversized). Rolling back.
+2026-02-22 20:46:38 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1390ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:38 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (107 lines, 4127 chars) from D:\Orb\app\providers\registry.py → D:\Orb\app\providers\_registry_utils.py
+2026-02-22 20:46:39 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 27: BOOT FAILED for D:\Orb\app\providers\registry.py. Rolled back.
+2026-02-22 20:46:40 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1364ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:40 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: (unicode error) 'unicodeescape' codec can't decode bytes in position 120-121: truncated \UXXXXXXXX escape (<unknown>, line 2)
+2026-02-22 20:46:40 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\llm\local_tools\host_fs_scanner.py
+2026-02-22 20:46:40 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 28: No extraction possible for D:\Orb\app\llm\local_tools\host_fs_scanner.py: No extractable symbols found
+2026-02-22 20:46:41 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1316ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:41 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (196 lines, 6872 chars) from D:\Orb\app\specs\schema.py → D:\Orb\app\specs\_schema_utils.py
+2026-02-22 20:46:44 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 29: BOOT FAILED for D:\Orb\app\specs\schema.py. Rolled back.
+2026-02-22 20:46:46 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1464ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:46 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 7 symbols (320 lines, 12467 chars) from D:\Orb\app\llm\pipeline\revision.py → D:\Orb\app\llm\pipeline\_revision_utils.py
+2026-02-22 20:46:47 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 30: BOOT FAILED for D:\Orb\app\llm\pipeline\revision.py. Rolled back.
+2026-02-22 20:46:48 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1566ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:48 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 6 symbols (393 lines, 15549 chars) from D:\Orb\app\llm\pipeline\critique_schemas.py → D:\Orb\app\llm\pipeline\_critique_schemas_utils.py
+2026-02-22 20:46:49 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 31: BOOT FAILED for D:\Orb\app\llm\pipeline\critique_schemas.py. Rolled back.
+2026-02-22 20:46:50 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1286ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:50 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (275 lines, 11705 chars) from D:\Orb\app\llm\stream_router.py → D:\Orb\app\llm\_stream_router_utils.py
+2026-02-22 20:46:51 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 32: BOOT FAILED for D:\Orb\app\llm\stream_router.py. Rolled back.
+2026-02-22 20:46:53 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1585ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:53 [DEBUG  ] app.orchestrator.surgical_extractor: [surgical] Skipping large assignment TOOL_DISPATCH (41 lines) — too big to copy
+2026-02-22 20:46:53 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (388 lines, 16455 chars) from D:\Orb\app\llm\pipeline\evidence_loop.py → D:\Orb\app\llm\pipeline\_evidence_loop_utils.py
+2026-02-22 20:46:54 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 33: BOOT FAILED for D:\Orb\app\llm\pipeline\evidence_loop.py. Rolled back.
+2026-02-22 20:46:56 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1668ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:56 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 59)
+2026-02-22 20:46:56 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\llm\local_tools\zobie\streams\fs_query.py
+2026-02-22 20:46:56 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 34: No extraction possible for D:\Orb\app\llm\local_tools\zobie\streams\fs_query.py: No extractable symbols found
+2026-02-22 20:46:57 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1448ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:46:57 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 3 symbols (200 lines, 8528 chars) from D:\Orb\app\llm\pipeline\critique.py → D:\Orb\app\llm\pipeline\_critique_utils.py
+2026-02-22 20:46:58 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 35: BOOT FAILED for D:\Orb\app\llm\pipeline\critique.py. Rolled back.
+2026-02-22 20:46:59 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1532ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:47:00 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (388 lines, 13306 chars) from D:\Orb\app\endpoints\chat_attachments.py → D:\Orb\app\endpoints\_chat_attachments_utils.py
+2026-02-22 20:47:03 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 36: BOOT FAILED for D:\Orb\app\endpoints\chat_attachments.py. Rolled back.
+2026-02-22 20:47:04 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1490ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:47:04 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (239 lines, 9139 chars) from D:\Orb\app\jobs\engine.py → D:\Orb\app\jobs\_engine_utils.py
+2026-02-22 20:47:07 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 37: BOOT FAILED for D:\Orb\app\jobs\engine.py. Rolled back.
+2026-02-22 20:47:09 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1467ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:47:09 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (640 lines, 31310 chars) from D:\Orb\app\llm\___spec_gate_stream_utils_1_utils_1_utils.py → D:\Orb\app\llm\____spec_gate_stream_utils_1_utils_1_utils_utils.py
+2026-02-22 20:47:09 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] Pass 38: Spawn guard — extracted module ____spec_gate_stream_utils_1_utils_1_utils_utils.py is 32.2KB (still oversized). Rolling back.
+2026-02-22 20:47:10 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1462ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:47:10 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (73 lines, 2694 chars) from D:\Orb\app\llm\job_classifier.py → D:\Orb\app\llm\_job_classifier_utils.py
+2026-02-22 20:47:11 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 39: BOOT FAILED for D:\Orb\app\llm\job_classifier.py. Rolled back.
+2026-02-22 20:47:13 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1398ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:47:13 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 45)
+2026-02-22 20:47:13 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\overwatcher\overwatcher_command.py
+2026-02-22 20:47:13 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 40: No extraction possible for D:\Orb\app\overwatcher\overwatcher_command.py: No extractable symbols found
+2026-02-22 20:47:14 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1469ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:47:14 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (671 lines, 33710 chars) from D:\Orb\app\llm\___weaver_stream_utils_6_utils_1_utils.py → D:\Orb\app\llm\____weaver_stream_utils_6_utils_1_utils_utils.py
+2026-02-22 20:47:14 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] Pass 41: Spawn guard — extracted module ____weaver_stream_utils_6_utils_1_utils_utils.py is 34.9KB (still oversized). Rolling back.
+2026-02-22 20:47:15 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1391ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:47:15 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 24)
+2026-02-22 20:47:15 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\llm\local_tools\zobie\streams\codebase_report.py
+2026-02-22 20:47:15 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 42: No extraction possible for D:\Orb\app\llm\local_tools\zobie\streams\codebase_report.py: No extractable symbols found
+2026-02-22 20:47:17 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1374ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:47:17 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 27)
+2026-02-22 20:47:17 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\orchestrator\refactor_segmenter.py
+2026-02-22 20:47:17 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 43: No extraction possible for D:\Orb\app\orchestrator\refactor_segmenter.py: No extractable symbols found
+2026-02-22 20:47:19 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1767ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:47:19 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (790 lines, 39295 chars) from D:\Orb\app\orchestrator\___segment_loop_utils_3_utils_1_utils.py → D:\Orb\app\orchestrator\____segment_loop_utils_3_utils_1_utils_utils.py
+2026-02-22 20:47:19 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] Pass 44: Spawn guard — extracted module ____segment_loop_utils_3_utils_1_utils_utils.py is 40.0KB (still oversized). Rolling back.
+2026-02-22 20:47:20 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1799ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:47:20 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\translation\intents.py
+2026-02-22 20:47:20 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 45: No extraction possible for D:\Orb\app\translation\intents.py: No extractable symbols found
+2026-02-22 20:47:22 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1562ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:47:22 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 47)
+2026-02-22 20:47:22 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\overwatcher\sandbox_build_validator.py
+2026-02-22 20:47:22 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 46: No extraction possible for D:\Orb\app\overwatcher\sandbox_build_validator.py: No extractable symbols found
+2026-02-22 20:47:24 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1611ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:47:24 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (108 lines, 4470 chars) from D:\Orb\app\llm\pipeline\high_stakes.py → D:\Orb\app\llm\pipeline\_high_stakes_utils.py
+2026-02-22 20:47:25 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 47: BOOT FAILED for D:\Orb\app\llm\pipeline\high_stakes.py. Rolled back.
+2026-02-22 20:47:26 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1654ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:47:26 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 40)
+2026-02-22 20:47:26 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\pot_spec\grounded\segmentation.py
+2026-02-22 20:47:26 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 48: No extraction possible for D:\Orb\app\pot_spec\grounded\segmentation.py: No extractable symbols found
+2026-02-22 20:47:28 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1747ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:47:28 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (969 lines, 52370 chars) from D:\Orb\app\pot_spec\grounded\___spec_runner_utils_5_utils_1_utils.py → D:\Orb\app\pot_spec\grounded\____spec_runner_utils_5_utils_1_utils_utils.py
+2026-02-22 20:47:28 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] Pass 49: Spawn guard — extracted module ____spec_runner_utils_5_utils_1_utils_utils.py is 53.3KB (still oversized). Rolling back.
+2026-02-22 20:47:30 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1549ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:47:30 [DEBUG  ] app.orchestrator.surgical_extractor: [surgical] Skipping large assignment USER_CHAT_PATTERNS (21 lines) — too big to copy
+2026-02-22 20:47:30 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (51 lines, 1538 chars) from D:\Orb\app\translation\tier0_rules.py → D:\Orb\app\translation\_tier0_rules_utils.py
+2026-02-22 20:47:31 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 50: BOOT FAILED for D:\Orb\app\translation\tier0_rules.py. Rolled back.
+2026-02-22 20:47:32 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1530ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:47:32 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 4 symbols (367 lines, 14737 chars) from D:\Orb\app\llm\critical_pipeline\stream_handler.py → D:\Orb\app\llm\critical_pipeline\_stream_handler_utils.py
+2026-02-22 20:47:36 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 51: BOOT FAILED for D:\Orb\app\llm\critical_pipeline\stream_handler.py. Rolled back.
+2026-02-22 20:47:37 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1698ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:47:37 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 64)
+2026-02-22 20:47:37 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\orchestrator\phase_checkout_checks.py
+2026-02-22 20:47:37 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 52: No extraction possible for D:\Orb\app\orchestrator\phase_checkout_checks.py: No extractable symbols found
+2026-02-22 20:47:39 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1545ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:47:39 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 53)
+2026-02-22 20:47:39 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\orchestrator\final_checkout.py
+2026-02-22 20:47:39 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 53: No extraction possible for D:\Orb\app\orchestrator\final_checkout.py: No extractable symbols found
+2026-02-22 20:47:41 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1564ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:47:41 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 81)
+2026-02-22 20:47:41 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\overwatcher\implementer.py
+2026-02-22 20:47:41 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 54: No extraction possible for D:\Orb\app\overwatcher\implementer.py: No extractable symbols found
+2026-02-22 20:47:42 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1546ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:47:42 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (1711 lines, 91580 chars) from D:\Orb\app\orchestrator\___segment_loop_utils_4_utils_1_utils.py → D:\Orb\app\orchestrator\____segment_loop_utils_4_utils_1_utils_utils.py
+2026-02-22 20:47:42 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] Pass 55: Spawn guard — extracted module ____segment_loop_utils_4_utils_1_utils_utils.py is 92.6KB (still oversized). Rolling back.
+2026-02-22 20:47:44 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1567ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:47:44 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (1696 lines, 92687 chars) from D:\Orb\app\overwatcher\architecture_executor\___orchestrator_utils_utils_utils.py → D:\Orb\app\overwatcher\architecture_executor\____orchestrator_utils_utils_utils_utils.py
+2026-02-22 20:47:44 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] Pass 56: Spawn guard — extracted module ____orchestrator_utils_utils_utils_utils.py is 93.8KB (still oversized). Rolling back.
+2026-02-22 20:47:46 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1779ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:47:46 [ERROR  ] asyncio: Task exception was never retrieved
+future: <Task finished name='Task-28' coro=<AsyncClient.aclose() done, defined at D:\Orb\.venv\Lib\site-packages\httpx\_client.py:1978> exception=RuntimeError('Event loop is closed')>
+Traceback (most recent call last):
+  File "D:\Orb\.venv\Lib\site-packages\httpx\_client.py", line 1985, in aclose
+    await self._transport.aclose()
+  File "D:\Orb\.venv\Lib\site-packages\httpx\_transports\default.py", line 406, in aclose
+    await self._pool.aclose()
+  File "D:\Orb\.venv\Lib\site-packages\httpcore\_async\connection_pool.py", line 353, in aclose
+    await self._close_connections(closing_connections)
+  File "D:\Orb\.venv\Lib\site-packages\httpcore\_async\connection_pool.py", line 345, in _close_connections
+    await connection.aclose()
+  File "D:\Orb\.venv\Lib\site-packages\httpcore\_async\connection.py", line 173, in aclose
+    await self._connection.aclose()
+  File "D:\Orb\.venv\Lib\site-packages\httpcore\_async\http11.py", line 258, in aclose
+    await self._network_stream.aclose()
+  File "D:\Orb\.venv\Lib\site-packages\httpcore\_backends\anyio.py", line 53, in aclose
+    await self._stream.aclose()
+  File "D:\Orb\.venv\Lib\site-packages\anyio\streams\tls.py", line 234, in aclose
+    await self.transport_stream.aclose()
+  File "D:\Orb\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 1323, in aclose
+    self._transport.close()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "G:\Lib\asyncio\proactor_events.py", line 109, in close
+    self._loop.call_soon(self._call_connection_lost, None)
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\Lib\asyncio\base_events.py", line 833, in call_soon
+    self._check_closed()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "G:\Lib\asyncio\base_events.py", line 556, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+2026-02-22 20:54:48 [INFO   ] app.logging_config: File logging initialised: D:\Orb\logs\astra.log (max 10 MB x 5 backups)
+2026-02-22 20:54:48 [DEBUG  ] app.db: [db_migrate] arch_code_chunks schema is up to date
+2026-02-22 20:54:48 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 1 projects
+2026-02-22 20:54:48 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 notes
+2026-02-22 20:54:48 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 10 messages
+2026-02-22 20:54:48 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 jobs
+2026-02-22 20:54:48 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 global prefs
+2026-02-22 20:54:58 [INFO   ] app.logging_config: File logging initialised: D:\Orb\logs\astra.log (max 10 MB x 5 backups)
+2026-02-22 20:54:58 [DEBUG  ] app.db: [db_migrate] arch_code_chunks schema is up to date
+2026-02-22 20:54:58 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 1 projects
+2026-02-22 20:54:58 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 notes
+2026-02-22 20:54:58 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 10 messages
+2026-02-22 20:54:58 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 jobs
+2026-02-22 20:54:58 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 global prefs
+2026-02-22 20:55:07 [DEBUG  ] asyncio: Using proactor: IocpProactor
+2026-02-22 20:55:07 [DEBUG  ] app.translation.translator: Mode: command, wake_phrase: Astra, command:
+2026-02-22 20:55:07 [DEBUG  ] app.translation.tier1_classifier: [LightweightLLMClient] Registry loaded successfully
+2026-02-22 20:55:14 [INFO   ] app.translation.phrase_cache: Added to phrase cache: 'refactor codebas' -> REFACTOR_CODEBASE
+2026-02-22 20:55:14 [DEBUG  ] app.llm.translation_routing: [translation] Mode=command, Intent=REFACTOR_CODEBASE, Execute=False, Tier=tier_1
+2026-02-22 20:55:14 [INFO   ] app.llm.stage_trace: [stage_trace] COMMAND_START: type=REFACTOR_CODEBASE, id=cmd_8d78fec1a7a8, project=1
+2026-02-22 20:55:16 [INFO   ] app.llm.stream_router: [stream_router] Confirmed intent bypass: REFACTOR_CODEBASE
+2026-02-22 20:55:16 [INFO   ] app.llm.stage_trace: [stage_trace] COMMAND_START: type=REFACTOR_CODEBASE, id=cmd_83b351ba8a61, project=1
+2026-02-22 20:55:16 [DEBUG  ] app.llm.stage_models: [stage_models] SPEC_GATE: anthropic/claude-opus-4-6
+2026-02-22 20:55:16 [DEBUG  ] app.llm.stage_models: [stage_models] WEAVER: openai/gpt-5.2
+2026-02-22 20:55:16 [DEBUG  ] app.llm.stage_models: [stage_models] CRITICAL_PIPELINE: openai/gpt-5.2
+2026-02-22 20:55:16 [DEBUG  ] app.llm.stage_models: [stage_models] OVERWATCHER: anthropic/claude-opus-4-6
+2026-02-22 20:55:16 [DEBUG  ] app.llm.translation_routing: [translation_routing] SpecGate: SPEC_GATE: anthropic/claude-opus-4-6
+2026-02-22 20:55:16 [DEBUG  ] app.llm.translation_routing: [translation_routing] Weaver: WEAVER: openai/gpt-5.2
+2026-02-22 20:55:16 [DEBUG  ] app.llm.translation_routing: [translation_routing] CriticalPipeline: CRITICAL_PIPELINE: openai/gpt-5.2
+2026-02-22 20:55:16 [DEBUG  ] app.llm.translation_routing: [translation_routing] Overwatcher: OVERWATCHER: anthropic/claude-opus-4-6
+2026-02-22 20:55:16 [INFO   ] app.llm.stage_trace: [stage_trace] STAGE_ENTER: refactor_loop (cmd=cmd_83b351ba8a61, provider=None, model=None)
+2026-02-22 20:55:18 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1379ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:55:18 [ERROR  ] asyncio: Task exception was never retrieved
+future: <Task finished name='Task-28' coro=<AsyncClient.aclose() done, defined at D:\Orb\.venv\Lib\site-packages\httpx\_client.py:1978> exception=RuntimeError('Event loop is closed')>
+Traceback (most recent call last):
+  File "D:\Orb\.venv\Lib\site-packages\httpx\_client.py", line 1985, in aclose
+    await self._transport.aclose()
+  File "D:\Orb\.venv\Lib\site-packages\httpx\_transports\default.py", line 406, in aclose
+    await self._pool.aclose()
+  File "D:\Orb\.venv\Lib\site-packages\httpcore\_async\connection_pool.py", line 353, in aclose
+    await self._close_connections(closing_connections)
+  File "D:\Orb\.venv\Lib\site-packages\httpcore\_async\connection_pool.py", line 345, in _close_connections
+    await connection.aclose()
+  File "D:\Orb\.venv\Lib\site-packages\httpcore\_async\connection.py", line 173, in aclose
+    await self._connection.aclose()
+  File "D:\Orb\.venv\Lib\site-packages\httpcore\_async\http11.py", line 258, in aclose
+    await self._network_stream.aclose()
+  File "D:\Orb\.venv\Lib\site-packages\httpcore\_backends\anyio.py", line 53, in aclose
+    await self._stream.aclose()
+  File "D:\Orb\.venv\Lib\site-packages\anyio\streams\tls.py", line 234, in aclose
+    await self.transport_stream.aclose()
+  File "D:\Orb\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 1323, in aclose
+    self._transport.close()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "G:\Lib\asyncio\proactor_events.py", line 109, in close
+    self._loop.call_soon(self._call_connection_lost, None)
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\Lib\asyncio\base_events.py", line 833, in call_soon
+    self._check_closed()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "G:\Lib\asyncio\base_events.py", line 556, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+2026-02-22 20:55:18 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (68 lines, 2357 chars) from D:\Orb\app\astra_memory\service.py → D:\Orb\app\astra_memory\_service_utils.py
+2026-02-22 20:55:19 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 1: BOOT FAILED for D:\Orb\app\astra_memory\service.py. Rolled back.
+2026-02-22 20:55:20 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1383ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:55:20 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (121 lines, 4828 chars) from D:\Orb\app\llm\routing\core.py → D:\Orb\app\llm\routing\_core_utils.py
+2026-02-22 20:55:21 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 2: BOOT FAILED for D:\Orb\app\llm\routing\core.py. Rolled back.
+2026-02-22 20:55:22 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1523ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:55:22 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 7 symbols (326 lines, 12033 chars) from D:\Orb\app\llm\streaming.py → D:\Orb\app\llm\_streaming_utils.py
+2026-02-22 20:55:24 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 3: BOOT FAILED for D:\Orb\app\llm\streaming.py. Rolled back.
+2026-02-22 20:55:25 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1620ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:55:25 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (151 lines, 4547 chars) from D:\Orb\app\pot_spec\evidence_collector.py → D:\Orb\app\pot_spec\_evidence_collector_utils.py
+2026-02-22 20:55:26 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 4: BOOT FAILED for D:\Orb\app\pot_spec\evidence_collector.py. Rolled back.
+2026-02-22 20:55:28 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1521ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:55:28 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (89 lines, 2361 chars) from D:\Orb\app\llm\token_budgeting.py → D:\Orb\app\llm\_token_budgeting_utils.py
+2026-02-22 20:55:29 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 5: BOOT FAILED for D:\Orb\app\llm\token_budgeting.py. Rolled back.
+2026-02-22 20:55:30 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1631ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:55:30 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 23)
+2026-02-22 20:55:30 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\orchestrator\implementation_compiler.py
+2026-02-22 20:55:30 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 6: No extraction possible for D:\Orb\app\orchestrator\implementation_compiler.py: No extractable symbols found
+2026-02-22 20:55:32 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1482ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:55:32 [DEBUG  ] app.orchestrator.surgical_extractor: [surgical] Skipping large assignment NON_DIRECTIVE_PATTERNS (81 lines) — too big to copy
+2026-02-22 20:55:32 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (345 lines, 11456 chars) from D:\Orb\app\translation\gates.py → D:\Orb\app\translation\_gates_utils.py
+2026-02-22 20:55:33 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 7: BOOT FAILED for D:\Orb\app\translation\gates.py. Rolled back.
+2026-02-22 20:55:35 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1669ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:55:35 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 7 symbols (347 lines, 11878 chars) from D:\Orb\app\llm\gemini_vision.py → D:\Orb\app\llm\_gemini_vision_utils.py
+2026-02-22 20:55:36 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 8: BOOT FAILED for D:\Orb\app\llm\gemini_vision.py. Rolled back.
+2026-02-22 20:55:37 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1501ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:55:37 [WARNING] app.orchestrator.surgical_extractor: [surgical] No extractable candidates in D:\Orb\app\pot_spec\spec_gate_grounded.py
+2026-02-22 20:55:37 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 9: No extraction possible for D:\Orb\app\pot_spec\spec_gate_grounded.py: No extractable symbols found
+2026-02-22 20:55:39 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1449ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:55:39 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (162 lines, 6623 chars) from D:\Orb\app\astra_memory\retrieval.py → D:\Orb\app\astra_memory\_retrieval_utils.py
+2026-02-22 20:55:40 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 10: BOOT FAILED for D:\Orb\app\astra_memory\retrieval.py. Rolled back.
+2026-02-22 20:55:41 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1484ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:55:41 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (155 lines, 5050 chars) from D:\Orb\app\llm\audit_logger.py → D:\Orb\app\llm\_audit_logger_utils.py
+2026-02-22 20:55:42 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 11: BOOT FAILED for D:\Orb\app\llm\audit_logger.py. Rolled back.
+2026-02-22 20:55:43 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1387ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:55:43 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (125 lines, 4073 chars) from D:\Orb\app\llm\policy.py → D:\Orb\app\llm\_policy_utils.py
+2026-02-22 20:55:45 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 12: BOOT FAILED for D:\Orb\app\llm\policy.py. Rolled back.
+2026-02-22 20:55:46 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1515ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:55:46 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 45)
+2026-02-22 20:55:46 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\overwatcher\pot_spec_executor.py
+2026-02-22 20:55:46 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 13: No extraction possible for D:\Orb\app\overwatcher\pot_spec_executor.py: No extractable symbols found
+2026-02-22 20:55:48 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1501ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:55:48 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 30)
+2026-02-22 20:55:48 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\overwatcher\executor.py
+2026-02-22 20:55:48 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 14: No extraction possible for D:\Orb\app\overwatcher\executor.py: No extractable symbols found
+2026-02-22 20:55:49 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1293ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:55:49 [WARNING] app.orchestrator.surgical_extractor: [surgical] No extractable candidates in D:\Orb\app\llm\weaver_stream.py
+2026-02-22 20:55:49 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 15: No extraction possible for D:\Orb\app\llm\weaver_stream.py: No extractable symbols found
+2026-02-22 20:55:50 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1400ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:55:50 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (474 lines, 20944 chars) from D:\Orb\app\llm\local_tools\zobie\streams\___archmap_full_utils_utils_1_utils.py → D:\Orb\app\llm\local_tools\zobie\streams\____archmap_full_utils_utils_1_utils_utils.py
+2026-02-22 20:55:50 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] Pass 16: Spawn guard — extracted module ____archmap_full_utils_utils_1_utils_utils.py is 22.2KB (still oversized). Rolling back.
+2026-02-22 20:55:52 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1290ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:55:52 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (111 lines, 3317 chars) from D:\Orb\app\llm\fallbacks.py → D:\Orb\app\llm\_fallbacks_utils.py
+2026-02-22 20:55:53 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 17: BOOT FAILED for D:\Orb\app\llm\fallbacks.py. Rolled back.
+2026-02-22 20:55:54 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1372ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:55:54 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (413 lines, 22763 chars) from D:\Orb\app\pot_spec\grounded\___simple_create_utils_6_utils_utils.py → D:\Orb\app\pot_spec\grounded\____simple_create_utils_6_utils_utils_utils.py
+2026-02-22 20:55:54 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] Pass 18: Spawn guard — extracted module ____simple_create_utils_6_utils_utils_utils.py is 23.1KB (still oversized). Rolling back.
+2026-02-22 20:55:56 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1610ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:55:56 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (542 lines, 23830 chars) from D:\Orb\app\rag\jobs\___embedding_job_utils_3_utils_utils.py → D:\Orb\app\rag\jobs\____embedding_job_utils_3_utils_utils_utils.py
+2026-02-22 20:55:56 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] Pass 19: Spawn guard — extracted module ____embedding_job_utils_3_utils_utils_utils.py is 24.5KB (still oversized). Rolling back.
+2026-02-22 20:55:57 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1444ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:55:57 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 4 symbols (343 lines, 13034 chars) from D:\Orb\app\llm\local_tools\zobie\fs_live_ops.py → D:\Orb\app\llm\local_tools\zobie\_fs_live_ops_utils.py
+2026-02-22 20:55:58 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 20: BOOT FAILED for D:\Orb\app\llm\local_tools\zobie\fs_live_ops.py. Rolled back.
+2026-02-22 20:55:59 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1436ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:55:59 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (23 lines, 815 chars) from D:\Orb\app\llm\high_stakes_stream.py → D:\Orb\app\llm\_high_stakes_stream_utils.py
+2026-02-22 20:56:02 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 21: BOOT FAILED for D:\Orb\app\llm\high_stakes_stream.py. Rolled back.
+2026-02-22 20:56:04 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1362ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:56:04 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (174 lines, 5651 chars) from D:\Orb\app\llm\preprocessor.py → D:\Orb\app\llm\_preprocessor_utils.py
+2026-02-22 20:56:05 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 22: BOOT FAILED for D:\Orb\app\llm\preprocessor.py. Rolled back.
+2026-02-22 20:56:06 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1494ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:56:06 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (189 lines, 6222 chars) from D:\Orb\app\llm\file_classifier.py → D:\Orb\app\llm\_file_classifier_utils.py
+2026-02-22 20:56:07 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 23: BOOT FAILED for D:\Orb\app\llm\file_classifier.py. Rolled back.
+2026-02-22 20:56:09 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1362ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:56:09 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 4 symbols (55 lines, 2139 chars) from D:\Orb\app\llm\routing\command_dispatch.py → D:\Orb\app\llm\routing\_command_dispatch_utils.py
+2026-02-22 20:56:11 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 24: BOOT FAILED for D:\Orb\app\llm\routing\command_dispatch.py. Rolled back.
+2026-02-22 20:56:13 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1405ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:56:13 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 27)
+2026-02-22 20:56:13 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\orchestrator\codebase_scanner.py
+2026-02-22 20:56:13 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 25: No extraction possible for D:\Orb\app\orchestrator\codebase_scanner.py: No extractable symbols found
+2026-02-22 20:56:14 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1335ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:56:14 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (509 lines, 26193 chars) from D:\Orb\app\orchestrator\___cohesion_check_utils_4_utils_utils.py → D:\Orb\app\orchestrator\____cohesion_check_utils_4_utils_utils_utils.py
+2026-02-22 20:56:14 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] Pass 26: Spawn guard — extracted module ____cohesion_check_utils_4_utils_utils_utils.py is 26.4KB (still oversized). Rolling back.
+2026-02-22 20:56:16 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1474ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:56:16 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (107 lines, 4127 chars) from D:\Orb\app\providers\registry.py → D:\Orb\app\providers\_registry_utils.py
+2026-02-22 20:56:17 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 27: BOOT FAILED for D:\Orb\app\providers\registry.py. Rolled back.
+2026-02-22 20:56:18 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1503ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:56:18 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: (unicode error) 'unicodeescape' codec can't decode bytes in position 120-121: truncated \UXXXXXXXX escape (<unknown>, line 2)
+2026-02-22 20:56:18 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\llm\local_tools\host_fs_scanner.py
+2026-02-22 20:56:18 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 28: No extraction possible for D:\Orb\app\llm\local_tools\host_fs_scanner.py: No extractable symbols found
+2026-02-22 20:56:20 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1519ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:56:20 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (196 lines, 6872 chars) from D:\Orb\app\specs\schema.py → D:\Orb\app\specs\_schema_utils.py
+2026-02-22 20:56:23 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 29: BOOT FAILED for D:\Orb\app\specs\schema.py. Rolled back.
+2026-02-22 20:56:24 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1552ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:56:24 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 7 symbols (320 lines, 12467 chars) from D:\Orb\app\llm\pipeline\revision.py → D:\Orb\app\llm\pipeline\_revision_utils.py
+2026-02-22 20:56:25 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 30: BOOT FAILED for D:\Orb\app\llm\pipeline\revision.py. Rolled back.
+2026-02-22 20:56:27 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1369ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:56:27 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 6 symbols (393 lines, 15549 chars) from D:\Orb\app\llm\pipeline\critique_schemas.py → D:\Orb\app\llm\pipeline\_critique_schemas_utils.py
+2026-02-22 20:56:27 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 31: BOOT FAILED for D:\Orb\app\llm\pipeline\critique_schemas.py. Rolled back.
+2026-02-22 20:56:29 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1371ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:56:29 [DEBUG  ] app.orchestrator.surgical_extractor: [surgical] Skipping large assignment TOOL_DISPATCH (41 lines) — too big to copy
+2026-02-22 20:56:29 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (388 lines, 16455 chars) from D:\Orb\app\llm\pipeline\evidence_loop.py → D:\Orb\app\llm\pipeline\_evidence_loop_utils.py
+2026-02-22 20:56:30 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 32: BOOT FAILED for D:\Orb\app\llm\pipeline\evidence_loop.py. Rolled back.
+2026-02-22 20:56:31 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1445ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:56:31 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 59)
+2026-02-22 20:56:31 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\llm\local_tools\zobie\streams\fs_query.py
+2026-02-22 20:56:31 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 33: No extraction possible for D:\Orb\app\llm\local_tools\zobie\streams\fs_query.py: No extractable symbols found
+2026-02-22 20:56:32 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1348ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:56:32 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (275 lines, 11705 chars) from D:\Orb\app\llm\stream_router.py → D:\Orb\app\llm\_stream_router_utils.py
+2026-02-22 20:56:34 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 34: BOOT FAILED for D:\Orb\app\llm\stream_router.py. Rolled back.
+2026-02-22 20:56:36 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1827ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:56:36 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 3 symbols (200 lines, 8528 chars) from D:\Orb\app\llm\pipeline\critique.py → D:\Orb\app\llm\pipeline\_critique_utils.py
+2026-02-22 20:56:37 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 35: BOOT FAILED for D:\Orb\app\llm\pipeline\critique.py. Rolled back.
+2026-02-22 20:56:38 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 565 files in 1850ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:56:38 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (388 lines, 13306 chars) from D:\Orb\app\endpoints\chat_attachments.py → D:\Orb\app\endpoints\_chat_attachments_utils.py

@@ -231,7 +231,6 @@ This file is now a thin re-export layer over the grounded subpackage.
 All implementation lives in app/pot_spec/grounded/*.py modules.
 External imports should continue to work via this file or can
 import directly from app.pot_spec.grounded for specific modules.
-from app.pot_spec._spec_gate_grounded_utils import _version_check
 ============================================================
 """
 
@@ -298,6 +297,16 @@ from app.pot_spec.grounded import (
 # =============================================================================
 # VERSION DIAGNOSTIC (for debugging import issues)
 # =============================================================================
+
+def _version_check():
+    """Quick diagnostic to verify module loading."""
+    import sys
+    grounded_modules = [k for k in sys.modules.keys() if 'grounded' in k]
+    return {
+        'version': 'v1.25 (modularized)',
+        'loaded_modules': grounded_modules,
+        'main_entry': 'run_spec_gate_grounded',
+    }
 
 # =============================================================================
 # BACKWARD COMPATIBILITY

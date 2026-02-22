@@ -123,6 +123,7 @@ class StreamRequest(BaseModel):
     enable_reasoning: bool = False
     continue_job_id: Optional[str] = None
     job_state: Optional[str] = None
+    confirmed_intent: Optional[str] = None  # v1.9: bypass translation for confirmed commands
 
 
 # =============================================================================
@@ -155,6 +156,44 @@ async def stream_chat(
     
     stage_trace = None
     
+    # =========================================================================
+    # CONFIRMED INTENT BYPASS (v1.9)
+    # When the frontend sends confirmed_intent, skip translation entirely
+    # and dispatch directly to the command handler.
+    # =========================================================================
+    if req.confirmed_intent:
+        try:
+            direct_intent = CanonicalIntent(req.confirmed_intent)
+            logger.info(f"[stream_router] Confirmed intent bypass: {direct_intent.value}")
+            stage_trace = create_stage_trace(direct_intent.value, req.project_id)
+            
+            from app.translation.schemas import (
+                TranslationResult, ConfirmationGateResult, LatencyTier,
+            )
+            translation_result = TranslationResult(
+                original_text=req.message,
+                mode=TranslationMode.COMMAND_CAPABLE,
+                resolved_intent=direct_intent,
+                intent_confidence=1.0,
+                latency_tier=LatencyTier.TIER_0_RULES,
+                confirmation_gate=ConfirmationGateResult(
+                    gate_name="confirmation",
+                    passed=True,
+                    requires_confirmation=False,
+                    awaiting_confirmation=False,
+                ),
+            )
+            
+            sse_headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+            response = handle_command_execution(
+                req, translation_result, db, trace, conversation_id, stage_trace
+            )
+            if response:
+                return response
+            logger.warning(f"[stream_router] Confirmed intent {direct_intent.value} had no handler, falling through")
+        except (ValueError, KeyError) as e:
+            logger.warning(f"[stream_router] Invalid confirmed_intent '{req.confirmed_intent}': {e}")
+
     # =========================================================================
     # TRANSLATION LAYER ROUTING
     # =========================================================================

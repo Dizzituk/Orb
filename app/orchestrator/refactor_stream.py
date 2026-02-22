@@ -3,9 +3,16 @@
 Refactor Stream Handler — SSE stream for the refactor loop.
 
 Yields Server-Sent Events as the refactor loop progresses.
-Integrates with the ASTRA streaming infrastructure.
+Uses the same SSE format as all other ASTRA streams:
+  data: {"type": "token", "content": "..."}\n\n
+
+v2.0 (2026-02-22): Fixed SSE format to match frontend expectations
+v2.1 (2026-02-22): Added asyncio.sleep(0) after each yield to force flush.
+  Without await points, the event loop buffers all yields until the generator
+  completes, causing the entire output to appear at once instead of streaming.
 """
 
+import asyncio
 import json
 import logging
 from typing import AsyncGenerator
@@ -20,14 +27,24 @@ from app.orchestrator.refactor_loop import (
 logger = logging.getLogger(__name__)
 
 
-def _sse(event: str, data: dict) -> str:
-    """Format an SSE message."""
-    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+def _sse_token(text: str) -> str:
+    """Send content that appears in the chat bubble."""
+    return "data: " + json.dumps({"type": "token", "content": text}) + "\n\n"
 
 
-def _done_event(summary: str) -> str:
-    """Build the 'done' SSE event the frontend requires to close the stream cleanly."""
-    return _sse("done", {"provider": "local", "model": "refactor-loop", "summary": summary})
+def _sse_meta(event_type: str, data: dict) -> str:
+    """Send a metadata/progress event (not rendered as text)."""
+    return "data: " + json.dumps({"type": event_type, **data}) + "\n\n"
+
+
+def _sse_done(summary: str) -> str:
+    """Send the done event that closes the stream cleanly."""
+    return "data: " + json.dumps({
+        "type": "done",
+        "provider": "local",
+        "model": "refactor-loop",
+        "summary": summary,
+    }) + "\n\n"
 
 
 async def generate_refactor_stream(
@@ -40,15 +57,9 @@ async def generate_refactor_stream(
 
     job_id = f"refactor-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
-    yield _sse("refactor_start", {
-        "job_id": job_id,
-        "max_passes": max_passes,
-        "min_size_kb": min_size_kb,
-    })
-
-    yield _sse("content", {
-        "text": f"🔧 **Refactor Loop Started** (job: `{job_id}`)\n\n",
-    })
+    yield _sse_meta("metadata", {"provider": "local", "model": "refactor-loop"})
+    yield _sse_token(f"🔧 **Refactor Loop Started** (job: `{job_id}`)\n\n")
+    await asyncio.sleep(0)
 
     files_touched = set()
     files_errored = set()
@@ -58,11 +69,12 @@ async def generate_refactor_stream(
     starting_oversized = None
 
     for pass_num in range(1, max_passes + 1):
+        await asyncio.sleep(0)
+
         scan = scan_for_refactor(min_size_kb=min_size_kb)
         if starting_oversized is None:
             starting_oversized = scan.oversized_files
 
-        # Skip errored/created files — pick next viable candidate
         skip_set = files_errored | files_created
         if scan.next_file and scan.next_file.path in skip_set:
             found_viable = False
@@ -77,56 +89,40 @@ async def generate_refactor_stream(
 
         if scan.next_file is None:
             resolved = (starting_oversized or 0) - scan.oversized_files
-            yield _sse("content", {
-                "text": (
-                    f"\n✅ **Refactor Complete!** No more viable candidates.\n"
-                    f"- Started: {starting_oversized} oversized\n"
-                    f"- Remaining: {scan.oversized_files}\n"
-                    f"- Resolved: {resolved}\n"
-                    f"- Passes: {passes_completed}\n"
-                    f"- Files touched: {len(files_touched)}\n"
-                    f"- Total reduced: {total_kb_reduced:.1f}KB\n"
-                    f"- Skipped (errors/unfixable): {len(files_errored)}\n"
-                ),
-            })
-            yield _sse("refactor_complete", {
-                "job_id": job_id,
-                "status": "complete",
-                "passes_completed": passes_completed,
-                "files_touched": len(files_touched),
-                "total_kb_reduced": total_kb_reduced,
-            })
-            yield _done_event(f"Refactor complete: {passes_completed} passes, {total_kb_reduced:.1f}KB reduced")
+            yield _sse_token(
+                f"\n✅ **Refactor Complete!** No more viable candidates.\n"
+                f"- Started: {starting_oversized} oversized\n"
+                f"- Remaining: {scan.oversized_files}\n"
+                f"- Resolved: {resolved}\n"
+                f"- Passes: {passes_completed}\n"
+                f"- Files touched: {len(files_touched)}\n"
+                f"- Total reduced: {total_kb_reduced:.1f}KB\n"
+                f"- Skipped (errors/unfixable): {len(files_errored)}\n"
+            )
+            await asyncio.sleep(0)
+            yield _sse_done(
+                f"Refactor complete: {passes_completed} passes, {total_kb_reduced:.1f}KB reduced"
+            )
             return
 
         target = scan.next_file
         short_path = target.path.replace("D:\\Orb\\", "")
         resolved = (starting_oversized or 0) - scan.oversized_files
 
-        yield _sse("content", {
-            "text": (
-                f"**Pass {pass_num}:** `{short_path}` "
-                f"({target.size_kb:.1f}KB) "
-                f"[{scan.oversized_files} oversized, {resolved} resolved, "
-                f"{total_kb_reduced:.0f}KB reduced]\n"
-            ),
-        })
+        yield _sse_token(
+            f"**Pass {pass_num}:** `{short_path}` "
+            f"({target.size_kb:.1f}KB) "
+            f"[{scan.oversized_files} oversized, {resolved} resolved, "
+            f"{total_kb_reduced:.0f}KB reduced]\n"
+        )
+        await asyncio.sleep(0)
 
-        yield _sse("refactor_pass_start", {
-            "pass_number": pass_num,
-            "file": short_path,
-            "size_kb": target.size_kb,
-            "score": target.extractability_score,
-        })
-
-        # Run extraction
         try:
             result = run_refactor_pass(target.path, pass_num, job_id)
         except Exception as exc:
             files_errored.add(target.path)
-            yield _sse("content", {
-                "text": f"  → ❌ **Error:** {str(exc)[:100]}\n",
-            })
+            yield _sse_token(f"  → ❌ **Error:** {str(exc)[:100]}\n")
+            await asyncio.sleep(0)
             continue
         passes_completed = pass_num
 
@@ -137,50 +133,41 @@ async def generate_refactor_stream(
             if result.new_module_path:
                 files_created.add(result.new_module_path)
 
-            yield _sse("content", {
-                "text": (
-                    f"  → {result.file_size_before_kb:.1f}KB → "
-                    f"{result.file_size_after_kb:.1f}KB "
-                    f"(-{kb_saved:.1f}KB, {result.symbols_extracted} symbols) "
-                    f"✅ Boot OK\n"
-                ),
-            })
+            yield _sse_token(
+                f"  → {result.file_size_before_kb:.1f}KB → "
+                f"{result.file_size_after_kb:.1f}KB "
+                f"(-{kb_saved:.1f}KB, {result.symbols_extracted} symbols) "
+                f"✅ Boot OK\n"
+            )
+            await asyncio.sleep(0)
 
         elif result.rolled_back:
             files_errored.add(target.path)
-            yield _sse("content", {
-                "text": f"  → ❌ **Boot Failed** — rolled back, skipping.\n",
-            })
+            yield _sse_token(f"  → ❌ **Rolled back** — skipping.\n")
+            await asyncio.sleep(0)
             continue
 
         elif result.error:
             files_errored.add(target.path)
             error_short = result.error[:80] if result.error else "unknown"
-            yield _sse("content", {
-                "text": f"  → ⏭️ Skipping: {error_short}\n",
-            })
+            yield _sse_token(f"  → ⏭️ Skipping: {error_short}\n")
+            await asyncio.sleep(0)
             continue
 
-        yield _sse("refactor_progress", {
-            "passes_completed": passes_completed,
-            "files_touched": len(files_touched),
-            "total_kb_reduced": total_kb_reduced,
-            "remaining_oversized": scan.oversized_files,
-            "starting_oversized": starting_oversized,
+        yield _sse_meta("refactor_progress", {
+            "pct": round(100 * passes_completed / max(starting_oversized or 1, 1)),
+            "pass_number": passes_completed,
+            "total_files": starting_oversized or 0,
+            "files_done": len(files_touched),
+            "current_file": short_path,
+            "status": "running",
         })
 
-    # Max passes reached
-    yield _sse("content", {
-        "text": (
-            f"\n⚠️ **Max passes reached** ({max_passes}). "
-            f"Reduced {total_kb_reduced:.1f}KB across {len(files_touched)} files.\n"
-        ),
-    })
-    yield _sse("refactor_complete", {
-        "job_id": job_id,
-        "status": "max_passes_reached",
-        "passes_completed": passes_completed,
-        "files_touched": len(files_touched),
-        "total_kb_reduced": total_kb_reduced,
-    })
-    yield _done_event(f"Refactor max passes: {passes_completed} passes, {total_kb_reduced:.1f}KB reduced")
+    yield _sse_token(
+        f"\n⚠️ **Max passes reached** ({max_passes}). "
+        f"Reduced {total_kb_reduced:.1f}KB across {len(files_touched)} files.\n"
+    )
+    await asyncio.sleep(0)
+    yield _sse_done(
+        f"Refactor max passes: {passes_completed} passes, {total_kb_reduced:.1f}KB reduced"
+    )
