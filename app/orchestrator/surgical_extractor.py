@@ -483,10 +483,11 @@ def _collect_needed_imports(
                 names_provided_by_imports.update(matched)
 
     # Find local assignments (type aliases, constants) that are referenced
-    # but not provided by imports and not being extracted
+    # but not provided by imports and not being extracted.
+    # Walk ALL nodes (not just top-level) to catch assignments inside try/except blocks.
     still_needed = used_names - names_provided_by_imports - extracted_names
     if still_needed:
-        for node in ast.iter_child_nodes(tree):
+        for node in ast.walk(tree):
             if isinstance(node, ast.Assign):
                 for target in node.targets:
                     if not isinstance(target, ast.Name):

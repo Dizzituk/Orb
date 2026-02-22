@@ -2,13 +2,7 @@
 """
 Refactor Stream Handler — SSE stream for the refactor loop.
 
-Yields Server-Sent Events as the refactor loop progresses:
-- scan results
-- extraction progress
-- boot check results
-- pass summaries
-- completion or failure
-
+Yields Server-Sent Events as the refactor loop progresses.
 Integrates with the ASTRA streaming infrastructure.
 """
 
@@ -37,30 +31,15 @@ def _done_event(summary: str) -> str:
 
 
 async def generate_refactor_stream(
-    max_passes: int = 100,
+    max_passes: int = 10000,
     min_size_kb: float = 20.0,
     **kwargs,
 ) -> AsyncGenerator[str, None]:
-    """
-    Stream the refactor loop as SSE events.
-    
-    Events:
-    - refactor_start: Loop beginning
-    - refactor_scan: Scan results (next file, progress)
-    - refactor_pass_start: Starting extraction on a file
-    - refactor_pass_complete: Extraction result
-    - refactor_progress: Running totals
-    - refactor_complete: Loop finished
-    - refactor_error: Something went wrong
-    - content: Text updates for the chat UI
-    - done: Required by frontend to close stream cleanly
-    """
     import uuid
     from datetime import datetime
 
     job_id = f"refactor-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
-    # Start event
     yield _sse("refactor_start", {
         "job_id": job_id,
         "max_passes": max_passes,
@@ -72,14 +51,16 @@ async def generate_refactor_stream(
     })
 
     files_touched = set()
-    files_errored = set()  # Files that failed extraction — skip on rescan
-    files_created = set()  # New modules created by extraction — never re-extract these
+    files_errored = set()
+    files_created = set()
     total_kb_reduced = 0.0
     passes_completed = 0
+    starting_oversized = None
 
     for pass_num in range(1, max_passes + 1):
-        # SCAN
         scan = scan_for_refactor(min_size_kb=min_size_kb)
+        if starting_oversized is None:
+            starting_oversized = scan.oversized_files
 
         # Skip errored/created files — pick next viable candidate
         skip_set = files_errored | files_created
@@ -94,26 +75,18 @@ async def generate_refactor_stream(
             if not found_viable:
                 scan.next_file = None
 
-        yield _sse("refactor_scan", {
-            "pass_number": pass_num,
-            "oversized_files": scan.oversized_files,
-            "scan_duration_ms": scan.scan_duration_ms,
-            "next_file": {
-                "path": scan.next_file.path if scan.next_file else None,
-                "size_kb": scan.next_file.size_kb if scan.next_file else 0,
-                "score": scan.next_file.extractability_score if scan.next_file else 0,
-                "role": scan.next_file.role if scan.next_file else "",
-            } if scan.next_file else None,
-            "progress": scan.progress,
-        })
-
         if scan.next_file is None:
+            resolved = (starting_oversized or 0) - scan.oversized_files
             yield _sse("content", {
                 "text": (
-                    f"\n✅ **Refactor Complete!** No more oversized files.\n"
+                    f"\n✅ **Refactor Complete!** No more viable candidates.\n"
+                    f"- Started: {starting_oversized} oversized\n"
+                    f"- Remaining: {scan.oversized_files}\n"
+                    f"- Resolved: {resolved}\n"
                     f"- Passes: {passes_completed}\n"
                     f"- Files touched: {len(files_touched)}\n"
                     f"- Total reduced: {total_kb_reduced:.1f}KB\n"
+                    f"- Skipped (errors/unfixable): {len(files_errored)}\n"
                 ),
             })
             yield _sse("refactor_complete", {
@@ -128,11 +101,14 @@ async def generate_refactor_stream(
 
         target = scan.next_file
         short_path = target.path.replace("D:\\Orb\\", "")
+        resolved = (starting_oversized or 0) - scan.oversized_files
 
         yield _sse("content", {
             "text": (
                 f"**Pass {pass_num}:** `{short_path}` "
-                f"({target.size_kb:.1f}KB, score={target.extractability_score:.1f})\n"
+                f"({target.size_kb:.1f}KB) "
+                f"[{scan.oversized_files} oversized, {resolved} resolved, "
+                f"{total_kb_reduced:.0f}KB reduced]\n"
             ),
         })
 
@@ -143,7 +119,7 @@ async def generate_refactor_stream(
             "score": target.extractability_score,
         })
 
-        # DO — run extraction
+        # Run extraction
         try:
             result = run_refactor_pass(target.path, pass_num, job_id)
         except Exception as exc:
@@ -151,16 +127,7 @@ async def generate_refactor_stream(
             yield _sse("content", {
                 "text": f"  → ❌ **Error:** {str(exc)[:100]}\n",
             })
-            yield _sse("refactor_complete", {
-                "job_id": job_id,
-                "status": "error",
-                "reason": str(exc)[:200],
-                "passes_completed": passes_completed,
-                "files_touched": len(files_touched),
-                "total_kb_reduced": total_kb_reduced,
-            })
-            yield _done_event(f"Refactor error on pass {pass_num}: {str(exc)[:80]}")
-            return
+            continue
         passes_completed = pass_num
 
         if result.boot_passed:
@@ -184,12 +151,6 @@ async def generate_refactor_stream(
             yield _sse("content", {
                 "text": f"  → ❌ **Boot Failed** — rolled back, skipping.\n",
             })
-            yield _sse("refactor_error", {
-                "job_id": job_id,
-                "pass_number": pass_num,
-                "error": "Boot check failed",
-                "file": short_path,
-            })
             continue
 
         elif result.error:
@@ -200,20 +161,12 @@ async def generate_refactor_stream(
             })
             continue
 
-        yield _sse("refactor_pass_complete", {
-            "pass_number": pass_num,
-            "boot_passed": result.boot_passed,
-            "size_before": result.file_size_before_kb,
-            "size_after": result.file_size_after_kb,
-            "symbols_extracted": result.symbols_extracted,
-            "duration_ms": result.duration_ms,
-        })
-
         yield _sse("refactor_progress", {
             "passes_completed": passes_completed,
             "files_touched": len(files_touched),
             "total_kb_reduced": total_kb_reduced,
             "remaining_oversized": scan.oversized_files,
+            "starting_oversized": starting_oversized,
         })
 
     # Max passes reached
