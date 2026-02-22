@@ -182,6 +182,7 @@ async def generate_refactor_stream(
                 strikes = rec.strikes if rec else 1
                 yield _sse_token(f"  → ❌ **Rolled back** (strike {strikes}/3)\n")
             await asyncio.sleep(0)
+            continue
 
         elif result.error:
             files_errored.add(target.path)
@@ -197,15 +198,13 @@ async def generate_refactor_stream(
                 strikes = rec.strikes if rec else 1
                 yield _sse_token(f"  → ⏭️ Skipping (strike {strikes}/3): {error_short}\n")
             await asyncio.sleep(0)
+            continue
 
-        # Progress: pass_num / starting_oversized, capped at 100%
-        pct = min(round(100 * pass_num / max(starting_oversized or 1, 1)), 100)
         yield _sse_meta("refactor_progress", {
-            "pct": pct,
-            "pass_number": pass_num,
+            "pct": round(100 * passes_completed / max(starting_oversized or 1, 1)),
+            "pass_number": passes_completed,
             "total_files": starting_oversized or 0,
             "files_done": len(files_touched),
-            "files_errored": len(files_errored),
             "current_file": short_path,
             "status": "running",
         })

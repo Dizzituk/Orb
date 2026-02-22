@@ -546,6 +546,35 @@ def _collect_needed_imports(
                         needed.append(ast.get_source_segment(source_code, node) or "")
                         names_provided_by_imports.add(check_name)
 
+    # For names STILL unresolved (defined in parent as classes/large constants),
+    # add an import from the parent module so the _utils file can access them.
+    final_unresolved = still_needed if still_needed else set()
+    # Also check used_names that weren't in still_needed but aren't provided
+    final_unresolved = (used_names - names_provided_by_imports - extracted_names)
+    if final_unresolved:
+        # Find which names are actually defined at module level in the source
+        parent_defined: Set[str] = set()
+        for node in ast.iter_child_nodes(tree):
+            if isinstance(node, ast.ClassDef) and node.name in final_unresolved:
+                parent_defined.add(node.name)
+            elif isinstance(node, ast.Assign):
+                for t in node.targets:
+                    if isinstance(t, ast.Name) and t.id in final_unresolved:
+                        parent_defined.add(t.id)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name in final_unresolved:
+                    parent_defined.add(node.name)
+        # Build a back-import from the parent file
+        if parent_defined:
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            source_dir = os.path.dirname(plan.source_file)
+            rel_dir = os.path.relpath(source_dir, project_root)
+            pkg_path = rel_dir.replace(os.sep, ".").replace("/", ".")
+            parent_stem = os.path.splitext(os.path.basename(plan.source_file))[0]
+            back_import = f"from {pkg_path}.{parent_stem} import {', '.join(sorted(parent_defined))}"
+            needed.append(back_import)
+            names_provided_by_imports.update(parent_defined)
+
     # Always include common stdlib
     has_logging = any("logger" in "\n".join(source_lines[s.line_start-1:s.line_end]) for s in symbols)
     if has_logging and not any("import logging" in n for n in needed):

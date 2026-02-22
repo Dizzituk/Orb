@@ -2,6 +2,30 @@ import logging
 import re
 from enum import Enum
 from typing import List, Optional
+
+# Re-exports: these symbols were moved to _utils_1/_utils_2/_utils_3 by the
+# refactor extractor but other modules still import them from here.
+# Lazy __getattr__ avoids circular imports.
+_REEXPORT_MAP = {
+    # _sandbox_discovery_utils_1
+    "SYSTEM_SCAN_INDICATORS": "_sandbox_discovery_utils_1",
+    "detect_output_mode": "_sandbox_discovery_utils_1",
+    "get_system_scan_targets": "_sandbox_discovery_utils_1",
+    # _sandbox_discovery_utils_2
+    "extract_scan_file_names": "_sandbox_discovery_utils_2",
+    "is_system_wide_scan_request": "_sandbox_discovery_utils_2",
+    # _sandbox_discovery_utils_3
+    "FILENAME_STOPWORDS": "_sandbox_discovery_utils_3",
+    "extract_file_targets": "_sandbox_discovery_utils_3",
+}
+
+def __getattr__(name):
+    if name in _REEXPORT_MAP:
+        import importlib
+        mod = importlib.import_module(f"app.pot_spec.grounded.{_REEXPORT_MAP[name]}")
+        return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 

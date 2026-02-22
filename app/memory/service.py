@@ -8,14 +8,28 @@ v0.12.4: Fixed create_message() to properly save provider, model, and reasoning 
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from app.memory import models, schemas
-from app.memory._service_utils import create_project, get_document_content_by_file_id, get_file_by_name, get_latest_document_content, get_project_by_name, list_files, list_messages, list_projects
 
 
 # ============== PROJECT ==============
 
+def create_project(db: Session, data: schemas.ProjectCreate) -> models.Project:
+    project = models.Project(name=data.name, description=data.description)
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+    return project
+
 
 def get_project(db: Session, project_id: int) -> Optional[models.Project]:
     return db.query(models.Project).filter(models.Project.id == project_id).first()
+
+
+def get_project_by_name(db: Session, name: str) -> Optional[models.Project]:
+    return db.query(models.Project).filter(models.Project.name == name).first()
+
+
+def list_projects(db: Session) -> List[models.Project]:
+    return db.query(models.Project).order_by(models.Project.created_at.desc()).all()
 
 
 def update_project(db: Session, project_id: int, data: schemas.ProjectUpdate) -> Optional[models.Project]:
@@ -341,6 +355,25 @@ def get_file(db: Session, file_id: int) -> Optional[models.File]:
     return db.query(models.File).filter(models.File.id == file_id).first()
 
 
+def get_file_by_name(db: Session, project_id: int, filename: str) -> Optional[models.File]:
+    return (
+        db.query(models.File)
+        .filter(models.File.project_id == project_id)
+        .filter(models.File.original_name.ilike(f"%{filename}%"))
+        .order_by(models.File.created_at.desc())
+        .first()
+    )
+
+
+def list_files(db: Session, project_id: int) -> List[models.File]:
+    return (
+        db.query(models.File)
+        .filter(models.File.project_id == project_id)
+        .order_by(models.File.created_at.desc())
+        .all()
+    )
+
+
 def delete_file(db: Session, file_id: int) -> bool:
     file_record = get_file(db, file_id)
     if not file_record:
@@ -412,6 +445,16 @@ def create_message(db: Session, data: schemas.MessageCreate) -> models.Message:
     _index_message_if_enabled(db, msg)
     
     return msg
+
+
+def list_messages(db: Session, project_id: int, limit: int = 100) -> List[models.Message]:
+    return (
+        db.query(models.Message)
+        .filter(models.Message.project_id == project_id)
+        .order_by(models.Message.created_at.asc())
+        .limit(limit)
+        .all()
+    )
 
 
 def delete_messages_for_project(db: Session, project_id: int) -> int:
@@ -513,6 +556,16 @@ def create_document_content(
     return doc
 
 
+def get_document_content_by_file_id(
+    db: Session, file_id: int
+) -> Optional[models.DocumentContent]:
+    return (
+        db.query(models.DocumentContent)
+        .filter(models.DocumentContent.file_id == file_id)
+        .first()
+    )
+
+
 def get_document_content_by_filename(
     db: Session, project_id: int, filename: str
 ) -> Optional[models.DocumentContent]:
@@ -550,6 +603,17 @@ def search_document_contents(
         )
         .order_by(models.DocumentContent.created_at.desc())
         .all()
+    )
+
+
+def get_latest_document_content(
+    db: Session, project_id: int
+) -> Optional[models.DocumentContent]:
+    return (
+        db.query(models.DocumentContent)
+        .filter(models.DocumentContent.project_id == project_id)
+        .order_by(models.DocumentContent.created_at.desc())
+        .first()
     )
 
 

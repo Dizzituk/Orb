@@ -42,7 +42,6 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.overwatcher.pot_spec_parser import POTAtomicTask, POTParseResult
 from app.overwatcher.sandbox_client import (
-from app.overwatcher._pot_spec_executor_utils import MAX_CONSECUTIVE_ERRORS, POT_EXECUTOR_BUILD_ID, READ_TIMEOUT, WRITE_TIMEOUT, _build_write_command, _encode_base64, _read_file_via_sandbox, _write_file_via_sandbox
     SandboxClient,
     SandboxError,
     get_sandbox_client,
@@ -51,6 +50,7 @@ from app.overwatcher._pot_spec_executor_utils import MAX_CONSECUTIVE_ERRORS, POT
 logger = logging.getLogger(__name__)
 
 # Build verification
+POT_EXECUTOR_BUILD_ID = "2026-02-03-v2.0-idempotent"
 print(f"[POT_EXECUTOR_LOADED] BUILD_ID={POT_EXECUTOR_BUILD_ID}")
 
 
@@ -58,10 +58,74 @@ print(f"[POT_EXECUTOR_LOADED] BUILD_ID={POT_EXECUTOR_BUILD_ID}")
 # Constants
 # =============================================================================
 
+MAX_CONSECUTIVE_ERRORS = 5  # Abort after N consecutive file failures
+READ_TIMEOUT = 30           # Seconds per file read
+WRITE_TIMEOUT = 60          # Seconds per file write
+
 
 # =============================================================================
 # Helpers
 # =============================================================================
+
+def _encode_base64(content: str) -> str:
+    """Encode content as Base64 for PowerShell transmission."""
+    return base64.b64encode(content.encode('utf-8')).decode('ascii')
+
+
+def _build_write_command(path: str, content: str) -> str:
+    """Build PowerShell command to write file via Base64 → raw bytes.
+
+    CRITICAL: Do NOT use 'Set-Content -Encoding UTF8' — PowerShell 5.1
+    writes a UTF-8 BOM (EF BB BF) which corrupts JSON files and breaks
+    Vite/Node.js parsers. Instead, decode Base64 to raw bytes and write
+    via [System.IO.File]::WriteAllBytes() which is BOM-free.
+
+    v1.1 (2026-02-03): Fixed UTF-8 BOM corruption bug.
+    """
+    encoded = _encode_base64(content)
+    return (
+        f'$bytes = [System.Convert]::FromBase64String("{encoded}"); '
+        f'[System.IO.File]::WriteAllBytes("{path}", $bytes)'
+    )
+
+
+def _read_file_via_sandbox(client: SandboxClient, path: str) -> Optional[str]:
+    """Read file content from sandbox via PowerShell."""
+    try:
+        cmd = f'Get-Content -Path "{path}" -Raw -Encoding UTF8'
+        result = client.shell_run(cmd, timeout_seconds=READ_TIMEOUT)
+        
+        if result.stdout is not None:
+            return result.stdout
+        
+        logger.warning(
+            "[pot_executor] Read failed for %s: stderr=%s",
+            path, (result.stderr or "")[:100]
+        )
+        return None
+    except Exception as e:
+        logger.error("[pot_executor] Read exception for %s: %s", path, e)
+        return None
+
+
+def _write_file_via_sandbox(client: SandboxClient, path: str, content: str) -> bool:
+    """Write file content to sandbox via Base64 PowerShell command."""
+    try:
+        cmd = _build_write_command(path, content)
+        result = client.shell_run(cmd, timeout_seconds=WRITE_TIMEOUT)
+        
+        # Check for errors
+        if result.stderr and result.stderr.strip():
+            logger.warning(
+                "[pot_executor] Write stderr for %s: %s",
+                path, result.stderr[:200]
+            )
+            return False
+        
+        return True
+    except Exception as e:
+        logger.error("[pot_executor] Write exception for %s: %s", path, e)
+        return False
 
 
 # =============================================================================

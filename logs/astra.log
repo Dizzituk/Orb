@@ -4028,3 +4028,40 @@ RuntimeError: Event loop is closed
 2026-02-22 21:28:12 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (790 lines, 39295 chars) from D:\Orb\app\orchestrator\segment_loop.py → D:\Orb\app\orchestrator\_segment_loop_utils.py
 2026-02-22 21:28:12 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] Pass 168: Spawn guard — extracted module _segment_loop_utils_3.py is 40.0KB (still oversized). Rolling back.
 2026-02-22 21:28:14 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 524 files in 1939ms. Oversized: 58 (leaf=58, branch=0, root=0)
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_part_begin with no data
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_header_field with data[42:61]
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_header_value with data[63:111]
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_header_end with no data
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_header_field with data[113:125]
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_header_value with data[127:136]
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_header_end with no data
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_headers_finished with no data
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_part_data with data[140:81920]
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_part_data with data[0:131072]
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_part_data with data[0:131072]
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_part_data with data[0:131072]
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_part_data with data[0:131072]
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_part_data with data[0:131072]
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_part_data with data[0:131072]
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_part_data with data[0:13112]
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_part_end with no data
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_part_begin with no data
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_header_field with data[13156:13175]
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_header_value with data[13177:13203]
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_header_end with no data
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_headers_finished with no data
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_part_data with data[13207:13209]
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_part_end with no data
+2026-02-22 21:30:16 [DEBUG  ] python_multipart.multipart: Calling on_end with no data
+2026-02-22 21:30:16 [INFO   ] app.services.model_manager: [model_manager] Loaded config from D:\LocalAI\config.ini: {'model_size': 'large-v3', 'device': 'cpu', 'compute_type': 'int8', 'vad_filter': 'true', 'language': 'en'}
+2026-02-22 21:30:16 [WARNING] app.services.model_manager: [model_manager] Model 'large-v3' has incomplete downloads (1 files), falling back to base.en
+2026-02-22 21:30:16 [INFO   ] app.services.faster_whisper_service: [faster_whisper] Model not loaded, loading now...
+2026-02-22 21:30:16 [INFO   ] app.services.model_manager: [model_manager] Loading 'base.en' on cpu (int8)
+2026-02-22 21:30:19 [INFO   ] app.services.model_manager: [model_manager] Model 'base.en' loaded successfully on cpu
+2026-02-22 21:30:19 [INFO   ] app.services.faster_whisper_service: [faster_whisper] Transcribing 440640 samples (27.5s), lang=en, vad=True
+2026-02-22 21:30:19 [INFO   ] faster_whisper: Processing audio with duration 00:27.540
+2026-02-22 21:30:19 [INFO   ] faster_whisper: VAD filter removed 00:00.016 of audio
+2026-02-22 21:30:19 [DEBUG  ] faster_whisper: VAD filter kept the following audio segments: [00:00.016 -> 00:27.540]
+2026-02-22 21:30:19 [DEBUG  ] faster_whisper: Processing segment at 00:00.000
+2026-02-22 21:30:21 [INFO   ] app.services.faster_whisper_service: [faster_whisper] Done: 'Reading your logic there and I've actually restarted since you put the free-stri' (6 segments, 1.5s)
+2026-02-22 21:30:21 [INFO   ] app.routers.transcribe: [transcribe_router] Done in 4.6s: 'Reading your logic there and I've actually restarted since you put the free-stri'
