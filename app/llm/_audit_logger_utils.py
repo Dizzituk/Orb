@@ -166,8 +166,11 @@ class _TelemetryStore:
         with self._lock:
             return list(self._recent[-lim:])
 
-def get_audit_logger() -> Optional[AuditLogger]:
+_AUDIT_SINGLETON = None
+
+def get_audit_logger():
     global _AUDIT_SINGLETON
     if _AUDIT_SINGLETON is None:
+        from app.llm.audit_logger import AuditLogger
         _AUDIT_SINGLETON = AuditLogger()
     return _AUDIT_SINGLETON
