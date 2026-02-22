@@ -1,10 +1,11 @@
 from __future__ import annotations
 from app.specs._schema_utils import SpecValidationResult
-from app.specs.schema import Spec
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+if TYPE_CHECKING:
+    from app.specs.schema import Spec
 
 
 SPEC_SCHEMA_VERSION = "1.2"

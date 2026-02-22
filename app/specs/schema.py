@@ -21,11 +21,10 @@ from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 import hashlib
-from app.specs._schema_utils import SpecMetadata, SpecOutput, SpecRequirements, SpecSafety, SpecStatus, SpecStep, SpecValidationResult, spec_to_markdown
-from app.specs._schema_utils import JobKind, SPEC_SCHEMA_VERSION, SpecConstraints, SpecInput, SpecProvenance, validate_spec
 
 # Current schema version
 # v1.2: Added multi-target read fields (is_multi_target_read, multi_target_files, grounding_data)
+SPEC_SCHEMA_VERSION = "1.2"
 
 
 # v1.2 (2026-01-31): Added multi-target read fields for Critical Pipeline
@@ -33,6 +32,128 @@ from app.specs._schema_utils import JobKind, SPEC_SCHEMA_VERSION, SpecConstraint
 # - multi_target_files: Array of file targets with content
 # - grounding_data: Dict containing all grounding evidence
 # CRITICAL: These fields MUST be persisted for micro_quickcheck() to pass on multi-target jobs
+
+
+class SpecStatus(str, Enum):
+    """Spec lifecycle status."""
+    DRAFT = "draft"              # Created by Weaver, not yet validated
+    PENDING_VALIDATION = "pending_validation"  # Sent to Spec Gate
+    VALIDATED = "validated"      # Approved by Spec Gate
+    REJECTED = "rejected"        # Rejected by Spec Gate
+    SUPERSEDED = "superseded"    # Replaced by newer spec
+
+
+class JobKind(str, Enum):
+    """
+    Job classification for pipeline routing (v1.1).
+    
+    Determined by SpecGate using deterministic rules (NO LLM).
+    Critical Pipeline MUST obey this classification.
+    """
+    MICRO_EXECUTION = "micro_execution"  # Simple read/write/answer tasks (seconds)
+    REPO_CHANGE = "repo_change"          # Code edits, file changes (minutes)
+    ARCHITECTURE = "architecture"         # Design/build/refactor (2-5 minutes)
+    UNKNOWN = "unknown"                   # Ambiguous - escalate to architecture
+
+
+@dataclass
+class SpecInput:
+    """Input definition for a spec."""
+    name: str
+    type: str
+    required: bool = True
+    example: Optional[str] = None
+    source: Optional[str] = None  # file path, API, etc.
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {k: v for k, v in asdict(self).items() if v is not None}
+
+
+@dataclass
+class SpecOutput:
+    """Output definition for a spec."""
+    name: str
+    type: str
+    example: Optional[str] = None
+    acceptance_criteria: List[str] = field(default_factory=list)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class SpecStep:
+    """Step in the spec execution plan."""
+    id: str
+    description: str
+    dependencies: List[str] = field(default_factory=list)  # other step ids
+    notes: Optional[str] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {k: v for k, v in asdict(self).items() if v is not None}
+
+
+@dataclass
+class SpecRequirements:
+    """Functional and non-functional requirements."""
+    functional: List[str] = field(default_factory=list)
+    non_functional: List[str] = field(default_factory=list)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class SpecConstraints:
+    """Budget, latency, platform, and compliance constraints."""
+    budget: Optional[str] = None
+    latency: Optional[str] = None
+    platform: Optional[str] = None
+    integrations: List[str] = field(default_factory=list)
+    compliance: List[str] = field(default_factory=list)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class SpecSafety:
+    """Risk coverage and mitigations."""
+    risks: List[str] = field(default_factory=list)
+    mitigations: List[str] = field(default_factory=list)
+    runtime_guards: List[str] = field(default_factory=list)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class SpecMetadata:
+    """Additional metadata."""
+    priority: str = "medium"  # low, medium, high
+    owner: Optional[str] = None
+    tags: List[str] = field(default_factory=list)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {k: v for k, v in asdict(self).items() if v is not None}
+
+
+@dataclass
+class SpecProvenance:
+    """Provenance tracking for reproducibility."""
+    job_id: Optional[str] = None
+    conversation_id: Optional[str] = None
+    source_message_ids: List[int] = field(default_factory=list)
+    summary_ids: List[int] = field(default_factory=list)  # if summarization used
+    commit_hash: Optional[str] = None
+    generator_model: str = "weaver-v1"
+    token_count: int = 0
+    timestamp_start: Optional[str] = None  # ISO-8601
+    timestamp_end: Optional[str] = None    # ISO-8601
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {k: v for k, v in asdict(self).items() if v is not None}
 
 
 @dataclass
@@ -356,3 +477,201 @@ class Spec:
     def from_json(cls, json_str: str) -> "Spec":
         """Create Spec from JSON string."""
         return cls.from_dict(json.loads(json_str))
+
+
+@dataclass
+class SpecValidationResult:
+    """Result of validating a spec against the schema."""
+    valid: bool
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+
+
+def validate_spec(spec: Spec) -> SpecValidationResult:
+    """
+    Validate a spec against the canonical schema.
+    
+    Returns validation result with errors and warnings.
+    Spec Gate uses this to reject invalid specs.
+    """
+    errors = []
+    warnings = []
+    
+    # Required fields
+    if not spec.spec_version:
+        errors.append("spec_version is required")
+    if not spec.spec_id:
+        errors.append("spec_id is required")
+    if not spec.objective:
+        errors.append("objective is required")
+    
+    # Version check
+    if spec.spec_version not in [SPEC_SCHEMA_VERSION, "1.0", "1.1"]:
+        warnings.append(f"spec_version '{spec.spec_version}' differs from current '{SPEC_SCHEMA_VERSION}'")
+    
+    # Provenance checks
+    if not spec.provenance.source_message_ids:
+        warnings.append("provenance.source_message_ids is empty - spec may not be reproducible")
+    if not spec.provenance.commit_hash:
+        warnings.append("provenance.commit_hash is missing - spec not anchored to codebase state")
+    
+    # Content checks
+    if not spec.title:
+        warnings.append("title is empty")
+    if not spec.summary:
+        warnings.append("summary is empty")
+    if not spec.acceptance_criteria:
+        warnings.append("acceptance_criteria is empty - how will you know when it's done?")
+    
+    # Safety checks
+    if not spec.safety.risks and not spec.safety.mitigations:
+        warnings.append("safety section is empty - consider adding risk coverage")
+    
+    # v1.1: Job classification check
+    if spec.job_kind == JobKind.UNKNOWN.value and spec.job_kind_confidence < 0.5:
+        warnings.append("job_kind is unknown with low confidence - routing may be suboptimal")
+    
+    return SpecValidationResult(
+        valid=len(errors) == 0,
+        errors=errors,
+        warnings=warnings,
+    )
+
+
+def spec_to_markdown(spec: Spec) -> str:
+    """
+    Convert spec to human-readable markdown.
+    
+    This is the secondary format for human review.
+    JSON remains canonical.
+    """
+    lines = []
+    
+    lines.append(f"# {spec.title or 'Untitled Spec'}")
+    lines.append("")
+    lines.append(f"**Spec ID:** `{spec.spec_id}`")
+    lines.append(f"**Version:** {spec.spec_version}")
+    lines.append(f"**Status:** Draft")
+    
+    # v1.1: Show job classification
+    if spec.job_kind and spec.job_kind != JobKind.UNKNOWN.value:
+        lines.append(f"**Job Kind:** `{spec.job_kind}` (confidence: {spec.job_kind_confidence:.2f})")
+    
+    lines.append("")
+    
+    if spec.summary:
+        lines.append("## Summary")
+        lines.append(spec.summary)
+        lines.append("")
+    
+    lines.append("## Objective")
+    lines.append(spec.objective or "_Not specified_")
+    lines.append("")
+    
+    # v1.1: Show sandbox grounding if present
+    if spec.sandbox_discovery_used and spec.sandbox_input_path:
+        lines.append("## Sandbox Grounding")
+        lines.append("")
+        lines.append(f"- **Input:** `{spec.sandbox_input_path}`")
+        if spec.sandbox_output_path:
+            lines.append(f"- **Output:** `{spec.sandbox_output_path}`")
+        if spec.sandbox_selected_type:
+            lines.append(f"- **Content Type:** {spec.sandbox_selected_type}")
+        lines.append("")
+    
+    # Requirements
+    lines.append("## Requirements")
+    lines.append("")
+    lines.append("### Functional")
+    if spec.requirements.functional:
+        for req in spec.requirements.functional:
+            lines.append(f"- {req}")
+    else:
+        lines.append("_None specified_")
+    lines.append("")
+    
+    lines.append("### Non-Functional")
+    if spec.requirements.non_functional:
+        for req in spec.requirements.non_functional:
+            lines.append(f"- {req}")
+    else:
+        lines.append("_None specified_")
+    lines.append("")
+    
+    # Constraints
+    lines.append("## Constraints")
+    lines.append("")
+    if spec.constraints.budget:
+        lines.append(f"- **Budget:** {spec.constraints.budget}")
+    if spec.constraints.latency:
+        lines.append(f"- **Latency:** {spec.constraints.latency}")
+    if spec.constraints.platform:
+        lines.append(f"- **Platform:** {spec.constraints.platform}")
+    if spec.constraints.integrations:
+        lines.append(f"- **Integrations:** {', '.join(spec.constraints.integrations)}")
+    if spec.constraints.compliance:
+        lines.append(f"- **Compliance:** {', '.join(spec.constraints.compliance)}")
+    if not any([spec.constraints.budget, spec.constraints.latency, spec.constraints.platform,
+                spec.constraints.integrations, spec.constraints.compliance]):
+        lines.append("_None specified_")
+    lines.append("")
+    
+    # Safety
+    lines.append("## Safety")
+    lines.append("")
+    lines.append("### Risks")
+    if spec.safety.risks:
+        for risk in spec.safety.risks:
+            lines.append(f"- {risk}")
+    else:
+        lines.append("_None identified_")
+    lines.append("")
+    
+    lines.append("### Mitigations")
+    if spec.safety.mitigations:
+        for mit in spec.safety.mitigations:
+            lines.append(f"- {mit}")
+    else:
+        lines.append("_None specified_")
+    lines.append("")
+    
+    # Acceptance Criteria
+    lines.append("## Acceptance Criteria")
+    if spec.acceptance_criteria:
+        for i, criterion in enumerate(spec.acceptance_criteria, 1):
+            lines.append(f"{i}. {criterion}")
+    else:
+        lines.append("_None specified_")
+    lines.append("")
+    
+    # Steps
+    if spec.steps:
+        lines.append("## Execution Steps")
+        lines.append("")
+        for step in spec.steps:
+            deps = f" (depends on: {', '.join(step.dependencies)})" if step.dependencies else ""
+            lines.append(f"### Step {step.id}{deps}")
+            lines.append(step.description)
+            if step.notes:
+                lines.append(f"_Note: {step.notes}_")
+            lines.append("")
+    
+    # Non-goals
+    if spec.non_goals:
+        lines.append("## Non-Goals (Out of Scope)")
+        for ng in spec.non_goals:
+            lines.append(f"- {ng}")
+        lines.append("")
+    
+    # Provenance
+    lines.append("---")
+    lines.append("## Provenance")
+    lines.append("")
+    lines.append(f"- **Generator:** {spec.provenance.generator_model}")
+    lines.append(f"- **Created:** {spec.provenance.created_at}")
+    if spec.provenance.commit_hash:
+        lines.append(f"- **Commit:** `{spec.provenance.commit_hash[:12]}`")
+    lines.append(f"- **Source Messages:** {len(spec.provenance.source_message_ids)} messages")
+    lines.append(f"- **Token Count:** {spec.provenance.token_count}")
+    
+    return "\n".join(lines)

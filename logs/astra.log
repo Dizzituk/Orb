@@ -11877,3 +11877,4 @@ RuntimeError: Event loop is closed
 2026-02-22 22:17:20 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] Pass 147: Spawn guard — extracted module _segment_loop_utils_6.py is 40.1KB (still oversized). Rolling back.
 2026-02-22 22:17:22 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 641 files in 1677ms. Oversized: 52 (leaf=52, branch=0, root=0)
 2026-02-22 22:39:30 [INFO   ] app.logging_config: File logging initialised: D:\Orb\logs\astra.log (max 10 MB x 5 backups)
+2026-02-22 22:41:48 [INFO   ] app.logging_config: File logging initialised: D:\Orb\logs\astra.log (max 10 MB x 5 backups)

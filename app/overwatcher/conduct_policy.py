@@ -33,9 +33,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
-from app.overwatcher._conduct_policy_utils import compute_spec_hash, create_discovery_result, create_resource_spec, format_compliance_report, get_edge_case_ruling, get_rule_description, get_scenario_example, list_scenario_examples
-from app.overwatcher._conduct_policy_utils import ConductComplianceResult, ConductRule, ConductViolation, ConductViolationType, DiscoveryResult, EvidenceRecord, ResourceExistenceSpec, ViolationSeverity
-from app.overwatcher._conduct_policy_utils import ConductPolicyEvaluator
 
 logger = logging.getLogger(__name__)
 
@@ -44,10 +41,227 @@ logger = logging.getLogger(__name__)
 # POLICY RULE IDENTIFIERS
 # =============================================================================
 
+class ConductRule(str, Enum):
+    """
+    The seven core conduct rules that govern all Overwatcher operations.
+    
+    These rules are non-negotiable and apply universally.
+    """
+    SPEC_FIDELITY = "RULE_1_SPEC_FIDELITY"
+    DISCOVERY_BEFORE_ACTION = "RULE_2_DISCOVERY_BEFORE_ACTION"
+    EVIDENCE_BASED_EXECUTION = "RULE_3_EVIDENCE_BASED_EXECUTION"
+    NO_SILENT_SUBSTITUTION = "RULE_4_NO_SILENT_SUBSTITUTION"
+    PREFER_UNCERTAINTY = "RULE_5_PREFER_UNCERTAINTY"
+    POLICY_VIOLATION_DETECTION = "RULE_6_POLICY_VIOLATION_DETECTION"
+    GRACEFUL_FAILURE = "RULE_7_GRACEFUL_FAILURE"
+
+
+class ConductViolationType(str, Enum):
+    """
+    Types of conduct policy violations.
+    
+    These are distinct from code enforcement violations (ViolationType).
+    These represent behavioral/procedural violations at the governance level.
+    """
+    # Rule 1: Spec Fidelity
+    CREATED_EXISTING_RESOURCE = "created_resource_spec_said_exists"
+    WORKAROUND_INSTEAD_OF_FAIL = "workaround_instead_of_fail"
+    PRECONDITION_MISSING_CONTINUED = "continued_with_missing_precondition"
+    
+    # Rule 2: Discovery Before Action
+    ACTED_WITHOUT_VERIFICATION = "acted_without_verifying_target"
+    ASSUMED_PATH_EXISTS = "assumed_path_without_check"
+    SKIPPED_ENUMERATION = "skipped_location_enumeration"
+    
+    # Rule 3: Evidence-Based Execution
+    NO_EVIDENCE_PRODUCED = "no_evidence_produced"
+    INCOMPLETE_EVIDENCE_TRAIL = "incomplete_evidence_trail"
+    MISSING_INSPECTION_LOG = "missing_inspection_log"
+    MISSING_FINDING_LOG = "missing_finding_log"
+    
+    # Rule 4: No Silent Substitution
+    ASSUMED_FILE_PATH = "assumed_file_path"
+    INVENTED_RESOURCE = "invented_missing_resource"
+    CREATED_SUBSTITUTE_RESOURCE = "created_substitute_for_missing"
+    REDIRECTED_EXECUTION = "redirected_to_different_location"
+    SPEC_REINTERPRETED = "spec_meaning_modified"
+    
+    # Rule 5: Prefer Uncertainty
+    GUESSED_INSTEAD_OF_ASKING = "guessed_instead_of_clarification"
+    UNCLEAR_CONDITIONS_PROCEEDED = "proceeded_with_unclear_conditions"
+    
+    # Rule 6: Policy Violations (Meta)
+    SYSTEMATIC_SAFETY_FAILURE = "systematic_safety_failure"
+    EXECUTION_WITHOUT_EVIDENCE = "execution_without_evidence_trail"
+    
+    # Rule 7: Graceful Failure
+    IMPROPER_FAILURE_HANDLING = "improper_failure_handling"
+    UNAUTHORIZED_RECOVERY_ATTEMPT = "unauthorized_recovery_attempt"
+    UNCLEAR_FAILURE_REASON = "unclear_failure_reason"
+
+
+class ViolationSeverity(str, Enum):
+    """Severity levels for conduct violations."""
+    CRITICAL = "critical"    # Immediate job termination required
+    ERROR = "error"          # Job should fail, violation logged
+    WARNING = "warning"      # Job may continue, violation logged
+    INFO = "info"            # For audit trail, no action required
+
 
 # =============================================================================
 # DATA STRUCTURES
 # =============================================================================
+
+@dataclass
+class ConductViolation:
+    """
+    A single conduct policy violation.
+    
+    Captures the full context of what rule was violated, how, and evidence.
+    """
+    rule: ConductRule
+    violation_type: ConductViolationType
+    message: str
+    severity: ViolationSeverity = ViolationSeverity.ERROR
+    evidence: Dict[str, Any] = field(default_factory=dict)
+    spec_id: Optional[str] = None
+    spec_hash: Optional[str] = None
+    timestamp: datetime = field(default_factory=datetime.utcnow)
+    remediation_hint: Optional[str] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize to dictionary for logging/storage."""
+        return {
+            "rule": self.rule.value,
+            "violation_type": self.violation_type.value,
+            "message": self.message,
+            "severity": self.severity.value,
+            "evidence": self.evidence,
+            "spec_id": self.spec_id,
+            "spec_hash": self.spec_hash,
+            "timestamp": self.timestamp.isoformat(),
+            "remediation_hint": self.remediation_hint,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ConductViolation":
+        """Deserialize from dictionary."""
+        return cls(
+            rule=ConductRule(data["rule"]),
+            violation_type=ConductViolationType(data["violation_type"]),
+            message=data["message"],
+            severity=ViolationSeverity(data.get("severity", "error")),
+            evidence=data.get("evidence", {}),
+            spec_id=data.get("spec_id"),
+            spec_hash=data.get("spec_hash"),
+            timestamp=datetime.fromisoformat(data["timestamp"]) if data.get("timestamp") else datetime.utcnow(),
+            remediation_hint=data.get("remediation_hint"),
+        )
+
+
+@dataclass
+class EvidenceRecord:
+    """
+    Evidence of an inspection or action taken during execution.
+    
+    Every operation must produce evidence showing what was inspected,
+    what was found, and why the chosen action was valid.
+    """
+    action: str
+    target: str
+    result: str
+    timestamp: datetime = field(default_factory=datetime.utcnow)
+    inspected_path: Optional[str] = None
+    found_state: Optional[Dict[str, Any]] = None
+    decision_reason: Optional[str] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "action": self.action,
+            "target": self.target,
+            "result": self.result,
+            "timestamp": self.timestamp.isoformat(),
+            "inspected_path": self.inspected_path,
+            "found_state": self.found_state,
+            "decision_reason": self.decision_reason,
+        }
+
+
+@dataclass
+class ConductComplianceResult:
+    """
+    Result of conduct policy compliance evaluation.
+    
+    This is the Overwatcher's verdict on whether execution followed
+    the global conduct rules.
+    """
+    compliant: bool
+    violations: List[ConductViolation] = field(default_factory=list)
+    evidence_trail: List[EvidenceRecord] = field(default_factory=list)
+    spec_id: Optional[str] = None
+    spec_hash: Optional[str] = None
+    evaluation_timestamp: datetime = field(default_factory=datetime.utcnow)
+    summary: str = ""
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "compliant": self.compliant,
+            "violations": [v.to_dict() for v in self.violations],
+            "evidence_trail": [e.to_dict() for e in self.evidence_trail],
+            "spec_id": self.spec_id,
+            "spec_hash": self.spec_hash,
+            "evaluation_timestamp": self.evaluation_timestamp.isoformat(),
+            "summary": self.summary,
+        }
+    
+    @property
+    def critical_violations(self) -> List[ConductViolation]:
+        """Return only critical violations."""
+        return [v for v in self.violations if v.severity == ViolationSeverity.CRITICAL]
+    
+    @property
+    def has_critical(self) -> bool:
+        """Check if any critical violations exist."""
+        return len(self.critical_violations) > 0
+
+
+@dataclass
+class ResourceExistenceSpec:
+    """
+    Specification of a resource's expected existence state.
+    
+    Used to validate Rule 1 (Spec Fidelity) - if spec says resource exists,
+    we must not create it.
+    """
+    path: str
+    must_exist: bool
+    resource_type: str  # "file", "folder", "record", "service"
+    description: Optional[str] = None
+
+
+@dataclass
+class DiscoveryResult:
+    """
+    Result of a discovery operation (Rule 2: Discovery Before Action).
+    
+    Captures what was looked for, what was found, and the discovery method.
+    """
+    target: str
+    exists: bool
+    discovery_method: str  # "stat", "enumerate", "query", "verify"
+    locations_checked: List[str] = field(default_factory=list)
+    timestamp: datetime = field(default_factory=datetime.utcnow)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "target": self.target,
+            "exists": self.exists,
+            "discovery_method": self.discovery_method,
+            "locations_checked": self.locations_checked,
+            "timestamp": self.timestamp.isoformat(),
+            "metadata": self.metadata,
+        }
 
 
 # =============================================================================
@@ -267,10 +481,402 @@ EDGE_CASE_RULES: Dict[str, Dict[str, Any]] = {
 # COMPLIANCE EVALUATION
 # =============================================================================
 
+class ConductPolicyEvaluator:
+    """
+    Evaluates execution against the Global Overwatcher Conduct Policy.
+    
+    This is the compliance engine that determines whether a job followed
+    all conduct rules correctly.
+    """
+    
+    def __init__(self, spec_id: Optional[str] = None, spec_hash: Optional[str] = None):
+        """
+        Initialize evaluator with optional spec context.
+        
+        Args:
+            spec_id: The spec identifier (job_id typically)
+            spec_hash: The spec hash for anchoring
+        """
+        self.spec_id = spec_id
+        self.spec_hash = spec_hash
+        self.violations: List[ConductViolation] = []
+        self.evidence_trail: List[EvidenceRecord] = []
+    
+    def add_evidence(
+        self,
+        action: str,
+        target: str,
+        result: str,
+        inspected_path: Optional[str] = None,
+        found_state: Optional[Dict[str, Any]] = None,
+        decision_reason: Optional[str] = None,
+    ) -> None:
+        """
+        Add evidence of an action to the trail.
+        
+        Every operation should call this to document what was done.
+        """
+        record = EvidenceRecord(
+            action=action,
+            target=target,
+            result=result,
+            inspected_path=inspected_path,
+            found_state=found_state,
+            decision_reason=decision_reason,
+        )
+        self.evidence_trail.append(record)
+        logger.debug(f"[CONDUCT] Evidence recorded: {action} -> {target}: {result}")
+    
+    def record_violation(
+        self,
+        rule: ConductRule,
+        violation_type: ConductViolationType,
+        message: str,
+        severity: Optional[ViolationSeverity] = None,
+        evidence: Optional[Dict[str, Any]] = None,
+        remediation_hint: Optional[str] = None,
+    ) -> ConductViolation:
+        """
+        Record a conduct violation.
+        
+        Args:
+            rule: The conduct rule that was violated
+            violation_type: Specific type of violation
+            message: Human-readable description
+            severity: Override severity (uses rule default if None)
+            evidence: Supporting evidence for the violation
+            remediation_hint: Suggestion for how to fix
+            
+        Returns:
+            The created violation record
+        """
+        if severity is None:
+            rule_def = GLOBAL_CONDUCT_RULES.get(rule, {})
+            severity = rule_def.get("severity_default", ViolationSeverity.ERROR)
+        
+        violation = ConductViolation(
+            rule=rule,
+            violation_type=violation_type,
+            message=message,
+            severity=severity,
+            evidence=evidence or {},
+            spec_id=self.spec_id,
+            spec_hash=self.spec_hash,
+            remediation_hint=remediation_hint,
+        )
+        self.violations.append(violation)
+        logger.warning(f"[CONDUCT] Violation: {rule.value} - {message}")
+        return violation
+    
+    def check_spec_fidelity(
+        self,
+        resource_specs: List[ResourceExistenceSpec],
+        actual_states: Dict[str, bool],
+        created_resources: List[str],
+    ) -> List[ConductViolation]:
+        """
+        Check Rule 1: Spec Fidelity.
+        
+        Verifies that:
+        - Resources spec says must exist were not created
+        - Resources spec says must not exist were not used as if existing
+        
+        Args:
+            resource_specs: List of resource existence specifications
+            actual_states: Map of resource paths to their actual existence state
+            created_resources: List of resources that were created during execution
+            
+        Returns:
+            List of violations found
+        """
+        violations = []
+        
+        for spec in resource_specs:
+            if spec.must_exist and spec.path in created_resources:
+                v = self.record_violation(
+                    rule=ConductRule.SPEC_FIDELITY,
+                    violation_type=ConductViolationType.CREATED_EXISTING_RESOURCE,
+                    message=f"Spec states '{spec.path}' must exist, but it was created. This violates spec fidelity.",
+                    evidence={
+                        "spec_path": spec.path,
+                        "spec_must_exist": spec.must_exist,
+                        "spec_type": spec.resource_type,
+                        "action_taken": "created",
+                    },
+                    remediation_hint="Verify resource exists before proceeding. If missing, FAIL instead of creating.",
+                )
+                violations.append(v)
+        
+        return violations
+    
+    def check_discovery(
+        self,
+        required_targets: List[str],
+        discovery_results: Dict[str, DiscoveryResult],
+    ) -> List[ConductViolation]:
+        """
+        Check Rule 2: Discovery Before Action.
+        
+        Verifies that all required targets were discovered before being acted upon.
+        
+        Args:
+            required_targets: List of targets that needed discovery
+            discovery_results: Map of targets to their discovery results
+            
+        Returns:
+            List of violations found
+        """
+        violations = []
+        
+        for target in required_targets:
+            if target not in discovery_results:
+                v = self.record_violation(
+                    rule=ConductRule.DISCOVERY_BEFORE_ACTION,
+                    violation_type=ConductViolationType.ACTED_WITHOUT_VERIFICATION,
+                    message=f"Target '{target}' was acted upon without prior discovery/verification.",
+                    evidence={
+                        "target": target,
+                        "discovery_performed": False,
+                    },
+                    remediation_hint="Always verify target existence before performing operations.",
+                )
+                violations.append(v)
+        
+        return violations
+    
+    def check_evidence_completeness(
+        self,
+        required_evidence_types: List[str],
+    ) -> List[ConductViolation]:
+        """
+        Check Rule 3: Evidence-Based Execution.
+        
+        Verifies that the evidence trail is complete and covers all required types.
+        
+        Args:
+            required_evidence_types: List of evidence types that must be present
+                                    (e.g., ["inspection", "finding", "decision"])
+            
+        Returns:
+            List of violations found
+        """
+        violations = []
+        
+        if not self.evidence_trail:
+            v = self.record_violation(
+                rule=ConductRule.EVIDENCE_BASED_EXECUTION,
+                violation_type=ConductViolationType.NO_EVIDENCE_PRODUCED,
+                message="No evidence was recorded during execution.",
+                remediation_hint="All operations must produce evidence logs.",
+            )
+            violations.append(v)
+            return violations
+        
+        evidence_actions = {e.action for e in self.evidence_trail}
+        
+        for required_type in required_evidence_types:
+            if required_type not in evidence_actions:
+                v = self.record_violation(
+                    rule=ConductRule.EVIDENCE_BASED_EXECUTION,
+                    violation_type=ConductViolationType.INCOMPLETE_EVIDENCE_TRAIL,
+                    message=f"Required evidence type '{required_type}' is missing from trail.",
+                    evidence={
+                        "required_type": required_type,
+                        "present_types": list(evidence_actions),
+                    },
+                    remediation_hint=f"Ensure '{required_type}' is logged during execution.",
+                )
+                violations.append(v)
+        
+        return violations
+    
+    def evaluate(
+        self,
+        resource_specs: Optional[List[ResourceExistenceSpec]] = None,
+        actual_states: Optional[Dict[str, bool]] = None,
+        created_resources: Optional[List[str]] = None,
+        required_targets: Optional[List[str]] = None,
+        discovery_results: Optional[Dict[str, DiscoveryResult]] = None,
+        required_evidence_types: Optional[List[str]] = None,
+    ) -> ConductComplianceResult:
+        """
+        Perform full compliance evaluation.
+        
+        This is the main entry point for checking conduct policy compliance.
+        
+        Returns:
+            ConductComplianceResult with compliance status and any violations
+        """
+        # Check Rule 1: Spec Fidelity
+        if resource_specs and actual_states and created_resources:
+            self.check_spec_fidelity(resource_specs, actual_states, created_resources)
+        
+        # Check Rule 2: Discovery Before Action
+        if required_targets and discovery_results is not None:
+            self.check_discovery(required_targets, discovery_results)
+        
+        # Check Rule 3: Evidence-Based Execution
+        if required_evidence_types:
+            self.check_evidence_completeness(required_evidence_types)
+        
+        # Determine overall compliance
+        compliant = len(self.violations) == 0
+        
+        # Generate summary
+        if compliant:
+            summary = "All conduct rules satisfied. Execution is compliant."
+        else:
+            critical_count = len([v for v in self.violations if v.severity == ViolationSeverity.CRITICAL])
+            error_count = len([v for v in self.violations if v.severity == ViolationSeverity.ERROR])
+            summary = f"Conduct violations detected: {critical_count} critical, {error_count} errors."
+        
+        return ConductComplianceResult(
+            compliant=compliant,
+            violations=self.violations.copy(),
+            evidence_trail=self.evidence_trail.copy(),
+            spec_id=self.spec_id,
+            spec_hash=self.spec_hash,
+            summary=summary,
+        )
+    
+    def reset(self) -> None:
+        """Reset evaluator state for a new evaluation."""
+        self.violations = []
+        self.evidence_trail = []
+
 
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
+
+def create_resource_spec(
+    path: str,
+    must_exist: bool,
+    resource_type: str = "file",
+    description: Optional[str] = None,
+) -> ResourceExistenceSpec:
+    """
+    Create a resource existence specification.
+    
+    Args:
+        path: Path to the resource
+        must_exist: True if spec says resource must already exist
+        resource_type: Type of resource ("file", "folder", "record", "service")
+        description: Optional description
+        
+    Returns:
+        ResourceExistenceSpec instance
+    """
+    return ResourceExistenceSpec(
+        path=path,
+        must_exist=must_exist,
+        resource_type=resource_type,
+        description=description,
+    )
+
+
+def create_discovery_result(
+    target: str,
+    exists: bool,
+    method: str,
+    locations_checked: Optional[List[str]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> DiscoveryResult:
+    """
+    Create a discovery result record.
+    
+    Args:
+        target: What was being discovered
+        exists: Whether it was found
+        method: How discovery was performed
+        locations_checked: List of locations that were checked
+        metadata: Additional metadata about the discovery
+        
+    Returns:
+        DiscoveryResult instance
+    """
+    return DiscoveryResult(
+        target=target,
+        exists=exists,
+        discovery_method=method,
+        locations_checked=locations_checked or [],
+        metadata=metadata or {},
+    )
+
+
+def format_compliance_report(result: ConductComplianceResult) -> str:
+    """
+    Format a compliance result as a human-readable report.
+    
+    Args:
+        result: The compliance result to format
+        
+    Returns:
+        Formatted report string
+    """
+    lines = [
+        "=" * 60,
+        "CONDUCT POLICY COMPLIANCE REPORT",
+        "=" * 60,
+        f"Spec ID: {result.spec_id or 'N/A'}",
+        f"Spec Hash: {result.spec_hash or 'N/A'}",
+        f"Evaluated: {result.evaluation_timestamp.isoformat()}",
+        f"Status: {'COMPLIANT' if result.compliant else 'NON-COMPLIANT'}",
+        "",
+        result.summary,
+        "",
+    ]
+    
+    if result.violations:
+        lines.append("-" * 60)
+        lines.append("VIOLATIONS:")
+        lines.append("-" * 60)
+        for i, v in enumerate(result.violations, 1):
+            lines.append(f"\n{i}. [{v.severity.value.upper()}] {v.rule.value}")
+            lines.append(f"   Type: {v.violation_type.value}")
+            lines.append(f"   Message: {v.message}")
+            if v.remediation_hint:
+                lines.append(f"   Remediation: {v.remediation_hint}")
+    
+    if result.evidence_trail:
+        lines.append("")
+        lines.append("-" * 60)
+        lines.append("EVIDENCE TRAIL:")
+        lines.append("-" * 60)
+        for i, e in enumerate(result.evidence_trail, 1):
+            lines.append(f"\n{i}. {e.action} -> {e.target}")
+            lines.append(f"   Result: {e.result}")
+            if e.decision_reason:
+                lines.append(f"   Reason: {e.decision_reason}")
+    
+    lines.append("")
+    lines.append("=" * 60)
+    
+    return "\n".join(lines)
+
+
+def get_rule_description(rule: ConductRule) -> str:
+    """Get the full description of a conduct rule."""
+    rule_def = GLOBAL_CONDUCT_RULES.get(rule, {})
+    return rule_def.get("description", "No description available.")
+
+
+def get_edge_case_ruling(edge_case_id: str) -> Optional[Dict[str, Any]]:
+    """Get the ruling for a specific edge case."""
+    return EDGE_CASE_RULES.get(edge_case_id)
+
+
+def compute_spec_hash(spec_content: str) -> str:
+    """
+    Compute a hash of spec content for anchoring.
+    
+    Args:
+        spec_content: The spec content to hash
+        
+    Returns:
+        SHA256 hash string
+    """
+    return hashlib.sha256(spec_content.encode()).hexdigest()[:16]
 
 
 # =============================================================================
@@ -375,3 +981,13 @@ SCENARIO_EXAMPLES: Dict[str, Dict[str, Any]] = {
         "outcome": "NON-COMPLIANT - Should have failed and reported, not recovered",
     },
 }
+
+
+def get_scenario_example(scenario_id: str) -> Optional[Dict[str, Any]]:
+    """Get a scenario example by ID."""
+    return SCENARIO_EXAMPLES.get(scenario_id)
+
+
+def list_scenario_examples() -> List[str]:
+    """List all available scenario example IDs."""
+    return list(SCENARIO_EXAMPLES.keys())

@@ -164,6 +164,7 @@ def _apply_extraction(
         new_module_path = os.path.join(dir_path, module_filename)
 
     # Avoid overwriting — increment if exists
+    original_module_path = new_module_path
     counter = 1
     base_path = os.path.splitext(new_module_path)[0]
     ext = os.path.splitext(new_module_path)[1] or ".py"
@@ -171,11 +172,38 @@ def _apply_extraction(
         new_module_path = f"{base_path}_{counter}{ext}"
         counter += 1
 
+    # If we renamed the module, update the import line in the source file
+    if new_module_path != original_module_path:
+        orig_stem = os.path.splitext(os.path.basename(original_module_path))[0]
+        new_stem = os.path.splitext(os.path.basename(new_module_path))[0]
+        # Re-read source (we just wrote it) and fix the import
+        with open(file_path, "r", encoding="utf-8") as f:
+            updated_source = f.read()
+        # Replace the module name in the import line
+        updated_source = updated_source.replace(
+            f"from {_path_to_package(os.path.dirname(original_module_path))}.{orig_stem} import",
+            f"from {_path_to_package(os.path.dirname(new_module_path))}.{new_stem} import",
+            1,  # only first occurrence
+        )
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(updated_source)
+        logger.info(
+            "[refactor_loop] Renamed module %s → %s, updated import in %s",
+            orig_stem, new_stem, os.path.basename(file_path)
+        )
+
     # Write new module
     with open(new_module_path, "w", encoding="utf-8") as f:
         f.write(new_module_source)
 
     return new_module_path
+
+
+def _path_to_package(dir_path: str) -> str:
+    """Convert a directory path to a Python package path relative to project root."""
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    rel = os.path.relpath(dir_path, project_root)
+    return rel.replace(os.sep, ".").replace("/", ".")
 
 
 def _rollback_extraction(

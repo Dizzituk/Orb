@@ -3,7 +3,9 @@ import hashlib
 import logging
 import re
 from app.llm._weaver_stream_utils import LEAKAGE_PATTERNS
-from app.llm.weaver_stream import TYPO_NORMALIZATIONS, logger
+import logging
+from app.llm._weaver_stream_utils_9 import TYPO_NORMALIZATIONS
+logger = logging.getLogger(__name__)
 from typing import Any, Dict
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
