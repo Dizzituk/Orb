@@ -1,8 +1,14 @@
 from __future__ import annotations
-from app.specs.schema import JobKind, Spec
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+if TYPE_CHECKING:
+    from app.specs.schema import Spec
+
+# JobKind used at runtime (value comparison) — lazy import
+def _get_job_kind():
+    from app.specs._schema_utils_1 import JobKind
+    return JobKind
 
 
 class SpecStatus(str, Enum):
@@ -87,7 +93,7 @@ def spec_to_markdown(spec: Spec) -> str:
     lines.append(f"**Status:** Draft")
     
     # v1.1: Show job classification
-    if spec.job_kind and spec.job_kind != JobKind.UNKNOWN.value:
+    if spec.job_kind and spec.job_kind != _get_job_kind().UNKNOWN.value:
         lines.append(f"**Job Kind:** `{spec.job_kind}` (confidence: {spec.job_kind_confidence:.2f})")
     
     lines.append("")
