@@ -484,10 +484,21 @@ def _collect_needed_imports(
 
     # Find local assignments (type aliases, constants) that are referenced
     # but not provided by imports and not being extracted.
-    # Walk ALL nodes (not just top-level) to catch assignments inside try/except blocks.
+    # Walk into Try/If/With blocks (where module-level constants often live)
+    # but NOT into FunctionDef/ClassDef bodies (those are local variables).
     still_needed = used_names - names_provided_by_imports - extracted_names
     if still_needed:
-        for node in ast.walk(tree):
+        def _walk_module_level(node):
+            """Yield assignments from module-level and try/if/with blocks only."""
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    continue  # Don't descend into function/class bodies
+                if isinstance(child, ast.Assign):
+                    yield child
+                elif isinstance(child, (ast.Try, ast.If, ast.With, ast.ExceptHandler)):
+                    yield from _walk_module_level(child)
+
+        for node in _walk_module_level(tree):
             if isinstance(node, ast.Assign):
                 for target in node.targets:
                     if not isinstance(target, ast.Name):
@@ -495,10 +506,11 @@ def _collect_needed_imports(
                     name = target.id
                     if name not in still_needed:
                         continue
-                    # Copy the assignment verbatim
-                    assign_text = "\n".join(
-                        source_lines[node.lineno - 1:(node.end_lineno or node.lineno)]
-                    )
+                    # Copy the assignment, dedenting if inside a try/if/with block
+                    raw_lines = source_lines[node.lineno - 1:(node.end_lineno or node.lineno)]
+                    # Dedent: find minimum indentation and strip it
+                    import textwrap
+                    assign_text = textwrap.dedent("\n".join(raw_lines))
                     # Also resolve imports needed by this assignment's RHS
                     try:
                         rhs_tree = ast.parse(assign_text)

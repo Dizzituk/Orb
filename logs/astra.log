@@ -34,3 +34,694 @@
 2026-02-22 18:44:21 [INFO   ] app.llm.stream_router: [translation] CHAT MODE - bypassing job classification
 2026-02-22 18:44:23 [DEBUG  ] app.llm.stage_models: [stage_models] CHAT: google/gemini-2.5-flash-lite
 2026-02-22 18:44:23 [WARNING] app.capabilities.loader: Capabilities file not found at D:\Orb\config\astra_capabilities.json, using fallback
+2026-02-22 19:13:26 [INFO   ] app.logging_config: File logging initialised: D:\Orb\logs\astra.log (max 10 MB x 5 backups)
+2026-02-22 19:13:26 [DEBUG  ] app.db: [db_migrate] arch_code_chunks schema is up to date
+2026-02-22 19:13:26 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 1 projects
+2026-02-22 19:13:26 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 notes
+2026-02-22 19:13:26 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 3 messages
+2026-02-22 19:13:26 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 jobs
+2026-02-22 19:13:26 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 global prefs
+2026-02-22 19:13:43 [DEBUG  ] asyncio: Using proactor: IocpProactor
+2026-02-22 19:13:43 [DEBUG  ] app.translation.translator: Mode: command, wake_phrase: Astra, command:
+2026-02-22 19:13:43 [DEBUG  ] app.translation.translator: Tier 0 match: exact_trigger_phrase -> CanonicalIntent.REFACTOR_CODEBASE
+2026-02-22 19:13:43 [DEBUG  ] app.llm.translation_routing: [translation] Mode=command, Intent=REFACTOR_CODEBASE, Execute=False, Tier=tier_0
+2026-02-22 19:13:43 [INFO   ] app.llm.stage_trace: [stage_trace] COMMAND_START: type=REFACTOR_CODEBASE, id=cmd_2dad3f051988, project=1
+2026-02-22 19:13:44 [DEBUG  ] asyncio: Using proactor: IocpProactor
+2026-02-22 19:13:44 [INFO   ] app.translation.translator: [translator] Confirmation accepted for REFACTOR_CODEBASE
+2026-02-22 19:13:44 [DEBUG  ] app.llm.translation_routing: [translation] Mode=command, Intent=REFACTOR_CODEBASE, Execute=True, Tier=tier_0
+2026-02-22 19:13:44 [INFO   ] app.llm.stage_trace: [stage_trace] COMMAND_START: type=REFACTOR_CODEBASE, id=cmd_1b6b07f67ddf, project=1
+2026-02-22 19:13:44 [DEBUG  ] app.llm.stage_models: [stage_models] SPEC_GATE: Using legacy var OPENAI_SPEC_GATE_MODEL=gpt-5.2-pro
+2026-02-22 19:13:44 [DEBUG  ] app.llm.stage_models: [stage_models] SPEC_GATE: Using legacy token var SPEC_GATE_MAX_OUTPUT_TOKENS_DEFAULT=4000
+2026-02-22 19:13:44 [DEBUG  ] app.llm.stage_models: [stage_models] SPEC_GATE: openai/gpt-5.2-pro
+2026-02-22 19:13:44 [DEBUG  ] app.llm.stage_models: [stage_models] WEAVER: openai/gpt-4.1-mini
+2026-02-22 19:13:44 [DEBUG  ] app.llm.stage_models: [stage_models] CRITICAL_PIPELINE: openai/gpt-5.2
+2026-02-22 19:13:44 [DEBUG  ] app.llm.stage_models: [stage_models] OVERWATCHER: Using legacy var ASTRA_OVERWATCH_MODEL=gpt-5.2-pro
+2026-02-22 19:13:44 [DEBUG  ] app.llm.stage_models: [stage_models] OVERWATCHER: Using legacy token var ASTRA_OVERWATCH_MAX_OUTPUT_DEFAULT=1200
+2026-02-22 19:13:44 [DEBUG  ] app.llm.stage_models: [stage_models] OVERWATCHER: openai/gpt-5.2-pro
+2026-02-22 19:13:44 [DEBUG  ] app.llm.translation_routing: [translation_routing] SpecGate: SPEC_GATE: openai/gpt-5.2-pro
+2026-02-22 19:13:44 [DEBUG  ] app.llm.translation_routing: [translation_routing] Weaver: WEAVER: openai/gpt-4.1-mini
+2026-02-22 19:13:44 [DEBUG  ] app.llm.translation_routing: [translation_routing] CriticalPipeline: CRITICAL_PIPELINE: openai/gpt-5.2
+2026-02-22 19:13:44 [DEBUG  ] app.llm.translation_routing: [translation_routing] Overwatcher: OVERWATCHER: openai/gpt-5.2-pro
+2026-02-22 19:13:44 [INFO   ] app.llm.stage_trace: [stage_trace] STAGE_ENTER: refactor_loop (cmd=cmd_1b6b07f67ddf, provider=None, model=None)
+2026-02-22 19:13:46 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 417 files in 2026ms. Oversized: 96 (leaf=96, branch=0, root=0)
+2026-02-22 19:13:46 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (50 lines, 1922 chars) from D:\Orb\app\memory\service.py → D:\Orb\app\memory\_service_utils.py
+2026-02-22 19:13:47 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 1: BOOT FAILED for D:\Orb\app\memory\service.py. Rolled back.
+2026-02-22 19:13:49 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 417 files in 1701ms. Oversized: 96 (leaf=96, branch=0, root=0)
+2026-02-22 19:13:49 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (63 lines, 1917 chars) from D:\Orb\app\llm\local_tools\archmap_helpers.py → D:\Orb\app\llm\local_tools\_archmap_helpers_utils.py
+2026-02-22 19:13:49 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 2: BOOT FAILED for D:\Orb\app\llm\local_tools\archmap_helpers.py. Rolled back.
+2026-02-22 19:13:51 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 417 files in 1855ms. Oversized: 96 (leaf=96, branch=0, root=0)
+2026-02-22 19:13:51 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (68 lines, 2357 chars) from D:\Orb\app\astra_memory\service.py → D:\Orb\app\astra_memory\_service_utils.py
+2026-02-22 19:13:52 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 3: BOOT FAILED for D:\Orb\app\astra_memory\service.py. Rolled back.
+2026-02-22 19:13:54 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 417 files in 2029ms. Oversized: 96 (leaf=96, branch=0, root=0)
+2026-02-22 19:13:54 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (241 lines, 7748 chars) from D:\Orb\app\llm\file_analyzer.py → D:\Orb\app\llm\_file_analyzer_utils.py
+2026-02-22 19:13:55 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 4: BOOT FAILED for D:\Orb\app\llm\file_analyzer.py. Rolled back.
+2026-02-22 19:13:57 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 417 files in 1894ms. Oversized: 96 (leaf=96, branch=0, root=0)
+2026-02-22 19:13:57 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (81 lines, 2876 chars) from D:\Orb\app\llm\spec_flow_state.py → D:\Orb\app\llm\_spec_flow_state_utils.py
+2026-02-22 19:14:00 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 5: BOOT FAILED for D:\Orb\app\llm\spec_flow_state.py. Rolled back.
+2026-02-22 19:14:02 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 417 files in 2029ms. Oversized: 96 (leaf=96, branch=0, root=0)
+2026-02-22 19:14:02 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (121 lines, 4828 chars) from D:\Orb\app\llm\routing\core.py → D:\Orb\app\llm\routing\_core_utils.py
+2026-02-22 19:14:03 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 6: BOOT FAILED for D:\Orb\app\llm\routing\core.py. Rolled back.
+2026-02-22 19:14:05 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 417 files in 1828ms. Oversized: 96 (leaf=96, branch=0, root=0)
+2026-02-22 19:14:05 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (115 lines, 4279 chars) from D:\Orb\app\orchestrator\deterministic_architecture.py → D:\Orb\app\orchestrator\_deterministic_architecture_utils.py
+2026-02-22 19:14:09 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 7: D:\Orb\app\orchestrator\deterministic_architecture.py 21.4KB -> 17.3KB (8 symbols) BOOT PASS
+2026-02-22 19:14:10 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:14:12 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 418 files in 1774ms. Oversized: 95 (leaf=95, branch=0, root=0)
+2026-02-22 19:14:12 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (107 lines, 3601 chars) from D:\Orb\app\llm\streaming.py → D:\Orb\app\llm\_streaming_utils.py
+2026-02-22 19:14:13 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 8: BOOT FAILED for D:\Orb\app\llm\streaming.py. Rolled back.
+2026-02-22 19:14:14 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 418 files in 1778ms. Oversized: 95 (leaf=95, branch=0, root=0)
+2026-02-22 19:14:14 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (42 lines, 1461 chars) from D:\Orb\app\overwatcher\executor.py → D:\Orb\app\overwatcher\_executor_utils.py
+2026-02-22 19:14:15 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 9: BOOT FAILED for D:\Orb\app\overwatcher\executor.py. Rolled back.
+2026-02-22 19:14:17 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 418 files in 1819ms. Oversized: 95 (leaf=95, branch=0, root=0)
+2026-02-22 19:14:17 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (151 lines, 4547 chars) from D:\Orb\app\pot_spec\evidence_collector.py → D:\Orb\app\pot_spec\_evidence_collector_utils.py
+2026-02-22 19:14:18 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 10: BOOT FAILED for D:\Orb\app\pot_spec\evidence_collector.py. Rolled back.
+2026-02-22 19:14:20 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 418 files in 1795ms. Oversized: 95 (leaf=95, branch=0, root=0)
+2026-02-22 19:14:20 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (149 lines, 5735 chars) from D:\Orb\app\pot_spec\spec_gate_parsers.py → D:\Orb\app\pot_spec\_spec_gate_parsers_utils.py
+2026-02-22 19:14:23 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 11: BOOT FAILED for D:\Orb\app\pot_spec\spec_gate_parsers.py. Rolled back.
+2026-02-22 19:14:25 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 418 files in 1995ms. Oversized: 95 (leaf=95, branch=0, root=0)
+2026-02-22 19:14:25 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (354 lines, 15103 chars) from D:\Orb\app\pot_spec\spec_gate_persistence.py → D:\Orb\app\pot_spec\_spec_gate_persistence_utils.py
+2026-02-22 19:14:28 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 12: BOOT FAILED for D:\Orb\app\pot_spec\spec_gate_persistence.py. Rolled back.
+2026-02-22 19:14:30 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 418 files in 2078ms. Oversized: 95 (leaf=95, branch=0, root=0)
+2026-02-22 19:14:30 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (89 lines, 2361 chars) from D:\Orb\app\llm\token_budgeting.py → D:\Orb\app\llm\_token_budgeting_utils.py
+2026-02-22 19:14:31 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 13: BOOT FAILED for D:\Orb\app\llm\token_budgeting.py. Rolled back.
+2026-02-22 19:14:33 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 418 files in 1851ms. Oversized: 95 (leaf=95, branch=0, root=0)
+2026-02-22 19:14:33 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (283 lines, 11117 chars) from D:\Orb\app\orchestrator\surgical_extractor.py → D:\Orb\app\orchestrator\_surgical_extractor_utils.py
+2026-02-22 19:14:36 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 14: D:\Orb\app\orchestrator\surgical_extractor.py 22.7KB -> 11.8KB (8 symbols) BOOT PASS
+2026-02-22 19:14:38 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:14:39 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 419 files in 1770ms. Oversized: 94 (leaf=94, branch=0, root=0)
+2026-02-22 19:14:39 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (313 lines, 12115 chars) from D:\Orb\app\llm\weaver_stream_core.py → D:\Orb\app\llm\_weaver_stream_core_utils.py
+2026-02-22 19:14:43 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 15: D:\Orb\app\llm\weaver_stream_core.py 22.2KB -> 10.3KB (8 symbols) BOOT PASS
+2026-02-22 19:14:44 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:14:46 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 420 files in 2026ms. Oversized: 93 (leaf=93, branch=0, root=0)
+2026-02-22 19:14:46 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (59 lines, 2524 chars) from D:\Orb\app\orchestrator\codebase_scanner.py → D:\Orb\app\orchestrator\_codebase_scanner_utils.py
+2026-02-22 19:14:50 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 16: D:\Orb\app\orchestrator\codebase_scanner.py 28.8KB -> 26.4KB (8 symbols) BOOT PASS
+2026-02-22 19:14:51 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:14:53 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 421 files in 1922ms. Oversized: 93 (leaf=93, branch=0, root=0)
+2026-02-22 19:14:53 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (345 lines, 11456 chars) from D:\Orb\app\translation\gates.py → D:\Orb\app\translation\_gates_utils.py
+2026-02-22 19:14:54 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 17: BOOT FAILED for D:\Orb\app\translation\gates.py. Rolled back.
+2026-02-22 19:14:56 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 421 files in 1910ms. Oversized: 93 (leaf=93, branch=0, root=0)
+2026-02-22 19:14:56 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (162 lines, 6623 chars) from D:\Orb\app\astra_memory\retrieval.py → D:\Orb\app\astra_memory\_retrieval_utils.py
+2026-02-22 19:14:57 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 18: BOOT FAILED for D:\Orb\app\astra_memory\retrieval.py. Rolled back.
+2026-02-22 19:14:59 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 421 files in 1804ms. Oversized: 93 (leaf=93, branch=0, root=0)
+2026-02-22 19:14:59 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (9 lines, 316 chars) from D:\Orb\app\pot_spec\spec_gate_grounded.py → D:\Orb\app\pot_spec\_spec_gate_grounded_utils.py
+2026-02-22 19:15:03 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 19: D:\Orb\app\pot_spec\spec_gate_grounded.py 20.9KB -> 20.6KB (1 symbols) BOOT PASS
+2026-02-22 19:15:04 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:15:06 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 422 files in 1842ms. Oversized: 93 (leaf=93, branch=0, root=0)
+2026-02-22 19:15:06 [WARNING] app.orchestrator.surgical_extractor: [surgical] No extractable candidates in D:\Orb\app\pot_spec\spec_gate_grounded.py
+2026-02-22 19:15:06 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 20: No extraction possible for D:\Orb\app\pot_spec\spec_gate_grounded.py: No extractable symbols found
+2026-02-22 19:15:08 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 422 files in 2149ms. Oversized: 93 (leaf=93, branch=0, root=0)
+2026-02-22 19:15:08 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (155 lines, 5050 chars) from D:\Orb\app\llm\audit_logger.py → D:\Orb\app\llm\_audit_logger_utils.py
+2026-02-22 19:15:09 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 21: BOOT FAILED for D:\Orb\app\llm\audit_logger.py. Rolled back.
+2026-02-22 19:15:11 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 422 files in 2166ms. Oversized: 93 (leaf=93, branch=0, root=0)
+2026-02-22 19:15:11 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (298 lines, 11348 chars) from D:\Orb\app\pot_spec\grounded\segment_schemas.py → D:\Orb\app\pot_spec\grounded\_segment_schemas_utils.py
+2026-02-22 19:15:14 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 22: BOOT FAILED for D:\Orb\app\pot_spec\grounded\segment_schemas.py. Rolled back.
+2026-02-22 19:15:16 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 422 files in 1729ms. Oversized: 93 (leaf=93, branch=0, root=0)
+2026-02-22 19:15:16 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (125 lines, 4073 chars) from D:\Orb\app\llm\policy.py → D:\Orb\app\llm\_policy_utils.py
+2026-02-22 19:15:17 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 23: BOOT FAILED for D:\Orb\app\llm\policy.py. Rolled back.
+2026-02-22 19:15:19 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 422 files in 1848ms. Oversized: 93 (leaf=93, branch=0, root=0)
+2026-02-22 19:15:19 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (374 lines, 14231 chars) from D:\Orb\app\orchestrator\critical_supervisor.py → D:\Orb\app\orchestrator\_critical_supervisor_utils.py
+2026-02-22 19:15:22 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 24: D:\Orb\app\orchestrator\critical_supervisor.py 21.5KB -> 7.5KB (8 symbols) BOOT PASS
+2026-02-22 19:15:24 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:15:26 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 423 files in 1860ms. Oversized: 92 (leaf=92, branch=0, root=0)
+2026-02-22 19:15:26 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 6 symbols (396 lines, 16577 chars) from D:\Orb\app\pot_spec\grounded\rename_policy.py → D:\Orb\app\pot_spec\grounded\_rename_policy_utils.py
+2026-02-22 19:15:27 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 25: BOOT FAILED for D:\Orb\app\pot_spec\grounded\rename_policy.py. Rolled back.
+2026-02-22 19:15:28 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 423 files in 1811ms. Oversized: 92 (leaf=92, branch=0, root=0)
+2026-02-22 19:15:28 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (310 lines, 11013 chars) from D:\Orb\app\llm\relationship_detector.py → D:\Orb\app\llm\_relationship_detector_utils.py
+2026-02-22 19:15:32 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 26: D:\Orb\app\llm\relationship_detector.py 22.9KB -> 12.0KB (8 symbols) BOOT PASS
+2026-02-22 19:15:33 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:15:35 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 424 files in 1779ms. Oversized: 91 (leaf=91, branch=0, root=0)
+2026-02-22 19:15:35 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (44 lines, 2539 chars) from D:\Orb\app\llm\pipeline\critique_parts\spec_compliance.py → D:\Orb\app\llm\pipeline\critique_parts\_spec_compliance_utils.py
+2026-02-22 19:15:38 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 27: D:\Orb\app\llm\pipeline\critique_parts\spec_compliance.py 22.1KB -> 19.8KB (8 symbols) BOOT PASS
+2026-02-22 19:15:39 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:15:41 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 425 files in 1834ms. Oversized: 90 (leaf=90, branch=0, root=0)
+2026-02-22 19:15:41 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 5 symbols (189 lines, 7201 chars) from D:\Orb\app\llm\critical_pipeline\foundation_templates.py → D:\Orb\app\llm\critical_pipeline\_foundation_templates_utils.py
+2026-02-22 19:15:44 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 28: D:\Orb\app\llm\critical_pipeline\foundation_templates.py 22.4KB -> 15.3KB (5 symbols) BOOT PASS
+2026-02-22 19:15:46 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:15:47 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 426 files in 1797ms. Oversized: 89 (leaf=89, branch=0, root=0)
+2026-02-22 19:15:47 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (474 lines, 20944 chars) from D:\Orb\app\llm\local_tools\zobie\streams\archmap_full.py → D:\Orb\app\llm\local_tools\zobie\streams\_archmap_full_utils.py
+2026-02-22 19:15:51 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 29: D:\Orb\app\llm\local_tools\zobie\streams\archmap_full.py 22.8KB -> 1.9KB (1 symbols) BOOT PASS
+2026-02-22 19:15:52 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:15:54 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 427 files in 1949ms. Oversized: 89 (leaf=89, branch=0, root=0)
+2026-02-22 19:15:54 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (111 lines, 3317 chars) from D:\Orb\app\llm\fallbacks.py → D:\Orb\app\llm\_fallbacks_utils.py
+2026-02-22 19:15:55 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 30: BOOT FAILED for D:\Orb\app\llm\fallbacks.py. Rolled back.
+2026-02-22 19:15:57 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 427 files in 1787ms. Oversized: 89 (leaf=89, branch=0, root=0)
+2026-02-22 19:15:57 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 7 symbols (226 lines, 7630 chars) from D:\Orb\app\overwatcher\block9_loop.py → D:\Orb\app\overwatcher\_block9_loop_utils.py
+2026-02-22 19:15:58 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 31: BOOT FAILED for D:\Orb\app\overwatcher\block9_loop.py. Rolled back.
+2026-02-22 19:15:59 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 427 files in 1772ms. Oversized: 89 (leaf=89, branch=0, root=0)
+2026-02-22 19:15:59 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (57 lines, 2390 chars) from D:\Orb\app\overwatcher\pot_spec_executor.py → D:\Orb\app\overwatcher\_pot_spec_executor_utils.py
+2026-02-22 19:16:03 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 32: D:\Orb\app\overwatcher\pot_spec_executor.py 23.8KB -> 21.6KB (8 symbols) BOOT PASS
+2026-02-22 19:16:04 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:16:06 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 428 files in 1791ms. Oversized: 89 (leaf=89, branch=0, root=0)
+2026-02-22 19:16:06 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 45)
+2026-02-22 19:16:06 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\overwatcher\pot_spec_executor.py
+2026-02-22 19:16:06 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 33: No extraction possible for D:\Orb\app\overwatcher\pot_spec_executor.py: No extractable symbols found
+2026-02-22 19:16:07 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 428 files in 1775ms. Oversized: 89 (leaf=89, branch=0, root=0)
+2026-02-22 19:16:08 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (295 lines, 11375 chars) from D:\Orb\app\orchestrator\brief_validator.py → D:\Orb\app\orchestrator\_brief_validator_utils.py
+2026-02-22 19:16:11 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 34: D:\Orb\app\orchestrator\brief_validator.py 26.6KB -> 15.3KB (8 symbols) BOOT PASS
+2026-02-22 19:16:12 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:16:14 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 429 files in 1741ms. Oversized: 88 (leaf=88, branch=0, root=0)
+2026-02-22 19:16:14 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (181 lines, 6177 chars) from D:\Orb\app\llm\gemini_vision.py → D:\Orb\app\llm\_gemini_vision_utils.py
+2026-02-22 19:16:15 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 35: BOOT FAILED for D:\Orb\app\llm\gemini_vision.py. Rolled back.
+2026-02-22 19:16:17 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 429 files in 1919ms. Oversized: 88 (leaf=88, branch=0, root=0)
+2026-02-22 19:16:17 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (262 lines, 12277 chars) from D:\Orb\app\pot_spec\grounded\spec_models.py → D:\Orb\app\pot_spec\grounded\_spec_models_utils.py
+2026-02-22 19:16:17 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 36: BOOT FAILED for D:\Orb\app\pot_spec\grounded\spec_models.py. Rolled back.
+2026-02-22 19:16:19 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 429 files in 1740ms. Oversized: 88 (leaf=88, branch=0, root=0)
+2026-02-22 19:16:19 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (296 lines, 11540 chars) from D:\Orb\app\orchestrator\cohesion_autofix.py → D:\Orb\app\orchestrator\_cohesion_autofix_utils.py
+2026-02-22 19:16:22 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 37: D:\Orb\app\orchestrator\cohesion_autofix.py 26.9KB -> 15.5KB (8 symbols) BOOT PASS
+2026-02-22 19:16:24 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:16:26 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 430 files in 1950ms. Oversized: 87 (leaf=87, branch=0, root=0)
+2026-02-22 19:16:26 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (271 lines, 9460 chars) from D:\Orb\app\overwatcher\orchestrator.py → D:\Orb\app\overwatcher\_orchestrator_utils.py
+2026-02-22 19:16:27 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 38: BOOT FAILED for D:\Orb\app\overwatcher\orchestrator.py. Rolled back.
+2026-02-22 19:16:28 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 430 files in 1634ms. Oversized: 87 (leaf=87, branch=0, root=0)
+2026-02-22 19:16:28 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (202 lines, 7268 chars) from D:\Orb\app\orchestrator\implementation_compiler.py → D:\Orb\app\orchestrator\_implementation_compiler_utils.py
+2026-02-22 19:16:31 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 39: D:\Orb\app\orchestrator\implementation_compiler.py 27.1KB -> 20.0KB (8 symbols) BOOT PASS
+2026-02-22 19:16:33 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:16:35 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 431 files in 1880ms. Oversized: 87 (leaf=87, branch=0, root=0)
+2026-02-22 19:16:35 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 23)
+2026-02-22 19:16:35 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\orchestrator\implementation_compiler.py
+2026-02-22 19:16:35 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 40: No extraction possible for D:\Orb\app\orchestrator\implementation_compiler.py: No extractable symbols found
+2026-02-22 19:16:37 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 431 files in 2165ms. Oversized: 87 (leaf=87, branch=0, root=0)
+2026-02-22 19:16:37 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (72 lines, 2572 chars) from D:\Orb\app\llm\file_classifier.py → D:\Orb\app\llm\_file_classifier_utils.py
+2026-02-22 19:16:40 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 41: D:\Orb\app\llm\file_classifier.py 28.0KB -> 25.5KB (8 symbols) BOOT PASS
+2026-02-22 19:16:41 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:16:43 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 432 files in 1756ms. Oversized: 87 (leaf=87, branch=0, root=0)
+2026-02-22 19:16:43 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 4 symbols (343 lines, 13034 chars) from D:\Orb\app\llm\local_tools\zobie\fs_live_ops.py → D:\Orb\app\llm\local_tools\zobie\_fs_live_ops_utils.py
+2026-02-22 19:16:44 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 42: BOOT FAILED for D:\Orb\app\llm\local_tools\zobie\fs_live_ops.py. Rolled back.
+2026-02-22 19:16:46 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 432 files in 1755ms. Oversized: 87 (leaf=87, branch=0, root=0)
+2026-02-22 19:16:46 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (23 lines, 815 chars) from D:\Orb\app\llm\high_stakes_stream.py → D:\Orb\app\llm\_high_stakes_stream_utils.py
+2026-02-22 19:16:49 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 43: BOOT FAILED for D:\Orb\app\llm\high_stakes_stream.py. Rolled back.
+2026-02-22 19:16:50 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 432 files in 1857ms. Oversized: 87 (leaf=87, branch=0, root=0)
+2026-02-22 19:16:51 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (174 lines, 5651 chars) from D:\Orb\app\llm\preprocessor.py → D:\Orb\app\llm\_preprocessor_utils.py
+2026-02-22 19:16:52 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 44: BOOT FAILED for D:\Orb\app\llm\preprocessor.py. Rolled back.
+2026-02-22 19:16:54 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 432 files in 1896ms. Oversized: 87 (leaf=87, branch=0, root=0)
+2026-02-22 19:16:54 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (247 lines, 9014 chars) from D:\Orb\app\overwatcher\schemas.py → D:\Orb\app\overwatcher\_schemas_utils.py
+2026-02-22 19:16:54 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 45: BOOT FAILED for D:\Orb\app\overwatcher\schemas.py. Rolled back.
+2026-02-22 19:16:56 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 432 files in 1691ms. Oversized: 87 (leaf=87, branch=0, root=0)
+2026-02-22 19:16:56 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (189 lines, 6222 chars) from D:\Orb\app\llm\file_classifier.py → D:\Orb\app\llm\_file_classifier_utils.py
+2026-02-22 19:16:57 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 46: BOOT FAILED for D:\Orb\app\llm\file_classifier.py. Rolled back.
+2026-02-22 19:16:59 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 432 files in 1780ms. Oversized: 87 (leaf=87, branch=0, root=0)
+2026-02-22 19:16:59 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (60 lines, 2158 chars) from D:\Orb\app\providers\registry.py → D:\Orb\app\providers\_registry_utils.py
+2026-02-22 19:17:00 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 47: BOOT FAILED for D:\Orb\app\providers\registry.py. Rolled back.
+2026-02-22 19:17:01 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 432 files in 1837ms. Oversized: 87 (leaf=87, branch=0, root=0)
+2026-02-22 19:17:01 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 4 symbols (55 lines, 2139 chars) from D:\Orb\app\llm\routing\command_dispatch.py → D:\Orb\app\llm\routing\_command_dispatch_utils.py
+2026-02-22 19:17:05 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 48: BOOT FAILED for D:\Orb\app\llm\routing\command_dispatch.py. Rolled back.
+2026-02-22 19:17:06 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 432 files in 1801ms. Oversized: 87 (leaf=87, branch=0, root=0)
+2026-02-22 19:17:06 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 6 symbols (399 lines, 14002 chars) from D:\Orb\app\llm\local_tools\zobie\fs_command_parser.py → D:\Orb\app\llm\local_tools\zobie\_fs_command_parser_utils.py
+2026-02-22 19:17:10 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 49: D:\Orb\app\llm\local_tools\zobie\fs_command_parser.py 27.7KB -> 13.8KB (6 symbols) BOOT PASS
+2026-02-22 19:17:11 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:17:13 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 433 files in 1703ms. Oversized: 86 (leaf=86, branch=0, root=0)
+2026-02-22 19:17:13 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (274 lines, 11611 chars) from D:\Orb\app\llm\stream_router.py → D:\Orb\app\llm\_stream_router_utils.py
+2026-02-22 19:17:14 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 50: BOOT FAILED for D:\Orb\app\llm\stream_router.py. Rolled back.
+2026-02-22 19:17:16 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 433 files in 1803ms. Oversized: 86 (leaf=86, branch=0, root=0)
+2026-02-22 19:17:16 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 27)
+2026-02-22 19:17:16 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\orchestrator\codebase_scanner.py
+2026-02-22 19:17:16 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 51: No extraction possible for D:\Orb\app\orchestrator\codebase_scanner.py: No extractable symbols found
+2026-02-22 19:17:18 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 433 files in 1820ms. Oversized: 86 (leaf=86, branch=0, root=0)
+2026-02-22 19:17:18 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (239 lines, 9411 chars) from D:\Orb\app\orchestrator\package_quarantine.py → D:\Orb\app\orchestrator\_package_quarantine_utils.py
+2026-02-22 19:17:21 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 52: D:\Orb\app\orchestrator\package_quarantine.py 27.4KB -> 18.1KB (8 symbols) BOOT PASS
+2026-02-22 19:17:22 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:17:24 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 434 files in 1765ms. Oversized: 85 (leaf=85, branch=0, root=0)
+2026-02-22 19:17:24 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: (unicode error) 'unicodeescape' codec can't decode bytes in position 120-121: truncated \UXXXXXXXX escape (<unknown>, line 2)
+2026-02-22 19:17:24 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\llm\local_tools\host_fs_scanner.py
+2026-02-22 19:17:24 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 53: No extraction possible for D:\Orb\app\llm\local_tools\host_fs_scanner.py: No extractable symbols found
+2026-02-22 19:17:26 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 434 files in 1781ms. Oversized: 85 (leaf=85, branch=0, root=0)
+2026-02-22 19:17:26 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (196 lines, 6872 chars) from D:\Orb\app\specs\schema.py → D:\Orb\app\specs\_schema_utils.py
+2026-02-22 19:17:29 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 54: BOOT FAILED for D:\Orb\app\specs\schema.py. Rolled back.
+2026-02-22 19:17:31 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 434 files in 1945ms. Oversized: 85 (leaf=85, branch=0, root=0)
+2026-02-22 19:17:31 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 7 symbols (194 lines, 8337 chars) from D:\Orb\app\overwatcher\job_checker.py → D:\Orb\app\overwatcher\_job_checker_utils.py
+2026-02-22 19:17:34 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 55: D:\Orb\app\overwatcher\job_checker.py 27.7KB -> 19.5KB (7 symbols) BOOT PASS
+2026-02-22 19:17:35 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:17:37 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 435 files in 1763ms. Oversized: 84 (leaf=84, branch=0, root=0)
+2026-02-22 19:17:37 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 7 symbols (320 lines, 12467 chars) from D:\Orb\app\llm\pipeline\revision.py → D:\Orb\app\llm\pipeline\_revision_utils.py
+2026-02-22 19:17:38 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 56: BOOT FAILED for D:\Orb\app\llm\pipeline\revision.py. Rolled back.
+2026-02-22 19:17:40 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 435 files in 1774ms. Oversized: 84 (leaf=84, branch=0, root=0)
+2026-02-22 19:17:40 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 6 symbols (393 lines, 15549 chars) from D:\Orb\app\llm\pipeline\critique_schemas.py → D:\Orb\app\llm\pipeline\_critique_schemas_utils.py
+2026-02-22 19:17:41 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 57: BOOT FAILED for D:\Orb\app\llm\pipeline\critique_schemas.py. Rolled back.
+2026-02-22 19:17:43 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 435 files in 1917ms. Oversized: 84 (leaf=84, branch=0, root=0)
+2026-02-22 19:17:43 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 4 symbols (298 lines, 10175 chars) from D:\Orb\app\llm\local_tools\zobie\fs_write_ops.py → D:\Orb\app\llm\local_tools\zobie\_fs_write_ops_utils.py
+2026-02-22 19:17:46 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 58: D:\Orb\app\llm\local_tools\zobie\fs_write_ops.py 28.8KB -> 18.7KB (4 symbols) BOOT PASS
+2026-02-22 19:17:48 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:17:49 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 436 files in 1677ms. Oversized: 83 (leaf=83, branch=0, root=0)
+2026-02-22 19:17:49 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 3 symbols (200 lines, 8528 chars) from D:\Orb\app\llm\pipeline\critique.py → D:\Orb\app\llm\pipeline\_critique_utils.py
+2026-02-22 19:17:50 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 59: BOOT FAILED for D:\Orb\app\llm\pipeline\critique.py. Rolled back.
+2026-02-22 19:17:52 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 436 files in 1795ms. Oversized: 83 (leaf=83, branch=0, root=0)
+2026-02-22 19:17:52 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (34 lines, 1200 chars) from D:\Orb\app\llm\local_tools\zobie\sandbox_inspector.py → D:\Orb\app\llm\local_tools\zobie\_sandbox_inspector_utils.py
+2026-02-22 19:17:56 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 60: D:\Orb\app\llm\local_tools\zobie\sandbox_inspector.py 31.4KB -> 30.4KB (8 symbols) BOOT PASS
+2026-02-22 19:17:57 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:17:59 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 437 files in 1737ms. Oversized: 83 (leaf=83, branch=0, root=0)
+2026-02-22 19:17:59 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 7 symbols (316 lines, 11217 chars) from D:\Orb\app\llm\local_tools\zobie\sandbox_inspector.py → D:\Orb\app\llm\local_tools\zobie\_sandbox_inspector_utils.py
+2026-02-22 19:18:02 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 61: D:\Orb\app\llm\local_tools\zobie\sandbox_inspector.py 30.4KB -> 19.3KB (7 symbols) BOOT PASS
+2026-02-22 19:18:03 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:18:05 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 438 files in 1863ms. Oversized: 82 (leaf=82, branch=0, root=0)
+2026-02-22 19:18:05 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (92 lines, 3559 chars) from D:\Orb\app\llm\pipeline\evidence_loop.py → D:\Orb\app\llm\pipeline\_evidence_loop_utils.py
+2026-02-22 19:18:06 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 62: BOOT FAILED for D:\Orb\app\llm\pipeline\evidence_loop.py. Rolled back.
+2026-02-22 19:18:08 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 438 files in 1777ms. Oversized: 82 (leaf=82, branch=0, root=0)
+2026-02-22 19:18:08 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (282 lines, 11554 chars) from D:\Orb\app\llm\overwatcher_stream.py → D:\Orb\app\llm\_overwatcher_stream_utils.py
+2026-02-22 19:18:11 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 63: BOOT FAILED for D:\Orb\app\llm\overwatcher_stream.py. Rolled back.
+2026-02-22 19:18:13 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 438 files in 1825ms. Oversized: 82 (leaf=82, branch=0, root=0)
+2026-02-22 19:18:13 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (388 lines, 13306 chars) from D:\Orb\app\endpoints\chat_attachments.py → D:\Orb\app\endpoints\_chat_attachments_utils.py
+2026-02-22 19:18:16 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 64: BOOT FAILED for D:\Orb\app\endpoints\chat_attachments.py. Rolled back.
+2026-02-22 19:18:18 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 438 files in 1837ms. Oversized: 82 (leaf=82, branch=0, root=0)
+2026-02-22 19:18:18 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (305 lines, 11561 chars) from D:\Orb\app\pot_spec\grounded\refactor_schemas.py → D:\Orb\app\pot_spec\grounded\_refactor_schemas_utils.py
+2026-02-22 19:18:19 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 65: BOOT FAILED for D:\Orb\app\pot_spec\grounded\refactor_schemas.py. Rolled back.
+2026-02-22 19:18:21 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 438 files in 1769ms. Oversized: 82 (leaf=82, branch=0, root=0)
+2026-02-22 19:18:21 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (239 lines, 9139 chars) from D:\Orb\app\jobs\engine.py → D:\Orb\app\jobs\_engine_utils.py
+2026-02-22 19:18:24 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 66: BOOT FAILED for D:\Orb\app\jobs\engine.py. Rolled back.
+2026-02-22 19:18:26 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 438 files in 1847ms. Oversized: 82 (leaf=82, branch=0, root=0)
+2026-02-22 19:18:26 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (50 lines, 2103 chars) from D:\Orb\app\llm\local_tools\zobie\streams\codebase_report.py → D:\Orb\app\llm\local_tools\zobie\streams\_codebase_report_utils.py
+2026-02-22 19:18:29 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 67: D:\Orb\app\llm\local_tools\zobie\streams\codebase_report.py 37.6KB -> 35.8KB (8 symbols) BOOT PASS
+2026-02-22 19:18:30 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:18:32 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 439 files in 1806ms. Oversized: 82 (leaf=82, branch=0, root=0)
+2026-02-22 19:18:32 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 6 symbols (389 lines, 16131 chars) from D:\Orb\app\orchestrator\post_execution_reconciliation.py → D:\Orb\app\orchestrator\_post_execution_reconciliation_utils.py
+2026-02-22 19:18:36 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 68: D:\Orb\app\orchestrator\post_execution_reconciliation.py 32.3KB -> 16.3KB (6 symbols) BOOT PASS
+2026-02-22 19:18:37 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:18:39 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 440 files in 1631ms. Oversized: 81 (leaf=81, branch=0, root=0)
+2026-02-22 19:18:39 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (47 lines, 1441 chars) from D:\Orb\app\pot_spec\grounded\qa_processing.py → D:\Orb\app\pot_spec\grounded\_qa_processing_utils.py
+2026-02-22 19:18:40 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 69: BOOT FAILED for D:\Orb\app\pot_spec\grounded\qa_processing.py. Rolled back.
+2026-02-22 19:18:41 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 440 files in 1820ms. Oversized: 81 (leaf=81, branch=0, root=0)
+2026-02-22 19:18:41 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (176 lines, 7046 chars) from D:\Orb\app\overwatcher\signature_checker.py → D:\Orb\app\overwatcher\_signature_checker_utils.py
+2026-02-22 19:18:45 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 70: D:\Orb\app\overwatcher\signature_checker.py 34.2KB -> 27.3KB (8 symbols) BOOT PASS
+2026-02-22 19:18:46 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:18:48 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 441 files in 1943ms. Oversized: 81 (leaf=81, branch=0, root=0)
+2026-02-22 19:18:48 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 5 symbols (393 lines, 15298 chars) from D:\Orb\app\overwatcher\signature_checker.py → D:\Orb\app\overwatcher\_signature_checker_utils.py
+2026-02-22 19:18:51 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 71: D:\Orb\app\overwatcher\signature_checker.py 27.3KB -> 12.1KB (5 symbols) BOOT PASS
+2026-02-22 19:18:53 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:18:55 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 442 files in 1928ms. Oversized: 80 (leaf=80, branch=0, root=0)
+2026-02-22 19:18:55 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (73 lines, 2694 chars) from D:\Orb\app\llm\job_classifier.py → D:\Orb\app\llm\_job_classifier_utils.py
+2026-02-22 19:18:56 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 72: BOOT FAILED for D:\Orb\app\llm\job_classifier.py. Rolled back.
+2026-02-22 19:18:57 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 442 files in 1753ms. Oversized: 80 (leaf=80, branch=0, root=0)
+2026-02-22 19:18:57 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (113 lines, 4036 chars) from D:\Orb\app\orchestrator\integration_check.py → D:\Orb\app\orchestrator\_integration_check_utils.py
+2026-02-22 19:19:01 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 73: D:\Orb\app\orchestrator\integration_check.py 38.7KB -> 34.8KB (8 symbols) BOOT PASS
+2026-02-22 19:19:02 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:19:04 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 443 files in 1796ms. Oversized: 80 (leaf=80, branch=0, root=0)
+2026-02-22 19:19:04 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (335 lines, 13957 chars) from D:\Orb\app\orchestrator\integration_check.py → D:\Orb\app\orchestrator\_integration_check_utils.py
+2026-02-22 19:19:07 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 74: D:\Orb\app\orchestrator\integration_check.py 34.8KB -> 21.1KB (8 symbols) BOOT PASS
+2026-02-22 19:19:08 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:19:10 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 444 files in 1947ms. Oversized: 80 (leaf=80, branch=0, root=0)
+2026-02-22 19:19:10 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 6 symbols (376 lines, 15180 chars) from D:\Orb\app\orchestrator\integration_check.py → D:\Orb\app\orchestrator\_integration_check_utils.py
+2026-02-22 19:19:14 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 75: D:\Orb\app\orchestrator\integration_check.py 21.1KB -> 6.0KB (6 symbols) BOOT PASS
+2026-02-22 19:19:15 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:19:17 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 445 files in 1596ms. Oversized: 79 (leaf=79, branch=0, root=0)
+2026-02-22 19:19:17 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (264 lines, 9193 chars) from D:\Orb\app\pot_spec\grounded\file_discovery.py → D:\Orb\app\pot_spec\grounded\_file_discovery_utils.py
+2026-02-22 19:19:18 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 76: BOOT FAILED for D:\Orb\app\pot_spec\grounded\file_discovery.py. Rolled back.
+2026-02-22 19:19:19 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 445 files in 1569ms. Oversized: 79 (leaf=79, branch=0, root=0)
+2026-02-22 19:19:19 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (318 lines, 12209 chars) from D:\Orb\app\overwatcher\deterministic_checker.py → D:\Orb\app\overwatcher\_deterministic_checker_utils.py
+2026-02-22 19:19:23 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 77: D:\Orb\app\overwatcher\deterministic_checker.py 34.2KB -> 22.2KB (8 symbols) BOOT PASS
+2026-02-22 19:19:24 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:19:26 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 446 files in 1954ms. Oversized: 79 (leaf=79, branch=0, root=0)
+2026-02-22 19:19:26 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (400 lines, 18969 chars) from D:\Orb\app\overwatcher\deterministic_checker.py → D:\Orb\app\overwatcher\_deterministic_checker_utils.py
+2026-02-22 19:19:30 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 78: D:\Orb\app\overwatcher\deterministic_checker.py 22.2KB -> 2.7KB (1 symbols) BOOT PASS
+2026-02-22 19:19:31 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:19:33 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 447 files in 1748ms. Oversized: 79 (leaf=79, branch=0, root=0)
+2026-02-22 19:19:33 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (147 lines, 5034 chars) from D:\Orb\app\overwatcher\overwatcher.py → D:\Orb\app\overwatcher\_overwatcher_utils.py
+2026-02-22 19:19:34 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 79: BOOT FAILED for D:\Orb\app\overwatcher\overwatcher.py. Rolled back.
+2026-02-22 19:19:35 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 447 files in 1582ms. Oversized: 79 (leaf=79, branch=0, root=0)
+2026-02-22 19:19:35 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (365 lines, 16877 chars) from D:\Orb\app\pot_spec\grounded\multi_file_detection.py → D:\Orb\app\pot_spec\grounded\_multi_file_detection_utils.py
+2026-02-22 19:19:36 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 80: BOOT FAILED for D:\Orb\app\pot_spec\grounded\multi_file_detection.py. Rolled back.
+2026-02-22 19:19:38 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 447 files in 1675ms. Oversized: 79 (leaf=79, branch=0, root=0)
+2026-02-22 19:19:38 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (129 lines, 4465 chars) from D:\Orb\app\orchestrator\refactor_segmenter.py → D:\Orb\app\orchestrator\_refactor_segmenter_utils.py
+2026-02-22 19:19:41 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 81: D:\Orb\app\orchestrator\refactor_segmenter.py 41.8KB -> 37.5KB (8 symbols) BOOT PASS
+2026-02-22 19:19:43 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:19:44 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 448 files in 1594ms. Oversized: 79 (leaf=79, branch=0, root=0)
+2026-02-22 19:19:44 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 24)
+2026-02-22 19:19:44 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\llm\local_tools\zobie\streams\codebase_report.py
+2026-02-22 19:19:44 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 82: No extraction possible for D:\Orb\app\llm\local_tools\zobie\streams\codebase_report.py: No extractable symbols found
+2026-02-22 19:19:46 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 448 files in 1994ms. Oversized: 79 (leaf=79, branch=0, root=0)
+2026-02-22 19:19:46 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (124 lines, 4068 chars) from D:\Orb\app\overwatcher\conduct_policy.py → D:\Orb\app\overwatcher\_conduct_policy_utils.py
+2026-02-22 19:19:50 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 83: D:\Orb\app\overwatcher\conduct_policy.py 37.8KB -> 33.9KB (8 symbols) BOOT PASS
+2026-02-22 19:19:51 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:19:53 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 449 files in 1612ms. Oversized: 79 (leaf=79, branch=0, root=0)
+2026-02-22 19:19:53 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (203 lines, 7968 chars) from D:\Orb\app\overwatcher\conduct_policy.py → D:\Orb\app\overwatcher\_conduct_policy_utils.py
+2026-02-22 19:19:56 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 84: D:\Orb\app\overwatcher\conduct_policy.py 33.9KB -> 26.0KB (8 symbols) BOOT PASS
+2026-02-22 19:19:57 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:19:59 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 450 files in 1455ms. Oversized: 79 (leaf=79, branch=0, root=0)
+2026-02-22 19:19:59 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (262 lines, 10057 chars) from D:\Orb\app\overwatcher\conduct_policy.py → D:\Orb\app\overwatcher\_conduct_policy_utils.py
+2026-02-22 19:20:02 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 85: D:\Orb\app\overwatcher\conduct_policy.py 26.0KB -> 16.0KB (1 symbols) BOOT PASS
+2026-02-22 19:20:04 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:20:05 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 451 files in 1497ms. Oversized: 78 (leaf=78, branch=0, root=0)
+2026-02-22 19:20:05 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 27)
+2026-02-22 19:20:05 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\orchestrator\refactor_segmenter.py
+2026-02-22 19:20:05 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 86: No extraction possible for D:\Orb\app\orchestrator\refactor_segmenter.py: No extractable symbols found
+2026-02-22 19:20:07 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 451 files in 1556ms. Oversized: 78 (leaf=78, branch=0, root=0)
+2026-02-22 19:20:07 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 6 symbols (343 lines, 13418 chars) from D:\Orb\app\llm\local_tools\zobie\streams\fs_query.py → D:\Orb\app\llm\local_tools\zobie\streams\_fs_query_utils.py
+2026-02-22 19:20:10 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 87: D:\Orb\app\llm\local_tools\zobie\streams\fs_query.py 41.5KB -> 28.2KB (6 symbols) BOOT PASS
+2026-02-22 19:20:11 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:20:13 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 452 files in 1603ms. Oversized: 78 (leaf=78, branch=0, root=0)
+2026-02-22 19:20:13 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 59)
+2026-02-22 19:20:13 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\llm\local_tools\zobie\streams\fs_query.py
+2026-02-22 19:20:13 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 88: No extraction possible for D:\Orb\app\llm\local_tools\zobie\streams\fs_query.py: No extractable symbols found
+2026-02-22 19:20:15 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 452 files in 1755ms. Oversized: 78 (leaf=78, branch=0, root=0)
+2026-02-22 19:20:15 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 6 symbols (84 lines, 3636 chars) from D:\Orb\app\llm\spec_gate_stream.py → D:\Orb\app\llm\_spec_gate_stream_utils.py
+2026-02-22 19:20:18 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 89: BOOT FAILED for D:\Orb\app\llm\spec_gate_stream.py. Rolled back.
+2026-02-22 19:20:20 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 452 files in 1604ms. Oversized: 78 (leaf=78, branch=0, root=0)
+2026-02-22 19:20:20 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 5 symbols (194 lines, 8248 chars) from D:\Orb\app\orchestrator\skeleton_contracts.py → D:\Orb\app\orchestrator\_skeleton_contracts_utils.py
+2026-02-22 19:20:23 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 90: D:\Orb\app\orchestrator\skeleton_contracts.py 39.0KB -> 30.9KB (5 symbols) BOOT PASS
+2026-02-22 19:20:24 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:20:26 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 453 files in 1501ms. Oversized: 78 (leaf=78, branch=0, root=0)
+2026-02-22 19:20:26 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 2 symbols (300 lines, 15885 chars) from D:\Orb\app\orchestrator\skeleton_contracts.py → D:\Orb\app\orchestrator\_skeleton_contracts_utils.py
+2026-02-22 19:20:29 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 91: D:\Orb\app\orchestrator\skeleton_contracts.py 30.9KB -> 15.2KB (2 symbols) BOOT PASS
+2026-02-22 19:20:31 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:20:32 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 454 files in 1507ms. Oversized: 77 (leaf=77, branch=0, root=0)
+2026-02-22 19:20:32 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (22 lines, 910 chars) from D:\Orb\app\rag\jobs\embedding_job.py → D:\Orb\app\rag\jobs\_embedding_job_utils.py
+2026-02-22 19:20:36 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 92: D:\Orb\app\rag\jobs\embedding_job.py 41.8KB -> 41.1KB (8 symbols) BOOT PASS
+2026-02-22 19:20:37 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:20:38 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 455 files in 1586ms. Oversized: 77 (leaf=77, branch=0, root=0)
+2026-02-22 19:20:38 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (162 lines, 6427 chars) from D:\Orb\app\rag\jobs\embedding_job.py → D:\Orb\app\rag\jobs\_embedding_job_utils.py
+2026-02-22 19:20:42 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 93: D:\Orb\app\rag\jobs\embedding_job.py 41.1KB -> 34.9KB (8 symbols) BOOT PASS
+2026-02-22 19:20:43 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:20:45 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 456 files in 1574ms. Oversized: 77 (leaf=77, branch=0, root=0)
+2026-02-22 19:20:45 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 2 symbols (15 lines, 728 chars) from D:\Orb\app\rag\jobs\embedding_job.py → D:\Orb\app\rag\jobs\_embedding_job_utils.py
+2026-02-22 19:20:48 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 94: D:\Orb\app\rag\jobs\embedding_job.py 34.9KB -> 34.2KB (2 symbols) BOOT PASS
+2026-02-22 19:20:49 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:20:51 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 457 files in 1518ms. Oversized: 77 (leaf=77, branch=0, root=0)
+2026-02-22 19:20:51 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (542 lines, 23830 chars) from D:\Orb\app\rag\jobs\embedding_job.py → D:\Orb\app\rag\jobs\_embedding_job_utils.py
+2026-02-22 19:20:54 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 95: D:\Orb\app\rag\jobs\embedding_job.py 34.2KB -> 10.5KB (1 symbols) BOOT PASS
+2026-02-22 19:20:55 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:20:57 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 458 files in 1584ms. Oversized: 77 (leaf=77, branch=0, root=0)
+2026-02-22 19:20:57 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 6 symbols (37 lines, 1516 chars) from D:\Orb\app\translation\intents.py → D:\Orb\app\translation\_intents_utils.py
+2026-02-22 19:21:00 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 96: D:\Orb\app\translation\intents.py 41.8KB -> 40.5KB (6 symbols) BOOT PASS
+2026-02-22 19:21:02 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:21:03 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 459 files in 1614ms. Oversized: 77 (leaf=77, branch=0, root=0)
+2026-02-22 19:21:03 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\translation\intents.py
+2026-02-22 19:21:03 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 97: No extraction possible for D:\Orb\app\translation\intents.py: No extractable symbols found
+2026-02-22 19:21:05 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 459 files in 1559ms. Oversized: 77 (leaf=77, branch=0, root=0)
+2026-02-22 19:21:05 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 7 symbols (283 lines, 9861 chars) from D:\Orb\app\overwatcher\overwatcher_command.py → D:\Orb\app\overwatcher\_overwatcher_command_utils.py
+2026-02-22 19:21:08 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 98: BOOT FAILED for D:\Orb\app\overwatcher\overwatcher_command.py. Rolled back.
+2026-02-22 19:21:09 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 459 files in 1606ms. Oversized: 77 (leaf=77, branch=0, root=0)
+2026-02-22 19:21:09 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (91 lines, 3930 chars) from D:\Orb\app\overwatcher\sandbox_build_validator.py → D:\Orb\app\overwatcher\_sandbox_build_validator_utils.py
+2026-02-22 19:21:13 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 99: D:\Orb\app\overwatcher\sandbox_build_validator.py 48.5KB -> 44.8KB (8 symbols) BOOT PASS
+2026-02-22 19:21:14 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:21:16 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 460 files in 1600ms. Oversized: 77 (leaf=77, branch=0, root=0)
+2026-02-22 19:21:16 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 47)
+2026-02-22 19:21:16 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\overwatcher\sandbox_build_validator.py
+2026-02-22 19:21:16 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 100: No extraction possible for D:\Orb\app\overwatcher\sandbox_build_validator.py: No extractable symbols found
+2026-02-22 19:21:18 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 460 files in 1460ms. Oversized: 77 (leaf=77, branch=0, root=0)
+2026-02-22 19:21:18 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (108 lines, 4470 chars) from D:\Orb\app\llm\pipeline\high_stakes.py → D:\Orb\app\llm\pipeline\_high_stakes_utils.py
+2026-02-22 19:21:18 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 101: BOOT FAILED for D:\Orb\app\llm\pipeline\high_stakes.py. Rolled back.
+2026-02-22 19:21:20 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 460 files in 1599ms. Oversized: 77 (leaf=77, branch=0, root=0)
+2026-02-22 19:21:20 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (250 lines, 10055 chars) from D:\Orb\app\pot_spec\grounded\refactor_classifier.py → D:\Orb\app\pot_spec\grounded\_refactor_classifier_utils.py
+2026-02-22 19:21:21 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 102: BOOT FAILED for D:\Orb\app\pot_spec\grounded\refactor_classifier.py. Rolled back.
+2026-02-22 19:21:23 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 460 files in 1573ms. Oversized: 77 (leaf=77, branch=0, root=0)
+2026-02-22 19:21:23 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (46 lines, 1495 chars) from D:\Orb\app\pot_spec\grounded\segmentation.py → D:\Orb\app\pot_spec\grounded\_segmentation_utils.py
+2026-02-22 19:21:26 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 103: D:\Orb\app\pot_spec\grounded\segmentation.py 52.6KB -> 51.3KB (8 symbols) BOOT PASS
+2026-02-22 19:21:27 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:21:29 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 461 files in 1466ms. Oversized: 77 (leaf=77, branch=0, root=0)
+2026-02-22 19:21:29 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 40)
+2026-02-22 19:21:29 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\pot_spec\grounded\segmentation.py
+2026-02-22 19:21:29 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 104: No extraction possible for D:\Orb\app\pot_spec\grounded\segmentation.py: No extractable symbols found
+2026-02-22 19:21:31 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 461 files in 1628ms. Oversized: 77 (leaf=77, branch=0, root=0)
+2026-02-22 19:21:31 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (266 lines, 10191 chars) from D:\Orb\app\orchestrator\segment_enrichment.py → D:\Orb\app\orchestrator\_segment_enrichment_utils.py
+2026-02-22 19:21:34 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 105: D:\Orb\app\orchestrator\segment_enrichment.py 58.6KB -> 48.6KB (8 symbols) BOOT PASS
+2026-02-22 19:21:35 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:21:37 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 462 files in 1617ms. Oversized: 77 (leaf=77, branch=0, root=0)
+2026-02-22 19:21:37 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (263 lines, 11989 chars) from D:\Orb\app\orchestrator\segment_enrichment.py → D:\Orb\app\orchestrator\_segment_enrichment_utils.py
+2026-02-22 19:21:40 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 106: D:\Orb\app\orchestrator\segment_enrichment.py 48.6KB -> 36.8KB (8 symbols) BOOT PASS
+2026-02-22 19:21:42 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:21:43 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 463 files in 1520ms. Oversized: 77 (leaf=77, branch=0, root=0)
+2026-02-22 19:21:43 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 3 symbols (228 lines, 9447 chars) from D:\Orb\app\orchestrator\segment_enrichment.py → D:\Orb\app\orchestrator\_segment_enrichment_utils.py
+2026-02-22 19:21:46 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 107: D:\Orb\app\orchestrator\segment_enrichment.py 36.8KB -> 27.5KB (3 symbols) BOOT PASS
+2026-02-22 19:21:48 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:21:50 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 464 files in 1785ms. Oversized: 77 (leaf=77, branch=0, root=0)
+2026-02-22 19:21:50 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 2 symbols (261 lines, 11117 chars) from D:\Orb\app\orchestrator\segment_enrichment.py → D:\Orb\app\orchestrator\_segment_enrichment_utils.py
+2026-02-22 19:21:53 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 108: D:\Orb\app\orchestrator\segment_enrichment.py 27.5KB -> 16.4KB (2 symbols) BOOT PASS
+2026-02-22 19:21:55 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:21:56 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 465 files in 1449ms. Oversized: 76 (leaf=76, branch=0, root=0)
+2026-02-22 19:21:56 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (51 lines, 1538 chars) from D:\Orb\app\translation\tier0_rules.py → D:\Orb\app\translation\_tier0_rules_utils.py
+2026-02-22 19:21:57 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 109: BOOT FAILED for D:\Orb\app\translation\tier0_rules.py. Rolled back.
+2026-02-22 19:21:59 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 465 files in 1562ms. Oversized: 76 (leaf=76, branch=0, root=0)
+2026-02-22 19:21:59 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (92 lines, 3163 chars) from D:\Orb\app\orchestrator\final_checkout.py → D:\Orb\app\orchestrator\_final_checkout_utils.py
+2026-02-22 19:22:02 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 110: D:\Orb\app\orchestrator\final_checkout.py 74.1KB -> 71.1KB (8 symbols) BOOT PASS
+2026-02-22 19:22:04 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:22:05 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 466 files in 1778ms. Oversized: 76 (leaf=76, branch=0, root=0)
+2026-02-22 19:22:05 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (176 lines, 6322 chars) from D:\Orb\app\orchestrator\phase_checkout_checks.py → D:\Orb\app\orchestrator\_phase_checkout_checks_utils.py
+2026-02-22 19:22:09 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 111: D:\Orb\app\orchestrator\phase_checkout_checks.py 75.6KB -> 69.5KB (8 symbols) BOOT PASS
+2026-02-22 19:22:10 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:22:12 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 467 files in 1570ms. Oversized: 76 (leaf=76, branch=0, root=0)
+2026-02-22 19:22:12 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 6 symbols (388 lines, 17017 chars) from D:\Orb\app\pot_spec\grounded\sandbox_discovery.py → D:\Orb\app\pot_spec\grounded\_sandbox_discovery_utils.py
+2026-02-22 19:22:13 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 112: BOOT FAILED for D:\Orb\app\pot_spec\grounded\sandbox_discovery.py. Rolled back.
+2026-02-22 19:22:14 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 467 files in 1496ms. Oversized: 76 (leaf=76, branch=0, root=0)
+2026-02-22 19:22:14 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 4 symbols (367 lines, 14737 chars) from D:\Orb\app\llm\critical_pipeline\stream_handler.py → D:\Orb\app\llm\critical_pipeline\_stream_handler_utils.py
+2026-02-22 19:22:17 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 113: BOOT FAILED for D:\Orb\app\llm\critical_pipeline\stream_handler.py. Rolled back.
+2026-02-22 19:22:19 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 467 files in 1509ms. Oversized: 76 (leaf=76, branch=0, root=0)
+2026-02-22 19:22:19 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 64)
+2026-02-22 19:22:19 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\orchestrator\phase_checkout_checks.py
+2026-02-22 19:22:19 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 114: No extraction possible for D:\Orb\app\orchestrator\phase_checkout_checks.py: No extractable symbols found
+2026-02-22 19:22:20 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 467 files in 1396ms. Oversized: 76 (leaf=76, branch=0, root=0)
+2026-02-22 19:22:20 [ERROR  ] app.orchestrator.surgical_extractor: [surgical] Failed to parse source: invalid syntax (<unknown>, line 53)
+2026-02-22 19:22:20 [WARNING] app.orchestrator.surgical_extractor: [surgical] No symbols found in D:\Orb\app\orchestrator\final_checkout.py
+2026-02-22 19:22:20 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 115: No extraction possible for D:\Orb\app\orchestrator\final_checkout.py: No extractable symbols found
+2026-02-22 19:22:22 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 467 files in 1489ms. Oversized: 76 (leaf=76, branch=0, root=0)
+2026-02-22 19:22:22 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (381 lines, 14610 chars) from D:\Orb\app\pot_spec\grounded\evidence_gathering.py → D:\Orb\app\pot_spec\grounded\_evidence_gathering_utils.py
+2026-02-22 19:22:23 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 116: BOOT FAILED for D:\Orb\app\pot_spec\grounded\evidence_gathering.py. Rolled back.
+2026-02-22 19:22:24 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 467 files in 1704ms. Oversized: 76 (leaf=76, branch=0, root=0)
+2026-02-22 19:22:24 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (385 lines, 16671 chars) from D:\Orb\app\orchestrator\cohesion_check.py → D:\Orb\app\orchestrator\_cohesion_check_utils.py
+2026-02-22 19:22:27 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 117: D:\Orb\app\orchestrator\cohesion_check.py 82.9KB -> 66.4KB (8 symbols) BOOT PASS
+2026-02-22 19:22:29 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:22:30 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 468 files in 1404ms. Oversized: 76 (leaf=76, branch=0, root=0)
+2026-02-22 19:22:30 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 5 symbols (266 lines, 10772 chars) from D:\Orb\app\orchestrator\cohesion_check.py → D:\Orb\app\orchestrator\_cohesion_check_utils.py
+2026-02-22 19:22:33 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 118: D:\Orb\app\orchestrator\cohesion_check.py 66.4KB -> 55.8KB (5 symbols) BOOT PASS
+2026-02-22 19:22:35 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:22:36 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 469 files in 1484ms. Oversized: 76 (leaf=76, branch=0, root=0)
+2026-02-22 19:22:36 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 4 symbols (328 lines, 12746 chars) from D:\Orb\app\orchestrator\cohesion_check.py → D:\Orb\app\orchestrator\_cohesion_check_utils.py
+2026-02-22 19:22:39 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 119: D:\Orb\app\orchestrator\cohesion_check.py 55.8KB -> 43.1KB (4 symbols) BOOT PASS
+2026-02-22 19:22:40 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:22:42 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 470 files in 1498ms. Oversized: 76 (leaf=76, branch=0, root=0)
+2026-02-22 19:22:42 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (311 lines, 13155 chars) from D:\Orb\app\orchestrator\cohesion_check.py → D:\Orb\app\orchestrator\_cohesion_check_utils.py
+2026-02-22 19:22:45 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 120: D:\Orb\app\orchestrator\cohesion_check.py 43.1KB -> 30.0KB (1 symbols) BOOT PASS
+2026-02-22 19:22:46 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:22:48 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 471 files in 1487ms. Oversized: 76 (leaf=76, branch=0, root=0)
+2026-02-22 19:22:48 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (509 lines, 26193 chars) from D:\Orb\app\orchestrator\cohesion_check.py → D:\Orb\app\orchestrator\_cohesion_check_utils.py
+2026-02-22 19:22:51 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 121: D:\Orb\app\orchestrator\cohesion_check.py 30.0KB -> 3.9KB (1 symbols) BOOT PASS
+2026-02-22 19:22:52 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:22:54 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 472 files in 1500ms. Oversized: 76 (leaf=76, branch=0, root=0)
+2026-02-22 19:22:54 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (145 lines, 5726 chars) from D:\Orb\app\overwatcher\implementer.py → D:\Orb\app\overwatcher\_implementer_utils.py
+2026-02-22 19:22:57 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 122: BOOT FAILED for D:\Orb\app\overwatcher\implementer.py. Rolled back.
+2026-02-22 19:22:58 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 472 files in 1415ms. Oversized: 76 (leaf=76, branch=0, root=0)
+2026-02-22 19:22:58 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (63 lines, 2590 chars) from D:\Orb\app\pot_spec\grounded\simple_create.py → D:\Orb\app\pot_spec\grounded\_simple_create_utils.py
+2026-02-22 19:22:59 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 123: BOOT FAILED for D:\Orb\app\pot_spec\grounded\simple_create.py. Rolled back.
+2026-02-22 19:23:01 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 472 files in 1502ms. Oversized: 76 (leaf=76, branch=0, root=0)
+2026-02-22 19:23:01 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (187 lines, 7521 chars) from D:\Orb\app\llm\weaver_stream.py → D:\Orb\app\llm\_weaver_stream_utils.py
+2026-02-22 19:23:04 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 124: D:\Orb\app\llm\weaver_stream.py 96.7KB -> 89.3KB (8 symbols) BOOT PASS
+2026-02-22 19:23:05 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:23:07 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 473 files in 1401ms. Oversized: 76 (leaf=76, branch=0, root=0)
+2026-02-22 19:23:07 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (49 lines, 1624 chars) from D:\Orb\app\llm\weaver_stream.py → D:\Orb\app\llm\_weaver_stream_utils.py
+2026-02-22 19:23:10 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 125: D:\Orb\app\llm\weaver_stream.py 89.3KB -> 87.9KB (8 symbols) BOOT PASS
+2026-02-22 19:23:11 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:23:13 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 474 files in 1498ms. Oversized: 76 (leaf=76, branch=0, root=0)
+2026-02-22 19:23:13 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (132 lines, 4778 chars) from D:\Orb\app\llm\weaver_stream.py → D:\Orb\app\llm\_weaver_stream_utils.py
+2026-02-22 19:23:16 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 126: D:\Orb\app\llm\weaver_stream.py 87.9KB -> 83.3KB (8 symbols) BOOT PASS
+2026-02-22 19:23:17 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:23:19 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 475 files in 1382ms. Oversized: 76 (leaf=76, branch=0, root=0)
+2026-02-22 19:23:19 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (242 lines, 10141 chars) from D:\Orb\app\llm\weaver_stream.py → D:\Orb\app\llm\_weaver_stream_utils.py
+2026-02-22 19:23:22 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 127: D:\Orb\app\llm\weaver_stream.py 83.3KB -> 73.3KB (8 symbols) BOOT PASS
+2026-02-22 19:23:23 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:23:25 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 476 files in 1495ms. Oversized: 76 (leaf=76, branch=0, root=0)
+2026-02-22 19:23:25 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (350 lines, 14251 chars) from D:\Orb\app\llm\weaver_stream.py → D:\Orb\app\llm\_weaver_stream_utils.py
+2026-02-22 19:23:28 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 128: D:\Orb\app\llm\weaver_stream.py 73.3KB -> 59.3KB (8 symbols) BOOT PASS
+2026-02-22 19:23:29 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:23:31 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 477 files in 1384ms. Oversized: 76 (leaf=76, branch=0, root=0)
+2026-02-22 19:23:31 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 2 symbols (98 lines, 4077 chars) from D:\Orb\app\llm\weaver_stream.py → D:\Orb\app\llm\_weaver_stream_utils.py
+2026-02-22 19:23:34 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 129: D:\Orb\app\llm\weaver_stream.py 59.3KB -> 55.2KB (2 symbols) BOOT PASS
+2026-02-22 19:23:35 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:23:36 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 478 files in 1378ms. Oversized: 76 (leaf=76, branch=0, root=0)
+2026-02-22 19:23:36 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (671 lines, 33710 chars) from D:\Orb\app\llm\weaver_stream.py → D:\Orb\app\llm\_weaver_stream_utils.py
+2026-02-22 19:23:40 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 130: D:\Orb\app\llm\weaver_stream.py 55.2KB -> 21.7KB (1 symbols) BOOT PASS
+2026-02-22 19:23:41 [WARNING] app.orchestrator.refactor_loop: [refactor_loop] RAG update failed (non-fatal): (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: INSERT INTO architecture_file_index (scan_id, path, name, ext, size_bytes, mtime, zone, root, line_count, language, status, source_monolith, refactor_job_id, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id]
+[parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-02-22 19:23:42 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 479 files in 1505ms. Oversized: 77 (leaf=77, branch=0, root=0)
+2026-02-22 19:23:42 [WARNING] app.orchestrator.surgical_extractor: [surgical] No extractable candidates in D:\Orb\app\llm\weaver_stream.py
+2026-02-22 19:23:42 [INFO   ] app.orchestrator.refactor_loop: [refactor_loop] Pass 131: No extraction possible for D:\Orb\app\llm\weaver_stream.py: No extractable symbols found
+2026-02-22 19:23:44 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 479 files in 1366ms. Oversized: 77 (leaf=77, branch=0, root=0)
+2026-02-22 19:23:44 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (45 lines, 1445 chars) from D:\Orb\app\pot_spec\grounded\spec_runner.py → D:\Orb\app\pot_spec\grounded\_spec_runner_utils.py
+2026-02-22 19:23:45 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 132: BOOT FAILED for D:\Orb\app\pot_spec\grounded\spec_runner.py. Rolled back.
+2026-02-22 19:23:46 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 479 files in 1450ms. Oversized: 77 (leaf=77, branch=0, root=0)
+2026-02-22 19:23:46 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 1 symbols (1696 lines, 92687 chars) from D:\Orb\app\overwatcher\architecture_executor\orchestrator.py → D:\Orb\app\overwatcher\architecture_executor\_orchestrator_utils.py
+2026-02-22 19:23:50 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 133: BOOT FAILED for D:\Orb\app\overwatcher\architecture_executor\orchestrator.py. Rolled back.
+2026-02-22 19:23:52 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 479 files in 1703ms. Oversized: 77 (leaf=77, branch=0, root=0)
+2026-02-22 19:23:52 [INFO   ] app.orchestrator.surgical_extractor: [surgical] Extracted 8 symbols (211 lines, 8240 chars) from D:\Orb\app\orchestrator\segment_loop.py → D:\Orb\app\orchestrator\_segment_loop_utils.py
+2026-02-22 19:23:56 [ERROR  ] app.orchestrator.refactor_loop: [refactor_loop] Pass 134: BOOT FAILED for D:\Orb\app\orchestrator\segment_loop.py. Rolled back.
+2026-02-22 19:23:57 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 479 files in 1407ms. Oversized: 77 (leaf=77, branch=0, root=0)
