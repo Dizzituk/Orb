@@ -54,23 +54,3 @@ def _build_simple_spec(
     lines.append("")
     
     return "\n".join(lines)
-
-
-# Re-exports: symbols extracted to _spec_runner_utils_1 by refactor loop
-_REEXPORT_MAP = {
-    "SCOPE_BACKEND": "_spec_runner_utils_1",
-    "SCOPE_FRONTEND": "_spec_runner_utils_1",
-    "_PRODUCT_SYNONYMS": "_spec_runner_utils_1",
-    "_detect_search_replace_terms": "_spec_runner_utils_1",
-    "_extract_requirements_from_spec": "_spec_runner_utils_1",
-    "_generate_aliases_for_root": "_spec_runner_utils_1",
-    "_get_job_dir_for_segmentation": "_spec_runner_utils_1",
-    "_parse_product_synonyms": "_spec_runner_utils_1",
-}
-
-def __getattr__(name):
-    if name in _REEXPORT_MAP:
-        import importlib
-        mod = importlib.import_module(f"app.pot_spec.grounded.{_REEXPORT_MAP[name]}")
-        return getattr(mod, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -39,13 +39,13 @@ from __future__ import annotations
 import logging
 import re
 from typing import Any, Dict, List, Optional
+from app.pot_spec.grounded._qa_processing_utils import DEEP_ANALYSIS_MAX_TOKENS, DEEP_ANALYSIS_MIN_TOKENS, NON_QA_MAX_TOKENS, QA_PROCESSING_BUILD_ID, STANDARD_QA_MAX_TOKENS, STANDARD_QA_MIN_TOKENS, STANDARD_QA_TOKENS_PER_QUESTION, _generate_reply_fallback
 
 logger = logging.getLogger(__name__)
 
 # =============================================================================
 # v1.31 BUILD VERIFICATION
 # =============================================================================
-QA_PROCESSING_BUILD_ID = "2026-01-30-v1.31-multi-file-synthesis"
 print(f"[QA_PROCESSING_LOADED] BUILD_ID={QA_PROCESSING_BUILD_ID}")
 logger.info(f"[qa_processing] Module loaded: BUILD_ID={QA_PROCESSING_BUILD_ID}")
 
@@ -54,19 +54,13 @@ logger.info(f"[qa_processing] Module loaded: BUILD_ID={QA_PROCESSING_BUILD_ID}")
 # =============================================================================
 
 # Deep analysis mode - checking ALL questions for correctness
-DEEP_ANALYSIS_MIN_TOKENS = 4000
 DEEP_ANALYSIS_TOKENS_PER_QUESTION = 400
 DEEP_ANALYSIS_BASE_TOKENS = 2000  # v1.30: Increased for full doc analysis
-DEEP_ANALYSIS_MAX_TOKENS = 32000
 
 # Standard Q&A mode - only answering unanswered questions
-STANDARD_QA_MIN_TOKENS = 2000
-STANDARD_QA_TOKENS_PER_QUESTION = 300
 STANDARD_QA_BASE_TOKENS = 1000  # v1.30: Increased for full doc analysis
-STANDARD_QA_MAX_TOKENS = 16000
 
 # Non-Q&A file analysis
-NON_QA_MAX_TOKENS = 8000
 
 
 def _calculate_token_budget(
@@ -651,48 +645,6 @@ Your response:"""
     
     # Fallback for non-Q&A files
     return _generate_reply_fallback(content, content_type)
-
-
-def _generate_reply_fallback(content: str, content_type: Optional[str] = None) -> str:
-    """Fallback heuristic reply generation for non-Q&A files."""
-    if not content:
-        return "(No content to process)"
-    
-    content_preview = content[:500] if len(content) > 500 else content
-    
-    # Detect questions
-    question_patterns = [
-        r'\?',
-        r'\bwhat\b',
-        r'\bhow\b',
-        r'\bwhy\b',
-        r'\bwhen\b',
-        r'\bwhere\b',
-        r'\bwhich\b',
-    ]
-    
-    has_question = any(re.search(p, content_preview, re.IGNORECASE) for p in question_patterns)
-    
-    if has_question:
-        return "(Response to question in file - LLM unavailable for intelligent answer)"
-    
-    # Detect code
-    code_patterns = [
-        r'\bdef\s+\w+',
-        r'\bclass\s+\w+',
-        r'\bimport\s+',
-        r'\bfunction\s+',
-        r'\bconst\s+',
-        r'\blet\s+',
-        r'\bvar\s+',
-    ]
-    
-    has_code = any(re.search(p, content_preview) for p in code_patterns)
-    
-    if has_code:
-        return "(Code analysis requested - LLM unavailable for intelligent explanation)"
-    
-    return "(Content acknowledged - LLM unavailable for intelligent response)"
 
 
 # =============================================================================

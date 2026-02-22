@@ -145,7 +145,7 @@ async def generate_refactor_stream(
             result = run_refactor_pass(target.path, pass_num, job_id)
         except Exception as exc:
             files_errored.add(target.path)
-            state.record_failure(target.path, target.size_kb, f"Exception: {str(exc)[:150]}")
+            # Exception = bug, not exhaustion. Skip this run, no strike.
             yield _sse_token(f"  → ❌ **Error:** {str(exc)[:100]}\n")
             await asyncio.sleep(0)
             continue
@@ -170,35 +170,31 @@ async def generate_refactor_stream(
 
         elif result.rolled_back:
             files_errored.add(target.path)
-            reason = result.error or "Boot failed after extraction"
-            state.record_failure(target.path, target.size_kb, reason[:200])
-
-            rec = state.files.get(target.path)
-            if rec and rec.needs_pipeline:
-                yield _sse_token(
-                    f"  → ❌ **Strike 3** — flagged for pipeline decomposition.\n"
-                )
-            else:
-                strikes = rec.strikes if rec else 1
-                yield _sse_token(f"  → ❌ **Rolled back** (strike {strikes}/3)\n")
+            # Boot fail = extraction worked but broke something.
+            # Skip this run, no strike — there may be other symbols to try.
+            yield _sse_token(f"  → ❌ **Rolled back** — skipping this run\n")
             await asyncio.sleep(0)
-            continue
 
         elif result.error:
             files_errored.add(target.path)
-            state.record_failure(target.path, target.size_kb, result.error[:200])
             error_short = result.error[:80] if result.error else "unknown"
+            is_exhausted = "No extractable symbols" in (result.error or "")
 
-            rec = state.files.get(target.path)
-            if rec and rec.needs_pipeline:
-                yield _sse_token(
-                    f"  → ⏭️ **Strike 3** — flagged for pipeline: {error_short}\n"
-                )
+            if is_exhausted:
+                # Nothing left to extract — THIS is a real strike
+                state.record_failure(target.path, target.size_kb, result.error[:200])
+                rec = state.files.get(target.path)
+                if rec and rec.needs_pipeline:
+                    yield _sse_token(
+                        f"  → ⏭️ **Strike 3** — flagged for pipeline decomposition\n"
+                    )
+                else:
+                    strikes = rec.strikes if rec else 1
+                    yield _sse_token(f"  → ⏭️ No symbols left (strike {strikes}/3)\n")
             else:
-                strikes = rec.strikes if rec else 1
-                yield _sse_token(f"  → ⏭️ Skipping (strike {strikes}/3): {error_short}\n")
+                # Extraction bug — skip this run, no strike
+                yield _sse_token(f"  → ⏭️ Skipping: {error_short}\n")
             await asyncio.sleep(0)
-            continue
 
         yield _sse_meta("refactor_progress", {
             "pct": round(100 * passes_completed / max(starting_oversized or 1, 1)),

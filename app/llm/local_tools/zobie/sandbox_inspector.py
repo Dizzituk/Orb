@@ -44,6 +44,7 @@ from typing import Any, Dict, List, Optional
 
 from .sandbox_client import call_fs_tree, call_fs_contents
 from .content_classifier import classify_content, score_file_for_intent, ContentType
+from app.llm.local_tools.zobie._sandbox_inspector_utils import D_DRIVE_ROOT, MAX_CANDIDATE_FILES, MAX_CLASSIFICATION_CHARS, MAX_FILE_CHARS, MAX_SEARCH_DEPTH, SANDBOX_DESKTOP_ROOTS, _read_snippet, file_exists_in_sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -51,10 +52,6 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # SAFETY LIMITS
 # =============================================================================
-
-MAX_FILE_CHARS = 8000           # Prevent ingesting megabyte logs
-MAX_CLASSIFICATION_CHARS = 800  # Snippet for classification (fast)
-MAX_CANDIDATE_FILES = 20        # Don't read more than this
 MAX_FILES_PER_FOLDER = 50       # Don't list more than this
 
 # Sandbox root paths (Windows Sandbox + host user)
@@ -89,15 +86,11 @@ PROJECT_ROOTS: Dict[str, str] = {
 }
 
 # v1.2: D:\ drive root for dynamic project discovery
-D_DRIVE_ROOT = "D:\\"
 
 # Separate lists for intelligent ordering
 HOST_DESKTOP_ROOTS = [
     r"C:\Users\dizzi\OneDrive\Desktop",
     r"C:\Users\dizzi\Desktop",
-]
-SANDBOX_DESKTOP_ROOTS = [
-    r"C:\Users\WDAGUtilityAccount\Desktop",
 ]
 HOST_DOCUMENTS_ROOTS = [
     r"C:\Users\dizzi\OneDrive\Documents",
@@ -111,7 +104,6 @@ SANDBOX_DOCUMENTS_ROOTS = [
 CANDIDATE_EXTENSIONS = [".txt", ".md", ".py", ".json", ".yaml", ".yml", ".log", ".csv"]
 
 # Maximum search depth for bounded fallback
-MAX_SEARCH_DEPTH = 3
 
 
 # =============================================================================
@@ -756,17 +748,6 @@ def _select_file_from_folder(result: Dict[str, Any], job_intent: Optional[str]) 
 # FILE READING UTILITIES
 # =============================================================================
 
-def _read_snippet(file_path: str, max_chars: int) -> Optional[str]:
-    """Read a small snippet for classification."""
-    status, data, error = call_fs_contents([file_path])
-    if status == 200 and data:
-        files = data.get("files", [])
-        if files:
-            content = files[0].get("content")
-            if content:
-                return content[:max_chars]
-    return None
-
 
 def read_sandbox_file(file_path: str) -> Optional[str]:
     """Read full file content (capped at MAX_FILE_CHARS)."""
@@ -784,24 +765,6 @@ def read_sandbox_file(file_path: str) -> Optional[str]:
                     return content[:MAX_FILE_CHARS]
                 return content
     return None
-
-
-def file_exists_in_sandbox(file_path: str) -> bool:
-    """Check if file exists in sandbox (by listing parent folder)."""
-    parent = os.path.dirname(file_path)
-    target = os.path.basename(file_path).lower()
-    
-    if not parent or not target:
-        return False
-    
-    status, data, error = call_fs_tree([parent], max_files=200)
-    if status != 200 or not data:
-        return False
-    
-    return any(
-        (f.get("name") or "").lower() == target
-        for f in data.get("files", [])
-    )
 
 
 # =============================================================================

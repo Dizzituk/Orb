@@ -33,14 +33,13 @@ import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from app.pot_spec.grounded._simple_create_utils import SIMPLE_CREATE_BUILD_ID, _CONTENT_SIGNALS, _CREATE_ANALYSIS_MODEL, _EVIDENCE_MAX_LOOPS, _FALLBACK_MODELS, _NEGATIVE_PATH_SEGMENTS, _extract_acceptance_from_constraints, _find_file_in_projects
+from app.pot_spec.grounded._simple_create_utils import ARCHITECTURAL_FILE_PATTERNS, CONCEPT_KEYWORDS, KEYWORD_STOPWORDS, MIN_KEYWORD_LENGTH, NEGATION_PATTERNS, PLACEHOLDER_GOALS, _resolve_mentioned_files, _score_integration_point
 
 logger = logging.getLogger(__name__)
-
-SIMPLE_CREATE_BUILD_ID = "2026-02-09-v5.1-pre-resolve-mentioned-files"
 print(f"[SIMPLE_CREATE_LOADED] BUILD_ID={SIMPLE_CREATE_BUILD_ID}")
 
 # v4.0: Max evidence fulfilment loops (matches ASTRA_EVIDENCE_MAX_LOOPS convention)
-_EVIDENCE_MAX_LOOPS = int(os.getenv("ASTRA_EVIDENCE_MAX_LOOPS", "3"))  # v4.2: Increased from 2 to 3
 # v4.0: Max chars to read per file during evidence fulfilment
 _EVIDENCE_MAX_FILE_CHARS = int(os.getenv("ASTRA_EVIDENCE_MAX_FILE_CHARS", "50000"))
 
@@ -53,7 +52,6 @@ _EVIDENCE_MAX_FILE_CHARS = int(os.getenv("ASTRA_EVIDENCE_MAX_FILE_CHARS", "50000
 #
 # Set ASTRA_CREATE_ANALYSIS_MODEL to override (e.g., "gpt-5-mini", "gpt-5.2")
 # If not set, uses the model allocated by spec_gate_stream.
-_CREATE_ANALYSIS_MODEL = os.getenv("ASTRA_CREATE_ANALYSIS_MODEL", "")
 _CREATE_ANALYSIS_TIMEOUT = int(os.getenv("ASTRA_CREATE_ANALYSIS_TIMEOUT", "180"))
 
 
@@ -101,42 +99,11 @@ class CreateEvidence:
 # =============================================================================
 
 # Words that should NEVER be used as search keywords for filename matching
-KEYWORD_STOPWORDS = {
-    # Articles, prepositions, conjunctions
-    'a', 'an', 'the', 'is', 'it', 'in', 'on', 'at', 'to', 'of', 'for',
-    'by', 'or', 'and', 'but', 'not', 'no', 'nor', 'so', 'as', 'if',
-    'do', 'be', 'am', 'are', 'was', 'were', 'has', 'had', 'have',
-    'will', 'can', 'may', 'with', 'from', 'that', 'this', 'than',
-    'its', 'my', 'any', 'all', 'each', 'every',
-    # Common verbs that match too many files
-    'get', 'set', 'run', 'use', 'add', 'new', 'put', 'let',
-    # Task description noise
-    'should', 'must', 'need', 'want', 'like', 'also', 'just',
-    'only', 'ever', 'never', 'always', 'still', 'yet',
-    # Generic computing terms too broad for filename matching
-    'file', 'data', 'type', 'name', 'path', 'list', 'item',
-    'mode', 'test', 'main', 'base', 'core', 'util', 'help',
-}
 
 # Minimum keyword length for filename matching (prevents "no", "ui", etc.)
-MIN_KEYWORD_LENGTH = 3
 
 # Map task concepts to search keywords
 # v2.0: Only concepts are returned, individual keywords are used for DETECTION only
-CONCEPT_KEYWORDS = {
-    "voice": ["voice", "audio", "speech", "microphone", "mic", "record"],
-    "text_input": ["input field", "text input", "textarea", "text entry"],
-    "button": ["button", "toggle", "click handler"],
-    "api_endpoint": ["endpoint", "api route", "http endpoint", "fastapi route"],
-    "file_upload": ["upload", "file upload", "blob upload"],
-    "transcription": ["transcribe", "transcription", "whisper", "speech-to-text", "stt"],
-    "ui_component": ["component", "widget", "ui element"],
-    "state_management": ["useState", "context", "store", "redux", "state management"],
-    "streaming": ["stream", "sse", "server-sent", "websocket", "real-time"],
-    "model_management": ["model download", "model loading", "model manager", "gpu detection"],
-    "wake_word": ["wake word", "hotword", "always listening", "voice activation"],
-    "noise_suppression": ["noise", "noise suppression", "vad", "voice activity"],
-}
 
 
 def _extract_task_keywords(text: str) -> List[str]:
@@ -180,20 +147,6 @@ def _extract_task_keywords(text: str) -> List[str]:
 # =============================================================================
 
 # Patterns that indicate negative constraints
-NEGATION_PATTERNS = [
-    (r'no\s+(cloud\s+api|cloud\s+service|external\s+api|remote\s+api)', 'no_cloud_api'),
-    (r'no\s+audio.*leave', 'no_audio_upload'),
-    (r'local[\s-]+only', 'local_only'),
-    (r'no\s+mobile', 'no_mobile'),
-    (r'no\s+multi[\s-]*language', 'no_multilingual'),
-    (r'never\s+leav(?:e|ing)\s+the\s+machine', 'local_only'),
-    (r'not\s+(?:a|an)?\s*cloud', 'no_cloud_api'),
-    (r'privacy\s+constraint', 'privacy_critical'),
-    (r'no\s+network\s+traffic', 'local_only'),
-    (r'phase\s+1\s+only', 'phase_1_scope'),
-    (r'desktop[\s-]+only', 'desktop_only'),
-    (r'no\s+(?:tts|text[\s-]*to[\s-]*speech)', 'no_tts'),
-]
 
 
 def _extract_constraints(text: str) -> List[str]:
@@ -234,87 +187,6 @@ def _extract_constraints(text: str) -> List[str]:
 # `architecture_executor.py`), resolve them to real paths BEFORE the LLM
 # is called. This prevents the LLM from guessing wrong paths in
 # EVIDENCE_REQUESTs.
-
-
-def _resolve_mentioned_files(
-    text: str,
-    project_paths: List[str],
-) -> List[Dict[str, Any]]:
-    """
-    v5.1: Extract filenames mentioned in the job description and resolve
-    them to real filesystem paths under project_paths.
-
-    Looks for patterns like:
-    - `filename.py` (backtick-quoted)
-    - filename.py (bare, with .py/.js/.ts/.jsx/.tsx/.json/.md/.yaml/.yml extension)
-
-    Returns list of dicts: {mentioned, resolved_path, size_bytes}
-    """
-    results = []
-    seen_filenames = set()
-
-    # Extract filenames from backtick-quoted references
-    backtick_pattern = re.compile(r'`([\w./_-]+\.(?:py|js|ts|jsx|tsx|json|md|yaml|yml|toml|cfg|txt))`')
-    # Also match bare filenames with extensions (word boundaries)
-    bare_pattern = re.compile(r'\b([\w_-]+\.(?:py|js|ts|jsx|tsx|json|md|yaml|yml|toml|cfg|txt))\b')
-
-    for pattern in [backtick_pattern, bare_pattern]:
-        for match in pattern.finditer(text):
-            filename = match.group(1)
-            # Normalise — take just the basename for searching
-            basename = os.path.basename(filename)
-            if basename in seen_filenames or not basename:
-                continue
-            seen_filenames.add(basename)
-
-            # Search for this file across all project paths
-            resolved = _find_file_in_projects(basename, project_paths)
-            if resolved:
-                for rpath in resolved:
-                    try:
-                        size = os.path.getsize(rpath)
-                    except OSError:
-                        size = 0
-                    results.append({
-                        "mentioned": filename,
-                        "resolved_path": rpath,
-                        "size_bytes": size,
-                    })
-
-    return results
-
-
-def _find_file_in_projects(
-    filename: str,
-    project_paths: List[str],
-    max_results: int = 3,
-) -> List[str]:
-    """
-    v5.1: Walk project directories to find files matching the given filename.
-
-    Returns up to max_results absolute paths. Skips common junk directories.
-    """
-    skip_dirs = {
-        '__pycache__', '.git', 'node_modules', '.venv', 'venv',
-        '.tox', '.mypy_cache', '.pytest_cache', 'dist', 'build',
-        '.next', '.nuxt', 'eggs', '*.egg-info',
-    }
-    found = []
-    for root_path in project_paths:
-        if not os.path.isdir(root_path):
-            continue
-        for dirpath, dirnames, filenames in os.walk(root_path):
-            # Prune junk dirs
-            dirnames[:] = [
-                d for d in dirnames
-                if d not in skip_dirs and not d.endswith('.egg-info')
-            ]
-            if filename in filenames:
-                full = os.path.join(dirpath, filename)
-                found.append(full)
-                if len(found) >= max_results:
-                    return found
-    return found
 
 
 # =============================================================================
@@ -451,22 +323,6 @@ def _detect_tech_stack(project_path: str, sandbox_client: Any = None) -> TechSta
 # =============================================================================
 
 # v2.0: Only match these SPECIFIC architectural files, not keyword substrings
-ARCHITECTURAL_FILE_PATTERNS = [
-    # Frontend entry points and primary components
-    (r'^InputSection\.(tsx|jsx)$', "Primary text input component", "modify"),
-    (r'^ChatWindow\.(tsx|jsx)$', "Main chat interface", "modify"),
-    (r'^Header\.(tsx|jsx)$', "App header/toolbar", "modify"),
-    (r'^App\.(tsx|jsx)$', "Root component", "reference"),
-    (r'^main\.(tsx|jsx)$', "Entry point", "reference"),
-    (r'^index\.(tsx|jsx)$', "Entry point", "reference"),
-    # Frontend API layer
-    (r'^api\.(ts|js)$', "API client layer", "modify"),
-    (r'^streamingApi\.(ts|js)$', "Streaming API client", "modify"),
-    # Backend entry points
-    (r'^main\.py$', "Backend entry point", "reference"),
-    # Types/interfaces
-    (r'^types\.(ts|d\.ts)$', "Type definitions", "reference"),
-]
 
 # v2.0: Concept-to-directory patterns — search for files in relevant directories
 CONCEPT_DIRECTORY_PATTERNS = {
@@ -508,45 +364,6 @@ CONCEPT_DIRECTORY_PATTERNS = {
 # Solution: For ambiguous filenames (main.py, index.py, app.py), read a small
 # content sample and score based on signals. Negative scores for paths under
 # static/dist/build/public directories.
-
-_CONTENT_SIGNALS = [
-    (re.compile(r'FastAPI\s*\('), +10),
-    (re.compile(r'from\s+fastapi\s+import\s+FastAPI'), +10),
-    (re.compile(r'include_router\s*\('), +5),
-    (re.compile(r'app\.mount\s*\('), +3),
-    (re.compile(r'@app\.on_event'), +3),
-    (re.compile(r'uvicorn\.run'), +3),
-]
-
-_NEGATIVE_PATH_SEGMENTS = {'static', 'dist', 'build', 'public', 'assets', 'out', '.next'}
-
-
-def _score_integration_point(file_path: str, project_path: str) -> int:
-    """
-    v3.6: Score an integration point based on content signals and path heuristics.
-    Only reads the first 3KB of the file for efficiency.
-    Positive scores = more likely architecturally relevant.
-    Negative scores = likely a false positive.
-    """
-    score = 0
-    rel_path = os.path.relpath(file_path, project_path).lower().replace('\\', '/')
-    path_segments = set(rel_path.split('/'))
-
-    if path_segments & _NEGATIVE_PATH_SEGMENTS:
-        score -= 10
-
-    filename = os.path.basename(file_path).lower()
-    if filename in ('main.py', 'app.py', 'index.py', 'server.py'):
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                head = f.read(3072)
-            for pattern, delta in _CONTENT_SIGNALS:
-                if pattern.search(head):
-                    score += delta
-        except Exception:
-            pass
-
-    return score
 
 def _find_integration_points(
     project_path: str,
@@ -1400,10 +1217,6 @@ the actual contents so you can produce a grounded analysis instead of guessing."
 
 
 # Default fallback model when the allocated model times out
-_FALLBACK_MODELS = [
-    ("openai", "gpt-5-mini"),
-    ("anthropic", "claude-sonnet-4-5-20250929"),
-]
 
 
 async def _run_llm_analysis(
@@ -1570,14 +1383,6 @@ Please provide your structured analysis."""
 # =============================================================================
 
 # v1.2: Placeholder goals that should never be used
-PLACEHOLDER_GOALS = {
-    "job description",
-    "job description from weaver", 
-    "weaver output",
-    "task description",
-    "implement requested feature",
-    "complete the requested task",
-}
 
 
 def _sanitize_goal(goal: str, what_to_do: str) -> str:
@@ -1612,24 +1417,6 @@ def _sanitize_goal(goal: str, what_to_do: str) -> str:
                     return line[:200]
     
     return goal.split('\n')[0].strip() if goal else "Implement requested feature"
-
-
-def _extract_acceptance_from_constraints(constraints: List[str]) -> List[str]:
-    """
-    v2.0: Generate task-specific acceptance criteria from constraints.
-    """
-    criteria = []
-    for constraint in constraints:
-        c_lower = constraint.lower()
-        if 'no cloud' in c_lower or 'local' in c_lower:
-            criteria.append("No network traffic during transcription (verify with network monitor)")
-        if 'no audio' in c_lower and 'leave' in c_lower:
-            criteria.append("Audio data never leaves the machine — no outbound connections")
-        if 'desktop' in c_lower:
-            criteria.append("Works on desktop platform as specified")
-        if 'phase 1' in c_lower:
-            criteria.append("Only Phase 1 features implemented — no scope creep")
-    return criteria
 
 
 def build_create_spec(

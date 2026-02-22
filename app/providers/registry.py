@@ -33,6 +33,7 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional, Dict, List, Tuple
+from app.providers._registry_utils import ProviderConfig, _build_anthropic_tools, _build_openai_tools, _execute_tool_by_name, _is_reasoning_model, _messages_to_prompt, _now_ms, _safe_json
 
 logger = logging.getLogger(__name__)
 
@@ -68,31 +69,12 @@ class LlmCallResult:
         return self.status == LlmCallStatus.SUCCESS
 
 
-@dataclass
-class ProviderConfig:
-    provider_id: str
-    display_name: str
-    env_key_name: str
-
-
 PROVIDERS: Dict[str, ProviderConfig] = {
     "openai": ProviderConfig("openai", "OpenAI", "OPENAI_API_KEY"),
     "anthropic": ProviderConfig("anthropic", "Anthropic", "ANTHROPIC_API_KEY"),
     "google": ProviderConfig("google", "Google (Gemini)", "GOOGLE_API_KEY"),
     "gemini": ProviderConfig("gemini", "Google (Gemini)", "GOOGLE_API_KEY"),
 }
-
-
-def _now_ms() -> int:
-    return int(time.time() * 1000)
-
-
-def _safe_json(obj: Any) -> Any:
-    try:
-        json.dumps(obj)
-        return obj
-    except Exception:
-        return str(obj)
 
 
 def _normalize_messages_for_openai(messages: List[dict], system_prompt: Optional[str]) -> List[dict]:
@@ -137,31 +119,6 @@ def _pick_default_provider() -> Optional[str]:
     return None
 
 
-def _build_openai_tools(tool_defs: List[dict]) -> List[dict]:
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": t["name"],
-                "description": (t.get("description", "") or "")[:800],
-                "parameters": t.get("input_schema", {"type": "object", "properties": {}}),
-            },
-        }
-        for t in tool_defs
-    ]
-
-
-def _build_anthropic_tools(tool_defs: List[dict]) -> List[dict]:
-    return [
-        {
-            "name": t["name"],
-            "description": (t.get("description", "") or "")[:800],
-            "input_schema": t.get("input_schema", {"type": "object", "properties": {}}),
-        }
-        for t in tool_defs
-    ]
-
-
 def _openai_token_param_name(model_id: str) -> str:
     """
     OpenAI token-limit parameter name differs for some newer models.
@@ -172,12 +129,6 @@ def _openai_token_param_name(model_id: str) -> str:
     if m.startswith("gpt-5") or m.startswith("o1") or m.startswith("o3") or m.startswith("o4"):
         return "max_completion_tokens"
     return "max_tokens"
-
-
-def _is_reasoning_model(model_id: str) -> bool:
-    """Check if model supports the reasoning parameter (GPT-5.x, o3, o4)."""
-    m = (model_id or "").strip().lower()
-    return m.startswith("gpt-5") or m.startswith("o3") or m.startswith("o4")
 
 
 def _supports_temperature(model_id: str) -> bool:
@@ -207,32 +158,6 @@ def _is_chat_model(model_id: str) -> bool:
         # gpt-5.2-pro, gpt-5-pro, o1-pro, o3-pro → completions only
         return False
     return True
-
-
-def _messages_to_prompt(messages: List[dict], system_prompt: Optional[str]) -> str:
-    """Convert messages array to a single prompt string for completions API."""
-    parts: List[str] = []
-    if system_prompt:
-        parts.append(f"System: {system_prompt}")
-    for m in messages:
-        role = m.get("role", "user")
-        content = m.get("content", "")
-        if role == "system":
-            parts.append(f"System: {content}")
-        elif role == "assistant":
-            parts.append(f"Assistant: {content}")
-        else:
-            parts.append(f"User: {content}")
-    # Add prompt for assistant response
-    parts.append("Assistant:")
-    return "\n\n".join(parts)
-
-
-async def _execute_tool_by_name(name: str, args: dict, context: Optional[dict]) -> dict:
-    from app.tools.registry import execute_tool_async
-
-    resp = await execute_tool_async(name, "v1", args, context=context)
-    return resp.to_dict()
 
 
 class ProviderRegistry:

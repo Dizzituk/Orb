@@ -44,6 +44,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.overwatcher.sandbox_client import (
+from app.overwatcher._sandbox_build_validator_utils import BUILD_VALIDATION_ENABLED, BUILD_VALIDATOR_BUILD_ID, DIAGNOSTIC_SYSTEM_PROMPT, DIAGNOSTIC_USER_PROMPT, ERROR_TYPE_PATTERNS, FILE_PATH_PATTERNS, MAX_DIAGNOSTIC_PROMPT_CHARS, PROJECT_UNKNOWN
     SandboxClient,
     SandboxError,
     ShellResult,
@@ -53,7 +54,6 @@ from app.overwatcher.sandbox_client import (
 logger = logging.getLogger(__name__)
 
 # Build verification
-BUILD_VALIDATOR_BUILD_ID = "2026-02-04-v1.1-path-inference"
 print(f"[BUILD_VALIDATOR_LOADED] BUILD_ID={BUILD_VALIDATOR_BUILD_ID}")
 
 
@@ -63,13 +63,9 @@ print(f"[BUILD_VALIDATOR_LOADED] BUILD_ID={BUILD_VALIDATOR_BUILD_ID}")
 
 MAX_BUILD_FIX_ATTEMPTS = int(os.getenv("OVERWATCHER_MAX_BUILD_FIX_ATTEMPTS", "3"))
 BUILD_VALIDATION_TIMEOUT = int(os.getenv("OVERWATCHER_BUILD_VALIDATION_TIMEOUT", "120"))
-BUILD_VALIDATION_ENABLED = os.getenv(
-    "OVERWATCHER_BUILD_VALIDATION_ENABLED", "1"
-).lower() in {"1", "true", "yes"}
 
 # Truncation limits for LLM prompts (follows evidence.py cost guardrails)
 MAX_BUILD_OUTPUT_CHARS = 5000
-MAX_DIAGNOSTIC_PROMPT_CHARS = 15000
 
 # Sandbox project paths (matches sandbox/manager.py paths)
 SANDBOX_FRONTEND_PATH = r"C:\Orb\orb-desktop"
@@ -78,7 +74,6 @@ SANDBOX_BACKEND_PATH = r"C:\Orb\Orb"
 # Project type identifiers
 PROJECT_VITE_REACT = "vite_react"
 PROJECT_PYTHON_BACKEND = "python_backend"
-PROJECT_UNKNOWN = "unknown"
 
 # Allowed fix command prefixes (safety constraint — Section 11.5 of job spec)
 ALLOWED_FIX_COMMANDS = [
@@ -343,31 +338,8 @@ async def detect_project_type_from_sandbox(
 # =============================================================================
 
 # Patterns for extracting file paths from build error output
-FILE_PATH_PATTERNS = [
-    # Vite/Node: absolute Windows paths
-    re.compile(r"([A-Z]:\\[^\s:]+\.\w+)", re.IGNORECASE),
-    # Vite/Node: relative paths with line numbers
-    re.compile(r"([\w./\\-]+\.\w+):(\d+):(\d+)"),
-    # Python: File "path", line N
-    re.compile(r'File "([^"]+)"', re.IGNORECASE),
-]
 
 # Patterns for extracting error types
-ERROR_TYPE_PATTERNS = [
-    (re.compile(r"SyntaxError", re.IGNORECASE), "SyntaxError"),
-    (re.compile(r"TypeError", re.IGNORECASE), "TypeError"),
-    (re.compile(r"ReferenceError", re.IGNORECASE), "ReferenceError"),
-    (re.compile(r"ModuleNotFoundError", re.IGNORECASE), "ModuleNotFoundError"),
-    (re.compile(r"ImportError", re.IGNORECASE), "ImportError"),
-    (re.compile(r"Cannot find module", re.IGNORECASE), "ModuleNotFound"),
-    (re.compile(r"Failed to load PostCSS config", re.IGNORECASE), "PostCSSConfigError"),
-    (re.compile(r"is not valid JSON", re.IGNORECASE), "JSONParseError"),
-    (re.compile(r"Unexpected token", re.IGNORECASE), "JSONParseError"),
-    (re.compile(r"ERR_MODULE_NOT_FOUND", re.IGNORECASE), "ModuleNotFound"),
-    (re.compile(r"TS\d{4}", re.IGNORECASE), "TypeScriptError"),
-    (re.compile(r"ENOENT", re.IGNORECASE), "FileNotFound"),
-    (re.compile(r"Cannot resolve", re.IGNORECASE), "ResolutionError"),
-]
 
 
 def parse_build_error_output(
@@ -641,70 +613,6 @@ async def validate_all_affected_projects(
 # =============================================================================
 # Diagnostic Reasoning (LLM-powered)
 # =============================================================================
-
-DIAGNOSTIC_SYSTEM_PROMPT = """You are a build error diagnostic expert for a Vite + React + Electron frontend and a Python FastAPI backend.
-
-You are given:
-1. The original spec (what was intended)
-2. The POT execution results (what files were changed)
-3. The build error output (what went wrong)
-
-YOUR TASK: Diagnose the root cause and generate a fix.
-
-RESPOND WITH ONLY A VALID JSON OBJECT matching this schema:
-{{
-  "diagnosis": "One sentence describing what went wrong",
-  "root_cause": "encoding|syntax|import|config|dependency|type_error|other",
-  "confidence": 0.0-1.0,
-  "fixes": [
-    {{
-      "fix_type": "rewrite_file|run_command|revert_file",
-      "file_path": "<use same absolute path from error output>",
-      "content": "Full corrected file content (for rewrite_file only)",
-      "command": "npm install (for run_command only)",
-      "rationale": "Why this fix addresses the root cause"
-    }}
-  ]
-}}
-
-RULES:
-1. fix_type must be one of: rewrite_file, run_command, revert_file
-2. For rewrite_file: provide the COMPLETE corrected file content (not a diff)
-3. For run_command: ONLY these commands are allowed: npm install, npm ci, npx tsc, npx vite build, python -m py_compile, pip install
-4. For revert_file: provide the file_path to revert (content from POT executor backup)
-5. All file paths must use the SAME absolute paths shown in the error output and modified files list (do NOT change drive letters or path prefixes)
-6. Do NOT suggest commands that delete files, modify system config, or access the network beyond npm
-7. Focus on the MINIMAL fix needed — do not rewrite files that weren't part of the error
-8. If the error mentions missing node_modules, suggest run_command with "npm install"
-9. Output ONLY JSON — no markdown, no explanations outside the JSON
-10. If the error is a UTF-8 BOM corruption (unexpected token at start of JSON), rewrite the affected file with clean UTF-8 content (no BOM)
-"""
-
-DIAGNOSTIC_USER_PROMPT = """## Build Error Diagnostic
-
-### Spec Intent
-{spec_summary}
-
-### Files Modified by POT Execution
-{modified_files_summary}
-
-### Build Error Output
-```
-{build_error_output}
-```
-
-### Build Details
-- Project Type: {project_type}
-- Build Command: {build_command}
-- Exit Code: {exit_code}
-- Error Type: {error_type}
-- Affected Files: {affected_files}
-
-### Fix Attempt
-This is fix attempt {attempt} of {max_attempts}.
-{previous_fix_summary}
-
-Diagnose the root cause and provide the minimal fix."""
 
 
 async def diagnose_build_failure(

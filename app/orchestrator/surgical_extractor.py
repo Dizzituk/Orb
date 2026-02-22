@@ -402,7 +402,7 @@ def _build_new_module(
     parts: List[str] = []
 
     # Collect imports needed by the extracted symbols
-    needed_imports = _collect_needed_imports(source_code, plan.symbols)
+    needed_imports = _collect_needed_imports(source_code, plan.symbols, plan)
     if needed_imports:
         parts.extend(needed_imports)
         parts.append("")
@@ -421,6 +421,7 @@ def _build_new_module(
 def _collect_needed_imports(
     source_code: str,
     symbols: List[SymbolLocation],
+    plan: ExtractionPlan = None,
 ) -> List[str]:
     """
     Find which imports from the source file are needed by the extracted symbols.
@@ -565,7 +566,7 @@ def _collect_needed_imports(
                 if node.name in final_unresolved:
                     parent_defined.add(node.name)
         # Build a back-import from the parent file
-        if parent_defined:
+        if parent_defined and plan:
             project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             source_dir = os.path.dirname(plan.source_file)
             rel_dir = os.path.relpath(source_dir, project_root)
