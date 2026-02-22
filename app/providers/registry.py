@@ -33,46 +33,11 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional, Dict, List, Tuple
+from app.providers._registry_utils_2 import ProviderConfig, _build_anthropic_tools, _build_openai_tools, _execute_tool_by_name, _is_reasoning_model, _messages_to_prompt, _now_ms, _safe_json
+from app.providers._registry_utils_3 import LlmUsage, _is_chat_model, _normalize_messages_for_anthropic, _normalize_messages_for_openai, _openai_token_param_name, _pick_default_provider, _supports_temperature, llm_call
+from app.providers._registry_utils_4 import LlmCallResult, LlmCallStatus, get_provider_registry, is_provider_available
 
 logger = logging.getLogger(__name__)
-
-
-class LlmCallStatus(str, Enum):
-    SUCCESS = "success"
-    ERROR = "error"
-    PROVIDER_UNAVAILABLE = "provider_unavailable"
-    INVALID_REQUEST = "invalid_request"
-    TOOL_ERROR = "tool_error"
-    TOOL_LOOP_EXCEEDED = "tool_loop_exceeded"
-
-
-@dataclass
-class LlmUsage:
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
-    cost_estimate: float = 0.0
-
-
-@dataclass
-class LlmCallResult:
-    status: LlmCallStatus
-    provider_id: str
-    model_id: str
-    content: str = ""
-    usage: LlmUsage = field(default_factory=LlmUsage)
-    raw_response: Optional[dict] = None
-    error_message: Optional[str] = None
-
-    def is_success(self) -> bool:
-        return self.status == LlmCallStatus.SUCCESS
-
-
-@dataclass
-class ProviderConfig:
-    provider_id: str
-    display_name: str
-    env_key_name: str
 
 
 PROVIDERS: Dict[str, ProviderConfig] = {
@@ -81,158 +46,6 @@ PROVIDERS: Dict[str, ProviderConfig] = {
     "google": ProviderConfig("google", "Google (Gemini)", "GOOGLE_API_KEY"),
     "gemini": ProviderConfig("gemini", "Google (Gemini)", "GOOGLE_API_KEY"),
 }
-
-
-def _now_ms() -> int:
-    return int(time.time() * 1000)
-
-
-def _safe_json(obj: Any) -> Any:
-    try:
-        json.dumps(obj)
-        return obj
-    except Exception:
-        return str(obj)
-
-
-def _normalize_messages_for_openai(messages: List[dict], system_prompt: Optional[str]) -> List[dict]:
-    out: List[dict] = []
-    if system_prompt:
-        out.append({"role": "system", "content": system_prompt})
-    for m in messages:
-        role = m.get("role")
-        content = m.get("content", "")
-        if role in ("system", "user", "assistant", "tool"):
-            if role == "tool":
-                out.append(
-                    {"role": "tool", "tool_call_id": m.get("tool_call_id"), "content": str(content)}
-                )
-            else:
-                out.append({"role": role, "content": str(content)})
-        else:
-            out.append({"role": "user", "content": str(content)})
-    return out
-
-
-def _normalize_messages_for_anthropic(messages: List[dict], system_prompt: Optional[str]) -> Tuple[str, List[dict]]:
-    sys_parts: List[str] = []
-    if system_prompt:
-        sys_parts.append(system_prompt)
-
-    user_assistant: List[dict] = []
-    for m in messages:
-        role = m.get("role")
-        if role == "system":
-            sys_parts.append(str(m.get("content", "")))
-        elif role in ("user", "assistant"):
-            user_assistant.append({"role": role, "content": str(m.get("content", ""))})
-
-    return ("\n\n".join([p for p in sys_parts if p]).strip(), user_assistant)
-
-
-def _pick_default_provider() -> Optional[str]:
-    for pid in ("openai", "anthropic", "google"):
-        if is_provider_available(pid):
-            return pid
-    return None
-
-
-def _build_openai_tools(tool_defs: List[dict]) -> List[dict]:
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": t["name"],
-                "description": (t.get("description", "") or "")[:800],
-                "parameters": t.get("input_schema", {"type": "object", "properties": {}}),
-            },
-        }
-        for t in tool_defs
-    ]
-
-
-def _build_anthropic_tools(tool_defs: List[dict]) -> List[dict]:
-    return [
-        {
-            "name": t["name"],
-            "description": (t.get("description", "") or "")[:800],
-            "input_schema": t.get("input_schema", {"type": "object", "properties": {}}),
-        }
-        for t in tool_defs
-    ]
-
-
-def _openai_token_param_name(model_id: str) -> str:
-    """
-    OpenAI token-limit parameter name differs for some newer models.
-    - Legacy: max_tokens
-    - Newer chat models (incl gpt-5.*): max_completion_tokens
-    """
-    m = (model_id or "").strip().lower()
-    if m.startswith("gpt-5") or m.startswith("o1") or m.startswith("o3") or m.startswith("o4"):
-        return "max_completion_tokens"
-    return "max_tokens"
-
-
-def _is_reasoning_model(model_id: str) -> bool:
-    """Check if model supports the reasoning parameter (GPT-5.x, o3, o4)."""
-    m = (model_id or "").strip().lower()
-    return m.startswith("gpt-5") or m.startswith("o3") or m.startswith("o4")
-
-
-def _supports_temperature(model_id: str) -> bool:
-    """Check if model supports non-default temperature.
-    
-    GPT-5.x models and o-series only accept temperature=1.
-    """
-    m = (model_id or "").strip().lower()
-    # Models known to reject non-default temperature
-    # All GPT-5 variants (gpt-5-mini, gpt-5.2-chat, gpt-5.2-pro, etc.)
-    if m.startswith("gpt-5"):
-        return False
-    if m.startswith("o1") or m.startswith("o3") or m.startswith("o4"):
-        return False
-    return True
-
-
-def _is_chat_model(model_id: str) -> bool:
-    """Check if model supports the chat completions endpoint.
-    
-    Pro models (gpt-5.2-pro, gpt-5-pro, o1-pro, o3-pro) require the
-    completions endpoint, not chat completions.
-    """
-    m = (model_id or "").strip().lower()
-    # Pro models are NOT chat-capable (except preview variants)
-    if "-pro" in m and "-preview" not in m:
-        # gpt-5.2-pro, gpt-5-pro, o1-pro, o3-pro → completions only
-        return False
-    return True
-
-
-def _messages_to_prompt(messages: List[dict], system_prompt: Optional[str]) -> str:
-    """Convert messages array to a single prompt string for completions API."""
-    parts: List[str] = []
-    if system_prompt:
-        parts.append(f"System: {system_prompt}")
-    for m in messages:
-        role = m.get("role", "user")
-        content = m.get("content", "")
-        if role == "system":
-            parts.append(f"System: {content}")
-        elif role == "assistant":
-            parts.append(f"Assistant: {content}")
-        else:
-            parts.append(f"User: {content}")
-    # Add prompt for assistant response
-    parts.append("Assistant:")
-    return "\n\n".join(parts)
-
-
-async def _execute_tool_by_name(name: str, args: dict, context: Optional[dict]) -> dict:
-    from app.tools.registry import execute_tool_async
-
-    resp = await execute_tool_async(name, "v1", args, context=context)
-    return resp.to_dict()
 
 
 class ProviderRegistry:
@@ -768,49 +581,6 @@ class ProviderRegistry:
 
 
 _registry: Optional[ProviderRegistry] = None
-
-
-def get_provider_registry() -> ProviderRegistry:
-    global _registry
-    if _registry is None:
-        _registry = ProviderRegistry()
-    return _registry
-
-
-async def llm_call(
-    provider_id: Optional[str],
-    model_id: str,
-    messages: List[dict],
-    system_prompt: Optional[str] = None,
-    temperature: float = 0.2,
-    max_tokens: int = 2048,
-    timeout_seconds: int = 180,  # v2.1: Raised from 60
-    enable_web_search: bool = False,
-    enable_tools: bool = False,
-    tool_names: Optional[List[str]] = None,
-    job_envelope: Optional[dict] = None,
-    reasoning: Optional[dict] = None,  # GPT-5.x: {"effort": "none"|"low"|"medium"|"high"|"xhigh"}
-    **kwargs: Any,  # absorb future constraints, e.g. data_sensitivity_constraint
-) -> LlmCallResult:
-    return await get_provider_registry().llm_call(
-        provider_id=provider_id,
-        model_id=model_id,
-        messages=messages,
-        system_prompt=system_prompt,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        timeout_seconds=timeout_seconds,
-        enable_web_search=enable_web_search,
-        enable_tools=enable_tools,
-        tool_names=tool_names,
-        job_envelope=job_envelope,
-        reasoning=reasoning,
-        **kwargs,
-    )
-
-
-def is_provider_available(provider_id: str) -> bool:
-    return get_provider_registry().is_provider_available(provider_id)
 
 
 __all__ = [

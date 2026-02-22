@@ -164,6 +164,7 @@ def _apply_extraction(
         new_module_path = os.path.join(dir_path, module_filename)
 
     # Avoid overwriting — increment if exists
+    original_module_path = new_module_path
     counter = 1
     base_path = os.path.splitext(new_module_path)[0]
     ext = os.path.splitext(new_module_path)[1] or ".py"
@@ -171,11 +172,38 @@ def _apply_extraction(
         new_module_path = f"{base_path}_{counter}{ext}"
         counter += 1
 
+    # If we renamed the module, update the import line in the source file
+    if new_module_path != original_module_path:
+        orig_stem = os.path.splitext(os.path.basename(original_module_path))[0]
+        new_stem = os.path.splitext(os.path.basename(new_module_path))[0]
+        # Re-read source (we just wrote it) and fix the import
+        with open(file_path, "r", encoding="utf-8") as f:
+            updated_source = f.read()
+        # Replace the module name in the import line
+        updated_source = updated_source.replace(
+            f"from {_path_to_package(os.path.dirname(original_module_path))}.{orig_stem} import",
+            f"from {_path_to_package(os.path.dirname(new_module_path))}.{new_stem} import",
+            1,  # only first occurrence
+        )
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(updated_source)
+        logger.info(
+            "[refactor_loop] Renamed module %s → %s, updated import in %s",
+            orig_stem, new_stem, os.path.basename(file_path)
+        )
+
     # Write new module
     with open(new_module_path, "w", encoding="utf-8") as f:
         f.write(new_module_source)
 
     return new_module_path
+
+
+def _path_to_package(dir_path: str) -> str:
+    """Convert a directory path to a Python package path relative to project root."""
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    rel = os.path.relpath(dir_path, project_root)
+    return rel.replace(os.sep, ".").replace("/", ".")
 
 
 def _rollback_extraction(
@@ -246,6 +274,23 @@ def run_refactor_pass(
     result.new_module_path = new_module_path
     result.symbols_extracted = extraction["symbols_extracted"]
     result.file_size_after_kb = os.path.getsize(file_path) / 1024
+
+    # Spawn guard: if the NEW module is still oversized, roll back immediately.
+    # This prevents infinite chains like _utils → __utils_utils → ___utils_utils_utils
+    if new_module_path and os.path.exists(new_module_path):
+        new_size_kb = os.path.getsize(new_module_path) / 1024
+        if new_size_kb >= 20:
+            logger.warning(
+                f"[refactor_loop] Pass {pass_number}: Spawn guard — "
+                f"extracted module {os.path.basename(new_module_path)} is "
+                f"{new_size_kb:.1f}KB (still oversized). Rolling back."
+            )
+            _rollback_extraction(file_path, backup_source, new_module_path)
+            result.boot_passed = False
+            result.rolled_back = True
+            result.file_size_after_kb = size_before
+            result.error = f"Spawn guard: new module {new_size_kb:.1f}KB >= 20KB"
+            return result
 
     # Boot check
     if _boot_check():

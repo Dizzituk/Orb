@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
+from app.astra_memory._service_utils import _hash_content, get_escalated_jobs, get_files_for_job, get_global_pref, get_job, get_jobs_by_status, get_patterns_for_file, get_prefs_for_component
 
 logger = logging.getLogger(__name__)
 
@@ -65,11 +66,6 @@ def _utc_ts() -> str:
 
 def _artifact_root() -> str:
     return os.path.abspath(os.getenv("ORB_JOB_ARTIFACT_ROOT", "jobs"))
-
-
-def _hash_content(content: str) -> str:
-    """SHA256 hash of content."""
-    return hashlib.sha256(content.encode()).hexdigest()
 
 
 # =============================================================================
@@ -310,13 +306,6 @@ def record_file_touch(
     db.commit()
 
     return file_record
-
-
-def get_files_for_job(db: Session, job_id: str) -> List[JobFile]:
-    """Get all files touched by a job."""
-    if not _MODELS_AVAILABLE:
-        return []
-    return db.query(JobFile).filter(JobFile.job_id == job_id).all()
 
 
 def get_jobs_for_file(db: Session, path: str) -> List[Tuple[str, str, datetime]]:
@@ -656,30 +645,6 @@ def set_global_pref(
     return pref
 
 
-def get_global_pref(db: Session, key: str) -> Optional[str]:
-    """Get a global preference value."""
-    if not _MODELS_AVAILABLE:
-        return None
-
-    pref = db.query(GlobalPref).filter(GlobalPref.key == key, GlobalPref.active == True).first()
-    return pref.value if pref else None
-
-
-def get_prefs_for_component(db: Session, component: str) -> List[GlobalPref]:
-    """Get all active preferences that apply to a component."""
-    if not _MODELS_AVAILABLE:
-        return []
-
-    return (
-        db.query(GlobalPref)
-        .filter(
-            GlobalPref.active == True,
-            (GlobalPref.applies_to == component) | (GlobalPref.applies_to == "all") | (GlobalPref.applies_to == None),
-        )
-        .all()
-    )
-
-
 # =============================================================================
 # OVERWATCHER PATTERNS (Cross-Job)
 # =============================================================================
@@ -743,56 +708,9 @@ def record_overwatch_pattern(
     return pattern
 
 
-def get_patterns_for_file(db: Session, path: str) -> List[OverwatchPattern]:
-    """Get all patterns for a file path."""
-    if not _MODELS_AVAILABLE:
-        return []
-
-    return (
-        db.query(OverwatchPattern)
-        .filter(OverwatchPattern.target_path == path)
-        .order_by(OverwatchPattern.occurrence_count.desc())
-        .all()
-    )
-
-
 # =============================================================================
 # QUERY HELPERS
 # =============================================================================
-
-def get_job(db: Session, job_id: str) -> Optional[AstraJob]:
-    """Get a job by ID."""
-    if not _MODELS_AVAILABLE:
-        return None
-    return db.query(AstraJob).filter(AstraJob.job_id == job_id).first()
-
-
-def get_jobs_by_status(db: Session, status: str, limit: int = 100) -> List[AstraJob]:
-    """Get jobs by status."""
-    if not _MODELS_AVAILABLE:
-        return []
-    return (
-        db.query(AstraJob)
-        .filter(AstraJob.status == status)
-        .order_by(AstraJob.created_at.desc())
-        .limit(limit)
-        .all()
-    )
-
-
-def get_escalated_jobs(db: Session, limit: int = 100) -> List[AstraJob]:
-    """Get jobs where Overwatcher escalated."""
-    if not _MODELS_AVAILABLE:
-        return []
-
-    return (
-        db.query(AstraJob)
-        .join(OverwatchSummary)
-        .filter(OverwatchSummary.escalated == True)
-        .order_by(AstraJob.created_at.desc())
-        .limit(limit)
-        .all()
-    )
 
 
 # =============================================================================

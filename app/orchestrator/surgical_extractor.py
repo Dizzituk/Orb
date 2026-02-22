@@ -401,8 +401,12 @@ def _build_new_module(
     """Build the content of the new extracted module."""
     parts: List[str] = []
 
+    # Always add future annotations — prevents NameError for type hints
+    # referencing symbols that stayed in the parent module
+    parts.append("from __future__ import annotations")
+
     # Collect imports needed by the extracted symbols
-    needed_imports = _collect_needed_imports(source_code, plan.symbols)
+    needed_imports = _collect_needed_imports(source_code, plan.symbols, plan)
     if needed_imports:
         parts.extend(needed_imports)
         parts.append("")
@@ -421,10 +425,15 @@ def _build_new_module(
 def _collect_needed_imports(
     source_code: str,
     symbols: List[SymbolLocation],
+    plan: Optional[ExtractionPlan] = None,
 ) -> List[str]:
     """
     Find which imports from the source file are needed by the extracted symbols.
     Also copies local type aliases and small assignments that are referenced.
+    
+    CIRCULAR IMPORT GUARD: If an import points back to the source file's own
+    module, we skip it — the new _utils file cannot import from its parent
+    at module level without creating a circular import.
     """
     try:
         tree = ast.parse(source_code)
@@ -433,6 +442,14 @@ def _collect_needed_imports(
 
     source_lines = source_code.split("\n")
     extracted_names = {s.name for s in symbols}
+
+    # Build the source module path for circular import detection
+    # e.g. D:\Orb\app\llm\weaver_stream.py → "app.llm.weaver_stream"
+    source_module_path = ""
+    if plan:
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        rel = os.path.relpath(plan.source_file, project_root)
+        source_module_path = rel.replace(os.sep, ".").replace("/", ".")[:-3]  # strip .py
 
     # Collect all names used in extracted symbol bodies
     used_names: Set[str] = set()
@@ -459,6 +476,8 @@ def _collect_needed_imports(
     # Find source imports that provide these names
     needed: List[str] = []
     names_provided_by_imports: Set[str] = set()
+    # Track names that come from the parent (circular) — these need lazy import
+    circular_names: Set[str] = set()
 
     for node in ast.iter_child_nodes(tree):
         if isinstance(node, ast.Import):
@@ -478,15 +497,38 @@ def _collect_needed_imports(
             matched = imported_names & used_names
             if matched:
                 module = ("." * (node.level or 0)) + (node.module or "")
+                
+                # CIRCULAR IMPORT GUARD: skip imports from the source file itself
+                if source_module_path and module == source_module_path:
+                    logger.info(
+                        "[surgical] CIRCULAR GUARD: skipping import of %s from parent %s",
+                        matched, module
+                    )
+                    circular_names.update(matched)
+                    names_provided_by_imports.update(matched)
+                    continue
+                
                 names_str = ", ".join(sorted(matched))
                 needed.append(f"from {module} import {names_str}")
                 names_provided_by_imports.update(matched)
 
     # Find local assignments (type aliases, constants) that are referenced
-    # but not provided by imports and not being extracted
+    # but not provided by imports and not being extracted.
+    # Walk into Try/If/With blocks (where module-level constants often live)
+    # but NOT into FunctionDef/ClassDef bodies (those are local variables).
     still_needed = used_names - names_provided_by_imports - extracted_names
     if still_needed:
-        for node in ast.iter_child_nodes(tree):
+        def _walk_module_level(node):
+            """Yield assignments from module-level and try/if/with blocks only."""
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    continue  # Don't descend into function/class bodies
+                if isinstance(child, ast.Assign):
+                    yield child
+                elif isinstance(child, (ast.Try, ast.If, ast.With, ast.ExceptHandler)):
+                    yield from _walk_module_level(child)
+
+        for node in _walk_module_level(tree):
             if isinstance(node, ast.Assign):
                 for target in node.targets:
                     if not isinstance(target, ast.Name):
@@ -494,10 +536,18 @@ def _collect_needed_imports(
                     name = target.id
                     if name not in still_needed:
                         continue
-                    # Copy the assignment verbatim
-                    assign_text = "\n".join(
-                        source_lines[node.lineno - 1:(node.end_lineno or node.lineno)]
-                    )
+                    # Copy the assignment, dedenting if inside a try/if/with block
+                    raw_lines = source_lines[node.lineno - 1:(node.end_lineno or node.lineno)]
+                    # Skip large assignments (>5 lines) — data structures that
+                    # would cause circular imports if copied
+                    if len(raw_lines) > 5:
+                        logger.debug(
+                            f"[surgical] Skipping large assignment {name} "
+                            f"({len(raw_lines)} lines) — too big to copy"
+                        )
+                        continue
+                    import textwrap
+                    assign_text = textwrap.dedent("\n".join(raw_lines))
                     # Also resolve imports needed by this assignment's RHS
                     try:
                         rhs_tree = ast.parse(assign_text)
@@ -548,13 +598,40 @@ def _collect_needed_imports(
 
 
 def _find_import_insert_point(lines: List[str]) -> int:
-    """Find the line index (0-based) where a new import should be inserted."""
+    """Find the line index (0-based) where a new import should be inserted.
+    
+    Correctly handles multi-line imports like:
+        from ..config import (
+            FOO,
+            BAR,
+        )
+    by tracking parenthesised blocks and never inserting inside them.
+    """
     last_import_idx = 0
+    in_paren = 0  # track nested parentheses depth
 
     for i, line in enumerate(lines):
         stripped = line.strip()
+        
+        # Track parentheses across multi-line imports
+        open_count = stripped.count("(")
+        close_count = stripped.count(")")
+        
+        if in_paren > 0:
+            # Inside a multi-line import — keep scanning until closed
+            in_paren += open_count - close_count
+            if in_paren <= 0:
+                in_paren = 0
+                last_import_idx = i + 1  # import block ended here
+            continue
+        
         if stripped.startswith(("import ", "from ")):
-            last_import_idx = i + 1
+            in_paren = open_count - close_count
+            if in_paren < 0:
+                in_paren = 0
+            if in_paren == 0:
+                last_import_idx = i + 1  # single-line import
+            # else: multi-line import started, will continue tracking
         elif stripped and not stripped.startswith("#") and not stripped.startswith('"""'):
             if last_import_idx > 0:
                 break
