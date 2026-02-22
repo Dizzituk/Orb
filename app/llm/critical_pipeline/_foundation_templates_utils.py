@@ -91,6 +91,7 @@ class MatchedTemplates:
 
 def _register(tmpl: FoundationTemplate):
     """Register a template in the global registry."""
+    from .foundation_templates import _REGISTRY
     _REGISTRY.append(tmpl)
 
 def match_templates(
@@ -111,6 +112,7 @@ def match_templates(
     Returns:
         MatchedTemplates with ranked matches and reasons
     """
+    from .foundation_templates import _REGISTRY
     tech_stack = tech_stack or {}
     spec_concepts = [c.lower() for c in (spec_concepts or [])]
 

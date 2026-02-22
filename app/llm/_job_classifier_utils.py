@@ -11,6 +11,7 @@ def _has_complex_vision_keywords(message_lower: str) -> bool:
 
 def _has_video_deep_analysis_keywords(message_lower: str) -> bool:
     """Check for deep semantic video analysis keywords."""
+    from .job_classifier import VIDEO_DEEP_ANALYSIS_KEYWORDS
     return any(kw in message_lower for kw in VIDEO_DEEP_ANALYSIS_KEYWORDS)
 
 def get_provider_for_job(job_type: JobType) -> Tuple[Provider, str]:
@@ -19,6 +20,7 @@ def get_provider_for_job(job_type: JobType) -> Tuple[Provider, str]:
 
 def get_routing_for_job_type(job_type_str: str) -> RoutingDecision:
     """Get routing for a job type string."""
+    from .job_classifier import _make_decision
     try:
         jt = JobType(job_type_str)
     except ValueError:

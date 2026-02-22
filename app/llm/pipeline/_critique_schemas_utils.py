@@ -59,6 +59,7 @@ def parse_critique_output(raw_output: str, model: str = "") -> CritiqueResult:
     Returns:
         CritiqueResult with parsed issues, or empty result on parse failure
     """
+    from .critique_schemas import CritiqueResult, extract_json_from_llm_output
     data = extract_json_from_llm_output(raw_output)
     
     if data is None:
@@ -363,6 +364,7 @@ def build_json_revision_prompt(
     Returns:
         Prompt string for revision
     """
+    from .critique_schemas import CritiqueResult
     issues_text = ""
     for issue in critique.blocking_issues:
         issues_text += f"""

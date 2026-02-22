@@ -28,6 +28,7 @@ def sandbox_append_file(
     Returns:
         WriteResult with operation status and evidence
     """
+    from .fs_write_ops import WriteResult, _count_lines, _get_preview
     norm_path = normalize_path(path, debug=debug)
     
     if debug:
@@ -187,6 +188,7 @@ def sandbox_overwrite_file(
     Returns:
         WriteResult with operation status and evidence
     """
+    from .fs_write_ops import WriteResult, _count_lines, _get_preview
     norm_path = normalize_path(path, debug=debug)
     
     if debug:

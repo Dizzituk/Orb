@@ -34,6 +34,7 @@ def check_output_file_sizes(
     - File size <= MAX_FILE_KB (15 KB)
     - Largest function body <= MAX_FUNCTION_LINES (200)
     """
+    from .phase_checkout_checks import _read_file_via_sandbox, _resolve_output_path
     violations: List[SizeViolation] = []
     files_checked = 0
 
@@ -124,6 +125,7 @@ def check_skeleton_contracts(
     Scope violations for package creation are handled -- if a segment
     creates a package from a monolith, the package path is valid scope.
     """
+    from .phase_checkout_checks import _resolve_output_path
     violations: List[ContractViolation] = []
 
     # v2.0: Use sandbox for file existence checks
@@ -298,6 +300,7 @@ def _try_reconciliation_import_fix(
 
     Returns (fixed_content, description) or None.
     """
+    from .phase_checkout_checks import _read_file_via_sandbox
     _emit = emit or (lambda msg: None)
 
     try:

@@ -10,6 +10,7 @@ from app.overwatcher.validated_overwatcher import run_validated_overwatcher
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple
 from uuid import uuid4
+from .block9_loop import emit_fix_actions_issued, emit_overwatcher_called, emit_strike_recorded, record_overwatch_intervention
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 ASTRA_MEMORY_AVAILABLE = True

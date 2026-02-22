@@ -7,6 +7,7 @@ from app.orchestrator.segment_state import JobState
 from app.pot_spec.grounded.segment_schemas import SegmentManifest, SegmentSpec, SegmentStatus
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from .segment_loop import update_segment_status
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 

@@ -4,6 +4,7 @@ import re
 import subprocess
 import time
 from typing import Dict, List, Optional, Tuple
+from .file_discovery import FileMatch, LineMatch, _classify_match_mechanical
 logger = logging.getLogger(__name__)
 
 def _get_match_bucket():

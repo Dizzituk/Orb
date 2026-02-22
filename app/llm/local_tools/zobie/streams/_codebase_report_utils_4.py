@@ -29,6 +29,7 @@ TOP_N_LONGEST = 30
 
 def _is_text_file(path: Path) -> bool:
     """Check if file is text-like (for line counting)."""
+    from .codebase_report import TEXT_EXTENSIONS
     ext = path.suffix.lower()
     name = path.name.lower()
     # Handle extensionless files by name
@@ -71,6 +72,7 @@ async def generate_codebase_report_stream(
     - "codebase report fast" - Quick metadata scan
     - "codebase report full" - Deep content scan
     """
+    from .codebase_report import AbsolutePathFinding, CODEBASE_REPORT_ROOTS, EXPECTED_ROOT_ITEMS_DESKTOP, EXPECTED_ROOT_ITEMS_ORB, FileEntry, _generate_json_report, _generate_markdown_report
     loop = asyncio.get_event_loop()
     started_ms = int(loop.time() * 1000)
     

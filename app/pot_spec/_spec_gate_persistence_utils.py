@@ -286,6 +286,7 @@ def persist_spec(
     DRAFT status and never updated, causing Critical Pipeline to fail with
     "No validated specification found".
     """
+    from .spec_gate_persistence import update_spec_status
     if specs_service is None or not hasattr(specs_service, "create_spec"):
         return False, None, None, "specs_service.create_spec not available"
 

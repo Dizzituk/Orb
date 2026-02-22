@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 def _parse_cohesion_response(llm_output: str) -> CohesionResult:
     """Parse the LLM's cohesion check response."""
+    from .cohesion_check import CohesionIssue, CohesionResult
     # Strip markdown fences
     cleaned = llm_output.strip()
     if cleaned.startswith("```"):
@@ -63,6 +64,7 @@ def _apply_tier1_fix(issue: CohesionIssue, arch_text: str) -> Optional[str]:
 
     Returns patched text or None if fix couldn't be applied.
     """
+    from .cohesion_check import CohesionIssue
     cat = issue.category
 
     # --- Import depth fixes ---
@@ -126,6 +128,7 @@ async def _apply_tier2_fix(
 
     Returns patched full text or None if fix couldn't be applied.
     """
+    from .cohesion_check import CohesionIssue
     try:
         from app.providers.registry import llm_call
     except ImportError:
@@ -260,6 +263,7 @@ INSTRUCTIONS:
 
 def save_cohesion_result(result: CohesionResult, job_dir: str) -> str:
     """Save cohesion result to disk alongside the manifest."""
+    from .cohesion_check import CohesionResult
     segments_dir = os.path.join(job_dir, "segments")
     os.makedirs(segments_dir, exist_ok=True)
     path = os.path.join(segments_dir, "cohesion_check.json")
@@ -270,6 +274,7 @@ def save_cohesion_result(result: CohesionResult, job_dir: str) -> str:
 
 def load_cohesion_result(job_dir: str) -> Optional[CohesionResult]:
     """Load cohesion result from disk. Returns None if not found."""
+    from .cohesion_check import CohesionResult
     path = os.path.join(job_dir, "segments", "cohesion_check.json")
     if not os.path.isfile(path):
         return None

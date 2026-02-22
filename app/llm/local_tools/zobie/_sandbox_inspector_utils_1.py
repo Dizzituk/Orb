@@ -4,6 +4,7 @@ from .content_classifier import classify_content, score_file_for_intent
 from .sandbox_client import call_fs_contents, call_fs_tree
 from app.llm.local_tools.zobie._sandbox_inspector_utils import MAX_CANDIDATE_FILES, MAX_CLASSIFICATION_CHARS, MAX_FILE_CHARS, _read_snippet
 from typing import Any, Dict, List, Optional
+from .sandbox_inspector import _get_ordered_roots, _identify_root_type
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 MAX_FILES_PER_FOLDER = 50       # Don't list more than this

@@ -5,6 +5,7 @@ from app.overwatcher._overwatcher_utils import CODE_PATTERNS, OVERWATCHER_SYSTEM
 from app.overwatcher.evidence import EvidenceBundle
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional
+from .overwatcher import Decision, OverwatcherOutput
 logger = logging.getLogger(__name__)
 _EVIDENCE_CONTRACT_AVAILABLE = True
 EVIDENCE_CONTRACT_PROMPT = ""

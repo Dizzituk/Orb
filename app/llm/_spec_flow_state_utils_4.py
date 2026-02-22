@@ -1,6 +1,7 @@
 from __future__ import annotations
 from app.llm.spec_flow_state import SpecFlowStage, get_active_flow, set_flow_state
 from typing import Any, Dict, Optional, Tuple
+from .spec_flow_state import _FLOW_STATES
 
 
 def check_weaver_answer_keywords(

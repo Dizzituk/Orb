@@ -195,6 +195,7 @@ async def run_multi_file_operation(
     Returns:
         MultiFileResult from appropriate handler
     """
+    from .implementer import MultiFileResult, run_multi_file_refactor, run_multi_file_search
     operation_type = multi_file.get("operation_type", "search")
     
     logger.info(

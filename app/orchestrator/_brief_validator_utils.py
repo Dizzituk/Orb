@@ -119,6 +119,7 @@ def _check_signature_consistency(
     Auto-fix: If enrichment has the original signature, overwrite the
     brief's version with the source-of-truth.
     """
+    from .brief_validator import FixLog
     for brief in briefs:
         for func in brief.functions:
             if func.name not in enrichment_functions:
@@ -179,6 +180,7 @@ def _check_import_path_consistency(
 
     Auto-fix: Normalise all cross-file imports to relative style.
     """
+    from .brief_validator import FixLog
     for brief in briefs:
         fixed_imports = []
         for imp in brief.imports:
@@ -228,6 +230,7 @@ def _check_completeness(
 
     Auto-fix: Pull functions from enrichment or merge into sibling brief.
     """
+    from .brief_validator import FixLog
     empty_briefs = []
 
     for brief in briefs:
@@ -299,6 +302,7 @@ def save_fix_log(
     segment_id: str,
 ) -> None:
     """Persist the fix log to disk for observability."""
+    from .brief_validator import FixLog
     seg_dir = os.path.join(job_dir_path, "segments", segment_id)
     compiler_dir = os.path.join(seg_dir, "compiler")
     os.makedirs(compiler_dir, exist_ok=True)

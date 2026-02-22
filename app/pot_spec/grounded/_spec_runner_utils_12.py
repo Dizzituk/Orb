@@ -23,6 +23,7 @@ def _extract_project_paths(text: str, search_term: str = None, replace_term: str
     - "rename Orb to Astra in Orb Desktop" -> D:\\orb-desktop ONLY  
     - "rename Orb to Astra across the codebase" -> D:\\orb-desktop + D:\\Orb
     """
+    from .spec_runner import _discover_project_roots
     if not text:
         return []
     

@@ -35,6 +35,7 @@ def rollback_quarantine(
     Returns:
         True if all rollbacks succeeded, False if any failed.
     """
+    from .package_quarantine import QuarantineResult
     _emit = on_progress or (lambda msg: None)
     all_ok = True
 
@@ -219,6 +220,7 @@ def cleanup_quarantine(
         client: SandboxClient for filesystem operations.
         on_progress: Optional callback for status messages.
     """
+    from .package_quarantine import QuarantineResult
     _emit = on_progress or (lambda msg: None)
 
     quarantined_entries = [

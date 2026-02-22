@@ -41,6 +41,7 @@ def select_vision_tier(
 
 def _get_openai_client():
     """Lazy init for OpenAI client."""
+    from .gemini_vision import _get_openai_api_key
     global _openai_client
     
     if _openai_client is None:
@@ -69,6 +70,7 @@ async def analyze_with_gemini(
     
     Used by router.py for vision jobs.
     """
+    from .gemini_vision import _get_google_api_key, _get_model_name
     import google.generativeai as genai
     
     api_key = _get_google_api_key()
@@ -126,6 +128,7 @@ def get_vision_model_for_complexity(question: str) -> str:
     """
     Select vision model tier based on question complexity.
     """
+    from .gemini_vision import _get_model_name
     q_lower = question.lower()
     
     # Complex analysis keywords -> use complex model
@@ -172,6 +175,7 @@ def transcribe_video_for_context_sync(
     
     For use in contexts where async is not available.
     """
+    from .gemini_vision import transcribe_video_for_context
     import asyncio
     
     try:

@@ -45,6 +45,7 @@ async def _run_llm_analysis(
     
     Returns LLM-generated analysis or None if all attempts fail.
     """
+    from .simple_create import CREATE_ANALYSIS_SYSTEM_PROMPT
     if not llm_call_func:
         logger.warning("[simple_create] v2.1 LLM unavailable, falling back to template")
         return None
@@ -200,6 +201,7 @@ async def build_grounded_create_spec(
     Returns:
         Tuple of (spec_markdown, evidence)
     """
+    from .simple_create import _fulfil_evidence_requests
     logger.info("[simple_create] v2.0 Building LLM-grounded CREATE spec")
     print(f"[simple_create] v2.0 GROUNDED CREATE: {goal[:60]}...")
     

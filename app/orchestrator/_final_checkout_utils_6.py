@@ -105,6 +105,7 @@ async def run_final_checkout(
     Returns:
         FinalCheckoutResult with aggregated pass/fail + RAG records
     """
+    from .final_checkout import FinalCheckoutResult, compile_pipeline_learning_report
     start = time.time()
     _emit = emit or (lambda msg: None)
 

@@ -61,6 +61,7 @@ def _find_integration_points(
     substring matching. Also searches for existing directories that
     match the task's concepts.
     """
+    from .simple_create import IntegrationPoint
     points = []
     
     try:
@@ -144,6 +145,7 @@ def _extract_patterns(
     tech_stack: TechStack,
 ) -> Dict[str, str]:
     """Extract coding patterns from existing files."""
+    from .simple_create import IntegrationPoint, TechStack
     patterns = {}
     
     for point in integration_points:
@@ -242,6 +244,7 @@ def build_create_spec(
     If LLM analysis is available, uses it for implementation steps and
     acceptance criteria. Falls back to weaver output if LLM unavailable.
     """
+    from .simple_create import CreateEvidence
     lines = []
     
     sanitized_goal = _sanitize_goal(goal, what_to_do)

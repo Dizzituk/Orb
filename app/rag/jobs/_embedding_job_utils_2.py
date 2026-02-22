@@ -1,5 +1,6 @@
 from __future__ import annotations
 from enum import Enum
+from .embedding_job import EmbeddingJobStatus
 _current_status = EmbeddingJobStatus()
 
 

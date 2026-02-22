@@ -343,6 +343,7 @@ def get_system_scan_targets(text: str) -> List[dict]:
     
     Returns targets marked for system-wide scan (anchor=None, scan_all_roots=True).
     """
+    from .sandbox_discovery import extract_scan_file_names, is_system_wide_scan_request
     if not text:
         return []
     

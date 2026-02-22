@@ -6,6 +6,7 @@ from app.llm._weaver_stream_utils import FEATURE_COMPONENT_INDICATORS, META_MODE
 from app.llm._weaver_stream_utils import _is_control_message
 from sqlalchemy.orm import Session
 from typing import Any, Dict, List, Tuple
+from .weaver_stream import _is_vision_context
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 _MEMORY_AVAILABLE = True

@@ -4,6 +4,7 @@ import os
 import re
 from app.pot_spec.grounded._simple_create_utils import CONCEPT_KEYWORDS, KEYWORD_STOPWORDS, MIN_KEYWORD_LENGTH, NEGATION_PATTERNS, PLACEHOLDER_GOALS
 from typing import List, Optional, Tuple
+from .simple_create import TechStack
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 

@@ -8,6 +8,7 @@ from app.llm.audit_logger import RoutingTrace
 from app.llm.local_tools.zobie.streams.fs_query import _format_write_result, logger
 from sqlalchemy.orm import Session
 from typing import AsyncGenerator, Optional
+from .fs_query import create_write_result, render_tool_commentary
 logger = logging.getLogger(__name__)
 _COMMENTARY_AVAILABLE = True
 is_commentary_enabled = lambda: False

@@ -60,6 +60,7 @@ def classify_file_layer(path: str) -> str:
     1. Architectural layer (path-based)
     2. File extension as tiebreaker
     """
+    from .segmentation import ArchLayer
     normalised = path.replace("\\", "/").lower()
 
     # Tests
@@ -129,6 +130,7 @@ def _infer_layer_dependencies(layers_present: List[str]) -> Dict[str, List[str]]
     - Frontend integration depends on all frontend layers
     - Tests depend on everything
     """
+    from .segmentation import ArchLayer
     # Define the dependency graph between layers
     _LAYER_DEPS: Dict[str, List[str]] = {
         ArchLayer.INFRASTRUCTURE: [],
@@ -169,6 +171,7 @@ def _merge_small_segments(
     Merge layers with fewer than MIN_FILES_PER_SEGMENT files into
     adjacent layers to avoid trivially small segments.
     """
+    from .segmentation import ArchLayer
     # Find layers that are too small
     small_layers = [
         layer for layer, files in layer_groups.items()

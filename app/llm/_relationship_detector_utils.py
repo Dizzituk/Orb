@@ -206,6 +206,7 @@ def detect_relationships_heuristic(
     Returns:
         RelationshipResult with heuristic-based relationships
     """
+    from .relationship_detector import RelationshipResult, RelationshipType
     result = RelationshipResult(detection_method="heuristic", confidence=0.6)
     
     user_lower = user_text.lower()

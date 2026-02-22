@@ -9,6 +9,17 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+def _safe_int(v: Any, default: int = 0) -> int:
+    try:
+        if v is None:
+            return default
+        if isinstance(v, bool):
+            return int(v)
+        return int(v)
+    except Exception:
+        return default
+
+
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
@@ -166,8 +177,11 @@ class _TelemetryStore:
         with self._lock:
             return list(self._recent[-lim:])
 
-def get_audit_logger() -> Optional[AuditLogger]:
+_AUDIT_SINGLETON = None
+
+def get_audit_logger():
     global _AUDIT_SINGLETON
     if _AUDIT_SINGLETON is None:
+        from app.llm.audit_logger import AuditLogger
         _AUDIT_SINGLETON = AuditLogger()
     return _AUDIT_SINGLETON

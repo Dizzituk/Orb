@@ -125,6 +125,7 @@ def _normalize_typos(text: str) -> str:
     
     Uses word boundaries to avoid substring collisions.
     """
+    from .weaver_stream import TYPO_NORMALIZATIONS
     result = text
     normalized_any = False
     

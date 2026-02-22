@@ -13,6 +13,7 @@ class EmbeddingPriority(Enum):
 
 def get_embedding_status() -> EmbeddingJobStatus:
     """Get current embedding job status."""
+    from .embedding_job import EmbeddingJobStatus
     # Try to load from file if not running (for persistence across restarts)
     if not _current_status.running:
         loaded = EmbeddingJobStatus.load_from_file()

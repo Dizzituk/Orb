@@ -6,6 +6,7 @@ from app.orchestrator._cohesion_check_utils import _build_cohesion_prompt
 from app.orchestrator._cohesion_check_utils import _parse_cohesion_response
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+from .cohesion_check import attempt_auto_fixes, run_skeleton_compliance
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 

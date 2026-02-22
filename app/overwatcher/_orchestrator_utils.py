@@ -206,6 +206,7 @@ async def run_implementation_loop(
     Returns:
         (passed_chunks, failed_chunks)
     """
+    from .orchestrator import Block9State, PipelineState, run_chunk_with_strikes, run_chunks_block9
     from app.overwatcher.planner import topological_sort_chunks
     from app.pot_spec.ledger import emit_job_completed, emit_job_failed
     

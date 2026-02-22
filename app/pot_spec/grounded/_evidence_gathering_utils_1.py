@@ -61,6 +61,7 @@ def sandbox_read_file(path: str, max_chars: int = 8000) -> Tuple[bool, Optional[
     Returns:
         (success: bool, content: Optional[str])
     """
+    from .evidence_gathering import sandbox_path_exists
     if not _SANDBOX_CLIENT_AVAILABLE or not call_fs_contents:
         logger.warning("[evidence_gathering] v1.26 sandbox_read_file: sandbox client not available")
         try:

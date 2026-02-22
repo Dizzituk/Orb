@@ -4,6 +4,7 @@ import os
 from app.pot_spec.grounded._simple_create_utils import _read_text_any_encoding
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+from .simple_create import TechStack
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 

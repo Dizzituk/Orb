@@ -5,6 +5,7 @@ from app.pot_spec.grounded._file_discovery_utils import _build_extension_search_
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
+from .file_discovery import DEFAULT_EXCLUSIONS, DEFAULT_ROOTS, DiscoveryResult
 logger = logging.getLogger(__name__)
 
 # Local copies — originals in file_discovery.py, can't import (circular)

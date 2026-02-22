@@ -25,6 +25,7 @@ def classify_chunk_priority(file_path: str) -> EmbeddingPriority:
     Returns highest matching priority (TIER1 > TIER2 > ... > TIER5).
     First match wins.
     """
+    from .embedding_job import EmbeddingPriority, PRIORITY_PATTERNS
     if not file_path:
         return EmbeddingPriority.TIER5_NORMAL
     
@@ -66,6 +67,7 @@ def queue_embedding_job(
     Returns:
         True if job was queued, False if already running or disabled
     """
+    from .embedding_job import EmbeddingJob
     global _current_status
     
     print(f"[embedding_job] queue_embedding_job called with scan_id={scan_id}")
@@ -105,6 +107,7 @@ def queue_embedding_job(
 
 def get_embedding_stats(db: Session) -> Dict[str, Any]:
     """Get embedding statistics from DB."""
+    from .embedding_job import get_embedding_status
     from app.rag.models import ArchCodeChunk
     
     total = db.query(func.count(ArchCodeChunk.id)).scalar() or 0
@@ -133,6 +136,7 @@ def format_embedding_status_report(db: Session) -> str:
     
     Returns text suitable for streaming to user.
     """
+    from .embedding_job import get_embedding_status
     stats = get_embedding_stats(db)
     status = get_embedding_status()
     

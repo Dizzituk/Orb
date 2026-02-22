@@ -68,6 +68,7 @@ def validate_spec(spec: Spec) -> SpecValidationResult:
     Returns validation result with errors and warnings.
     Spec Gate uses this to reject invalid specs.
     """
+    from .schema import Spec
     errors = []
     warnings = []
     

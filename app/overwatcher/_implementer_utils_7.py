@@ -26,6 +26,7 @@ async def run_multi_file_search(
     Returns:
         MultiFileResult with search results summary
     """
+    from .implementer import MultiFileResult
     import time
     start_time = time.time()
     

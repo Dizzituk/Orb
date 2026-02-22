@@ -39,6 +39,7 @@ def build_failure_evidence(
     touched_files: List[str],
 ) -> EvidenceBundle:
     """Build evidence bundle from verification failure."""
+    from .block9_loop import Block9State
     
     # Build file changes from chunk
     file_changes = []
@@ -100,6 +101,7 @@ async def call_overwatcher_for_diagnosis(
     Returns:
         (fix_actions_text, error_signature)
     """
+    from .block9_loop import Block9State, emit_fix_actions_issued, emit_overwatcher_called, record_overwatch_intervention
     state.total_overwatcher_calls += 1
     
     # Emit ledger event
@@ -172,6 +174,7 @@ def record_strike_to_manager(
     verification_result: VerificationResult,
 ) -> StrikeRecord:
     """Record strike to StrikeManager and return record."""
+    from .block9_loop import Block9State, emit_strike_recorded
     
     record = state.strike_manager.record_strike(
         job_id=state.job_id,
@@ -220,6 +223,7 @@ async def run_chunks_block9(
     Returns:
         (passed_chunk_ids, failed_chunk_ids)
     """
+    from .block9_loop import Block9State, run_chunk_block9
     passed = []
     failed = []
     

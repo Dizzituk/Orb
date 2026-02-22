@@ -226,6 +226,7 @@ def compare_signatures(
       5. Parameter names — soft heuristic, only reported when count matches
          and types aren't available for disambiguation
     """
+    from .signature_checker import FunctionSignature, SignatureMismatch
     differences = []
 
     # 1. async/sync
@@ -349,6 +350,7 @@ def check_file_signatures(
     Returns:
         SignatureCheckResult with pass/fail and detailed mismatches
     """
+    from .signature_checker import extract_signatures, parse_contract_signature
     if not contract_signatures:
         return SignatureCheckResult(
             passed=True,

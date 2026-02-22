@@ -28,6 +28,7 @@ async def _check_spec_coverage_with_fixes(
     Uses StrikeTracker: if generation fails for the same file repeatedly,
     escalate after 3 strikes.
     """
+    from .final_checkout import SpecCoverageResult, _file_exists_on_sandbox
     _emit = emit or (lambda msg: None)
 
     # First pass: check what exists
@@ -133,6 +134,7 @@ async def _check_cross_phase_with_fixes(
     - missing_export: add the missing name to the provider's __all__ or
       re-export it from __init__.py
     """
+    from .final_checkout import CrossPhaseResult, _file_exists_on_sandbox
     _emit = emit or (lambda msg: None)
     violations = []
     fixes_applied = []
@@ -222,6 +224,7 @@ async def _run_ai_review_with_fixes(
     send each critical issue back to the LLM with the file content for
     a targeted fix. Then re-score. Uses strike rule for repeated failures.
     """
+    from .final_checkout import AIReviewResult
     _emit = emit or (lambda msg: None)
 
     if not original_spec:
@@ -305,6 +308,7 @@ async def _run_ai_review_pass(
     emit: Optional[Callable] = None,
 ) -> AIReviewResult:
     """Single pass of AI review (no fix attempts)."""
+    from .final_checkout import AIReviewResult
     _emit = emit or (lambda msg: None)
 
     # Select files for review

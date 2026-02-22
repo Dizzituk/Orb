@@ -35,6 +35,7 @@ def _check_typescript_cross_imports(
     segment_outputs: Dict[str, List[str]],
 ) -> List[IntegrationIssue]:
     """Check a TypeScript file's imports for cross-segment reference issues."""
+    from .integration_check import IntegrationIssue
     issues: List[IntegrationIssue] = []
     defs = extract_typescript_exports(file_path)
 
@@ -89,6 +90,7 @@ def _check_interface_contracts(
     - Verify exposes: the source segment's files define the declared names
     - Verify consumes: the consuming segment references names that exist in exposes
     """
+    from .integration_check import IntegrationIssue
     issues: List[IntegrationIssue] = []
     checked_segments = set(segment_outputs.keys())
 
@@ -116,6 +118,7 @@ def _verify_consumes(
     checked_segments: Set[str],
 ) -> List[IntegrationIssue]:
     """Verify that consumed names actually exist in upstream segment exposes."""
+    from .integration_check import IntegrationIssue
     issues: List[IntegrationIssue] = []
     seg_id = seg_spec.segment_id
     consumes = seg_spec.consumes
@@ -177,6 +180,7 @@ def _check_duplicate_definitions(
     - Duplicate table names in migration files
     - Duplicate route paths in router files
     """
+    from .integration_check import IntegrationIssue
     issues: List[IntegrationIssue] = []
 
     # --- Duplicate table names ---
@@ -265,6 +269,7 @@ def _run_llm_integration_review(
     Single LLM call for semantic validation.
     Advisory only - produces warnings, not errors.
     """
+    from .integration_check import IntegrationIssue
     issues: List[IntegrationIssue] = []
 
     prompt_parts = [

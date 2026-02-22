@@ -58,6 +58,7 @@ def generate_segments(
                         smart_segmentation.py. List of dicts with keys:
                         title, files, concepts, depends_on.
     """
+    from .segmentation import _build_manifest_from_concepts, _topological_sort, validate_manifest
     # Check if segmentation is needed (skipped if concept_groups already provided)
     if concept_groups is None:
         should_segment, reason = needs_segmentation(file_scope, requirements)

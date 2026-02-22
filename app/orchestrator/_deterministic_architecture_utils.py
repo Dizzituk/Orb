@@ -95,6 +95,7 @@ def generate_all_architectures(
 
     Returns: {segment_id: architecture_markdown}
     """
+    from .deterministic_architecture import generate_segment_architecture
     architectures: Dict[str, str] = {}
     completed: Dict[str, str] = {}  # file_path → source (empty until tiers complete)
 

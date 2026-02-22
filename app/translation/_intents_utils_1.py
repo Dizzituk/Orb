@@ -1,6 +1,7 @@
 from __future__ import annotations
 from .schemas import CanonicalIntent, IntentDefinition
 from typing import List, Optional
+from .intents import INTENT_DEFINITIONS
 
 
 def get_intent_definition(intent: CanonicalIntent) -> IntentDefinition:

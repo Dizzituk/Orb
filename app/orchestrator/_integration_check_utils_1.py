@@ -7,6 +7,7 @@ from app.orchestrator._integration_check_utils import _PY_ROUTE_RE, _SQL_TABLE_R
 from app.orchestrator.ast_helpers import extract_typescript_exports, resolve_typescript_import
 from app.pot_spec.grounded.segment_schemas import SegmentManifest, SegmentSpec
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from .integration_check import IntegrationIssue
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 

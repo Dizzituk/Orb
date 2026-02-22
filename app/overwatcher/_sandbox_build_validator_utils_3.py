@@ -115,6 +115,7 @@ def _parse_diagnostic_response(raw_text: str) -> DiagnosticResult:
 
     Handles: raw JSON, JSON in code fences, partial/malformed JSON.
     """
+    from .sandbox_build_validator import BuildFixAction, DiagnosticResult
     if not raw_text:
         return DiagnosticResult(
             diagnosis="Empty response from diagnostic LLM",

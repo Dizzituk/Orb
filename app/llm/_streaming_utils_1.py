@@ -2,6 +2,7 @@ from __future__ import annotations
 import os
 from app.llm.streaming import _int_env, _openai_needs_max_completion_tokens
 from typing import Any, Dict, List, Optional
+from .streaming import AsyncOpenAI
 HAS_OPENAI = True
 HAS_ANTHROPIC = True
 HAS_GEMINI = True

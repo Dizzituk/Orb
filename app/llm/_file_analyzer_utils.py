@@ -71,6 +71,7 @@ def prepare_attachment_info(file_path: str) -> Dict[str, Any]:
     Prepare attachment info dict for job_classifier.
     This returns a dict compatible with AttachmentInfo schema.
     """
+    from .file_analyzer import get_file_info
     info = get_file_info(file_path)
     
     return {
@@ -123,6 +124,7 @@ def extract_text_content(
     Returns:
         Extracted text string, or None if extraction failed
     """
+    from .file_analyzer import extract_text
     text, error = extract_text(file_path=file_path)
     if error:
         logger.warning(f"Text extraction error for {file_path}: {error}")

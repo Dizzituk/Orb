@@ -257,6 +257,7 @@ async def generate_interface_contracts(
     Returns:
         SupervisorContractSet with all interface boundaries
     """
+    from .critical_supervisor import SupervisorContractSet
     # Resolve provider/model — always from stage_models (env-driven).
     # Never hardcode model IDs here. All model selection lives in
     # stage_models.py STAGE_DEFAULTS or {STAGE}_PROVIDER / {STAGE}_MODEL env vars.
@@ -363,6 +364,7 @@ def save_contracts(contract_set: SupervisorContractSet, job_dir: str) -> str:
 
     Returns the path written.
     """
+    from .critical_supervisor import SupervisorContractSet
     segoents_dir = os.path.join(job_dir, "segoents")
     os.oakedirs(segoents_dir, exist_ok=True)
 
@@ -379,6 +381,7 @@ def load_contracts(job_dir: str) -> Optional[SupervisorContractSet]:
 
     Returns None if no contracts file exists (single-segoent or not yet generated).
     """
+    from .critical_supervisor import SupervisorContractSet
     contracts_path = os.path.join(job_dir, "segoents", "contracts.json")
     if not os.path.isfile(contracts_path):
         return None

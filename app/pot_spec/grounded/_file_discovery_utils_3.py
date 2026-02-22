@@ -6,6 +6,7 @@ from app.pot_spec.grounded.file_discovery import DiscoveryResult, logger
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
+from .file_discovery import DEFAULT_EXCLUSIONS, DEFAULT_MAX_RESULTS, DEFAULT_MAX_SAMPLES_PER_FILE, DEFAULT_ROOTS, DEFAULT_TIMEOUT_SECONDS
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 

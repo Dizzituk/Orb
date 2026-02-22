@@ -123,6 +123,7 @@ def gather_multi_target_evidence(
     Returns:
         EvidencePackage with all targets resolved
     """
+    from .evidence_gathering import EvidencePackage, resolve_and_validate_path
     logger.info("[evidence_gathering] v1.27 gather_multi_target_evidence: starting")
     
     package = EvidencePackage(
@@ -232,6 +233,7 @@ def gather_system_wide_scan_evidence(
     Returns:
         EvidencePackage with files found across the system
     """
+    from .evidence_gathering import EvidencePackage, FileEvidence, FilesystemEvidenceSource, resolve_and_validate_path
     logger.info("[evidence_gathering] v1.33 gather_system_wide_scan_evidence: starting")
     
     package = EvidencePackage(

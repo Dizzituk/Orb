@@ -4,6 +4,7 @@ import os
 from app.pot_spec.grounded._evidence_gathering_utils import USER_SCAN_ROOTS, scan_root_for_file
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
+from .evidence_gathering import resolve_and_validate_path
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 _SANDBOX_CLIENT_AVAILABLE = True

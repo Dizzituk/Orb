@@ -39,6 +39,7 @@ async def run_boot_test_with_fix_loop(
     Only fixes deterministic errors: bad imports, syntax errors, missing
     attributes. Does NOT attempt to fix logic errors or runtime failures.
     """
+    from .phase_checkout_checks import _attempt_boot_fix, _investigate_boot_error
     _emit = emit or (lambda msg: None)
     start = time.time()
 

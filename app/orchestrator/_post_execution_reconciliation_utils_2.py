@@ -229,6 +229,7 @@ def apply_import_fixes(
     Returns:
         Patched file content
     """
+    from .post_execution_reconciliation import ImportFix
     if not fixes:
         return file_content
 
@@ -283,6 +284,7 @@ def reconcile_deferred_consumers(
 
     Returns ReconciliationResult with fix details.
     """
+    from .post_execution_reconciliation import ReconciliationResult
     _emit = on_progress or (lambda msg: None)
     result = ReconciliationResult()
 

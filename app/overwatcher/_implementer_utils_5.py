@@ -17,6 +17,7 @@ async def run_verification(
     client: Optional[SandboxClient] = None,
 ) -> VerificationResult:
     """Verify Implementer output against spec requirements."""
+    from .implementer import ImplementerResult
     try:
         expected_filename, expected_content, expected_action = spec.get_target_file()
         output_mode = spec.get_output_mode()
@@ -220,6 +221,7 @@ async def run_implementer_edit_task(
     Returns:
         EditTaskResult with per-edit success/failure tracking
     """
+    from .implementer import _write_content_to_sandbox
     import time
     start_time = time.time()
     

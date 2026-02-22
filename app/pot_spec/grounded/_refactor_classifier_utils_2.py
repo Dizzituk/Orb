@@ -6,6 +6,7 @@ from .refactor_schemas import ChangeDecision, ClassifiedMatch, DEFAULT_BUCKET_DE
 from app.pot_spec.grounded._refactor_classifier_utils import FILE_PATTERN_HINTS, LINE_PATTERN_HINTS, _read_file_lines_from_sandbox
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
+from .refactor_classifier import _needs_expansion
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 

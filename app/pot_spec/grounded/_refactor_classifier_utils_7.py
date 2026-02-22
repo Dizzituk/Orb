@@ -75,6 +75,7 @@ def _build_classification_prompt(
     - USER-VISIBLE UI elements (title bars, headings, buttons) → likely CHANGE
     - Internal code paths/identifiers → assess based on risk
     """
+    from .refactor_classifier import _get_heuristic_hint
     # Build match list with heuristic hints
     match_entries = []
     for i, m in enumerate(matches):
@@ -150,6 +151,7 @@ def _parse_classification_response(
     """
     Parse the LLM's JSON response into ClassifiedMatch objects.
     """
+    from .refactor_classifier import _fallback_heuristic_classification
     classified = []
     
     # Try to extract JSON array from response

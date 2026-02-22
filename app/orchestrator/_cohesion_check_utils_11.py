@@ -43,6 +43,7 @@ async def attempt_auto_fixes(
     Returns:
         Updated CohesionResult with fixed issues marked
     """
+    from .cohesion_check import run_skeleton_compliance
     if not result.issues:
         return result
 

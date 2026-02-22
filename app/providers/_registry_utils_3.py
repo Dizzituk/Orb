@@ -45,6 +45,7 @@ def _normalize_messages_for_anthropic(messages: List[dict], system_prompt: Optio
 
 def _pick_default_provider() -> Optional[str]:
     for pid in ("openai", "anthropic", "google"):
+        from .registry import is_provider_available
         if is_provider_available(pid):
             return pid
     return None
@@ -101,7 +102,8 @@ async def llm_call(
     job_envelope: Optional[dict] = None,
     reasoning: Optional[dict] = None,  # GPT-5.x: {"effort": "none"|"low"|"medium"|"high"|"xhigh"}
     **kwargs: Any,  # absorb future constraints, e.g. data_sensitivity_constraint
-) -> LlmCallResult:
+):
+    from .registry import LlmCallResult, get_provider_registry
     return await get_provider_registry().llm_call(
         provider_id=provider_id,
         model_id=model_id,

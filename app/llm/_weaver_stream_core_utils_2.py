@@ -71,9 +71,11 @@ def _get_last_consumed_message_id_from_spec(db_spec: Any) -> Optional[int]:
         return None
 
 def _estimate_tokens(text: str) -> int:
+    from .weaver_stream_core import estimate_tokens
     return estimate_tokens(text)
 
 def build_weaver_prompt(context: WeaverContext) -> str:
+    from .weaver_stream_core import CONTENT_PRESERVATION_DIRECTIVE, WeaverContext
     instructions = f"""
 You are ASTRA Weaver.
 
@@ -265,6 +267,7 @@ def build_spec_from_dict(
     conversation_id: Optional[str] = None,
     generator_model: Optional[str] = None,
 ) -> SpecSchema:
+    from .weaver_stream_core import WeaverContext
     _ = project_id
 
     if not generator_model:

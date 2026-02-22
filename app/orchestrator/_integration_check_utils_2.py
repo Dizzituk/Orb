@@ -9,6 +9,7 @@ from app.pot_spec.grounded.segment_schemas import SegmentManifest
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
+from .integration_check import IntegrationIssue
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 ProgressCallback = Optional[Callable[[str], None]]
