@@ -1225,7 +1225,18 @@ async def run_architecture_execution(
             # skip the expensive LLM call entirely.
             _det_passed = False
             try:
-                from ..deterministic_checker import deterministic_check as _det_check
+                from ..deterministic_checker import (
+                    deterministic_check as _det_check,
+                    extract_expected_exports_from_arch,
+                )
+                # v3.0 FIX 21: Extract expected exports from architecture
+                # to feed the facade gate and divergence detector.
+                _arch_section = extract_section_for_file(
+                    architecture_content, rel_path,
+                ) or ""
+                _expected_exports = extract_expected_exports_from_arch(
+                    _arch_section,
+                ) if _arch_section else None
                 _det_result = _det_check(
                     file_path=rel_path,
                     file_content=file_content,
@@ -1233,6 +1244,7 @@ async def run_architecture_execution(
                     sandbox_base=sandbox_base,
                     existing_sandbox_files=_existing_sandbox_files,
                     manifest_file_scope=_manifest_file_scope if '_manifest_file_scope' in dir() else None,
+                    expected_exports=_expected_exports or None,
                 )
                 if _det_result.skipped:
                     logger.debug("[arch_exec] v2.5 Det check skipped for %s: %s",

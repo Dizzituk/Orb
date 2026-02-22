@@ -113,6 +113,10 @@ class ArchitectureSearch:
             
             self._resolve_metadata(result)
             
+            # Skip excluded (quarantined/purged) results
+            if result.source_type == "_excluded":
+                continue
+            
             # Apply limits
             if result.source_type == SourceType.ARCH_DIRECTORY:
                 if dirs_found < top_k_dirs:
@@ -143,6 +147,10 @@ class ArchitectureSearch:
         elif result.source_type == SourceType.ARCH_CHUNK:
             chunk = self.db.query(ArchCodeChunk).get(result.source_id)
             if chunk:
+                # Skip quarantined/purged chunks — stale data
+                if chunk.status != "active":
+                    result.source_type = "_excluded"
+                    return
                 result.canonical_path = chunk.file_path
                 result.name = chunk.chunk_name
                 result.chunk_type = chunk.chunk_type

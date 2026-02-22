@@ -36,7 +36,7 @@ from app.orchestrator.refactor_segmenter_models import (
 
 logger = logging.getLogger(__name__)
 
-DETERMINISTIC_ARCH_BUILD_ID = "2026-02-20-v1.0-deterministic-architecture-generator"
+DETERMINISTIC_ARCH_BUILD_ID = "2026-02-21-v1.1-fix19-relative-import-nesting"
 print(f"[DETERMINISTIC_ARCH_LOADED] BUILD_ID={DETERMINISTIC_ARCH_BUILD_ID}")
 
 
@@ -437,7 +437,27 @@ def _compute_imports(
 
         if needed_names:
             if imp.module:
-                if len(needed_names) == len(imp.names):
+                if imp.is_relative:
+                    # v6.1 FIX 19: Adjust relative imports for subpackage nesting.
+                    # Source monolith sits at e.g. app/translation/intents.py
+                    # so `from .schemas import X` is relative to app/translation/.
+                    # But the output file is at app/translation/intents/core.py
+                    # so `.schemas` would resolve to app/translation/intents/schemas
+                    # (wrong). We need `..schemas` to reach app/translation/schemas.
+                    # Extract original dot level from raw_statement (e.g. "from ..foo" -> 2)
+                    _after_from = imp.raw_statement.strip()
+                    if _after_from.startswith("from"):
+                        _after_from = _after_from[4:].lstrip()
+                    _orig_dots = len(_after_from) - len(_after_from.lstrip("."))
+                    _orig_dots = max(_orig_dots, 1)  # at least 1 dot for relative
+                    _new_dots = "." * (_orig_dots + 1)
+                    _import_stmt = f"from {_new_dots}{imp.module} import {', '.join(needed_names)}"
+                    imports.append(_import_stmt)
+                    logger.debug(
+                        "[det_arch] FIX 19: Adjusted relative import: %s -> %s",
+                        imp.raw_statement.strip(), _import_stmt,
+                    )
+                elif len(needed_names) == len(imp.names):
                     imports.append(imp.raw_statement)
                 else:
                     imports.append(f"from {imp.module} import {', '.join(needed_names)}")

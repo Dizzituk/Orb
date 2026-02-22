@@ -262,6 +262,19 @@ except ImportError as e:
     generate_segment_loop_stream = None
 
 # =============================================================================
+# REFACTOR LOOP (v1.9)
+# =============================================================================
+
+try:
+    from app.orchestrator.refactor_stream import generate_refactor_stream
+    _REFACTOR_AVAILABLE = True
+    print("[handler_registry] Refactor loop handler loaded successfully")
+except ImportError as e:
+    _REFACTOR_AVAILABLE = False
+    print(f"[handler_registry] WARNING: Refactor loop import failed: {e}")
+    generate_refactor_stream = None
+
+# =============================================================================
 # INTROSPECTION
 # =============================================================================
 
@@ -294,6 +307,7 @@ def log_handler_availability() -> None:
     print(f"[HANDLER_STATUS] RAGStream: {_RAG_STREAM_AVAILABLE}")
     print(f"[HANDLER_STATUS] EmbeddingStream: {_EMBEDDING_STREAM_AVAILABLE}")
     print(f"[HANDLER_STATUS] SegmentLoop: {_SEGMENT_LOOP_AVAILABLE}")
+    print(f"[HANDLER_STATUS] RefactorLoop: {_REFACTOR_AVAILABLE}")
     print(f"[HANDLER_STATUS] Introspection: {_INTROSPECTION_AVAILABLE}")
 
 
@@ -315,6 +329,7 @@ def get_handler_status() -> dict:
         "rag_stream": _RAG_STREAM_AVAILABLE,
         "embedding_stream": _EMBEDDING_STREAM_AVAILABLE,
         "segment_loop": _SEGMENT_LOOP_AVAILABLE,
+        "refactor_loop": _REFACTOR_AVAILABLE,
         "introspection": _INTROSPECTION_AVAILABLE,
     }
 
@@ -390,6 +405,9 @@ __all__ = [
     # Segment Loop
     "_SEGMENT_LOOP_AVAILABLE",
     "generate_segment_loop_stream",
+    # Refactor Loop
+    "_REFACTOR_AVAILABLE",
+    "generate_refactor_stream",
     # Introspection
     "detect_log_intent",
     # Status functions

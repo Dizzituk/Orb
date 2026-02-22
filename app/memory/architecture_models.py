@@ -209,6 +209,21 @@ class ArchitectureFileIndex(Base):
     line_count = Column(Integer, nullable=True)
     language = Column(String(50), nullable=True, index=True)
     
+    # ==========================================================================
+    # LIFECYCLE STATUS (v1.2 - refactor awareness)
+    # ==========================================================================
+    # active = live codebase, quarantined = replaced by refactor, purged = deleted
+    status = Column(String(20), default="active", nullable=False)
+    
+    # If this file was created from a refactored monolith, which file?
+    source_monolith = Column(String(500), nullable=True)
+    
+    # Which refactor job created this entry
+    refactor_job_id = Column(String(100), nullable=True)
+    
+    # When this entry was quarantined (for cleanup tracking)
+    quarantined_at = Column(DateTime, nullable=True)
+    
     # Relationships
     scan_run = relationship("ArchitectureScanRun", back_populates="files")
     content = relationship(
@@ -223,6 +238,7 @@ class ArchitectureFileIndex(Base):
         Index("ix_arch_file_scan_zone", "scan_id", "zone"),
         Index("ix_arch_file_scan_ext", "scan_id", "ext"),
         Index("ix_arch_file_scan_lang", "scan_id", "language"),
+        Index("ix_arch_fi_status", "status"),
     )
     
     def __repr__(self):

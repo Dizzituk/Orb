@@ -171,6 +171,11 @@ def tier0_classify(text: str) -> Tier0RuleResult:
     if result.matched:
         return result
     
+    # 4e2. Check refactor codebase command (v1.9)
+    result = check_refactor_codebase_trigger(text_stripped)
+    if result.matched:
+        return result
+    
     # 4f. Check filesystem query (v1.5) - MUST be before is_obvious_chat!
     result = check_filesystem_query_trigger(text)
     if result.matched:
@@ -1045,6 +1050,65 @@ def check_multi_file_trigger(text: str) -> Tier0RuleResult:
                 confidence=0.98,
                 rule_name=f"multi_file_search_{pattern_type}",
                 reason=f"Multi-file search: {pattern_type} for '{search_pattern}'",
+            )
+    
+    return Tier0RuleResult(matched=False)
+
+
+# =============================================================================
+# REFACTOR CODEBASE (v1.9 - Self-refactoring loop)
+# =============================================================================
+
+import re as _re_refactor  # local import to avoid conflicts
+
+_REFACTOR_PATTERNS = [
+    r"^(?:[Aa]stra[,:]?\s+)?[Rr]efactor\s+(?:yourself|codebase)$",
+    r"^[Ss]tart\s+(?:the\s+)?refactor(?:ing)?$",
+    r"^\*refactor$",
+    r"^[Rr]efactor\s+(?:the\s+)?codebase$",
+]
+
+_REFACTOR_EXACT_PHRASES = {
+    "astra, refactor yourself",
+    "refactor yourself",
+    "refactor codebase",
+    "start refactor",
+    "*refactor",
+    "astra, command: refactor codebase",
+}
+
+
+def check_refactor_codebase_trigger(text: str) -> Tier0RuleResult:
+    """
+    Check if the user is requesting codebase refactoring.
+    
+    Matches:
+    - "Astra, refactor yourself"
+    - "refactor codebase" 
+    - "start refactor"
+    - "*refactor"
+    """
+    text_lower = text.strip().lower()
+    
+    # Exact phrase match
+    if text_lower in _REFACTOR_EXACT_PHRASES:
+        return Tier0RuleResult(
+            matched=True,
+            intent=CanonicalIntent.REFACTOR_CODEBASE,
+            confidence=1.0,
+            rule_name="refactor_codebase_exact",
+            reason=f"Exact match: '{text_lower}'",
+        )
+    
+    # Regex pattern match
+    for pattern in _REFACTOR_PATTERNS:
+        if _re_refactor.match(pattern, text.strip()):
+            return Tier0RuleResult(
+                matched=True,
+                intent=CanonicalIntent.REFACTOR_CODEBASE,
+                confidence=1.0,
+                rule_name="refactor_codebase_pattern",
+                reason=f"Pattern match: '{pattern}'",
             )
     
     return Tier0RuleResult(matched=False)

@@ -378,11 +378,28 @@ class ArchCodeChunk(Base):
     # Hash that was used when embedding was generated (for staleness detection)
     embedded_content_hash = Column(String(64), nullable=True)
     
+    # ==========================================================================
+    # LIFECYCLE STATUS (v1.2 - refactor awareness)
+    # ==========================================================================
+    # active = live codebase, quarantined = replaced by refactor, purged = deleted
+    status = Column(String(20), default="active", nullable=False, index=True)
+    
+    # If this chunk came from a refactored monolith, which file was it?
+    source_monolith = Column(String(500), nullable=True)
+    
+    # Which refactor job created this entry
+    refactor_job_id = Column(String(100), nullable=True)
+    
+    # Role in package (init, core, models, validators, utils, constants, etc.)
+    package_role = Column(String(50), nullable=True)
+    
     __table_args__ = (
         Index("ix_archchunk_scan_file", "scan_id", "file_path"),
         Index("ix_archchunk_scan_name", "scan_id", "chunk_name"),
         Index("ix_archchunk_embedded", "embedded"),
         Index("ix_archchunk_content_hash", "content_hash"),
+        Index("ix_arch_chunks_status", "status"),
+        Index("ix_arch_chunks_monolith", "source_monolith"),
     )
     
     @property

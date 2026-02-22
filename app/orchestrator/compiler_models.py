@@ -99,7 +99,24 @@ class FileBrief:
             parts.append(self.instruction)
             parts.append("")
 
-        # Feedback from previous failures — SECOND for urgency
+        # v6.1 FIX 24b: Mandatory symbol checklist — SECOND for attention.
+        # Placed before function bodies so the LLM sees the complete list
+        # of required symbols before it starts writing. This combats the
+        # LLM dropping symbols from the tail of long briefs.
+        if self.functions and self.profile == "refactor":
+            func_names = [f.name for f in self.functions]
+            parts.append("## MANDATORY SYMBOL CHECKLIST")
+            parts.append("")
+            parts.append(
+                f"This file MUST contain ALL {len(func_names)} symbols listed below. "
+                f"Do NOT skip any. After writing the file, verify every symbol is present."
+            )
+            parts.append("")
+            for i, name in enumerate(func_names, 1):
+                parts.append(f"{i}. `{name}`")
+            parts.append("")
+
+        # Feedback from previous failures — THIRD for urgency
         if self.feedback:
             parts.append("## Previous Failure Feedback (MUST address)")
             parts.append("")

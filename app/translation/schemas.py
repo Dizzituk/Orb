@@ -129,6 +129,13 @@ class CanonicalIntent(str, Enum):
     # Separated from RUN_SEGMENT_LOOP to prevent accidental auto-execution
     IMPLEMENT_SEGMENTS = "IMPLEMENT_SEGMENTS"
 
+    # =========================================================================
+    # CODEBASE REFACTOR (v1.9 - Self-refactoring loop)
+    # =========================================================================
+
+    # Run the scan-do-rescan refactor loop (surgical extractor)
+    REFACTOR_CODEBASE = "REFACTOR_CODEBASE"
+
 class LatencyTier(str, Enum):
     """Which cost tier resolved this intent?"""
     TIER_0_RULES = "tier_0"      # Pure regex/string, no LLM

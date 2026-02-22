@@ -348,16 +348,25 @@ def run_skeleton_compliance(
     if manifest_dict and len(architectures) > 1:
         import re as _re
 
-        # Build a map of module_name -> (segment_id, exported_symbols)
+        # Build a map of full_module_path -> (segment_id, exported_symbols)
         # exported_symbols = set of names defined in that module's architecture
-        _module_to_segment: Dict[str, str] = {}
-        _module_exports: Dict[str, Set[str]] = {}
+        # v6.1 FIX 22: Key by FULL PATH instead of basename to prevent
+        # cross-package collisions when multiple source files produce
+        # identically-named submodules (models.py, core.py).
+        _module_to_segment: Dict[str, str] = {}  # full_path -> seg_id
+        _module_exports: Dict[str, Set[str]] = {}  # full_path -> symbols
+        _seg_package_prefix: Dict[str, str] = {}  # seg_id -> package dir
 
         for _seg_data in manifest_dict.get("segments", []):
             _sid = _seg_data.get("segment_id", "")
-            for _fp in _seg_data.get("file_scope", []):
-                _mod_name = _fp.replace("\\", "/").rsplit("/", 1)[-1].replace(".py", "").lower()
-                _module_to_segment[_mod_name] = _sid
+            _file_paths = [f.replace("\\", "/") for f in _seg_data.get("file_scope", [])]
+            # Derive package prefix from common directory of file_scope
+            if _file_paths:
+                _dirs = [fp.rsplit("/", 1)[0] if "/" in fp else "" for fp in _file_paths]
+                _seg_package_prefix[_sid] = _dirs[0] if _dirs else ""
+            for _fp in _file_paths:
+                _full_key = _fp.replace(".py", "").lower()
+                _module_to_segment[_full_key] = _sid
 
         # Extract symbols defined in each segment's architecture
         # Look for: def func_name, class ClassName, CONSTANT_NAME =, async def func_name
@@ -385,16 +394,12 @@ def run_skeleton_compliance(
             for _m in _re.finditer(r'(?:exports?|imports?|provides?|defines?)\s+`(\w+)`', arch_content):
                 _defined.add(_m.group(1))
 
-            # Map to modules owned by this segment
-            _seg_files = set()
+            # Map to modules owned by this segment (v6.1 FIX 22: full path keys)
             _seg_data = next((s for s in manifest_dict.get("segments", []) if s.get("segment_id") == seg_id), None)
             if _seg_data:
-                _seg_files = {
-                    f.replace("\\", "/").rsplit("/", 1)[-1].replace(".py", "").lower()
-                    for f in _seg_data.get("file_scope", [])
-                }
-            for _mod in _seg_files:
-                _module_exports.setdefault(_mod, set()).update(_defined)
+                for _fp in _seg_data.get("file_scope", []):
+                    _full_key = _fp.replace("\\", "/").replace(".py", "").lower()
+                    _module_exports.setdefault(_full_key, set()).update(_defined)
 
         # Now check: for each segment's imports from other modules,
         # verify the imported symbols exist in the target module's exports
@@ -408,12 +413,17 @@ def run_skeleton_compliance(
                 _imports_str = _m.group(2).strip().rstrip("\\").strip('`')
                 _imported_names = [n.strip().strip('`').split(" as ")[0] for n in _imports_str.split(",") if n.strip()]
 
+                # v6.1 FIX 22: Resolve relative import to full path within
+                # this segment's package, then check cross-segment ownership.
+                _pkg_prefix = _seg_package_prefix.get(seg_id, "")
+                _full_target = f"{_pkg_prefix}/{_target_mod}".lower() if _pkg_prefix else _target_mod
+
                 # Only check cross-segment imports
-                _target_seg = _module_to_segment.get(_target_mod)
+                _target_seg = _module_to_segment.get(_full_target)
                 if not _target_seg or _target_seg == seg_id:
                     continue
 
-                _available = _module_exports.get(_target_mod, set())
+                _available = _module_exports.get(_full_target, set())
                 if not _available:
                     continue  # Can't verify if we don't know the exports
 
@@ -455,12 +465,17 @@ def run_skeleton_compliance(
     if len(architectures) > 1:
         import re as _re
 
-        # Build: function_name -> [(segment_id, file_path, line_count_estimate)]
+        # Build: function_name -> [(segment_id, file_path, line_count_estimate, source)]
+        # v6.1 FIX 22: Include deterministic_source to scope duplicates
+        # to the same source monolith. Functions with the same name from
+        # different source files (e.g. to_dict in conduct_policy vs
+        # sandbox_build_validator) are NOT duplicates.
         _func_locations: Dict[str, List[tuple]] = {}
 
         for seg_id, arch_content in architectures.items():
-            # Get this segment's file scope from manifest
+            # Get this segment's file scope and source from manifest
             _seg_files = set()
+            _seg_source = ""
             if manifest_dict:
                 _seg_data = next(
                     (s for s in manifest_dict.get("segments", [])
@@ -468,6 +483,7 @@ def run_skeleton_compliance(
                 )
                 if _seg_data:
                     _seg_files = set(_seg_data.get("file_scope", []))
+                    _seg_source = _seg_data.get("deterministic_source", "")
 
             # Extract function definitions from architecture
             # Match: def func_name( or async def func_name(
@@ -496,41 +512,50 @@ def run_skeleton_compliance(
                     _line_count = arch_content[_start:].count('\n')
 
                 _func_locations.setdefault(_fname, []).append(
-                    (seg_id, ", ".join(sorted(_seg_files)[:3]), _line_count)
+                    (seg_id, ", ".join(sorted(_seg_files)[:3]), _line_count, _seg_source)
                 )
 
         # Flag functions that appear in more than one segment
+        # v6.1 FIX 22: Only flag duplicates from the SAME source monolith.
         for _fname, _locs in _func_locations.items():
-            _unique_segs = set(loc[0] for loc in _locs)
-            if len(_unique_segs) <= 1:
-                continue
+            # Group by source monolith — only flag within same source
+            _by_source: Dict[str, List[tuple]] = {}
+            for _loc in _locs:
+                _src = _loc[3] if len(_loc) > 3 else ""
+                _by_source.setdefault(_src, []).append(_loc)
 
-            # Get max estimated line count
-            _max_lines = max(loc[2] for loc in _locs)
-            _severity = "blocking" if _max_lines > 100 else "warning"
-            _seg_list = ", ".join(sorted(_unique_segs))
+            # Check each source group independently
+            for _src_group in _by_source.values():
+                _unique_segs = set(loc[0] for loc in _src_group)
+                if len(_unique_segs) <= 1:
+                    continue
 
-            issue_counter += 1
-            issues.append(CohesionIssue(
-                issue_id=f"SKEL-{issue_counter:03d}",
-                severity=_severity,
-                category="duplicate_function",
-                description=(
-                    f"Function '{_fname}' is defined in {len(_unique_segs)} segments: "
-                    f"{_seg_list}. Estimated {_max_lines}+ lines. "
-                    f"It should be defined in exactly one segment and imported by others."
-                ),
-                source_segment=sorted(_unique_segs)[0],
-                related_segment=sorted(_unique_segs)[1] if len(_unique_segs) > 1 else "",
-                suggested_fix=(
-                    f"Assign '{_fname}' to one segment only. The other segment(s) "
-                    f"should import it via 'from .module import {_fname}'."
-                ),
-            ))
-            logger.warning(
-                "[cohesion_check] v4.0 DUPLICATE FUNCTION: '%s' in segments %s (~%d lines)",
-                _fname, _seg_list, _max_lines,
-            )
+                # Get max estimated line count
+                _max_lines = max(loc[2] for loc in _src_group)
+                _severity = "blocking" if _max_lines > 100 else "warning"
+                _seg_list = ", ".join(sorted(_unique_segs))
+
+                issue_counter += 1
+                issues.append(CohesionIssue(
+                    issue_id=f"SKEL-{issue_counter:03d}",
+                    severity=_severity,
+                    category="duplicate_function",
+                    description=(
+                        f"Function '{_fname}' is defined in {len(_unique_segs)} segments: "
+                        f"{_seg_list}. Estimated {_max_lines}+ lines. "
+                        f"It should be defined in exactly one segment and imported by others."
+                    ),
+                    source_segment=sorted(_unique_segs)[0],
+                    related_segment=sorted(_unique_segs)[1] if len(_unique_segs) > 1 else "",
+                    suggested_fix=(
+                        f"Assign '{_fname}' to one segment only. The other segment(s) "
+                        f"should import it via 'from .module import {_fname}'."
+                    ),
+                ))
+                logger.warning(
+                    "[cohesion_check] v4.0 DUPLICATE FUNCTION: '%s' in segments %s (~%d lines)",
+                    _fname, _seg_list, _max_lines,
+                )
 
     # =========================================================================
     # Check 8 (v4.0 Fix 3): Cross-segment missing symbol with monolith check

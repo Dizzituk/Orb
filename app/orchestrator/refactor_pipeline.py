@@ -324,6 +324,23 @@ def run_deterministic_refactor(
         plan.graph.total_tiers, plan.total_segments,
     )
 
+    # v6.1 FIX 23: Save enrichment to each segment directory so the
+    # implementation compiler can load it. Without this, the compiler
+    # detects profile=GREENFIELD (no enrichment) and the LLM invents
+    # fictional code instead of transplanting from the architecture.
+    for seg in plan.segments:
+        _enrich_dir = os.path.join(job_dir, "segments", seg.segment_id)
+        os.makedirs(_enrich_dir, exist_ok=True)
+        _enrich_path = os.path.join(_enrich_dir, "enrichment.json")
+        try:
+            with open(_enrich_path, "w", encoding="utf-8") as _ef:
+                json.dump(enrichment, _ef, indent=2, default=str)
+        except Exception as _e:
+            logger.warning(
+                "[refactor_pipeline] Failed to save enrichment for %s: %s",
+                seg.segment_id, _e,
+            )
+
     # Step 4: Generate architectures
     architectures = generate_all_architectures(plan, source_scan)
     for seg_id, arch_text in architectures.items():

@@ -249,10 +249,27 @@ def _extract_verbatim_code_from_architecture(file_context: str, rel_path: str) -
     if not code_blocks:
         return None
 
-    # Filter large blocks (>500 chars)
-    large_blocks = [block for block in code_blocks if len(block.strip()) > 500]
+    # v6.1 FIX 24d: Separate import blocks from content blocks.
+    # The imports block is often small (<500 chars) but MUST be included
+    # and placed FIRST, otherwise the file fails with NameError at runtime.
+    import_blocks = []
+    content_blocks = []
+    for block in code_blocks:
+        stripped = block.strip()
+        if not stripped:
+            continue
+        # Detect import blocks: majority of lines are import/from statements
+        lines = [l for l in stripped.split('\n') if l.strip()]
+        import_lines = sum(1 for l in lines
+                          if l.strip().startswith(('import ', 'from ')))
+        if lines and import_lines / len(lines) > 0.5:
+            import_blocks.append(stripped)
+        elif len(stripped) > 500:
+            content_blocks.append(stripped)
 
-    if not large_blocks:
+    large_blocks = content_blocks  # back-compat name for logic below
+
+    if not large_blocks and not import_blocks:
         return None
 
     # Check file extension for sanity
@@ -263,9 +280,19 @@ def _extract_verbatim_code_from_architecture(file_context: str, rel_path: str) -
         logger.debug(f"[ARCH_EXEC] Verbatim extraction: unrecognized extension {ext}, skipping")
         return None
 
+    # v6.1 FIX 24d: Helper to prepend import blocks
+    def _prepend_imports(code: str) -> str:
+        if not import_blocks:
+            return code
+        return "\n".join(import_blocks) + "\n\n" + code
+
     # If single large block, use it
     if len(large_blocks) == 1:
-        return large_blocks[0].strip()
+        return _prepend_imports(large_blocks[0].strip())
+
+    # No large content blocks but imports exist — not enough for verbatim
+    if not large_blocks:
+        return None
 
     # Multiple large blocks: check context for "complete file" indicators
     combine_indicators = [
@@ -282,7 +309,8 @@ def _extract_verbatim_code_from_architecture(file_context: str, rel_path: str) -
 
     if should_combine:
         # Combine blocks with double newline separator
-        return "\n\n".join(block.strip() for block in large_blocks)
+        combined = "\n\n".join(block.strip() for block in large_blocks)
+        return _prepend_imports(combined)
 
     # Default: use first large block
-    return large_blocks[0].strip()
+    return _prepend_imports(large_blocks[0].strip())

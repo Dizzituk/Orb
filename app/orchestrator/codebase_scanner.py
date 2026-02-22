@@ -208,6 +208,28 @@ def _extract_symbols(
                     )
                     result.symbols[target.id] = info
 
+        # --- Constants (annotated assignments like X: Type = value) ---
+        elif isinstance(node, ast.AnnAssign):
+            # v6.1 FIX 19b: Handle type-annotated constants.
+            # e.g. INTENT_DEFINITIONS: Dict[CanonicalIntent, IntentDefinition] = {...}
+            # Python AST represents these as ast.AnnAssign (not ast.Assign).
+            target = node.target
+            if isinstance(target, ast.Name) and _is_constant_name(target.id) and node.value is not None:
+                source_segment = ast.get_source_segment(source_code, node) or ""
+
+                kind = SymbolKind.CONSTANT
+                if len(source_segment) > 200 or _is_data_structure(node.value):
+                    kind = SymbolKind.DATA_STRUCTURE
+
+                info = SymbolInfo(
+                    name=target.id,
+                    kind=kind,
+                    source_code=source_segment,
+                    line_start=node.lineno,
+                    line_end=node.end_lineno or node.lineno,
+                )
+                result.symbols[target.id] = info
+
         # --- Module-level expressions ---
         elif isinstance(node, ast.Expr):
             source_segment = ast.get_source_segment(source_code, node) or ""

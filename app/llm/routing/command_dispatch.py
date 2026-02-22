@@ -61,6 +61,8 @@ from .handler_registry import (
     generate_rag_query_stream,
     generate_embedding_status_stream,
     generate_embeddings_stream,
+    _REFACTOR_AVAILABLE,
+    generate_refactor_stream,
     StageTrace,
     get_env_model_audit,
     log_handler_availability,
@@ -347,6 +349,24 @@ def handle_command_execution(
                 stage_trace,
                 "PIPELINE HANDLER NOT AVAILABLE (segment_loop_stream)",
                 "generate_segment_loop_stream",
+            )
+    
+    # --- Refactor Codebase (v1.9) ---
+    if intent == CanonicalIntent.REFACTOR_CODEBASE:
+        if _REFACTOR_AVAILABLE:
+            print("[PIPELINE_ROUTE] v1.9 Refactor codebase loop")
+            if stage_trace:
+                stage_trace.enter_stage("refactor_loop")
+            return StreamingResponse(
+                generate_refactor_stream(),
+                media_type="text/event-stream",
+                headers=sse_headers,
+            )
+        else:
+            log_routing_failure(
+                stage_trace,
+                "REFACTOR HANDLER NOT AVAILABLE (refactor_stream)",
+                "generate_refactor_stream",
             )
     
     # --- Overwatcher ---

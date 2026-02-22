@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
-PACKAGE_QUARANTINE_BUILD_ID = "2026-02-14-v2.0-quarantine-folder"
+PACKAGE_QUARANTINE_BUILD_ID = "2026-02-21-v3.0-host-quarantine-stem-match"
 print(f"[PACKAGE_QUARANTINE_LOADED] BUILD_ID={PACKAGE_QUARANTINE_BUILD_ID}")
 
 # ── Constants ────────────────────────────────────────────────────────
@@ -142,30 +142,45 @@ def detect_file_to_package_refactors(
             det_sources = [_single]
 
     if det_sources:
+        # v6.1 FIX 17c: Match by stem name, not parent directory.
+        # Old logic used parent dir as dict key, which broke when two
+        # sources shared the same parent (e.g. conduct_policy.py and
+        # sandbox_build_validator.py both in app/overwatcher/).
         _pairs = []
         for det_source in det_sources:
             det_source_norm = det_source.replace("\\", "/")
-            det_parent = det_source_norm.rsplit("/", 1)[0] if "/" in det_source_norm else ""
-            # Find the package dir whose parent matches this source's parent
+            # Derive expected package: parent/stem  e.g. app/overwatcher/conduct_policy
+            _stem = det_source_norm.rsplit("/", 1)[-1].replace(".py", "") if "/" in det_source_norm else det_source_norm.replace(".py", "")
+            _parent = det_source_norm.rsplit("/", 1)[0] if "/" in det_source_norm else ""
+            _expected_pkg = f"{_parent}/{_stem}" if _parent else _stem
+
             _matched = False
-            for dir_segment, init_seg_id in init_owners.items():
-                pkg_parent = dir_segment.rsplit("/", 1)[0] if "/" in dir_segment else ""
-                if pkg_parent == det_parent:
-                    logger.info(
-                        "[quarantine] v6.1 Deterministic source override: quarantine %s (package: %s)",
-                        det_source, dir_segment,
-                    )
-                    _pairs.append((dir_segment, init_seg_id))
-                    _matched = True
-                    break
-            if not _matched and len(init_owners) == 1:
-                # Fallback: single package, assume it's the target
-                dir_segment, init_seg_id = next(iter(init_owners.items()))
+            if _expected_pkg in init_owners:
+                # Direct stem match — most precise
+                init_seg_id = init_owners[_expected_pkg]
                 logger.info(
-                    "[quarantine] v6.1 Deterministic source fallback: quarantine %s (package: %s)",
-                    det_source, dir_segment,
+                    "[quarantine] v6.1 FIX 17c stem match: %s → package %s",
+                    det_source, _expected_pkg,
                 )
-                _pairs.append((dir_segment, init_seg_id))
+                _pairs.append((_expected_pkg, init_seg_id))
+                _matched = True
+            else:
+                # Fallback: scan init_owners for any package whose stem matches
+                for dir_segment, init_seg_id in init_owners.items():
+                    pkg_stem = dir_segment.rsplit("/", 1)[-1] if "/" in dir_segment else dir_segment
+                    if pkg_stem == _stem:
+                        logger.info(
+                            "[quarantine] v6.1 FIX 17c stem fallback: %s → package %s",
+                            det_source, dir_segment,
+                        )
+                        _pairs.append((dir_segment, init_seg_id))
+                        _matched = True
+                        break
+            if not _matched:
+                logger.warning(
+                    "[quarantine] v6.1 FIX 17c: no package found for source %s",
+                    det_source,
+                )
         if _pairs:
             return _pairs
 
@@ -225,29 +240,31 @@ def run_quarantine(
     )
     _emit(f"[quarantine] Detected {len(refactors)} file->package refactor(s)")
 
-    # v6.1 FIX 8 + FIX 13: Build a lookup from package dir -> source file.
+    # v6.1 FIX 8 + FIX 13 + FIX 17c: Build lookup from package stem -> source file.
     # For multi-file refactors, each package has its own source monolith.
+    # FIX 17c: Keyed by stem (not parent dir) to handle multiple sources
+    # in the same parent directory.
     det_sources = manifest_dict.get("deterministic_sources", [])
     if not det_sources:
         _single = manifest_dict.get("deterministic_source")
         if _single:
             det_sources = [_single]
 
-    # Build map: parent_dir -> source_file (for matching packages to sources)
-    _source_by_parent: Dict[str, str] = {}
+    # Build map: stem_name -> source_file  (e.g. "conduct_policy" -> "app/overwatcher/conduct_policy.py")
+    _source_by_stem: Dict[str, str] = {}
     for ds in det_sources:
         ds_norm = ds.replace("\\", "/")
-        ds_parent = ds_norm.rsplit("/", 1)[0] if "/" in ds_norm else ""
-        _source_by_parent[ds_parent] = ds_norm
+        _ds_stem = ds_norm.rsplit("/", 1)[-1].replace(".py", "") if "/" in ds_norm else ds_norm.replace(".py", "")
+        _source_by_stem[_ds_stem] = ds_norm
 
     for dir_segment, init_seg_id in refactors:
-        # v6.1: Use deterministic source matched by parent dir, else derive
-        pkg_parent = dir_segment.rsplit("/", 1)[0] if "/" in dir_segment else ""
-        _matched_source = _source_by_parent.get(pkg_parent)
+        # v6.1 FIX 17c: Match by package stem name
+        pkg_stem = dir_segment.rsplit("/", 1)[-1] if "/" in dir_segment else dir_segment
+        _matched_source = _source_by_stem.get(pkg_stem)
         if _matched_source:
             module_py = _matched_source
             logger.info(
-                "[quarantine] v6.1 Using deterministic_source for quarantine: %s (package: %s)",
+                "[quarantine] v6.1 FIX 17c stem match for quarantine: %s (package: %s)",
                 module_py, dir_segment,
             )
         elif det_sources and len(det_sources) == 1:

@@ -34,7 +34,7 @@ from app.orchestrator.refactor_segmenter_models import (
 
 logger = logging.getLogger(__name__)
 
-REFACTOR_SEGMENTER_BUILD_ID = "2026-02-20-v1.0-deterministic-refactor-segmenter"
+REFACTOR_SEGMENTER_BUILD_ID = "2026-02-21-v1.1-fix18-source-prefix-segment-names"
 print(f"[REFACTOR_SEGMENTER_LOADED] BUILD_ID={REFACTOR_SEGMENTER_BUILD_ID}")
 
 
@@ -803,6 +803,17 @@ def _make_segment(
             deps.add(seg.segment_id)
 
     # Generate readable segment ID
+    # v6.1 FIX 18: Prepend source file stem to prevent name collisions
+    # when multiple source files produce segments with similar structure
+    # (e.g. both conduct_policy.py and sandbox_build_validator.py producing
+    # seg-01-models-and-core). The source_file is always available.
+    _src_stem = os.path.basename(source_file).replace(".py", "")
+    # Abbreviate long stems (>20 chars) to keep segment IDs manageable
+    if len(_src_stem) > 20:
+        _src_prefix = _src_stem[:18]
+    else:
+        _src_prefix = _src_stem
+
     if is_facade:
         slug = "facade"
     else:
@@ -811,7 +822,7 @@ def _make_segment(
         if len(stems) > 3:
             slug += f"-etc-{len(stems)}files"
 
-    seg_id = f"seg-{index + 1:02d}-{slug}"
+    seg_id = f"seg-{index + 1:02d}-{_src_prefix}-{slug}"
 
     # Estimate total lines
     est_lines = sum(nodes[fp].estimated_lines for fp in file_paths)
@@ -867,34 +878,142 @@ def _auto_generate_file_layout(
     # Separate symbols by kind
     constants = [s for s in symbols if s.kind in (SymbolKind.CONSTANT, SymbolKind.DATA_STRUCTURE)]
     classes = [s for s in symbols if s.kind == SymbolKind.CLASS]
-    functions = [s for s in symbols if s.kind == SymbolKind.FUNCTION]
+    functions = [s for s in symbols if s.kind in (SymbolKind.FUNCTION, SymbolKind.ASYNC_FUNCTION)]
 
-    # Models file: constants + classes
-    if constants or classes:
-        models_path = f"{pkg}/models.py"
-        nodes[models_path] = FileNode(
-            file_path=models_path,
-            file_stem="models",
-            description="Constants, data structures, and class definitions",
-        )
-
-    # Split functions into groups of ~400 lines each
+    # v6.1 FIX 26: Dual cap — lines AND brief char budget.
+    # The LLM reliably handles briefs up to ~35KB. Beyond that it dumps
+    # the entire source instead of writing only assigned symbols.
+    # Both caps must be satisfied — whichever is hit first triggers a split.
     MAX_LINES_PER_FILE = 400
+    MAX_BRIEF_CHARS = 35_000  # ~35KB of function body content per file
+
+    # Models file: constants + classes — split if too large
+    if constants or classes:
+        model_syms = constants + classes
+        model_lines = sum(s.estimated_lines or 20 for s in model_syms)
+        model_chars = sum(s.char_count or 0 for s in model_syms)
+        if model_lines > MAX_LINES_PER_FILE or model_chars > MAX_BRIEF_CHARS:
+            # Split: data constants into constants.py, classes into models.py
+            if constants and classes:
+                const_path = f"{pkg}/constants.py"
+                nodes[const_path] = FileNode(
+                    file_path=const_path,
+                    file_stem="constants",
+                    description="Data constants and lookup tables",
+                )
+                models_path = f"{pkg}/models.py"
+                nodes[models_path] = FileNode(
+                    file_path=models_path,
+                    file_stem="models",
+                    description="Class definitions and data structures",
+                )
+                logger.info(
+                    "[refactor_segmenter] FIX 25b: Split models (%d lines) into "
+                    "constants.py (%d constants) + models.py (%d classes)",
+                    model_lines, len(constants), len(classes),
+                )
+            # If only one kind but still too large, use size-based grouping
+            elif len(model_syms) > 1:
+                model_groups: List[List] = []
+                _mg: List = []
+                _ml = 0
+                _mc = 0
+                for s in model_syms:
+                    sl = s.estimated_lines or 20
+                    sc = s.char_count or 0
+                    if (_ml + sl > MAX_LINES_PER_FILE or _mc + sc > MAX_BRIEF_CHARS) and _mg:
+                        model_groups.append(_mg)
+                        _mg = []
+                        _ml = 0
+                        _mc = 0
+                    _mg.append(s)
+                    _ml += sl
+                    _mc += sc
+                if _mg:
+                    model_groups.append(_mg)
+                for idx, mg in enumerate(model_groups):
+                    stem = "models" if idx == 0 else f"models_{idx + 1}"
+                    mpath = f"{pkg}/{stem}.py"
+                    nodes[mpath] = FileNode(
+                        file_path=mpath,
+                        file_stem=stem,
+                        description=f"Data: {', '.join(s.name for s in mg[:3])}...",
+                    )
+            else:
+                # Single oversized symbol (e.g. large dict) — can't split further
+                models_path = f"{pkg}/models.py"
+                nodes[models_path] = FileNode(
+                    file_path=models_path,
+                    file_stem="models",
+                    description="Constants, data structures, and class definitions",
+                )
+        else:
+            # Fits in one file
+            models_path = f"{pkg}/models.py"
+            nodes[models_path] = FileNode(
+                file_path=models_path,
+                file_stem="models",
+                description="Constants, data structures, and class definitions",
+            )
+
+    # Split functions into groups (dual cap: lines AND chars)
+    # Giant functions (individually over cap) get their own dedicated file.
     if functions:
         groups: List[List] = []
         current_group: List = []
         current_lines = 0
+        current_chars = 0
 
-        for fn in functions:
+        # Sort: largest functions first so giants get isolated early
+        sorted_fns = sorted(functions, key=lambda f: f.char_count or 0, reverse=True)
+
+        giant_groups: List[List] = []  # functions that need their own file
+        normal_fns: List = []          # functions that can be grouped
+
+        for fn in sorted_fns:
+            fn_chars = fn.char_count or 0
+            if fn_chars > MAX_BRIEF_CHARS:
+                # This function alone exceeds the cap — solo file
+                giant_groups.append([fn])
+                logger.info(
+                    "[refactor_segmenter] FIX 26: Giant function '%s' "
+                    "(%d chars) gets dedicated file",
+                    fn.name, fn_chars,
+                )
+            else:
+                normal_fns.append(fn)
+
+        # Group the normal functions by cumulative cap
+        for fn in normal_fns:
             fn_lines = fn.estimated_lines or 20
-            if current_lines + fn_lines > MAX_LINES_PER_FILE and current_group:
+            fn_chars = fn.char_count or 0
+            if (current_lines + fn_lines > MAX_LINES_PER_FILE
+                    or current_chars + fn_chars > MAX_BRIEF_CHARS) and current_group:
                 groups.append(current_group)
                 current_group = []
                 current_lines = 0
+                current_chars = 0
             current_group.append(fn)
             current_lines += fn_lines
+            current_chars += fn_chars
         if current_group:
             groups.append(current_group)
+
+        # Combine: giant solo files + normal grouped files
+        all_groups = giant_groups + groups
+        groups = all_groups
+
+        total_fn_chars = sum(fn.char_count or 0 for fn in functions)
+        logger.info(
+            "[refactor_segmenter] FIX 26: %d functions (%d lines, %d chars) "
+            "split into %d group(s) (cap: %d lines / %d chars per file)",
+            len(functions),
+            sum(fn.estimated_lines or 20 for fn in functions),
+            total_fn_chars,
+            len(groups),
+            MAX_LINES_PER_FILE,
+            MAX_BRIEF_CHARS,
+        )
 
         if len(groups) == 1:
             # Single group → core.py

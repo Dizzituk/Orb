@@ -1366,7 +1366,28 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
             _file_scope = _extract_file_scope_from_spec(
                 spot_markdown, grounding_data=None, multi_file_op=multi_file_op,
             )
-            
+
+            # v6.1 FIX 25: Also extract file paths from the raw user intent
+            # and weaver text. The LLM-generated spec may rewrite/drop
+            # explicit file paths the user specified. Merging from the raw
+            # inputs ensures user-specified targets are never lost.
+            _user_scope = _extract_file_scope_from_spec(
+                combined_text, grounding_data=None, multi_file_op=None,
+            )
+            if _user_scope:
+                _existing = {fp.replace("\\", "/").lower() for fp in _file_scope}
+                _added = []
+                for _ufp in _user_scope:
+                    if _ufp.replace("\\", "/").lower() not in _existing:
+                        _file_scope.append(_ufp)
+                        _added.append(_ufp)
+                if _added:
+                    logger.info(
+                        "[spec_runner] FIX 25: Merged %d file(s) from user intent "
+                        "into file_scope: %s",
+                        len(_added), _added[:5],
+                    )
+
             logger.info("[spec_runner] v5.16 File scope: %d file(s) extracted", len(_file_scope))
             print(f"[spec_runner] v5.16 FILE_SCOPE: {len(_file_scope)} file(s): {_file_scope[:5]}")
 
@@ -1608,27 +1629,14 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
                                     _src, _tgt,
                                 )
 
-                                # v6.1 FIX 14c: Build file inventory for this pair.
-                                # Only include CREATE entries from file_scope that match
-                                # the target package prefix. If none match (Strategy 0
-                                # auto-generated packages), pass empty inventory so the
-                                # auto-layout in build_refactor_plan generates files.
-                                _create_entries = [
-                                    sf.replace("\\", "/") for sf in _file_scope
-                                    if sf.replace("\\", "/").startswith(_tgt)
-                                ]
-                                if _create_entries:
-                                    _inv_lines = ["## File Inventory\n"]
-                                    _inv_lines.append("| File | Operation | Purpose |")
-                                    _inv_lines.append("|---|---|---|")
-                                    for _ce in _create_entries:
-                                        _inv_lines.append(f"| `{_ce}` | CREATE | Submodule |")
-                                    _inv_lines.append(f"| `{_src}` | QUARANTINE | Source monolith |")
-                                    _inv_text = "\n".join(_inv_lines)
-                                else:
-                                    # Strategy 0: no LLM-proposed package files.
-                                    # Pass empty so auto-layout generates the file structure.
-                                    _inv_text = ""
+                                # v6.1 FIX 20: Always use auto-layout for Strategy 0.
+                                # The LLM's file_scope proposes file names (e.g.
+                                # general_intents.py, helpers.py) that don't correspond
+                                # to actual symbol groupings. The deterministic auto-layout
+                                # in build_refactor_plan analyses symbols and creates
+                                # properly-assigned files. Passing the LLM inventory causes
+                                # empty files and misassigned symbols.
+                                _inv_text = ""
 
                                 _det_plan, _det_archs, _det_manifest_data = run_deterministic_refactor(
                                     source_file_path=_src,

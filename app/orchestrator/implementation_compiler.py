@@ -94,6 +94,10 @@ def _parse_file_inventory(architecture_text: str) -> List[Dict[str, str]]:
                 # v6.1 FIX 10: Recognise QUARANTINE as a facade file
                 elif 'quarantine' in desc_lower:
                     operation = "FACADE"
+                # v6.1 FIX 23c: Recognise facade/re-export __init__.py files
+                elif ('facade' in desc_lower or 're-export' in desc_lower
+                      or 'reexport' in desc_lower):
+                    operation = "FACADE"
                 files.append({
                     "path": fpath,
                     "operation": operation,
@@ -117,20 +121,53 @@ def _extract_file_design_notes(
     capture = False
     captured: List[str] = []
 
+    # v6.1 FIX 23c: Track the heading level that started capture.
+    # Only stop when hitting a heading at the same or higher level.
+    # Previously, ### subheadings (Purpose, Re-exports) inside a
+    # ## File section would terminate capture immediately.
+    capture_level = 0
+
     for line in lines:
         stripped = line.strip()
 
-        if re.match(r'^#{2,4}\s', stripped):
+        _h_match = re.match(r'^(#{2,4})\s', stripped)
+        if _h_match:
+            _level = len(_h_match.group(1))
             if file_stem in stripped or file_path in stripped:
                 capture = True
+                capture_level = _level
                 continue
-            elif capture:
+            elif capture and _level <= capture_level:
+                # Same or higher level heading = new section
                 break
+            # Deeper subheading within section — include it
 
         if capture:
             captured.append(line)
 
-    return "\n".join(captured).strip()
+    raw = "\n".join(captured).strip()
+
+    # v6.1 FIX 23d: Strip content that the compiler provides separately
+    # to avoid duplicating function bodies in the brief.
+    import re as _re
+    # 1. Strip "### Contents" sections entirely
+    raw = _re.sub(
+        r'### Contents.*?(?=### [A-Z]|## [A-Z]|$)',
+        '',
+        raw,
+        flags=_re.DOTALL,
+    )
+    # 2. Strip individual #### `symbol` blocks with their code fences.
+    #    These appear under various subsection headers and duplicate
+    #    the function bodies the compiler embeds via enrichment.
+    raw = _re.sub(
+        r'####\s*`\w+`\s*\([^)]*\).*?(?=####\s*`|### [A-Z]|## [A-Z]|$)',
+        '',
+        raw,
+        flags=_re.DOTALL,
+    ).strip()
+
+    return raw
 
 
 # =============================================================================
@@ -219,6 +256,7 @@ def compile_implementation_briefs(
         source_extract=source_extract,
         func_by_name=enrichment_functions,
         const_by_name=enrichment_constants,
+        architecture_text=architecture_text,
     )
 
     # Step 5: Collect feedback
@@ -349,11 +387,13 @@ def _assign_functions_to_files(
     source_extract: Dict[str, str],
     func_by_name: Dict[str, Dict],
     const_by_name: Dict[str, Dict],
+    architecture_text: str = "",
 ) -> Dict[str, List[FileFunction]]:
     """
     Assign enrichment functions/constants to their target files.
 
     Strategy:
+    0. Parse architecture file sections for explicit assignments (v6.1 FIX 23b)
     1. Match function names against file stems
     2. Remaining functions go to the largest non-init file
     """
@@ -399,7 +439,33 @@ def _assign_functions_to_files(
             body=value, line_count=value.count("\n") + 1 if value else 1,
         )
 
-    # Pass 1: File stem affinity matching
+    # Pass 0 (v6.1 FIX 23b): Parse architecture for explicit assignments.
+    # Architecture has "## File: `path`" sections with "#### `symbol_name`" headers.
+    # This is the authoritative mapping from the deterministic pipeline.
+    if architecture_text:
+        import re as _re
+        _current_file = ""
+        for _line in architecture_text.split("\n"):
+            # Match: ## File: `app/foo/bar.py`
+            _file_match = _re.match(r'^## File:\s*`([^`]+)`', _line)
+            if _file_match:
+                _current_file = _file_match.group(1)
+                continue
+            # Match: #### `symbol_name` (function, ~6L) or (data_structure, ~468L)
+            _sym_match = _re.match(r'^####\s*`(\w+)`', _line)
+            if _sym_match and _current_file:
+                _sym_name = _sym_match.group(1)
+                if _sym_name in all_funcs and _sym_name not in assigned:
+                    if _current_file in result:
+                        result[_current_file].append(all_funcs[_sym_name])
+                        assigned.add(_sym_name)
+        if assigned:
+            logger.info(
+                "[IMPL_COMPILER] FIX 23b: Architecture assigned %d/%d symbols",
+                len(assigned), len(all_funcs),
+            )
+
+    # Pass 1: File stem affinity matching (fallback for unassigned)
     for name, func in all_funcs.items():
         if name in assigned:
             continue
@@ -432,29 +498,24 @@ def _assign_functions_to_files(
             result[best_match].append(func)
             assigned.add(name)
 
-    # Pass 2: Remaining → largest non-init file
+    # Pass 2: Log unassigned symbols but do NOT dump them.
+    # v6.1 FIX 26b: Unassigned symbols belong to OTHER segments.
+    # Dumping them into the largest file caused 146KB briefs and
+    # LLM duplication failures. If the architecture didn't assign
+    # a symbol to this segment, it's handled by another segment.
     unassigned_funcs = [
         (name, func) for name, func in all_funcs.items()
         if name not in assigned
     ]
 
     if unassigned_funcs:
-        main_file = ""
-        for entry in file_inventory:
-            fpath = entry["path"]
-            if "__init__" not in fpath:
-                if not main_file:
-                    main_file = fpath
-                elif len(result.get(fpath, [])) > len(result.get(main_file, [])):
-                    main_file = fpath
-
-        if not main_file and file_inventory:
-            main_file = file_inventory[0]["path"]
-
-        if main_file:
-            for name, func in unassigned_funcs:
-                result[main_file].append(func)
-                assigned.add(name)
+        unassigned_names = [name for name, _ in unassigned_funcs]
+        logger.info(
+            "[IMPL_COMPILER] FIX 26b: %d symbols not in this segment's "
+            "architecture (belong to other segments): %s",
+            len(unassigned_names),
+            ", ".join(sorted(unassigned_names)[:10]),
+        )
 
     return result
 

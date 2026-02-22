@@ -888,6 +888,53 @@ INTENT_DEFINITIONS: Dict[CanonicalIntent, IntentDefinition] = {
     # CHAT (no action)
     # -------------------------------------------------------------------------
     
+    # =========================================================================
+    # CODEBASE REFACTOR (v1.9 - Self-refactoring loop)
+    # =========================================================================
+
+    CanonicalIntent.REFACTOR_CODEBASE: IntentDefinition(
+        intent=CanonicalIntent.REFACTOR_CODEBASE,
+        trigger_phrases=[
+            "Astra, refactor yourself",
+            "astra, refactor yourself",
+            "ASTRA, REFACTOR YOURSELF",
+            "Refactor yourself",
+            "refactor yourself",
+            "Astra, command: refactor codebase",
+            "astra, command: refactor codebase",
+            "refactor codebase",
+            "Refactor codebase",
+            "Start refactor",
+            "start refactor",
+            "*refactor",
+        ],
+        trigger_patterns=[
+            r"^(?:[Aa]stra[,:]?\s+)?[Rr]efactor\s+(?:yourself|codebase)$",
+            r"^[Ss]tart\s+(?:the\s+)?refactor(?:ing)?$",
+            r"^\*refactor$",
+        ],
+        requires_context=[],
+        requires_confirmation=True,
+        confirmation_prompt=(
+            "This will start the refactor loop — scanning your codebase, "
+            "extracting symbols from oversized files, and boot-checking after "
+            "each pass. The loop runs until all files are at minimum viable size "
+            "or a boot check fails. Proceed?"
+        ),
+        description="Run the scan-do-rescan codebase refactor loop",
+        behavior=(
+            "Runs the autonomous refactor loop:\n"
+            "1. Scan codebase, pick easiest oversized file\n"
+            "2. Surgical extraction (zero LLM, deterministic)\n"
+            "3. Boot check — if fail, rollback and stop\n"
+            "4. Update RAG with new file state\n"
+            "5. Rescan and repeat\n\n"
+            "Uses surgical_extractor for all extractions.\n"
+            "Chips away at monoliths across multiple passes.\n"
+            "Stops when scan returns zero oversized files."
+        ),
+    ),
+
     CanonicalIntent.CHAT_ONLY: IntentDefinition(
         intent=CanonicalIntent.CHAT_ONLY,
         trigger_phrases=[],  # Default fallback
