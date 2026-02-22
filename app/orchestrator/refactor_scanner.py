@@ -45,6 +45,14 @@ SKIP_DIRS = {
     ".mypy_cache", ".pytest_cache", "dist", "build",
 }
 
+# Never refactor these files — they ARE the refactor system
+SKIP_FILES = {
+    "refactor_scanner.py",
+    "refactor_loop.py",
+    "refactor_stream.py",
+    "surgical_extractor.py",
+}
+
 
 @dataclass
 class FileCandidate:
@@ -84,6 +92,8 @@ def _walk_python_files() -> Dict[str, int]:
             dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
             for fname in filenames:
                 if not fname.endswith(".py"):
+                    continue
+                if fname in SKIP_FILES:
                     continue
                 full = os.path.join(dirpath, fname)
                 try:

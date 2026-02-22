@@ -247,6 +247,23 @@ def run_refactor_pass(
     result.symbols_extracted = extraction["symbols_extracted"]
     result.file_size_after_kb = os.path.getsize(file_path) / 1024
 
+    # Spawn guard: if the NEW module is still oversized, roll back immediately.
+    # This prevents infinite chains like _utils → __utils_utils → ___utils_utils_utils
+    if new_module_path and os.path.exists(new_module_path):
+        new_size_kb = os.path.getsize(new_module_path) / 1024
+        if new_size_kb >= 20:
+            logger.warning(
+                f"[refactor_loop] Pass {pass_number}: Spawn guard — "
+                f"extracted module {os.path.basename(new_module_path)} is "
+                f"{new_size_kb:.1f}KB (still oversized). Rolling back."
+            )
+            _rollback_extraction(file_path, backup_source, new_module_path)
+            result.boot_passed = False
+            result.rolled_back = True
+            result.file_size_after_kb = size_before
+            result.error = f"Spawn guard: new module {new_size_kb:.1f}KB >= 20KB"
+            return result
+
     # Boot check
     if _boot_check():
         result.boot_passed = True

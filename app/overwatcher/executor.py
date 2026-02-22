@@ -27,6 +27,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from uuid import uuid4
 
 from app.overwatcher.schemas import (
+from app.overwatcher._executor_utils import CODE_BLOCK_PATTERN, FILE_HEADER_PATTERN, IMPLEMENTER_MAX_OUTPUT_TOKENS, SANDBOX_ROOT, emit_boundary_violation, emit_chunk_implemented, emit_provider_fallback, emit_stage_failed
     Chunk,
     ChunkStatus,
     BoundaryViolation,
@@ -49,10 +50,8 @@ IMPLEMENTER_FALLBACK_PROVIDER = os.getenv("ORB_IMPLEMENTER_FALLBACK_PROVIDER", "
 IMPLEMENTER_FALLBACK_MODEL = os.getenv("ORB_IMPLEMENTER_FALLBACK_MODEL", "gpt-5.2-thinking")
 
 # Sandbox configuration
-SANDBOX_ROOT = os.getenv("ORB_SANDBOX_ROOT", "D:\\SandboxOrb")
 
 # Implementation output limits
-IMPLEMENTER_MAX_OUTPUT_TOKENS = int(os.getenv("ORB_IMPLEMENTER_MAX_OUTPUT_TOKENS", "16000"))
 
 
 # =============================================================================
@@ -249,10 +248,8 @@ def get_working_tree_changes(repo_path: str) -> Tuple[List[str], List[str], List
 # =============================================================================
 
 # Pattern to match file headers like "# FILE: path/to/file.py"
-FILE_HEADER_PATTERN = re.compile(r'^#\s*FILE:\s*(.+?)\s*$', re.MULTILINE)
 
 # Pattern to extract code blocks
-CODE_BLOCK_PATTERN = re.compile(r'```(?:\w+)?\n(.*?)```', re.DOTALL)
 
 
 def extract_files_from_output(output: str) -> Dict[str, str]:
@@ -395,51 +392,6 @@ Please implement all required changes. Output complete file contents for each fi
 # =============================================================================
 # Ledger Event Emission (stubs for event system)
 # =============================================================================
-
-def emit_chunk_implemented(
-    job_artifact_root: str,
-    job_id: str,
-    chunk_id: str,
-    files_added: List[str],
-    files_modified: List[str],
-    model: str,
-) -> None:
-    """Emit chunk implementation event."""
-    logger.info(f"[executor] Event: chunk_implemented {chunk_id}")
-
-
-def emit_boundary_violation(
-    job_artifact_root: str,
-    job_id: str,
-    chunk_id: str,
-    violations: List[Dict[str, Any]],
-) -> None:
-    """Emit boundary violation event."""
-    logger.warning(f"[executor] Event: boundary_violation {chunk_id}: {violations}")
-
-
-def emit_stage_failed(
-    job_artifact_root: str,
-    job_id: str,
-    stage_id: str,
-    error_type: str,
-    error_message: str,
-) -> None:
-    """Emit stage failure event."""
-    logger.error(f"[executor] Event: stage_failed {stage_id}: {error_type} - {error_message}")
-
-
-def emit_provider_fallback(
-    job_artifact_root: str,
-    job_id: str,
-    from_provider: str,
-    from_model: str,
-    to_provider: str,
-    to_model: str,
-    reason: str,
-) -> None:
-    """Emit provider fallback event."""
-    logger.info(f"[executor] Event: provider_fallback {from_provider}/{from_model} -> {to_provider}/{to_model}")
 
 
 # =============================================================================
