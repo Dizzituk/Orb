@@ -2360,3 +2360,51 @@
 [parameters: (1, 'D:\\Orb\\app\\__init__.py', '__init__.py', '.py', 48, '2026-02-08T20:21:56.990229', 'backend', 'D:\\Orb', 2, 'python', 'active', None, None, None)]
 (Background on this error at: https://sqlalche.me/e/20/gkpj)
 2026-02-22 20:19:13 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 570 files in 2044ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:26:22 [INFO   ] app.logging_config: File logging initialised: D:\Orb\logs\astra.log (max 10 MB x 5 backups)
+2026-02-22 20:26:22 [DEBUG  ] app.db: [db_migrate] arch_code_chunks schema is up to date
+2026-02-22 20:26:22 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 1 projects
+2026-02-22 20:26:22 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 notes
+2026-02-22 20:26:22 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 7 messages
+2026-02-22 20:26:22 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 jobs
+2026-02-22 20:26:22 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 global prefs
+2026-02-22 20:26:33 [DEBUG  ] asyncio: Using proactor: IocpProactor
+2026-02-22 20:26:33 [DEBUG  ] app.translation.translator: Mode: command, wake_phrase: Astra, command:
+2026-02-22 20:26:33 [DEBUG  ] app.translation.translator: Tier 0 match: exact_trigger_phrase -> CanonicalIntent.REFACTOR_CODEBASE
+2026-02-22 20:26:33 [DEBUG  ] app.llm.translation_routing: [translation] Mode=command, Intent=REFACTOR_CODEBASE, Execute=False, Tier=tier_0
+2026-02-22 20:26:33 [INFO   ] app.llm.stage_trace: [stage_trace] COMMAND_START: type=REFACTOR_CODEBASE, id=cmd_73bb8cdce9c7, project=1
+2026-02-22 20:26:35 [DEBUG  ] asyncio: Using proactor: IocpProactor
+2026-02-22 20:26:35 [INFO   ] app.translation.translator: [translator] Confirmation accepted for REFACTOR_CODEBASE
+2026-02-22 20:26:35 [DEBUG  ] app.llm.translation_routing: [translation] Mode=command, Intent=REFACTOR_CODEBASE, Execute=True, Tier=tier_0
+2026-02-22 20:26:35 [INFO   ] app.llm.stage_trace: [stage_trace] COMMAND_START: type=REFACTOR_CODEBASE, id=cmd_5ff566e54ed3, project=1
+2026-02-22 20:26:35 [DEBUG  ] app.llm.stage_models: [stage_models] SPEC_GATE: Using legacy var OPENAI_SPEC_GATE_MODEL=gpt-5.2-pro
+2026-02-22 20:26:35 [DEBUG  ] app.llm.stage_models: [stage_models] SPEC_GATE: Using legacy token var SPEC_GATE_MAX_OUTPUT_TOKENS_DEFAULT=4000
+2026-02-22 20:26:35 [DEBUG  ] app.llm.stage_models: [stage_models] SPEC_GATE: openai/gpt-5.2-pro
+2026-02-22 20:26:35 [DEBUG  ] app.llm.stage_models: [stage_models] WEAVER: openai/gpt-4.1-mini
+2026-02-22 20:26:35 [DEBUG  ] app.llm.stage_models: [stage_models] CRITICAL_PIPELINE: openai/gpt-5.2
+2026-02-22 20:26:35 [DEBUG  ] app.llm.stage_models: [stage_models] OVERWATCHER: Using legacy var ASTRA_OVERWATCH_MODEL=gpt-5.2-pro
+2026-02-22 20:26:35 [DEBUG  ] app.llm.stage_models: [stage_models] OVERWATCHER: Using legacy token var ASTRA_OVERWATCH_MAX_OUTPUT_DEFAULT=1200
+2026-02-22 20:26:35 [DEBUG  ] app.llm.stage_models: [stage_models] OVERWATCHER: openai/gpt-5.2-pro
+2026-02-22 20:26:35 [DEBUG  ] app.llm.translation_routing: [translation_routing] SpecGate: SPEC_GATE: openai/gpt-5.2-pro
+2026-02-22 20:26:35 [DEBUG  ] app.llm.translation_routing: [translation_routing] Weaver: WEAVER: openai/gpt-4.1-mini
+2026-02-22 20:26:35 [DEBUG  ] app.llm.translation_routing: [translation_routing] CriticalPipeline: CRITICAL_PIPELINE: openai/gpt-5.2
+2026-02-22 20:26:35 [DEBUG  ] app.llm.translation_routing: [translation_routing] Overwatcher: OVERWATCHER: openai/gpt-5.2-pro
+2026-02-22 20:26:35 [INFO   ] app.llm.stage_trace: [stage_trace] STAGE_ENTER: refactor_loop (cmd=cmd_5ff566e54ed3, provider=None, model=None)
+2026-02-22 20:26:36 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1396ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:26:37 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1296ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:26:39 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1371ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:26:40 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1382ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:26:41 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1295ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:26:43 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1277ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:26:44 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1497ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:26:46 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1469ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:26:47 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1594ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:26:49 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1550ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:26:51 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1830ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:26:52 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1521ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:26:54 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1840ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:26:56 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1861ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:26:58 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1847ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:26:59 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1598ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:01 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1667ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:03 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1534ms. Oversized: 56 (leaf=56, branch=0, root=0)
+2026-02-22 20:27:04 [INFO   ] app.orchestrator.refactor_scanner: [refactor_scanner] Scanned 566 files in 1720ms. Oversized: 56 (leaf=56, branch=0, root=0)
