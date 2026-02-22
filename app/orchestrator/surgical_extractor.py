@@ -311,7 +311,11 @@ def build_extraction_plan(
     # e.g. app/orchestrator/segment_loop.py extracts to
     #      app/orchestrator/_segment_loop_utils.py
     # Import: from app.orchestrator._segment_loop_utils import ...
-    pkg_path = source_dir.replace(os.sep, ".").replace("/", ".")
+    # Convert absolute path to Python package path relative to project root
+    # D:\Orb\app\memory → app.memory
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # D:\Orb
+    rel_dir = os.path.relpath(source_dir, project_root)
+    pkg_path = rel_dir.replace(os.sep, ".").replace("/", ".")
     symbol_names = sorted(s.name for s in symbols)
     import_line = f"from {pkg_path}.{module_name} import {', '.join(symbol_names)}"
 

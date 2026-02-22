@@ -264,6 +264,12 @@ def intent_to_routing_info(intent: "CanonicalIntent") -> Optional[dict]:
                 f"({weaver.provider}/{weaver.model})"
             ),
         },
+        CanonicalIntent.REFACTOR_CODEBASE: {
+            "type": "local.refactor_codebase",
+            "provider": "local",
+            "model": "refactor-loop",
+            "reason": "Translation layer: REFACTOR CODEBASE (deterministic)",
+        },
     }
     return mapping.get(intent, None)
 

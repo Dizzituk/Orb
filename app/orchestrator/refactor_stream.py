@@ -31,6 +31,11 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
+def _done_event(summary: str) -> str:
+    """Build the 'done' SSE event the frontend requires to close the stream cleanly."""
+    return _sse("done", {"provider": "local", "model": "refactor-loop", "summary": summary})
+
+
 async def generate_refactor_stream(
     max_passes: int = 100,
     min_size_kb: float = 20.0,
@@ -48,6 +53,7 @@ async def generate_refactor_stream(
     - refactor_complete: Loop finished
     - refactor_error: Something went wrong
     - content: Text updates for the chat UI
+    - done: Required by frontend to close stream cleanly
     """
     import uuid
     from datetime import datetime
@@ -66,12 +72,27 @@ async def generate_refactor_stream(
     })
 
     files_touched = set()
+    files_errored = set()  # Files that failed extraction — skip on rescan
+    files_created = set()  # New modules created by extraction — never re-extract these
     total_kb_reduced = 0.0
     passes_completed = 0
 
     for pass_num in range(1, max_passes + 1):
         # SCAN
         scan = scan_for_refactor(min_size_kb=min_size_kb)
+
+        # Skip errored/created files — pick next viable candidate
+        skip_set = files_errored | files_created
+        if scan.next_file and scan.next_file.path in skip_set:
+            found_viable = False
+            if scan.all_candidates:
+                for candidate in scan.all_candidates:
+                    if candidate.path not in skip_set:
+                        scan.next_file = candidate
+                        found_viable = True
+                        break
+            if not found_viable:
+                scan.next_file = None
 
         yield _sse("refactor_scan", {
             "pass_number": pass_num,
@@ -102,6 +123,7 @@ async def generate_refactor_stream(
                 "files_touched": len(files_touched),
                 "total_kb_reduced": total_kb_reduced,
             })
+            yield _done_event(f"Refactor complete: {passes_completed} passes, {total_kb_reduced:.1f}KB reduced")
             return
 
         target = scan.next_file
@@ -122,13 +144,31 @@ async def generate_refactor_stream(
         })
 
         # DO — run extraction
-        result = run_refactor_pass(target.path, pass_num, job_id)
+        try:
+            result = run_refactor_pass(target.path, pass_num, job_id)
+        except Exception as exc:
+            files_errored.add(target.path)
+            yield _sse("content", {
+                "text": f"  → ❌ **Error:** {str(exc)[:100]}\n",
+            })
+            yield _sse("refactor_complete", {
+                "job_id": job_id,
+                "status": "error",
+                "reason": str(exc)[:200],
+                "passes_completed": passes_completed,
+                "files_touched": len(files_touched),
+                "total_kb_reduced": total_kb_reduced,
+            })
+            yield _done_event(f"Refactor error on pass {pass_num}: {str(exc)[:80]}")
+            return
         passes_completed = pass_num
 
         if result.boot_passed:
             kb_saved = result.file_size_before_kb - result.file_size_after_kb
             total_kb_reduced += kb_saved
             files_touched.add(target.path)
+            if result.new_module_path:
+                files_created.add(result.new_module_path)
 
             yield _sse("content", {
                 "text": (
@@ -140,8 +180,9 @@ async def generate_refactor_stream(
             })
 
         elif result.rolled_back:
+            files_errored.add(target.path)
             yield _sse("content", {
-                "text": f"  → ❌ **Boot Failed** — rolled back. Stopping.\n",
+                "text": f"  → ❌ **Boot Failed** — rolled back, skipping.\n",
             })
             yield _sse("refactor_error", {
                 "job_id": job_id,
@@ -149,19 +190,13 @@ async def generate_refactor_stream(
                 "error": "Boot check failed",
                 "file": short_path,
             })
-            yield _sse("refactor_complete", {
-                "job_id": job_id,
-                "status": "stopped",
-                "reason": "boot_failure",
-                "passes_completed": passes_completed,
-                "files_touched": len(files_touched),
-                "total_kb_reduced": total_kb_reduced,
-            })
-            return
+            continue
 
-        elif result.error and "No extractable symbols" in (result.error or ""):
+        elif result.error:
+            files_errored.add(target.path)
+            error_short = result.error[:80] if result.error else "unknown"
             yield _sse("content", {
-                "text": f"  → ⏭️ At minimum viable size, skipping\n",
+                "text": f"  → ⏭️ Skipping: {error_short}\n",
             })
             continue
 
@@ -195,3 +230,4 @@ async def generate_refactor_stream(
         "files_touched": len(files_touched),
         "total_kb_reduced": total_kb_reduced,
     })
+    yield _done_event(f"Refactor max passes: {passes_completed} passes, {total_kb_reduced:.1f}KB reduced")

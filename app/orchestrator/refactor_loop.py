@@ -47,7 +47,7 @@ class RefactorPassResult:
     file_path: str
     file_size_before_kb: float
     file_size_after_kb: float
-    symbols_extracted: int
+    symbols_extracted: int = 0
     new_module_path: Optional[str] = None
     boot_passed: bool = False
     rolled_back: bool = False
@@ -122,7 +122,7 @@ def _run_extraction(file_path: str) -> dict:
             "new_source": new_source,
             "new_module_source": new_module,
             "new_module_name": plan.target_module if plan else "extract",
-            "symbols_extracted": len(plan.selected) if plan else 0,
+            "symbols_extracted": len(plan.symbols) if plan else 0,
             "error": None,
         }
 
@@ -153,16 +153,22 @@ def _apply_extraction(
         f.write(new_source)
 
     # Determine new module path
-    dir_path = os.path.dirname(file_path)
-    base_name = os.path.splitext(os.path.basename(file_path))[0]
-    module_filename = f"_{base_name}_{new_module_name}.py"
-    new_module_path = os.path.join(dir_path, module_filename)
+    # If new_module_name is already a full path (from surgical extractor),
+    # use it directly. Otherwise build a path from the source file's directory.
+    if os.path.isabs(new_module_name) or os.sep in new_module_name:
+        new_module_path = new_module_name
+    else:
+        dir_path = os.path.dirname(file_path)
+        base_name = os.path.splitext(os.path.basename(file_path))[0]
+        module_filename = f"_{base_name}_{new_module_name}.py"
+        new_module_path = os.path.join(dir_path, module_filename)
 
     # Avoid overwriting — increment if exists
     counter = 1
+    base_path = os.path.splitext(new_module_path)[0]
+    ext = os.path.splitext(new_module_path)[1] or ".py"
     while os.path.exists(new_module_path):
-        module_filename = f"_{base_name}_{new_module_name}_{counter}.py"
-        new_module_path = os.path.join(dir_path, module_filename)
+        new_module_path = f"{base_path}_{counter}{ext}"
         counter += 1
 
     # Write new module
