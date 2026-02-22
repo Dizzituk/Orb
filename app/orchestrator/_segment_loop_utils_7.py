@@ -118,6 +118,7 @@ def mark_dependents_blocked(
 
     Returns list of segment IDs that were blocked.
     """
+    from .segment_loop import update_segment_status
     blocked_ids: List[str] = []
     # Build reverse dependency map: blocked set grows transitively
     blocked_set = {failed_segment_id}
@@ -160,6 +161,7 @@ def unblock_recovered_segments(
 
     Returns list of segment IDs that were unblocked.
     """
+    from .segment_loop import update_segment_status
     unblocked_ids: List[str] = []
 
     for seg in manifest.segments:

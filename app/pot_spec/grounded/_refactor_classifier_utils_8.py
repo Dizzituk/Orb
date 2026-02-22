@@ -132,6 +132,7 @@ async def _expand_evidence_batch(
     Returns:
         (expanded_matches, expansion_failures)
     """
+    from .refactor_classifier import _needs_expansion
     from collections import defaultdict
     
     # Group matches by file that need expansion

@@ -16,10 +16,12 @@ ABSOLUTE_PATH_PATTERNS = [
 
 def _should_exclude_folder(folder_name: str) -> bool:
     """Check if folder should be excluded."""
+    from .codebase_report import EXCLUDE_FOLDER_NAMES
     return folder_name.lower() in {n.lower() for n in EXCLUDE_FOLDER_NAMES}
 
 def _should_exclude_file(path: Path) -> bool:
     """Check if file should be excluded."""
+    from .codebase_report import EXCLUDE_FILE_EXTENSIONS
     return path.suffix.lower() in EXCLUDE_FILE_EXTENSIONS
 
 def _count_lines_fast(path: Path, max_bytes: int = 1_000_000) -> Optional[int]:
@@ -51,6 +53,7 @@ def _detect_floating_files(root: Path, expected: Set[str]) -> List[str]:
 
 def _detect_duplicate_filenames(files: List[FileEntry], threshold: int = 6) -> Dict[str, List[str]]:
     """Detect filenames that appear too many times."""
+    from .codebase_report import FileEntry
     name_to_paths: Dict[str, List[str]] = {}
     
     for f in files:

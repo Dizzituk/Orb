@@ -4,6 +4,7 @@ import logging
 from app.overwatcher._signature_checker_utils import _normalise_type, _types_match
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+from .signature_checker import FunctionSignature, SignatureMismatch, extract_signatures, parse_contract_signature
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 

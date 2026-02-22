@@ -66,6 +66,7 @@ def _verify_exposes(
     project_roots: List[str],
 ) -> List[IntegrationIssue]:
     """Verify that a segment's output files actually define what it promises to expose."""
+    from .integration_check import IntegrationIssue
     issues: List[IntegrationIssue] = []
     seg_id = seg_spec.segment_id
     exposes = seg_spec.exposes

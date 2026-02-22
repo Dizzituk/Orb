@@ -107,6 +107,7 @@ def extract_outputs_from_acceptance(
     location: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Extract output artifacts from acceptance criteria text."""
+    from .spec_gate_parsers import extract_filename_from_text
     outputs: List[Dict[str, Any]] = []
     
     for criterion in acceptance:

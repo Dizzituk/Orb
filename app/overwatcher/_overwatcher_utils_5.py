@@ -68,6 +68,7 @@ async def run_pot_spec_execution(
     artifact_root: str = "D:/Orb/jobs",
     file_scope: Optional[list] = None,
 ) -> Dict[str, Any]:
+    from .overwatcher import Decision, OverwatcherOutput
     """
     Execute POT spec with sequential task processing.
     

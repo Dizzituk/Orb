@@ -5,6 +5,7 @@ import re
 from app.pot_spec.grounded._spec_runner_utils import SCOPE_BACKEND, SCOPE_FRONTEND, _detect_search_replace_terms
 from app.pot_spec.grounded._spec_runner_utils import _FALLBACK_ALL_PATHS, _FALLBACK_BACKEND_PATHS, _FALLBACK_FRONTEND_PATHS
 from typing import List
+from .spec_runner import _discover_project_roots
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 

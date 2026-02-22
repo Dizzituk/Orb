@@ -13360,3 +13360,10 @@ RuntimeError: Event loop is closed
 2026-02-22 23:39:26 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 1 messages
 2026-02-22 23:39:26 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 jobs
 2026-02-22 23:39:26 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 global prefs
+2026-02-22 23:41:04 [INFO   ] app.logging_config: File logging initialised: D:\Orb\logs\astra.log (max 10 MB x 5 backups)
+2026-02-22 23:41:04 [DEBUG  ] app.db: [db_migrate] arch_code_chunks schema is up to date
+2026-02-22 23:41:04 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 1 projects
+2026-02-22 23:41:04 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 notes
+2026-02-22 23:41:04 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 1 messages
+2026-02-22 23:41:04 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 jobs
+2026-02-22 23:41:04 [INFO   ] app.astra_memory.indexer: [indexer] Indexed 0 global prefs

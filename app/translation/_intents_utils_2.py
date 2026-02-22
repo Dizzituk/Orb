@@ -5,6 +5,7 @@ from typing import List, Optional
 
 def get_intent_definition(intent: CanonicalIntent) -> IntentDefinition:
     """Get the definition for a canonical intent."""
+    from .intents import INTENT_DEFINITIONS
     return INTENT_DEFINITIONS[intent]
 
 def get_all_command_intents() -> List[CanonicalIntent]:
@@ -16,6 +17,7 @@ def get_all_command_intents() -> List[CanonicalIntent]:
 
 def get_high_stakes_intents() -> List[CanonicalIntent]:
     """Get all intents that require confirmation."""
+    from .intents import INTENT_DEFINITIONS
     return [
         intent for intent, defn in INTENT_DEFINITIONS.items()
         if defn.requires_confirmation
@@ -41,6 +43,7 @@ def get_intent_by_trigger_phrase(phrase: str) -> Optional[CanonicalIntent]:
     Exact match lookup for trigger phrases.
     Returns None if no exact match found.
     """
+    from .intents import INTENT_DEFINITIONS
     for intent, defn in INTENT_DEFINITIONS.items():
         if phrase in defn.trigger_phrases:
             return intent

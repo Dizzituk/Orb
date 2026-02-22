@@ -33,6 +33,7 @@ async def enrich_segments(
     Returns:
         {segment_id: enrichment_dict} — empty dict if enrichment fails entirely
     """
+    from .segment_enrichment import _assign_symbols_deterministic, _extract_all_symbols
     if not source_evidence:
         logger.info("[SEGMENT_ENRICHMENT] No source evidence — skipping enrichment")
         return {}

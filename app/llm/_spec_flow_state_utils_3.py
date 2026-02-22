@@ -2,6 +2,7 @@ from __future__ import annotations
 import logging
 from app.llm.spec_flow_state import get_active_flow, logger, set_flow_state
 from typing import Any, Dict, Optional, Set
+from .spec_flow_state import _FLOW_STATES
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 

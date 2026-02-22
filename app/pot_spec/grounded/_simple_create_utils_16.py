@@ -31,6 +31,7 @@ class CreateEvidence:
 
 def _detect_tech_stack(project_path: str, sandbox_client: Any = None) -> TechStack:
     """Detect the technology stack of a project."""
+    from .simple_create import TechStack
     stack = TechStack()
     
     # Check for common config files

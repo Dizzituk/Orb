@@ -4,6 +4,7 @@ from app.orchestrator._segment_enrichment_utils import SegmentEnrichment, _apply
 from app.orchestrator._segment_enrichment_utils import _build_symbol_map, _generate_implementation_intelligence, _save_enrichment
 from app.orchestrator._segment_enrichment_utils import _pick_primary_source
 from typing import Any, Dict, List
+from .segment_enrichment import _assign_symbols_deterministic, _extract_all_symbols
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 

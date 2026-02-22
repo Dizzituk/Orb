@@ -33,6 +33,7 @@ def resolve_path_enhanced(
     Returns:
         Tuple of (resolved_path, resolution_method)
     """
+    from .evidence_gathering import sandbox_path_exists
     if not user_reference:
         return None, "empty_reference"
     
@@ -219,6 +220,7 @@ def gather_filesystem_evidence(
     
     v1.34: Now excludes CREATE targets from ALL code paths.
     """
+    from .evidence_gathering import EvidencePackage, gather_multi_target_evidence, gather_system_wide_scan_evidence, resolve_and_validate_path
     logger.info(
         "[evidence_gathering] v1.34 gather_filesystem_evidence: anchor='%s', subfolder='%s', rag_hints=%d",
         anchor, subfolder, len(rag_hints) if rag_hints else 0

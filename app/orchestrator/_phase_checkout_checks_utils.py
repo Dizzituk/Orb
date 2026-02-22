@@ -179,6 +179,7 @@ def map_file_to_segment(
     state: Any,
 ) -> Optional[str]:
     """Map a failing file path to the segment that produced it."""
+    from .phase_checkout_checks import _norm
     if not file_path:
         return None
     target = _norm(file_path)

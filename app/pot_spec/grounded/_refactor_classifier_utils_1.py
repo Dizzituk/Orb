@@ -4,6 +4,7 @@ import logging
 import re
 from .refactor_schemas import ChangeDecision, ClassifiedMatch, MatchBucket, RawMatch, RefactorFlag, RiskLevel
 from typing import Any, List, Optional
+from .refactor_classifier import _fallback_heuristic_classification, _get_heuristic_hint
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 

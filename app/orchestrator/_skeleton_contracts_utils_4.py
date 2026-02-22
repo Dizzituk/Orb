@@ -61,6 +61,7 @@ def generate_skeleton_contract(
 
     Zero LLM calls. Pure Python logic.
     """
+    from .skeleton_contracts import ExportBinding, SkeletonContractSet
     segments_raw = manifest_dict.get("segments", [])
     if not segments_raw:
         return SkeletonContractSet(job_id=job_id, total_segments=0)
@@ -186,6 +187,7 @@ def generate_skeleton_contract(
 
 def save_skeleton_contract(contract_set: SkeletonContractSet, job_dir: str) -> str:
     """Save skeleton contracts to disk alongside the segment manifest."""
+    from .skeleton_contracts import SkeletonContractSet
     segments_dir = os.path.join(job_dir, "segments")
     os.makedirs(segments_dir, exist_ok=True)
     path = os.path.join(segments_dir, "skeleton_contract.json")
@@ -196,6 +198,7 @@ def save_skeleton_contract(contract_set: SkeletonContractSet, job_dir: str) -> s
 
 def load_skeleton_contract(job_dir: str) -> Optional[SkeletonContractSet]:
     """Load skeleton contracts from disk. Returns None if not found."""
+    from .skeleton_contracts import SkeletonContractSet
     path = os.path.join(job_dir, "segments", "skeleton_contract.json")
     if not os.path.isfile(path):
         return None

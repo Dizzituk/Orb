@@ -2,6 +2,7 @@ from __future__ import annotations
 import logging
 import re
 from typing import List
+from .sandbox_discovery import SUBFOLDER_STOPWORDS, extract_sandbox_hints
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 

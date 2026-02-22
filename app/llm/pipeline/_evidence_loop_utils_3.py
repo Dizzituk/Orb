@@ -256,6 +256,7 @@ def validate_tool_call(
     Tweak #5: unknown tool / invalid args -> NONCRITICAL issue + ignore,
     unless the request is CRITICAL, then escalate to HUMAN_REQUIRED after loops.
     """
+    from .evidence_loop import TOOL_DISPATCH, tool_allowed
     if not tool_name or not isinstance(tool_name, str):
         return False, f"Invalid tool name: {tool_name!r}"
 

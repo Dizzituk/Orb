@@ -15,6 +15,7 @@ def _run_single_boot(
     """
     Run a single boot test. Returns (passed, stdout, stderr, error_summary, failing_file).
     """
+    from .phase_checkout_checks import _parse_boot_failure
     venv = actual_base + r"\.venv\Scripts\python.exe"
     # v2.2: Force UTF-8 to prevent UnicodeEncodeError from emoji in generated code
     cmd = (
@@ -217,6 +218,7 @@ def _try_quarantine_constant_recovery(
 
     Returns fix description if successful, None otherwise.
     """
+    from .phase_checkout_checks import _write_file_to_sandbox
     _emit = emit or (lambda msg: None)
 
     # Only handle "cannot import name" errors

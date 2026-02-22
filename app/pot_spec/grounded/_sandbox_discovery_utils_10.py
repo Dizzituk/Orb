@@ -59,6 +59,7 @@ def extract_scan_file_names(text: str) -> List[str]:
     
     Returns list of file names (without paths/anchors).
     """
+    from .sandbox_discovery import FILENAME_STOPWORDS
     if not text:
         return []
     

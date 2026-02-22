@@ -47,6 +47,7 @@ def is_multi_target_request(text: str) -> bool:
     
     Returns True if the text mentions multiple files with different locations.
     """
+    from .sandbox_discovery import extract_file_targets
     if not text:
         return False
     
@@ -277,6 +278,7 @@ def extract_create_targets(text: str) -> List[dict]:
     Returns:
         List of dicts with keys: name, anchor, is_create=True
     """
+    from .sandbox_discovery import FILENAME_STOPWORDS
     if not text:
         return []
     

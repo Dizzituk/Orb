@@ -26,6 +26,7 @@ async def _generate_missing_file(
     strategy='generate_from_spec': Use LLM with spec context.
     strategy='generate_stub': Create minimal stub (fallback).
     """
+    from .final_checkout import _write_file_to_sandbox
     _emit = emit or (lambda msg: None)
 
     if strategy == "generate_stub":
@@ -89,6 +90,7 @@ async def _fix_import_resolution_issue(
     Strike 1: Find closest match in provider exports, rewrite import.
     Strike 2: Ask LLM to fix the import with full context of both files.
     """
+    from .final_checkout import _write_file_to_sandbox
     _emit = emit or (lambda msg: None)
 
     consumer_file = issue.file_b
@@ -206,6 +208,7 @@ async def _apply_ai_review_fix(
     strategy='targeted_fix' (strike 1): Fix only the specific issue.
     strategy='conservative_fix' (strike 2): Broader context, safer changes.
     """
+    from .final_checkout import _write_file_to_sandbox
     _emit = emit or (lambda msg: None)
 
     # --- Step 1: Identify affected file(s) from the issue description ---
@@ -320,6 +323,7 @@ async def _apply_ai_review_fix(
 
 def _parse_review_response(response: str, files_reviewed: int) -> AIReviewResult:
     """Parse the LLM review response."""
+    from .final_checkout import AIReviewResult
     cleaned = response.strip()
     if cleaned.startswith("```"):
         lines = cleaned.split("\n")

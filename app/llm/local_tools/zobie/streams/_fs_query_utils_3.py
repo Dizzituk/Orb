@@ -41,6 +41,7 @@ async def generate_filesystem_query_stream(
     4. For writes: Execute via sandbox controller
     5. Return results with appropriate formatting
     """
+    from .fs_query import _handle_find_query, _handle_list_query
     loop = asyncio.get_event_loop()
     started_ms = int(loop.time() * 1000)
     
@@ -204,6 +205,7 @@ async def _handle_read_query(
     user_message: str = "",
 ) -> AsyncGenerator[str, None]:
     """Handle read/head/lines queries using DB-first, live fallback."""
+    from .fs_query import create_read_result, render_tool_commentary
     loop = asyncio.get_event_loop()
     
     # Normalize path (uses robust normalize_path)

@@ -3,6 +3,7 @@ import logging
 from app.llm.critical_pipeline.foundation_templates import logger
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
+from .foundation_templates import _REGISTRY
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 

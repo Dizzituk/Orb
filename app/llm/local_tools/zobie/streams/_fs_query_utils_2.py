@@ -23,6 +23,7 @@ async def _handle_append_query(
     user_message: str = "",
 ) -> AsyncGenerator[str, None]:
     """Handle append command."""
+    from .fs_query import _format_write_result, create_write_result, render_tool_commentary
     loop = asyncio.get_event_loop()
     
     if content is None:
@@ -99,6 +100,7 @@ async def _handle_overwrite_query(
     user_message: str = "",
 ) -> AsyncGenerator[str, None]:
     """Handle overwrite command."""
+    from .fs_query import _format_write_result, create_write_result, render_tool_commentary
     loop = asyncio.get_event_loop()
     
     if content is None:
@@ -175,6 +177,7 @@ async def _handle_delete_area_query(
     user_message: str = "",
 ) -> AsyncGenerator[str, None]:
     """Handle delete_area command (marker-based deletion)."""
+    from .fs_query import _format_write_result, create_write_result, render_tool_commentary
     loop = asyncio.get_event_loop()
     
     yield sse_token(f"🗑️ [DELETE_AREA] Removing content between ASTRA_BLOCK markers\n")
@@ -243,6 +246,7 @@ async def _handle_delete_lines_query(
     user_message: str = "",
 ) -> AsyncGenerator[str, None]:
     """Handle delete_lines command (line range deletion)."""
+    from .fs_query import _format_write_result, create_write_result, render_tool_commentary
     loop = asyncio.get_event_loop()
     
     if start_line is None or end_line is None:

@@ -27,6 +27,7 @@ class LlmCallResult:
         return self.status == LlmCallStatus.SUCCESS
 
 def get_provider_registry() -> ProviderRegistry:
+    from .registry import ProviderRegistry
     global _registry
     if _registry is None:
         _registry = ProviderRegistry()

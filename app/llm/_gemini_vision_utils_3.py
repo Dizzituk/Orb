@@ -117,6 +117,7 @@ def analyze_video(
     Returns:
         dict with: answer, provider, model, tier, error (optional)
     """
+    from .gemini_vision import _get_google_api_key, _get_model_name, _get_vision_model
     path = Path(video_path)
     if not path.exists():
         return {
@@ -252,6 +253,7 @@ async def transcribe_video_for_context(
         Structured text description of the video content.
         On error, returns an error message string.
     """
+    from .gemini_vision import _get_google_api_key, _get_vision_model
     from pathlib import Path
     
     path = Path(video_path)
@@ -317,6 +319,7 @@ async def transcribe_video_for_context(
 
 def check_vision_available() -> dict:
     """Check if vision capability is available."""
+    from .gemini_vision import _get_google_api_key, _get_model_name, _get_vision_model
     google_available = False
     openai_available = False
     

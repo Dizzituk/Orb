@@ -45,6 +45,7 @@ async def stream_anthropic(
         max_tokens: Override max output tokens (default: ANTHROPIC_MAX_TOKENS env or 4096)
         timeout_seconds: Request timeout (currently logged but not enforced at HTTP level)
     """
+    from .streaming import anthropic, enhance_system_prompt_with_reasoning, get_default_model, get_model_for_route
     print(f"[STREAM_ANTHROPIC] Called: model={model}, route={route}, max_tokens={max_tokens}, timeout={timeout_seconds}s")
 
     if not HAS_ANTHROPIC:
@@ -128,6 +129,7 @@ async def stream_gemini(
     route: Optional[str] = None,
 ) -> AsyncGenerator[Dict, None]:
     """Stream from Gemini (Google Generative AI)."""
+    from .streaming import enhance_system_prompt_with_reasoning, genai, get_default_model, get_model_for_route
     if not HAS_GEMINI:
         yield {"type": "error", "message": "google.generativeai package not installed"}
         return
@@ -226,6 +228,7 @@ async def stream_llm(
         max_tokens: Override max output tokens (provider-specific defaults otherwise)
         timeout_seconds: Request timeout hint (implementation varies by provider)
     """
+    from .streaming import stream_openai
     print(f"[STREAM_LLM] Called: provider={provider}, model={model}, messages={len(messages)}, max_tokens={max_tokens}")
 
     if not provider:
@@ -278,6 +281,7 @@ async def call_llm_text(
     - Raises RuntimeError on {"type":"error"}.
     - Retries once for transient stream disconnects; for OpenAI it falls back to a non-stream call.
     """
+    from .streaming import enhance_system_prompt_with_reasoning, get_model_for_route
     if not provider:
         raise ValueError("call_llm_text: provider is required")
 

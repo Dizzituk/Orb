@@ -176,6 +176,7 @@ async def run_cohesion_check(
     Returns:
         CohesionResult with any issues found
     """
+    from .cohesion_check import attempt_auto_fixes, run_skeleton_compliance
     if len(segment_ids) < 2:
         return CohesionResult(
             status="pass",

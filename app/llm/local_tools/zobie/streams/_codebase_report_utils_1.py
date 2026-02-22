@@ -3,6 +3,7 @@ import re
 from app.llm.local_tools.zobie.streams.codebase_report import FileEntry
 from pathlib import Path
 from typing import Dict, List, Optional, Set
+from .codebase_report import EXCLUDE_FILE_EXTENSIONS, EXCLUDE_FOLDER_NAMES
 
 
 CODEBASE_REPORT_OUTPUT_DIR = Path(r"D:\Orb.architecture")

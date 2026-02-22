@@ -401,6 +401,7 @@ def parse_filesystem_query(message: str) -> Dict:
     - content: For append/overwrite queries
     - source: "command" or "natural"
     """
+    from .fs_command_parser import parse_command_mode
     # Try command mode first
     cmd_result = parse_command_mode(message)
     if cmd_result and cmd_result.get("query_type"):

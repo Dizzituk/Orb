@@ -3,6 +3,7 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set
+from .rename_policy import INVARIANT_FILES, PROTOCOL_ENV_VARS, PROTOCOL_TOKENS, SAFE_CONTENT_PATTERNS, SAFE_FILE_PATTERNS
 
 
 class Invariant(str, Enum):

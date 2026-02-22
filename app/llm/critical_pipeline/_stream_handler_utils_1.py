@@ -11,9 +11,11 @@ logger = logging.getLogger(__name__)
 
 
 def _token(text: str) -> str:
+    from .stream_handler import _sse
     return _sse("token", text)
 
 def _done(**fields) -> str:
+    from .stream_handler import _sse
     return _sse("done", **fields)
 
 def _save_to_memory(
@@ -50,6 +52,7 @@ async def generate_critical_pipeline_stream(
     segment_context: Optional[dict] = None,
 ):
     """Generate SSE stream for Critical Pipeline execution."""
+    from .stream_handler import _handle_architecture, _sse
     response_parts = []
     model_cfg = get_pipeline_model_config()
     pipeline_provider = model_cfg["provider"]

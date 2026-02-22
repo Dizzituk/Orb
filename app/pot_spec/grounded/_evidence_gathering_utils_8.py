@@ -243,6 +243,7 @@ def format_evidence_for_prompt(package: EvidencePackage) -> str:
     
     Now handles multi-target read packages with full content.
     """
+    from .evidence_gathering import EvidencePackage
     lines = [
         "## Filesystem Evidence (Ground Truth)",
         f"Timestamp: {package.ground_truth_timestamp}",
@@ -313,6 +314,7 @@ async def format_multi_target_reply(
         llm_call_func: Optional LLM call function
         user_request: The user's original request for context
     """
+    from .evidence_gathering import EvidencePackage
     if not package.is_multi_target:
         return ""
     

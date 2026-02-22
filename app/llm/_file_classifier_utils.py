@@ -26,6 +26,7 @@ def build_file_map_for_task(
     Returns:
         Formatted file map string with only relevant files
     """
+    from .file_classifier import ClassifiedFile, build_file_map
     relevant = [cf for cf in classified_files if cf.file_id in target_file_ids]
     return build_file_map(relevant)
 
@@ -34,6 +35,7 @@ def get_file_by_id(
     file_id: str,
 ) -> Optional[ClassifiedFile]:
     """Get a classified file by its stable ID."""
+    from .file_classifier import ClassifiedFile
     for cf in classified_files:
         if cf.file_id == file_id:
             return cf
@@ -44,14 +46,17 @@ def get_files_by_type(
     file_type: FileType,
 ) -> List[ClassifiedFile]:
     """Get all files of a specific type."""
+    from .file_classifier import ClassifiedFile, FileType
     return [cf for cf in classified_files if cf.file_type == file_type]
 
 def has_any_media(result: ClassificationResult) -> bool:
     """Check if classification has any media (images or video)."""
+    from .file_classifier import ClassificationResult
     return result.has_image or result.has_video
 
 def has_vision_content(result: ClassificationResult) -> bool:
     """Check if classification requires vision model (images, video, or mixed)."""
+    from .file_classifier import ClassificationResult
     return result.has_image or result.has_video or result.has_mixed
 
 def classify_from_attachment_info(
@@ -68,6 +73,7 @@ def classify_from_attachment_info(
     Returns:
         ClassificationResult
     """
+    from .file_classifier import ClassificationResult, classify_attachments
     attachments = []
     
     for att in attachment_infos:

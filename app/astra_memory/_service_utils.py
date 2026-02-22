@@ -11,12 +11,14 @@ def _hash_content(content: str) -> str:
 
 def get_files_for_job(db: Session, job_id: str) -> List[JobFile]:
     """Get all files touched by a job."""
+    from .service import JobFile
     if not _MODELS_AVAILABLE:
         return []
     return db.query(JobFile).filter(JobFile.job_id == job_id).all()
 
 def get_global_pref(db: Session, key: str) -> Optional[str]:
     """Get a global preference value."""
+    from .service import GlobalPref
     if not _MODELS_AVAILABLE:
         return None
 
@@ -25,6 +27,7 @@ def get_global_pref(db: Session, key: str) -> Optional[str]:
 
 def get_prefs_for_component(db: Session, component: str) -> List[GlobalPref]:
     """Get all active preferences that apply to a component."""
+    from .service import GlobalPref
     if not _MODELS_AVAILABLE:
         return []
 
@@ -39,6 +42,7 @@ def get_prefs_for_component(db: Session, component: str) -> List[GlobalPref]:
 
 def get_patterns_for_file(db: Session, path: str) -> List[OverwatchPattern]:
     """Get all patterns for a file path."""
+    from .service import OverwatchPattern
     if not _MODELS_AVAILABLE:
         return []
 
@@ -51,12 +55,14 @@ def get_patterns_for_file(db: Session, path: str) -> List[OverwatchPattern]:
 
 def get_job(db: Session, job_id: str) -> Optional[AstraJob]:
     """Get a job by ID."""
+    from .service import AstraJob
     if not _MODELS_AVAILABLE:
         return None
     return db.query(AstraJob).filter(AstraJob.job_id == job_id).first()
 
 def get_jobs_by_status(db: Session, status: str, limit: int = 100) -> List[AstraJob]:
     """Get jobs by status."""
+    from .service import AstraJob
     if not _MODELS_AVAILABLE:
         return []
     return (
@@ -69,6 +75,7 @@ def get_jobs_by_status(db: Session, status: str, limit: int = 100) -> List[Astra
 
 def get_escalated_jobs(db: Session, limit: int = 100) -> List[AstraJob]:
     """Get jobs where Overwatcher escalated."""
+    from .service import AstraJob, OverwatchSummary
     if not _MODELS_AVAILABLE:
         return []
 

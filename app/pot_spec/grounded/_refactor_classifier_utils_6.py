@@ -166,6 +166,7 @@ def _read_file_snippet(
     
     Pure slicing on backend - no new sandbox endpoint needed.
     """
+    from .refactor_classifier import _read_file_lines_from_sandbox
     lines = _read_file_lines_from_sandbox(file_path, sandbox_client)
     
     if lines is None:

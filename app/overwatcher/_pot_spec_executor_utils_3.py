@@ -37,6 +37,7 @@ async def run_pot_spec_execution(
         Dict with: success, decision, error, trace, tasks_completed,
                    total_tasks, artifacts_written, file_results
     """
+    from .pot_spec_executor import apply_line_edits
     start_time = time.time()
     trace: List[Dict[str, Any]] = []
     

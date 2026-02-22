@@ -21,6 +21,7 @@ def create_resource_spec(
     Returns:
         ResourceExistenceSpec instance
     """
+    from .conduct_policy import ResourceExistenceSpec
     return ResourceExistenceSpec(
         path=path,
         must_exist=must_exist,
@@ -48,6 +49,7 @@ def create_discovery_result(
     Returns:
         DiscoveryResult instance
     """
+    from .conduct_policy import DiscoveryResult
     return DiscoveryResult(
         target=target,
         exists=exists,
@@ -66,6 +68,7 @@ def format_compliance_report(result: ConductComplianceResult) -> str:
     Returns:
         Formatted report string
     """
+    from .conduct_policy import ConductComplianceResult
     lines = [
         "=" * 60,
         "CONDUCT POLICY COMPLIANCE REPORT",
@@ -108,11 +111,13 @@ def format_compliance_report(result: ConductComplianceResult) -> str:
 
 def get_rule_description(rule: ConductRule) -> str:
     """Get the full description of a conduct rule."""
+    from .conduct_policy import ConductRule, GLOBAL_CONDUCT_RULES
     rule_def = GLOBAL_CONDUCT_RULES.get(rule, {})
     return rule_def.get("description", "No description available.")
 
 def get_edge_case_ruling(edge_case_id: str) -> Optional[Dict[str, Any]]:
     """Get the ruling for a specific edge case."""
+    from .conduct_policy import EDGE_CASE_RULES
     return EDGE_CASE_RULES.get(edge_case_id)
 
 def compute_spec_hash(spec_content: str) -> str:
@@ -129,10 +134,12 @@ def compute_spec_hash(spec_content: str) -> str:
 
 def get_scenario_example(scenario_id: str) -> Optional[Dict[str, Any]]:
     """Get a scenario example by ID."""
+    from .conduct_policy import SCENARIO_EXAMPLES
     return SCENARIO_EXAMPLES.get(scenario_id)
 
 def list_scenario_examples() -> List[str]:
     """List all available scenario example IDs."""
+    from .conduct_policy import SCENARIO_EXAMPLES
     return list(SCENARIO_EXAMPLES.keys())
 
 

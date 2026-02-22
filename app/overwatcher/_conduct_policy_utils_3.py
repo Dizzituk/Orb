@@ -2,6 +2,7 @@ from __future__ import annotations
 import hashlib
 from app.overwatcher.conduct_policy import ConductComplianceResult, ConductRule, DiscoveryResult, ResourceExistenceSpec
 from typing import Any, Dict, List, Optional
+from .conduct_policy import EDGE_CASE_RULES, GLOBAL_CONDUCT_RULES, SCENARIO_EXAMPLES
 
 
 def create_resource_spec(

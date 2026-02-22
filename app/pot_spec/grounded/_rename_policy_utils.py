@@ -168,6 +168,7 @@ def classify_match(
     
     This is the core decision logic.
     """
+    from .rename_policy import INVARIANT_FILES, PROTOCOL_ENV_VARS, PROTOCOL_TOKENS, SAFE_CONTENT_PATTERNS, SAFE_FILE_PATTERNS
     path_lower = file_path.lower()
     content_lower = line_content.lower()
     

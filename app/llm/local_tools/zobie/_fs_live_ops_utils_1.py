@@ -165,6 +165,7 @@ def live_read_file_with_remote_fallback(
         (content, total_lines, total_bytes, truncated, error_msg, source)
         - source: "local" if local read succeeded, "remote_agent" if fallback used
     """
+    from .fs_live_ops import live_read_file
     # Normalize path
     norm_path = normalize_path(path, debug=debug)
     
@@ -248,6 +249,7 @@ def live_list_directory(
         - files: List of file paths (sorted)
         - error_msg: Empty string on success, error description on failure
     """
+    from .fs_live_ops import _get_extended_path
     # Normalize path
     norm_path = normalize_path(path, debug=debug)
     
@@ -329,6 +331,7 @@ def check_path_exists(path: str) -> Tuple[bool, str, str]:
         - path_type: "file", "directory", or "unknown"
         - error_msg: Empty on success/exists, error description on failure
     """
+    from .fs_live_ops import _get_extended_path
     norm_path = normalize_path(path)
     
     try:

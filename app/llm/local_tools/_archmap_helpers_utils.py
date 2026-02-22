@@ -20,6 +20,7 @@ def default_zobie_mapper_out_dir(start_file: Optional[str] = None) -> str:
     If legacy D:\\tools\\zobie_mapper\\out exists, keep using it.
     Otherwise store mapper artifacts under repo-local cache.
     """
+    from .archmap_helpers import default_sandbox_cache_root
     legacy = Path(r"D:\tools\zobie_mapper\out")
     try:
         if legacy.exists():

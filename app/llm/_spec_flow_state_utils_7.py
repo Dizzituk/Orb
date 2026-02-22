@@ -17,6 +17,7 @@ def check_weaver_answer_keywords(
         Tuple of (has_any_keywords, captured_answers_dict)
         captured_answers_dict maps question_type → matched keyword
     """
+    from .spec_flow_state import SpecFlowStage, _FLOW_STATES
     state = _FLOW_STATES.get(project_id)
     if not state or state.stage != SpecFlowStage.WEAVER_DESIGN_QUESTIONS:
         return False, {}
@@ -56,6 +57,7 @@ def get_weaver_design_state(project_id: int) -> Optional[Dict[str, Any]]:
         - captured_answers: answers already captured
         - all_answered: bool whether all questions are answered
     """
+    from .spec_flow_state import SpecFlowStage, _FLOW_STATES
     state = _FLOW_STATES.get(project_id)
     if not state or state.stage != SpecFlowStage.WEAVER_DESIGN_QUESTIONS:
         return None
@@ -69,6 +71,7 @@ def get_weaver_design_state(project_id: int) -> Optional[Dict[str, Any]]:
 
 def clear_weaver_design_questions(project_id: int) -> None:
     """Clear weaver design question state (after weave completes)."""
+    from .spec_flow_state import _FLOW_STATES, set_flow_state
     state = _FLOW_STATES.get(project_id)
     if state:
         state.weaver_pending_questions = {}
@@ -80,6 +83,7 @@ def clear_weaver_design_questions(project_id: int) -> None:
 
 def complete_flow(project_id: int) -> None:
     """Mark flow as complete."""
+    from .spec_flow_state import SpecFlowStage, _FLOW_STATES, set_flow_state
     state = _FLOW_STATES.get(project_id)
     if state:
         state.stage = SpecFlowStage.COMPLETE
@@ -87,6 +91,7 @@ def complete_flow(project_id: int) -> None:
 
 def cancel_flow(project_id: int) -> None:
     """Cancel/abandon flow."""
+    from .spec_flow_state import SpecFlowStage, _FLOW_STATES, set_flow_state
     state = _FLOW_STATES.get(project_id)
     if state:
         state.stage = SpecFlowStage.CANCELLED
@@ -94,6 +99,7 @@ def cancel_flow(project_id: int) -> None:
 
 def should_route_to_spec_gate(project_id: int) -> bool:
     """Check if message should route to Spec Gate (mid-clarification)."""
+    from .spec_flow_state import SpecFlowStage, get_active_flow
     state = get_active_flow(project_id)
     if not state:
         return False
@@ -101,6 +107,7 @@ def should_route_to_spec_gate(project_id: int) -> bool:
 
 def should_route_to_critical_pipeline(project_id: int) -> bool:
     """Check if message should route to Critical Pipeline."""
+    from .spec_flow_state import SpecFlowStage, get_active_flow
     state = get_active_flow(project_id)
     if not state:
         return False
@@ -108,6 +115,7 @@ def should_route_to_critical_pipeline(project_id: int) -> bool:
 
 def should_route_to_overwatcher(project_id: int) -> bool:
     """Check if message should route to Overwatcher."""
+    from .spec_flow_state import SpecFlowStage, get_active_flow
     state = get_active_flow(project_id)
     if not state:
         return False

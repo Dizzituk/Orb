@@ -50,6 +50,7 @@ def _extract_vision_context(messages: List[Dict[str, Any]]) -> str:
     v3.9.0: Returns a string describing UI elements that were identified
     from screenshot analysis. This context is passed to SpecGate.
     """
+    from .weaver_stream import _is_vision_context
     vision_parts = []
     
     for msg in messages:

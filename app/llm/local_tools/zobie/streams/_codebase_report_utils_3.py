@@ -41,6 +41,7 @@ def _compute_incremental(
     
     Returns: (new_files, changed_files, deleted_files)
     """
+    from .codebase_report import FileEntry
     current_keys = set(current_files.keys())
     old_keys = set(old_state.keys())
     
@@ -72,6 +73,7 @@ def _scan_directory(
     Returns:
         (files, suspect_folders, extension_counts)
     """
+    from .codebase_report import FileEntry, SUSPECT_FOLDER_KEYWORDS, _is_text_file
     files: List[FileEntry] = []
     suspect_folders: List[str] = []
     extension_counts: Dict[str, int] = {}
@@ -131,6 +133,7 @@ def _scan_file_for_absolute_paths(
     max_matches: int = FULL_MAX_MATCHES_PER_FILE,
 ) -> List[AbsolutePathFinding]:
     """Scan a single file for absolute path references."""
+    from .codebase_report import AbsolutePathFinding, _is_text_file
     findings: List[AbsolutePathFinding] = []
     
     if not _is_text_file(path):
@@ -168,6 +171,7 @@ def _scan_file_for_blocked_refs(
     max_bytes: int = FULL_MAX_BYTES_PER_FILE,
 ) -> List[Tuple[str, int, str]]:
     """Scan a file for blocked folder references."""
+    from .codebase_report import BLOCKED_FOLDER_REFS, _is_text_file
     refs: List[Tuple[str, int, str]] = []
     
     if not _is_text_file(path):

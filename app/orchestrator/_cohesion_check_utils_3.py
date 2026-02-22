@@ -4,6 +4,7 @@ from app.orchestrator._cohesion_check_utils import CohesionResult, load_segment_
 from app.orchestrator._cohesion_check_utils import _apply_tier1_fix, _apply_tier2_fix
 from app.orchestrator._cohesion_check_utils import _classify_fix_tier, _save_patched_architecture
 from typing import Dict, List, Optional
+from .cohesion_check import run_skeleton_compliance
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 

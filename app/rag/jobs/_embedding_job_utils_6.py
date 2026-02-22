@@ -32,5 +32,6 @@ def run_embedding_job_sync(
     Returns:
         Final job status
     """
+    from .embedding_job import EmbeddingJob, EmbeddingJobStatus
     job = EmbeddingJob(db_session_factory, scan_id=scan_id)
     return job.run_sync()

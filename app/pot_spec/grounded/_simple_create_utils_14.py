@@ -117,6 +117,7 @@ def _suggest_new_files(
     CRITICAL FIX: Respects constraints (e.g., "no cloud APIs" prevents 
     suggesting openai_client.py). Uses concepts, not raw keywords.
     """
+    from .simple_create import TechStack
     suggested = []
     constraint_tags = set()
     

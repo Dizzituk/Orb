@@ -83,6 +83,7 @@ def _detect_multi_file_intent(
     
     v2.2: Falls back to context-aware inference when direct extraction fails.
     """
+    from .multi_file_detection import _extract_replacement_only, _extract_search_and_replace_terms, _infer_search_term_from_context
     # Check if constraints_hint already has multi-file metadata
     if constraints_hint:
         multi_file_meta = constraints_hint.get("multi_file_metadata")
@@ -223,6 +224,7 @@ async def _build_multi_file_operation(
     When vision context is present, the classifier can distinguish between
     user-visible UI text (title bars, headings) and internal code paths.
     """
+    from .multi_file_detection import _is_valid_term
     logger.info("[multi_file_detection] v2.4 Building multi-file operation: type=%s, pattern=%s, vision_context=%d chars",
                 operation_type, search_pattern, len(vision_context))
     

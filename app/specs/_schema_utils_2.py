@@ -77,6 +77,7 @@ def spec_to_markdown(spec: Spec) -> str:
     This is the secondary format for human review.
     JSON remains canonical.
     """
+    from .schema import JobKind, Spec
     lines = []
     
     lines.append(f"# {spec.title or 'Untitled Spec'}")

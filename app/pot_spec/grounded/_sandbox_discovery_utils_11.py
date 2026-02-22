@@ -55,6 +55,7 @@ def extract_file_targets(text: str) -> List[dict]:
             {"name": "file.txt", "anchor": None, "subfolder": None, "explicit_path": "C:\\Users\\file.txt"},
         ]
     """
+    from .sandbox_discovery import SUBFOLDER_STOPWORDS, extract_sandbox_hints
     if not text:
         return []
     

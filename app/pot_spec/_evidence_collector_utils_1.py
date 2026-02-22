@@ -47,6 +47,7 @@ def add_file_read_to_bundle(
     Returns:
         File content if successful, None otherwise
     """
+    from .evidence_collector import EvidenceBundle, read_file
     content, source = read_file(
         path=path,
         start_line=start_line,
@@ -75,6 +76,7 @@ def add_search_to_bundle(
     Returns:
         Search results
     """
+    from .evidence_collector import EvidenceBundle, search_repo
     results, source = search_repo(query=query, limit=limit)
     
     bundle.add_source(source)
@@ -109,6 +111,7 @@ def find_in_evidence(
     Returns:
         List of (source_name, matched_content) tuples
     """
+    from .evidence_collector import EvidenceBundle
     results = []
     regex = re.compile(pattern, re.IGNORECASE | re.MULTILINE)
     
@@ -147,6 +150,7 @@ def verify_path_exists(
     Returns:
         (exists, source) - where source is which evidence confirmed it
     """
+    from .evidence_collector import EvidenceBundle
     # Normalize path for comparison
     path_normalized = path.replace("\\", "/").lower()
     

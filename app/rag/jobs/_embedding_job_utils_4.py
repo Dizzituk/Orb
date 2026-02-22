@@ -8,6 +8,7 @@ from datetime import datetime
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import Any, Callable, Dict, Optional
+from .embedding_job import PRIORITY_PATTERNS
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 _current_status = EmbeddingJobStatus()

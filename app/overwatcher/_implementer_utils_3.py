@@ -79,6 +79,7 @@ def _apply_qa_corrections(
     
     Works backwards through the file to preserve character positions.
     """
+    from .implementer import _parse_corrections
     pairs = _find_question_answer_pairs(content)
     corrections = _parse_corrections(generated_reply)
     
@@ -277,6 +278,7 @@ async def _multi_file_write_content(
     
     Returns True if write succeeded, False otherwise.
     """
+    from .implementer import _write_content_to_sandbox
     try:
         # v1.13: Use shared write helper (auto temp-file for large files)
         result = _write_content_to_sandbox(client, file_path, content, timeout_seconds=MULTI_FILE_VERIFY_TIMEOUT)

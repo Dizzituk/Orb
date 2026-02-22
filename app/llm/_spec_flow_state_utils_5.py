@@ -1,6 +1,7 @@
 from __future__ import annotations
 from app.llm.spec_flow_state import SpecFlowStage, SpecFlowState, get_active_flow, set_flow_state
 from typing import Any, Dict, Optional, Set
+from .spec_flow_state import _FLOW_STATES
 
 
 def capture_weaver_answers(

@@ -127,6 +127,7 @@ async def validate_all_affected_projects(
     Returns:
         List of BuildValidationResult (one per affected project)
     """
+    from .sandbox_build_validator import BuildValidationResult, _infer_project_path, validate_build
     if not modified_files:
         logger.info("[build_validator] No modified files — skipping validation")
         return []
@@ -190,6 +191,7 @@ async def diagnose_build_failure(
     Returns:
         DiagnosticResult with diagnosis and fix actions
     """
+    from .sandbox_build_validator import BuildValidationResult
     # Assemble evidence for the LLM
     modified_files = pot_result.get("artifacts_written", [])
     modified_files_summary = "\n".join(f"- {f}" for f in modified_files) or "None"
@@ -293,6 +295,7 @@ async def execute_all_fixes(
     Returns:
         List of execution result dicts
     """
+    from .sandbox_build_validator import execute_build_fix
     results: List[Dict[str, Any]] = []
 
     for fix in diagnostic.fixes:

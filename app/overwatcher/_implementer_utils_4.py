@@ -204,6 +204,7 @@ async def run_implementer_task(
     Returns:
         AtomicTaskResult with success/failure and verification
     """
+    from .implementer import _write_content_to_sandbox
     import time
     start_time = time.time()
     

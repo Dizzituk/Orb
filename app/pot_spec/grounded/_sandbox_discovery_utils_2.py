@@ -3,6 +3,7 @@ import logging
 import re
 from app.pot_spec.grounded._sandbox_discovery_utils import SYSTEM_SCAN_INDICATORS
 from typing import List
+from .sandbox_discovery import FILENAME_STOPWORDS
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 

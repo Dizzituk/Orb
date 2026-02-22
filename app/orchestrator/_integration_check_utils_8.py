@@ -92,6 +92,7 @@ def _check_import_resolution(
     For each segment's output files, find cross-segment imports.
     Verify the imported names exist in the target file.
     """
+    from .integration_check import IntegrationIssue
     issues: List[IntegrationIssue] = []
     file_to_seg = _build_file_to_segment_map(segment_outputs)
 
@@ -120,6 +121,7 @@ def _check_python_cross_imports(
     segment_outputs: Dict[str, List[str]],
 ) -> List[IntegrationIssue]:
     """Check a Python file's imports for cross-segment reference issues."""
+    from .integration_check import IntegrationIssue
     issues: List[IntegrationIssue] = []
     defs = extract_python_definitions(file_path)
 
@@ -188,6 +190,7 @@ def _check_file_references(
     Catches: segment 2 imports from 'app/services/transcription_service.py'
     but segment 1 created 'app/services/transcription.py'.
     """
+    from .integration_check import IntegrationIssue
     issues: List[IntegrationIssue] = []
     file_to_seg = _build_file_to_segment_map(segment_outputs)
 
@@ -256,6 +259,7 @@ def run_integration_check(
     This function catches all exceptions internally -- it will never
     crash the segment loop.
     """
+    from .integration_check import IntegrationIssue
     _emit = on_progress or (lambda msg: None)
 
     try:

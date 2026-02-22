@@ -8,6 +8,7 @@ from app.pot_spec.grounded._simple_create_utils import _extract_patterns, _find_
 from app.pot_spec.grounded._simple_create_utils import _resolve_mentioned_files
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from .simple_create import CREATE_ANALYSIS_SYSTEM_PROMPT, _fulfil_evidence_requests
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 

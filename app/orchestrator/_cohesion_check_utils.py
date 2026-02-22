@@ -190,6 +190,7 @@ def _classify_fix_tier(issue: CohesionIssue) -> int:
         2 = Micro-LLM fix (small targeted call, ~500 tokens)
         3 = Full regeneration (existing pipeline, expensive)
     """
+    from .cohesion_check import CohesionIssue
     desc_lower = issue.description.lower()
     fix_lower = issue.suggested_fix.lower()
     cat = issue.category
@@ -257,6 +258,7 @@ def _extract_import_replacements(issue: CohesionIssue) -> List[tuple]:
     Parses the description and suggested_fix for patterns like:
       "from .implementer import" → "from ..implementer import"
     """
+    from .cohesion_check import CohesionIssue
     replacements = []
     combined = issue.description + " " + issue.suggested_fix
 

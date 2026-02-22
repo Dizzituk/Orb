@@ -16,6 +16,7 @@ def capture_weaver_answers(
     Returns:
         Updated flow state or None if no active flow
     """
+    from .spec_flow_state import SpecFlowState, _FLOW_STATES, set_flow_state
     state = _FLOW_STATES.get(project_id)
     if not state:
         return None
@@ -44,6 +45,7 @@ def save_confirmed_design_prefs(
     
     These are NOT cleared when weave completes - they stick for the project.
     """
+    from .spec_flow_state import SpecFlowStage, SpecFlowState, _FLOW_STATES, set_flow_state
     state = _FLOW_STATES.get(project_id)
     if not state:
         state = SpecFlowState(project_id=project_id, stage=SpecFlowStage.AWAITING_SPEC_GATE_CONFIRM)
@@ -66,6 +68,7 @@ def save_weave_checkpoint(
     This allows subsequent weaves to only process NEW messages.
     NOTE: v1.3 uses hash-based tracking instead of message_count for delta detection.
     """
+    from .spec_flow_state import SpecFlowStage, SpecFlowState, _FLOW_STATES, set_flow_state
     state = _FLOW_STATES.get(project_id)
     if not state:
         state = SpecFlowState(project_id=project_id, stage=SpecFlowStage.AWAITING_SPEC_GATE_CONFIRM)
@@ -87,6 +90,7 @@ def save_woven_user_hashes(
     This provides durable tracking of which messages are already in the spec,
     regardless of message ordering or count drift.
     """
+    from .spec_flow_state import SpecFlowStage, SpecFlowState, _FLOW_STATES, set_flow_state
     state = _FLOW_STATES.get(project_id)
     if not state:
         state = SpecFlowState(project_id=project_id, stage=SpecFlowStage.AWAITING_SPEC_GATE_CONFIRM)
@@ -100,6 +104,7 @@ def save_woven_user_hashes(
 
 def should_route_to_weaver_continuation(project_id: int) -> bool:
     """Check if message should route to Weaver continuation (mid-design-questions)."""
+    from .spec_flow_state import SpecFlowStage, get_active_flow
     state = get_active_flow(project_id)
     if not state:
         return False
@@ -114,6 +119,7 @@ def advance_to_spec_gate_questions(
     clarification_round: int = 1,
 ) -> Optional[SpecFlowState]:
     """Advance flow to Spec Gate questions stage."""
+    from .spec_flow_state import SpecFlowStage, SpecFlowState, _FLOW_STATES, set_flow_state
     state = _FLOW_STATES.get(project_id)
     if not state:
         # Create new state if none exists
@@ -135,6 +141,7 @@ def advance_to_spec_validated(
     spec_version: int = 1,
 ) -> Optional[SpecFlowState]:
     """Advance flow to spec validated stage (SPoT ready)."""
+    from .spec_flow_state import SpecFlowStage, SpecFlowState, _FLOW_STATES, set_flow_state
     state = _FLOW_STATES.get(project_id)
     if not state:
         state = SpecFlowState(project_id=project_id, stage=SpecFlowStage.SPEC_VALIDATED)
@@ -152,6 +159,7 @@ def advance_to_awaiting_overwatcher(
     work_artifacts: Dict[str, Any],
 ) -> Optional[SpecFlowState]:
     """Advance flow to awaiting Overwatcher stage."""
+    from .spec_flow_state import SpecFlowStage, SpecFlowState, _FLOW_STATES, set_flow_state
     state = _FLOW_STATES.get(project_id)
     if not state:
         return None

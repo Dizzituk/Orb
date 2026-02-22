@@ -215,6 +215,7 @@ async def _handle_micro(
     spec_data, message, spec_id, job_id, project_id, db,
     trace, provider, model, response_parts,
 ):
+    from .stream_handler import _done, _save_to_memory, _sse, _token
     def _emit(text):
         response_parts.append(text)
         return _token(text)
@@ -302,6 +303,7 @@ async def _handle_scan(
     spec_data, message, spec_id, job_id, project_id, db,
     trace, provider, model, response_parts,
 ):
+    from .stream_handler import _done, _save_to_memory, _sse, _token
     def _emit(text):
         response_parts.append(text)
         return _token(text)

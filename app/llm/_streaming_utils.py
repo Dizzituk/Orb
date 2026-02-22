@@ -78,6 +78,7 @@ async def _openai_text_nonstream(
     """
     Non-stream OpenAI call used as a fallback for transient stream disconnects.
     """
+    from .streaming import AsyncOpenAI, _int_env, _openai_needs_max_completion_tokens
     if not HAS_OPENAI:
         raise RuntimeError("openai package not installed")
 

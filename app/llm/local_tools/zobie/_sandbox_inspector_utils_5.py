@@ -102,6 +102,7 @@ def _discover_folder_without_hint(anchor: str, job_intent: Optional[str] = None)
     v1.1: Uses intelligent root ordering based on job_intent.
     Now properly tracks roots_tried and root_type.
     """
+    from .sandbox_inspector import _get_ordered_roots, _identify_root_type
     # v1.1: Use intelligent ordering
     roots = _get_ordered_roots(anchor, job_intent)
     roots_tried = []

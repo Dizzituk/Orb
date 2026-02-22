@@ -22,6 +22,7 @@ def get_git_changes(repo_path: str, base_ref: str = "HEAD") -> Tuple[List[str], 
     
     Returns (added, modified, deleted)
     """
+    from .executor import parse_git_diff_stat
     try:
         result = subprocess.run(
             ["git", "diff", "--name-status", base_ref],
@@ -46,6 +47,7 @@ def get_working_tree_changes(repo_path: str) -> Tuple[List[str], List[str], List
     
     Returns (added, modified, deleted)
     """
+    from .executor import parse_git_diff_stat
     try:
         # Get staged changes
         staged = subprocess.run(
