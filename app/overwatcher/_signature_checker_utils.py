@@ -189,3 +189,20 @@ def extract_contract_signatures_for_file(
         )
 
     return signatures
+
+
+# Auto-generated re-exports for symbols in numbered _utils files
+_REEXPORT_MAP = {
+    "SignatureCheckResult": "_signature_checker_utils_3",
+    "_build_signature_string": "_signature_checker_utils_3",
+    "_parse_params_from_node": "_signature_checker_utils_3",
+    "check_file_signatures": "_signature_checker_utils_3",
+    "compare_signatures": "_signature_checker_utils_3",
+}
+
+def __getattr__(name):
+    if name in _REEXPORT_MAP:
+        import importlib
+        mod = importlib.import_module(f"app.overwatcher.{_REEXPORT_MAP[name]}")
+        return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

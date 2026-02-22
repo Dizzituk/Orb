@@ -127,3 +127,29 @@ _TS_ROUTE_RE = re.compile(
     r"(?:app|router)\.\s*(?:get|post|put|patch|delete)\s*\(\s*['\"]([^'\"]+)['\"]",
     re.IGNORECASE,
 )
+
+
+# Auto-generated re-exports for symbols in numbered _utils files
+_REEXPORT_MAP = {
+    "_check_duplicate_definitions": "_integration_check_utils_4",
+    "_check_interface_contracts": "_integration_check_utils_4",
+    "_check_typescript_cross_imports": "_integration_check_utils_4",
+    "_looks_like_project_import": "_integration_check_utils_4",
+    "_module_to_expected_path": "_integration_check_utils_4",
+    "_normalise_path": "_integration_check_utils_4",
+    "_run_llm_integration_review": "_integration_check_utils_4",
+    "_verify_consumes": "_integration_check_utils_4",
+    "IntegrationCheckResult": "_integration_check_utils_5",
+    "_build_file_to_segment_map": "_integration_check_utils_5",
+    "_check_file_references": "_integration_check_utils_5",
+    "_check_import_resolution": "_integration_check_utils_5",
+    "_check_python_cross_imports": "_integration_check_utils_5",
+    "run_integration_check": "_integration_check_utils_5",
+}
+
+def __getattr__(name):
+    if name in _REEXPORT_MAP:
+        import importlib
+        mod = importlib.import_module(f"app.orchestrator.{_REEXPORT_MAP[name]}")
+        return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

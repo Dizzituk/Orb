@@ -227,3 +227,24 @@ def _build_sibling_interfaces(
         len(interfaces), segment.segment_id,
     )
     return formatted
+
+
+# Auto-generated re-exports for symbols in numbered _utils files
+_REEXPORT_MAP = {
+    "_is_facade_segment": "_segment_loop_utils_4",
+    "_save_execution_trace": "_segment_loop_utils_4",
+    "build_evidence_bundle": "_segment_loop_utils_4",
+    "build_segment_context": "_segment_loop_utils_4",
+    "can_execute_segment": "_segment_loop_utils_4",
+    "mark_dependents_blocked": "_segment_loop_utils_4",
+    "unblock_recovered_segments": "_segment_loop_utils_4",
+    "verify_contracts_fulfilled": "_segment_loop_utils_4",
+    "update_segment_status": "_segment_loop_utils_5",
+}
+
+def __getattr__(name):
+    if name in _REEXPORT_MAP:
+        import importlib
+        mod = importlib.import_module(f"app.orchestrator.{_REEXPORT_MAP[name]}")
+        return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

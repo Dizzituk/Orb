@@ -282,3 +282,28 @@ def load_enrichment(job_dir_path: str, segment_id: str) -> Optional[Dict]:
     except Exception as e:
         logger.warning("[SEGMENT_ENRICHMENT] Failed to load %s: %s", path, e)
         return None
+
+
+# Auto-generated re-exports for symbols in numbered _utils files
+_REEXPORT_MAP = {
+    "ENRICHMENT_MAX_TOKENS": "_segment_enrichment_utils_5",
+    "ENRICHMENT_MODEL": "_segment_enrichment_utils_5",
+    "ENRICHMENT_SYSTEM_PROMPT": "_segment_enrichment_utils_5",
+    "ENRICHMENT_TIMEOUT": "_segment_enrichment_utils_5",
+    "SegmentEnrichment": "_segment_enrichment_utils_5",
+    "_apply_llm_assignments": "_segment_enrichment_utils_5",
+    "_build_per_segment_extractions": "_segment_enrichment_utils_5",
+    "_load_experience_patterns": "_segment_enrichment_utils_5",
+    "_build_symbol_map": "_segment_enrichment_utils_6",
+    "_generate_implementation_intelligence": "_segment_enrichment_utils_6",
+    "_save_enrichment": "_segment_enrichment_utils_6",
+    "BUILD_ID": "_segment_enrichment_utils_7",
+    "enrich_segments": "_segment_enrichment_utils_7",
+}
+
+def __getattr__(name):
+    if name in _REEXPORT_MAP:
+        import importlib
+        mod = importlib.import_module(f"app.orchestrator.{_REEXPORT_MAP[name]}")
+        return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

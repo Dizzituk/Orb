@@ -205,3 +205,17 @@ def load_skeleton_contract(job_dir: str) -> Optional[SkeletonContractSet]:
     except Exception as e:
         logger.warning("[skeleton_contracts] Failed to load: %s", e)
         return None
+
+
+# Auto-generated re-exports for symbols in numbered _utils files
+_REEXPORT_MAP = {
+    "ExportBinding": "_skeleton_contracts_utils_3",
+    "SkeletonContractSet": "_skeleton_contracts_utils_3",
+}
+
+def __getattr__(name):
+    if name in _REEXPORT_MAP:
+        import importlib
+        mod = importlib.import_module(f"app.orchestrator.{_REEXPORT_MAP[name]}")
+        return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

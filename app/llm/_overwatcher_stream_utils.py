@@ -304,3 +304,17 @@ def sse_event(event_type: str, **kwargs) -> str:
 
 def sse_error(error: str) -> str:
     return "data: " + json.dumps({"type": "error", "error": error}) + "\n\n"
+
+
+# Auto-generated re-exports for symbols in numbered _utils files
+_REEXPORT_MAP = {
+    "create_overwatcher_llm_fn": "_overwatcher_stream_utils_3",
+    "generate_overwatcher_stream": "_overwatcher_stream_utils_3",
+}
+
+def __getattr__(name):
+    if name in _REEXPORT_MAP:
+        import importlib
+        mod = importlib.import_module(f"app.llm.{_REEXPORT_MAP[name]}")
+        return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -292,3 +292,28 @@ def _parse_file_list_output(
         ))
     
     return files, truncated
+
+
+# Auto-generated re-exports for symbols in numbered _utils files
+# Circular-safe re-exports. MatchBucket/DiscoveryResult live in file_discovery.py
+# which imports from us, so _utils_3 (which re-defines MatchBucket) would cause a loop.
+# Non-circular symbols can go through _utils_3 directly.
+_REEXPORT_MAP = {
+    "FileMatch": "_file_discovery_utils_1",
+    "LineMatch": "_file_discovery_utils_1",
+    "_classify_match_mechanical": "_file_discovery_utils_1",
+    "discover_files": "_file_discovery_utils_2",
+    "discover_files_by_extension": "_file_discovery_utils_2",
+}
+
+def __getattr__(name):
+    if name in _REEXPORT_MAP:
+        import importlib
+        mod = importlib.import_module(f"app.pot_spec.grounded.{_REEXPORT_MAP[name]}")
+        return getattr(mod, name)
+    if name == "MatchBucket":
+        return _get_match_bucket()
+    if name == "DiscoveryResult":
+        from app.pot_spec.grounded.file_discovery import DiscoveryResult
+        return DiscoveryResult
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

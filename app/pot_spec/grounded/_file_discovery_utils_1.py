@@ -6,7 +6,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
-logger = logging.getLogger(__name__)
+
+# Local copies — originals in file_discovery.py, can't import (circular)
+DEFAULT_TIMEOUT_SECONDS: int = 120
+DEFAULT_MAX_RESULTS: int = 2000
+DEFAULT_MAX_SAMPLES_PER_FILE: int = 50
 
 
 class MatchBucket(str, Enum):

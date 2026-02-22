@@ -134,3 +134,24 @@ def get_scenario_example(scenario_id: str) -> Optional[Dict[str, Any]]:
 def list_scenario_examples() -> List[str]:
     """List all available scenario example IDs."""
     return list(SCENARIO_EXAMPLES.keys())
+
+
+# Auto-generated re-exports for symbols in numbered _utils files
+_REEXPORT_MAP = {
+    "ConductComplianceResult": "_conduct_policy_utils_4",
+    "ConductRule": "_conduct_policy_utils_4",
+    "ConductViolation": "_conduct_policy_utils_4",
+    "ConductViolationType": "_conduct_policy_utils_4",
+    "DiscoveryResult": "_conduct_policy_utils_4",
+    "EvidenceRecord": "_conduct_policy_utils_4",
+    "ResourceExistenceSpec": "_conduct_policy_utils_4",
+    "ViolationSeverity": "_conduct_policy_utils_4",
+    "ConductPolicyEvaluator": "_conduct_policy_utils_5",
+}
+
+def __getattr__(name):
+    if name in _REEXPORT_MAP:
+        import importlib
+        mod = importlib.import_module(f"app.overwatcher.{_REEXPORT_MAP[name]}")
+        return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

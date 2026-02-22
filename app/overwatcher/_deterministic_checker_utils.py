@@ -330,3 +330,16 @@ def _unparse_safe(node) -> Optional[str]:
         return ast.unparse(node)
     except Exception:
         return None
+
+
+# Auto-generated re-exports for symbols in numbered _utils files
+_REEXPORT_MAP = {
+    "deterministic_check": "_deterministic_checker_utils_3",
+}
+
+def __getattr__(name):
+    if name in _REEXPORT_MAP:
+        import importlib
+        mod = importlib.import_module(f"app.overwatcher.{_REEXPORT_MAP[name]}")
+        return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

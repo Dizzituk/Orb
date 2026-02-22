@@ -45,3 +45,22 @@ def file_exists_in_sandbox(file_path: str) -> bool:
         (f.get("name") or "").lower() == target
         for f in data.get("files", [])
     )
+
+
+# Auto-generated re-exports for symbols in numbered _utils files
+_REEXPORT_MAP = {
+    "HOST_DESKTOP_ROOTS": "_sandbox_inspector_utils_3",
+    "HOST_DOCUMENTS_ROOTS": "_sandbox_inspector_utils_3",
+    "SANDBOX_DOCUMENTS_ROOTS": "_sandbox_inspector_utils_3",
+    "_bounded_folder_search": "_sandbox_inspector_utils_3",
+    "_discover_folder_without_hint": "_sandbox_inspector_utils_3",
+    "_select_file_from_folder": "_sandbox_inspector_utils_3",
+    "read_sandbox_file": "_sandbox_inspector_utils_3",
+}
+
+def __getattr__(name):
+    if name in _REEXPORT_MAP:
+        import importlib
+        mod = importlib.import_module(f"app.llm.local_tools.zobie.{_REEXPORT_MAP[name]}")
+        return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -160,3 +160,18 @@ Remember:
 - NO code in fix_actions descriptions
 - decision must be PASS, FAIL, or NEEDS_INFO
 - Strike {strike_number}/3 - {strike_hint}"""
+
+
+# Auto-generated re-exports for symbols in numbered _utils files
+_REEXPORT_MAP = {
+    "build_overwatcher_prompt": "_overwatcher_utils_3",
+    "contains_code": "_overwatcher_utils_3",
+    "run_pot_spec_execution": "_overwatcher_utils_3",
+}
+
+def __getattr__(name):
+    if name in _REEXPORT_MAP:
+        import importlib
+        mod = importlib.import_module(f"app.overwatcher.{_REEXPORT_MAP[name]}")
+        return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -93,3 +93,31 @@ def get_spot_for_project(project_id: int) -> Optional[Dict[str, Any]]:
         "spec_hash": state.spec_hash,
         "spec_version": state.spec_version,
     }
+
+
+# Auto-generated re-exports for symbols in numbered _utils files
+_REEXPORT_MAP = {
+    "cancel_flow": "_spec_flow_state_utils_4",
+    "check_weaver_answer_keywords": "_spec_flow_state_utils_4",
+    "clear_weaver_design_questions": "_spec_flow_state_utils_4",
+    "complete_flow": "_spec_flow_state_utils_4",
+    "get_weaver_design_state": "_spec_flow_state_utils_4",
+    "should_route_to_critical_pipeline": "_spec_flow_state_utils_4",
+    "should_route_to_overwatcher": "_spec_flow_state_utils_4",
+    "should_route_to_spec_gate": "_spec_flow_state_utils_4",
+    "advance_to_awaiting_overwatcher": "_spec_flow_state_utils_5",
+    "advance_to_spec_gate_questions": "_spec_flow_state_utils_5",
+    "advance_to_spec_validated": "_spec_flow_state_utils_5",
+    "capture_weaver_answers": "_spec_flow_state_utils_5",
+    "save_confirmed_design_prefs": "_spec_flow_state_utils_5",
+    "save_weave_checkpoint": "_spec_flow_state_utils_5",
+    "save_woven_user_hashes": "_spec_flow_state_utils_5",
+    "should_route_to_weaver_continuation": "_spec_flow_state_utils_5",
+}
+
+def __getattr__(name):
+    if name in _REEXPORT_MAP:
+        import importlib
+        mod = importlib.import_module(f"app.llm.{_REEXPORT_MAP[name]}")
+        return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

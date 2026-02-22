@@ -34,3 +34,25 @@ def run_embedding_job_sync(
     """
     job = EmbeddingJob(db_session_factory, scan_id=scan_id)
     return job.run_sync()
+
+
+# Auto-generated re-exports for symbols in numbered _utils files
+_REEXPORT_MAP = {
+    "EMBEDDING_AUTO_ENABLED": "_embedding_job_utils_4",
+    "EMBEDDING_MODEL": "_embedding_job_utils_4",
+    "STATUS_FILE": "_embedding_job_utils_4",
+    "classify_chunk_priority": "_embedding_job_utils_4",
+    "compute_content_hash": "_embedding_job_utils_4",
+    "format_embedding_status_report": "_embedding_job_utils_4",
+    "get_embedding_stats": "_embedding_job_utils_4",
+    "queue_embedding_job": "_embedding_job_utils_4",
+    "EmbeddingPriority": "_embedding_job_utils_5",
+    "get_embedding_status": "_embedding_job_utils_5",
+}
+
+def __getattr__(name):
+    if name in _REEXPORT_MAP:
+        import importlib
+        mod = importlib.import_module(f"app.rag.jobs.{_REEXPORT_MAP[name]}")
+        return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

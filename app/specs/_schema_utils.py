@@ -208,3 +208,21 @@ def spec_to_markdown(spec: Spec) -> str:
     lines.append(f"- **Token Count:** {spec.provenance.token_count}")
     
     return "\n".join(lines)
+
+
+# Auto-generated re-exports for symbols in numbered _utils files
+_REEXPORT_MAP = {
+    "JobKind": "_schema_utils_1",
+    "SPEC_SCHEMA_VERSION": "_schema_utils_1",
+    "SpecConstraints": "_schema_utils_1",
+    "SpecInput": "_schema_utils_1",
+    "SpecProvenance": "_schema_utils_1",
+    "validate_spec": "_schema_utils_1",
+}
+
+def __getattr__(name):
+    if name in _REEXPORT_MAP:
+        import importlib
+        mod = importlib.import_module(f"app.specs.{_REEXPORT_MAP[name]}")
+        return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -199,3 +199,49 @@ def _get_blocking_questions(text: str, is_micro_task: bool) -> List[str]:
     # - Multiple files (use default selection rules)
     
     return questions
+
+
+# Auto-generated re-exports for symbols in numbered _utils files
+_REEXPORT_MAP = {
+    "CONCRETE_TARGETS": "_weaver_stream_utils_10",
+    "DESIGN_PREF_BLACKLIST_PATTERNS": "_weaver_stream_utils_10",
+    "MICRO_TASK_SYSTEM_PROMPT": "_weaver_stream_utils_10",
+    "REFACTOR_TASK_SYSTEM_PROMPT": "_weaver_stream_utils_10",
+    "VISION_CONTEXT_PATTERNS": "_weaver_stream_utils_10",
+    "_enforce_design_pref_hygiene": "_weaver_stream_utils_10",
+    "_is_refactor_task": "_weaver_stream_utils_10",
+    "_is_vision_context": "_weaver_stream_utils_10",
+    "CORE_GOAL_TARGETS": "_weaver_stream_utils_11",
+    "_has_core_goal": "_weaver_stream_utils_11",
+    "BUILD_VERBS": "_weaver_stream_utils_7",
+    "INTENT_GOAL_PATTERNS": "_weaver_stream_utils_7",
+    "LEAKAGE_PATTERNS": "_weaver_stream_utils_7",
+    "MICRO_FILE_INDICATORS": "_weaver_stream_utils_7",
+    "NEGATION_PATTERNS": "_weaver_stream_utils_7",
+    "NON_MICRO_INDICATORS": "_weaver_stream_utils_7",
+    "REFACTOR_INDICATORS": "_weaver_stream_utils_7",
+    "_hash_messages": "_weaver_stream_utils_7",
+    "CORE_GOAL_VERBS": "_weaver_stream_utils_8",
+    "FEATURE_COMPONENT_INDICATORS": "_weaver_stream_utils_8",
+    "META_MODE_PATTERNS": "_weaver_stream_utils_8",
+    "QUESTIONS_DISMISSED_PATTERNS": "_weaver_stream_utils_8",
+    "_get_streaming_function": "_weaver_stream_utils_8",
+    "_hash_message": "_weaver_stream_utils_8",
+    "_normalize_typos": "_weaver_stream_utils_8",
+    "_sanitize_weaver_output": "_weaver_stream_utils_8",
+    "DESIGN_PREF_WHITELIST_PATTERNS": "_weaver_stream_utils_9",
+    "REFACTOR_ACTION_PATTERNS": "_weaver_stream_utils_9",
+    "TYPO_NORMALIZATIONS": "_weaver_stream_utils_9",
+    "_extract_meta_mode": "_weaver_stream_utils_9",
+    "_extract_vision_context": "_weaver_stream_utils_9",
+    "_gather_ramble_messages": "_weaver_stream_utils_9",
+    "_is_micro_file_task": "_weaver_stream_utils_9",
+    "_user_dismissed_questions": "_weaver_stream_utils_9",
+}
+
+def __getattr__(name):
+    if name in _REEXPORT_MAP:
+        import importlib
+        mod = importlib.import_module(f"app.llm.{_REEXPORT_MAP[name]}")
+        return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

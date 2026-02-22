@@ -262,3 +262,27 @@ def _convert_to_v3_match(
         impact_note=v2_match.impact_note,
         is_unresolved=False,
     )
+
+
+# Auto-generated re-exports for symbols in numbered _utils files
+_REEXPORT_MAP = {
+    "EXPANSION_NEEDED_PATTERNS": "_refactor_classifier_utils_4",
+    "FILE_PATTERN_HINTS": "_refactor_classifier_utils_4",
+    "LINE_PATTERN_HINTS": "_refactor_classifier_utils_4",
+    "_build_classification_prompt": "_refactor_classifier_utils_4",
+    "_generate_flags": "_refactor_classifier_utils_4",
+    "_parse_classification_response": "_refactor_classifier_utils_4",
+    "_read_file_lines_from_sandbox": "_refactor_classifier_utils_4",
+    "_apply_heuristic_exclusions": "_refactor_classifier_utils_5",
+    "_compute_risk_class": "_refactor_classifier_utils_5",
+    "_expand_evidence_batch": "_refactor_classifier_utils_5",
+    "_fallback_heuristic_classification": "_refactor_classifier_utils_5",
+    "_get_heuristic_hint": "_refactor_classifier_utils_5",
+}
+
+def __getattr__(name):
+    if name in _REEXPORT_MAP:
+        import importlib
+        mod = importlib.import_module(f"app.pot_spec.grounded.{_REEXPORT_MAP[name]}")
+        return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

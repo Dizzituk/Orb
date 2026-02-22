@@ -399,3 +399,25 @@ def _save_patched_architecture(
         new_path, len(patched_text), len(fix_notes),
     )
     return new_path
+
+
+# Auto-generated re-exports for symbols in numbered _utils files
+_REEXPORT_MAP = {
+    "_apply_tier1_fix": "_cohesion_check_utils_5",
+    "_apply_tier2_fix": "_cohesion_check_utils_5",
+    "_parse_cohesion_response": "_cohesion_check_utils_5",
+    "load_cohesion_result": "_cohesion_check_utils_5",
+    "save_cohesion_result": "_cohesion_check_utils_5",
+    "CohesionIssue": "_cohesion_check_utils_6",
+    "CohesionResult": "_cohesion_check_utils_6",
+    "load_segment_architectures": "_cohesion_check_utils_6",
+    "run_cohesion_check": "_cohesion_check_utils_6",
+    "attempt_auto_fixes": "_cohesion_check_utils_7",
+}
+
+def __getattr__(name):
+    if name in _REEXPORT_MAP:
+        import importlib
+        mod = importlib.import_module(f"app.orchestrator.{_REEXPORT_MAP[name]}")
+        return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
