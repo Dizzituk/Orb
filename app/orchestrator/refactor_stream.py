@@ -8,8 +8,8 @@ Uses the same SSE format as all other ASTRA streams:
 
 v2.0 (2026-02-22): Fixed SSE format to match frontend expectations
 v2.1 (2026-02-22): Added asyncio.sleep(0) after each yield to force flush.
-  Without await points, the event loop buffers all yields until the generator
-  completes, causing the entire output to appear at once instead of streaming.
+v2.2 (2026-02-22): Three-strikes persistent state — files that fail 3 times
+  are flagged for pipeline decomposition and skipped on subsequent runs.
 """
 
 import asyncio
@@ -23,6 +23,7 @@ from app.orchestrator.refactor_loop import (
     RefactorLoopResult,
     _boot_check,
 )
+from app.orchestrator.refactor_state import RefactorState
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +58,19 @@ async def generate_refactor_stream(
 
     job_id = f"refactor-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
+    # Load persistent state
+    state = RefactorState.load()
+    state.mark_run_start()
+    stats = state.stats
+
     yield _sse_meta("metadata", {"provider": "local", "model": "refactor-loop"})
-    yield _sse_token(f"🔧 **Refactor Loop Started** (job: `{job_id}`)\n\n")
+    yield _sse_token(f"🔧 **Refactor Loop Started** (job: `{job_id}`)\n")
+    if stats["needs_pipeline"] > 0:
+        yield _sse_token(
+            f"📋 {stats['needs_pipeline']} files flagged for pipeline decomposition "
+            f"(struck out in previous runs)\n"
+        )
+    yield _sse_token("\n")
     await asyncio.sleep(0)
 
     files_touched = set()
@@ -89,6 +101,7 @@ async def generate_refactor_stream(
 
         if scan.next_file is None:
             resolved = (starting_oversized or 0) - scan.oversized_files
+            pipeline_count = len(state.pipeline_queue)
             yield _sse_token(
                 f"\n✅ **Refactor Complete!** No more viable candidates.\n"
                 f"- Started: {starting_oversized} oversized\n"
@@ -97,11 +110,18 @@ async def generate_refactor_stream(
                 f"- Passes: {passes_completed}\n"
                 f"- Files touched: {len(files_touched)}\n"
                 f"- Total reduced: {total_kb_reduced:.1f}KB\n"
-                f"- Skipped (errors/unfixable): {len(files_errored)}\n"
+                f"- Skipped (errors): {len(files_errored)}\n"
+                f"- Awaiting pipeline: {pipeline_count}\n"
             )
             await asyncio.sleep(0)
+
+            # Save state before closing
+            state.save()
+
             yield _sse_done(
-                f"Refactor complete: {passes_completed} passes, {total_kb_reduced:.1f}KB reduced"
+                f"Refactor complete: {passes_completed} passes, "
+                f"{total_kb_reduced:.1f}KB reduced, "
+                f"{pipeline_count} awaiting pipeline"
             )
             return
 
@@ -109,9 +129,13 @@ async def generate_refactor_stream(
         short_path = target.path.replace("D:\\Orb\\", "")
         resolved = (starting_oversized or 0) - scan.oversized_files
 
+        # Show strike count if this file has previous failures
+        rec = state.files.get(target.path)
+        strike_info = f" ⚡{rec.strikes}/3" if rec and rec.strikes > 0 else ""
+
         yield _sse_token(
             f"**Pass {pass_num}:** `{short_path}` "
-            f"({target.size_kb:.1f}KB) "
+            f"({target.size_kb:.1f}KB){strike_info} "
             f"[{scan.oversized_files} oversized, {resolved} resolved, "
             f"{total_kb_reduced:.0f}KB reduced]\n"
         )
@@ -121,6 +145,7 @@ async def generate_refactor_stream(
             result = run_refactor_pass(target.path, pass_num, job_id)
         except Exception as exc:
             files_errored.add(target.path)
+            state.record_failure(target.path, target.size_kb, f"Exception: {str(exc)[:150]}")
             yield _sse_token(f"  → ❌ **Error:** {str(exc)[:100]}\n")
             await asyncio.sleep(0)
             continue
@@ -133,6 +158,8 @@ async def generate_refactor_stream(
             if result.new_module_path:
                 files_created.add(result.new_module_path)
 
+            state.record_success(target.path, result.file_size_before_kb, result.file_size_after_kb)
+
             yield _sse_token(
                 f"  → {result.file_size_before_kb:.1f}KB → "
                 f"{result.file_size_after_kb:.1f}KB "
@@ -143,14 +170,33 @@ async def generate_refactor_stream(
 
         elif result.rolled_back:
             files_errored.add(target.path)
-            yield _sse_token(f"  → ❌ **Rolled back** — skipping.\n")
+            reason = result.error or "Boot failed after extraction"
+            state.record_failure(target.path, target.size_kb, reason[:200])
+
+            rec = state.files.get(target.path)
+            if rec and rec.needs_pipeline:
+                yield _sse_token(
+                    f"  → ❌ **Strike 3** — flagged for pipeline decomposition.\n"
+                )
+            else:
+                strikes = rec.strikes if rec else 1
+                yield _sse_token(f"  → ❌ **Rolled back** (strike {strikes}/3)\n")
             await asyncio.sleep(0)
             continue
 
         elif result.error:
             files_errored.add(target.path)
+            state.record_failure(target.path, target.size_kb, result.error[:200])
             error_short = result.error[:80] if result.error else "unknown"
-            yield _sse_token(f"  → ⏭️ Skipping: {error_short}\n")
+
+            rec = state.files.get(target.path)
+            if rec and rec.needs_pipeline:
+                yield _sse_token(
+                    f"  → ⏭️ **Strike 3** — flagged for pipeline: {error_short}\n"
+                )
+            else:
+                strikes = rec.strikes if rec else 1
+                yield _sse_token(f"  → ⏭️ Skipping (strike {strikes}/3): {error_short}\n")
             await asyncio.sleep(0)
             continue
 
@@ -162,6 +208,9 @@ async def generate_refactor_stream(
             "current_file": short_path,
             "status": "running",
         })
+
+    # Max passes reached — save state
+    state.save()
 
     yield _sse_token(
         f"\n⚠️ **Max passes reached** ({max_passes}). "

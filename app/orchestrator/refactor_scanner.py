@@ -244,11 +244,21 @@ def scan_for_refactor(
     all_files = _walk_python_files()
     total_files = len(all_files)
 
-    # Filter to oversized
-    oversized = {
-        p: s for p, s in all_files.items()
-        if s > min_size_kb * 1024
-    }
+    # Load persistent state for three-strikes filtering
+    from app.orchestrator.refactor_state import RefactorState
+    state = RefactorState.load()
+
+    # Filter to oversized, excluding struck-out files
+    oversized = {}
+    skipped_by_state = 0
+    for p, s in all_files.items():
+        if s <= min_size_kb * 1024:
+            continue
+        size_kb = s / 1024
+        if state.should_skip(p, current_size_kb=size_kb):
+            skipped_by_state += 1
+            continue
+        oversized[p] = s
 
     if not oversized:
         elapsed = (time.time() - start) * 1000
@@ -302,6 +312,7 @@ def scan_for_refactor(
     logger.info(
         f"[refactor_scanner] Scanned {total_files} files in {elapsed:.0f}ms. "
         f"Oversized: {len(candidates)} (leaf={leaves}, branch={branches}, root={roots})"
+        + (f", skipped={skipped_by_state} (struck out)" if skipped_by_state else "")
     )
 
     return RefactorScanResult(
