@@ -1,3 +1,4 @@
+from __future__ import annotations
 import re
 from typing import Optional
 
@@ -56,3 +57,26 @@ def _generate_reply_fallback(content: str, content_type: Optional[str] = None) -
         return "(Code analysis requested - LLM unavailable for intelligent explanation)"
     
     return "(Content acknowledged - LLM unavailable for intelligent response)"
+
+
+# Re-exports: symbols extracted to _utils_1/_2 by refactor loop
+_REEXPORT_MAP = {
+    "DEEP_ANALYSIS_BASE_TOKENS": "_qa_processing_utils_1",
+    "DEEP_ANALYSIS_TOKENS_PER_QUESTION": "_qa_processing_utils_1",
+    "MULTI_FILE_SYNTHESIS_MAX_TOKENS": "_qa_processing_utils_1",
+    "MULTI_FILE_SYNTHESIS_MIN_TOKENS": "_qa_processing_utils_1",
+    "MULTI_FILE_SYNTHESIS_TOKENS_PER_FILE": "_qa_processing_utils_1",
+    "STANDARD_QA_BASE_TOKENS": "_qa_processing_utils_1",
+    "_needs_deep_analysis": "_qa_processing_utils_1",
+    "detect_simple_instruction": "_qa_processing_utils_1",
+    "_calculate_token_budget": "_qa_processing_utils_2",
+    "analyze_qa_file": "_qa_processing_utils_2",
+    "generate_synthesized_reply_from_files": "_qa_processing_utils_2",
+}
+
+def __getattr__(name):
+    if name in _REEXPORT_MAP:
+        import importlib
+        mod = importlib.import_module(f"app.pot_spec.grounded.{_REEXPORT_MAP[name]}")
+        return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

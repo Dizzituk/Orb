@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 from .sandbox_client import call_fs_contents, call_fs_tree
 from typing import Optional

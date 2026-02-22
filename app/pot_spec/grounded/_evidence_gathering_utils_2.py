@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 import os
 from app.pot_spec.grounded._evidence_gathering_utils import ANCHOR_RESOLUTION_MAP, COMMON_FILE_EXTENSIONS, extract_path_references
@@ -234,6 +235,7 @@ def gather_filesystem_evidence(
         return gather_multi_target_evidence(combined_text, rag_hints)
     
     # Standard single-target handling
+    from app.pot_spec.grounded.evidence_gathering import EvidencePackage
     package = EvidencePackage(
         task_type="unresolved",
         ground_truth_timestamp=datetime.now(timezone.utc).isoformat(),

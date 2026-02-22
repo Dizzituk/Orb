@@ -1,3 +1,4 @@
+from __future__ import annotations
 import sys
 from .fs_live_ops import live_read_file_with_remote_fallback
 from .fs_path_utils import is_path_allowed, normalize_path

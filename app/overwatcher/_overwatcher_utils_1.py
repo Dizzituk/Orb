@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 import re
 from app.overwatcher._overwatcher_utils import CODE_PATTERNS, OVERWATCHER_SYSTEM, OVERWATCHER_USER

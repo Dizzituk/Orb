@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 from app.orchestrator._segment_loop_utils import _now_iso
 from app.orchestrator.segment_state import JobState, save_state

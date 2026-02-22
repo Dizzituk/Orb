@@ -1,3 +1,4 @@
+from __future__ import annotations
 from app.memory import models, schemas
 from sqlalchemy.orm import Session
 from typing import List, Optional

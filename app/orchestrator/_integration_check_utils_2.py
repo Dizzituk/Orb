@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 import os
 from app.orchestrator._integration_check_utils import _check_duplicate_definitions, _check_interface_contracts, _check_typescript_cross_imports, _looks_like_project_import, _module_to_expected_path, _normalise_path, _run_llm_integration_review

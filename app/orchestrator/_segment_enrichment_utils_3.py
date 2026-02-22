@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 from app.orchestrator._segment_enrichment_utils import SegmentEnrichment, _apply_llm_assignments, _build_per_segment_extractions, _load_experience_patterns
 from app.orchestrator._segment_enrichment_utils import _build_symbol_map, _generate_implementation_intelligence, _save_enrichment

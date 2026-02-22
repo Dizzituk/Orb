@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 import os
 from app.pot_spec.grounded._simple_create_utils import CreateEvidence, IntegrationPoint, _detect_tech_stack

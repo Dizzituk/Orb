@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 import os
 from app.orchestrator._segment_enrichment_utils import _extract_names_from_import

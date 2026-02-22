@@ -40,6 +40,9 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from app.rag.jobs._embedding_job_utils import ARCHITECTURE_OUTPUT_DIR, EMBEDDING_BATCH_SIZE, EMBEDDING_RATE_LIMIT_DELAY, SQLITE_LOCK_INITIAL_BACKOFF, SQLITE_LOCK_MAX_BACKOFF, SQLITE_LOCK_MAX_RETRIES, _is_sqlite_lock_error, run_embedding_job_sync
+from app.rag.jobs._embedding_job_utils import EMBEDDING_AUTO_ENABLED, EMBEDDING_MODEL, STATUS_FILE, classify_chunk_priority, compute_content_hash, format_embedding_status_report, get_embedding_stats, queue_embedding_job
+from app.rag.jobs._embedding_job_utils import EmbeddingPriority, get_embedding_status
 
 logger = logging.getLogger(__name__)
 
@@ -48,44 +51,20 @@ logger = logging.getLogger(__name__)
 # SQLITE RETRY CONFIGURATION (v1.2)
 # =============================================================================
 
-SQLITE_LOCK_MAX_RETRIES = 10
-SQLITE_LOCK_INITIAL_BACKOFF = 0.25  # seconds
-SQLITE_LOCK_MAX_BACKOFF = 8.0  # seconds
-
-
-def _is_sqlite_lock_error(exc: Exception) -> bool:
-    """Check if exception is a SQLite database lock error."""
-    error_str = str(exc).lower()
-    return "database is locked" in error_str or "database_is_locked" in error_str
-
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
 # Environment flags
-EMBEDDING_AUTO_ENABLED = os.getenv("ORB_EMBEDDING_AUTO", "true").lower() == "true"
-EMBEDDING_MODEL = os.getenv("ORB_EMBEDDING_MODEL", "text-embedding-3-small")
-EMBEDDING_BATCH_SIZE = int(os.getenv("ORB_EMBEDDING_BATCH_SIZE", "20"))
-EMBEDDING_RATE_LIMIT_DELAY = float(os.getenv("ORB_EMBEDDING_RATE_DELAY", "0.5"))  # seconds between batches
 
 # Status file location - use consistent path with zobie_tools
 # IMPORTANT: Must match FULL_ARCHMAP_OUTPUT_DIR in zobie_tools.py
-ARCHITECTURE_OUTPUT_DIR = Path(r"D:\Orb\.architecture")
-STATUS_FILE = ARCHITECTURE_OUTPUT_DIR / "embedding_status.json"
 
 
 # =============================================================================
 # PRIORITY CLASSIFICATION (v1.1 - refined patterns)
 # =============================================================================
-
-class EmbeddingPriority(Enum):
-    """Embedding priority tiers."""
-    TIER1_CRITICAL = 1   # Entry points, routers, dispatch - semantic search useful fast
-    TIER2_HIGH = 2       # Pipeline core - spec gate, overwatcher, weaver
-    TIER3_MEDIUM = 3     # Services, models, DB - infrastructure queries
-    TIER4_LOW = 4        # Handlers, utils, clients
-    TIER5_NORMAL = 5     # Everything else
 
 
 # Priority patterns (regex on file_path) - order matters, first match wins
@@ -152,42 +131,6 @@ PRIORITY_PATTERNS: Dict[EmbeddingPriority, List[re.Pattern]] = {
     
     # TIER 5: NORMAL - No patterns, catch-all
 }
-
-
-def classify_chunk_priority(file_path: str) -> EmbeddingPriority:
-    """
-    Classify a chunk's embedding priority based on file path.
-    
-    Returns highest matching priority (TIER1 > TIER2 > ... > TIER5).
-    First match wins.
-    """
-    if not file_path:
-        return EmbeddingPriority.TIER5_NORMAL
-    
-    # Normalize path separators
-    normalized = file_path.replace("\\", "/")
-    
-    for priority in [
-        EmbeddingPriority.TIER1_CRITICAL,
-        EmbeddingPriority.TIER2_HIGH,
-        EmbeddingPriority.TIER3_MEDIUM,
-        EmbeddingPriority.TIER4_LOW,
-    ]:
-        for pattern in PRIORITY_PATTERNS.get(priority, []):
-            if pattern.search(normalized):
-                return priority
-    
-    return EmbeddingPriority.TIER5_NORMAL
-
-
-def compute_content_hash(chunk) -> str:
-    """
-    Compute content hash for change detection.
-    
-    Hash is based on: chunk_name + signature + docstring
-    """
-    content = f"{chunk.chunk_name or ''}|{chunk.signature or ''}|{chunk.docstring or ''}"
-    return hashlib.sha256(content.encode()).hexdigest()[:32]
 
 
 # =============================================================================
@@ -280,16 +223,6 @@ class EmbeddingJobStatus:
 # Global status (thread-safe via GIL for simple reads)
 _current_status = EmbeddingJobStatus()
 _job_lock = threading.Lock()
-
-
-def get_embedding_status() -> EmbeddingJobStatus:
-    """Get current embedding job status."""
-    # Try to load from file if not running (for persistence across restarts)
-    if not _current_status.running:
-        loaded = EmbeddingJobStatus.load_from_file()
-        if loaded:
-            return loaded
-    return _current_status
 
 
 # =============================================================================
@@ -843,149 +776,3 @@ class EmbeddingJob:
 # =============================================================================
 # CONVENIENCE FUNCTIONS
 # =============================================================================
-
-def queue_embedding_job(
-    db_session_factory: Callable[[], Session],
-    scan_id: Optional[int] = None,
-) -> bool:
-    """
-    Queue an embedding job to run in background.
-    
-    Args:
-        db_session_factory: Callable returning new DB session
-        scan_id: Optional scan_id to scope embeddings (None = all pending chunks)
-        
-    Returns:
-        True if job was queued, False if already running or disabled
-    """
-    global _current_status
-    
-    print(f"[embedding_job] queue_embedding_job called with scan_id={scan_id}")
-    logger.info(f"[embedding_job] queue_embedding_job called with scan_id={scan_id}")
-    
-    if not EMBEDDING_AUTO_ENABLED:
-        print("[embedding_job] Auto embedding disabled (ORB_EMBEDDING_AUTO=false)")
-        logger.info("[embedding_job] Auto embedding disabled (ORB_EMBEDDING_AUTO=false)")
-        return False
-    
-    # v1.2: Check for stale running status from crashed previous run
-    # If status file says running but started > 30 min ago, assume crashed
-    if _current_status.running:
-        if _current_status.started_at:
-            elapsed = (datetime.utcnow() - _current_status.started_at).total_seconds()
-            if elapsed > 1800:  # 30 minutes
-                print(f"[embedding_job] Stale running status detected (started {elapsed/60:.1f}min ago), resetting")
-                logger.warning(f"[embedding_job] Stale running status detected (started {elapsed/60:.1f}min ago), resetting")
-                _current_status.running = False
-                _current_status.last_error = "Previous job timed out or crashed"
-                _current_status.save_to_file()
-            else:
-                print(f"[embedding_job] Job already running (started {elapsed:.1f}s ago), skipping")
-                logger.info(f"[embedding_job] Job already running (started {elapsed:.1f}s ago), not queueing another")
-                return False
-        else:
-            print("[embedding_job] Job already running, skipping")
-            logger.info("[embedding_job] Job already running, not queueing another")
-            return False
-    
-    print(f"[embedding_job] Creating EmbeddingJob with scan_id={scan_id}")
-    logger.info(f"[embedding_job] Queueing embedding job (scan_id={scan_id})")
-    job = EmbeddingJob(db_session_factory, scan_id=scan_id)
-    result = job.run_async()
-    print(f"[embedding_job] run_async() returned: {result}")
-    return result
-
-
-def run_embedding_job_sync(
-    db_session_factory: Callable[[], Session],
-    scan_id: Optional[int] = None,
-) -> EmbeddingJobStatus:
-    """
-    Run embedding job synchronously (for manual trigger).
-    
-    Returns:
-        Final job status
-    """
-    job = EmbeddingJob(db_session_factory, scan_id=scan_id)
-    return job.run_sync()
-
-
-def get_embedding_stats(db: Session) -> Dict[str, Any]:
-    """Get embedding statistics from DB."""
-    from app.rag.models import ArchCodeChunk
-    
-    total = db.query(func.count(ArchCodeChunk.id)).scalar() or 0
-    embedded = db.query(func.count(ArchCodeChunk.id)).filter(
-        ArchCodeChunk.embedded == True
-    ).scalar() or 0
-    
-    # Get status (from file if not running)
-    status = get_embedding_status()
-    
-    return {
-        "total_chunks": total,
-        "embedded_chunks": embedded,
-        "pending_chunks": total - embedded,
-        "embedding_pct": round(100 * embedded / max(total, 1), 1),
-        "job_running": status.running,
-        "current_tier": status.current_tier,
-        "last_run": status.completed_at.isoformat() if status.completed_at else None,
-        "last_error": status.last_error,
-        "tier_counts": status.tier_counts,
-    }
-
-
-def format_embedding_status_report(db: Session) -> str:
-    """
-    Format a human-readable embedding status report.
-    
-    Returns text suitable for streaming to user.
-    """
-    stats = get_embedding_stats(db)
-    status = get_embedding_status()
-    
-    lines = [
-        "📊 **Embedding Status**",
-        "",
-        f"**Total chunks:** {stats['total_chunks']}",
-        f"**Embedded:** {stats['embedded_chunks']} ({stats['embedding_pct']}%)",
-        f"**Pending:** {stats['pending_chunks']}",
-        "",
-    ]
-    
-    if status.running:
-        lines.extend([
-            f"🔄 **Currently running:** {status.current_tier}",
-            f"   Batch {status.current_batch}/{status.total_batches}",
-            "",
-        ])
-    elif status.completed_at:
-        duration = ""
-        if status.started_at:
-            dur_sec = (status.completed_at - status.started_at).total_seconds()
-            duration = f" ({dur_sec:.1f}s)"
-        lines.extend([
-            f"✅ **Last run:** {status.completed_at.strftime('%Y-%m-%d %H:%M:%S')}{duration}",
-            f"   Embedded: {status.embedded_chunks} | Failed: {status.failed_chunks}",
-            "",
-        ])
-    
-    if status.tier_counts:
-        lines.append("**Queue breakdown:**")
-        for tier, count in status.tier_counts.items():
-            progress = status.tier_progress.get(tier, {})
-            done = progress.get("done", 0)
-            if count > 0:
-                lines.append(f"   • {tier}: {done}/{count}")
-        lines.append("")
-    
-    if status.last_error:
-        lines.extend([
-            f"⚠️ **Last error:** {status.last_error}",
-            "",
-        ])
-    
-    lines.append(f"**Model:** {status.model_used}")
-    lines.append(f"**Auto-embed:** {'enabled' if EMBEDDING_AUTO_ENABLED else 'disabled'}")
-    
-    return "\n".join(lines)

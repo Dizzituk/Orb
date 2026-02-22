@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 from app.orchestrator._cohesion_check_utils import CohesionResult, load_segment_architectures
 from app.orchestrator._cohesion_check_utils import _apply_tier1_fix, _apply_tier2_fix

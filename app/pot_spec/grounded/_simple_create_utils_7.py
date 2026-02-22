@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 import re
 from app.pot_spec.grounded._simple_create_utils import _CONTENT_SIGNALS, _NEGATIVE_PATH_SEGMENTS, _find_file_in_projects

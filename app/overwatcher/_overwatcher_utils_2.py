@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 from dataclasses import dataclass
 _STAGE_MODELS_AVAILABLE = True

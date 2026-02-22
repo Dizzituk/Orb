@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 import re
 from .refactor_schemas import BlockingIssue, ExpansionFailureReason, RefactorPlanV3, RiskClass

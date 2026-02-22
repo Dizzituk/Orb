@@ -1,3 +1,4 @@
+from __future__ import annotations
 from .refactor_schemas import BucketSummary, ChangeDecision, ClassifiedMatch, MatchBucket, RiskLevel
 from .refactor_schemas import ClassifiedMatchV3, ExpansionFailureReason, ExpansionResult, ReasonCode
 from collections import defaultdict

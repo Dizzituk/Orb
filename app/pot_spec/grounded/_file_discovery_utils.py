@@ -1,10 +1,14 @@
+from __future__ import annotations
 import logging
 import re
 import subprocess
 import time
 from typing import Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
-logger = logging.getLogger(__name__)
+
+def _get_match_bucket():
+    from app.pot_spec.grounded.file_discovery import MatchBucket
+    return MatchBucket
 
 
 FILE_DISCOVERY_BUILD_ID = "2026-02-02-v2.3-local-fallback"
@@ -59,12 +63,22 @@ def _run_powershell_local(
         logger.error("[file_discovery] v2.3 LOCAL exception: %s", e)
         return False, '', str(e), duration_ms
 
-MUST_REVIEW_BUCKETS = frozenset({
-    MatchBucket.ENV_VAR_KEY,
-    MatchBucket.DATABASE_ARTIFACT,
-    MatchBucket.FILE_FOLDER_NAME,
-    MatchBucket.HISTORICAL_DATA,
-})
+# Lazy — MatchBucket lives in parent, avoid circular import at module level
+_MUST_REVIEW_BUCKETS = None
+
+def _get_must_review_buckets():
+    global _MUST_REVIEW_BUCKETS
+    if _MUST_REVIEW_BUCKETS is None:
+        MB = _get_match_bucket()
+        _MUST_REVIEW_BUCKETS = frozenset({MB.ENV_VAR_KEY, MB.DATABASE_ARTIFACT, MB.FILE_FOLDER_NAME, MB.HISTORICAL_DATA})
+    return _MUST_REVIEW_BUCKETS
+
+# Keep original name accessible for importers
+class _LazyBuckets:
+    def __contains__(self, item): return item in _get_must_review_buckets()
+    def __iter__(self): return iter(_get_must_review_buckets())
+    def __len__(self): return len(_get_must_review_buckets())
+MUST_REVIEW_BUCKETS = _LazyBuckets()
 
 def _should_skip_line(line: str, file_path: str = "") -> bool:
     """

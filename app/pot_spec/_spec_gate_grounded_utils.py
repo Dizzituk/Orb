@@ -1,3 +1,4 @@
+from __future__ import annotations
 
 def _version_check():
     """Quick diagnostic to verify module loading."""

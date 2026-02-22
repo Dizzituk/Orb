@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 import os
 from app.pot_spec.grounded._evidence_gathering_utils import USER_SCAN_ROOTS, scan_root_for_file
@@ -123,6 +124,7 @@ def gather_multi_target_evidence(
         EvidencePackage with all targets resolved
     """
     logger.info("[evidence_gathering] v1.27 gather_multi_target_evidence: starting")
+    from app.pot_spec.grounded.evidence_gathering import EvidencePackage
     
     package = EvidencePackage(
         task_type="unresolved",
@@ -232,6 +234,7 @@ def gather_system_wide_scan_evidence(
         EvidencePackage with files found across the system
     """
     logger.info("[evidence_gathering] v1.33 gather_system_wide_scan_evidence: starting")
+    from app.pot_spec.grounded.evidence_gathering import EvidencePackage, FileEvidence, FilesystemEvidenceSource
     
     package = EvidencePackage(
         task_type="unresolved",

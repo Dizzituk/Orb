@@ -1,3 +1,4 @@
+from __future__ import annotations
 from .construction_planner_models import ConstructionPlan
 from .strike_tracker import StrikeVerdict
 from typing import Any, Callable, Optional

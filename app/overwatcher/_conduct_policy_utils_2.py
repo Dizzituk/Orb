@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 from app.overwatcher._conduct_policy_utils import ConductComplianceResult, ConductRule, ConductViolation, ConductViolationType, DiscoveryResult, EvidenceRecord, ResourceExistenceSpec, ViolationSeverity
 from typing import Any, Dict, List, Optional

@@ -1,3 +1,4 @@
+from __future__ import annotations
 from .schemas import CanonicalIntent, IntentDefinition
 from typing import List, Optional
 

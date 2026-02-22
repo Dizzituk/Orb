@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 import re
 from app.pot_spec.grounded._sandbox_discovery_utils import OutputMode

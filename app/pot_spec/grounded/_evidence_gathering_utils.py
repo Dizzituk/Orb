@@ -1,6 +1,9 @@
+from __future__ import annotations
 import logging
 import os
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
+if TYPE_CHECKING:
+    from app.pot_spec.grounded.evidence_gathering import EvidencePackage
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 _SANDBOX_CLIENT_AVAILABLE = True
@@ -398,3 +401,28 @@ async def format_multi_target_reply(
             header_lines.append(content)
     
     return "\n".join(header_lines)
+
+
+# Re-exports: symbols extracted to _utils_1/_2/_3 by refactor loop
+_REEXPORT_MAP = {
+    "ANCHOR_RESOLUTION_MAP": "_evidence_gathering_utils_1",
+    "COMMON_FILE_EXTENSIONS": "_evidence_gathering_utils_1",
+    "PATH_REFERENCE_STOPWORDS": "_evidence_gathering_utils_1",
+    "USER_SCAN_ROOTS": "_evidence_gathering_utils_1",
+    "detect_file_structure": "_evidence_gathering_utils_1",
+    "extract_path_references": "_evidence_gathering_utils_1",
+    "sandbox_read_file": "_evidence_gathering_utils_1",
+    "scan_root_for_file": "_evidence_gathering_utils_1",
+    "gather_filesystem_evidence": "_evidence_gathering_utils_2",
+    "resolve_path_enhanced": "_evidence_gathering_utils_2",
+    "gather_multi_target_evidence": "_evidence_gathering_utils_3",
+    "gather_system_wide_scan_evidence": "_evidence_gathering_utils_3",
+    "sandbox_path_exists": "_evidence_gathering_utils_3",
+}
+
+def __getattr__(name):
+    if name in _REEXPORT_MAP:
+        import importlib
+        mod = importlib.import_module(f"app.pot_spec.grounded.{_REEXPORT_MAP[name]}")
+        return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

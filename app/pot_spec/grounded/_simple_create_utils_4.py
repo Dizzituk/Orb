@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 import os
 from app.pot_spec.grounded._simple_create_utils import _read_text_any_encoding

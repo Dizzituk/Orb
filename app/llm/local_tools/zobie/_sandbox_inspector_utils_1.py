@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 from .content_classifier import classify_content, score_file_for_intent
 from .sandbox_client import call_fs_contents, call_fs_tree

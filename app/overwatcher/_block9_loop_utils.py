@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 from app.overwatcher.error_signature import ErrorSignature, compute_error_signature
 from app.overwatcher.evidence import EvidenceBundle, FileChange

@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 import re
 from app.llm._weaver_stream_utils import BUILD_VERBS, MICRO_FILE_INDICATORS, NON_MICRO_INDICATORS, REFACTOR_INDICATORS

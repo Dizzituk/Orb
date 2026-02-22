@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 import re
 from app.pot_spec.grounded._spec_runner_utils import _PRODUCT_SYNONYMS_RAW

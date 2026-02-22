@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 import re
 from .file_discovery import DISCOVERY_DEFAULT_ROOTS, DiscoveryResult, discover_files

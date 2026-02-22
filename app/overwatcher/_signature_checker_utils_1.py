@@ -1,3 +1,4 @@
+from __future__ import annotations
 import ast
 import logging
 from app.overwatcher._signature_checker_utils import _normalise_type, _types_match
