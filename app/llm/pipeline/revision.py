@@ -225,6 +225,7 @@ async def call_revision(
             job_envelope=revision_envelope,
             max_tokens=revision_max_tokens,
             timeout_seconds=revision_timeout,
+            stage="revision",  # v2.2: Cost tracking
         )
         
         if not result or not result.content:

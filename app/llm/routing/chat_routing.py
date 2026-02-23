@@ -95,17 +95,23 @@ def handle_chat_mode(
     # Build context
     full_context = build_full_context(db, req.project_id, req.message, req.use_semantic_search)
     
-    # Get provider/model from stage_models
-    try:
-        from app.llm.stage_models import get_chat_config
-        chat_config = get_chat_config()
-        provider = chat_config.provider
-        model = chat_config.model
-        print(f"[CHAT_MODE] Using stage_models: provider={provider}, model={model}")
-    except ImportError:
-        provider = "openai"
-        model = DEFAULT_MODELS.get("openai", "gpt-4.1-mini")
-        print(f"[CHAT_MODE] stage_models unavailable, using fallback: provider={provider}, model={model}")
+    # v5.5: Frontend model override (from model switcher dropdown)
+    if req.provider and req.model:
+        provider = req.provider
+        model = req.model
+        print(f"[CHAT_MODE] Using frontend override: provider={provider}, model={model}")
+    else:
+        # Get provider/model from stage_models
+        try:
+            from app.llm.stage_models import get_chat_config
+            chat_config = get_chat_config()
+            provider = chat_config.provider
+            model = chat_config.model
+            print(f"[CHAT_MODE] Using stage_models: provider={provider}, model={model}")
+        except ImportError:
+            provider = "openai"
+            model = DEFAULT_MODELS.get("openai", "gpt-4.1-mini")
+            print(f"[CHAT_MODE] stage_models unavailable, using fallback: provider={provider}, model={model}")
     
     # Check provider availability
     available = get_available_streaming_provider()

@@ -79,6 +79,7 @@ def _process_document_attachment(
     mime_type: str,
     original_name: str,
     suffix: str,
+    simple_llm_call=None,
 ) -> tuple[dict, Optional[str], str, Optional[str]]:
     """Process document attachment, return (analysis, raw_text, doc_type, structured_data)."""
     print(f"[chat_attachments] Extracting text: {original_name}")

@@ -280,6 +280,55 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
             task.messages = task.messages
 
     # ==========================================================================
+    # Step 0b: Task-level provider/model override (v0.17)
+    # When chat_attachments or other callers set task.provider + task.model,
+    # skip classification entirely and use the specified routing.
+    # ==========================================================================
+    if task.provider and task.model:
+        provider_val = task.provider.value if hasattr(task.provider, 'value') else str(task.provider)
+        model_val = str(task.model)
+        _debug_log(f"Task-level override: provider={provider_val}, model={model_val}")
+        print(f"[router] Task-level override: provider={provider_val}, model={model_val}")
+        
+        jt = task.job_type if task.job_type and task.job_type != JobType.UNKNOWN else JobType.TEXT_HEAVY
+        job_type_str = str(jt.value if hasattr(jt, 'value') else jt)
+        
+        envelope = synthesize_envelope_from_task(
+            task=task,
+            session_id=session_id,
+            project_id=project_id,
+            file_map=None,
+            cleaned_message=None,
+        )
+        
+        result = await registry_llm_call(
+            provider_id=provider_val,
+            model_id=model_val,
+            messages=envelope.messages,
+            job_envelope=envelope,
+        )
+        
+        return LLMResult(
+            content=result.content,
+            provider=provider_val,
+            model=model_val,
+            finish_reason="stop",
+            error_message=None,
+            prompt_tokens=result.usage.prompt_tokens,
+            completion_tokens=result.usage.completion_tokens,
+            total_tokens=result.usage.total_tokens,
+            cost_usd=result.usage.cost_estimate,
+            raw_response=result.raw_response,
+            job_type=jt,
+            routing_decision={
+                "job_type": job_type_str,
+                "provider": provider_val,
+                "model": model_val,
+                "reason": "task-level override",
+            },
+        )
+
+    # ==========================================================================
     # Step 1: Classify and route
     # ==========================================================================
     requested_type = task.job_type if job_type_specified else None

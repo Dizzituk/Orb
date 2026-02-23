@@ -249,6 +249,39 @@ async def run_cohesion_check(
             result.status = "pass"  # Reset for Layer 2 evaluation
 
     # =========================================================================
+    # LAYER 1B: Deterministic cross-segment import/collision check (v2.2)
+    # =========================================================================
+    try:
+        from app.orchestrator.deterministic_cohesion import run_deterministic_cohesion
+        from app.llm.pipeline.deterministic_critique import extract_code_blocks_from_arch as _extract_code_blocks_from_arch
+        # Build segment_files dict: {seg_id: {file_path: content}}
+        _seg_files = {}
+        for _sid, _arch_content in architectures.items():
+            _files = _extract_code_blocks_from_arch(_arch_content)
+            if _files:
+                _seg_files[_sid] = _files
+        if len(_seg_files) >= 2:
+            det_coh = run_deterministic_cohesion(_seg_files)
+            if det_coh.issues:
+                for _di in det_coh.issues:
+                    result.issues.append(CohesionIssue(
+                        issue_id=f"DET-{_di.check.upper()}",
+                        severity=_di.severity,
+                        category=_di.check,
+                        description=_di.message,
+                        source_segment=_di.source_segment,
+                        related_segment=_di.target_segment,
+                        auto_fix_tier=1 if _di.severity == "warning" else 3,
+                    ))
+                logger.info(
+                    "[cohesion_check] Layer 1B: %d issues (%d blocking)",
+                    len(det_coh.issues),
+                    sum(1 for i in det_coh.issues if i.severity == "blocker"),
+                )
+    except Exception as _det_err:
+        logger.debug("[cohesion_check] Layer 1B skipped: %s", _det_err)
+
+    # =========================================================================
     # LAYER 2: LLM-based cross-segment cohesion
     # =========================================================================
     # v6.1: Skip LLM layer for deterministic refactor jobs
@@ -297,6 +330,7 @@ async def run_cohesion_check(
             system_prompt=_system,
             max_tokens=8192,
             timeout_seconds=180,
+            stage="coherence_guardian",  # v2.2: Cost tracking
         )
         llm_response = llm_result_obj.content if llm_result_obj else None
 

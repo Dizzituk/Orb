@@ -470,6 +470,7 @@ END OF POT SPEC - Architecture must implement EXACTLY the above
                     job_envelope=envelope,
                     max_tokens=arch_max_tokens,
                     timeout_seconds=arch_timeout,
+                    stage="architecture",  # v2.2: Cost tracking
                 )
                 _total_prompt_tokens += result.usage.prompt_tokens
                 _total_completion_tokens += result.usage.completion_tokens
@@ -552,6 +553,7 @@ END OF POT SPEC - Architecture must implement EXACTLY the above
                 job_envelope=envelope,
                 max_tokens=arch_max_tokens,
                 timeout_seconds=arch_timeout,
+                stage="architecture",  # v2.2: Cost tracking
             )
         except Exception as exc:
             err_msg = f"High-stakes draft failed: {exc}"
@@ -670,6 +672,26 @@ END OF POT SPEC - Architecture must implement EXACTLY the above
             _trace_step(trace, 'revision_loop_done', version=final_version, passed=passed)
         
         _maybe_complete_trace(audit_logger, trace, success=True)
+        
+        # v2.2: Cache successful architectures for reuse
+        if passed:
+            try:
+                from app.orchestrator.architecture_cache import store_architecture as _store_arch_cache
+                _arch_goal = ""
+                _arch_files = []
+                if spec_json:
+                    _spec_data = json.loads(spec_json) if isinstance(spec_json, str) else spec_json
+                    _arch_goal = _spec_data.get("goal", "")
+                _store_arch_cache(
+                    goal=_arch_goal,
+                    file_targets=segment_file_scope or [],
+                    arch_content=final_content,
+                    spec_hash=spec_hash or "",
+                    model_used=model_id,
+                    critique_passed=True,
+                )
+            except Exception:
+                pass  # Cache store failure is never fatal
         
         return LLMResult(
             content=final_content,

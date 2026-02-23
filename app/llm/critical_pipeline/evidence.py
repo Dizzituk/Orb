@@ -67,8 +67,13 @@ class CriticalPipelineEvidence:
         self,
         max_arch_chars: int = 15000,
         max_codebase_chars: int = 10000,
+        summary_mode: bool = False,
     ) -> str:
-        """Format evidence as context string for LLM prompt."""
+        """Format evidence as context string for LLM prompt.
+        
+        v2.2: summary_mode=True uses signature-only evidence (~70% fewer tokens).
+        Use for SpecGate, Critique, Cohesion. Use full mode for Implementer.
+        """
         sections = []
 
         if self.arch_map_content:
@@ -114,7 +119,9 @@ class CriticalPipelineEvidence:
 
         if self.file_evidence and FULL_EVIDENCE_AVAILABLE and format_evidence_for_prompt:
             try:
-                sections.append(format_evidence_for_prompt(self.file_evidence))
+                sections.append(format_evidence_for_prompt(
+                    self.file_evidence, summary_mode=summary_mode,
+                ))
             except Exception as e:
                 logger.warning(
                     "[critical_pipeline] Failed to format file evidence: %s", e

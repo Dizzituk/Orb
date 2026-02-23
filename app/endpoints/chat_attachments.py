@@ -174,7 +174,7 @@ def chat_with_attachments(
         
         else:
             analysis, raw_text, doc_type, structured_data = _process_document_attachment(
-                str(file_path), mime_type, original_name, suffix
+                str(file_path), mime_type, original_name, suffix, simple_llm_call
             )
             
             # Build document content section for current upload
@@ -405,8 +405,16 @@ def chat_with_attachments(
     else:
         messages = history_dicts + [{"role": "user", "content": full_message}]
 
-    # Job type
-    if attachment_metadata:
+    # Job type — documents need a capable model, not chat.light
+    # v0.17: Force OPENAI_DEFAULT_MODEL for document uploads (avoids gpt-4.1-mini)
+    doc_force_provider = None
+    doc_force_model = None
+    if document_content_parts:
+        jt = JobType.TEXT_HEAVY
+        doc_force_provider = Provider.OPENAI
+        doc_force_model = os.getenv("OPENAI_DEFAULT_MODEL", "gpt-5.2")
+        print(f"[chat_attachments] {len(attachment_metadata)} attachment(s) with document content - forcing {doc_force_model}")
+    elif attachment_metadata:
         jt = JobType.UNKNOWN
         print(f"[chat_attachments] {len(attachment_metadata)} attachment(s) - router will classify")
     else:
@@ -434,6 +442,8 @@ The content of the current upload appears first in the context under "=== CURREN
         attachments=attachment_metadata if attachment_metadata else None,
         project_context=full_context if full_context else None,
         system_prompt=system_prompt,
+        provider=doc_force_provider,
+        model=doc_force_model,
     )
 
     try:

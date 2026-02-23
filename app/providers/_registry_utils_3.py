@@ -101,10 +101,35 @@ async def llm_call(
     tool_names: Optional[List[str]] = None,
     job_envelope: Optional[dict] = None,
     reasoning: Optional[dict] = None,  # GPT-5.x: {"effort": "none"|"low"|"medium"|"high"|"xhigh"}
+    stage: Optional[str] = None,  # v2.2: Pipeline stage name for cost tracking
     **kwargs: Any,  # absorb future constraints, e.g. data_sensitivity_constraint
 ):
-    from .registry import LlmCallResult, get_provider_registry
-    return await get_provider_registry().llm_call(
+    from .registry import LlmCallResult, LlmCallStatus, get_provider_registry
+
+    # v2.2: Auto-inject tiered system prompt when none provided
+    if system_prompt is None and stage:
+        try:
+            from app.llm.prompt_tiers import get_system_prompt as _get_tiered_prompt
+            system_prompt = _get_tiered_prompt(stage=stage)
+        except Exception:
+            pass
+
+    # v2.2: Pre-call budget check
+    try:
+        from app.overwatcher.cost_recorder import pre_call_budget_check
+        allowed, reason = pre_call_budget_check(stage=stage)
+        if not allowed:
+            return LlmCallResult(
+                status=LlmCallStatus.ERROR,
+                provider_id=provider_id or "unknown",
+                model_id=model_id,
+                content="",
+                error_message=f"Budget exceeded: {reason}",
+            )
+    except Exception:
+        pass  # Budget check failure must never block calls
+
+    result = await get_provider_registry().llm_call(
         provider_id=provider_id,
         model_id=model_id,
         messages=messages,
@@ -119,3 +144,27 @@ async def llm_call(
         reasoning=reasoning,
         **kwargs,
     )
+
+    # v2.2: Post-call cost recording
+    try:
+        from app.overwatcher.cost_recorder import record_llm_cost
+        if hasattr(result, 'usage') and result.usage:
+            job_id = None
+            if job_envelope:
+                # JobEnvelope can be a Pydantic model or a dict
+                if isinstance(job_envelope, dict):
+                    job_id = job_envelope.get("job_id")
+                else:
+                    job_id = getattr(job_envelope, "job_id", None)
+            record_llm_cost(
+                provider=result.provider_id if hasattr(result, 'provider_id') else (provider_id or "unknown"),
+                model=result.model_id if hasattr(result, 'model_id') else model_id,
+                prompt_tokens=result.usage.prompt_tokens,
+                completion_tokens=result.usage.completion_tokens,
+                stage=stage,
+                job_id=job_id,
+            )
+    except Exception:
+        pass  # Cost recording failure must never break the pipeline
+
+    return result

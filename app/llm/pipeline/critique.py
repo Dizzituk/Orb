@@ -83,6 +83,18 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# v2.2: Code block extraction for structural critique
+# =============================================================================
+
+# v2.2: Import shared code block extractor
+try:
+    from app.llm.pipeline.deterministic_critique import extract_code_blocks_from_arch as _extract_code_blocks_from_arch
+except ImportError:
+    def _extract_code_blocks_from_arch(arch_content: str) -> Dict[str, str]:
+        return {}  # Graceful fallback
+
+
+# =============================================================================
 # Block 5: Structured JSON Critique
 # =============================================================================
 
@@ -175,7 +187,27 @@ async def call_json_critic(
     deterministic_issues.extend(scope_creep_issues)
     if scope_creep_issues:
         print(f"[DEBUG] [critique] v2.1 Scope creep check: {len(scope_creep_issues)} issue(s)")
-    
+
+    # v2.2: Run STRUCTURAL critique (syntax, size, imports, duplicates)
+    try:
+        from app.llm.pipeline.deterministic_critique import run_deterministic_critique
+        # Extract file blocks from architecture doc if present
+        _struct_files = _extract_code_blocks_from_arch(arch_content)
+        if _struct_files:
+            struct_result = run_deterministic_critique(_struct_files)
+            if struct_result.has_blockers:
+                for v in struct_result.as_critique_blockers():
+                    deterministic_issues.append(CritiqueIssue(
+                        id=f"STRUCT-{v['check'].upper()}",
+                        spec_ref=None, arch_ref=v["file"],
+                        category=v["check"], severity="blocking",
+                        description=v["message"],
+                        fix_suggestion=f"Fix {v['check']} issue in {v['file']}",
+                    ))
+                print(f"[DEBUG] [critique] v2.2 Structural check: {struct_result.blocker_count} blocker(s), {struct_result.warning_count} warning(s)")
+    except Exception as _struct_exc:
+        logger.debug("[critique] v2.2 Structural critique skipped: %s", _struct_exc)
+
     if deterministic_issues:
         print(f"[DEBUG] [critique] v1.3 EARLY FAIL: {len(deterministic_issues)} deterministic blocker(s) found")
         logger.warning("[critique] v1.3 Deterministic check BLOCKED architecture: %d issue(s)", len(deterministic_issues))
@@ -335,6 +367,7 @@ CRITICAL_CLAIMS must be the LAST block in your output."""
             job_envelope=critic_envelope,
             max_tokens=critique_max_tokens,
             timeout_seconds=180,  # v1.10: Large arch + spec inputs need room
+            stage="critique",  # v2.2: Cost tracking
         )
         
         if not result or not result.content:

@@ -179,7 +179,12 @@ def build_context_block(db: Session, project_id: int) -> str:
     return "\n\n".join(sections) if sections else ""
 
 
-def build_document_context(db: Session, project_id: int) -> str:
+def build_document_context(db: Session, project_id: int, query: str = "") -> str:
+    """Build document context from uploaded files.
+    
+    v0.17: Most recent doc gets full content (up to 50KB).
+    Older docs get summary + 1KB preview.
+    """
     try:
         from app.memory.models import DocumentContent
 
@@ -195,11 +200,30 @@ def build_document_context(db: Session, project_id: int) -> str:
             return ""
 
         context_parts = []
-        for doc in recent_docs:
+        for i, doc in enumerate(recent_docs):
             summary = doc.summary[:500] if doc.summary else ""
-            raw_preview = doc.raw_text[:1000] if doc.raw_text else ""
-            if summary or raw_preview:
-                context_parts.append(f"[{doc.filename}]:\nSummary: {summary}\nContent: {raw_preview}...")
+            raw_text = doc.raw_text or ""
+            
+            if i == 0 and len(raw_text) <= 50 * 1024:
+                # Most recent doc: include full content (up to 50KB)
+                context_parts.append(
+                    f"=== LATEST UPLOAD: {doc.filename} ===\n"
+                    f"Summary: {summary}\n\n"
+                    f"--- FULL CONTENT ---\n{raw_text}"
+                )
+            elif i == 0:
+                # Most recent but too large: first 40KB + last 10KB
+                context_parts.append(
+                    f"=== LATEST UPLOAD: {doc.filename} (TRUNCATED) ===\n"
+                    f"Summary: {summary}\n\n"
+                    f"--- CONTENT (first 40KB + last 10KB) ---\n"
+                    f"{raw_text[:40*1024]}\n\n... [TRUNCATED] ...\n\n{raw_text[-10*1024:]}"
+                )
+            else:
+                # Older docs: summary + preview
+                raw_preview = raw_text[:1000]
+                if summary or raw_preview:
+                    context_parts.append(f"[{doc.filename}]:\nSummary: {summary}\nContent: {raw_preview}...")
 
         return "\n\n".join(context_parts)
     except Exception as e:

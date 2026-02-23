@@ -143,6 +143,11 @@ def tier0_classify(text: str) -> Tier0RuleResult:
     if result.matched:
         return result
     
+    # 4h. Check graduated confidence rules (v2.2 — Cost Optimisation Phase 2)
+    result = _check_graduated_rules(text_stripped)
+    if result.matched:
+        return result
+
     # 5. Check obvious chat patterns (short-circuit)
     is_chat, chat_reason = is_obvious_chat(text_stripped)
     if is_chat:
@@ -785,3 +790,42 @@ from app.translation._tier0_codebase_questions import (  # noqa: E402
     check_natural_codebase_question,
     CODEBASE_GUARD_KEYWORDS,
 )
+
+
+# =============================================================================
+# GRADUATED CONFIDENCE RULES (v2.2 — Cost Optimisation Phase 2)
+# =============================================================================
+
+def _check_graduated_rules(text: str) -> Tier0RuleResult:
+    """
+    Check input against graduated confidence rules.
+
+    These are high-confidence phrase→intent mappings that have been
+    promoted from Tier 1 (LLM classifier) to Tier 0 (deterministic).
+    Safe to call even if the learned rules file doesn't exist yet.
+    """
+    try:
+        from app.translation.tier0_learned_rules import check_graduated_rules
+        result = check_graduated_rules(text)
+        if result.matched:
+            # Convert string intent to CanonicalIntent enum
+            intent_enum = None
+            try:
+                intent_enum = CanonicalIntent(result.intent)
+            except ValueError:
+                pass  # Unknown intent — skip this graduated rule
+
+            if intent_enum is not None:
+                return Tier0RuleResult(
+                    matched=True,
+                    intent=intent_enum,
+                    confidence=result.confidence,
+                    rule_name=result.rule_name,
+                    reason=result.reason,
+                )
+    except ImportError:
+        pass  # File doesn't exist yet — no graduated rules
+    except Exception:
+        pass  # Never let graduation failures break classification
+
+    return Tier0RuleResult(matched=False)

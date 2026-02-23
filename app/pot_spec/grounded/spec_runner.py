@@ -1108,6 +1108,23 @@ Found **{multi_file_op.total_occurrences} occurrences** in **{multi_file_op.tota
         
         logger.info("[spec_runner] v4.6 DONE: ready_for_pipeline=True, status=%s", final_status)
         
+        # v2.2: Store validated spec in cache for future reuse
+        try:
+            from app.pot_spec.spec_cache import store_spec as _store_spec_cache
+            _cache_files = _extract_file_scope_from_spec(
+                spot_markdown, grounding_data=None, multi_file_op=multi_file_op,
+            ) if spot_markdown else []
+            _store_spec_cache(
+                goal=goal or "",
+                in_scope_files=_cache_files,
+                operation_type=_job_kind,
+                spec_id=spec_id,
+                spec_json=json.dumps(grounding_data or {}),
+            )
+            logger.info("[spec_runner] v2.2 Spec cached for future reuse")
+        except Exception as _cache_err:
+            logger.debug("[spec_runner] v2.2 Spec cache store failed (non-fatal): %s", _cache_err)
+        
         return SpecGateResult(
             ready_for_pipeline=True,
             open_questions=[],

@@ -237,12 +237,24 @@ def _resolve_via_index_json(ref_normalized: str) -> Optional[str]:
     # Last resort: first candidate
     return candidates[0]
 
-def format_evidence_for_prompt(package: EvidencePackage) -> str:
+def format_evidence_for_prompt(
+    package: EvidencePackage,
+    summary_mode: bool = False,
+) -> str:
     """
     v1.27: Format evidence package for injection into LLM prompt.
+    v2.2: Added summary_mode — signatures only, no full content.
     
     Now handles multi-target read packages with full content.
+    When summary_mode=True, delegates to evidence_summary.format_evidence_summary()
+    which includes only file paths, sizes, and AST signatures (~70% fewer tokens).
     """
+    if summary_mode:
+        try:
+            from app.pot_spec.grounded.evidence_summary import format_evidence_summary
+            return format_evidence_summary(package)
+        except ImportError:
+            pass  # Fall through to full mode
     from .evidence_gathering import EvidencePackage
     lines = [
         "## Filesystem Evidence (Ground Truth)",
