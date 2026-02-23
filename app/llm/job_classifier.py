@@ -4,14 +4,6 @@ Job classification for LLM routing.
 
 Version: 0.15.1 - Simplified OVERRIDE → Frontier Model Routing
 
-CHANGES FROM v0.15.0:
-- NEW: Simplified OVERRIDE mechanism for frontier model routing
-- OVERRIDE (default) → Gemini 3 Pro Preview
-- OVERRIDE CLAUDE/OPUS → Anthropic frontier (Opus)
-- OVERRIDE CHATGPT/GPT/OPENAI → OpenAI frontier
-- OVERRIDE line stripped from prompt before sending to LLM
-- Frontier models configurable via env vars
-
 8-ROUTE CLASSIFICATION:
 1. CHAT_LIGHT → OpenAI gpt-4.1-mini (casual chat)
 2. TEXT_HEAVY → OpenAI gpt-4.1 (heavy text work, text-only PDFs)
@@ -23,12 +15,6 @@ CHANGES FROM v0.15.0:
 8. OPUS_CRITIC → Gemini 3.0 Pro (explicit Opus review only)
 9. VIDEO_CODE_DEBUG → 2-step pipeline: Gemini3 transcribe → Sonnet code
 
-MIXED_FILE ROUTING (v0.15.0):
-- PDFs with embedded images → MIXED_FILE → IMAGE_COMPLEX
-- DOCX with embedded images → MIXED_FILE → IMAGE_COMPLEX
-- PPTX (always has slides) → MIXED_FILE → IMAGE_COMPLEX
-- Text-only PDFs → TEXT_FILE → TEXT_HEAVY
-
 HARD RULES:
 - Images/video NEVER go to Claude (enforced here)
 - PDFs NEVER go to Claude (enforced here)
@@ -38,14 +24,32 @@ HARD RULES:
 """
 
 import os
-import re
 import logging
 from typing import Optional, List, Dict, Any, Tuple, Union
 
 from .schemas import (
     JobType, Provider, RoutingDecision, RoutingConfig, AttachmentInfo
 )
-from app.llm._job_classifier_utils import VIDEO_SIZE_THRESHOLD, _has_complex_vision_keywords, _has_video_deep_analysis_keywords, get_provider_for_job, get_routing_for_job_type, is_claude_allowed, is_claude_forbidden, is_vision_job
+from app.llm._job_classifier_utils import (
+    VIDEO_SIZE_THRESHOLD, _has_complex_vision_keywords,
+    _has_video_deep_analysis_keywords, get_provider_for_job,
+    get_routing_for_job_type, is_claude_allowed, is_claude_forbidden,
+    is_vision_job,
+)
+
+# Classification logic (extracted for modularity)
+from app.llm._job_classifier_classify import (
+    classify_job,
+    _make_decision,
+    _classify_pdf,
+    _detect_user_override,
+    _has_code_keywords,
+    _has_scoped_code_keywords,
+    _has_architecture_keywords,
+    _has_heavy_text_keywords,
+    _debug_log,
+    ROUTER_DEBUG,
+)
 
 # v0.15.0: Import file_classifier for MIXED_FILE detection
 try:
@@ -60,7 +64,6 @@ try:
     FILE_CLASSIFIER_AVAILABLE = True
 except ImportError:
     FILE_CLASSIFIER_AVAILABLE = False
-    # Stub for backward compatibility
     class FileType:
         TEXT_FILE = "TEXT_FILE"
         CODE_FILE = "CODE_FILE"
@@ -70,23 +73,11 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# ============================================================================
-# ROUTER DEBUG MODE
-# ============================================================================
-ROUTER_DEBUG = os.getenv("ORB_ROUTER_DEBUG", "0") == "1"
-
-def _debug_log(msg: str):
-    """Print debug message if ROUTER_DEBUG is enabled."""
-    if ROUTER_DEBUG:
-        print(f"[router-debug] {msg}")
-
 
 # ============================================================================
 # v0.15.1: FRONTIER MODEL CONFIGURATION
 # ============================================================================
 
-# These env vars define which model is the "frontier" for each provider.
-# Update these when new frontier models are released (Gemini 4, Opus 5, GPT-5.2, etc.)
 GEMINI_FRONTIER_MODEL_ID = os.getenv("GEMINI_FRONTIER_MODEL_ID", "gemini-3-pro-preview")
 ANTHROPIC_FRONTIER_MODEL_ID = os.getenv("ANTHROPIC_FRONTIER_MODEL_ID", "claude-opus-4-5-20250514")
 OPENAI_FRONTIER_MODEL_ID = os.getenv("OPENAI_FRONTIER_MODEL_ID", "gpt-4.1")
@@ -99,99 +90,63 @@ OPENAI_FRONTIER_MODEL_ID = os.getenv("OPENAI_FRONTIER_MODEL_ID", "gpt-4.1")
 def detect_frontier_override(message: str) -> Optional[Tuple[str, str, str]]:
     """
     Detect OVERRIDE command at start of a line and return frontier model routing.
-    
-    OVERRIDE semantics:
-    - OVERRIDE (with or without extra words) → Gemini 3 Pro Preview (default)
-    - OVERRIDE CLAUDE / OVERRIDE OPUS / OVERRIDE ANTHROPIC → Anthropic frontier
-    - OVERRIDE CHATGPT / OVERRIDE GPT / OVERRIDE OPENAI → OpenAI frontier
-    
-    Args:
-        message: The user message text
-        
+
     Returns:
         Tuple of (provider, model_id, cleaned_message) if OVERRIDE found
         None if no OVERRIDE detected
-        
-    The cleaned_message has the OVERRIDE line stripped out.
     """
     if not message:
         return None
-    
-    # Split into lines to find OVERRIDE at start of a line
+
     lines = message.split('\n')
     override_line_idx = None
     override_payload = ""
-    
+
     for idx, line in enumerate(lines):
         stripped = line.strip()
-        # Check if line starts with OVERRIDE (case-insensitive)
         if stripped.upper().startswith("OVERRIDE"):
             override_line_idx = idx
-            # Extract payload: everything after "OVERRIDE" on this line
-            # Handle both "OVERRIDE" and "OVERRIDE something"
-            if len(stripped) > 8:  # len("OVERRIDE") == 8
+            if len(stripped) > 8:
                 override_payload = stripped[8:].strip()
             else:
                 override_payload = ""
             break
-    
+
     if override_line_idx is None:
         return None
-    
-    # We found an OVERRIDE line
+
     payload_lower = override_payload.lower()
-    
+
     if ROUTER_DEBUG:
         _debug_log(f"OVERRIDE DETECTED at line {override_line_idx}")
         _debug_log(f"  Payload: '{override_payload}'")
-    
-    # Determine provider based on payload keywords
-    # Priority: Check specific provider keywords
-    
+
     if any(kw in payload_lower for kw in ["claude", "anthropic", "opus"]):
         force_provider = "anthropic"
         force_model_id = ANTHROPIC_FRONTIER_MODEL_ID
-        if ROUTER_DEBUG:
-            _debug_log(f"  → Anthropic frontier: {force_model_id}")
-    
     elif any(kw in payload_lower for kw in ["chatgpt", "openai", "gpt"]):
         force_provider = "openai"
         force_model_id = OPENAI_FRONTIER_MODEL_ID
-        if ROUTER_DEBUG:
-            _debug_log(f"  → OpenAI frontier: {force_model_id}")
-    
     elif any(kw in payload_lower for kw in ["gemini", "google"]):
-        # Explicit Gemini request
         force_provider = "google"
         force_model_id = GEMINI_FRONTIER_MODEL_ID
-        if ROUTER_DEBUG:
-            _debug_log(f"  → Gemini frontier (explicit): {force_model_id}")
-    
     else:
-        # Default: Gemini 3 Pro Preview (when no provider specified)
         force_provider = "google"
         force_model_id = GEMINI_FRONTIER_MODEL_ID
-        if ROUTER_DEBUG:
-            _debug_log(f"  → Gemini frontier (default): {force_model_id}")
-    
-    # Build cleaned message with OVERRIDE line removed
+
+    if ROUTER_DEBUG:
+        _debug_log(f"  → {force_provider} frontier: {force_model_id}")
+
     cleaned_lines = lines[:override_line_idx] + lines[override_line_idx + 1:]
     cleaned_message = '\n'.join(cleaned_lines).strip()
-    
-    # v0.15.1 FIX: If cleaned message is empty, provide a default prompt
-    # This prevents "non-empty content" errors from LLM APIs
+
     if not cleaned_message:
         cleaned_message = "Analyze and describe the content in detail."
         if ROUTER_DEBUG:
             _debug_log("  → Empty message after OVERRIDE removal, using default prompt")
-    
-    if ROUTER_DEBUG:
-        _debug_log(f"  Cleaned message length: {len(cleaned_message)} chars")
-    
+
     return (force_provider, force_model_id, cleaned_message)
 
-
-# Size threshold for video escalation (10MB)
 
 # Deep semantic video analysis keywords
 VIDEO_DEEP_ANALYSIS_KEYWORDS: set = {
@@ -206,90 +161,45 @@ VIDEO_DEEP_ANALYSIS_KEYWORDS: set = {
 
 
 # =============================================================================
-# MODALITY FLAG HELPER (v0.15.0 - Enhanced with file_classifier)
+# MODALITY FLAG HELPER
 # =============================================================================
 
 def compute_modality_flags(
     attachments: List[AttachmentInfo],
     base_path: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Compute modality flags from attachments.
-    
-    v0.15.0: Now uses file_classifier for MIXED_FILE detection.
-    Backward compatible - returns same structure plus new fields.
-    
-    Args:
-        attachments: List of AttachmentInfo objects
-        base_path: Optional base path for file access (for MIXED_FILE detection)
-    
-    Returns:
-        Dict with:
-            # Original fields (backward compat)
-            has_video: bool
-            has_image: bool
-            has_code: bool
-            has_text: bool
-            has_pdf: bool
-            video_count: int
-            image_count: int
-            code_count: int
-            text_count: int
-            video_attachments: List[AttachmentInfo]
-            image_attachments: List[AttachmentInfo]
-            code_attachments: List[AttachmentInfo]
-            
-            # New fields (v0.15.0)
-            has_mixed: bool  # Documents with embedded images
-            mixed_count: int
-            classification_result: Optional[ClassificationResult]
-            file_map: Optional[str]  # Stable [FILE_X] naming
-    """
-    # Basic categorization (backward compat)
+    """Compute modality flags from attachments."""
     video_attachments = [a for a in attachments if a.is_video]
     image_attachments = [a for a in attachments if a.is_image]
     code_attachments = [a for a in attachments if a.is_code]
     text_attachments = [a for a in attachments if a.is_document and not a.is_pdf]
     pdf_attachments = [a for a in attachments if a.is_pdf]
-    
-    # v0.15.0: Use file_classifier for enhanced detection
+
     classification_result = None
     file_map = None
     has_mixed = False
     mixed_count = 0
-    
+
     if FILE_CLASSIFIER_AVAILABLE and attachments:
         try:
             classification_result = classify_from_attachment_info(attachments)
             file_map = build_file_map(classification_result)
-            
-            # Extract MIXED_FILE info
             has_mixed = classification_result.HAS_MIXED
             mixed_count = len(classification_result.mixed_files)
-            
             if ROUTER_DEBUG:
                 _debug_log(f"file_classifier results:")
-                _debug_log(f"  HAS_TEXT: {classification_result.HAS_TEXT}")
-                _debug_log(f"  HAS_CODE: {classification_result.HAS_CODE}")
-                _debug_log(f"  HAS_IMAGE: {classification_result.HAS_IMAGE}")
-                _debug_log(f"  HAS_VIDEO: {classification_result.HAS_VIDEO}")
                 _debug_log(f"  HAS_MIXED: {classification_result.HAS_MIXED}")
                 _debug_log(f"  mixed_files: {[f.file_id for f in classification_result.mixed_files]}")
-                
         except Exception as e:
             logger.warning(f"file_classifier failed, using fallback: {e}")
-            if ROUTER_DEBUG:
-                _debug_log(f"file_classifier error: {e}")
-    
-    # Fallback MIXED_FILE detection for PDFs (if file_classifier unavailable)
+
     if not FILE_CLASSIFIER_AVAILABLE:
         for pdf in pdf_attachments:
             if pdf.pdf_image_count and pdf.pdf_image_count > 0:
                 has_mixed = True
                 mixed_count += 1
-    
+
     return {
-        # Original fields (backward compat)
         "has_video": len(video_attachments) > 0,
         "has_image": len(image_attachments) > 0,
         "has_code": len(code_attachments) > 0,
@@ -302,543 +212,11 @@ def compute_modality_flags(
         "video_attachments": video_attachments,
         "image_attachments": image_attachments,
         "code_attachments": code_attachments,
-        
-        # New fields (v0.15.0)
         "has_mixed": has_mixed,
         "mixed_count": mixed_count,
         "classification_result": classification_result,
         "file_map": file_map,
     }
-
-
-def classify_job(
-    message: str,
-    attachments: Optional[List[AttachmentInfo]] = None,
-    requested_job_type: Optional[str] = None,
-    metadata: Optional[Dict[str, Any]] = None,
-) -> RoutingDecision:
-    """
-    Classify a job and return routing decision.
-    
-    v0.15.1: Now checks for OVERRIDE before classification.
-    v0.15.0: Enhanced with MIXED_FILE detection via file_classifier.
-    
-    Priority order:
-    1. Explicit opus.critic (job_type or metadata)
-    2. Explicit document.pdf_text / document.pdf_vision override
-    3. User override detection ("force Opus", "use GPT")
-    4. Video+Code → VIDEO_CODE_DEBUG pipeline
-    5. Video attachments → VIDEO_HEAVY
-    6. Code attachments → CODE_MEDIUM/ORCHESTRATOR (code wins over images)
-    7. Image attachments → IMAGE_COMPLEX
-    8. MIXED_FILE (docs with images) → IMAGE_COMPLEX (v0.15.0)
-    9. PDF attachments → TEXT_HEAVY or IMAGE_COMPLEX
-    10. Text complexity → TEXT_HEAVY or CHAT_LIGHT
-    11. Default → CHAT_LIGHT
-    
-    Args:
-        message: User message text
-        attachments: List of AttachmentInfo objects
-        requested_job_type: Explicitly requested job type string
-        metadata: Optional metadata dict
-    
-    Returns:
-        RoutingDecision with job_type, provider, model, reason
-    """
-    attachments = attachments or []
-    metadata = metadata or {}
-    message_lower = message.lower()
-    
-    # =========================================================================
-    # DEBUG LOGGING
-    # =========================================================================
-    if ROUTER_DEBUG:
-        _debug_log("=" * 70)
-        _debug_log("CLASSIFICATION START")
-        _debug_log("=" * 70)
-        _debug_log(f"Message (first 200 chars): {repr(message[:200])}")
-        _debug_log(f"Message length: {len(message)} chars")
-        _debug_log(f"Requested job_type: {requested_job_type}")
-        _debug_log(f"Metadata: {metadata}")
-        _debug_log(f"Total attachments: {len(attachments)}")
-        
-        if attachments:
-            for i, att in enumerate(attachments):
-                _debug_log(f"  Attachment {i+1}:")
-                _debug_log(f"    filename: {att.filename}")
-                _debug_log(f"    mime_type: {getattr(att, 'mime_type', 'N/A')}")
-                _debug_log(f"    size_bytes: {getattr(att, 'size_bytes', 'N/A')}")
-                _debug_log(f"    is_code: {att.is_code}")
-                _debug_log(f"    is_image: {att.is_image}")
-                _debug_log(f"    is_video: {att.is_video}")
-                _debug_log(f"    is_pdf: {att.is_pdf}")
-                _debug_log(f"    pdf_image_count: {getattr(att, 'pdf_image_count', 'N/A')}")
-    
-    # =========================================================================
-    # 1. EXPLICIT OPUS.CRITIC CHECK
-    # =========================================================================
-    
-    if requested_job_type == "opus.critic":
-        _debug_log("Section 1: OPUS.CRITIC - Explicit request")
-        return _make_decision(
-            JobType.OPUS_CRITIC,
-            "Explicit opus.critic job type requested"
-        )
-    
-    if (metadata.get("source_model", "").startswith("claude-opus") and 
-        metadata.get("intent") == "critic"):
-        return _make_decision(
-            JobType.OPUS_CRITIC,
-            "Metadata indicates Opus output critique request"
-        )
-    
-    # =========================================================================
-    # 2. EXPLICIT PDF OVERRIDES
-    # =========================================================================
-    
-    if requested_job_type == "document.pdf_text":
-        return _make_decision(
-            JobType.DOCUMENT_PDF_TEXT,
-            "Explicit document.pdf_text override",
-            user_override=True
-        )
-    
-    if requested_job_type == "document.pdf_vision":
-        return _make_decision(
-            JobType.DOCUMENT_PDF_VISION,
-            "Explicit document.pdf_vision override",
-            user_override=True
-        )
-    
-    # =========================================================================
-    # 3. USER OVERRIDE DETECTION (Legacy)
-    # =========================================================================
-    # Note: Frontier OVERRIDE is handled separately in router.py
-    
-    override_result = _detect_user_override(message_lower)
-    if override_result:
-        return override_result
-    
-    # =========================================================================
-    # 3.5 COMPUTE MODALITY FLAGS (v0.15.0: with file_classifier)
-    # =========================================================================
-    
-    modality_flags = compute_modality_flags(attachments)
-    
-    if ROUTER_DEBUG:
-        _debug_log(f"Section 3.5: MODALITY FLAGS")
-        _debug_log(f"  has_video: {modality_flags['has_video']} ({modality_flags['video_count']})")
-        _debug_log(f"  has_image: {modality_flags['has_image']} ({modality_flags['image_count']})")
-        _debug_log(f"  has_code: {modality_flags['has_code']} ({modality_flags['code_count']})")
-        _debug_log(f"  has_text: {modality_flags['has_text']}")
-        _debug_log(f"  has_mixed: {modality_flags['has_mixed']} ({modality_flags['mixed_count']})")
-        if modality_flags.get('file_map'):
-            _debug_log(f"  file_map generated: {len(modality_flags['file_map'])} chars")
-    
-    # =========================================================================
-    # 4. VIDEO+CODE DEBUG PIPELINE (v0.14.1)
-    # =========================================================================
-    
-    if modality_flags["has_video"] and modality_flags["has_code"]:
-        if ROUTER_DEBUG:
-            _debug_log(f"  → VIDEO+CODE detected: {modality_flags['video_count']} video(s) + {modality_flags['code_count']} code file(s)")
-            _debug_log(f"  → Returning VIDEO_CODE_DEBUG (Gemini3 → Sonnet pipeline)")
-        
-        return _make_decision(
-            JobType.VIDEO_CODE_DEBUG,
-            f"Video+Code debug pipeline: {modality_flags['video_count']} video(s) + {modality_flags['code_count']} code file(s) → Gemini3 transcription → Sonnet coding",
-            file_map=modality_flags.get('file_map')
-        )
-    
-    # =========================================================================
-    # 5. VIDEO ATTACHMENTS → GEMINI 3 PRO
-    # =========================================================================
-    
-    video_attachments = modality_flags["video_attachments"]
-    image_attachments = modality_flags["image_attachments"]
-    
-    if video_attachments:
-        video_count = len(video_attachments)
-        total_video_size = sum(a.size_bytes for a in video_attachments)
-        
-        if ROUTER_DEBUG:
-            _debug_log(f"Section 5: VIDEO DETECTION - {video_count} video(s)")
-            _debug_log(f"  Total video size: {total_video_size / 1024 / 1024:.1f}MB")
-            _debug_log(f"  → ALL VIDEO → VIDEO_HEAVY (Gemini 3.0 Pro)")
-        
-        return _make_decision(
-            JobType.VIDEO_HEAVY,
-            f"Video analysis: {video_count} video(s), {total_video_size / 1024 / 1024:.1f}MB → Gemini 3.0 Pro",
-            file_map=modality_flags.get('file_map')
-        )
-    
-    # =========================================================================
-    # 6. CODE ATTACHMENTS → ANTHROPIC (code wins over images)
-    # =========================================================================
-    
-    code_attachments = modality_flags["code_attachments"]
-    
-    if code_attachments or _has_code_keywords(message_lower):
-        if ROUTER_DEBUG:
-            _debug_log(f"Section 6: CODE DETECTION - Found {len(code_attachments)} code file(s)")
-            if modality_flags["has_image"]:
-                _debug_log(f"  Note: {modality_flags['image_count']} image(s) also present - code takes priority")
-            if modality_flags["has_mixed"]:
-                _debug_log(f"  Note: {modality_flags['mixed_count']} mixed file(s) also present - code takes priority")
-        
-        bugfix_keywords = [
-            "bug", "bugfix", "fix", "error", "issue", "traceback",
-            "stack trace", "identify bug", "find the issue", "debug",
-            "inspect", "find any bug", "code bugfix", "please inspect"
-        ]
-        
-        has_bugfix_request = any(kw in message_lower for kw in bugfix_keywords)
-        
-        if ROUTER_DEBUG:
-            matched_bugfix = [kw for kw in bugfix_keywords if kw in message_lower]
-            _debug_log(f"  Bugfix check: {has_bugfix_request} (matched: {matched_bugfix})")
-        
-        if len(code_attachments) == 1 and has_bugfix_request:
-            _debug_log(f"  → Returning CODE_MEDIUM (single file + bugfix)")
-            return _make_decision(
-                JobType.CODE_MEDIUM,
-                "Single code file with bugfix request → Sonnet",
-                file_map=modality_flags.get('file_map')
-            )
-        
-        if len(code_attachments) > 3 or _has_architecture_keywords(message_lower):
-            _debug_log(f"  → Returning ORCHESTRATOR (multi-file or architecture)")
-            return _make_decision(
-                JobType.ORCHESTRATOR,
-                "Multi-file or architecture-level code task → Opus",
-                file_map=modality_flags.get('file_map')
-            )
-        
-        elif _has_scoped_code_keywords(message_lower):
-            _debug_log(f"  → Returning CODE_MEDIUM (scoped code task)")
-            return _make_decision(
-                JobType.CODE_MEDIUM,
-                "Scoped code task (1-3 files) → Sonnet",
-                file_map=modality_flags.get('file_map')
-            )
-        
-        else:
-            _debug_log(f"  → Returning CODE_MEDIUM (default for code)")
-            return _make_decision(
-                JobType.CODE_MEDIUM,
-                "Code task (defaulting to Sonnet)",
-                file_map=modality_flags.get('file_map')
-            )
-    
-    # =========================================================================
-    # 7. IMAGE ATTACHMENTS → GEMINI 2.5 PRO
-    # =========================================================================
-    
-    if image_attachments:
-        image_count = len(image_attachments)
-        total_image_size = sum(a.size_bytes for a in image_attachments)
-        
-        if ROUTER_DEBUG:
-            _debug_log(f"Section 7: IMAGE DETECTION - {image_count} image(s)")
-            _debug_log(f"  Total image size: {total_image_size / 1024 / 1024:.1f}MB")
-            _debug_log(f"  → ALL IMAGES → IMAGE_COMPLEX (Gemini 2.5 Pro)")
-        
-        return _make_decision(
-            JobType.IMAGE_COMPLEX,
-            f"Image analysis: {image_count} image(s) → Gemini 2.5 Pro",
-            file_map=modality_flags.get('file_map')
-        )
-    
-    # =========================================================================
-    # 7.5. MIXED_FILE (Docs with images) → GEMINI 2.5 PRO (v0.15.0)
-    # =========================================================================
-    
-    if modality_flags["has_mixed"]:
-        mixed_count = modality_flags["mixed_count"]
-        
-        if ROUTER_DEBUG:
-            _debug_log(f"Section 7.5: MIXED_FILE DETECTION - {mixed_count} mixed file(s)")
-            _debug_log(f"  → MIXED_FILE → IMAGE_COMPLEX (Gemini 2.5 Pro for vision)")
-        
-        return _make_decision(
-            JobType.IMAGE_COMPLEX,
-            f"Documents with embedded images: {mixed_count} mixed file(s) → Gemini 2.5 Pro (vision required)",
-            file_map=modality_flags.get('file_map')
-        )
-    
-    # =========================================================================
-    # 8. DOCUMENT FILES (.md, .txt, .csv) → Smart routing
-    # =========================================================================
-    
-    doc_attachments = [a for a in attachments 
-                       if a.filename.lower().endswith(('.md', '.txt', '.csv', '.json', '.yaml', '.yml'))]
-    
-    if ROUTER_DEBUG:
-        _debug_log(f"Section 8: DOCUMENT FILES - Found {len(doc_attachments)} document(s)")
-    
-    if doc_attachments:
-        architecture_keywords = [
-            "architecture design", "high-level architecture", "system architecture",
-            "design a revised architecture", "architect", "architectural",
-            "design a system", "design a new system", "refactor the entire",
-            "comprehensive architectural analysis", "deep system dive",
-            "structural improvements", "system design", "component design"
-        ]
-        
-        simple_doc_keywords = [
-            "summari", "explain", "describe", "list", "outline",
-            "convert", "format", "show me", "what is", "what does",
-            "tell me about", "read this", "preview", "quick look"
-        ]
-        
-        has_architecture_request = any(kw in message_lower for kw in architecture_keywords)
-        
-        if has_architecture_request:
-            _debug_log(f"  → Returning ORCHESTRATOR (architecture design)")
-            return _make_decision(
-                JobType.ORCHESTRATOR,
-                f"Document with architecture design request: {len(doc_attachments)} file(s)",
-                file_map=modality_flags.get('file_map')
-            )
-        
-        has_simple_request = any(kw in message_lower for kw in simple_doc_keywords)
-        
-        if has_simple_request:
-            _debug_log(f"  → Returning CHAT_LIGHT (simple doc processing)")
-            return _make_decision(
-                JobType.CHAT_LIGHT,
-                f"Document task: {len(doc_attachments)} file(s), simple processing",
-                file_map=modality_flags.get('file_map')
-            )
-    
-    # =========================================================================
-    # 9. PDF ATTACHMENTS → DETERMINISTIC ROUTING
-    # =========================================================================
-    
-    pdf_attachments = [a for a in attachments if a.is_pdf]
-    if pdf_attachments:
-        return _classify_pdf(pdf_attachments, message_lower, modality_flags.get('file_map'))
-    
-    # =========================================================================
-    # 10. TEXT COMPLEXITY DETECTION
-    # =========================================================================
-    
-    if _has_heavy_text_keywords(message_lower):
-        return _make_decision(
-            JobType.TEXT_HEAVY,
-            "Heavy text work detected"
-        )
-    
-    # =========================================================================
-    # 11. LEGACY JOB TYPE NORMALIZATION
-    # =========================================================================
-    
-    if requested_job_type:
-        try:
-            legacy_type = JobType(requested_job_type)
-            primary_type = RoutingConfig.normalize_job_type(legacy_type)
-            return _make_decision(
-                primary_type,
-                f"Normalized from legacy type: {requested_job_type}"
-            )
-        except ValueError:
-            logger.warning(f"Unknown job type requested: {requested_job_type}")
-    
-    # =========================================================================
-    # 12. DEFAULT → CHAT_LIGHT
-    # =========================================================================
-    
-    return _make_decision(
-        JobType.CHAT_LIGHT,
-        "Default classification (casual chat)"
-    )
-
-
-def _classify_pdf(
-    pdf_attachments: List[AttachmentInfo],
-    message_lower: str,
-    file_map: Optional[str] = None,
-) -> RoutingDecision:
-    """
-    Deterministic PDF routing based on image count.
-    
-    v0.15.0: Uses pdf_image_count for MIXED_FILE detection.
-    
-    Rules:
-    - image_count == 0 → TEXT_HEAVY (GPT)
-    - image_count > 0 → IMAGE_COMPLEX (Gemini) [MIXED_FILE]
-    - NEVER route to Claude
-    """
-    total_image_count = 0
-    total_text_chars = 0
-    
-    for pdf in pdf_attachments:
-        if pdf.pdf_image_count is not None:
-            total_image_count += pdf.pdf_image_count
-        if pdf.pdf_text_chars is not None:
-            total_text_chars += pdf.pdf_text_chars
-    
-    if ROUTER_DEBUG:
-        _debug_log(f"Section 9: PDF ROUTING")
-        _debug_log(f"  Total PDFs: {len(pdf_attachments)}")
-        _debug_log(f"  Total image count: {total_image_count}")
-        _debug_log(f"  Total text chars: {total_text_chars}")
-    
-    # If no image count data, check text as signal
-    if all(pdf.pdf_image_count is None for pdf in pdf_attachments):
-        if total_text_chars > 0:
-            _debug_log(f"  → TEXT_HEAVY (text-only, no image analysis)")
-            return _make_decision(
-                JobType.TEXT_HEAVY,
-                f"Text-based PDF ({total_text_chars} chars, image count not analyzed) → GPT",
-                pdf_image_count=None,
-                pdf_text_chars=total_text_chars,
-                file_map=file_map
-            )
-        else:
-            _debug_log(f"  → IMAGE_COMPLEX (safe default, no text)")
-            return _make_decision(
-                JobType.IMAGE_COMPLEX,
-                "PDF not analyzed (no text, no image count) - using vision route (safe default)",
-                pdf_image_count=None,
-                pdf_text_chars=total_text_chars,
-                file_map=file_map
-            )
-    
-    # Deterministic routing based on image count
-    if total_image_count == 0:
-        _debug_log(f"  → TEXT_HEAVY (0 images)")
-        return _make_decision(
-            JobType.TEXT_HEAVY,
-            f"Text-only PDF ({total_text_chars} chars, 0 images) → GPT",
-            pdf_image_count=0,
-            pdf_text_chars=total_text_chars,
-            file_map=file_map
-        )
-    else:
-        _debug_log(f"  → IMAGE_COMPLEX (MIXED_FILE: {total_image_count} images)")
-        return _make_decision(
-            JobType.IMAGE_COMPLEX,
-            f"PDF with {total_image_count} image(s) [MIXED_FILE] → Gemini vision",
-            pdf_image_count=total_image_count,
-            pdf_text_chars=total_text_chars,
-            file_map=file_map
-        )
-
-
-def _make_decision(
-    job_type: JobType,
-    reason: str,
-    user_override: bool = False,
-    pdf_image_count: Optional[int] = None,
-    pdf_text_chars: Optional[int] = None,
-    file_map: Optional[str] = None,
-) -> RoutingDecision:
-    """Create a RoutingDecision with provider/model lookup."""
-    provider, model = RoutingConfig.get_routing(job_type)
-    
-    if ROUTER_DEBUG:
-        _debug_log("=" * 70)
-        _debug_log("CLASSIFICATION COMPLETE")
-        _debug_log(f"  Job Type: {job_type.value}")
-        _debug_log(f"  Provider: {provider.value}")
-        _debug_log(f"  Model: {model}")
-        _debug_log(f"  Reason: {reason}")
-        if user_override:
-            _debug_log(f"  User Override: YES")
-        if pdf_image_count is not None:
-            _debug_log(f"  PDF Image Count: {pdf_image_count}")
-        if pdf_text_chars is not None:
-            _debug_log(f"  PDF Text Chars: {pdf_text_chars}")
-        if file_map:
-            _debug_log(f"  File Map: {len(file_map)} chars")
-        _debug_log("=" * 70)
-    
-    decision = RoutingDecision(
-        job_type=job_type,
-        provider=provider,
-        model=model,
-        reason=reason,
-        user_override=user_override,
-        pdf_image_count=pdf_image_count,
-        pdf_text_chars=pdf_text_chars,
-    )
-    
-    # v0.15.0: Attach file_map to decision metadata (for prompt injection)
-    if file_map:
-        if not hasattr(decision, 'metadata'):
-            # Store in reason as workaround if RoutingDecision doesn't have metadata field
-            decision.reason = f"{reason}\n\n{file_map}"
-    
-    return decision
-
-
-def _detect_user_override(message_lower: str) -> Optional[RoutingDecision]:
-    """
-    Detect explicit user overrides in message (legacy style).
-    
-    Note: This is for legacy "force opus", "use gpt" style commands.
-    The new OVERRIDE mechanism is handled separately via detect_frontier_override().
-    """
-    
-    if any(p in message_lower for p in ["force opus", "use opus", "send to opus"]):
-        return _make_decision(
-            JobType.ORCHESTRATOR,
-            "User requested Opus explicitly",
-            user_override=True
-        )
-    
-    if any(p in message_lower for p in ["force sonnet", "use sonnet", "send to sonnet"]):
-        return _make_decision(
-            JobType.CODE_MEDIUM,
-            "User requested Sonnet explicitly",
-            user_override=True
-        )
-    
-    if any(p in message_lower for p in ["force gpt", "use gpt", "send to gpt", "use openai"]):
-        return _make_decision(
-            JobType.TEXT_HEAVY,
-            "User requested GPT explicitly",
-            user_override=True
-        )
-    
-    if any(p in message_lower for p in ["force gemini", "use gemini", "send to gemini"]):
-        return _make_decision(
-            JobType.IMAGE_COMPLEX,
-            "User requested Gemini explicitly → Gemini 2.5 Pro",
-            user_override=True
-        )
-    
-    return None
-
-
-def _has_code_keywords(message_lower: str) -> bool:
-    """Check if message contains code-related keywords."""
-    code_indicators = [
-        "code", "function", "class", "method", "variable",
-        "bug", "error", "exception", "debug", "fix",
-        "implement", "refactor", "test", "unit test",
-        "api", "endpoint", "route", "handler",
-        "import", "module", "package", "library",
-        "def ", "async ", "await ", "return ",
-        "```", "python", "javascript", "typescript",
-    ]
-    return any(kw in message_lower for kw in code_indicators)
-
-
-def _has_scoped_code_keywords(message_lower: str) -> bool:
-    """Check for scoped/small code task keywords."""
-    return any(kw in message_lower for kw in RoutingConfig.CODE_MEDIUM_KEYWORDS)
-
-
-def _has_architecture_keywords(message_lower: str) -> bool:
-    """Check for architecture/complex code keywords."""
-    return any(kw in message_lower for kw in RoutingConfig.ORCHESTRATOR_KEYWORDS)
-
-
-def _has_heavy_text_keywords(message_lower: str) -> bool:
-    """Check for heavy text work keywords."""
-    return any(kw in message_lower for kw in RoutingConfig.TEXT_HEAVY_KEYWORDS)
 
 
 # =============================================================================
@@ -851,11 +229,9 @@ def prepare_attachments(
     """Convert raw attachment dicts to AttachmentInfo objects."""
     if not raw_attachments:
         return []
-    
+
     result = []
     for att in raw_attachments:
-        # Accept legacy/simple attachment formats where entries may be strings
-        # (e.g., filename, path, or file_id). Normalize to dict for `.get()` usage.
         if isinstance(att, str):
             att = {"filename": att}
         if isinstance(att, AttachmentInfo):
@@ -870,7 +246,7 @@ def prepare_attachments(
                 pdf_page_count=att.get("pdf_page_count"),
             )
             result.append(info)
-    
+
     return result
 
 
@@ -900,7 +276,6 @@ def get_model_config() -> Dict[str, str]:
         "gemini_complex": os.getenv("GEMINI_VISION_MODEL_COMPLEX", "gemini-2.5-pro"),
         "gemini_video": os.getenv("GEMINI_VIDEO_HEAVY_MODEL", "gemini-3.0-pro-preview"),
         "gemini_critic": os.getenv("GEMINI_OPUS_CRITIC_MODEL", "gemini-3.0-pro-preview"),
-        # v0.15.1: Frontier models
         "gemini_frontier": GEMINI_FRONTIER_MODEL_ID,
         "anthropic_frontier": ANTHROPIC_FRONTIER_MODEL_ID,
         "openai_frontier": OPENAI_FRONTIER_MODEL_ID,
@@ -908,19 +283,13 @@ def get_model_config() -> Dict[str, str]:
 
 
 # =============================================================================
-# v0.15.0: FILE MAP HELPERS
+# FILE MAP HELPERS
 # =============================================================================
 
 def get_file_map_for_attachments(attachments: List[AttachmentInfo]) -> Optional[str]:
-    """
-    Generate stable file map for attachments.
-    
-    Returns:
-        File map string or None if file_classifier unavailable
-    """
+    """Generate stable file map for attachments."""
     if not FILE_CLASSIFIER_AVAILABLE or not attachments:
         return None
-    
     try:
         result = classify_from_attachment_info(attachments)
         return build_file_map(result)

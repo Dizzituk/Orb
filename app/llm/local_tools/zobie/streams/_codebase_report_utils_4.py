@@ -6,6 +6,7 @@ from ..sse import sse_done, sse_error, sse_token
 from app.llm.audit_logger import RoutingTrace
 from app.llm.local_tools.zobie.streams._codebase_report_utils_2 import CODEBASE_REPORT_OUTPUT_DIR, _detect_duplicate_filenames, _detect_floating_files
 from app.llm.local_tools.zobie.streams._codebase_report_utils_3 import _compute_incremental, _format_size, _load_state, _save_state, _scan_directory, _scan_file_for_absolute_paths, _scan_file_for_blocked_refs
+from app.llm.local_tools.zobie.streams._codebase_report_structural import run_structural_scan
 from datetime import datetime
 from pathlib import Path
 from sqlalchemy.orm import Session
@@ -170,6 +171,20 @@ async def generate_codebase_report_stream(
         duplicate_names = _detect_duplicate_filenames(all_files)
         yield sse_token(f"   ✓ Found {len(duplicate_names)} duplicate filename patterns\n\n")
     
+    # =================================================================
+    # STRUCTURAL ANALYSIS — run smart scanner on qualifying Python files
+    # =================================================================
+    yield sse_token("🔬 Running structural analysis on Python files...\n")
+    structural_report = run_structural_scan(all_files)
+    yield sse_token(
+        f"   ✓ Scanned {structural_report.files_scanned} files, "
+        f"found {len(structural_report.findings)} structural concerns "
+        f"({structural_report.warning_count} warnings, {structural_report.info_count} info)\n"
+    )
+    if structural_report.files_skipped_small:
+        yield sse_token(f"   ℹ️  Skipped {structural_report.files_skipped_small} small files (<200 lines)\n")
+    yield sse_token("\n")
+
     # Generate timestamp for filenames
     now = datetime.now()
     timestamp_str = now.strftime("%Y-%m-%d_%H%M")
@@ -195,6 +210,7 @@ async def generate_codebase_report_stream(
         abs_path_findings=abs_path_findings if mode == "FULL" else None,
         blocked_refs=blocked_refs if mode == "FULL" else None,
         duplicate_names=duplicate_names if mode == "FULL" else None,
+        structural_report=structural_report,
     )
     
     json_content = _generate_json_report(

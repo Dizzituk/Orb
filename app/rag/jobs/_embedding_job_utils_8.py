@@ -1,6 +1,6 @@
 from __future__ import annotations
 from enum import Enum
-_current_status = EmbeddingJobStatus()
+_current_status = None  # Lazy init — see get_embedding_status()
 
 
 class EmbeddingPriority(Enum):

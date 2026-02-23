@@ -35,6 +35,7 @@ from app.orchestrator.codebase_scanner_models import (
 )
 from app.orchestrator._codebase_scanner_utils_2 import CODEBASE_SCANNER_BUILD_ID, _BUILTINS, _build_signature, _get_name, _is_constant_name, _is_data_structure, _is_internal, _normalise_hash
 from app.orchestrator._codebase_scanner_utils_3 import _STDLIB_MODULES, _build_call_graph, _build_cross_file_edges, _check_dead_code, _check_shadowed_builtins, _check_unused_imports, _detect_circular_imports, _detect_duplicate_functions
+from app.orchestrator._codebase_scanner_health import run_smart_health_checks
 
 # Lazy import for JS scanner (only when JS files encountered)
 _js_scanner = None
@@ -63,9 +64,10 @@ print(f"[CODEBASE_SCANNER_LOADED] BUILD_ID={CODEBASE_SCANNER_BUILD_ID}")
 
 # Standard library top-level modules (common subset)
 
-# Oversized thresholds
-MAX_FUNCTION_LINES = 200
-MAX_FILE_LINES = 800
+# Legacy thresholds (kept for reference — no longer used for health checks).
+# Smart structural checks in _codebase_scanner_health.py replaced these.
+# MAX_FUNCTION_LINES = 200
+# MAX_FILE_LINES = 800
 
 
 # =============================================================================
@@ -283,38 +285,28 @@ def _detect_health_issues(result: FileScanResult) -> None:
     """Run all health checks on the scanned file."""
     _check_dead_code(result)
     _check_unused_imports(result)
-    _check_oversized_functions(result)
-    _check_oversized_file(result)
     _check_shadowed_builtins(result)
+    # v2.0: Smart structural checks replace dumb size-only checks.
+    # Old _check_oversized_functions / _check_oversized_file removed —
+    # they flagged data files, orchestrators, and already-modular files.
+    run_smart_health_checks(result)
 
 
-def _check_oversized_functions(result: FileScanResult) -> None:
-    """Flag functions that exceed the line limit."""
-    for name, info in result.symbols.items():
-        if info.kind not in (SymbolKind.FUNCTION, SymbolKind.ASYNC_FUNCTION):
-            continue
-        if info.estimated_lines > MAX_FUNCTION_LINES:
-            result.health_issues.append(HealthIssue(
-                category=HealthCategory.OVERSIZED_FUNCTION,
-                severity=HealthSeverity.WARNING,
-                file_path=result.file_path,
-                symbol_name=name,
-                line_number=info.line_start,
-                description=f"'{name}' is {info.estimated_lines} lines (limit: {MAX_FUNCTION_LINES})",
-                suggestion="Consider breaking into smaller functions",
-            ))
-
-
-def _check_oversized_file(result: FileScanResult) -> None:
-    """Flag files that exceed the line limit."""
-    if result.line_count > MAX_FILE_LINES:
-        result.health_issues.append(HealthIssue(
-            category=HealthCategory.OVERSIZED_FILE,
-            severity=HealthSeverity.WARNING,
-            file_path=result.file_path,
-            description=f"File is {result.line_count} lines (limit: {MAX_FILE_LINES})",
-            suggestion="Consider decomposing into a subpackage",
-        ))
+# =============================================================================
+# LEGACY OVERSIZED CHECKS (removed v2.0)
+# =============================================================================
+# _check_oversized_functions and _check_oversized_file have been replaced by
+# run_smart_health_checks() in _codebase_scanner_health.py.
+#
+# The old checks flagged files purely by line count / function size, which
+# produced false positives for:
+# - Data-only files (intents.py — pure dict, nothing to refactor)
+# - Single async orchestrators (can't split without breaking yield chains)
+# - Already-modular files (20 small functions = fine at any total size)
+# - Files where helpers were already extracted to _utils modules
+#
+# The new checks analyse call-graph structure, cluster independence, and
+# function composition to flag only genuinely refactorable code.
 
 
 # =============================================================================

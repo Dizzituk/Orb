@@ -206,6 +206,8 @@ def _generate_markdown_report(
     abs_path_findings: Optional[List[AbsolutePathFinding]] = None,
     blocked_refs: Optional[List[Tuple[str, int, str]]] = None,
     duplicate_names: Optional[Dict[str, List[str]]] = None,
+    # Structural analysis
+    structural_report: Optional[Any] = None,
 ) -> str:
     """Generate Markdown report content."""
     lines: List[str] = []
@@ -239,8 +241,55 @@ def _generate_markdown_report(
     lines.append(f"- **Line count issues:** {line_critical} CRITICAL, {line_high} HIGH, {line_warn} WARN")
     lines.append(f"- **Suspect folders:** {len(suspect_folders)}")
     lines.append(f"- **Floating files (root):** Orb={len(floating_orb)}, Desktop={len(floating_desktop)}")
+    if structural_report:
+        lines.append(f"- **Structural concerns:** {structural_report.warning_count} warnings, {structural_report.info_count} suggestions")
+        lines.append(f"- **Files structurally scanned:** {structural_report.files_scanned}")
     lines.append("")
     
+    # =========================================================================
+    # STRUCTURAL CONCERNS (smart analysis — the most important section)
+    # =========================================================================
+    if structural_report and structural_report.has_concerns:
+        lines.append("## Structural Concerns")
+        lines.append("")
+        lines.append(
+            "> These are genuine refactoring opportunities identified by AST analysis. "
+            "Data-only files, single async orchestrators, and already-modular files "
+            "are excluded — only actionable issues appear here."
+        )
+        lines.append("")
+
+        # Group by category for readability
+        warnings = [f for f in structural_report.findings if f.severity == "warning"]
+        infos = [f for f in structural_report.findings if f.severity == "info"]
+
+        if warnings:
+            lines.append("### Warnings (should address)")
+            lines.append("")
+            for finding in warnings:
+                label = finding.category.replace("_", " ").title()
+                lines.append(f"- **[{label}]** `{finding.file_path}`")
+                if finding.symbol_name:
+                    lines.append(f"  - Symbol: `{finding.symbol_name}` (L{finding.line_number})")
+                lines.append(f"  - {finding.description}")
+                lines.append(f"  - → {finding.suggestion}")
+            lines.append("")
+
+        if infos:
+            lines.append("### Suggestions (nice to have)")
+            lines.append("")
+            for finding in infos:
+                label = finding.category.replace("_", " ").title()
+                lines.append(f"- **[{label}]** `{finding.file_path}`")
+                lines.append(f"  - {finding.description}")
+                lines.append(f"  - → {finding.suggestion}")
+            lines.append("")
+    elif structural_report:
+        lines.append("## Structural Concerns")
+        lines.append("")
+        lines.append("_No structural concerns found. All scanned files are well-structured._")
+        lines.append("")
+
     # Largest Files
     lines.append("## Largest Files (Top 30)")
     lines.append("")
@@ -263,8 +312,8 @@ def _generate_markdown_report(
         lines.append(f"- [{cat}] `{f.relative_path}` ({f.root_label}) - {f.line_count} lines")
     lines.append("")
     
-    # Files Over Limits
-    lines.append("## Files Over Limits")
+    # File Size Inventory (informational — see Structural Concerns for actionable issues)
+    lines.append("## File Size Inventory")
     lines.append("")
     lines.append("### By Size")
     for cat in ["CRITICAL", "HIGH", "WARN"]:

@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
-CODEBASE_SCANNER_MODELS_BUILD_ID = "2026-02-20-v1.0-codebase-scanner-models"
+CODEBASE_SCANNER_MODELS_BUILD_ID = "2026-02-23-v2.0-smart-health-checks"
 print(f"[CODEBASE_SCANNER_MODELS_LOADED] BUILD_ID={CODEBASE_SCANNER_MODELS_BUILD_ID}")
 
 
@@ -149,8 +149,15 @@ class HealthCategory(Enum):
     ORPHANED_FILE = "orphaned_file"
     UNREACHABLE_CODE = "unreachable_code"
     SHADOWED_BUILTIN = "shadowed_builtin"
+    # Legacy size-only checks (kept for backward compat, no longer emitted)
     OVERSIZED_FUNCTION = "oversized_function"
     OVERSIZED_FILE = "oversized_file"
+    # v2.0: Smart refactorability checks — flag *structure*, not size
+    MULTI_RESPONSIBILITY = "multi_responsibility"        # File mixes unrelated concerns
+    EXTRACTABLE_BLOCK = "extractable_block"              # Self-contained block could be its own module
+    MONOLITHIC_FUNCTION = "monolithic_function"           # Single huge function that does too many things
+    GOD_CLASS = "god_class"                              # Class with too many methods spanning multiple concerns
+    TANGLED_DEPENDENCIES = "tangled_dependencies"        # File has high fan-in AND fan-out
 
 
 class HealthSeverity(Enum):
