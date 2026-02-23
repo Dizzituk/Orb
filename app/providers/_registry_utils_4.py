@@ -26,6 +26,9 @@ class LlmCallResult:
     def is_success(self) -> bool:
         return self.status == LlmCallStatus.SUCCESS
 
+_registry = None  # Module-level singleton (initialised lazily by get_provider_registry)
+
+
 def get_provider_registry() -> ProviderRegistry:
     from .registry import ProviderRegistry
     global _registry

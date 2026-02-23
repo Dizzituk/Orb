@@ -6,7 +6,7 @@ All tunables in one place for easy adjustment.
 CRITICAL DESIGN DECISIONS:
 1. Source of Truth: Reads FROM architecture_file_content table (no filesystem access)
 2. Scope Alignment: Indexes whatever the scan indexed (no additional filters)
-3. Repo-relative Paths: All paths stored as-is from scan (no C:\ dependencies)
+3. Repo-relative Paths: All paths stored as-is from scan (no C: drive dependencies)
 4. Read-only: No file modifications, no destructive operations
 5. Ignore Rules: Inherits from scan - only indexes files that passed scan filters
 """

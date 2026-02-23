@@ -159,7 +159,7 @@ async def generate_rag_query_stream(
     
     # Search and answer
     try:
-        result = await ask_architecture_async(db=db, question=question)
+        result = await ask_architecture_async(db=db, question=question, project_id=str(project_id))
         
         # Stream the answer
         yield "data: " + json.dumps({

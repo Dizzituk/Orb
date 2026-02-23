@@ -3,7 +3,7 @@
 Centralized logging configuration for ASTRA.
 
 Sets up a RotatingFileHandler so all logger.info/warning/error calls
-across the entire application are written to D:\Orb\logs\astra.log
+across the entire application are written to D:/Orb/logs/astra.log
 in addition to the console (stdout/stderr).
 
 Usage: Call setup_file_logging() once at startup (before any other imports

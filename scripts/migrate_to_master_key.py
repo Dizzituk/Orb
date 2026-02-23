@@ -13,7 +13,7 @@ Requirements:
 - Backend should NOT be running during migration
 
 Usage:
-    cd D:\Orb
+    cd D:/Orb
     set ORB_MASTER_KEY=<your-master-key>
     python scripts/migrate_to_master_key.py
 """

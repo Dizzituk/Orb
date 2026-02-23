@@ -8,7 +8,7 @@ This script:
 3. Checks that the marker does NOT appear in plaintext in the database file
 
 Usage:
-    cd D:\Orb
+    cd D:/Orb
     $env:ORB_MASTER_KEY = "your-43-char-key"
     python scripts/verify_encryption.py
 """

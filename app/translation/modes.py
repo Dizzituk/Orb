@@ -208,10 +208,31 @@ _IMPLICIT_COMMAND_COMPILED = [re.compile(p) for p in IMPLICIT_COMMAND_PATTERNS]
 
 
 def _is_implicit_command(text: str) -> bool:
-    """Check if text matches an implicit command pattern."""
+    """Check if text matches an implicit command pattern.
+    
+    v10.0 (Job 10A): Also checks natural codebase question patterns
+    with guard keyword filtering so questions like "How many times
+    does Orb appear in the codebase?" reach COMMAND mode → Tier 0.
+    """
+    stripped = text.strip()
     for pattern in _IMPLICIT_COMMAND_COMPILED:
-        if pattern.match(text.strip()):
+        if pattern.match(stripped):
             return True
+    
+    # v10.0: Natural codebase questions (pattern + guard keyword)
+    try:
+        from app.translation._tier0_codebase_questions import (
+            _NATURAL_CODEBASE_PATTERNS,
+            _message_has_guard_keyword,
+        )
+        for pattern in _NATURAL_CODEBASE_PATTERNS:
+            if pattern.match(stripped):
+                if _message_has_guard_keyword(stripped):
+                    return True
+                break  # Pattern matched but no guard — not a command
+    except ImportError:
+        pass
+    
     return False
 
 

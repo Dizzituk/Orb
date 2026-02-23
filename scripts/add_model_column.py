@@ -8,8 +8,8 @@ which specific LLM model generated each assistant response.
 This migration adds the column to existing databases.
 
 Usage:
-    cd D:\Orb
-    .\.venv\Scripts\Activate.ps1
+    cd D:/Orb
+    .venv/Scripts/Activate.ps1
     python scripts/add_model_column.py
 """
 

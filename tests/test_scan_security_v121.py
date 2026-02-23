@@ -6,7 +6,7 @@ These tests verify that SCAN_ONLY operations are constrained to the sandbox
 workspace only and NEVER allow scanning the host PC filesystem.
 
 CRITICAL SECURITY REQUIREMENT:
-- Scans can ONLY target D:\Orb and D:\orb-desktop (SAFE_DEFAULT_SCAN_ROOTS)
+- Scans can ONLY target D:/Orb and D:/orb-desktop (SAFE_DEFAULT_SCAN_ROOTS)
 - Bare drive letters (D:\, C:\) MUST be rejected
 - "Entire D drive" MUST be interpreted as "entire allowed workspace"
 """
@@ -129,11 +129,11 @@ class TestPathValidation:
     """Tests for path validation security functions."""
     
     def test_is_path_within_allowed_roots_accepts_orb(self):
-        """D:\Orb should be accepted."""
+        """D:/Orb should be accepted."""
         assert _is_path_within_allowed_roots("D:\\Orb") is True
     
     def test_is_path_within_allowed_roots_accepts_orb_desktop(self):
-        """D:\orb-desktop should be accepted."""
+        """D:/orb-desktop should be accepted."""
         assert _is_path_within_allowed_roots("D:\\orb-desktop") is True
     
     def test_is_path_within_allowed_roots_accepts_subdirs(self):

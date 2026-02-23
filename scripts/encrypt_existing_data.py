@@ -4,7 +4,7 @@ Migration script to encrypt existing database data.
 Run this ONCE after setting up encryption to encrypt existing plaintext data.
 
 Usage:
-    cd D:\Orb
+    cd D:/Orb
     py -3.13 scripts/encrypt_existing_data.py
 
 IMPORTANT: 

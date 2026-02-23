@@ -2,7 +2,7 @@
 """
 Host-side quarantine for file->package refactors.
 
-v6.1 FIX 17b: Direct filesystem operations on the HOST (D:\Orb),
+v6.1 FIX 17b: Direct filesystem operations on the HOST (D:/Orb),
 replacing the sandbox-client approach that operated on the wrong machine.
 
 The sandbox client (shell_run over HTTP to 192.168.250.2) was checking

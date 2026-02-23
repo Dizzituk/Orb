@@ -103,8 +103,13 @@ def tier0_classify(text: str) -> Tier0RuleResult:
     if result.matched:
         return result
     
-    # 4b. Check RAG codebase query (v1.3)
+    # 4b. Check RAG codebase query (v1.3) — rigid patterns (extracted to _tier0_codebase_questions.py)
     result = check_rag_codebase_query(text_stripped)
+    if result.matched:
+        return result
+    
+    # 4b2. Check natural codebase questions (v10.0 — Job 10A)
+    result = check_natural_codebase_question(text_stripped)
     if result.matched:
         return result
     
@@ -622,123 +627,7 @@ def check_segment_loop_trigger(text: str) -> Tier0RuleResult:
     return Tier0RuleResult(matched=False)
 
 
-def check_rag_codebase_query(text: str) -> Tier0RuleResult:
-    """
-    Special handler for RAG codebase queries.
-    
-    Searches indexed codebase and answers questions.
-    v1.5: Fixed patterns to match trailing punctuation (?, !)
-    v1.4: Expanded patterns to catch architecture/codebase questions automatically.
-    v1.3: Added RAG query support.
-    """
-    text_stripped = text.strip()
-    text_lower = text_stripped.lower()
-    
-    # Remove trailing punctuation for pattern matching
-    text_clean = text_lower.rstrip('?.!')
-    
-    # Index commands
-    index_patterns = [
-        r"^index\s+(?:the\s+)?(?:architecture|codebase|rag)$",
-        r"^run\s+rag\s+index$",
-    ]
-    
-    for pattern in index_patterns:
-        if re.match(pattern, text_clean):
-            return Tier0RuleResult(
-                matched=True,
-                intent=CanonicalIntent.RAG_CODEBASE_QUERY,
-                confidence=1.0,
-                rule_name="rag_index",
-                reason="RAG index command detected",
-            )
-    
-    # Explicit search queries (highest confidence)
-    explicit_search_patterns = [
-        r"^search\s+(?:the\s+)?codebase:\s*.+",
-        r"^ask\s+about\s+(?:the\s+)?codebase:\s*.+",
-        r"^codebase\s+(?:search|query):\s*.+",
-        r"^in\s+(?:the|this)\s+codebase,?\s+.+",
-    ]
-    
-    for pattern in explicit_search_patterns:
-        if re.match(pattern, text_lower):
-            return Tier0RuleResult(
-                matched=True,
-                intent=CanonicalIntent.RAG_CODEBASE_QUERY,
-                confidence=1.0,
-                rule_name="rag_explicit_search",
-                reason="RAG codebase search detected",
-            )
-    
-    # ==========================================================================
-    # Architecture-related questions (auto-route to RAG)
-    # These patterns catch questions about the codebase structure/architecture
-    # Patterns match against text_clean (no trailing punctuation)
-    # ==========================================================================
-    
-    architecture_question_patterns = [
-        # Entry points / main flow
-        r"^what\s+(?:are|is)\s+(?:the\s+)?(?:main\s+)?entry\s*points?$",
-        r"^where\s+(?:are|is)\s+(?:the\s+)?(?:main\s+)?entry\s*points?$",
-        r"^show\s+(?:me\s+)?(?:the\s+)?entry\s*points?$",
-        r"^(?:list|find)\s+(?:the\s+)?entry\s*points?$",
-        
-        # Bottlenecks / performance
-        r"^what\s+(?:are|is)\s+(?:the\s+)?(?:potential\s+)?bottlenecks?$",
-        r"^where\s+(?:are|is)\s+(?:the\s+)?bottlenecks?$",
-        r"^(?:find|identify|show)\s+(?:the\s+)?bottlenecks?$",
-        r"^bottlenecks$",  # Single word
-        
-        # Coupling / dependencies
-        r"^(?:which|what)\s+modules?\s+(?:are|is)\s+(?:tightly\s+)?coupled",
-        r"^where\s+(?:is|are)\s+(?:the\s+)?tight\s+coupling",
-        r"^show\s+(?:me\s+)?(?:the\s+)?dependencies",
-        
-        # Where should X live / feature placement
-        r"^where\s+should\s+(?:a\s+)?(?:new\s+)?(?:feature|functionality|code|module|component)\s+.+\s+(?:live|go)",
-        r"^where\s+should\s+I\s+(?:put|add|place|implement)\s+.+",
-        r"^where\s+does\s+.+\s+(?:belong|go|fit)",
-        
-        # What functions/classes handle X
-        r"^what\s+(?:function|class|method|module|file)s?\s+(?:handle|process|manage|control)s?\s+.+",
-        r"^(?:which|what)\s+(?:function|class|method|module|file)s?\s+(?:are\s+)?responsible\s+for\s+.+",
-        r"^(?:which|what)\s+(?:function|class|method|module|file)s?\s+(?:do|does)\s+.+",
-        
-        # Where is X implemented/defined/located
-        r"^where\s+is\s+.+\s+(?:implemented|defined|located|declared|found)",
-        r"^find\s+(?:the\s+)?(?:implementation|definition|location)\s+of\s+.+",
-        r"^(?:locate|find)\s+.+\s+(?:in\s+the\s+codebase|code)",
-        
-        # How does X work / flow
-        r"^how\s+does\s+(?:the\s+)?(?:routing|streaming|pipeline|job|auth|memory|rag)\s+(?:work|function|flow)",
-        r"^explain\s+(?:the\s+)?(?:routing|streaming|pipeline|job|auth|memory|rag)\s+(?:flow|system|architecture)",
-        
-        # Optimization / improvement
-        r"^how\s+(?:would|should|could)\s+(?:you|I|we)\s+optimize\s+.+",
-        r"^(?:suggest|recommend)\s+(?:optimizations?|improvements?)\s+(?:for|to)\s+.+",
-        
-        # Code structure questions
-        r"^what\s+is\s+the\s+(?:purpose|role|responsibility)\s+of\s+.+",
-        r"^what\s+does\s+(?:the\s+)?(?:file|module|class|function)\s+.+\s+do",
-        r"^describe\s+(?:the\s+)?(?:file|module|class|function|component)\s+.+",
-        
-        # List/show components
-        r"^(?:list|show|display)\s+(?:all\s+)?(?:the\s+)?(?:modules?|components?|services?|handlers?|routers?)$",
-        r"^what\s+(?:modules?|components?|services?)\s+(?:exist|are\s+there)",
-    ]
-    
-    for pattern in architecture_question_patterns:
-        if re.match(pattern, text_clean):
-            return Tier0RuleResult(
-                matched=True,
-                intent=CanonicalIntent.RAG_CODEBASE_QUERY,
-                confidence=0.95,  # High but slightly below explicit commands
-                rule_name="rag_architecture_question",
-                reason=f"Architecture question detected: '{text_clean}'",
-            )
-    
-    return Tier0RuleResult(matched=False)
+# check_rag_codebase_query() — extracted to _tier0_codebase_questions.py (v10.0)
 
 
 def check_codebase_report_trigger(text: str) -> Tier0RuleResult:
@@ -886,4 +775,13 @@ from app.translation._tier0_filesystem import (  # noqa: E402
     is_user_chat_pattern,
     TAZISH_CHAT_PATTERNS,
     is_tazish_chat,
+)
+
+# =============================================================================
+# EXTRACTED TO _tier0_codebase_questions.py (v10.0 — Job 10A)
+# =============================================================================
+from app.translation._tier0_codebase_questions import (  # noqa: E402
+    check_rag_codebase_query,
+    check_natural_codebase_question,
+    CODEBASE_GUARD_KEYWORDS,
 )

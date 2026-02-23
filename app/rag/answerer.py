@@ -1,17 +1,32 @@
+# FILE: app/rag/answerer.py
 """
 Grounded Q&A engine for architecture queries.
 
-Takes a question, searches RAG index, builds context, and answers with LLM.
+Takes a question, searches RAG index, builds context from both
+architecture chunks and memory stores, and answers with a
+complexity-appropriate LLM.
 
+v10.0 (2026-02-23): Job 10B/10C/10D — complexity routing, memory
+    grounding, upgraded prompts, provider-agnostic LLM call.
 v1.0 (2026-01): Initial implementation
 """
 
+import asyncio
+import logging
 import os
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
+
 from sqlalchemy.orm import Session
 
 from app.rag.models import ArchCodeChunk, ArchDirectoryIndex
+from app.rag._answerer_model_selection import select_rag_model
+from app.rag._answerer_memory_context import build_memory_context
+from app.rag._answerer_structured_context import build_structured_context
+from app.rag._answerer_text_search import search_codebase_text
+from app.rag._answerer_prompts import RAG_SYSTEM_PROMPT, build_rag_user_prompt
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -24,16 +39,23 @@ class ArchAnswer:
     model_used: str
 
 
-def _build_context_from_chunks(chunks: List[ArchCodeChunk], max_tokens: int = 8000) -> Tuple[str, List[dict]]:
+# =========================================================================
+# Chunk context building (unchanged from v1.0)
+# =========================================================================
+
+def _build_context_from_chunks(
+    chunks: List[ArchCodeChunk],
+    max_tokens: int = 8000,
+) -> Tuple[str, List[dict]]:
     """
     Build context string from chunks for LLM.
-    
+
     Returns: (context_string, sources_list)
     """
     context_parts = []
     sources = []
     approx_tokens = 0
-    
+
     for chunk in chunks:
         # Build chunk representation
         chunk_text = f"## {chunk.file_path}\n"
@@ -46,89 +68,97 @@ def _build_context_from_chunks(chunks: List[ArchCodeChunk], max_tokens: int = 80
         if chunk.start_line:
             chunk_text += f"**Lines**: {chunk.start_line}-{chunk.end_line or '?'}\n"
         chunk_text += "\n"
-        
+
         # Approximate token count (rough: 4 chars = 1 token)
         chunk_tokens = len(chunk_text) // 4
         if approx_tokens + chunk_tokens > max_tokens:
             break
-            
+
         context_parts.append(chunk_text)
         approx_tokens += chunk_tokens
-        
+
         sources.append({
             "file": chunk.file_path,
             "name": chunk.chunk_name,
             "type": chunk.chunk_type,
             "line": chunk.start_line,
         })
-    
+
     return "\n".join(context_parts), sources
 
 
-def _search_chunks_keyword(db: Session, query: str, limit: int = 20) -> List[ArchCodeChunk]:
+# =========================================================================
+# Chunk search — keyword
+# =========================================================================
+
+def _search_chunks_keyword(
+    db: Session,
+    query: str,
+    limit: int = 20,
+) -> List[ArchCodeChunk]:
     """
     Keyword-based search when embeddings aren't available.
-    
+
     Searches chunk_name, file_path, signature, docstring.
     """
-    # Split query into keywords
     keywords = [k.strip().lower() for k in query.split() if len(k.strip()) > 2]
-    
     if not keywords:
         return []
-    
-    # Build filter - match any keyword in name, path, signature, or docstring
+
     from sqlalchemy import or_, func
-    
+
     filters = []
-    for kw in keywords[:5]:  # Limit keywords
+    for kw in keywords[:5]:
         filters.append(func.lower(ArchCodeChunk.chunk_name).contains(kw))
         filters.append(func.lower(ArchCodeChunk.file_path).contains(kw))
         filters.append(func.lower(ArchCodeChunk.signature).contains(kw))
         filters.append(func.lower(ArchCodeChunk.docstring).contains(kw))
-    
+
     chunks = db.query(ArchCodeChunk).filter(
         or_(*filters)
     ).limit(limit).all()
-    
+
     return chunks
 
 
+# =========================================================================
+# Chunk search — embedding
+# =========================================================================
+
 def _check_embedding_availability(db: Session) -> Tuple[int, int]:
-    """
-    Check how many chunks have embeddings.
-    
-    Returns: (embedded_count, total_count)
-    """
+    """Returns: (embedded_count, total_count)"""
     from sqlalchemy import func
-    
+
     total = db.query(func.count(ArchCodeChunk.id)).scalar() or 0
     embedded = db.query(func.count(ArchCodeChunk.id)).filter(
-        ArchCodeChunk.embedded == True
+        ArchCodeChunk.embedded == True  # noqa: E712
     ).scalar() or 0
-    
+
     return embedded, total
 
 
-def _search_chunks_embedding(db: Session, query: str, limit: int = 20) -> Tuple[List[ArchCodeChunk], str]:
+def _search_chunks_embedding(
+    db: Session,
+    query: str,
+    limit: int = 20,
+) -> Tuple[List[ArchCodeChunk], str]:
     """
     Embedding-based semantic search.
-    
+
     Returns: (chunks, search_mode_used)
     """
-    # First check if we have embeddings
     embedded_count, total_count = _check_embedding_availability(db)
-    
+
     if embedded_count == 0:
-        print(f"[rag:answerer] No embeddings available ({total_count} chunks), using keyword search")
+        logger.info("[rag:answerer] No embeddings available (%d chunks), using keyword search", total_count)
         return [], "keyword_only"
-    
+
     if embedded_count < total_count:
-        print(f"[rag:answerer] Partial embeddings ({embedded_count}/{total_count}), semantic search may be incomplete")
-    
+        logger.info("[rag:answerer] Partial embeddings (%d/%d), semantic search may be incomplete", embedded_count, total_count)
+
     try:
         from app.embeddings.service import search_embeddings
-        
+
         results, _ = search_embeddings(
             db=db,
             project_id=0,
@@ -136,226 +166,166 @@ def _search_chunks_embedding(db: Session, query: str, limit: int = 20) -> Tuple[
             top_k=limit,
             source_types=["arch_code_chunk"],
         )
-        
+
         if not results:
             return [], "no_results"
-        
-        # Fetch full chunk records
+
         chunk_ids = [r.source_id for r in results]
         chunks = db.query(ArchCodeChunk).filter(
             ArchCodeChunk.id.in_(chunk_ids)
         ).all()
-        
+
         # Preserve ranking order
         chunk_map = {c.id: c for c in chunks}
         ordered_chunks = [chunk_map[cid] for cid in chunk_ids if cid in chunk_map]
-        
+
         mode = "semantic" if embedded_count == total_count else "semantic_partial"
         return ordered_chunks, mode
-        
+
     except Exception as e:
-        print(f"[rag:answerer] Embedding search failed: {e}, falling back to keyword")
+        logger.warning("[rag:answerer] Embedding search failed: %s, falling back to keyword", e)
         return [], "embedding_error"
 
 
-def ask_architecture(
+# =========================================================================
+# Hybrid chunk search
+# =========================================================================
+
+def _search_chunks_hybrid(
     db: Session,
     question: str,
     use_embeddings: bool = True,
-) -> ArchAnswer:
+) -> Tuple[List[ArchCodeChunk], str]:
     """
-    Answer a question about the codebase using RAG.
-    
-    Uses hybrid search strategy:
-    1. Try semantic (embedding) search first if available
-    2. Fall back to keyword search if semantic fails/empty
-    
-    Args:
-        db: Database session
-        question: User's question
-        use_embeddings: Try embedding search first (falls back to keyword)
-        
-    Returns:
-        ArchAnswer with response and sources
+    Hybrid search: tries semantic first, falls back to keyword.
+
+    Returns: (chunks, search_mode)
     """
-    # Search for relevant chunks using hybrid strategy
     chunks: List[ArchCodeChunk] = []
     search_mode = "none"
-    
-    # Step 1: Try semantic search if enabled
+
     if use_embeddings:
         semantic_chunks, semantic_mode = _search_chunks_embedding(db, question, limit=15)
-        
         if semantic_chunks:
-            chunks = semantic_chunks
-            search_mode = semantic_mode
-            print(f"[rag:answerer] Semantic search returned {len(chunks)} chunks (mode={search_mode})")
-        else:
-            print(f"[rag:answerer] Semantic search returned empty (mode={semantic_mode}), trying keyword fallback")
-    
-    # Step 2: Fall back to keyword search if semantic didn't return results
-    if not chunks:
-        chunks = _search_chunks_keyword(db, question, limit=15)
-        if chunks:
-            search_mode = "keyword"
-            print(f"[rag:answerer] Keyword search returned {len(chunks)} chunks")
-        else:
-            print(f"[rag:answerer] Keyword search also returned empty")
-    
-    if not chunks:
-        return ArchAnswer(
-            question=question,
-            answer="I couldn't find any relevant code in the architecture index. Try running `Astra, command: CREATE ARCHITECTURE MAP` first, then `/rag/index` to create embeddings.",
-            sources=[],
-            chunks_searched=0,
-            model_used="none",
-        )
-    
-    # Build context
-    context, sources = _build_context_from_chunks(chunks)
-    
-    # Build prompt
-    system_prompt = """You are an expert code assistant answering questions about the Orb/ASTRA codebase.
+            return semantic_chunks, semantic_mode
+        logger.info("[rag:answerer] Semantic search empty (mode=%s), trying keyword", semantic_mode)
 
-Use the provided code context to answer the user's question accurately. 
-- Reference specific files and functions when relevant
-- If the context doesn't contain enough information, say so
-- Be concise but thorough"""
+    chunks = _search_chunks_keyword(db, question, limit=15)
+    if chunks:
+        return chunks, "keyword"
 
-    user_prompt = f"""## Code Context
+    logger.info("[rag:answerer] Keyword search also returned empty")
+    return [], "none"
 
-{context}
 
-## Question
-
-{question}
-
-## Instructions
-
-Answer based on the code context above. Reference specific files and functions."""
-
-    # Call LLM (use cheap model for speed)
-    try:
-        from app.llm.clients import call_openai
-        
-        # call_openai returns (content, usage_dict) and takes:
-        # system_prompt, messages, temperature, model
-        content, usage = call_openai(
-            system_prompt=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-            temperature=0.3,
-            model=os.getenv("ORB_RAG_MODEL", "gpt-4o-mini"),
-        )
-        
-        answer_text = content if content else "Failed to generate answer"
-        model_used = os.getenv("ORB_RAG_MODEL", "gpt-4o-mini")
-        
-    except Exception as e:
-        answer_text = f"LLM call failed: {e}"
-        model_used = "error"
-    
-    return ArchAnswer(
-        question=question,
-        answer=answer_text,
-        sources=sources,
-        chunks_searched=len(chunks),
-        model_used=model_used,
-    )
-
+# =========================================================================
+# Main async entry point (primary)
+# =========================================================================
 
 async def ask_architecture_async(
     db: Session,
     question: str,
     use_embeddings: bool = True,
+    project_id: str = "astra-core",
 ) -> ArchAnswer:
     """
-    Async version of ask_architecture for use in async contexts (FastAPI streams).
-    
-    Uses await async_call_openai() instead of sync call_openai().
-    Logic is identical to ask_architecture() - keep them in sync.
-    
+    Answer a question about the codebase using grounded RAG.
+
+    Pipeline:
+        1. Select model via complexity classification (Job 10B)
+        2. Search architecture chunks (hybrid: semantic → keyword)
+        3. Query memory stores for additional context (Job 10C)
+        4. Assemble prompt with memory + code context (Job 10D)
+        5. Call LLM via provider registry (provider-agnostic)
+
     Args:
-        db: Database session
-        question: User's question
-        use_embeddings: Try embedding search first (falls back to keyword)
-        
+        db:             Database session
+        question:       User's codebase question
+        use_embeddings: Try embedding search first
+        project_id:     Project scope for memory queries
+
     Returns:
-        ArchAnswer with response and sources
+        ArchAnswer with response, sources, and model info
     """
-    # Search for relevant chunks using hybrid strategy
-    chunks: List[ArchCodeChunk] = []
-    search_mode = "none"
-    
-    # Step 1: Try semantic search if enabled
-    if use_embeddings:
-        semantic_chunks, semantic_mode = _search_chunks_embedding(db, question, limit=15)
-        
-        if semantic_chunks:
-            chunks = semantic_chunks
-            search_mode = semantic_mode
-            print(f"[rag:answerer] Semantic search returned {len(chunks)} chunks (mode={search_mode})")
-        else:
-            print(f"[rag:answerer] Semantic search returned empty (mode={semantic_mode}), trying keyword fallback")
-    
-    # Step 2: Fall back to keyword search if semantic didn't return results
-    if not chunks:
-        chunks = _search_chunks_keyword(db, question, limit=15)
-        if chunks:
-            search_mode = "keyword"
-            print(f"[rag:answerer] Keyword search returned {len(chunks)} chunks")
-        else:
-            print(f"[rag:answerer] Keyword search also returned empty")
-    
+    # Step 1: Select model based on question complexity
+    provider, model, tier = select_rag_model(question)
+
+    # Step 2: Search for relevant chunks
+    chunks, search_mode = _search_chunks_hybrid(db, question, use_embeddings)
+
     if not chunks:
         return ArchAnswer(
             question=question,
-            answer="I couldn't find any relevant code in the architecture index. Try running `Astra, command: CREATE ARCHITECTURE MAP` first, then `/rag/index` to create embeddings.",
+            answer=(
+                "I couldn't find any relevant code in the architecture index. "
+                "Try running `Astra, command: CREATE ARCHITECTURE MAP` first, "
+                "then `index the architecture` to create embeddings."
+            ),
             sources=[],
             chunks_searched=0,
             model_used="none",
         )
-    
-    # Build context
-    context, sources = _build_context_from_chunks(chunks)
-    
-    # Build prompt
-    system_prompt = """You are an expert code assistant answering questions about the Orb/ASTRA codebase.
 
-Use the provided code context to answer the user's question accurately. 
-- Reference specific files and functions when relevant
-- If the context doesn't contain enough information, say so
-- Be concise but thorough"""
+    logger.info(
+        "[rag:answerer] %d chunks found (mode=%s), complexity=%s → %s/%s",
+        len(chunks), search_mode, tier, provider, model,
+    )
 
-    user_prompt = f"""## Code Context
+    # Step 3: Build code context from chunks
+    code_context, sources = _build_context_from_chunks(chunks)
 
-{context}
+    # Step 4: Build memory context from all domain stores
+    memory_context = build_memory_context(
+        question=question,
+        project_id=project_id,
+    )
 
-## Question
+    # Step 4b: Build structured codebase overview (Job 11A)
+    structured_context = build_structured_context(token_budget=2000)
 
-{question}
+    # Step 4c: On-demand text search if question looks like a count/find query (Job 11B)
+    text_search_context = search_codebase_text(question, token_budget=1500)
 
-## Instructions
+    # Step 5: Assemble prompt — combine all context sources
+    combined_code_context = code_context
+    if structured_context:
+        combined_code_context = structured_context + "\n\n" + combined_code_context
+    if text_search_context:
+        combined_code_context = combined_code_context + "\n\n" + text_search_context
 
-Answer based on the code context above. Reference specific files and functions."""
+    user_prompt = build_rag_user_prompt(
+        memory_context=memory_context,
+        code_context=combined_code_context,
+        question=question,
+    )
 
-    # Call LLM using async variant (FastAPI-safe)
+    # Step 6: Call LLM via provider registry
     try:
-        from app.llm.clients import async_call_openai
-        
-        content, usage = await async_call_openai(
-            system_prompt=system_prompt,
+        from app.providers._registry_utils_3 import llm_call as registry_llm_call
+
+        result = await registry_llm_call(
+            provider_id=provider,
+            model_id=model,
             messages=[{"role": "user", "content": user_prompt}],
+            system_prompt=RAG_SYSTEM_PROMPT,
             temperature=0.3,
-            model=os.getenv("ORB_RAG_MODEL", "gpt-4o-mini"),
+            max_tokens=4096,
         )
-        
-        answer_text = content if content else "Failed to generate answer"
-        model_used = os.getenv("ORB_RAG_MODEL", "gpt-4o-mini")
-        
+
+        if result.is_success():
+            answer_text = result.content or "No response generated."
+            model_used = f"{result.provider_id}/{result.model_id}"
+        else:
+            error_msg = getattr(result, "error_message", "Unknown error")
+            answer_text = f"LLM call failed ({result.status}): {error_msg}"
+            model_used = f"{provider}/{model} (error)"
+            logger.error("[rag:answerer] LLM call failed: %s — %s", result.status, error_msg)
+
     except Exception as e:
         answer_text = f"LLM call failed: {e}"
-        model_used = "error"
-    
+        model_used = f"{provider}/{model} (exception)"
+        logger.error("[rag:answerer] LLM call exception: %s", e)
+
     return ArchAnswer(
         question=question,
         answer=answer_text,
@@ -363,3 +333,40 @@ Answer based on the code context above. Reference specific files and functions."
         chunks_searched=len(chunks),
         model_used=model_used,
     )
+
+
+# =========================================================================
+# Sync wrapper (deprecated — use ask_architecture_async instead)
+# =========================================================================
+
+def ask_architecture(
+    db: Session,
+    question: str,
+    use_embeddings: bool = True,
+    project_id: str = "astra-core",
+) -> ArchAnswer:
+    """
+    Sync wrapper around ask_architecture_async().
+
+    Deprecated: prefer the async version directly.
+    Kept for backward compatibility with any sync callers.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        # Already inside an event loop — can't use asyncio.run().
+        # Create a new thread to run the async version.
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                asyncio.run,
+                ask_architecture_async(db, question, use_embeddings, project_id),
+            )
+            return future.result(timeout=120)
+    else:
+        return asyncio.run(
+            ask_architecture_async(db, question, use_embeddings, project_id)
+        )

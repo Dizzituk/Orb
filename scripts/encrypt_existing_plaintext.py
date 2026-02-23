@@ -8,7 +8,7 @@ This script is for the scenario where data was stored in plaintext
 Security Level 4: Uses master key from ORB_MASTER_KEY environment variable.
 
 Usage:
-    cd D:\Orb
+    cd D:/Orb
     $env:ORB_MASTER_KEY = "your-43-char-key"
     python scripts/encrypt_existing_plaintext.py
 """

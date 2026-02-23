@@ -15,7 +15,7 @@ codebase questions that would otherwise fall through to chat mode.
 from __future__ import annotations
 
 import re
-from typing import List
+from typing import List, Set
 
 # =============================================================================
 # ARCHITECTURE QUERY PATTERNS (v4.12)
@@ -64,6 +64,57 @@ _ARCHITECTURE_QUERY_PATTERNS: List[re.Pattern] = [
     ),
 ]
 
+# =========================================================================
+# NATURAL CODEBASE QUESTION PATTERNS (v10.0 — Job 10A)
+# =========================================================================
+# Broader patterns that catch natural questions. Require a guard keyword
+# to prevent false positives on general knowledge questions.
+
+_NATURAL_CODEBASE_PATTERNS: List[re.Pattern] = [
+    re.compile(r"^[Hh]ow\s+many\s+(?:times?\s+)?(?:does|do|is|are)\s+.+", re.IGNORECASE),
+    re.compile(
+        r"^[Hh]ow\s+(?:hard|difficult|easy|complex)\s+would\s+it\s+be\s+to\s+"
+        r"(?:refactor|rename|change|replace|update|migrate|remove|extract|split|merge|consolidate)\s+.+",
+        re.IGNORECASE,
+    ),
+    re.compile(r"^[Ww]hat\s+does?\s+(?:the\s+)?(?:\w+\s+){0,3}(?:do|handle|manage|control|process|route)\s*\??", re.IGNORECASE),
+    re.compile(r"^[Hh]ow\s+does\s+(?:the\s+)?(?:\w+\s+){0,3}(?:work|function|operate|run)\s*\??", re.IGNORECASE),
+    re.compile(r"^[Tt]ell\s+me\s+about\s+(?:the\s+)?.+", re.IGNORECASE),
+    re.compile(r"^[Ee]xplain\s+(?:the\s+)?(?:how\s+)?.+", re.IGNORECASE),
+    re.compile(r"^[Ww]hat\s+happens\s+(?:when|if)\s+.+", re.IGNORECASE),
+    re.compile(r"^[Ww]here\s+(?:does|do|is|are)\s+.+", re.IGNORECASE),
+    re.compile(r"^[Ww]hich\s+(?:files?|modules?|functions?|classes?|components?)\s+.+", re.IGNORECASE),
+]
+
+# Guard keywords — must contain at least one for natural patterns to fire.
+# Mirrors CODEBASE_GUARD_KEYWORDS in _tier0_codebase_questions.py.
+_CODEBASE_GUARD_KEYWORDS: Set[str] = {
+    "weaver", "specgate", "spec gate", "overwatcher", "sandbox",
+    "translation", "pipeline", "implementer",
+    "memory", "rag", "confidence", "preference", "context",
+    "knowledge", "embedding", "store", "domain store",
+    "codebase", "module", "file", "function", "class", "method",
+    "import", "dependency", "endpoint", "handler", "router",
+    "provider", "registry", "stream", "hook", "tier",
+    "refactor", "rename", "migrate", "extract", "decompose",
+    "architecture", "subsystem", "component",
+    "database", "table", "sqlite", "orb.db",
+}
+
+
+def _has_guard_keyword(text: str) -> bool:
+    """Check if text contains at least one codebase guard keyword."""
+    text_lower = text.lower()
+    for kw in _CODEBASE_GUARD_KEYWORDS:
+        if " " in kw:
+            if kw in text_lower:
+                return True
+        else:
+            if re.search(r'\b' + re.escape(kw) + r'\b', text_lower):
+                return True
+    return False
+
+
 # Command prefix pattern - never route explicit commands to RAG fallback
 _COMMAND_PREFIX_PATTERN = re.compile(r"^[Aa]stra[,:]?\s*command:\s*", re.IGNORECASE)
 
@@ -73,7 +124,10 @@ def is_architecture_query(message: str) -> bool:
     Check if a message is a plain-English architecture/codebase question.
     
     Used as a fallback when translation layer fails or returns None.
-    High-precision patterns only - no broad catch-alls.
+    
+    Two-stage matching:
+        1. High-precision patterns (original) — always fire
+        2. Natural language patterns (Job 10A) — require guard keyword
     
     Args:
         message: User message to check
@@ -88,10 +142,18 @@ def is_architecture_query(message: str) -> bool:
     if _COMMAND_PREFIX_PATTERN.match(text):
         return False
     
-    # Check against high-precision patterns
+    # Stage 1: High-precision patterns (no guard needed)
     for pattern in _ARCHITECTURE_QUERY_PATTERNS:
         if pattern.match(text):
             return True
+    
+    # Stage 2: Natural patterns (guard keyword required)
+    for pattern in _NATURAL_CODEBASE_PATTERNS:
+        if pattern.match(text):
+            if _has_guard_keyword(text):
+                return True
+            # Pattern matched but no guard keyword — don't trigger
+            break
     
     return False
 
