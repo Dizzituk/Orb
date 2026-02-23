@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from typing import Any, Callable, Dict, Optional
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
-_current_status = EmbeddingJobStatus()
+_current_status = None
 
 
 EMBEDDING_AUTO_ENABLED = os.getenv("ORB_EMBEDDING_AUTO", "true").lower() == "true"
@@ -67,8 +67,10 @@ def queue_embedding_job(
     Returns:
         True if job was queued, False if already running or disabled
     """
-    from .embedding_job import EmbeddingJob
+    from .embedding_job import EmbeddingJob, EmbeddingJobStatus
     global _current_status
+    if _current_status is None:
+        _current_status = EmbeddingJobStatus()
     
     print(f"[embedding_job] queue_embedding_job called with scan_id={scan_id}")
     logger.info(f"[embedding_job] queue_embedding_job called with scan_id={scan_id}")

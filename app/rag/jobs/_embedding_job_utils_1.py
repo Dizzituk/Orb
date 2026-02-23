@@ -7,7 +7,7 @@ from datetime import datetime
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import Any, Callable, Dict, Optional
-from .embedding_job import EmbeddingJob, EmbeddingPriority, PRIORITY_PATTERNS, get_embedding_status
+from .embedding_job import EmbeddingJob, EmbeddingJobStatus, EmbeddingPriority, PRIORITY_PATTERNS, get_embedding_status
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 _current_status = EmbeddingJobStatus()
