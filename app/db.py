@@ -126,10 +126,33 @@ def init_db():
     # v3.0: Import Experience Database models (Unified Memory System)
     from app.experience import models as experience_models  # noqa: F401
 
-    Base.metadata.create_all(bind=engine)
+    # v4.0: Import unified memory models (MemoryRouter, RAG entries, confidence)
+    from app.memory import confidence_model  # noqa: F401
+    from app.memory import rag_entries_model  # noqa: F401
+
+    # v4.0: create_all with checkfirst=True (default) handles tables.
+    # SQLite may raise OperationalError for pre-existing indexes.
+    # We catch and log these rather than crashing startup.
+    import logging as _db_logging
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as _create_err:
+        _logger = _db_logging.getLogger(__name__)
+        if "already exists" in str(_create_err):
+            _logger.debug(f"[init_db] Ignoring pre-existing schema element: {_create_err}")
+        else:
+            raise
     
     # v2.4: Run schema migrations for existing tables
     _migrate_arch_code_chunks_schema()
+
+    # v4.0: Run memory module migrations (project columns, astra-core seed)
+    from app.memory.migrations import run_memory_migrations
+    run_memory_migrations()
+
+    # v4.1: Register domain stores with the MemoryRouter singleton
+    from app.memory.startup import init_memory_system
+    init_memory_system()
 
 
 # =============================================================================

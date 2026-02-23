@@ -29,6 +29,14 @@ class Project(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), unique=True, nullable=False, index=True)
     description = Column(Text, nullable=True)  # Not encrypted (metadata)
+    
+    # v2.0: Business identifier for MemoryRouter (e.g. 'astra-core', 'delivery-app')
+    project_key = Column(String(100), unique=True, nullable=True, index=True)
+    
+    # v2.0: Project classification and lifecycle
+    type = Column(String(50), default="development", nullable=False)
+    status = Column(String(20), default="active", nullable=False)
+    
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

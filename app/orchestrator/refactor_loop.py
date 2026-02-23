@@ -301,13 +301,39 @@ def run_refactor_pass(
             f"({extraction['symbols_extracted']} symbols) BOOT PASS"
         )
 
-        # Update RAG
+        # Update RAG — lifecycle hook + rescan
         try:
             from app.db import get_db_session
             from app.rag.rescan import rescan_codebase
+            from app.memory.lifecycle_hook import on_refactor_success
 
             db = get_db_session()
+
+            # Step 1: Rescan to index the new file in arch tables
             rescan_codebase(db)
+
+            # Step 2: Lifecycle hook — quarantine old entries,
+            # tag new entries with provenance, create redirect
+            hook_result = on_refactor_success(
+                db=db,
+                old_file_path=file_path,
+                new_module_path=new_module_path,
+                job_id=job_id,
+            )
+
+            if hook_result["errors"]:
+                logger.warning(
+                    "[refactor_loop] Lifecycle hook partial errors: %s",
+                    hook_result["errors"],
+                )
+            else:
+                logger.info(
+                    "[refactor_loop] Lifecycle hook OK: "
+                    "quarantined=%d, redirect=%s",
+                    hook_result["quarantined_chunks"],
+                    hook_result["redirect_created"],
+                )
+
             db.close()
         except Exception as e:
             logger.warning(f"[refactor_loop] RAG update failed (non-fatal): {e}")

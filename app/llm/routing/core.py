@@ -195,6 +195,13 @@ from app.llm.routing.envelope import synthesize_envelope_from_task
 from app.llm.routing.video_code_debug import run_video_code_debug_pipeline
 from app.llm.routing.local_actions import maybe_handle_local_action
 
+# v0.15.2: Complexity-aware routing enrichment
+try:
+    from app.memory.integration import enrich_routing as _enrich_routing
+    _COMPLEXITY_AVAILABLE = True
+except ImportError:
+    _COMPLEXITY_AVAILABLE = False
+
 
 # =============================================================================
 # ROUTER DEBUG MODE
@@ -287,6 +294,30 @@ async def call_llm_async(task: LLMTask) -> LLMResult:
         reason = getattr(classifier_out, 'reason', '')
     else:
         provider, model, job_type, reason = classifier_out
+
+    # ==========================================================================
+    # Step 1b: Complexity enrichment (v0.15.2)
+    # Can upgrade model tier but never downgrade below job-type floor.
+    # Only runs when no OVERRIDE is active (overrides are explicit).
+    # ==========================================================================
+    complexity_info = None
+    if _COMPLEXITY_AVAILABLE and not override_result:
+        try:
+            jt_val = str(job_type.value if hasattr(job_type, "value") else job_type)
+            complexity_info = _enrich_routing(
+                query=message_text,
+                job_type=jt_val,
+                attachments=task.attachments,
+            )
+            if complexity_info and complexity_info.get("was_upgraded"):
+                _debug_log(
+                    f"Complexity upgrade: {complexity_info.get('floor_tier')} → "
+                    f"{complexity_info.get('model_tier')} "
+                    f"(tier={complexity_info.get('complexity', {}).tier if complexity_info.get('complexity') else '?'})"
+                )
+                reason = f"{reason} | complexity_upgrade={complexity_info.get('model_tier')}"
+        except Exception as exc:
+            _debug_log(f"Complexity enrichment failed: {exc}")
 
     # Apply OVERRIDE routing if present
     if override_result:

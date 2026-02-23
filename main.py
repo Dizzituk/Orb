@@ -30,7 +30,7 @@ from fastapi.responses import FileResponse
 from app.db import init_db, get_db
 from app.auth import require_auth, is_auth_configured
 from app.auth.router import router as auth_router
-from app.memory.router import router as memory_router
+from app.memory.api_router import router as memory_router
 from app.llm.stream_router import router as stream_router
 from app.llm.telemetry_router import router as telemetry_router
 from app.llm.web_search_router import router as web_search_router

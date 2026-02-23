@@ -1,331 +1,255 @@
 # FILE: app/memory/router.py
-from typing import List, Optional
-from pathlib import Path
-from uuid import uuid4
+"""
+MemoryRouter — single entry point for all memory operations.
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastAPIFile, Form, Query
-from sqlalchemy.orm import Session
+This is the programmatic interface that every part of ASTRA imports
+when it needs to read or write memory. It delegates to domain-specific
+stores that each handle their own backing table.
 
-from app.db import get_db
-from app.memory import service, schemas
-from app.auth import require_auth
+NOT the HTTP API router — that's app/memory/api_router.py.
 
-router = APIRouter(
-    prefix="/memory",
-    tags=["memory"],
-    dependencies=[Depends(require_auth)],
+Usage:
+    from app.memory.router import memory_router
+
+    results = memory_router.query("weaver streaming", project_id="astra-core")
+    entry_id = memory_router.store("knowledge", "Weaver handles chat streaming", {})
+"""
+
+import logging
+from typing import Optional, Protocol, runtime_checkable
+
+from app.memory.schemas_unified import (
+    MemoryResult,
+    StoreRequest,
+    QueryRequest,
+    DomainStats,
 )
 
-
-# ============== PROJECTS ==============
-
-@router.post("/projects", response_model=schemas.ProjectOut, status_code=201)
-def create_project(data: schemas.ProjectCreate, db: Session = Depends(get_db)):
-    existing = service.get_project_by_name(db, data.name)
-    if existing:
-        raise HTTPException(status_code=400, detail="Project name already exists")
-    return service.create_project(db, data)
+logger = logging.getLogger(__name__)
 
 
-@router.get("/projects", response_model=List[schemas.ProjectOut])
-def list_projects(db: Session = Depends(get_db)):
-    return service.list_projects(db)
+# =========================================================================
+# Domain Store Protocol
+# =========================================================================
 
-
-@router.get("/projects/{project_id}", response_model=schemas.ProjectOut)
-def get_project(project_id: int, db: Session = Depends(get_db)):
-    project = service.get_project(db, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return project
-
-
-@router.patch("/projects/{project_id}", response_model=schemas.ProjectOut)
-def update_project(project_id: int, data: schemas.ProjectUpdate, db: Session = Depends(get_db)):
-    project = service.update_project(db, project_id, data)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return project
-
-
-@router.delete("/projects/{project_id}", status_code=204)
-def delete_project(project_id: int, db: Session = Depends(get_db)):
+@runtime_checkable
+class DomainStore(Protocol):
     """
-    Delete a project and all associated data.
-    
-    This endpoint performs best-effort cleanup of:
-    - Memory content (notes, tasks, files, messages)
-    - Job system data (jobs, sessions, artefacts, scheduled jobs, project configs)
-    - Database cascade handles Phase-4 foreign key relationships
-    
-    The project deletion is always attempted even if Phase-4 cleanup encounters errors.
-    Returns 204 on success, 404 if project not found, 500 for unexpected errors.
+    Protocol that all domain stores must implement.
+
+    Each domain (architecture, knowledge, preference, confidence, context)
+    provides a store class that implements these methods.
     """
-    success = service.delete_project(db, project_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return None
+
+    @property
+    def domain_name(self) -> str:
+        """The domain this store handles (e.g. 'architecture')."""
+        ...
+
+    def query(
+        self,
+        text: str,
+        project_id: str = "astra-core",
+        limit: int = 10,
+        min_relevance: float = 0.0,
+    ) -> list[MemoryResult]:
+        """Search this domain for relevant entries."""
+        ...
+
+    def store(self, request: StoreRequest) -> int:
+        """Store a new entry. Returns the entry ID."""
+        ...
+
+    def quarantine(self, file_path: str, project_id: str = "astra-core") -> int:
+        """Quarantine entries for a file path. Returns count affected."""
+        ...
+
+    def count(self, project_id: str = "astra-core") -> int:
+        """Count active entries for a project."""
+        ...
+
+    def get_stats(self, project_id: str = "astra-core") -> DomainStats:
+        """Get statistics for this domain."""
+        ...
 
 
-# ============== NOTES (FLAT) ==============
+# =========================================================================
+# MemoryRouter
+# =========================================================================
 
-@router.post("/notes", response_model=schemas.NoteOut, status_code=201)
-def create_note(data: schemas.NoteCreate, db: Session = Depends(get_db)):
-    project = service.get_project(db, data.project_id)
-    if not project:
-        raise HTTPException(status_code=400, detail="Project not found")
-    return service.create_note(db, data)
-
-
-@router.get("/notes", response_model=List[schemas.NoteOut])
-def list_notes(
-    project_id: int,
-    tag: Optional[str] = None,
-    search: Optional[str] = None,
-    db: Session = Depends(get_db),
-):
-    return service.list_notes(db, project_id, tag_filter=tag, search=search)
-
-
-@router.get("/notes/{note_id}", response_model=schemas.NoteOut)
-def get_note(note_id: int, db: Session = Depends(get_db)):
-    note = service.get_note(db, note_id)
-    if not note:
-        raise HTTPException(status_code=404, detail="Note not found")
-    return note
-
-
-@router.patch("/notes/{note_id}", response_model=schemas.NoteOut)
-def update_note(note_id: int, data: schemas.NoteUpdate, db: Session = Depends(get_db)):
-    note = service.update_note(db, note_id, data)
-    if not note:
-        raise HTTPException(status_code=404, detail="Note not found")
-    return note
-
-
-@router.delete("/notes/{note_id}", status_code=204)
-def delete_note(note_id: int, db: Session = Depends(get_db)):
-    success = service.delete_note(db, note_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="Note not found")
-    return None
-
-
-# ============== NOTES (NESTED UNDER PROJECT) ==============
-
-@router.post("/projects/{project_id}/notes", response_model=schemas.NoteOut, status_code=201)
-def create_note_for_project(
-    project_id: int,
-    data: schemas.NoteCreateForProject,
-    db: Session = Depends(get_db),
-):
-    project = service.get_project(db, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return service.create_note_for_project(db, project_id, data)
-
-
-@router.get("/projects/{project_id}/notes", response_model=List[schemas.NoteOut])
-def list_notes_for_project(
-    project_id: int,
-    tag: Optional[str] = None,
-    search: Optional[str] = None,
-    db: Session = Depends(get_db),
-):
-    project = service.get_project(db, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return service.list_notes(db, project_id, tag_filter=tag, search=search)
-
-
-# ============== TASKS (FLAT) ==============
-
-@router.post("/tasks", response_model=schemas.TaskOut, status_code=201)
-def create_task(data: schemas.TaskCreate, db: Session = Depends(get_db)):
-    project = service.get_project(db, data.project_id)
-    if not project:
-        raise HTTPException(status_code=400, detail="Project not found")
-    return service.create_task(db, data)
-
-
-@router.get("/tasks", response_model=List[schemas.TaskOut])
-def list_tasks(
-    project_id: int,
-    status: Optional[str] = None,
-    db: Session = Depends(get_db),
-):
-    return service.list_tasks(db, project_id, status=status)
-
-
-@router.get("/tasks/{task_id}", response_model=schemas.TaskOut)
-def get_task(task_id: int, db: Session = Depends(get_db)):
-    task = service.get_task(db, task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    return task
-
-
-@router.patch("/tasks/{task_id}", response_model=schemas.TaskOut)
-def update_task(task_id: int, data: schemas.TaskUpdate, db: Session = Depends(get_db)):
-    task = service.update_task(db, task_id, data)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    return task
-
-
-@router.delete("/tasks/{task_id}", status_code=204)
-def delete_task(task_id: int, db: Session = Depends(get_db)):
-    success = service.delete_task(db, task_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="Task not found")
-    return None
-
-
-# ============== TASKS (NESTED UNDER PROJECT) ==============
-
-@router.post("/projects/{project_id}/tasks", response_model=schemas.TaskOut, status_code=201)
-def create_task_for_project(
-    project_id: int,
-    data: schemas.TaskCreateForProject,
-    db: Session = Depends(get_db),
-):
-    project = service.get_project(db, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return service.create_task_for_project(db, project_id, data)
-
-
-@router.get("/projects/{project_id}/tasks", response_model=List[schemas.TaskOut])
-def list_tasks_for_project(
-    project_id: int,
-    status: Optional[str] = None,
-    db: Session = Depends(get_db),
-):
-    project = service.get_project(db, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return service.list_tasks(db, project_id, status=status)
-
-
-# ============== FILES ==============
-
-@router.post(
-    "/projects/{project_id}/files/upload",
-    response_model=schemas.FileOut,
-    status_code=201,
-)
-async def upload_file_for_project(
-    project_id: int,
-    file: UploadFile = FastAPIFile(...),
-    description: Optional[str] = Form(None),
-    file_type: Optional[str] = Form(None),
-    db: Session = Depends(get_db),
-):
-    project = service.get_project(db, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    data_root = Path("data")
-    project_dir = data_root / "files" / str(project_id)
-    project_dir.mkdir(parents=True, exist_ok=True)
-
-    original_name = file.filename or "uploaded_file"
-    suffix = Path(original_name).suffix
-    unique_name = f"{uuid4().hex}{suffix}"
-    file_path = project_dir / unique_name
-
-    contents = await file.read()
-    file_path.write_bytes(contents)
-
-    relative_path = file_path.relative_to(data_root)
-    normalized_relative_path = str(relative_path).replace("\\", "/")
-
-    inferred_type: Optional[str] = file_type or file.content_type
-    if not inferred_type and suffix:
-        inferred_type = suffix.lstrip(".")
-
-    file_create = schemas.FileCreate(
-        project_id=project_id,
-        path=normalized_relative_path,
-        original_name=original_name,
-        file_type=inferred_type,
-        description=description or "",
-    )
-
-    file_record = service.create_file_for_project(db, project_id, file_create)
-    return file_record
-
-
-@router.post("/files", response_model=schemas.FileOut, status_code=201)
-def create_file(data: schemas.FileCreate, db: Session = Depends(get_db)):
-    project = service.get_project(db, data.project_id)
-    if not project:
-        raise HTTPException(status_code=400, detail="Project not found")
-    return service.create_file(db, data)
-
-
-@router.get("/files", response_model=List[schemas.FileOut])
-def list_files(project_id: int, db: Session = Depends(get_db)):
-    return service.list_files(db, project_id)
-
-
-@router.get("/files/{file_id}", response_model=schemas.FileOut)
-def get_file(file_id: int, db: Session = Depends(get_db)):
-    file_record = service.get_file(db, file_id)
-    if not file_record:
-        raise HTTPException(status_code=404, detail="File not found")
-    return file_record
-
-
-@router.delete("/files/{file_id}", status_code=204)
-def delete_file(file_id: int, db: Session = Depends(get_db)):
-    success = service.delete_file(db, file_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="File not found")
-    return None
-
-
-# ============== MESSAGES ==============
-
-@router.post("/messages", response_model=schemas.MessageOut, status_code=201)
-def create_message(data: schemas.MessageCreate, db: Session = Depends(get_db)):
-    project = service.get_project(db, data.project_id)
-    if not project:
-        raise HTTPException(status_code=400, detail="Project not found")
-    return service.create_message(db, data)
-
-
-@router.get("/messages", response_model=schemas.MessageHistoryResponse)
-def get_message_history(
-    project_id: int = Query(..., description="Project ID to get messages for"),
-    limit: int = Query(50, ge=1, le=200, description="Maximum messages to return"),
-    before_id: Optional[int] = Query(None, description="Return messages older than this ID"),
-    db: Session = Depends(get_db),
-):
+class MemoryRouter:
     """
-    Get paginated message history for a project.
-    Returns messages in chronological order (oldest first) for display.
-    Use before_id to paginate backwards through history.
+    Single entry point for all memory operations.
+
+    Domain stores register themselves. Query/store calls are delegated
+    to the appropriate store based on the domain parameter.
     """
-    project = service.get_project(db, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    
-    return service.get_message_history(db, project_id, limit, before_id)
+
+    def __init__(self):
+        self._stores: dict[str, DomainStore] = {}
+
+    def register(self, store: DomainStore) -> None:
+        """Register a domain store."""
+        name = store.domain_name
+        if name in self._stores:
+            logger.warning(f"[memory_router] Overwriting store for domain: {name}")
+        self._stores[name] = store
+        logger.info(f"[memory_router] Registered domain store: {name}")
+
+    @property
+    def registered_domains(self) -> list[str]:
+        """List all registered domain names."""
+        return list(self._stores.keys())
+
+    # -----------------------------------------------------------------
+    # Query
+    # -----------------------------------------------------------------
+
+    def query(
+        self,
+        text: str,
+        project_id: str = "astra-core",
+        domains: Optional[list[str]] = None,
+        limit: int = 10,
+        min_relevance: float = 0.0,
+    ) -> list[MemoryResult]:
+        """
+        Query across one or more memory domains.
+
+        If domains is None, queries all registered domains.
+        Results are merged and sorted by relevance (highest first).
+        """
+        target_domains = domains or list(self._stores.keys())
+        all_results: list[MemoryResult] = []
+
+        for domain in target_domains:
+            store = self._stores.get(domain)
+            if not store:
+                logger.warning(f"[memory_router] No store for domain: {domain}")
+                continue
+            try:
+                results = store.query(
+                    text=text,
+                    project_id=project_id,
+                    limit=limit,
+                    min_relevance=min_relevance,
+                )
+                all_results.extend(results)
+            except Exception as e:
+                logger.error(f"[memory_router] Query failed for domain {domain}: {e}")
+
+        # Sort by relevance descending, take top N
+        all_results.sort(key=lambda r: r.relevance, reverse=True)
+        return all_results[:limit]
+
+    # -----------------------------------------------------------------
+    # Store
+    # -----------------------------------------------------------------
+
+    def store(
+        self,
+        domain: str,
+        content: str,
+        metadata: Optional[dict] = None,
+        project_id: str = "astra-core",
+        file_path: Optional[str] = None,
+    ) -> int:
+        """
+        Store a new entry in the specified domain.
+
+        Returns the entry ID from the backing store.
+        """
+        store = self._stores.get(domain)
+        if not store:
+            raise ValueError(f"No store registered for domain: {domain}")
+
+        request = StoreRequest(
+            domain=domain,
+            content=content,
+            metadata=metadata or {},
+            project_id=project_id,
+            file_path=file_path,
+        )
+        return store.store(request)
+
+    # -----------------------------------------------------------------
+    # Lifecycle
+    # -----------------------------------------------------------------
+
+    def quarantine(
+        self,
+        file_path: str,
+        project_id: str = "astra-core",
+    ) -> int:
+        """
+        Quarantine entries across all domains for a file path.
+
+        Returns total count of entries quarantined.
+        """
+        total = 0
+        for name, store in self._stores.items():
+            try:
+                count = store.quarantine(file_path, project_id)
+                total += count
+            except Exception as e:
+                logger.error(f"[memory_router] Quarantine failed for {name}: {e}")
+        return total
+
+    def purge_quarantined(self, project_id: str = "astra-core") -> int:
+        """
+        Purge all quarantined entries across all domains.
+
+        Returns total count of entries purged.
+        """
+        total = 0
+        for name, store in self._stores.items():
+            try:
+                if hasattr(store, "purge_quarantined"):
+                    count = store.purge_quarantined(project_id)
+                    total += count
+            except Exception as e:
+                logger.error(f"[memory_router] Purge failed for {name}: {e}")
+        return total
+
+    def wipe_domain(self, domain: str, project_id: str = "astra-core") -> int:
+        """
+        Delete all entries in a domain for a project.
+
+        Returns count of entries deleted.
+        """
+        store = self._stores.get(domain)
+        if not store:
+            raise ValueError(f"No store registered for domain: {domain}")
+
+        if hasattr(store, "wipe"):
+            return store.wipe(project_id)
+
+        raise NotImplementedError(f"Domain {domain} does not support wipe")
+
+    # -----------------------------------------------------------------
+    # Stats
+    # -----------------------------------------------------------------
+
+    def get_stats(self) -> dict[str, DomainStats]:
+        """Get statistics for all registered domains."""
+        stats = {}
+        for name, store in self._stores.items():
+            try:
+                stats[name] = store.get_stats()
+            except Exception as e:
+                logger.error(f"[memory_router] Stats failed for {name}: {e}")
+                stats[name] = DomainStats(domain=name)
+        return stats
 
 
-@router.get("/projects/{project_id}/messages", response_model=List[schemas.MessageOut])
-def list_messages_for_project(project_id: int, limit: int = 100, db: Session = Depends(get_db)):
-    project = service.get_project(db, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return service.list_messages(db, project_id, limit=limit)
+# =========================================================================
+# Module-level singleton
+# =========================================================================
 
+memory_router = MemoryRouter()
+"""
+Module-level singleton instance.
 
-@router.delete("/projects/{project_id}/messages", status_code=200)
-def clear_messages_for_project(project_id: int, db: Session = Depends(get_db)):
-    project = service.get_project(db, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    count = service.delete_messages_for_project(db, project_id)
-    return {"deleted": count}
+Import this wherever you need memory access:
+    from app.memory.router import memory_router
+"""

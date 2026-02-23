@@ -23,6 +23,13 @@ from .schemas import (
 )
 from .phrase_cache import PhraseCache, get_phrase_cache
 
+# v5.4: Memory integration — confidence correction on misfires
+try:
+    from app.memory.integration import on_intent_corrected as _confidence_correct
+    _CONFIDENCE_AVAILABLE = True
+except ImportError:
+    _CONFIDENCE_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 # =============================================================================
@@ -173,6 +180,13 @@ class FeedbackLogger:
                 confidence=1.0,
                 source="feedback_false_positive",
             )
+            # v5.4: Tell confidence store this was a wrong mapping
+            if _CONFIDENCE_AVAILABLE and event.resolved_intent:
+                _confidence_correct(
+                    phrase=event.original_text,
+                    wrong_intent=event.resolved_intent.value,
+                    right_intent=CanonicalIntent.CHAT_ONLY.value,
+                )
         elif event.feedback_type == "false_negative":
             # This should have been a command - add to cache
             self._phrase_cache.add(
@@ -181,6 +195,13 @@ class FeedbackLogger:
                 confidence=1.0,
                 source="feedback_false_negative",
             )
+            # v5.4: Tell confidence store the correct mapping
+            if _CONFIDENCE_AVAILABLE and event.expected_intent:
+                _confidence_correct(
+                    phrase=event.original_text,
+                    wrong_intent=CanonicalIntent.CHAT_ONLY.value,
+                    right_intent=event.expected_intent.value,
+                )
     
     def _persist_event(self, event: FeedbackEvent) -> None:
         """Persist feedback event to log file."""

@@ -136,6 +136,16 @@ class CanonicalIntent(str, Enum):
     # Run the scan-do-rescan refactor loop (surgical extractor)
     REFACTOR_CODEBASE = "REFACTOR_CODEBASE"
 
+    # =========================================================================
+    # RAG LIFECYCLE (v2.0 - Quarantine purge)
+    # =========================================================================
+
+    # Purge quarantined RAG entries (post-refactor cleanup)
+    PURGE_QUARANTINE = "PURGE_QUARANTINE"
+
+    # Show quarantine status (counts across all tables)
+    QUARANTINE_STATUS = "QUARANTINE_STATUS"
+
 class LatencyTier(str, Enum):
     """Which cost tier resolved this intent?"""
     TIER_0_RULES = "tier_0"      # Pure regex/string, no LLM

@@ -936,6 +936,75 @@ INTENT_DEFINITIONS: Dict[CanonicalIntent, IntentDefinition] = {
         ),
     ),
 
+    # =========================================================================
+    # RAG LIFECYCLE (v2.0 - Quarantine purge & status)
+    # =========================================================================
+
+    CanonicalIntent.PURGE_QUARANTINE: IntentDefinition(
+        intent=CanonicalIntent.PURGE_QUARANTINE,
+        trigger_phrases=[
+            "Astra, command: purge quarantine",
+            "astra, command: purge quarantine",
+            "Astra, purge quarantine",
+            "astra, purge quarantine",
+            "purge quarantine",
+            "Purge quarantine",
+            "purge quarantined entries",
+            "Purge quarantined entries",
+            "clean quarantine",
+            "Clean quarantine",
+        ],
+        trigger_patterns=[
+            r"^(?:[Aa]stra[,:]?\s*)?(?:command[:\s]+)?[Pp]urge\s+(?:the\s+)?quarantin(?:e|ed)(?:\s+entries)?$",
+            r"^(?:[Aa]stra[,:]?\s*)?[Cc]lean\s+(?:the\s+)?quarantine$",
+        ],
+        requires_context=[],
+        requires_confirmation=True,
+        confirmation_prompt=(
+            "This will permanently delete all quarantined RAG entries "
+            "across arch_code_chunks, architecture_file_index, and rag_entries. "
+            "It will also remove .quarantined/ directories from disk. "
+            "This cannot be undone. Proceed?"
+        ),
+        description="Permanently remove quarantined RAG entries after refactoring",
+        behavior=(
+            "Purge all quarantined entries:\n"
+            "1. Delete quarantined arch_code_chunks\n"
+            "2. Delete quarantined architecture_file_index entries\n"
+            "3. Delete quarantined rag_entries\n"
+            "4. Remove .quarantined/ directories from disk\n"
+            "5. Report counts of purged items"
+        ),
+    ),
+
+    CanonicalIntent.QUARANTINE_STATUS: IntentDefinition(
+        intent=CanonicalIntent.QUARANTINE_STATUS,
+        trigger_phrases=[
+            "Astra, command: quarantine status",
+            "astra, command: quarantine status",
+            "quarantine status",
+            "Quarantine status",
+            "show quarantine",
+            "Show quarantine",
+            "how many quarantined",
+            "How many quarantined",
+        ],
+        trigger_patterns=[
+            r"^(?:[Aa]stra[,:]?\s*)?(?:command[:\s]+)?(?:[Ss]how\s+)?quarantine\s+status$",
+            r"^(?:[Hh]ow\s+many|[Ss]how)\s+quarantined(?:\s+entries)?$",
+        ],
+        requires_context=[],
+        requires_confirmation=False,
+        description="Show counts of quarantined entries across all RAG tables",
+        behavior=(
+            "Display quarantine statistics:\n"
+            "1. Count quarantined arch_code_chunks\n"
+            "2. Count quarantined architecture_file_index entries\n"
+            "3. Count quarantined rag_entries\n"
+            "4. Report total and per-table counts"
+        ),
+    ),
+
     CanonicalIntent.CHAT_ONLY: IntentDefinition(
         intent=CanonicalIntent.CHAT_ONLY,
         trigger_phrases=[],  # Default fallback

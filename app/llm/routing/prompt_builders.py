@@ -387,6 +387,19 @@ def build_full_context(
     if doc_context:
         full_context += "=== UPLOADED DOCUMENTS ===" + doc_context
     
+    # v5.4: RAG memory injection from unified memory router
+    try:
+        from app.memory.integration import inject_memory_context
+        memory_ctx = inject_memory_context(
+            query=message,
+            project_id=str(project_id),
+            limit=10,
+        )
+        if memory_ctx:
+            full_context += "\n\n" + memory_ctx
+    except Exception:
+        pass  # Non-fatal — memory system may not be initialised yet
+    
     return full_context
 
 

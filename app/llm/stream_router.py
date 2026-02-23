@@ -103,6 +103,9 @@ from app.llm.routing.chat_routing import (
 )
 from app.llm._stream_router_utils import StreamRequest, _EXPLICIT_COMMAND_INTENTS, _WEAVER_EXIT_INTENTS, _create_handler_unavailable_response, _create_no_spec_error_response, _handle_blocked_command, _handle_db_spec_routing, _handle_flow_state_routing
 
+# v5.4: Memory integration hooks (confidence learning, preference capture, context extraction)
+from app.memory.integration import on_intent_confirmed, after_user_message
+
 
 router = APIRouter(prefix="/stream", tags=["streaming"])
 logger = logging.getLogger(__name__)
@@ -171,6 +174,9 @@ async def stream_chat(
                 ),
             )
             
+            # v5.4: Record confirmation in confidence learning
+            on_intent_confirmed(req.message, direct_intent.value, user_id)
+            
             sse_headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
             response = handle_command_execution(
                 req, translation_result, db, trace, conversation_id, stage_trace
@@ -231,6 +237,8 @@ async def stream_chat(
         # =================================================================
         if translation_result.mode == TranslationMode.CHAT:
             logger.info("[translation] CHAT MODE - bypassing job classification")
+            # v5.4: Capture preferences and context from chat messages
+            after_user_message(req.message, project_id=str(req.project_id), user_id=user_id)
             return handle_chat_mode(req, project, db, trace)
         
         # =================================================================
@@ -285,6 +293,12 @@ async def stream_chat(
             
             # Execute approved commands
             if translation_result.should_execute:
+                # v5.4: Record successful intent resolution in confidence learning
+                intent_val = translation_result.resolved_intent.value if translation_result.resolved_intent else None
+                if intent_val:
+                    on_intent_confirmed(req.message, intent_val, user_id)
+                after_user_message(req.message, project_id=str(req.project_id), user_id=user_id)
+                
                 response = handle_command_execution(
                     req, translation_result, db, trace, conversation_id, stage_trace
                 )
