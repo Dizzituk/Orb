@@ -39,6 +39,11 @@ from app.introspection.router import router as introspection_router
 from app.astra_memory.router import router as astra_memory_router
 from app.rag.router import router as rag_router
 from app.shared_context.router import router as shared_context_router
+from app.content.router import router as content_router
+from app.content.scout_router import router as content_scout_router
+from app.content.production_router import router as content_production_router
+from app.content.distribution_router import router as content_distribution_router
+from app.settings.router import router as settings_router
 
 # Import refactored endpoints
 from app.endpoints import router as endpoints_router
@@ -151,6 +156,34 @@ def on_startup():
     except Exception as e:
         print(f"[startup] ASTRA memory indexing skipped: {e}")
 
+    # v5.1: Sync API keys from DB to environment
+    try:
+        from app.settings.service import sync_all_to_env
+        from app.db import SessionLocal
+        _sdb = SessionLocal()
+        _key_count = sync_all_to_env(_sdb)
+        if _key_count > 0:
+            print(f"[startup] Settings: synced {_key_count} API keys from DB")
+        else:
+            print("[startup] Settings: no DB-stored API keys (using .env)")
+        _sdb.close()
+    except Exception as e:
+        print(f"[startup] Settings sync skipped: {e}")
+
+    # v5.0: Seed content pipeline data (series, style profile)
+    try:
+        from app.content.seed import seed_content_data
+        from app.db import SessionLocal
+        _cdb = SessionLocal()
+        _seed_result = seed_content_data(_cdb)
+        if _seed_result.get("series_created", 0) > 0:
+            print(f"[startup] Content pipeline: seeded {_seed_result['series_created']} series")
+        else:
+            print("[startup] Content pipeline: [OK] data present")
+        _cdb.close()
+    except Exception as e:
+        print(f"[startup] Content pipeline seed skipped: {e}")
+
     # v2.2: Confidence graduation — promote high-confidence Tier 1 → Tier 0
     try:
         from app.translation.confidence_graduation import run_graduation
@@ -176,6 +209,15 @@ app.include_router(embeddings_router)
 app.include_router(embeddings_search_router)
 app.include_router(astra_memory_router)
 app.include_router(shared_context_router, dependencies=[Depends(require_auth)])
+
+# Content Creation Pipeline
+app.include_router(content_router)
+app.include_router(content_scout_router)
+app.include_router(content_production_router)
+app.include_router(content_distribution_router)
+
+# Settings (API key management)
+app.include_router(settings_router)
 
 # Refactored endpoints (chat, chat_with_attachments, direct_llm)
 app.include_router(endpoints_router)

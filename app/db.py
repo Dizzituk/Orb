@@ -130,6 +130,12 @@ def init_db():
     from app.memory import confidence_model  # noqa: F401
     from app.memory import rag_entries_model  # noqa: F401
 
+    # v5.0: Import Content Pipeline models
+    from app.content import models as content_models  # noqa: F401
+
+    # v5.1: Import Settings models (API key management)
+    from app.settings import models as settings_models  # noqa: F401
+
     # v4.0: create_all with checkfirst=True (default) handles tables.
     # SQLite may raise OperationalError for pre-existing indexes.
     # We catch and log these rather than crashing startup.
