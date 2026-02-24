@@ -1005,25 +1005,6 @@ INTENT_DEFINITIONS: Dict[CanonicalIntent, IntentDefinition] = {
         ),
     ),
 
-    CanonicalIntent.WEB_SEARCH: IntentDefinition(
-        intent=CanonicalIntent.WEB_SEARCH,
-        trigger_phrases=[
-            # Detection handled by _tier0_web_search.py check_web_search_trigger()
-        ],
-        trigger_patterns=[],
-        requires_context=[],
-        requires_confirmation=False,
-        description="Search the web and return synthesised results with sources",
-        behavior=(
-            "Web search — read-only, no confirmation required.\n"
-            "1. Extract search query from user message\n"
-            "2. Query Brave Search API (primary) or DuckDuckGo (fallback)\n"
-            "3. Fetch and parse top result pages for evidence\n"
-            "4. LLM synthesises answer from sources only\n"
-            "5. Stream answer with source citations"
-        ),
-    ),
-
     CanonicalIntent.CHAT_ONLY: IntentDefinition(
         intent=CanonicalIntent.CHAT_ONLY,
         trigger_phrases=[],  # Default fallback
@@ -1163,3 +1144,42 @@ INTENT_DEFINITIONS: Dict[CanonicalIntent, IntentDefinition] = {
         ),
     ),
 }
+
+# =============================================================================
+# DUPLICATE GUARD — catch silent overwrites at import time
+# =============================================================================
+# Python dicts silently accept duplicate keys (last write wins).
+# This guard runs once at import and catches any key that was defined
+# twice — like the WEB_SEARCH duplicate that lived here undetected.
+
+import ast as _ast
+import inspect as _inspect
+
+def _check_no_duplicate_intents() -> None:
+    """Parse this file's AST to detect duplicate dict keys."""
+    try:
+        source = _inspect.getsource(_inspect.getmodule(_check_no_duplicate_intents))
+        tree = _ast.parse(source)
+        for node in _ast.walk(tree):
+            if not isinstance(node, _ast.Dict):
+                continue
+            seen = {}
+            for key in node.keys:
+                if key is None:
+                    continue
+                # Extract key string from AST
+                key_str = _ast.dump(key)
+                if key_str in seen:
+                    import warnings
+                    warnings.warn(
+                        f"[intents.py] DUPLICATE INTENT KEY near line {key.lineno} "
+                        f"(first seen line {seen[key_str]}). "
+                        f"The second definition silently overwrites the first.",
+                        stacklevel=2,
+                    )
+                seen[key_str] = getattr(key, 'lineno', '?')
+    except Exception:
+        pass  # Guard must never break import
+
+_check_no_duplicate_intents()
+del _check_no_duplicate_intents, _ast, _inspect

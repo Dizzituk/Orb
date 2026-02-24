@@ -567,8 +567,8 @@ try:
 except ImportError:
     _GOV_PROMPT = ""
 
-CREATE_ANALYSIS_SYSTEM_PROMPT = f"""You are an expert software architect analyzing a feature request.
-{_GOV_PROMPT}
+CREATE_ANALYSIS_SYSTEM_PROMPT = """You are an expert software architect analyzing a feature request.
+""" + _GOV_PROMPT + """
 
 You will receive:
 1. A feature description (from the Weaver stage)
