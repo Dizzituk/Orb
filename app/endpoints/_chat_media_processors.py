@@ -21,7 +21,10 @@ from app.llm import (
 from app.llm.schemas import AttachmentInfo
 from app.llm.file_analyzer import is_video_mime_type
 from app.llm.gemini_vision import ask_about_image, check_vision_available, analyze_video
+from sqlalchemy.orm import Session
+
 from app.helpers.context import build_document_context
+from app.memory import service as memory_service, schemas as memory_schemas
 
 logger = logging.getLogger(__name__)
 
@@ -177,11 +180,11 @@ def _route_to_vision(
     vision_context: str,
     tier: str,
     override_model_name: Optional[str],
-    attachments_summary: List[AttachmentSummary],
+    attachments_summary: list,
     project_id: int,
     user_message: str,
     db: Session,
-) -> ChatResponse:
+):
     """Route media to Gemini Vision and return response."""
     
     image_count = len(image_attachments)
@@ -244,6 +247,9 @@ def _route_to_vision(
         print(f"[chat_attachments] Vision error: {vision_result['error']}")
     
     print(f"[chat_attachments] Vision response from: {provider_str} / {model_str}")
+    
+    # Deferred import to avoid circular dependency
+    from app.endpoints.chat_attachments import ChatResponse
     
     # Log messages
     user_content = user_message if user_message else "[Attachment only]"

@@ -21,6 +21,12 @@ import logging
 import os
 from typing import Optional
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(__file__), '..', '..', '.env'))
+except ImportError:
+    pass  # dotenv not required if env vars set externally
+
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,17 +48,16 @@ DEFAULT_VOICE = "en-GB-WaveNet-B"
 DEFAULT_LANGUAGE = "en-GB"
 DEFAULT_SPEED = 1.0
 
-# Voice catalogue (curated subset for the UI)
-VOICE_CATALOGUE = [
-    {"name": "British Male (WaveNet)",      "voice_id": "en-GB-WaveNet-B",   "gender": "MALE",   "tier": "wavenet"},
-    {"name": "British Female (WaveNet)",    "voice_id": "en-GB-WaveNet-A",   "gender": "FEMALE", "tier": "wavenet"},
-    {"name": "British Male (Neural2)",      "voice_id": "en-GB-Neural2-B",   "gender": "MALE",   "tier": "neural2"},
-    {"name": "British Female (Neural2)",    "voice_id": "en-GB-Neural2-A",   "gender": "FEMALE", "tier": "neural2"},
-    {"name": "British Male (Standard)",     "voice_id": "en-GB-Standard-B",  "gender": "MALE",   "tier": "standard"},
-    {"name": "British Female (Standard)",   "voice_id": "en-GB-Standard-A",  "gender": "FEMALE", "tier": "standard"},
-    {"name": "US Male (WaveNet)",           "voice_id": "en-US-WaveNet-D",   "gender": "MALE",   "tier": "wavenet"},
-    {"name": "US Female (WaveNet)",         "voice_id": "en-US-WaveNet-F",   "gender": "FEMALE", "tier": "wavenet"},
-]
+# Supported language prefixes (en-GB first, then en-US)
+SUPPORTED_LANGUAGES = ["en-GB", "en-US"]
+
+# Tier display order (best first)
+TIER_ORDER = ["Chirp3-HD", "Chirp-HD", "Studio", "Wavenet", "Neural2", "News", "Standard"]
+
+# Cached voice list from Google API
+_voice_cache: list = []
+_voice_cache_time: float = 0
+VOICE_CACHE_TTL = 3600  # Refresh every hour
 
 # ── State ───────────────────────────────────────────────────────────────
 
@@ -84,6 +89,98 @@ class PreviewRequest(BaseModel):
 
 class SelectVoiceRequest(BaseModel):
     voice: str
+
+
+# ── Voice catalogue (live from Google API) ──────────────────────────────
+
+def _extract_tier(voice_name: str) -> str:
+    """Extract tier from voice ID, e.g. 'en-GB-Chirp3-HD-Achird' → 'Chirp3-HD'."""
+    # Remove language prefix (e.g. 'en-GB-')
+    parts = voice_name.split("-", 2)
+    if len(parts) < 3:
+        return "Other"
+    remainder = parts[2]  # e.g. 'Chirp3-HD-Achird' or 'Wavenet-B'
+    for tier in TIER_ORDER:
+        if remainder.startswith(tier):
+            return tier
+    return "Other"
+
+
+def _make_display_name(voice_name: str, gender: str) -> str:
+    """Create a friendly display name from the voice ID."""
+    tier = _extract_tier(voice_name)
+    # Extract the letter/name suffix
+    parts = voice_name.split("-")
+    suffix = parts[-1] if parts else ""
+    lang = "-".join(parts[:2]) if len(parts) >= 2 else ""
+    region = "British" if lang == "en-GB" else "US" if lang == "en-US" else lang
+    gender_label = "Male" if gender == "MALE" else "Female"
+    return f"{region} {gender_label} — {tier} {suffix}"
+
+
+async def _fetch_voices_from_google() -> list:
+    """Fetch all supported English voices from Google TTS API."""
+    global _voice_cache, _voice_cache_time
+    import time
+
+    now = time.time()
+    if _voice_cache and (now - _voice_cache_time) < VOICE_CACHE_TTL:
+        return _voice_cache
+
+    if not GOOGLE_API_KEY:
+        return []
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{VOICES_API_URL}?key={GOOGLE_API_KEY}"
+            )
+        if resp.status_code != 200:
+            logger.error("[tts] Failed to fetch voices: %d", resp.status_code)
+            return _voice_cache  # Return stale cache on error
+
+        all_voices = resp.json().get("voices", [])
+
+        catalogue = []
+        for v in all_voices:
+            langs = v.get("languageCodes", [])
+            # Only include supported languages
+            matching_lang = None
+            for lang in SUPPORTED_LANGUAGES:
+                if lang in langs:
+                    matching_lang = lang
+                    break
+            if not matching_lang:
+                continue
+
+            voice_id = v["name"]
+            gender = v.get("ssmlGender", "NEUTRAL")
+            tier = _extract_tier(voice_id)
+            display = _make_display_name(voice_id, gender)
+
+            catalogue.append({
+                "name": display,
+                "voice_id": voice_id,
+                "gender": gender,
+                "tier": tier,
+                "language": matching_lang,
+            })
+
+        # Sort: by language (en-GB first), then tier order, then gender, then name
+        def sort_key(v):
+            lang_idx = SUPPORTED_LANGUAGES.index(v["language"]) if v["language"] in SUPPORTED_LANGUAGES else 99
+            tier_idx = TIER_ORDER.index(v["tier"]) if v["tier"] in TIER_ORDER else 99
+            return (lang_idx, tier_idx, v["gender"], v["voice_id"])
+
+        catalogue.sort(key=sort_key)
+        _voice_cache = catalogue
+        _voice_cache_time = now
+        logger.info("[tts] Fetched %d voices from Google API", len(catalogue))
+        return catalogue
+
+    except Exception as e:
+        logger.error("[tts] Voice fetch error: %s", e)
+        return _voice_cache
 
 
 # ── Google TTS call ─────────────────────────────────────────────────────
@@ -160,8 +257,9 @@ async def preview(req: PreviewRequest):
 @app.get("/tts/voices")
 async def list_voices():
     """List available voices and current selection."""
+    catalogue = await _fetch_voices_from_google()
     voices = []
-    for v in VOICE_CATALOGUE:
+    for v in catalogue:
         voices.append({
             "name": v["name"],
             "voice_id": v["voice_id"],
@@ -177,10 +275,7 @@ async def select_voice(req: SelectVoiceRequest):
     """Set the active voice."""
     global _selected_voice
 
-    valid_ids = {v["voice_id"] for v in VOICE_CATALOGUE}
-    if req.voice not in valid_ids:
-        raise HTTPException(400, f"Unknown voice: {req.voice}. Valid: {sorted(valid_ids)}")
-
+    # Accept any voice ID — Google will validate it on speak
     _selected_voice = req.voice
     logger.info("[tts] Voice selected: %s", _selected_voice)
     return {"selected": _selected_voice}

@@ -14,23 +14,16 @@ LOCKED BEHAVIOUR:
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
-import os
-import re
 import uuid
-from datetime import datetime, timezone
-from typing import AsyncIterator, Dict, List, Optional, Any, Set, Tuple
+from typing import AsyncIterator, Dict, List, Optional, Any
 
 from sqlalchemy.orm import Session
-from app.llm._weaver_stream_utils_12 import _SLOT_RECONCILIATION_REMOVED, _enforce_deduplication, _format_execution_mode, _format_ramble, _get_blocking_questions, _get_weaver_config, _is_control_message, _serialize_sse
-from app.llm._weaver_stream_utils_13 import BUILD_VERBS, INTENT_GOAL_PATTERNS, LEAKAGE_PATTERNS, MICRO_FILE_INDICATORS, NEGATION_PATTERNS, NON_MICRO_INDICATORS, REFACTOR_INDICATORS, _hash_messages
-from app.llm._weaver_stream_utils_14 import CORE_GOAL_VERBS, FEATURE_COMPONENT_INDICATORS, META_MODE_PATTERNS, QUESTIONS_DISMISSED_PATTERNS, _get_streaming_function, _hash_message, _normalize_typos, _sanitize_weaver_output
-from app.llm._weaver_stream_utils_15 import DESIGN_PREF_WHITELIST_PATTERNS, REFACTOR_ACTION_PATTERNS, TYPO_NORMALIZATIONS, _extract_meta_mode, _extract_vision_context, _gather_ramble_messages, _is_micro_file_task, _user_dismissed_questions
-from app.llm._weaver_stream_utils_16 import CONCRETE_TARGETS, DESIGN_PREF_BLACKLIST_PATTERNS, MICRO_TASK_SYSTEM_PROMPT, REFACTOR_TASK_SYSTEM_PROMPT, VISION_CONTEXT_PATTERNS, _enforce_design_pref_hygiene, _is_refactor_task, _is_vision_context
-from app.llm._weaver_stream_utils_17 import CORE_GOAL_TARGETS, _has_core_goal
-from app.llm._weaver_prompts import WEAVER_UPDATE_SYSTEM_PROMPT, WEAVER_CREATE_SYSTEM_PROMPT
+from app.llm._weaver_stream_utils_12 import _enforce_deduplication, _get_blocking_questions, _get_weaver_config, _serialize_sse
+from app.llm._weaver_stream_utils_14 import _get_streaming_function, _sanitize_weaver_output
+from app.llm._weaver_stream_utils_15 import _is_micro_file_task, _user_dismissed_questions
+from app.llm._weaver_stream_utils_16 import _enforce_design_pref_hygiene, _is_refactor_task
+from app.llm._weaver_stream_utils_17 import _has_core_goal
 
 logger = logging.getLogger(__name__)
 
@@ -58,44 +51,19 @@ except ImportError:
 try:
     from app.llm.spec_flow_state import (
         start_weaver_flow,
-        SpecFlowStage,
-        set_weaver_design_questions,
-        get_weaver_design_state,
         clear_weaver_design_questions,
-        get_active_flow,
-        # v1.2: Persistent prefs and checkpoints
         save_confirmed_design_prefs,
-        get_confirmed_design_prefs,
         save_weave_checkpoint,
-        get_weave_checkpoint,
-        # v1.3: Hash-based delta tracking
         save_woven_user_hashes,
-        get_woven_user_hashes,
     )
     _FLOW_STATE_AVAILABLE = True
 except ImportError:
     start_weaver_flow = None
-    SpecFlowStage = None
-    set_weaver_design_questions = None
-    get_weaver_design_state = None
     clear_weaver_design_questions = None
-    get_active_flow = None
     save_confirmed_design_prefs = None
-    get_confirmed_design_prefs = None
     save_weave_checkpoint = None
-    get_weave_checkpoint = None
     save_woven_user_hashes = None
-    get_woven_user_hashes = None
     _FLOW_STATE_AVAILABLE = False
-
-# Simple weaver function
-try:
-    from app.llm.weaver_simple import weave, WEAVER_SYSTEM_PROMPT, _format_messages_as_ramble
-    _SIMPLE_WEAVER_AVAILABLE = True
-except ImportError as e:
-    logger.warning(f"[weaver_stream] weaver_simple not available: {e}")
-    _SIMPLE_WEAVER_AVAILABLE = False
-    weave = None
 
 # Import streaming functions for all providers
 try:
@@ -110,12 +78,6 @@ except ImportError:
         stream_anthropic = None
         stream_gemini = None
         _STREAMING_AVAILABLE = False
-
-
-# ---------------------------------------------------------------------------
-# All constants, helpers, hashing, classification, and prompts have been
-# extracted to _weaver_stream_utils_12..17 and _weaver_prompts.py.
-# ---------------------------------------------------------------------------
 
 async def generate_weaver_stream(
     *,
@@ -159,183 +121,37 @@ async def generate_weaver_stream(
     
     try:
         # =====================================================================
-        # STEP 1: Gather ALL messages
+        # STEPS 1-4: Gather, filter, dedup, load state (delegated)
         # =====================================================================
-        
-        all_messages = _gather_ramble_messages(db, project_id)
-        
-        # =============================================================
-        # v4.1.0: INJECT PENDING USER MESSAGE (auto-reweave race fix)
-        # When stream_router auto-routes to Weaver UPDATE, the user's
-        # latest message may not yet be persisted to the DB (the SSE
-        # handler fires before message persistence completes). We
-        # inject it directly so hash-based dedup sees it as new.
-        # Dedup by hash ensures no double-counting if it IS in DB.
-        # =============================================================
-        if pending_user_message and pending_user_message.strip():
-            pending_msg = {"role": "user", "content": pending_user_message.strip()}
-            # Only inject if not already present (hash check prevents duplicates)
-            pending_hash = _hash_message(pending_msg)
-            existing_hashes = _hash_messages(all_messages)
-            if pending_hash not in existing_hashes:
-                all_messages.append(pending_msg)
-                print(f"[WEAVER] v4.1.0 Injected pending_user_message ({len(pending_user_message)} chars, hash={pending_hash})")
-            else:
-                print(f"[WEAVER] v4.1.0 pending_user_message already in DB (hash={pending_hash}), skipping injection")
-        
-        if not all_messages:
-            no_messages_msg = (
-                "**No conversation to weave**\n\n"
-                "I don't see any recent messages to organize into a job description.\n\n"
-                "Share what you want to build or change, then say "
-                "`how does that look all together` again."
-            )
-            yield _serialize_sse({"type": "token", "content": no_messages_msg})
+        from app.llm._weaver_stream_prepare import prepare_weaver_messages
+
+        prep = prepare_weaver_messages(db, project_id, pending_user_message, captured_answers)
+
+        if prep.early_exit_message:
+            yield _serialize_sse({"type": "token", "content": prep.early_exit_message})
             yield _serialize_sse({"type": "done", "provider": provider, "model": model})
             return
-        
-        total_message_count = len(all_messages)
-        print(f"[WEAVER] Gathered {total_message_count} total messages")
-        
-        # =====================================================================
-        # STEP 2: Extract meta-mode phrases (Bug 2 fix)
-        # =====================================================================
-        
-        filtered_messages, extracted_modes = _extract_meta_mode(all_messages)
-        execution_mode = _format_execution_mode(extracted_modes)
-        
-        if execution_mode:
-            print(f"[WEAVER] Extracted execution_mode: {execution_mode}")
-        
-        # =====================================================================
-        # STEP 2b: Apply typo normalization (v3.6.0)
-        # Must happen BEFORE Step 4 builds ramble_text so classification sees
-        # normalized text (e.g., "deck top" → "desktop")
-        # =====================================================================
-        
-        for i, msg in enumerate(filtered_messages):
-            if msg.get("role") == "user" and msg.get("content"):
-                normalized_content = _normalize_typos(msg["content"])
-                if normalized_content != msg["content"]:
-                    filtered_messages[i] = {**msg, "content": normalized_content}
-        
-        # =====================================================================
-        # STEP 3: Load confirmed prefs + woven hashes + checkpoint
-        # =====================================================================
-        
-        confirmed_prefs = {}
-        if _FLOW_STATE_AVAILABLE and get_confirmed_design_prefs:
-            confirmed_prefs = get_confirmed_design_prefs(project_id)
-            if confirmed_prefs:
-                print(f"[WEAVER] Loaded confirmed prefs: {confirmed_prefs}")
-        
-        # Merge with any newly captured answers
-        if captured_answers:
-            confirmed_prefs.update(captured_answers)
-            if _FLOW_STATE_AVAILABLE and save_confirmed_design_prefs:
-                save_confirmed_design_prefs(project_id, captured_answers)
-        
-        # Load woven hashes for delta detection
-        woven_hashes: Set[str] = set()
-        if _FLOW_STATE_AVAILABLE and get_woven_user_hashes:
-            woven_hashes = get_woven_user_hashes(project_id)
-            if woven_hashes:
-                print(f"[WEAVER] Loaded {len(woven_hashes)} woven user hashes")
-        
-        # Load checkpoint for previous output
-        checkpoint = None
-        if _FLOW_STATE_AVAILABLE and get_weave_checkpoint:
-            checkpoint = get_weave_checkpoint(project_id)
-            if checkpoint:
-                print(f"[WEAVER] Loaded checkpoint: {checkpoint['message_count']} messages")
-        
-        # =====================================================================
-        # STEP 4: Compute new messages using HASH-BASED dedup
-        # v3.9.0: Now includes assistant messages with vision context
-        # =====================================================================
-        
-        # v3.9.0: Extract vision context BEFORE filtering
-        # This preserves Gemini vision analysis for SpecGate
-        vision_context = _extract_vision_context(filtered_messages)
-        if vision_context:
-            print(f"[WEAVER] v3.9 Extracted {len(vision_context)} chars of vision context")
-        
-        # Filter to USER messages + assistant messages with vision context
-        # v3.9.0: Changed from USER-only to include valuable vision analysis
-        relevant_messages = [
-            m for m in filtered_messages 
-            if m.get("role") == "user" or 
-               (m.get("role") == "assistant" and _is_vision_context(m.get("content", "")))
-        ]
-        
-        # For hashing, we still only track USER messages (to determine what's new)
-        user_messages_only = [m for m in filtered_messages if m.get("role") == "user"]
-        print(f"[WEAVER] Filtered to {len(relevant_messages)} relevant messages ({len(user_messages_only)} USER + vision context) (from {total_message_count} total)")
-        
-        # Compute hashes for current user messages
-        current_user_hashes = _hash_messages(user_messages_only)
-        
-        # Determine which messages are NEW (not in woven_hashes)
-        new_user_hashes = current_user_hashes - woven_hashes
-        
-        # Get the actual new messages (those whose hash is in new_user_hashes)
-        new_user_messages = [
-            m for m in user_messages_only
-            if _hash_message(m) in new_user_hashes
-        ]
-        
-        # Determine mode: UPDATE if we have previous output AND woven hashes
-        is_update_mode = bool(woven_hashes) and checkpoint is not None and checkpoint.get("last_output")
-        
-        if is_update_mode:
-            if not new_user_messages:
-                no_new_msg = (
-                    "**Nothing new to weave**\n\n"
-                    "I don't see any new requirements from you since the last weave.\n\n"
-                    "Add more details to your conversation, then say "
-                    "`how does that look all together` again."
-                )
-                yield _serialize_sse({"type": "token", "content": no_new_msg})
-                yield _serialize_sse({"type": "done", "provider": provider, "model": model})
-                return
-            
-            print(f"[WEAVER] UPDATE mode: {len(new_user_messages)} new USER messages (hash-based detection)")
-        else:
-            print("[WEAVER] CREATE mode: first weave for this project")
-        
-        # =====================================================================
+
+        total_message_count = prep.total_message_count
+        relevant_messages = prep.relevant_messages
+        new_user_messages = prep.new_user_messages
+        ramble_text = prep.ramble_text
+        vision_context = prep.vision_context
+        confirmed_prefs = prep.confirmed_prefs
+        current_user_hashes = prep.current_user_hashes
+        checkpoint = prep.checkpoint
+        is_update_mode = prep.is_update_mode
+        execution_mode = prep.execution_mode
+
         # v5.5 PHASE 4C: Progressive Memory — compact long conversations
-        # =====================================================================
-        _compaction_applied = False
         if len(relevant_messages) >= 15:
             try:
                 from app.llm.weaver_memory import compact_conversation
                 _compaction_result = await compact_conversation(relevant_messages)
                 if _compaction_result.was_compacted:
                     ramble_text = _compaction_result.format_for_weaver()
-                    _compaction_applied = True
-                    logger.info(
-                        "[WEAVER] v5.5 Progressive memory: %d messages compacted "
-                        "(%d distilled → %d chars, %d verbatim)",
-                        _compaction_result.total_messages,
-                        _compaction_result.compacted_count,
-                        len(_compaction_result.distilled_summary),
-                        _compaction_result.preserved_count,
-                    )
-                    print(
-                        f"[WEAVER] v5.5 COMPACTION: {_compaction_result.compacted_count} old → "
-                        f"{len(_compaction_result.distilled_summary)} char summary, "
-                        f"{_compaction_result.preserved_count} recent kept verbatim"
-                    )
-                else:
-                    logger.debug("[WEAVER] v5.5 Compaction skipped: %s", _compaction_result.skip_reason)
-            except (ImportError, Exception) as _compact_err:
-                logger.debug("[WEAVER] v5.5 Progressive memory unavailable: %s", _compact_err)
-
-        # Format ramble text from RELEVANT messages (USER + vision context)
-        # v3.9.0: Now includes vision analysis for context
-        if not _compaction_applied:
-            ramble_text = _format_ramble(relevant_messages)
+            except (ImportError, Exception):
+                pass
         
         # =====================================================================
         # STEP 5: Core goal check (FOR LOGGING ONLY - v3.5.0)
@@ -393,119 +209,21 @@ async def generate_weaver_stream(
         # STEP 7: Weave - CREATE or UPDATE mode
         # v3.5.0: ALWAYS produces structured output, never conversational
         # =====================================================================
-        
-        # Build prefs context
-        prefs_context = ""
-        if confirmed_prefs:
-            prefs_lines = [f"- {k.title()}: {v}" for k, v in confirmed_prefs.items()]
-            prefs_context = "\n\nUser's confirmed design preferences:\n" + "\n".join(prefs_lines)
-        
-        # Build execution mode context
-        exec_mode_context = ""
-        if execution_mode:
-            exec_mode_context = f"\n\nExecution mode (extracted from meta-phrases): {execution_mode}"
-        
-        # v4.0.0: No questions_context injection. The LLM generates its own
-        # contextual questions based on actual gaps in the user's requirements.
-        
-        if is_micro_task:
-            # =================================================================
-            # MICRO-TASK MODE (v3.6.0) - Simple file operations, minimal output
-            # =================================================================
-            print(f"[WEAVER] MICRO-TASK mode: using minimal prompt for file operation")
-            
-            start_message = f"**Quick task detected...**\n\n"
-            yield _serialize_sse({"type": "token", "content": start_message})
-            
-            # Build blocking questions context if any
-            blocker_context = ""
-            if blocking_questions:
-                blocker_context = "\n\nBLOCKING QUESTIONS (must include in output):\n" + "\n".join(f"- {q}" for q in blocking_questions)
-            
-            system_prompt = MICRO_TASK_SYSTEM_PROMPT
-            user_prompt = f"""User request:
+        from app.llm._weaver_stream_modes import build_weave_prompt
 
-{ramble_text}{blocker_context}
-
-Produce the minimal job outline:"""
-        
-        elif is_refactor_task:
-            # =================================================================
-            # REFACTOR-TASK MODE (v3.8.0) - Text replacement, no design questions
-            # =================================================================
-            print(f"[WEAVER] REFACTOR-TASK mode: using refactor prompt")
-            
-            start_message = f"**Refactor/rename task detected...**\n\n"
-            yield _serialize_sse({"type": "token", "content": start_message})
-            
-            system_prompt = REFACTOR_TASK_SYSTEM_PROMPT
-            user_prompt = f"""User request:
-
-{ramble_text}
-
-Produce the refactor job outline:"""
-        
-        elif is_update_mode:
-            # UPDATE MODE - Merge new info into existing job description
-            print(f"[WEAVER] UPDATE mode: weaving {len(new_user_messages)} new messages into existing spec")
-            
-            # v5.5 PHASE 4C: Compact new messages if there are many
-            _update_compacted = False
-            if len(new_user_messages) >= 15:
-                try:
-                    from app.llm.weaver_memory import compact_conversation
-                    _update_compact = await compact_conversation(new_user_messages)
-                    if _update_compact.was_compacted:
-                        new_ramble = _update_compact.format_for_weaver()
-                        _update_compacted = True
-                        print(f"[WEAVER] v5.5 UPDATE compaction: {_update_compact.compacted_count} distilled + {_update_compact.preserved_count} verbatim")
-                except (ImportError, Exception):
-                    pass
-            if not _update_compacted:
-                new_ramble = _format_ramble(new_user_messages)
-            previous_output = checkpoint["last_output"]
-            
-            # DEBUG: Show what we're sending to the LLM
-            print(f"[WEAVER] NEW RAMBLE CONTENT ({len(new_ramble)} chars):")
-            print(f"[WEAVER] ---\n{new_ramble[:500]}{'...' if len(new_ramble) > 500 else ''}\n[WEAVER] ---")
-            
-            start_message = f"**Updating your job description...**\n\nIncorporating {len(new_user_messages)} new requirement(s) from you.\n\n"
-            yield _serialize_sse({"type": "token", "content": start_message})
-            
-            system_prompt = WEAVER_UPDATE_SYSTEM_PROMPT
-
-            user_prompt = f"""Previous job description:
-
-{previous_output}
-
-New requirements from user (extract and add EVERY feature):
-
-{new_ramble}
-{prefs_context}{exec_mode_context}
-
-Output the complete updated job description with all new features added:"""
-
-        else:
-            # CREATE MODE - First weave
-            print(f"[WEAVER] CREATE mode: weaving {total_message_count} messages")
-            
-            start_message = f"**Organizing your thoughts...**\n\nAnalyzing {total_message_count} messages to create a job description.\n\n"
-            yield _serialize_sse({"type": "token", "content": start_message})
-            
-            system_prompt = WEAVER_CREATE_SYSTEM_PROMPT
-
-            user_prompt = f"""Organize this conversation into a job description:
-
-{ramble_text}{prefs_context}{exec_mode_context}
-
-Remember:
-- Include ALL requirements the user stated (don't drop anything)
-- Preserve any ambiguities (list them, don't resolve them)
-- Keep What and Outcome DIFFERENT (no duplication)
-- Code-answerable gaps go in "SpecGate must resolve" (NOT questions for user)
-- Only put genuinely subjective/preference questions in "Questions for user"
-- When in doubt, it's a SpecGate directive, not a user question
-- Preserve the user's domain terminology"""
+        system_prompt, user_prompt, start_message = build_weave_prompt(
+            is_micro_task=is_micro_task,
+            is_refactor_task=is_refactor_task,
+            is_update_mode=is_update_mode,
+            ramble_text=ramble_text,
+            blocking_questions=blocking_questions,
+            new_user_messages=new_user_messages,
+            checkpoint=checkpoint,
+            confirmed_prefs=confirmed_prefs,
+            execution_mode=execution_mode,
+            total_message_count=total_message_count,
+        )
+        yield _serialize_sse({"type": "token", "content": start_message})
         
         # v3.0: Inject user memory into Weaver system prompt
         try:

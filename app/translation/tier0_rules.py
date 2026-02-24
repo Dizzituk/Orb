@@ -3,6 +3,7 @@
 Tier 0: Pure rule-based intent classification (no LLM calls).
 
 Routes wake phrases, pipeline triggers, RAG queries, and obvious chat patterns.
+Trigger check functions are in _tier0_trigger_checks.py.
 Filesystem, multi-file, refactor, and chat pattern rules are in _tier0_filesystem.py.
 """
 from __future__ import annotations
@@ -19,7 +20,7 @@ from .gates import is_obvious_chat
 
 class Tier0RuleResult:
     """Result from Tier 0 rule matching."""
-    
+
     def __init__(
         self,
         matched: bool,
@@ -35,755 +36,23 @@ class Tier0RuleResult:
         self.reason = reason
 
 
-def tier0_classify(text: str) -> Tier0RuleResult:
-    """
-    Attempt to classify intent using pure rules.
-    Returns Tier0RuleResult with matched=True if successful.
-    
-    Order of checks:
-    1. Exact trigger phrase match
-    2. Pattern match against intent patterns
-    3. Spec Gate flow special handlers
-    4. Obvious chat short-circuit
-    5. No match (needs Tier 1)
-    """
-    text_stripped = text.strip()
-    
-    # Strip wake phrase prefix if present (e.g., "Astra, command: X" or "Orb, command: X" -> "X")
-    # v5.8: Added orb prefix support
-    text_stripped = re.sub(
-        r'^(?:(?:astra|orb),?\s*)?(?:command:?\s*)?(?:feedback:?\s*)?',
-        '', text_stripped, flags=re.IGNORECASE
-    ).strip()
-    
-    # 1. Check exact trigger phrase matches
-    result = _check_exact_trigger_phrases(text_stripped)
-    if result.matched:
-        return result
-    
-    # 2. Check pattern matches
-    result = _check_trigger_patterns(text_stripped)
-    if result.matched:
-        return result
-    
-    # 3. Check architecture update trigger
-    result = check_update_architecture(text_stripped)
-    if result.matched:
-        return result
-    
-    # 3b. Check scan sandbox trigger
-    result = check_scan_sandbox_trigger(text_stripped)
-    if result.matched:
-        return result
-    
-    # 3c. Check architecture map variants (ALL CAPS vs lowercase)
-    result = check_architecture_map_variant(text_stripped)
-    if result.matched:
-        return result
-    
-    # 4. Check Spec Gate flow special handlers
-    result = check_weaver_trigger(text_stripped)
-    if result.matched:
-        return result
-    
-    result = check_spec_gate_trigger(text_stripped)
-    if result.matched:
-        return result
-    
-    result = check_critical_pipeline_trigger(text_stripped)
-    if result.matched:
-        return result
-    
-    result = check_overwatcher_trigger(text_stripped)
-    if result.matched:
-        return result
-    
-    # 4a2. Check segment loop trigger (v1.8 — Phase 2 Pipeline Segmentation)
-    result = check_segment_loop_trigger(text_stripped)
-    if result.matched:
-        return result
-    
-    # 4b. Check RAG codebase query (v1.3) — rigid patterns (extracted to _tier0_codebase_questions.py)
-    result = check_rag_codebase_query(text_stripped)
-    if result.matched:
-        return result
-    
-    # 4b2. Check natural codebase questions (v10.0 — Job 10A)
-    result = check_natural_codebase_question(text_stripped)
-    if result.matched:
-        return result
-    
-    # 4c. Check embedding commands (v1.3)
-    result = check_embedding_commands(text_stripped)
-    if result.matched:
-        return result
-    
-    # 4d. Check codebase report (v1.5)
-    result = check_codebase_report_trigger(text_stripped)
-    if result.matched:
-        return result
-    
-    # 4e. Check multi-file operations (v5.10) - BEFORE filesystem query!
-    result = check_multi_file_trigger(text_stripped)
-    if result.matched:
-        return result
-    
-    # 4e2. Check refactor codebase command (v1.9)
-    result = check_refactor_codebase_trigger(text_stripped)
-    if result.matched:
-        return result
-    
-    # 4f. Check filesystem query (v1.5) - MUST be before is_obvious_chat!
-    result = check_filesystem_query_trigger(text)
-    if result.matched:
-        return result
-    
-    # 4g. Check latest report commands (v5.9)
-    result = check_latest_report_trigger(text_stripped)
-    if result.matched:
-        return result
-    
-    # 4h-pre. Check deep research trigger (v2.1) — BEFORE web search
-    result = check_deep_research_trigger(text_stripped)
-    if result.matched:
-        return result
-    
-    # 4h-pre1. Check web search trigger (v2.1)
-    result = check_web_search_trigger(text_stripped)
-    if result.matched:
-        return result
-    
-    # 4h-pre2. Check memory ingest/store trigger (v2.1)
-    result = check_memory_trigger(text_stripped)
-    if result.matched:
-        return result
-    
-    # 4i. Check graduated confidence rules (v2.2 — Cost Optimisation Phase 2)
-    result = _check_graduated_rules(text_stripped)
-    if result.matched:
-        return result
+# --- Trigger check functions (extracted to _tier0_trigger_checks.py) ---------
+from app.translation._tier0_trigger_checks import (  # noqa: E402
+    check_architecture_map_variant,
+    check_zombie_start,
+    check_update_architecture,
+    check_scan_sandbox_trigger,
+    check_weaver_trigger,
+    check_spec_gate_trigger,
+    check_critical_pipeline_trigger,
+    check_overwatcher_trigger,
+    check_segment_loop_trigger,
+    check_codebase_report_trigger,
+    check_latest_report_trigger,
+    check_embedding_commands,
+)
 
-    # 5. Check obvious chat patterns (short-circuit)
-    is_chat, chat_reason = is_obvious_chat(text_stripped)
-    if is_chat:
-        return Tier0RuleResult(
-            matched=True,
-            intent=CanonicalIntent.CHAT_ONLY,
-            confidence=0.95,  # High but not 1.0 - classifier could override
-            rule_name="obvious_chat",
-            reason=f"Obvious chat pattern: {chat_reason}",
-        )
-    
-    # 6. No match - needs Tier 1 classifier
-    return Tier0RuleResult(
-        matched=False,
-        intent=None,
-        confidence=0.0,
-        rule_name=None,
-        reason="No rule match - requires Tier 1 classification",
-    )
-
-
-def _check_exact_trigger_phrases(text: str) -> Tier0RuleResult:
-    """
-    Check for exact trigger phrase matches.
-    These are high-confidence matches.
-    """
-    # Check each intent's trigger phrases
-    for intent, defn in INTENT_DEFINITIONS.items():
-        for phrase in defn.trigger_phrases:
-            # Case-sensitive match for ALL CAPS phrases
-            if phrase.isupper():
-                if text == phrase or text.startswith(phrase + " "):
-                    return Tier0RuleResult(
-                        matched=True,
-                        intent=intent,
-                        confidence=1.0,
-                        rule_name="exact_trigger_phrase",
-                        reason=f"Exact match: '{phrase}'",
-                    )
-            else:
-                # Case-insensitive for normal phrases
-                if text.lower() == phrase.lower() or text.lower().startswith(phrase.lower() + " "):
-                    return Tier0RuleResult(
-                        matched=True,
-                        intent=intent,
-                        confidence=1.0,
-                        rule_name="exact_trigger_phrase",
-                        reason=f"Exact match (case-insensitive): '{phrase}'",
-                    )
-    
-    return Tier0RuleResult(matched=False)
-
-
-def _check_trigger_patterns(text: str) -> Tier0RuleResult:
-    """
-    Check for regex pattern matches against intent patterns.
-    """
-    for intent, defn in INTENT_DEFINITIONS.items():
-        for pattern_str in defn.trigger_patterns:
-            try:
-                pattern = re.compile(pattern_str, re.IGNORECASE if not _is_case_sensitive_pattern(pattern_str) else 0)
-                if pattern.match(text):
-                    return Tier0RuleResult(
-                        matched=True,
-                        intent=intent,
-                        confidence=0.98,  # Slightly less than exact match
-                        rule_name="trigger_pattern",
-                        reason=f"Pattern match: '{pattern_str}'",
-                    )
-            except re.error:
-                continue  # Skip invalid patterns
-    
-    return Tier0RuleResult(matched=False)
-
-
-def _is_case_sensitive_pattern(pattern: str) -> bool:
-    """
-    Determine if a pattern should be case-sensitive.
-    Patterns with ALL CAPS literals are case-sensitive.
-    """
-    # Check if pattern has uppercase literals (not character classes)
-    # Simple heuristic: if pattern contains uppercase letters outside []
-    in_class = False
-    has_upper = False
-    for char in pattern:
-        if char == '[':
-            in_class = True
-        elif char == ']':
-            in_class = False
-        elif not in_class and char.isupper():
-            has_upper = True
-            break
-    return has_upper
-
-
-# =============================================================================
-# SPECIAL CASE HANDLERS
-# =============================================================================
-
-def check_architecture_map_variant(text: str) -> Tier0RuleResult:
-    """
-    Special handler for architecture map variants.
-    - ALL CAPS "CREATE ARCHITECTURE MAP" -> with files
-    - Normal case "Create architecture map" -> structure only
-    """
-    text_stripped = text.strip()
-    
-    # Check ALL CAPS variant
-    if text_stripped.startswith("CREATE ARCHITECTURE MAP"):
-        return Tier0RuleResult(
-            matched=True,
-            intent=CanonicalIntent.ARCHITECTURE_MAP_WITH_FILES,
-            confidence=1.0,
-            rule_name="archmap_all_caps",
-            reason="ALL CAPS trigger for full architecture map with files",
-        )
-    
-    # Check normal case variant
-    if re.match(r"^[Cc]reate [Aa]rchitecture [Mm]ap", text_stripped):
-        # Make sure it's NOT all caps
-        if not text_stripped.startswith("CREATE ARCHITECTURE MAP"):
-            return Tier0RuleResult(
-                matched=True,
-                intent=CanonicalIntent.ARCHITECTURE_MAP_STRUCTURE_ONLY,
-                confidence=1.0,
-                rule_name="archmap_normal_case",
-                reason="Normal case trigger for structure-only architecture map",
-            )
-    
-    return Tier0RuleResult(matched=False)
-
-
-def check_zombie_start(text: str) -> Tier0RuleResult:
-    """
-    Special handler for zombie/sandbox start commands.
-    """
-    text_lower = text.strip().lower()
-    
-    patterns = [
-        r"^start your zombie$",
-        r"^start the zombie$",
-        r"^launch zombie$",
-        r"^spin up zombie$",
-    ]
-    
-    for pattern in patterns:
-        if re.match(pattern, text_lower):
-            return Tier0RuleResult(
-                matched=True,
-                intent=CanonicalIntent.START_SANDBOX_ZOMBIE_SELF,
-                confidence=1.0,
-                rule_name="zombie_start",
-                reason="Zombie start command detected",
-            )
-    
-    return Tier0RuleResult(matched=False)
-
-
-def check_update_architecture(text: str) -> Tier0RuleResult:
-    """
-    Special handler for architecture update commands.
-    """
-    text_lower = text.strip().lower()
-    
-    patterns = [
-        r"^update architecture$",
-        r"^update your architecture$",
-        r"^refresh architecture$",
-        r"^update code atlas$",
-        r"^refresh code atlas$",
-    ]
-    
-    for pattern in patterns:
-        if re.match(pattern, text_lower):
-            return Tier0RuleResult(
-                matched=True,
-                intent=CanonicalIntent.ARCHITECTURE_UPDATE_ATLAS_ONLY,
-                confidence=1.0,
-                rule_name="update_architecture",
-                reason="Architecture update command detected",
-            )
-    
-    return Tier0RuleResult(matched=False)
-
-
-def check_scan_sandbox_trigger(text: str) -> Tier0RuleResult:
-    """
-    Special handler for sandbox scanning commands.
-    
-    Scans the sandbox filesystem structure via sandbox controller.
-    Does NOT scan host PC - only sandbox environment.
-    """
-    text_lower = text.strip().lower()
-    
-    patterns = [
-        r"^scan sandbox$",
-        r"^scan the sandbox$",
-        r"^sandbox scan$",
-        r"^scan sandbox structure$",
-        r"^scan sandbox filesystem$",
-        r"^scan filesystem$",
-        r"^filesystem scan$",
-    ]
-    
-    for pattern in patterns:
-        if re.match(pattern, text_lower):
-            return Tier0RuleResult(
-                matched=True,
-                intent=CanonicalIntent.SCAN_SANDBOX_STRUCTURE,
-                confidence=1.0,
-                rule_name="scan_sandbox",
-                reason="Sandbox scan command detected",
-            )
-    
-    return Tier0RuleResult(matched=False)
-
-
-# =============================================================================
-# SPEC GATE FLOW HANDLERS (v1.1)
-# =============================================================================
-
-def check_weaver_trigger(text: str) -> Tier0RuleResult:
-    """
-    Special handler for Weaver (spec building) triggers.
-    
-    Triggers Weaver to consolidate ramble/conversation into candidate spec.
-    Natural language triggers that indicate "put it all together".
-    """
-    text_lower = text.strip().lower()
-    text_stripped = text.strip()
-    
-    # Exact phrase matches (case-insensitive)
-    # NOTE: "critical architecture" moved to check_spec_gate_trigger (v1.2)
-    exact_phrases = [
-        "how does that look all together",
-        "how does that look all together?",
-        "weave this into a spec",
-        "weave that into a spec",
-        "build spec from ramble",
-        "compile the spec",
-        "put that all together",
-        "put this all together",
-        "put it all together",
-        "consolidate that into a spec",
-        "consolidate this into a spec",
-        "summarize the ramble into a spec",
-        "summarize my ramble into a spec",
-        "turn this into a spec",
-        "turn that into a spec",
-    ]
-    
-    for phrase in exact_phrases:
-        if text_lower == phrase or text_lower.rstrip("?") == phrase.rstrip("?"):
-            return Tier0RuleResult(
-                matched=True,
-                intent=CanonicalIntent.WEAVER_BUILD_SPEC,
-                confidence=1.0,
-                rule_name="weaver_exact_phrase",
-                reason=f"Weaver trigger: '{phrase}'",
-            )
-    
-    # Pattern matches
-    weaver_patterns = [
-        r"^how does (?:that|this|it) (?:all )?look(?: all together)?\??$",
-        r"^weave (?:this|that|it) into a spec$",
-        r"^build (?:a )?spec from (?:the )?ramble$",
-        r"^compile (?:the )?spec$",
-        r"^put (?:that|this|it) all together$",
-        r"^consolidate (?:that|this|it) into a spec$",
-        r"^summarize (?:the|my) ramble into a spec$",
-        r"^turn (?:this|that|it) into a spec$",
-        r"^okay,? (?:now )?(?:weave|build|compile|consolidate)",
-        r"^ok,? (?:now )?(?:weave|build|compile|consolidate)",
-    ]
-    
-    for pattern in weaver_patterns:
-        if re.match(pattern, text_lower):
-            return Tier0RuleResult(
-                matched=True,
-                intent=CanonicalIntent.WEAVER_BUILD_SPEC,
-                confidence=0.98,
-                rule_name="weaver_pattern",
-                reason=f"Weaver trigger pattern: '{pattern}'",
-            )
-    
-    return Tier0RuleResult(matched=False)
-
-
-def check_spec_gate_trigger(text: str) -> Tier0RuleResult:
-    """
-    Special handler for Spec Gate (validation) triggers.
-    
-    Sends refined candidate spec to Spec Gate for validation.
-    Explicit "send to spec gate" type commands.
-    Also handles simple "Yes" confirmations after Weaver prompt.
-    """
-    text_lower = text.strip().lower()
-    
-    # Simple affirmative responses (after Weaver asks "Shall I send to Spec Gate?")
-    # These are short, so we match exactly
-    simple_affirmatives = [
-        "yes",
-        "yes please",
-        "yes, please",
-        "yep",
-        "yeah",
-        "sure",
-        "go ahead",
-        "do it",
-        "proceed",
-        "send it",
-        "ok",
-        "okay",
-        "affirmative",
-        "confirmed",
-        "confirm",
-        "y",
-    ]
-    
-    if text_lower in simple_affirmatives:
-        return Tier0RuleResult(
-            matched=True,
-            intent=CanonicalIntent.SEND_TO_SPEC_GATE,
-            confidence=0.95,  # Slightly lower - relies on context
-            rule_name="specgate_affirmative",
-            reason=f"Spec Gate affirmative confirmation: '{text_lower}'",
-        )
-    
-    # Exact phrase matches (case-insensitive)
-    # "critical architecture" triggers Spec Gate validation (v1.2)
-    exact_phrases = [
-        "critical architecture",
-        "send to spec gate",
-        "send that to spec gate",
-        "send this to spec gate",
-        "send it to spec gate",
-        "okay, send that to spec gate",
-        "okay, send to spec gate",
-        "ok, send that to spec gate",
-        "ok, send to spec gate",
-        "validate the spec",
-        "validate spec",
-        "run spec gate",
-        "submit spec for validation",
-        "submit the spec",
-        "spec gate validate",
-        "specgate validate",
-    ]
-    
-    for phrase in exact_phrases:
-        if text_lower == phrase or text_lower.startswith(phrase):
-            return Tier0RuleResult(
-                matched=True,
-                intent=CanonicalIntent.SEND_TO_SPEC_GATE,
-                confidence=1.0,
-                rule_name="specgate_exact_phrase",
-                reason=f"Spec Gate trigger: '{phrase}'",
-            )
-    
-    # Pattern matches
-    specgate_patterns = [
-        r"^(?:ok(?:ay)?,?\s*)?send (?:that|this|it) to spec ?gate$",
-        r"^send to spec ?gate$",
-        r"^validate (?:the )?spec$",
-        r"^run spec ?gate$",
-        r"^submit (?:the )?spec(?: for validation)?$",
-        r"^spec ?gate[,:]?\s*validate$",
-        r"^(?:now )?send (?:it )?to spec ?gate$",
-        r"^(?:go ahead and )?send (?:it )?to spec ?gate$",
-        r"^critical architecture$",
-    ]
-    
-    for pattern in specgate_patterns:
-        if re.match(pattern, text_lower):
-            return Tier0RuleResult(
-                matched=True,
-                intent=CanonicalIntent.SEND_TO_SPEC_GATE,
-                confidence=0.98,
-                rule_name="specgate_pattern",
-                reason=f"Spec Gate trigger pattern: '{pattern}'",
-            )
-    
-    return Tier0RuleResult(matched=False)
-
-
-def check_critical_pipeline_trigger(text: str) -> Tier0RuleResult:
-    """
-    Special handler for critical pipeline triggers.
-    
-    Requires validated spec from Spec Gate before execution.
-    High-stakes - requires confirmation.
-    """
-    text_lower = text.strip().lower()
-    
-    patterns = [
-        r"^run (?:the )?pipeline$",          # v5.4: new unified trigger
-        r"^run (?:the )?critical pipeline$",
-        r"^execute (?:the )?critical pipeline$",
-        r"^start the pipeline$",
-        r"^run (?:the )?critical pipeline for job\s+",
-        r"^execute (?:the )?pipeline$",
-        r"^critical pipeline$",
-    ]
-    
-    for pattern in patterns:
-        if re.match(pattern, text_lower):
-            return Tier0RuleResult(
-                matched=True,
-                intent=CanonicalIntent.RUN_PIPELINE,  # v5.4: unified pipeline
-                confidence=1.0,
-                rule_name="run_pipeline",
-                reason="Pipeline command detected (unified)",
-            )
-    
-    return Tier0RuleResult(matched=False)
-
-
-def check_overwatcher_trigger(text: str) -> Tier0RuleResult:
-    """
-    Special handler for Overwatcher execution triggers.
-    
-    Final stage: Overwatcher implements the approved changes.
-    High-stakes - requires confirmation.
-    """
-    text_lower = text.strip().lower()
-    
-    patterns = [
-        r"^send to overwatcher$",
-        r"^send (?:it |that )?to overwatcher$",
-        r"^overwatcher execute$",
-        r"^run overwatcher$",
-        r"^execute overwatcher$",
-        r"^overwatcher$",
-        r"^(?:ok(?:ay)?,?\s*)?send (?:it |that )?to overwatcher$",
-    ]
-    
-    for pattern in patterns:
-        if re.match(pattern, text_lower):
-            return Tier0RuleResult(
-                matched=True,
-                intent=CanonicalIntent.OVERWATCHER_EXECUTE_CHANGES,
-                confidence=1.0,
-                rule_name="overwatcher_execute",
-                reason="Overwatcher execute command detected",
-            )
-    
-    return Tier0RuleResult(matched=False)
-
-
-def check_segment_loop_trigger(text: str) -> Tier0RuleResult:
-    """
-    Special handler for segment loop execution triggers.
-    
-    Executes a segmented job through the pipeline, segment by segment.
-    Phase 2 of Pipeline Segmentation.
-    
-    v1.8 (2026-02-08): Added segment loop support.
-    """
-    text_lower = text.strip().lower()
-    
-    patterns = [
-        r"^run segments?$",
-        r"^run (?:the )?segments?$",
-        r"^execute segments?$",
-        r"^run segment loop$",
-        r"^execute segment loop$",
-        r"^segment loop$",
-        r"^run segmented job$",
-        r"^(?:ok(?:ay)?,?\s*)?run (?:the )?segments?$",
-    ]
-    
-    for pattern in patterns:
-        if re.match(pattern, text_lower):
-            return Tier0RuleResult(
-                matched=True,
-                intent=CanonicalIntent.RUN_PIPELINE,  # v5.4: unified pipeline
-                confidence=1.0,
-                rule_name="run_pipeline",
-                reason="Pipeline command detected (unified)",
-            )
-    
-    return Tier0RuleResult(matched=False)
-
-
-# check_rag_codebase_query() — extracted to _tier0_codebase_questions.py (v10.0)
-
-
-def check_codebase_report_trigger(text: str) -> Tier0RuleResult:
-    """
-    Special handler for codebase report commands.
-    
-    Commands:
-    - "codebase report fast" → Quick metadata scan
-    - "codebase report full" → Deep content scan
-    
-    v1.5: Added codebase report support.
-    """
-    text_lower = text.strip().lower()
-    
-    # Codebase report patterns
-    codebase_report_patterns = [
-        r"^codebase\s+report\s+fast$",
-        r"^codebase\s+report\s+full$",
-        r"^generate\s+codebase\s+report$",
-        r"^run\s+codebase\s+report$",
-    ]
-    
-    for pattern in codebase_report_patterns:
-        if re.match(pattern, text_lower):
-            return Tier0RuleResult(
-                matched=True,
-                intent=CanonicalIntent.CODEBASE_REPORT,
-                confidence=1.0,
-                rule_name="codebase_report",
-                reason="Codebase report command detected",
-            )
-    
-    return Tier0RuleResult(matched=False)
-
-
-def check_latest_report_trigger(text: str) -> Tier0RuleResult:
-    """
-    Special handler for latest report resolver commands.
-    
-    Commands:
-    - "latest architecture map" → Resolve and display latest ARCHITECTURE_MAP*.md
-    - "latest codebase report full" → Resolve and display latest CODEBASE_REPORT_FULL_*.md
-    
-    v5.9 (2026-01): Added latest report resolver support.
-    """
-    text_lower = text.strip().lower()
-    
-    # Latest architecture map
-    archmap_patterns = [
-        r"^latest\s+architecture\s+map$",
-    ]
-    
-    for pattern in archmap_patterns:
-        if re.match(pattern, text_lower):
-            return Tier0RuleResult(
-                matched=True,
-                intent=CanonicalIntent.LATEST_ARCHITECTURE_MAP,
-                confidence=1.0,
-                rule_name="latest_architecture_map",
-                reason="Latest architecture map command detected",
-            )
-    
-    # Latest codebase report full (also match short form "latest codebase report")
-    codebase_patterns = [
-        r"^latest\s+codebase\s+report(?:\s+full)?$",
-    ]
-    
-    for pattern in codebase_patterns:
-        if re.match(pattern, text_lower):
-            return Tier0RuleResult(
-                matched=True,
-                intent=CanonicalIntent.LATEST_CODEBASE_REPORT_FULL,
-                confidence=1.0,
-                rule_name="latest_codebase_report_full",
-                reason="Latest codebase report (FULL) command detected",
-            )
-    
-    return Tier0RuleResult(matched=False)
-
-
-def check_embedding_commands(text: str) -> Tier0RuleResult:
-    """
-    Special handler for embedding management commands.
-    
-    Commands:
-    - "embedding status" → Check status
-    - "generate embeddings" → Trigger job
-    
-    v1.3: Added embedding command support.
-    """
-    text_lower = text.strip().lower()
-    
-    # Status commands
-    status_patterns = [
-        r"^embedding[s]?\s+status$",
-        r"^check\s+embedding[s]?$",
-        r"^embedding[s]?\s+progress$",
-        r"^how\s+are\s+embeddings\s+doing$",
-    ]
-    
-    for pattern in status_patterns:
-        if re.match(pattern, text_lower):
-            return Tier0RuleResult(
-                matched=True,
-                intent=CanonicalIntent.EMBEDDING_STATUS,
-                confidence=1.0,
-                rule_name="embedding_status",
-                reason="Embedding status command detected",
-            )
-    
-    # Generate commands
-    generate_patterns = [
-        r"^generate\s+embedding[s]?$",
-        r"^run\s+embedding[s]?$",
-        r"^start\s+embedding[s]?$",
-        r"^embed\s+(?:the\s+)?(?:code\s+)?chunks$",
-    ]
-    
-    for pattern in generate_patterns:
-        if re.match(pattern, text_lower):
-            return Tier0RuleResult(
-                matched=True,
-                intent=CanonicalIntent.GENERATE_EMBEDDINGS,
-                confidence=1.0,
-                rule_name="generate_embeddings",
-                reason="Generate embeddings command detected",
-            )
-    
-    return Tier0RuleResult(matched=False)
-
-
-# =============================================================================
-
-# =============================================================================
-# EXTRACTED TO _tier0_filesystem.py
-# =============================================================================
+# --- Filesystem, multi-file, refactor, chat patterns --------------------------
 from app.translation._tier0_filesystem import (  # noqa: E402
     MULTI_FILE_SEARCH_PATTERNS,
     MULTI_FILE_REFACTOR_PATTERNS,
@@ -797,54 +66,221 @@ from app.translation._tier0_filesystem import (  # noqa: E402
     is_tazish_chat,
 )
 
-# =============================================================================
-# EXTRACTED TO _tier0_codebase_questions.py (v10.0 — Job 10A)
-# =============================================================================
+# --- Codebase questions (v10.0 — Job 10A) ------------------------------------
 from app.translation._tier0_codebase_questions import (  # noqa: E402
     check_rag_codebase_query,
     check_natural_codebase_question,
     CODEBASE_GUARD_KEYWORDS,
 )
 
-# =============================================================================
-# EXTRACTED TO _tier0_web_search.py (v2.1 — Web Search)
-# =============================================================================
+# --- Web search (v2.1) -------------------------------------------------------
 from app.translation._tier0_web_search import (  # noqa: E402
     check_web_search_trigger,
     check_deep_research_trigger,
 )
 
-# =============================================================================
-# EXTRACTED TO _tier0_memory_ingest.py (v2.1 — Memory Ingest/Store)
-# =============================================================================
+# --- Memory ingest (v2.1) ----------------------------------------------------
 from app.translation._tier0_memory_ingest import (  # noqa: E402
     check_memory_trigger,
 )
 
 
 # =============================================================================
-# GRADUATED CONFIDENCE RULES (v2.2 — Cost Optimisation Phase 2)
+# MAIN CLASSIFIER
+# =============================================================================
+
+def tier0_classify(text: str) -> Tier0RuleResult:
+    """
+    Attempt to classify intent using pure rules.
+    Returns Tier0RuleResult with matched=True if successful.
+
+    Order of checks:
+    1. Exact trigger phrase match
+    2. Pattern match against intent patterns
+    3. Spec Gate flow special handlers
+    4. Obvious chat short-circuit
+    5. No match (needs Tier 1)
+    """
+    text_stripped = text.strip()
+
+    # Strip wake phrase prefix
+    text_stripped = re.sub(
+        r'^(?:(?:astra|orb),?\s*)?(?:command:?\s*)?(?:feedback:?\s*)?',
+        '', text_stripped, flags=re.IGNORECASE
+    ).strip()
+
+    # 1. Exact trigger phrase matches
+    result = _check_exact_trigger_phrases(text_stripped)
+    if result.matched:
+        return result
+
+    # 2. Pattern matches
+    result = _check_trigger_patterns(text_stripped)
+    if result.matched:
+        return result
+
+    # 3. Special case handlers
+    for check_fn in (
+        check_update_architecture,
+        check_scan_sandbox_trigger,
+        check_architecture_map_variant,
+        check_weaver_trigger,
+        check_spec_gate_trigger,
+        check_critical_pipeline_trigger,
+        check_overwatcher_trigger,
+        check_segment_loop_trigger,
+    ):
+        result = check_fn(text_stripped)
+        if result.matched:
+            return result
+
+    # 4. Data & query handlers
+    result = check_rag_codebase_query(text_stripped)
+    if result.matched:
+        return result
+
+    result = check_natural_codebase_question(text_stripped)
+    if result.matched:
+        return result
+
+    result = check_embedding_commands(text_stripped)
+    if result.matched:
+        return result
+
+    result = check_codebase_report_trigger(text_stripped)
+    if result.matched:
+        return result
+
+    # 4e. Multi-file operations (BEFORE filesystem query!)
+    result = check_multi_file_trigger(text_stripped)
+    if result.matched:
+        return result
+
+    result = check_refactor_codebase_trigger(text_stripped)
+    if result.matched:
+        return result
+
+    # 4f. Filesystem query (MUST be before is_obvious_chat!)
+    result = check_filesystem_query_trigger(text)
+    if result.matched:
+        return result
+
+    result = check_latest_report_trigger(text_stripped)
+    if result.matched:
+        return result
+
+    # 4h. Web search & memory (v2.1)
+    result = check_deep_research_trigger(text_stripped)
+    if result.matched:
+        return result
+
+    result = check_web_search_trigger(text_stripped)
+    if result.matched:
+        return result
+
+    result = check_memory_trigger(text_stripped)
+    if result.matched:
+        return result
+
+    # 4i. Graduated confidence rules (v2.2)
+    result = _check_graduated_rules(text_stripped)
+    if result.matched:
+        return result
+
+    # 5. Obvious chat patterns
+    is_chat, chat_reason = is_obvious_chat(text_stripped)
+    if is_chat:
+        return Tier0RuleResult(
+            matched=True,
+            intent=CanonicalIntent.CHAT_ONLY,
+            confidence=0.95,
+            rule_name="obvious_chat",
+            reason=f"Obvious chat pattern: {chat_reason}",
+        )
+
+    # 6. No match — needs Tier 1 classifier
+    return Tier0RuleResult(
+        matched=False,
+        intent=None,
+        confidence=0.0,
+        rule_name=None,
+        reason="No rule match - requires Tier 1 classification",
+    )
+
+
+# =============================================================================
+# GENERIC MATCHERS (used by tier0_classify)
+# =============================================================================
+
+def _check_exact_trigger_phrases(text: str) -> Tier0RuleResult:
+    """Check for exact trigger phrase matches."""
+    for intent, defn in INTENT_DEFINITIONS.items():
+        for phrase in defn.trigger_phrases:
+            if phrase.isupper():
+                if text == phrase or text.startswith(phrase + " "):
+                    return Tier0RuleResult(
+                        matched=True, intent=intent, confidence=1.0,
+                        rule_name="exact_trigger_phrase",
+                        reason=f"Exact match: '{phrase}'",
+                    )
+            else:
+                if text.lower() == phrase.lower() or text.lower().startswith(phrase.lower() + " "):
+                    return Tier0RuleResult(
+                        matched=True, intent=intent, confidence=1.0,
+                        rule_name="exact_trigger_phrase",
+                        reason=f"Exact match (case-insensitive): '{phrase}'",
+                    )
+    return Tier0RuleResult(matched=False)
+
+
+def _check_trigger_patterns(text: str) -> Tier0RuleResult:
+    """Check for regex pattern matches against intent patterns."""
+    for intent, defn in INTENT_DEFINITIONS.items():
+        for pattern_str in defn.trigger_patterns:
+            try:
+                pattern = re.compile(
+                    pattern_str,
+                    re.IGNORECASE if not _is_case_sensitive_pattern(pattern_str) else 0,
+                )
+                if pattern.match(text):
+                    return Tier0RuleResult(
+                        matched=True, intent=intent, confidence=0.98,
+                        rule_name="trigger_pattern",
+                        reason=f"Pattern match: '{pattern_str}'",
+                    )
+            except re.error:
+                continue
+    return Tier0RuleResult(matched=False)
+
+
+def _is_case_sensitive_pattern(pattern: str) -> bool:
+    """Determine if a pattern should be case-sensitive (has uppercase literals)."""
+    in_class = False
+    for char in pattern:
+        if char == '[':
+            in_class = True
+        elif char == ']':
+            in_class = False
+        elif not in_class and char.isupper():
+            return True
+    return False
+
+
+# =============================================================================
+# GRADUATED CONFIDENCE RULES (v2.2)
 # =============================================================================
 
 def _check_graduated_rules(text: str) -> Tier0RuleResult:
-    """
-    Check input against graduated confidence rules.
-
-    These are high-confidence phrase→intent mappings that have been
-    promoted from Tier 1 (LLM classifier) to Tier 0 (deterministic).
-    Safe to call even if the learned rules file doesn't exist yet.
-    """
+    """Check input against graduated confidence rules promoted from Tier 1."""
     try:
         from app.translation.tier0_learned_rules import check_graduated_rules
         result = check_graduated_rules(text)
         if result.matched:
-            # Convert string intent to CanonicalIntent enum
             intent_enum = None
             try:
                 intent_enum = CanonicalIntent(result.intent)
             except ValueError:
-                pass  # Unknown intent — skip this graduated rule
-
+                pass
             if intent_enum is not None:
                 return Tier0RuleResult(
                     matched=True,
@@ -854,8 +290,7 @@ def _check_graduated_rules(text: str) -> Tier0RuleResult:
                     reason=result.reason,
                 )
     except ImportError:
-        pass  # File doesn't exist yet — no graduated rules
+        pass
     except Exception:
-        pass  # Never let graduation failures break classification
-
+        pass
     return Tier0RuleResult(matched=False)

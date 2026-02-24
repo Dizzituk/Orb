@@ -25,112 +25,23 @@ v1.1 (2026-01): Refined priority patterns per Taz's spec
 v1.0 (2026-01): Initial implementation
 """
 
-import os
-import re
 import json
-import hashlib
 import logging
 import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
 from typing import List, Optional, Dict, Any, Callable
-from pathlib import Path
 
 from sqlalchemy.orm import Session
-from sqlalchemy import func
 from app.rag.jobs._embedding_job_utils_6 import ARCHITECTURE_OUTPUT_DIR, EMBEDDING_BATCH_SIZE, EMBEDDING_RATE_LIMIT_DELAY, SQLITE_LOCK_INITIAL_BACKOFF, SQLITE_LOCK_MAX_BACKOFF, SQLITE_LOCK_MAX_RETRIES, _is_sqlite_lock_error, run_embedding_job_sync
 from app.rag.jobs._embedding_job_utils_7 import EMBEDDING_AUTO_ENABLED, EMBEDDING_MODEL, STATUS_FILE, classify_chunk_priority, compute_content_hash, format_embedding_status_report, get_embedding_stats, queue_embedding_job
 from app.rag.jobs._embedding_job_utils_8 import EmbeddingPriority, get_embedding_status
 
 logger = logging.getLogger(__name__)
 
-
-# =============================================================================
-# SQLITE RETRY CONFIGURATION (v1.2)
-# =============================================================================
-
-
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
-
-# Environment flags
-
-# Status file location - use consistent path with zobie_tools
-# IMPORTANT: Must match FULL_ARCHMAP_OUTPUT_DIR in zobie_tools.py
-
-
-# =============================================================================
-# PRIORITY CLASSIFICATION (v1.1 - refined patterns)
-# =============================================================================
-
-
-# Priority patterns (regex on file_path) - order matters, first match wins
-PRIORITY_PATTERNS: Dict[EmbeddingPriority, List[re.Pattern]] = {
-    # ==========================================================================
-    # TIER 1: CRITICAL - Entry points, routing, dispatch
-    # Semantic search useful for "how does routing work?" immediately
-    # ==========================================================================
-    EmbeddingPriority.TIER1_CRITICAL: [
-        re.compile(r"main\.py$", re.IGNORECASE),
-        re.compile(r"stream_router", re.IGNORECASE),
-        re.compile(r"translation_routing", re.IGNORECASE),
-        re.compile(r"app[/\\]translation[/\\]intents\.py$", re.IGNORECASE),
-        re.compile(r"app[/\\]translation[/\\]tier0_rules\.py$", re.IGNORECASE),
-        re.compile(r"app[/\\]translation[/\\]modes\.py$", re.IGNORECASE),
-        re.compile(r"app[/\\]llm[/\\]local_tools[/\\]", re.IGNORECASE),  # Tool dispatch is critical
-        re.compile(r"app[/\\]llm[/\\]streaming\.py$", re.IGNORECASE),
-        re.compile(r"uvicorn|gunicorn|startup", re.IGNORECASE),
-    ],
-    
-    # ==========================================================================
-    # TIER 2: HIGH - Pipeline core (spec gate, overwatcher, memory backbone)
-    # Answers "how does the pipeline work?" within ~1 minute
-    # ==========================================================================
-    EmbeddingPriority.TIER2_HIGH: [
-        re.compile(r"spec_gate", re.IGNORECASE),
-        re.compile(r"overwatcher", re.IGNORECASE),
-        re.compile(r"critical_pipeline", re.IGNORECASE),
-        re.compile(r"weaver", re.IGNORECASE),
-        re.compile(r"app[/\\]rag[/\\]pipeline\.py$", re.IGNORECASE),  # RAG pipeline
-        re.compile(r"app[/\\]rag[/\\]answerer\.py$", re.IGNORECASE),  # RAG answerer
-        re.compile(r"app[/\\]memory[/\\].*architecture", re.IGNORECASE),  # Architecture models
-        re.compile(r"app[/\\]memory[/\\]service\.py$", re.IGNORECASE),  # Memory service
-        re.compile(r"job_classifier", re.IGNORECASE),
-        re.compile(r"astra_memory", re.IGNORECASE),
-    ],
-    
-    # ==========================================================================
-    # TIER 3: MEDIUM - Services, models, schemas, DB infrastructure
-    # Answers "what data models exist?" "how is DB structured?"
-    # ==========================================================================
-    EmbeddingPriority.TIER3_MEDIUM: [
-        re.compile(r"models\.py$", re.IGNORECASE),
-        re.compile(r"schemas\.py$", re.IGNORECASE),
-        re.compile(r"service\.py$", re.IGNORECASE),
-        re.compile(r"services[/\\]", re.IGNORECASE),
-        re.compile(r"repository", re.IGNORECASE),
-        re.compile(r"app[/\\]db\.py$", re.IGNORECASE),
-        re.compile(r"database", re.IGNORECASE),
-        re.compile(r"app[/\\]embeddings[/\\]", re.IGNORECASE),
-    ],
-    
-    # ==========================================================================
-    # TIER 4: LOW - Handlers, utilities, clients
-    # Supporting infrastructure
-    # ==========================================================================
-    EmbeddingPriority.TIER4_LOW: [
-        re.compile(r"handler", re.IGNORECASE),
-        re.compile(r"client", re.IGNORECASE),
-        re.compile(r"util", re.IGNORECASE),
-        re.compile(r"helper", re.IGNORECASE),
-        re.compile(r"config\.py$", re.IGNORECASE),
-    ],
-    
-    # TIER 5: NORMAL - No patterns, catch-all
-}
+# Priority patterns and chunk grouping in _embedding_priority.py
+from app.rag.jobs._embedding_priority import PRIORITY_PATTERNS, get_chunks_by_priority
 
 
 # =============================================================================
@@ -426,79 +337,8 @@ class EmbeddingJob:
         return _current_status
     
     def _get_chunks_by_priority(self, db: Session) -> Dict[EmbeddingPriority, List]:
-        """
-        Get chunks needing embedding, grouped by priority.
-        
-        INCREMENTAL: Only returns chunks that:
-        - Have no embedding (embedded=False)
-        - OR have stale embedding (content_hash != embedded_content_hash)
-        
-        Never re-embeds unchanged chunks regardless of tier.
-        """
-        from app.rag.models import ArchCodeChunk
-        from sqlalchemy import func
-        
-        # First, count total chunks in DB for diagnostics
-        total_in_db = db.query(func.count(ArchCodeChunk.id)).scalar() or 0
-        logger.info(f"[embedding_job] Total ArchCodeChunk rows in DB: {total_in_db}")
-        print(f"[embedding_job] Total ArchCodeChunk rows in DB: {total_in_db}")
-        
-        # Query all chunks (optionally filtered by scan_id)
-        query = db.query(ArchCodeChunk)
-        if self.scan_id:
-            logger.info(f"[embedding_job] Filtering by scan_id={self.scan_id}")
-            print(f"[embedding_job] Filtering by scan_id={self.scan_id}")
-            query = query.filter(ArchCodeChunk.scan_id == self.scan_id)
-        else:
-            logger.info("[embedding_job] No scan_id filter - querying ALL chunks")
-            print("[embedding_job] No scan_id filter - querying ALL chunks")
-        
-        all_chunks = query.all()
-        logger.info(f"[embedding_job] Chunks after filter: {len(all_chunks)}")
-        print(f"[embedding_job] Chunks after filter: {len(all_chunks)}")
-        
-        # First pass: compute content hashes for chunks that don't have them
-        hash_updates = 0
-        for chunk in all_chunks:
-            if not chunk.content_hash:
-                chunk.content_hash = compute_content_hash(chunk)
-                hash_updates += 1
-        
-        if hash_updates > 0:
-            db.commit()
-            logger.info(f"[embedding_job] Computed {hash_updates} missing content hashes")
-        
-        # Group by priority, filtering for those needing embedding
-        result: Dict[EmbeddingPriority, List] = {p: [] for p in EmbeddingPriority}
-        
-        already_embedded = 0
-        needs_reembed = 0
-        
-        for chunk in all_chunks:
-            # Check if needs embedding (INCREMENTAL logic)
-            if chunk.embedded:
-                # Already embedded - check if content changed
-                if chunk.content_hash and chunk.embedded_content_hash:
-                    if chunk.content_hash == chunk.embedded_content_hash:
-                        # Up to date, skip
-                        already_embedded += 1
-                        continue
-                    else:
-                        # Content changed, needs re-embed
-                        needs_reembed += 1
-                else:
-                    # No hash comparison possible, skip
-                    already_embedded += 1
-                    continue
-            
-            # Needs embedding - classify priority
-            priority = classify_chunk_priority(chunk.file_path or "")
-            result[priority].append(chunk)
-        
-        logger.info(f"[embedding_job] Already embedded (unchanged): {already_embedded}")
-        logger.info(f"[embedding_job] Needs re-embed (changed): {needs_reembed}")
-        
-        return result
+        """Get chunks needing embedding, grouped by priority. Delegates to _embedding_priority."""
+        return get_chunks_by_priority(db, self.scan_id)
     
     def _process_chunks(
         self,
@@ -552,227 +392,12 @@ class EmbeddingJob:
                 time.sleep(self.rate_limit_delay)
     
     def _embed_batch(self, db: Session, chunks: List) -> int:
-        """
-        Embed a batch of chunks.
-        
-        Returns: number of successfully embedded chunks
-        """
-        print(f"[embedding_job] _embed_batch: processing {len(chunks)} chunks")
-        logger.info(f"[embedding_job] _embed_batch: processing {len(chunks)} chunks")
-        
-        try:
-            from app.llm.clients import get_embeddings
-            print("[embedding_job] Imported get_embeddings successfully")
-        except ImportError as e:
-            print(f"[embedding_job] Failed to import get_embeddings: {e}")
-            logger.error(f"[embedding_job] Failed to import get_embeddings: {e}")
-            raise
-        
-        try:
-            from app.embeddings.service import store_embedding, embedding_exists
-            print("[embedding_job] Imported store_embedding and embedding_exists successfully")
-        except ImportError as e:
-            print(f"[embedding_job] Failed to import store_embedding: {e}")
-            logger.error(f"[embedding_job] Failed to import store_embedding: {e}")
-            raise
-        
-        # ======================================================================
-        # PREFILTER: Skip chunks that already have embeddings (safety net)
-        # This prevents re-embedding if chunk rows exist but weren't deduplicated
-        # ======================================================================
-        chunks_to_embed = []
-        skipped_existing = 0
-        now = datetime.utcnow()
-        
-        for chunk in chunks:
-            if embedding_exists(
-                db=db,
-                project_id=0,
-                source_type="arch_code_chunk",
-                source_id=chunk.id,
-            ):
-                # Embedding already exists for this chunk.id - skip API call
-                chunk.embedded = True
-                chunk.embedding_model = EMBEDDING_MODEL
-                chunk.embedded_at = now
-                chunk.embedded_content_hash = chunk.content_hash
-                skipped_existing += 1
-                
-                # Update skipped_chunks counter (safe check for attribute existence)
-                if hasattr(_current_status, 'skipped_chunks'):
-                    _current_status.skipped_chunks += 1
-            else:
-                chunks_to_embed.append(chunk)
-        
-        if skipped_existing > 0:
-            logger.info(f"[embedding_job] Skipped {skipped_existing} chunks (embeddings already exist)")
-            print(f"[embedding_job] Skipped {skipped_existing} chunks (embeddings already exist)")
-        
-        # If all chunks already have embeddings, commit and return early
-        if not chunks_to_embed:
-            logger.info(f"[embedding_job] All {len(chunks)} chunks already embedded, no API calls needed")
-            print(f"[embedding_job] All {len(chunks)} chunks already embedded, no API calls needed")
-            db.commit()
-            return len(chunks)  # All were "processed" (skipped)
-        
-        # Build texts for embedding (only for chunks that need it)
-        texts = []
-        for chunk in chunks_to_embed:
-            # Build embeddable text: name + signature + docstring
-            text_parts = []
-            if chunk.chunk_name:
-                text_parts.append(f"{chunk.chunk_type}: {chunk.chunk_name}")
-            if chunk.signature:
-                text_parts.append(f"Signature: {chunk.signature}")
-            if chunk.docstring:
-                text_parts.append(f"Description: {chunk.docstring[:500]}")
-            if chunk.file_path:
-                text_parts.append(f"File: {chunk.file_path}")
-            
-            texts.append("\n".join(text_parts))
-        
-        # Call embedding API
-        print(f"[embedding_job] Calling OpenAI embeddings API for {len(texts)} texts...")
-        logger.info(f"[embedding_job] Calling get_embeddings API for {len(texts)} texts...")
-        try:
-            vectors = get_embeddings(texts, model=EMBEDDING_MODEL)
-            print(f"[embedding_job] SUCCESS: Got {len(vectors)} vectors from API")
-            logger.info(f"[embedding_job] Got {len(vectors)} vectors from API")
-        except Exception as e:
-            print(f"[embedding_job] API call FAILED: {e}")
-            logger.error(f"[embedding_job] get_embeddings API call failed: {e}")
-            raise
-        
-        # Store embeddings
-        print(f"[embedding_job] Storing {len(vectors)} embeddings in DB...")
-        success_count = 0
-        
-        for i, chunk in enumerate(chunks_to_embed):
-            try:
-                # Store in embeddings table
-                store_embedding(
-                    db=db,
-                    project_id=0,  # Architecture embeddings use project_id=0
-                    source_type="arch_code_chunk",
-                    source_id=chunk.id,
-                    content=texts[i],
-                    embedding=vectors[i],
-                )
-                
-                # Update chunk status
-                chunk.embedded = True
-                chunk.embedding_model = EMBEDDING_MODEL
-                chunk.embedded_at = now
-                chunk.embedded_content_hash = chunk.content_hash
-                
-                _current_status.embedded_chunks += 1
-                success_count += 1
-                
-            except Exception as e:
-                print(f"[embedding_job] Failed to store chunk {chunk.id}: {e}")
-                logger.error(f"[embedding_job] Failed to store embedding for chunk {chunk.id}: {e}")
-                _current_status.failed_chunks += 1
-        
-        db.commit()
-        total_processed = success_count + skipped_existing
-        print(f"[embedding_job] Batch complete: {success_count} newly embedded, {skipped_existing} skipped (already exist), total embedded: {_current_status.embedded_chunks}")
-        return total_processed
-    
+        """Embed a batch of chunks. Delegates to _embedding_batch module."""
+        from app.rag.jobs._embedding_batch import embed_batch
+        return embed_batch(db, chunks, _current_status)
+
     def _embed_batch_with_retry(self, chunk_ids: List[int]) -> int:
-        """
-        Embed a batch of chunks with SQLite lock retry and fresh session per batch.
-        
-        v1.2: Added to fix "database is locked" cascade errors.
-        
-        Key behaviors:
-        - Creates fresh session for this batch (prevents poisoned session cascade)
-        - Retries with exponential backoff on SQLite lock errors
-        - Properly closes session in all cases
-        
-        Returns: number of successfully embedded chunks
-        """
-        from sqlalchemy.exc import OperationalError
-        from app.rag.models import ArchCodeChunk
-        
-        backoff = SQLITE_LOCK_INITIAL_BACKOFF
-        last_error = None
-        
-        for attempt in range(1, SQLITE_LOCK_MAX_RETRIES + 1):
-            db = None
-            try:
-                # Fresh session for this batch
-                db = self.db_session_factory()
-                
-                # Re-fetch chunks by ID (they're detached from previous session)
-                chunks = db.query(ArchCodeChunk).filter(
-                    ArchCodeChunk.id.in_(chunk_ids)
-                ).all()
-                
-                if len(chunks) != len(chunk_ids):
-                    logger.warning(
-                        f"[embedding_job] Fetched {len(chunks)}/{len(chunk_ids)} chunks "
-                        f"(some may have been deleted)"
-                    )
-                
-                if not chunks:
-                    logger.warning("[embedding_job] No chunks found for batch, skipping")
-                    return 0
-                
-                # Delegate to existing _embed_batch logic
-                result = self._embed_batch(db, chunks)
-                return result
-                
-            except OperationalError as e:
-                if _is_sqlite_lock_error(e):
-                    last_error = e
-                    logger.warning(
-                        f"[embedding_job] SQLite lock on attempt {attempt}/{SQLITE_LOCK_MAX_RETRIES}, "
-                        f"backing off {backoff:.2f}s"
-                    )
-                    print(
-                        f"[embedding_job] SQLite lock (attempt {attempt}), "
-                        f"retrying in {backoff:.2f}s..."
-                    )
-                    
-                    # Rollback and close current session before retry
-                    if db:
-                        try:
-                            db.rollback()
-                        except Exception:
-                            pass
-                        try:
-                            db.close()
-                        except Exception:
-                            pass
-                        db = None
-                    
-                    time.sleep(backoff)
-                    backoff = min(backoff * 2, SQLITE_LOCK_MAX_BACKOFF)
-                else:
-                    # Non-lock OperationalError, re-raise
-                    raise
-                    
-            except Exception as e:
-                # Non-retryable error
-                logger.error(f"[embedding_job] Non-retryable error in batch: {e}")
-                raise
-                
-            finally:
-                # Always close session if it exists
-                if db:
-                    try:
-                        db.close()
-                    except Exception:
-                        pass
-        
-        # Exhausted retries
-        error_msg = f"SQLite lock persisted after {SQLITE_LOCK_MAX_RETRIES} retries: {last_error}"
-        logger.error(f"[embedding_job] {error_msg}")
-        print(f"[embedding_job] {error_msg}")
-        _current_status.last_error = error_msg
-        raise RuntimeError(error_msg)
+        """Embed batch with SQLite lock retry. Delegates to _embedding_batch module."""
+        from app.rag.jobs._embedding_batch import embed_batch_with_retry
+        return embed_batch_with_retry(chunk_ids, self.db_session_factory, _current_status)
 
-
-# =============================================================================
-# CONVENIENCE FUNCTIONS
-# =============================================================================
