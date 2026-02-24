@@ -30,6 +30,8 @@ from app.llm.stream_utils import (
     select_provider_for_job_type,
 )
 
+from app.memory.complexity import classify_complexity
+
 from app.llm.legacy_triggers import (
     is_zobie_map_trigger,
     is_archmap_trigger,
@@ -101,17 +103,92 @@ def handle_chat_mode(
         model = req.model
         print(f"[CHAT_MODE] Using frontend override: provider={provider}, model={model}")
     else:
-        # Get provider/model from stage_models
-        try:
-            from app.llm.stage_models import get_chat_config
-            chat_config = get_chat_config()
-            provider = chat_config.provider
-            model = chat_config.model
-            print(f"[CHAT_MODE] Using stage_models: provider={provider}, model={model}")
-        except ImportError:
+        # v5.7: Run complexity classifier to decide model tier.
+        # Even in chat mode, complex messages deserve a better model.
+        complexity = classify_complexity(
+            query=req.message,
+            intent=None,
+            attachments=getattr(req, 'attachments', None),
+        )
+        print(f"[CHAT_MODE] Complexity: tier={complexity.tier}, target={complexity.model_target}, "
+              f"confidence={complexity.confidence}, signals={complexity.signals}")
+        
+        # Map complexity tier to provider/model
+        # deep        → Claude Opus 4.6  (architecture, multi-domain planning)
+        # reasoning   → GPT-5.2          (comparisons, debugging, implementation)
+        # multimodal  → Gemini 3.1 Pro   (images, video, multi-attachment)
+        # lookup      → GPT-5 Mini       (factual, memory, simple questions)
+        # ping_pong   → GPT-5 Mini       (greetings, acknowledgements)
+        if complexity.tier == "deep":
+            provider = "anthropic"
+            model = "claude-opus-4-6"
+            print(f"[CHAT_MODE] Complexity UPGRADE: deep → Opus")
+            # v2.1: Model escalation confirmation gate
+            try:
+                from app.llm.routing.confirmation_gate import (
+                    should_confirm_model_escalation,
+                    format_confirmation_sse,
+                )
+                confirm_req = should_confirm_model_escalation(
+                    from_tier="lookup", to_tier="deep",
+                    confidence=complexity.confidence,
+                    message=req.message,
+                )
+                if confirm_req:
+                    async def _confirm_stream():
+                        yield format_confirmation_sse(confirm_req)
+                        yield "data: [DONE]\n\n"
+                    return StreamingResponse(
+                        _confirm_stream(),
+                        media_type="text/event-stream",
+                        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                    )
+            except ImportError:
+                pass
+        elif complexity.tier == "reasoning":
             provider = "openai"
-            model = DEFAULT_MODELS.get("openai", "gpt-4.1-mini")
-            print(f"[CHAT_MODE] stage_models unavailable, using fallback: provider={provider}, model={model}")
+            model = "gpt-5.2"
+            print(f"[CHAT_MODE] Complexity UPGRADE: reasoning → GPT-5.2")
+            # v2.1: Model escalation confirmation gate
+            try:
+                from app.llm.routing.confirmation_gate import (
+                    should_confirm_model_escalation,
+                    format_confirmation_sse,
+                )
+                confirm_req = should_confirm_model_escalation(
+                    from_tier="lookup", to_tier="reasoning",
+                    confidence=complexity.confidence,
+                    message=req.message,
+                )
+                if confirm_req:
+                    async def _confirm_stream():
+                        yield format_confirmation_sse(confirm_req)
+                        yield "data: [DONE]\n\n"
+                    return StreamingResponse(
+                        _confirm_stream(),
+                        media_type="text/event-stream",
+                        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                    )
+            except ImportError:
+                pass
+        elif complexity.tier == "multimodal":
+            # Route based on attachment count/type
+            attachments = getattr(req, 'attachments', None) or []
+            if len(attachments) >= 2:
+                # Multiple attachments → Gemini 3.1 Pro (big context, multimodal)
+                provider = "google"
+                model = "gemini-3.1-pro-preview"
+                print(f"[CHAT_MODE] Multimodal ({len(attachments)} files) → Gemini 3.1 Pro")
+            else:
+                # Single image/file → Gemini 2.5 Flash (fast, cheap vision)
+                provider = "google"
+                model = "gemini-2.5-flash"
+                print(f"[CHAT_MODE] Multimodal (single) → Gemini 2.5 Flash")
+        else:
+            # lookup or ping_pong
+            provider = "openai"
+            model = "gpt-5-mini"
+            print(f"[CHAT_MODE] Using GPT-5 Mini for {complexity.tier}")
     
     # Check provider availability
     available = get_available_streaming_provider()

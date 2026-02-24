@@ -262,6 +262,32 @@ except ImportError as e:
     generate_segment_loop_stream = None
 
 # =============================================================================
+# WEB SEARCH STREAM (v2.1)
+# =============================================================================
+
+try:
+    from app.llm.web_search_stream import generate_web_search_stream
+    _WEB_SEARCH_STREAM_AVAILABLE = True
+    print("[handler_registry] Web search stream handler loaded successfully")
+except ImportError as e:
+    _WEB_SEARCH_STREAM_AVAILABLE = False
+    print(f"[handler_registry] WARNING: Web search stream import failed: {e}")
+    generate_web_search_stream = None
+
+# =============================================================================
+# DEEP RESEARCH STREAM (v2.1)
+# =============================================================================
+
+try:
+    from app.llm.deep_research_stream import generate_deep_research_stream
+    _DEEP_RESEARCH_STREAM_AVAILABLE = True
+    print("[handler_registry] Deep research stream handler loaded successfully")
+except ImportError as e:
+    _DEEP_RESEARCH_STREAM_AVAILABLE = False
+    print(f"[handler_registry] WARNING: Deep research stream import failed: {e}")
+    generate_deep_research_stream = None
+
+# =============================================================================
 # REFACTOR LOOP (v1.9)
 # =============================================================================
 
@@ -308,6 +334,8 @@ def log_handler_availability() -> None:
     print(f"[HANDLER_STATUS] EmbeddingStream: {_EMBEDDING_STREAM_AVAILABLE}")
     print(f"[HANDLER_STATUS] SegmentLoop: {_SEGMENT_LOOP_AVAILABLE}")
     print(f"[HANDLER_STATUS] RefactorLoop: {_REFACTOR_AVAILABLE}")
+    print(f"[HANDLER_STATUS] WebSearchStream: {_WEB_SEARCH_STREAM_AVAILABLE}")
+    print(f"[HANDLER_STATUS] DeepResearchStream: {_DEEP_RESEARCH_STREAM_AVAILABLE}")
     print(f"[HANDLER_STATUS] Introspection: {_INTROSPECTION_AVAILABLE}")
 
 
@@ -330,6 +358,8 @@ def get_handler_status() -> dict:
         "embedding_stream": _EMBEDDING_STREAM_AVAILABLE,
         "segment_loop": _SEGMENT_LOOP_AVAILABLE,
         "refactor_loop": _REFACTOR_AVAILABLE,
+        "web_search_stream": _WEB_SEARCH_STREAM_AVAILABLE,
+        "deep_research_stream": _DEEP_RESEARCH_STREAM_AVAILABLE,
         "introspection": _INTROSPECTION_AVAILABLE,
     }
 
@@ -405,6 +435,12 @@ __all__ = [
     # Segment Loop
     "_SEGMENT_LOOP_AVAILABLE",
     "generate_segment_loop_stream",
+    # Web Search Stream
+    "_WEB_SEARCH_STREAM_AVAILABLE",
+    "generate_web_search_stream",
+    # Deep Research Stream
+    "_DEEP_RESEARCH_STREAM_AVAILABLE",
+    "generate_deep_research_stream",
     # Refactor Loop
     "_REFACTOR_AVAILABLE",
     "generate_refactor_stream",

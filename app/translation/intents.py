@@ -1005,6 +1005,25 @@ INTENT_DEFINITIONS: Dict[CanonicalIntent, IntentDefinition] = {
         ),
     ),
 
+    CanonicalIntent.WEB_SEARCH: IntentDefinition(
+        intent=CanonicalIntent.WEB_SEARCH,
+        trigger_phrases=[
+            # Detection handled by _tier0_web_search.py check_web_search_trigger()
+        ],
+        trigger_patterns=[],
+        requires_context=[],
+        requires_confirmation=False,
+        description="Search the web and return synthesised results with sources",
+        behavior=(
+            "Web search — read-only, no confirmation required.\n"
+            "1. Extract search query from user message\n"
+            "2. Query Brave Search API (primary) or DuckDuckGo (fallback)\n"
+            "3. Fetch and parse top result pages for evidence\n"
+            "4. LLM synthesises answer from sources only\n"
+            "5. Stream answer with source citations"
+        ),
+    ),
+
     CanonicalIntent.CHAT_ONLY: IntentDefinition(
         intent=CanonicalIntent.CHAT_ONLY,
         trigger_phrases=[],  # Default fallback
@@ -1021,6 +1040,126 @@ INTENT_DEFINITIONS: Dict[CanonicalIntent, IntentDefinition] = {
             "- Planning\n"
             "- Storytelling\n"
             "- Meta-discussion"
+        ),
+    ),
+
+    # -------------------------------------------------------------------------
+    # WEB SEARCH (v2.1)
+    # -------------------------------------------------------------------------
+
+    CanonicalIntent.WEB_SEARCH: IntentDefinition(
+        intent=CanonicalIntent.WEB_SEARCH,
+        trigger_phrases=[],  # Patterns handled by _tier0_web_search.py
+        trigger_patterns=[],
+        requires_context=[],
+        requires_confirmation=False,
+        description="Search the web and return synthesised results with sources",
+        behavior=(
+            "Web search — read-only, no confirmation required.\n"
+            "\n"
+            "Triggers:\n"
+            "- 'search the web for X'\n"
+            "- 'look up X'\n"
+            "- 'get me the latest on X'\n"
+            "- 'google X'\n"
+            "- 'research X'\n"
+            "- 'find out about X'\n"
+            "\n"
+            "Process:\n"
+            "1. Extract search query from message\n"
+            "2. Query Brave Search API (DuckDuckGo fallback)\n"
+            "3. Fetch top source pages for evidence\n"
+            "4. LLM synthesises answer from sources\n"
+            "5. Return answer with cited sources"
+        ),
+    ),
+
+    # -------------------------------------------------------------------------
+    # DEEP RESEARCH (v2.1)
+    # -------------------------------------------------------------------------
+
+    CanonicalIntent.DEEP_RESEARCH: IntentDefinition(
+        intent=CanonicalIntent.DEEP_RESEARCH,
+        trigger_phrases=[],  # Patterns handled by _tier0_web_search.py
+        trigger_patterns=[],
+        requires_context=[],
+        requires_confirmation=False,
+        description="Iterative multi-round web research with gap analysis and synthesis",
+        behavior=(
+            "Deep research — thorough, multi-round investigation.\n"
+            "\n"
+            "Triggers:\n"
+            "- 'research X thoroughly'\n"
+            "- 'deep dive into X'\n"
+            "- 'investigate X'\n"
+            "- 'give me a full breakdown of X'\n"
+            "- 'dig into X'\n"
+            "\n"
+            "Process:\n"
+            "1. LLM plans 3-5 targeted search queries\n"
+            "2. Runs all queries via Brave/DDG\n"
+            "3. Fetches and tags top pages by credibility\n"
+            "4. LLM identifies information gaps\n"
+            "5. Generates follow-up queries to fill gaps\n"
+            "6. Repeats up to 3 rounds\n"
+            "7. Final synthesis from all evidence with citations"
+        ),
+    ),
+
+    # -------------------------------------------------------------------------
+    # MEMORY INGEST (v2.1)
+    # -------------------------------------------------------------------------
+
+    CanonicalIntent.MEMORY_INGEST: IntentDefinition(
+        intent=CanonicalIntent.MEMORY_INGEST,
+        trigger_phrases=[],  # Patterns handled by _tier0_memory_ingest.py
+        trigger_patterns=[],
+        requires_context=[],
+        requires_confirmation=False,
+        description="Ingest bulk data into ASTRA memory (files, exports, uploads)",
+        behavior=(
+            "Memory ingest — processes uploaded data through the ingest pipeline.\n"
+            "\n"
+            "Triggers:\n"
+            "- 'ingest this into your memory'\n"
+            "- 'import my GPT data'\n"
+            "- 'upload this to memory'\n"
+            "- 'process this data'\n"
+            "- 'learn from this'\n"
+            "\n"
+            "Process:\n"
+            "1. Parse uploaded file (JSON, text, CSV, etc.)\n"
+            "2. Extract discrete knowledge items\n"
+            "3. Classify domain, memory tier, confidence\n"
+            "4. Deduplicate against existing memory\n"
+            "5. Store high-confidence items, queue low-confidence for review\n"
+            "6. Report summary: stored, duplicates, review queue"
+        ),
+    ),
+
+    CanonicalIntent.MEMORY_STORE: IntentDefinition(
+        intent=CanonicalIntent.MEMORY_STORE,
+        trigger_phrases=[],  # Patterns handled by _tier0_memory_ingest.py
+        trigger_patterns=[],
+        requires_context=[],
+        requires_confirmation=False,
+        description="Remember a specific fact or preference from conversation",
+        behavior=(
+            "Memory store — saves a specific fact or preference.\n"
+            "\n"
+            "Triggers:\n"
+            "- 'remember this'\n"
+            "- 'remember that I...'\n"
+            "- 'don't forget that...'\n"
+            "- 'save this to memory'\n"
+            "- 'from now on...'\n"
+            "- 'I prefer X'\n"
+            "\n"
+            "Process:\n"
+            "1. Extract the fact/preference from message\n"
+            "2. Classify as preference, biographical, or knowledge\n"
+            "3. Route to appropriate capture channel\n"
+            "4. Confirm storage to user"
         ),
     ),
 }

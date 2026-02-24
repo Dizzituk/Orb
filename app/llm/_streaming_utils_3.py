@@ -82,12 +82,17 @@ async def stream_anthropic(
     effective_max_tokens = max_tokens or _int_env("ANTHROPIC_MAX_TOKENS") or 4096
     print(f"[STREAM_ANTHROPIC] Effective max_tokens={effective_max_tokens}, timeout={effective_timeout}s")
     
+    # Anthropic Messages API does not accept role="system" in messages —
+    # system content must go via the top-level `system` parameter.
+    # Filter out any system messages that may have been injected upstream.
+    clean_messages = [m for m in messages if m.get("role") != "system"]
+    
     try:
         resp = await client.messages.create(
             model=use_model,
             max_tokens=effective_max_tokens,
             system=enhanced_prompt,
-            messages=messages,
+            messages=clean_messages,
             stream=True,
         )
 
@@ -182,8 +187,13 @@ async def stream_gemini(
         last_chunk = None
         for chunk in response:
             last_chunk = chunk
-            if getattr(chunk, "text", None):
-                yield {"type": "token", "text": chunk.text}
+            try:
+                text = getattr(chunk, "text", None)
+                if text:
+                    yield {"type": "token", "text": text}
+            except ValueError:
+                # Gemini returns empty Part for refused/empty responses
+                pass
 
         usage_md = _uget(response, "usage_metadata") or _uget(last_chunk, "usage_metadata")
         if usage_md:

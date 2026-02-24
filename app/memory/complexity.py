@@ -93,6 +93,10 @@ DEEP_KEYWORDS = {
     "dependency graph", "blast radius", "breaking change",
     "trade-off", "tradeoff", "design decision",
     "scalability", "performance audit", "infrastructure",
+    # Strategic/planning complexity (v2: catch multi-domain planning)
+    "pipeline", "roadmap", "domain", "integrate",
+    "integration", "capability", "capabilities",
+    "end-to-end", "production", "deploy",
 }
 
 # Reasoning indicators
@@ -117,7 +121,7 @@ LOOKUP_KEYWORDS = {
 PING_PONG_PATTERNS = [
     r"^(hi|hello|hey|yo|sup|thanks|thank you|ok|okay|yes|no|sure|cool|great|cheers|ta|right|yep|nah|nope)[\s!.?]*$",
     r"^(good\s+(morning|afternoon|evening|night))[\s!.?]*$",
-    r"^(how are you|what'?s up|how'?s it going)[\s!.?]*$",
+    r"^(?:hi|hello|hey)?\s*(how are you|what'?s up|how'?s it going)[\s!.?]*$",
 ]
 
 # Multimodal indicators (attachment-based, not keyword)
@@ -316,6 +320,7 @@ def _resolve_tier(
     Context depth pushes toward higher tiers.
     """
     # Deep: 2+ deep keywords OR 1 deep + long message
+    # v2: Very long messages (100+ words) with reasoning keywords are also deep
     if deep_hits >= 2 or (deep_hits >= 1 and word_count > 30):
         conf = min(0.95, 0.7 + (deep_hits * 0.1))
         return ("deep", conf)
@@ -326,6 +331,10 @@ def _resolve_tier(
         # Context depth can push reasoning → deep
         if context_depth > 5 and reasoning_hits >= 2:
             return ("deep", conf * 0.9)
+        # Very long messages with multiple reasoning signals → deep
+        # (multi-domain planning, brainstorming, strategic requests)
+        if word_count > 100 and reasoning_hits >= 3:
+            return ("deep", min(0.85, conf))
         return ("reasoning", conf)
 
     # Lookup: lookup keywords or short factual query

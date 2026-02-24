@@ -35,6 +35,11 @@ class WebSearchSource(BaseModel):
     title: str
     url: str
     snippet: str = ""
+    # v2.1: Source credibility tagging
+    credibility_tier: int = 5           # 1-5 (1=authoritative, 5=unknown)
+    credibility_label: str = "unknown"  # authoritative/established/professional/community/unknown
+    source_type: str = "unknown"        # academic/government/official_docs/mainstream_news/etc.
+    bias_note: str = ""                 # Optional warning about known bias
 
 
 class WebSearchResponse(BaseModel):
@@ -44,6 +49,9 @@ class WebSearchResponse(BaseModel):
     answer: str = ""
     sources: list[WebSearchSource] = []
     error: str = ""
+    # v2.1: Diversity metadata
+    diversity_score: float = 0.0        # 0.0-1.0 (higher = more diverse sources)
+    missing_perspectives: list[str] = []  # Source types not represented
 
 
 def _extract_content(llm_result: Any) -> str:
@@ -210,16 +218,37 @@ async def search_and_answer(req: WebSearchRequest, context: Optional[dict] = Non
         provider = str(tool_result.get("provider") or "")
         results = tool_result.get("results") or []
 
+        # v2.1: Import source classifier
+        try:
+            from app.tools.source_classifier import (
+                classify_source,
+                get_diversity_summary,
+                format_source_tag_for_evidence,
+            )
+            _classifier_available = True
+        except ImportError:
+            _classifier_available = False
+            logger.warning("[web_search] Source classifier not available")
+
         sources: list[WebSearchSource] = []
+        source_tags = []
         for r in results[: req.max_results]:
             try:
-                sources.append(
-                    WebSearchSource(
-                        title=str(r.get("title") or ""),
-                        url=str(r.get("url") or ""),
-                        snippet=str(r.get("snippet") or ""),
-                    )
+                url = str(r.get("url") or "")
+                source = WebSearchSource(
+                    title=str(r.get("title") or ""),
+                    url=url,
+                    snippet=str(r.get("snippet") or ""),
                 )
+                # v2.1: Tag credibility
+                if _classifier_available and url:
+                    tag = classify_source(url)
+                    source.credibility_tier = tag.tier
+                    source.credibility_label = tag.tier_label
+                    source.source_type = tag.source_type
+                    source.bias_note = tag.bias_note or ""
+                    source_tags.append(tag)
+                sources.append(source)
             except Exception:
                 continue
 
@@ -247,7 +276,11 @@ async def search_and_answer(req: WebSearchRequest, context: Optional[dict] = Non
 
         evidence_lines: list[str] = []
         for i, s in enumerate(sources, start=1):
-            line = f"[{i}] {s.title}\nURL: {s.url}"
+            # v2.1: Include credibility tag in evidence
+            cred_tag = ""
+            if _classifier_available and s.source_type != "unknown":
+                cred_tag = f" {format_source_tag_for_evidence(source_tags[i-1])}" if i-1 < len(source_tags) else ""
+            line = f"[{i}]{cred_tag} {s.title}\nURL: {s.url}"
             if s.snippet:
                 line += f"\nSnippet: {s.snippet}"
 
@@ -261,15 +294,33 @@ async def search_and_answer(req: WebSearchRequest, context: Optional[dict] = Non
 
         evidence = "\n\n".join(evidence_lines)
 
+        # v2.1: Diversity analysis
+        diversity = {}
+        if _classifier_available and source_tags:
+            diversity = get_diversity_summary(source_tags)
+
         # 4) Ask an LLM to answer (optional)
         answer_provider, answer_model = _pick_answer_provider()
         if not answer_provider:
             return WebSearchResponse(ok=True, query=req.query, provider=provider, answer="", sources=sources)
 
+        # v2.1: Enhanced prompt with credibility awareness
+        diversity_note = ""
+        if diversity.get("missing_perspectives"):
+            missing = ", ".join(diversity["missing_perspectives"])
+            diversity_note = f"\nNote: These results lack {missing} perspectives. Mention if relevant.\n"
+        bias_notes_text = ""
+        if diversity.get("bias_notes"):
+            bias_notes_text = "\nSource notes:\n" + "\n".join(diversity["bias_notes"]) + "\n"
+
         prompt = (
             "Answer the user's question using ONLY the sources below. "
             "If the sources don't contain the answer, say you can't find it in the sources. "
-            "Be direct. Include citations like [1], [2].\n\n"
+            "Be direct. Include citations like [1], [2]. "
+            "Each source has a credibility tag (AUTHORITATIVE, ESTABLISHED, PROFESSIONAL, COMMUNITY, UNKNOWN). "
+            "Prefer higher-credibility sources but include useful info from all. "
+            "If sources conflict, note which is more authoritative."
+            f"{diversity_note}{bias_notes_text}\n"
             f"Question: {req.query}\n\n"
             f"Sources:\n{evidence}\n"
         )
@@ -295,7 +346,15 @@ async def search_and_answer(req: WebSearchRequest, context: Optional[dict] = Non
         llm_res = await registry_llm_call(**kwargs)  # type: ignore[arg-type]
         answer = _extract_content(llm_res).strip()
 
-        return WebSearchResponse(ok=True, query=req.query, provider=provider, answer=answer, sources=sources)
+        return WebSearchResponse(
+            ok=True,
+            query=req.query,
+            provider=provider,
+            answer=answer,
+            sources=sources,
+            diversity_score=diversity.get("diversity_score", 0.0),
+            missing_perspectives=diversity.get("missing_perspectives", []),
+        )
 
     except Exception as e:
         logger.exception("[web_search] search_and_answer failed: %s", e)

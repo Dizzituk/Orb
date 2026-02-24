@@ -119,6 +119,22 @@ class CanonicalIntent(str, Enum):
     MULTI_FILE_REFACTOR = "MULTI_FILE_REFACTOR"
 
     # =========================================================================
+    # WEB SEARCH (v2.1)
+    # =========================================================================
+
+    # Search the web and return synthesised results
+    WEB_SEARCH = "WEB_SEARCH"
+
+    # Deep iterative research (multi-round search + synthesis)
+    DEEP_RESEARCH = "DEEP_RESEARCH"
+
+    # Ingest data into memory (files, text, exports)
+    MEMORY_INGEST = "MEMORY_INGEST"
+
+    # Remember a specific fact or preference from conversation
+    MEMORY_STORE = "MEMORY_STORE"
+
+    # =========================================================================
     # SEGMENT LOOP (v1.8 - Phase 2 Pipeline Segmentation)
     # =========================================================================
 

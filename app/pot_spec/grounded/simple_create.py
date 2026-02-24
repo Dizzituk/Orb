@@ -561,7 +561,14 @@ async def _fulfil_evidence_requests(
 # LLM ANALYSIS (v2.0 — NEW)
 # =============================================================================
 
-CREATE_ANALYSIS_SYSTEM_PROMPT = """You are an expert software architect analyzing a feature request.
+# v2.1: Import governance rules for prompt injection
+try:
+    from app.pot_spec.governance_rules import SPEC_GATE_GOVERNANCE_PROMPT as _GOV_PROMPT
+except ImportError:
+    _GOV_PROMPT = ""
+
+CREATE_ANALYSIS_SYSTEM_PROMPT = f"""You are an expert software architect analyzing a feature request.
+{_GOV_PROMPT}
 
 You will receive:
 1. A feature description (from the Weaver stage)

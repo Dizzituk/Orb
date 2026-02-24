@@ -227,9 +227,21 @@ def _extract_keywords(text: str) -> list[str]:
         "to", "for", "of", "and", "or", "not", "with", "from", "by",
         "it", "this", "that", "how", "what", "where", "when", "who",
         "does", "do", "can", "will", "about", "me", "my", "show",
+        "i", "you", "we", "they", "he", "she", "be", "have", "has",
+        "had", "but", "if", "so", "as", "just", "like", "would",
+        "could", "should", "been", "being", "than", "then", "also",
+        "very", "really", "actually", "basically", "i'd", "i'm",
+        "it's", "don't", "i'll", "you're", "that's", "there",
     }
     words = text.lower().split()
-    return [w for w in words if len(w) >= 2 and w not in stop_words]
+    keywords = [w.strip(".,;:!?'\"()") for w in words]
+    keywords = [w for w in keywords if len(w) >= 3 and w not in stop_words]
+    # Cap at 20 keywords to avoid blowing SQLite's expression tree limit.
+    # Prefer longer (more specific) keywords when capping.
+    if len(keywords) > 20:
+        keywords.sort(key=len, reverse=True)
+        keywords = keywords[:20]
+    return keywords
 
 
 def _score_chunk(chunk: ArchCodeChunk, keywords: list[str]) -> float:

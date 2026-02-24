@@ -151,6 +151,17 @@ def on_startup():
     except Exception as e:
         print(f"[startup] ASTRA memory indexing skipped: {e}")
 
+    # v2.2: Confidence graduation — promote high-confidence Tier 1 → Tier 0
+    try:
+        from app.translation.confidence_graduation import run_graduation
+        _grad_count = run_graduation()
+        if _grad_count > 0:
+            print(f"[startup] Confidence graduation: {_grad_count} rule(s) graduated to Tier 0")
+        else:
+            print("[startup] Confidence graduation: no new candidates")
+    except Exception as e:
+        print(f"[startup] Confidence graduation skipped: {e}")
+
 
 # ============================================================================
 # ROUTERS
@@ -171,6 +182,13 @@ app.include_router(endpoints_router)
 
 # RAG system (architecture search)
 app.include_router(rag_router)
+
+# Cost dashboard (no auth required for monitoring)
+try:
+    from app.endpoints.cost_dashboard import router as cost_dashboard_router
+    app.include_router(cost_dashboard_router, tags=["Cost Dashboard"])
+except ImportError as e:
+    print(f"[startup] Cost dashboard not available: {e}")
 
 # Log introspection (read-only, requires auth)
 app.include_router(

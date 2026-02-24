@@ -264,4 +264,11 @@ If no files are modified, include the table header with no rows.
 
 Generate a complete, detailed architecture document.""")
 
+    # v2.1: Inject pipeline governance rules
+    try:
+        from app.pot_spec.governance_rules import CRITICAL_PIPELINE_GOVERNANCE_PROMPT
+        parts.append(f"\n{CRITICAL_PIPELINE_GOVERNANCE_PROMPT}\n")
+    except ImportError:
+        pass
+
     return "".join(parts)

@@ -291,6 +291,12 @@ def extract_context_from_text(
             context["change_set_id"] = match.group(1)
             break
     
+    # Web search: extract query from Tier 0 rule if available
+    # (The Tier 0 rule already parsed the query out of the natural language;
+    #  this fallback catches cases where the full message IS the query.)
+    if intent == CanonicalIntent.WEB_SEARCH and "extracted_query" not in context:
+        context["extracted_query"] = text.strip()
+    
     return context
 
 

@@ -235,6 +235,10 @@ class Translator:
                 result.should_execute = False
                 return result
             
+            # v2.1: Pass extracted data from Tier 0 into context
+            if hasattr(tier0_result, 'extracted_query') and tier0_result.extracted_query:
+                result.extracted_context['extracted_query'] = tier0_result.extracted_query
+            
             # Continue to gates for commands
             return await self._apply_gates(text, result, ui_context, conversation_id)
         # Step 3b: Directive vs Story Gate (only for non-tier0 matches)

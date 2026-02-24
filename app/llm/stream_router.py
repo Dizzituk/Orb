@@ -293,6 +293,32 @@ async def stream_chat(
             
             # Execute approved commands
             if translation_result.should_execute:
+                # v2.1: Confirmation gate — check if this routing decision needs user approval
+                try:
+                    from app.llm.routing.confirmation_gate import (
+                        should_confirm_intent_routing,
+                        format_confirmation_sse,
+                    )
+                    intent_str = translation_result.resolved_intent.value if translation_result.resolved_intent else None
+                    if intent_str:
+                        confirm_req = should_confirm_intent_routing(
+                            intent=intent_str,
+                            confidence=translation_result.intent_confidence,
+                            message=req.message,
+                        )
+                        if confirm_req:
+                            # Emit confirmation event and wait for user response
+                            async def _confirm_stream():
+                                yield format_confirmation_sse(confirm_req)
+                                yield "data: [DONE]\n\n"
+                            return StreamingResponse(
+                                _confirm_stream(),
+                                media_type="text/event-stream",
+                                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                            )
+                except ImportError:
+                    pass  # Gate not available, proceed normally
+
                 # v5.4: Record successful intent resolution in confidence learning
                 intent_val = translation_result.resolved_intent.value if translation_result.resolved_intent else None
                 if intent_val:

@@ -13,7 +13,9 @@ Public API used by the rest of the app:
 from __future__ import annotations
 
 import html as _html
+import json
 import logging
+import os
 import re
 import urllib.parse
 from dataclasses import dataclass
@@ -236,14 +238,66 @@ def _parse_ddg_html(page: str, max_results: int) -> list[dict]:
     return results
 
 
-async def web_search_handler(input_data: dict, context: Optional[dict]) -> dict:
-    query = str(input_data.get("query") or "").strip()
-    max_results = int(input_data.get("max_results") or 5)
-    max_results = max(1, min(10, max_results))
+# -------------------------
+# Brave Search
+# -------------------------
 
-    if not query:
-        return {"query": query, "provider": "duckduckgo_lite", "results": []}
+def _get_brave_api_key() -> Optional[str]:
+    """Return Brave Search API key if configured."""
+    key = (os.getenv("BRAVE_SEARCH_API_KEY") or "").strip()
+    return key if key else None
 
+
+def _parse_brave_results(data: dict, max_results: int) -> list[dict]:
+    """Parse Brave Search API JSON into our standard result format."""
+    results: list[dict] = []
+    web = data.get("web") or {}
+    for item in (web.get("results") or [])[:max_results]:
+        title = str(item.get("title") or "").strip()
+        url = str(item.get("url") or "").strip()
+        snippet = str(item.get("description") or "").strip()
+        if not title or not url:
+            continue
+        results.append({"title": title, "url": url, "snippet": snippet})
+    return results
+
+
+async def _brave_search(query: str, max_results: int, api_key: str) -> Optional[list[dict]]:
+    """Query Brave Search API. Returns results list or None on failure."""
+    try:
+        q = urllib.parse.quote_plus(query)
+        url = f"https://api.search.brave.com/res/v1/web/search?q={q}&count={max_results}"
+        resp = await get_tool_executor().http_fetch(
+            url=url,
+            method="GET",
+            headers={
+                "X-Subscription-Token": api_key,
+                "Accept": "application/json",
+            },
+            max_bytes=500_000,
+        )
+        if not resp.get("ok"):
+            logger.warning("[web_search] Brave API request failed: status=%s", resp.get("status_code"))
+            return None
+
+        text = str(resp.get("text") or "")
+        if not text:
+            return None
+
+        data = json.loads(text)
+        results = _parse_brave_results(data, max_results)
+        return results if results else None
+    except Exception as e:
+        logger.warning("[web_search] Brave search failed: %s", e)
+        return None
+
+
+# -------------------------
+# DuckDuckGo (fallback)
+# -------------------------
+
+async def _ddg_search(query: str, max_results: int) -> tuple[str, list[dict]]:
+    """DuckDuckGo Lite + HTML fallback. Returns (provider, results)."""
     q = urllib.parse.quote_plus(query)
 
     # 1) Lite first (less ad noise)
@@ -272,6 +326,28 @@ async def web_search_handler(input_data: dict, context: Optional[dict]) -> dict:
         if page.get("ok"):
             results = _parse_ddg_html(str(page.get("text") or ""), max_results)
 
+    return provider, results
+
+
+async def web_search_handler(input_data: dict, context: Optional[dict]) -> dict:
+    query = str(input_data.get("query") or "").strip()
+    max_results = int(input_data.get("max_results") or 5)
+    max_results = max(1, min(10, max_results))
+
+    if not query:
+        return {"query": query, "provider": "none", "results": []}
+
+    # 1) Brave Search (primary — if API key configured)
+    brave_key = _get_brave_api_key()
+    if brave_key:
+        results = await _brave_search(query, max_results, brave_key)
+        if results:
+            logger.info("[web_search] Brave returned %d results for: %s", len(results), query[:80])
+            return {"query": query, "provider": "brave", "results": results}
+        logger.info("[web_search] Brave failed or empty, falling back to DuckDuckGo")
+
+    # 2) DuckDuckGo fallback
+    provider, results = await _ddg_search(query, max_results)
     return {"query": query, "provider": provider, "results": results}
 
 
@@ -334,7 +410,7 @@ def _register_defaults() -> None:
         ToolDefinition(
             name="web_search",
             version="v1",
-            description="Search the public web (DuckDuckGo Lite + HTML fallback) and return structured results.",
+            description="Search the public web (Brave Search primary, DuckDuckGo fallback) and return structured results.",
             input_schema=TOOL_SCHEMAS["web_search"]["input"],
             output_schema=TOOL_SCHEMAS["web_search"]["output"],
             handler=web_search_handler,

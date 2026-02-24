@@ -143,7 +143,22 @@ def tier0_classify(text: str) -> Tier0RuleResult:
     if result.matched:
         return result
     
-    # 4h. Check graduated confidence rules (v2.2 — Cost Optimisation Phase 2)
+    # 4h-pre. Check deep research trigger (v2.1) — BEFORE web search
+    result = check_deep_research_trigger(text_stripped)
+    if result.matched:
+        return result
+    
+    # 4h-pre1. Check web search trigger (v2.1)
+    result = check_web_search_trigger(text_stripped)
+    if result.matched:
+        return result
+    
+    # 4h-pre2. Check memory ingest/store trigger (v2.1)
+    result = check_memory_trigger(text_stripped)
+    if result.matched:
+        return result
+    
+    # 4i. Check graduated confidence rules (v2.2 — Cost Optimisation Phase 2)
     result = _check_graduated_rules(text_stripped)
     if result.matched:
         return result
@@ -789,6 +804,21 @@ from app.translation._tier0_codebase_questions import (  # noqa: E402
     check_rag_codebase_query,
     check_natural_codebase_question,
     CODEBASE_GUARD_KEYWORDS,
+)
+
+# =============================================================================
+# EXTRACTED TO _tier0_web_search.py (v2.1 — Web Search)
+# =============================================================================
+from app.translation._tier0_web_search import (  # noqa: E402
+    check_web_search_trigger,
+    check_deep_research_trigger,
+)
+
+# =============================================================================
+# EXTRACTED TO _tier0_memory_ingest.py (v2.1 — Memory Ingest/Store)
+# =============================================================================
+from app.translation._tier0_memory_ingest import (  # noqa: E402
+    check_memory_trigger,
 )
 
 

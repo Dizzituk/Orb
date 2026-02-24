@@ -63,6 +63,10 @@ from .handler_registry import (
     generate_embeddings_stream,
     _REFACTOR_AVAILABLE,
     generate_refactor_stream,
+    _WEB_SEARCH_STREAM_AVAILABLE,
+    generate_web_search_stream,
+    _DEEP_RESEARCH_STREAM_AVAILABLE,
+    generate_deep_research_stream,
     StageTrace,
     get_env_model_audit,
     log_handler_availability,
@@ -471,6 +475,116 @@ def handle_command_execution(
             error_msg = _make_unavailable_error("Latest Codebase Report Handler", "app/llm/local_tools/zobie_tools.py")
             return StreamingResponse(
                 create_error_stream("Latest codebase report handler not available", error_msg),
+                media_type="text/event-stream",
+                headers=sse_headers,
+            )
+    
+    # --- Memory Ingest (v2.1) ---
+    if intent == CanonicalIntent.MEMORY_INGEST:
+        # Route to Weaver — it will detect the file context and run the ingest pipeline
+        if _WEAVER_AVAILABLE:
+            if stage_trace:
+                stage_trace.enter_stage("memory_ingest", provider="local", model="ingest_pipeline")
+            return StreamingResponse(
+                generate_weaver_stream(
+                    project_id=req.project_id,
+                    message=req.message,
+                    db=db,
+                    trace=trace,
+                    conversation_id=str(req.project_id),
+                ),
+                media_type="text/event-stream",
+                headers=sse_headers,
+            )
+        else:
+            error_msg = _make_unavailable_error("Memory Ingest Handler", "app/memory/ingest/pipeline.py")
+            return StreamingResponse(
+                create_error_stream("Memory ingest handler not available", error_msg),
+                media_type="text/event-stream",
+                headers=sse_headers,
+            )
+    
+    # --- Memory Store (v2.1) ---
+    if intent == CanonicalIntent.MEMORY_STORE:
+        # Route to Weaver — it will detect the preference/fact and store via capture hooks
+        if _WEAVER_AVAILABLE:
+            if stage_trace:
+                stage_trace.enter_stage("memory_store", provider="local", model="preference_capture")
+            return StreamingResponse(
+                generate_weaver_stream(
+                    project_id=req.project_id,
+                    message=req.message,
+                    db=db,
+                    trace=trace,
+                    conversation_id=str(req.project_id),
+                ),
+                media_type="text/event-stream",
+                headers=sse_headers,
+            )
+        else:
+            error_msg = _make_unavailable_error("Memory Store Handler", "app/memory/domains/preference_capture.py")
+            return StreamingResponse(
+                create_error_stream("Memory store handler not available", error_msg),
+                media_type="text/event-stream",
+                headers=sse_headers,
+            )
+    
+    # --- Deep Research (v2.1) ---
+    if intent == CanonicalIntent.DEEP_RESEARCH:
+        if _DEEP_RESEARCH_STREAM_AVAILABLE:
+            if stage_trace:
+                stage_trace.enter_stage("deep_research", provider="multi", model="deep_research_engine")
+            extracted_query = None
+            if hasattr(translation_result, 'extracted_context'):
+                extracted_query = translation_result.extracted_context.get('extracted_query')
+            return StreamingResponse(
+                generate_deep_research_stream(
+                    project_id=req.project_id,
+                    message=req.message,
+                    db=db,
+                    trace=trace,
+                    extracted_query=extracted_query,
+                ),
+                media_type="text/event-stream",
+                headers=sse_headers,
+            )
+        else:
+            log_routing_failure(stage_trace, "Deep research stream handler not available", "generate_deep_research_stream")
+            log_handler_availability()
+            error_msg = _make_unavailable_error("Deep Research Handler", "app/llm/deep_research_stream.py")
+            return StreamingResponse(
+                create_error_stream("Deep research handler not available", error_msg),
+                media_type="text/event-stream",
+                headers=sse_headers,
+            )
+    
+    # --- Web Search (v2.1) ---
+    if intent == CanonicalIntent.WEB_SEARCH:
+        if _WEB_SEARCH_STREAM_AVAILABLE:
+            if stage_trace:
+                stage_trace.enter_stage("web_search", provider="brave", model="web_search")
+            # Extract query from translation context if available
+            extracted_query = None
+            if hasattr(translation_result, 'extracted_context'):
+                extracted_query = translation_result.extracted_context.get('extracted_query')
+            return StreamingResponse(
+                generate_web_search_stream(
+                    project_id=req.project_id,
+                    message=req.message,
+                    db=db,
+                    trace=trace,
+                    extracted_query=extracted_query,
+                ),
+                media_type="text/event-stream",
+                headers=sse_headers,
+            )
+        else:
+            log_routing_failure(stage_trace, "Web search stream handler not available", "generate_web_search_stream")
+            log_handler_availability()
+            
+            error_msg = _make_unavailable_error("Web Search Handler", "app/llm/web_search_stream.py")
+            return StreamingResponse(
+                create_error_stream("Web search handler not available", error_msg),
                 media_type="text/event-stream",
                 headers=sse_headers,
             )
