@@ -136,6 +136,12 @@ def init_db():
     # v5.1: Import Settings models (API key management)
     from app.settings import models as settings_models  # noqa: F401
 
+    # v6.0: Import Investments models (portfolio snapshots)
+    from app.investments import models as investments_models  # noqa: F401
+
+    # v7.0: Import Finance models (accounting, tax, budgeting)
+    from app.finance import models as finance_models  # noqa: F401
+
     # v4.0: create_all with checkfirst=True (default) handles tables.
     # SQLite may raise OperationalError for pre-existing indexes.
     # We catch and log these rather than crashing startup.
@@ -246,3 +252,4 @@ def ensure_embedding_schema():
         ensure_embedding_schema()  # Before embedding operations
     """
     _migrate_arch_code_chunks_schema()
+

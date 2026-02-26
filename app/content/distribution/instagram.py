@@ -9,8 +9,11 @@ Handles:
 - Insights retrieval (engagement metrics)
 
 Requires: Instagram Business/Creator account linked to
-a Facebook Page. INSTAGRAM_ACCESS_TOKEN and INSTAGRAM_ACCOUNT_ID
-in .env.
+a Facebook Page. Uses META_ACCESS_TOKEN and META_APP_ID from
+the unified Meta credentials in settings.
+
+Falls back to legacy INSTAGRAM_ACCESS_TOKEN / INSTAGRAM_ACCOUNT_ID
+if Meta credentials are not yet configured.
 
 Note: Instagram Graph API requires app review for publishing
 permissions. Development mode works for testing with your own account.
@@ -25,14 +28,24 @@ GRAPH_API_URL = "https://graph.facebook.com/v19.0"
 
 
 def _get_config() -> Optional[Dict[str, str]]:
-    """Get Instagram API config from environment."""
-    token = os.getenv("INSTAGRAM_ACCESS_TOKEN")
-    account_id = os.getenv("INSTAGRAM_ACCOUNT_ID")
+    """
+    Get Instagram API config from environment.
+    Prefers unified Meta credentials, falls back to legacy Instagram vars.
+    """
+    # Prefer new unified Meta credentials
+    token = os.getenv("META_ACCESS_TOKEN")
+    account_id = os.getenv("META_APP_ID")
+
+    # Fall back to legacy env vars
+    if not token:
+        token = os.getenv("INSTAGRAM_ACCESS_TOKEN")
+    if not account_id:
+        account_id = os.getenv("INSTAGRAM_ACCOUNT_ID")
 
     if not token or not account_id:
         logger.warning(
-            "[instagram] Missing INSTAGRAM_ACCESS_TOKEN or "
-            "INSTAGRAM_ACCOUNT_ID in .env"
+            "[instagram] Missing META_ACCESS_TOKEN/META_APP_ID "
+            "(or legacy INSTAGRAM_ACCESS_TOKEN/INSTAGRAM_ACCOUNT_ID)"
         )
         return None
 
@@ -258,7 +271,12 @@ async def get_media_insights(
 
 def is_configured() -> bool:
     """Check if Instagram API credentials are available."""
-    return bool(
+    has_meta = bool(
+        os.getenv("META_ACCESS_TOKEN")
+        and os.getenv("META_APP_ID")
+    )
+    has_legacy = bool(
         os.getenv("INSTAGRAM_ACCESS_TOKEN")
         and os.getenv("INSTAGRAM_ACCOUNT_ID")
     )
+    return has_meta or has_legacy

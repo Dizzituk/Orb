@@ -206,7 +206,7 @@ async def _synthesize(text: str, voice_name: str, speed: float = 1.0) -> bytes:
         },
     }
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(
             f"{TTS_API_URL}?key={GOOGLE_API_KEY}",
             json=payload,

@@ -24,6 +24,7 @@ class StreamRequest(BaseModel):
     continue_job_id: Optional[str] = None
     job_state: Optional[str] = None
     confirmed_intent: Optional[str] = None  # v1.9: bypass translation for confirmed commands
+    extracted_query: Optional[str] = None     # v2.2: carry extracted search query through confirmation roundtrip
 
 _EXPLICIT_COMMAND_INTENTS = {
     CanonicalIntent.RUN_PIPELINE,  # v5.4: unified pipeline

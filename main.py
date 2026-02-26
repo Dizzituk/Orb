@@ -184,6 +184,28 @@ def on_startup():
     except Exception as e:
         print(f"[startup] Content pipeline seed skipped: {e}")
 
+    # v6.0: Start investments snapshot scheduler
+    try:
+        from app.investments.scheduler import start_scheduler as start_investments_scheduler
+        start_investments_scheduler()
+        print("[startup] Investments scheduler: [OK] 08:00 + 18:00 UK")
+    except Exception as e:
+        print(f"[startup] Investments scheduler: [WARN] {e}")
+
+    # v7.0: Seed finance data (categories, tax year, default goals)
+    try:
+        from app.finance.seed import seed_finance_data
+        from app.db import SessionLocal
+        _fdb = SessionLocal()
+        _fin_result = seed_finance_data(_fdb)
+        if _fin_result.get("categories_created", 0) > 0:
+            print(f"[startup] Finance: seeded {_fin_result['categories_created']} categories")
+        else:
+            print("[startup] Finance: [OK] data present")
+        _fdb.close()
+    except Exception as e:
+        print(f"[startup] Finance seed skipped: {e}")
+
     # v2.2: Confidence graduation — promote high-confidence Tier 1 → Tier 0
     try:
         from app.translation.confidence_graduation import run_graduation
@@ -219,6 +241,18 @@ app.include_router(content_distribution_router)
 # Settings (API key management)
 app.include_router(settings_router)
 
+# Investments dashboard (portfolio, crypto, snapshots)
+from app.investments.router import router as investments_router
+app.include_router(investments_router)
+
+# Investments chat (portfolio-aware LLM)
+from app.investments.chat_router import router as investments_chat_router
+app.include_router(investments_chat_router)
+
+# Finance / Accounting dashboard
+from app.finance.router import router as finance_router
+app.include_router(finance_router)
+
 # Refactored endpoints (chat, chat_with_attachments, direct_llm)
 app.include_router(endpoints_router)
 
@@ -231,6 +265,18 @@ try:
     app.include_router(cost_dashboard_router, tags=["Cost Dashboard"])
 except ImportError as e:
     print(f"[startup] Cost dashboard not available: {e}")
+
+# Debug Assistant (conversational debug agent)
+try:
+    from app.debug.debug_chat import router as debug_chat_router
+    app.include_router(
+        debug_chat_router,
+        tags=["Debug Assistant"],
+        dependencies=[Depends(require_auth)]
+    )
+    print("[startup] Debug Assistant: [OK] registered")
+except ImportError as e:
+    print(f"[startup] Debug Assistant not available: {e}")
 
 # Log introspection (read-only, requires auth)
 app.include_router(
@@ -314,3 +360,4 @@ def list_job_types(auth = Depends(require_auth)):
             for jt in JobType
         ]
     }
+

@@ -6,7 +6,10 @@ Receives a natural language query, runs it through the web search
 orchestrator (Brave primary, DuckDuckGo fallback), and streams
 the answer back as SSE events.
 
-v2.1 (2026-02): Initial implementation.
+v2.5 (2026-02): Saves user + assistant messages to history (persistence fix).
+v2.4 (2026-02): Sends sources as structured 'sources' event for rich rendering.
+v2.3 (2026-02): Shows actual synthesis model in metadata badge.
+v2.2 (2026-02): Fixed SSE event types to match frontend expectations.
 """
 from __future__ import annotations
 
@@ -19,6 +22,40 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 
+def _sse(event_type: str, **kwargs) -> str:
+    """Build an SSE data line with the given type and fields."""
+    payload = {"type": event_type, **kwargs}
+    return f"data: {json.dumps(payload)}\n\n"
+
+
+def _save_to_history(
+    db: Session,
+    project_id: int,
+    user_message: str,
+    assistant_content: str,
+    provider: str,
+    model: str,
+) -> None:
+    """Persist user + assistant messages so they survive reload."""
+    try:
+        from app.memory import service as mem_svc, schemas as mem_schemas
+        mem_svc.create_message(db, mem_schemas.MessageCreate(
+            project_id=project_id,
+            role="user",
+            content=user_message,
+            provider="local",
+        ))
+        mem_svc.create_message(db, mem_schemas.MessageCreate(
+            project_id=project_id,
+            role="assistant",
+            content=assistant_content,
+            provider=provider,
+            model=model,
+        ))
+    except Exception as e:
+        logger.warning("[web_search_stream] Failed to save history: %s", e)
+
+
 async def generate_web_search_stream(
     project_id: int,
     message: str,
@@ -26,81 +63,80 @@ async def generate_web_search_stream(
     trace: Optional[object] = None,
     extracted_query: Optional[str] = None,
 ) -> AsyncIterator[str]:
-    """
-    Stream web search results as SSE events.
+    """Stream web search results as SSE events."""
+    synth_provider = "brave"
+    synth_model = "web_search"
+    full_response = ""  # Accumulate for history
 
-    Args:
-        project_id: Current project ID.
-        message: The user's original message.
-        db: Database session.
-        trace: Optional stage trace.
-        extracted_query: Pre-extracted search query from Tier 0 rules.
-                         Falls back to the full message if not provided.
-    """
     try:
         from app.llm.web_search import (
             WebSearchRequest,
             search_and_answer,
         )
     except ImportError:
-        yield f"data: {json.dumps({'type': 'error', 'content': 'Web search module not available.'})}\n\n"
-        yield "data: [DONE]\n\n"
+        yield _sse("error", error="Web search module not available.")
+        yield _sse("done", provider=synth_provider, model=synth_model, total_length=0)
         return
 
     # Use the extracted query if available, otherwise use the full message
     query = (extracted_query or message).strip()
+    logger.info("[web_search_stream] extracted_query=%r, message=%r, using query=%r",
+                extracted_query, message[:60], query[:60])
     if not query:
-        yield f"data: {json.dumps({'type': 'error', 'content': 'No search query provided.'})}\n\n"
-        yield "data: [DONE]\n\n"
+        yield _sse("error", error="No search query provided.")
+        yield _sse("done", provider=synth_provider, model=synth_model, total_length=0)
         return
 
-    # Signal that we're searching
-    yield f"data: {json.dumps({'type': 'status', 'content': f'Searching the web for: {query}'})}\n\n"
+    # Initial metadata (shows while searching)
+    yield _sse("metadata", provider="brave", model="web_search")
+    yield _sse("token", content=f"\U0001f50d Searching the web for: {query}...\n\n")
 
     try:
         req = WebSearchRequest(query=query, max_results=5)
         result = await search_and_answer(req)
 
         if not result.ok:
-            error_msg = result.error or "Search failed"
-            yield f"data: {json.dumps({'type': 'error', 'content': f'Search failed: {error_msg}'})}\n\n"
-            yield "data: [DONE]\n\n"
+            yield _sse("error", error=f"Search failed: {result.error or 'Unknown error'}")
+            yield _sse("done", provider=synth_provider, model=synth_model, total_length=0)
             return
 
-        # Stream the answer
+        # Update to show the actual synthesis model in the badge
+        synth_provider = result.answer_provider or "openai"
+        synth_model = result.answer_model or "web_search"
+        yield _sse("metadata", provider=synth_provider, model=synth_model)
+
+        # Stream the LLM-synthesised answer
         if result.answer:
-            # Stream answer in chunks for a more responsive feel
-            answer = result.answer
+            full_response = result.answer
             chunk_size = 80
-            for i in range(0, len(answer), chunk_size):
-                chunk = answer[i:i + chunk_size]
-                yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
+            for i in range(0, len(result.answer), chunk_size):
+                yield _sse("token", content=result.answer[i:i + chunk_size])
 
-        # Append sources with credibility tags
+        # Send sources as structured data for rich frontend rendering
         if result.sources:
-            source_text = "\n\n---\n**Sources:**\n"
-            for i, src in enumerate(result.sources, 1):
-                cred = ""
-                if src.source_type and src.source_type != "unknown":
-                    cred = f" `{src.credibility_label}` · {src.source_type}"
-                source_text += f"\n[{i}] [{src.title}]({src.url}){cred}"
-            if result.missing_perspectives:
-                missing = ", ".join(result.missing_perspectives)
-                source_text += f"\n\n*Note: Results lack {missing} perspectives.*"
-            yield f"data: {json.dumps({'type': 'content', 'content': source_text})}\n\n"
-
-        # Provider + diversity info
-        provider = result.provider or "unknown"
-        meta = {
-            'provider': provider,
-            'source_count': len(result.sources),
-            'diversity_score': result.diversity_score,
-        }
-        yield f"data: {json.dumps({'type': 'metadata', 'content': json.dumps(meta)})}\n\n"
+            sources_data = []
+            source_lines = []
+            for src in result.sources:
+                sources_data.append({
+                    "title": src.title,
+                    "url": src.url,
+                    "snippet": src.snippet,
+                    "credibility_label": src.credibility_label,
+                    "source_type": src.source_type,
+                })
+                source_lines.append(f"[{src.title}]({src.url})")
+            yield _sse("sources", sources=sources_data,
+                        missing_perspectives=result.missing_perspectives or [])
+            # Append sources to saved content so history has them
+            if source_lines:
+                full_response += "\n\nSources: " + " | ".join(source_lines)
 
     except Exception as e:
         logger.exception("[web_search_stream] Failed: %s", e)
-        yield f"data: {json.dumps({'type': 'error', 'content': f'Search error: {str(e)}'})}\n\n"
+        yield _sse("error", error=f"Search error: {str(e)}")
 
-    yield "data: [DONE]\n\n"
+    # Save to history so messages persist across reloads
+    if full_response.strip():
+        _save_to_history(db, project_id, message, full_response, synth_provider, synth_model)
 
+    yield _sse("done", provider=synth_provider, model=synth_model, total_length=0)

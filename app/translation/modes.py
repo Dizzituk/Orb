@@ -3,6 +3,14 @@
 Mode classification for ASTRA Translation Layer.
 Every message must first be classified into Chat, Command-Capable, or Feedback.
 
+v2.1 (2026-02): Added web search + deep research patterns to IMPLICIT_COMMAND_PATTERNS
+  - Routes "check the web for X", "search online for X", "look up X",
+    "google X", "research X", "what's the latest on X" etc. to COMMAND_CAPABLE
+  - Without these, web search requests fell through to CHAT mode and
+    never reached tier0_classify → check_web_search_trigger
+  - Also routes deep research patterns: "deep dive", "investigate",
+    "thoroughly research", "dig into" etc.
+
 v1.6 (2026-01): Added READ file patterns to IMPLICIT_COMMAND_PATTERNS
   - Routes "what's written in <path>" to COMMAND_CAPABLE mode
   - Routes "read file <path>" to COMMAND_CAPABLE mode
@@ -201,10 +209,129 @@ IMPLICIT_COMMAND_PATTERNS = [
     # "what does <path> say/contain"
     # Match: "what does C:\file.txt contain"
     r"^[Ww]hat\s+does\s+[A-Za-z]:[/\\].+\s+(?:say|contain)",
+    
+    # =========================================================================
+    # Web search patterns (v2.1) — route to COMMAND so tier0 can resolve WEB_SEARCH
+    # Without these, web search requests fall through to CHAT mode and
+    # never reach tier0_classify → check_web_search_trigger.
+    # =========================================================================
+    
+    # "search the web/internet/online for X" / "search for X online"
+    r"^(?:(?:you\s+need\s+to|can\s+you|could\s+you|go\s+(?:and\s+)?|please|i\s+(?:need|want)\s+you\s+to)\s+)?search\s+(?:the\s+)?(?:web|internet|online)\s+(?:for\s+)?.+",
+    # "web search X" / "web search: X"
+    r"^web\s+search:?\s+.+",
+    # "look up X" / "look up X online"
+    r"^(?:(?:you\s+need\s+to|can\s+you|could\s+you|go\s+(?:and\s+)?|please|i\s+(?:need|want)\s+you\s+to)\s+)?look\s+up\s+.+",
+    # "google X" / "brave search X"
+    r"^(?:google|brave\s+search)\s+.+",
+    # "find out about X" / "find information on X"
+    r"^(?:(?:you\s+need\s+to|can\s+you|could\s+you|go\s+(?:and\s+)?|please|i\s+(?:need|want)\s+you\s+to)\s+)?find\s+(?:out\s+about|information\s+(?:on|about))\s+.+",
+    # "get me the latest on X" / "get the latest news on X"
+    r"^(?:(?:you\s+need\s+to|can\s+you|could\s+you|go\s+(?:and\s+)?|please|i\s+(?:need|want)\s+you\s+to)\s+)?get\s+(?:me\s+)?the\s+latest\s+.+",
+    # "what's the latest on X"
+    r"^what(?:'s|\s+is)\s+the\s+latest\s+.+",
+    # "research X" / "research X for me"
+    r"^(?:(?:you\s+need\s+to|can\s+you|could\s+you|go\s+(?:and\s+)?|please|i\s+(?:need|want)\s+you\s+to)\s+)?research\s+.+",
+    # "check online/the web for X" / "check the web for X"
+    r"^(?:(?:you\s+need\s+to|can\s+you|could\s+you|go\s+(?:and\s+)?|please|i\s+(?:need|want)\s+you\s+to)\s+)?check\s+(?:the\s+)?(?:web|internet|online)\s+(?:for\s+)?.+",
+    # "have a look online for X"
+    r"^(?:(?:you\s+need\s+to|can\s+you|could\s+you|go\s+(?:and\s+)?|please|i\s+(?:need|want)\s+you\s+to)\s+)?have\s+a\s+look\s+(?:online|on\s+the\s+(?:web|internet))\s+(?:for\s+)?.+",
+    # "search for X online/on the web"
+    r"^(?:(?:you\s+need\s+to|can\s+you|could\s+you|go\s+(?:and\s+)?|please|i\s+(?:need|want)\s+you\s+to)\s+)?search\s+for\s+.+\s+(?:online|on\s+the\s+(?:web|internet))$",
+    # "what's the current price/status of X" (contextual web search)
+    r"^what(?:'s|\s+is)\s+the\s+current\s+.+",
+    
+    # =========================================================================
+    # Deep research patterns (v2.1) — route to COMMAND so tier0 can resolve
+    # DEEP_RESEARCH intent for thorough multi-query searches.
+    # =========================================================================
+    
+    # "deep dive into X" / "deep search X" / "deep research X"
+    r"^(?:(?:you\s+need\s+to|can\s+you|could\s+you|go\s+(?:and\s+)?|please|i\s+(?:need|want)\s+you\s+to)\s+)?deep\s+(?:dive|search|research)\s+.+",
+    # "do a deep search/research on X"
+    r"^(?:(?:you\s+need\s+to|can\s+you|could\s+you|go\s+(?:and\s+)?|please|i\s+(?:need|want)\s+you\s+to)\s+)?do\s+(?:a\s+)?deep\s+(?:search|research|dive)\s+.+",
+    # "thoroughly research/investigate X"
+    r"^(?:(?:you\s+need\s+to|can\s+you|could\s+you|go\s+(?:and\s+)?|please|i\s+(?:need|want)\s+you\s+to)\s+)?thoroughly\s+(?:research|look\s+into|investigate|search\s+for)\s+.+",
+    # "investigate X"
+    r"^(?:(?:you\s+need\s+to|can\s+you|could\s+you|go\s+(?:and\s+)?|please|i\s+(?:need|want)\s+you\s+to)\s+)?investigate\s+.+",
+    # "I need a full/complete/detailed breakdown/analysis of X"
+    r"^(?:i\s+need|give\s+me)\s+(?:a\s+)?(?:full|complete|comprehensive|detailed)\s+(?:breakdown|analysis|overview|report|summary)\s+(?:of|on|about)\s+.+",
+    # "dig into X" / "dig deeper into X"
+    r"^(?:(?:you\s+need\s+to|can\s+you|could\s+you|go\s+(?:and\s+)?|please|i\s+(?:need|want)\s+you\s+to)\s+)?dig\s+(?:deeper?\s+)?into\s+.+",
+    # "research X thoroughly/in depth"
+    r"^(?:(?:you\s+need\s+to|can\s+you|could\s+you|go\s+(?:and\s+)?|please|i\s+(?:need|want)\s+you\s+to)\s+)?research\s+.+\s+(?:thoroughly|in\s+depth|in\s+detail|deeply|comprehensively)$",
 ]
 
 # Compile patterns for efficiency
 _IMPLICIT_COMMAND_COMPILED = [re.compile(p) for p in IMPLICIT_COMMAND_PATTERNS]
+
+
+# =============================================================================
+# KEYWORD-BASED WEB SEARCH DETECTOR (v2.2)
+# =============================================================================
+# Regex patterns are brittle for natural language web search requests because
+# users phrase them in countless ways ("go online and find...", "find me the
+# latest...", "what's happening with AI today"). Instead of enumerating every
+# structure, detect web-search intent by co-occurrence of:
+#   1. A web-context keyword (online, web, internet, latest, news, today, etc.)
+#   2. An action verb (search, find, look, check, get, show, etc.)
+# Guard against false positives with codebase keywords.
+#
+# This function acts as a MODE GATE only — it enables COMMAND_CAPABLE so that
+# tier0_classify → check_web_search_trigger can run the precise intent matching.
+
+_WEB_CONTEXT_KEYWORDS = {
+    "online", "web", "internet", "latest", "news", "today",
+    "recent", "current", "trending", "happening", "updates",
+    "headlines", "google", "brave",
+}
+
+_WEB_ACTION_VERBS = {
+    "search", "find", "look", "check", "get", "fetch",
+    "show", "pull", "grab", "browse", "research",
+    "investigate", "discover",
+}
+
+_WEB_SEARCH_GUARD_WORDS = {
+    "codebase", "code base", "pipeline",
+    "specgate", "spec gate", "overwatcher", "weaver",
+    "sandbox", "endpoint", "router",
+    "handler", "fixture",
+}
+
+
+def _is_web_search_by_keywords(text: str) -> bool:
+    """Detect web search intent via keyword co-occurrence.
+    
+    Returns True if the message contains both a web-context keyword
+    AND an action verb, with no codebase guard words present.
+    This enables COMMAND_CAPABLE mode so tier0 web search rules can run.
+    
+    Guard uses whole-word matching to avoid substring false positives
+    (e.g. 'test' matching inside 'latest').
+    """
+    lower = text.lower()
+    words = set(re.findall(r'[a-z]+', lower))
+    
+    # Guard: if codebase keywords present (whole-word), not a web search
+    if words & _WEB_SEARCH_GUARD_WORDS:
+        return False
+    
+    has_context = bool(words & _WEB_CONTEXT_KEYWORDS)
+    has_action = bool(words & _WEB_ACTION_VERBS)
+    
+    # Strong web-context words that imply search even without an action verb
+    # e.g. "whats happening with AI today" or "latest AI news"
+    _STRONG_WEB_CONTEXT = {"news", "latest", "trending", "headlines", "happening", "updates"}
+    has_strong_context = bool(words & _STRONG_WEB_CONTEXT)
+    
+    # Match if: (context + action) OR (strong context alone with enough words)
+    if has_context and has_action:
+        return True
+    if has_strong_context and len(words) >= 4:
+        return True
+    
+    return False
 
 
 def _is_implicit_command(text: str) -> bool:
@@ -213,11 +340,19 @@ def _is_implicit_command(text: str) -> bool:
     v10.0 (Job 10A): Also checks natural codebase question patterns
     with guard keyword filtering so questions like "How many times
     does Orb appear in the codebase?" reach COMMAND mode → Tier 0.
+    
+    v2.2 (2026-02): Added keyword-based web search detection so
+    natural phrasings like "go online and find AI news" reach
+    COMMAND mode without needing an exact regex match.
     """
     stripped = text.strip()
     for pattern in _IMPLICIT_COMMAND_COMPILED:
         if pattern.match(stripped):
             return True
+    
+    # v2.2: Keyword-based web search detection (catches natural phrasings)
+    if _is_web_search_by_keywords(stripped):
+        return True
     
     # v10.0: Natural codebase questions (pattern + guard keyword)
     try:

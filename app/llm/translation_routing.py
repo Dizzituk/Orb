@@ -270,6 +270,19 @@ def intent_to_routing_info(intent: "CanonicalIntent") -> Optional[dict]:
             "model": "refactor-loop",
             "reason": "Translation layer: REFACTOR CODEBASE (deterministic)",
         },
+        # Web search & deep research (v2.1)
+        CanonicalIntent.WEB_SEARCH: {
+            "type": "local.web_search",
+            "provider": "brave",
+            "model": "web_search",
+            "reason": "Translation layer: WEB SEARCH",
+        },
+        CanonicalIntent.DEEP_RESEARCH: {
+            "type": "local.deep_research",
+            "provider": "multi",
+            "model": "deep_research_engine",
+            "reason": "Translation layer: DEEP RESEARCH",
+        },
     }
     return mapping.get(intent, None)
 

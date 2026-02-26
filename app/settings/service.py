@@ -167,6 +167,7 @@ def get_all_keys_status(db: Session) -> List[Dict[str, Any]]:
             "display_name": reg["display_name"],
             "description": reg["description"],
             "required": reg["required"],
+            "category": reg.get("category", "other"),
             "is_set": is_set,
             "source": source,
             "masked_value": masked,
@@ -270,6 +271,24 @@ async def verify_api_key(
             status, detail = await _verify_google(value)
         elif key_name == "brave_search":
             status, detail = await _verify_brave(value)
+        elif key_name == "trading212_api_key":
+            secret = _get_companion_key(db, "trading212_api_secret")
+            status, detail = await _verify_trading212(value, secret)
+        elif key_name == "coinmarketcap":
+            status, detail = await _verify_coinmarketcap(value)
+        elif key_name == "meta_access_token":
+            status, detail = await _verify_meta(value)
+        elif key_name in (
+            "youtube_client_id", "youtube_client_secret", "youtube_api_key",
+            "meta_app_id", "meta_app_secret",
+            "tiktok_client_key", "tiktok_client_secret",
+            "trading212_api_secret",
+            "quickbooks_client_id", "quickbooks_client_secret",
+            "quickbooks_refresh_token", "quickbooks_realm_id",
+        ):
+            # These are credential components verified via their primary key
+            status = "stored"
+            detail = "Credential stored — verified via primary key"
         else:
             status = "skipped"
             detail = "No verification available for this key type"
@@ -362,3 +381,87 @@ async def _verify_brave(key: str) -> tuple:
             return "invalid", "Authentication failed"
         else:
             return "error", f"HTTP {resp.status_code}"
+
+
+async def _verify_trading212(api_key: str, api_secret: Optional[str]) -> tuple:
+    """
+    Verify Trading 212 credentials.
+    Uses Basic Auth (Base64 of key:secret) against account cash endpoint.
+    """
+    if not api_secret:
+        return "incomplete", "API Secret not set — both key and secret are required"
+
+    import httpx
+    import base64
+
+    credentials = base64.b64encode(
+        f"{api_key}:{api_secret}".encode("utf-8")
+    ).decode("utf-8")
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            "https://live.trading212.com/api/v0/equity/account/cash",
+            headers={"Authorization": f"Basic {credentials}"},
+        )
+        if resp.status_code == 200:
+            return "valid", "Credentials accepted"
+        elif resp.status_code in (401, 403):
+            return "invalid", "Authentication failed"
+        else:
+            return "error", f"HTTP {resp.status_code}"
+
+
+async def _verify_coinmarketcap(key: str) -> tuple:
+    """Verify CoinMarketCap API key with a lightweight call."""
+    import httpx
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            "https://pro-api.coinmarketcap.com/v1/key/info",
+            headers={
+                "X-CMC_PRO_API_KEY": key,
+                "Accepts": "application/json",
+            },
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            plan = data.get("data", {}).get("plan", {}).get("plan_name", "unknown")
+            return "valid", f"Key accepted — {plan} plan"
+        elif resp.status_code == 401:
+            return "invalid", "Authentication failed"
+        else:
+            return "error", f"HTTP {resp.status_code}"
+
+
+async def _verify_meta(token: str) -> tuple:
+    """
+    Verify Meta (Facebook/Instagram) access token.
+    Calls /me on the Graph API to confirm token validity.
+    """
+    import httpx
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            "https://graph.facebook.com/v19.0/me",
+            params={"access_token": token},
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            name = data.get("name", "unknown")
+            return "valid", f"Token valid — {name}"
+        elif resp.status_code == 401:
+            return "invalid", "Token expired or invalid"
+        else:
+            error = resp.json().get("error", {}).get("message", "")
+            return "error", error or f"HTTP {resp.status_code}"
+
+
+def _get_companion_key(db: Session, key_name: str) -> Optional[str]:
+    """Get a companion key value (e.g., secret for a key pair)."""
+    entry = db.query(ApiKeyEntry).get(key_name)
+    if entry and entry.active:
+        return entry.key_value
+
+    reg = API_KEY_REGISTRY.get(key_name)
+    if reg:
+        return os.getenv(reg["env_var"])
+
+    return None

@@ -178,19 +178,28 @@ _CONTEXTUAL_PATTERNS = [
 
 
 # Keywords that indicate the user is asking about the codebase, not the web.
-_CODEBASE_GUARD_WORDS = {
-    "codebase", "code base", "orb", "astra", "pipeline",
-    "specgate", "spec gate", "overwatcher", "weaver",
-    "sandbox", "file", "module", "function", "class",
-    "import", "refactor", "component", "endpoint",
-    "router", "handler", "test", "fixture",
+# Single-word guards use whole-word matching; multi-word guards use substring.
+_CODEBASE_GUARD_WORDS_SINGLE = {
+    "codebase", "pipeline", "specgate", "overwatcher", "weaver",
+    "sandbox", "module", "function", "endpoint",
+    "router", "handler", "fixture", "refactor",
+}
+_CODEBASE_GUARD_WORDS_MULTI = {
+    "code base", "spec gate",
 }
 
 
 def _has_codebase_keywords(text: str) -> bool:
-    """Check if text contains codebase-related keywords."""
+    """Check if text contains codebase-related keywords.
+    
+    Uses whole-word matching for single words to avoid substring
+    false positives (e.g. 'test' matching inside 'latest').
+    """
     lower = text.lower()
-    return any(kw in lower for kw in _CODEBASE_GUARD_WORDS)
+    words = set(re.findall(r'[a-z]+', lower))
+    if words & _CODEBASE_GUARD_WORDS_SINGLE:
+        return True
+    return any(mg in lower for mg in _CODEBASE_GUARD_WORDS_MULTI)
 
 
 
@@ -242,6 +251,73 @@ _DEEP_RESEARCH_PATTERNS = [
         re.IGNORECASE,
     ), "dig_into", 1),
 ]
+
+
+# =========================================================================
+# Keyword-based query extraction (v2.2)
+# =========================================================================
+# When structural regex patterns fail to match natural language web search
+# requests, this fallback extracts a search query by:
+# 1. Checking for co-occurrence of web-context + action keywords
+# 2. Stripping out noise words (go, online, and, find, the, for, me, etc.)
+# 3. Returning the remaining content as the search query
+
+_WEB_NOISE_WORDS = {
+    "go", "online", "and", "the", "web", "internet", "for", "me",
+    "find", "search", "look", "up", "check", "get", "fetch",
+    "show", "pull", "grab", "browse", "discover",
+    "please", "can", "you", "could", "would", "need", "want",
+    "to", "i", "a", "some", "about", "on", "in", "at", "of",
+    "what", "is", "are", "there", "whats", "what's",
+}
+
+_KEYWORD_WEB_CONTEXT = {
+    "online", "web", "internet", "latest", "news", "today",
+    "recent", "current", "trending", "happening", "updates",
+    "headlines", "google", "brave",
+}
+
+_KEYWORD_ACTION_VERBS = {
+    "search", "find", "look", "check", "get", "fetch",
+    "show", "pull", "grab", "browse", "research",
+    "investigate", "discover", "happening",
+}
+
+
+def _extract_query_by_keywords(text: str) -> Optional[str]:
+    """Extract a web search query using keyword co-occurrence.
+    
+    Returns the cleaned query string if web-search intent is detected,
+    None otherwise. Intent requires both a web-context keyword AND
+    an action verb to be present.
+    """
+    lower = text.lower().strip().rstrip("?!.")
+    words = re.findall(r"[a-z']+", lower)
+    word_set = set(words)
+    
+    has_context = bool(word_set & _KEYWORD_WEB_CONTEXT)
+    has_action = bool(word_set & _KEYWORD_ACTION_VERBS)
+    
+    if not (has_context and has_action):
+        return None
+    
+    # Strip noise words, keep meaningful content
+    # Also keep words that are in context keywords if they're topical
+    # (e.g. "news" is both a context keyword and a valid query term)
+    topical_context = {"news", "latest", "updates", "headlines", "trending", "today"}
+    meaningful = []
+    for w in words:
+        if w in _WEB_NOISE_WORDS and w not in topical_context:
+            continue
+        meaningful.append(w)
+    
+    query = " ".join(meaningful).strip()
+    
+    # Must have at least 2 chars of actual query content
+    if len(query) < 2:
+        return None
+    
+    return query
 
 
 def check_deep_research_trigger(text: str) -> Tier0RuleResult:
@@ -326,6 +402,22 @@ def check_web_search_trigger(text: str) -> Tier0RuleResult:
                             reason=f"Web search (contextual): {name}",
                             extracted_query=query,
                         )
+
+    # 3) Keyword-based fallback (v2.2)
+    # Catches natural phrasings like "go online and find AI news today"
+    # that don't match any structural regex. Uses keyword co-occurrence
+    # and extracts the query by stripping web/action words.
+    if not _has_codebase_keywords(text_stripped):
+        query = _extract_query_by_keywords(text_stripped)
+        if query:
+            return Tier0RuleResult(
+                matched=True,
+                intent=CanonicalIntent.WEB_SEARCH,
+                confidence=0.80,
+                rule_name="web_search_keyword_fallback",
+                reason="Web search (keyword co-occurrence fallback)",
+                extracted_query=query,
+            )
 
     return Tier0RuleResult(matched=False)
 

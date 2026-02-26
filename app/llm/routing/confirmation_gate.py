@@ -331,7 +331,10 @@ def should_confirm_intent_routing(
 # SSE helpers for chat UI
 # =========================================================================
 
-def format_confirmation_sse(req: ConfirmationRequest) -> str:
+def format_confirmation_sse(
+    req: ConfirmationRequest,
+    extracted_query: Optional[str] = None,
+) -> str:
     """Format a confirmation request as an SSE event for the chat UI."""
     payload = {
         "type": "confirmation_required",
@@ -346,6 +349,11 @@ def format_confirmation_sse(req: ConfirmationRequest) -> str:
         payload["proposed_model"] = req.proposed_model
     if req.proposed_intent:
         payload["proposed_intent"] = req.proposed_intent
+        # Frontend reads event.intent for the confirm button label
+        payload["intent"] = req.proposed_intent
+    # v2.2: Thread extracted query so frontend can send it back on confirm
+    if extracted_query:
+        payload["extracted_query"] = extracted_query
 
     return f"data: {json.dumps(payload)}\n\n"
 

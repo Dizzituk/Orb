@@ -23,10 +23,26 @@ def update_project(db: Session, project_id: int, data: schemas.ProjectUpdate) ->
     if not project:
         return None
     if data.name is not None:
+        # Deduplicate: if a project with this name already exists, append a suffix
+        from sqlalchemy.exc import IntegrityError
         project.name = data.name
     if data.description is not None:
         project.description = data.description
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        # Name collision — append number suffix to make unique
+        base_name = data.name if data.name else project.name
+        for i in range(2, 100):
+            candidate = f"{base_name} ({i})"
+            existing = db.query(models.Project).filter(
+                models.Project.name == candidate
+            ).first()
+            if not existing:
+                project.name = candidate
+                break
+        db.commit()
     db.refresh(project)
     return project
 

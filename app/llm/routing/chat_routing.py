@@ -136,8 +136,9 @@ def handle_chat_mode(
                 )
                 if confirm_req:
                     async def _confirm_stream():
+                        import json as _json
                         yield format_confirmation_sse(confirm_req)
-                        yield "data: [DONE]\n\n"
+                        yield f"data: {_json.dumps({'type': 'done', 'provider': 'local', 'model': 'confirmation_gate', 'total_length': 0})}\n\n"
                     return StreamingResponse(
                         _confirm_stream(),
                         media_type="text/event-stream",
@@ -162,8 +163,9 @@ def handle_chat_mode(
                 )
                 if confirm_req:
                     async def _confirm_stream():
+                        import json as _json
                         yield format_confirmation_sse(confirm_req)
-                        yield "data: [DONE]\n\n"
+                        yield f"data: {_json.dumps({'type': 'done', 'provider': 'local', 'model': 'confirmation_gate', 'total_length': 0})}\n\n"
                     return StreamingResponse(
                         _confirm_stream(),
                         media_type="text/event-stream",

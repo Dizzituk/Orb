@@ -163,6 +163,7 @@ class ToolExecutor:
         method: str = "GET",
         headers: Optional[dict[str, str]] = None,
         max_bytes: Optional[int] = None,
+        allow_any_domain: bool = False,
     ) -> dict:
         # Safety: scheme + domain
         parsed = urlparse(url)
@@ -177,7 +178,7 @@ class ToolExecutor:
                 "truncated": False,
                 "error": f"blocked scheme: {parsed.scheme}",
             }
-        if not self._domain_allowed(url):
+        if not allow_any_domain and not self._domain_allowed(url):
             return {
                 "ok": False,
                 "url": url,

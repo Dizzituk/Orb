@@ -160,12 +160,17 @@ async def stream_chat(
             from app.translation.schemas import (
                 TranslationResult, ConfirmationGateResult, LatencyTier,
             )
+            # v2.2: Thread extracted_query from frontend confirm roundtrip
+            _extracted_ctx = {}
+            if req.extracted_query:
+                _extracted_ctx['extracted_query'] = req.extracted_query
             translation_result = TranslationResult(
                 original_text=req.message,
                 mode=TranslationMode.COMMAND_CAPABLE,
                 resolved_intent=direct_intent,
                 intent_confidence=1.0,
                 latency_tier=LatencyTier.TIER_0_RULES,
+                extracted_context=_extracted_ctx,
                 confirmation_gate=ConfirmationGateResult(
                     gate_name="confirmation",
                     passed=True,
@@ -307,10 +312,13 @@ async def stream_chat(
                             message=req.message,
                         )
                         if confirm_req:
+                            # v2.2: Thread extracted_query so frontend can send it back
+                            _eq = translation_result.extracted_context.get('extracted_query')
                             # Emit confirmation event and wait for user response
-                            async def _confirm_stream():
-                                yield format_confirmation_sse(confirm_req)
-                                yield "data: [DONE]\n\n"
+                            async def _confirm_stream(_eq=_eq):
+                                yield format_confirmation_sse(confirm_req, extracted_query=_eq)
+                                import json as _json
+                                yield f"data: {_json.dumps({'type': 'done', 'provider': 'local', 'model': 'confirmation_gate', 'total_length': 0})}\n\n"
                             return StreamingResponse(
                                 _confirm_stream(),
                                 media_type="text/event-stream",

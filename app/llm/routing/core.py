@@ -184,9 +184,9 @@ from app.llm.pipeline.high_stakes import (
     is_opus_model,
     HIGH_STAKES_JOB_TYPES,
     MIN_CRITIQUE_CHARS,
-    GEMINI_CRITIC_MODEL,
     run_high_stakes_with_critique,
 )
+from app.llm.pipeline.critique import GEMINI_CRITIC_MODEL
 from app.llm.routing.job_routing import (
     classify_and_route,
     inject_file_map_into_messages,

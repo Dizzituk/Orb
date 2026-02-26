@@ -243,7 +243,20 @@ def _parse_ddg_html(page: str, max_results: int) -> list[dict]:
 # -------------------------
 
 def _get_brave_api_key() -> Optional[str]:
-    """Return Brave Search API key if configured."""
+    """Return Brave Search API key — checks DB first, then env."""
+    try:
+        from app.settings.service import get_key_value
+        from app.db import SessionLocal
+        db = SessionLocal()
+        try:
+            val = get_key_value(db, "brave_search")
+            if val:
+                return val.strip()
+        finally:
+            db.close()
+    except Exception:
+        pass
+    # Fallback to env
     key = (os.getenv("BRAVE_SEARCH_API_KEY") or "").strip()
     return key if key else None
 

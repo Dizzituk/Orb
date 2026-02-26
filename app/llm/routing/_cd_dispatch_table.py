@@ -230,7 +230,6 @@ def build_dispatch_table(registry: Any) -> List[Dict[str, Any]]:
             "handler_kwargs_fn": lambda req, tr: {
                 "extracted_query": (tr.extracted_context.get('extracted_query') if hasattr(tr, 'extracted_context') else None),
             },
-            "skip_message": True,
             "error_name": "Deep Research Handler",
             "error_module": "app/llm/deep_research_stream.py",
         },
@@ -244,7 +243,6 @@ def build_dispatch_table(registry: Any) -> List[Dict[str, Any]]:
             "handler_kwargs_fn": lambda req, tr: {
                 "extracted_query": (tr.extracted_context.get('extracted_query') if hasattr(tr, 'extracted_context') else None),
             },
-            "skip_message": True,
             "error_name": "Web Search Handler",
             "error_module": "app/llm/web_search_stream.py",
         },
