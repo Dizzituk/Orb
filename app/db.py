@@ -142,6 +142,9 @@ def init_db():
     # v7.0: Import Finance models (accounting, tax, budgeting)
     from app.finance import models as finance_models  # noqa: F401
 
+    # v8.0: Import Lifestyle Engine models (weight, nutrition, workouts, goals)
+    from app.lifestyle import models as lifestyle_models  # noqa: F401
+
     # v4.0: create_all with checkfirst=True (default) handles tables.
     # SQLite may raise OperationalError for pre-existing indexes.
     # We catch and log these rather than crashing startup.
@@ -252,4 +255,6 @@ def ensure_embedding_schema():
         ensure_embedding_schema()  # Before embedding operations
     """
     _migrate_arch_code_chunks_schema()
+
+
 

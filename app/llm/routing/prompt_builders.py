@@ -1,4 +1,4 @@
-# FILE: app/llm/routing/prompt_builders.py
+﻿# FILE: app/llm/routing/prompt_builders.py
 """
 System prompt and message builders for stream routing.
 
@@ -189,16 +189,105 @@ def _detect_requested_sections(user_text: str, sections: List[Dict]) -> List[Dic
 # CORE PROMPT BUILDERS
 # =============================================================================
 
-def build_system_prompt(project: Any, full_context: str) -> str:
+# =============================================================================
+# UI CONTEXT DESCRIPTIONS — Injected into system prompt so the LLM knows
+# which tab/view the user is currently looking at.
+# =============================================================================
+
+_UI_CONTEXT_DESCRIPTIONS: dict[str, str] = {
+    "investments": (
+        "The user is currently viewing the INVESTMENTS dashboard. "
+        "This tab shows their live portfolio positions, allocation chart, growth history, "
+        "and curated news feed. The data is RIGHT THERE on their screen. "
+        "CRITICAL: If they ask about investments, ANSWER DIRECTLY using portfolio data "
+        "provided below. Do NOT ask them to paste holdings, confirm formats, choose "
+        "metrics, or pick time windows. Just answer with the data you have. "
+        "If data is missing from context, say so briefly and offer to check."
+    ),
+    "accounts": (
+        "The user is currently viewing the ACCOUNTS / FINANCE tab. "
+        "This shows bank transactions, spending categories, tax summaries, "
+        "and QuickBooks integration. Answer finance questions directly."
+    ),
+    "content": (
+        "The user is currently viewing the CONTENT tab. "
+        "This is the content creation pipeline — style references, video creation, "
+        "image creation, blog creation, and content output/publishing. "
+        "They may be inside a specific content project workspace."
+    ),
+    "debug": (
+        "The user is currently viewing the DEBUG tab. "
+        "This provides direct conversational access to the codebase, logs, "
+        "pipeline state, and diagnostic tools. Respond technically."
+    ),
+    "project_builds": (
+        "The user is currently viewing the PROJECT BUILDS tab. "
+        "This is where ASTRA's build pipeline runs — Weaver, SpecGate, "
+        "Critical Pipeline, Overwatcher, Implementer. They may be looking "
+        "at build progress, specs, or architecture for a specific project."
+    ),
+    "health_fitness": (
+        "The user is currently viewing the HEALTH & FITNESS tab. "
+        "This covers workout programming, nutrition, and progress tracking."
+    ),
+    "social_media": (
+        "The user is currently viewing the SOCIAL MEDIA tab. "
+        "This covers scheduling, analytics, cross-platform posting."
+    ),
+    "website": (
+        "The user is currently viewing the WEBSITE tab. "
+        "This covers the client-facing website builder and CMS."
+    ),
+    "education": (
+        "The user is currently viewing the EDUCATION tab. "
+        "This covers learning paths, course tracking, skill development."
+    ),
+    "settings": (
+        "The user is currently viewing the SETTINGS page. "
+        "They may have questions about API keys, voice settings, or configuration."
+    ),
+}
+
+
+def _build_ui_context_block(ui_context: Any) -> str:
+    """Build a system prompt section describing the user's current UI context."""
+    if ui_context is None:
+        return ""
+
+    view_type = getattr(ui_context, 'view_type', None)
+    job_type = getattr(ui_context, 'job_type', None)
+    label = getattr(ui_context, 'label', None)
+
+    if view_type == 'job' and job_type:
+        desc = _UI_CONTEXT_DESCRIPTIONS.get(job_type, "")
+        block = f"\n\n## CURRENT UI CONTEXT\nThe user is in the '{label or job_type}' tab."
+        if desc:
+            block += f"\n{desc}"
+        block += (
+            "\nRespond with awareness of what they can see on screen. "
+            "Reference data and features available in this tab directly — "
+            "do not ask the user to provide information that the tab already shows."
+        )
+        return block
+    elif view_type == 'settings':
+        desc = _UI_CONTEXT_DESCRIPTIONS.get('settings', '')
+        return f"\n\n## CURRENT UI CONTEXT\n{desc}"
+    else:
+        return ""
+
+
+def build_system_prompt(project: Any, full_context: str, ui_context: Any = None) -> str:
     """
     Build system prompt with project context and ASTRA capability layer.
     
     v4.9: Injects capability layer at the top of every system prompt.
     v5.0: Adds conversational guidelines to prevent code dumping.
+    v6.0: Injects UI context from Universal Chat Panel.
     
     Args:
         project: Project ORM object with name and description
         full_context: Pre-built context string (semantic, documents, etc.)
+        ui_context: Optional UIContext from chat panel (which tab user is viewing)
     
     Returns:
         Complete system prompt string
@@ -220,6 +309,11 @@ def build_system_prompt(project: Any, full_context: str) -> str:
     
     # v5.0: Add conversational guidelines
     system_prompt += _CONVERSATIONAL_GUIDELINES
+    
+    # v6.0: Inject UI context from Universal Chat Panel
+    ui_block = _build_ui_context_block(ui_context)
+    if ui_block:
+        system_prompt += ui_block
     
     # Combine: capabilities first, then project context
     if capability_layer:

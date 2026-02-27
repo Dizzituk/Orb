@@ -119,60 +119,71 @@ def handle_chat_mode(
         # multimodal  → Gemini 3.1 Pro   (images, video, multi-attachment)
         # lookup      → GPT-5 Mini       (factual, memory, simple questions)
         # ping_pong   → GPT-5 Mini       (greetings, acknowledgements)
+        # v6.0: Chat panel requests (with ui_context) skip the confirmation gate.
+        # The user explicitly asked a question — no ambiguity about intent.
+        # Main chat window can still get gated once its UI is wired up.
+        _skip_confirm = getattr(req, 'ui_context', None) is not None
+
         if complexity.tier == "deep":
             provider = "anthropic"
             model = "claude-opus-4-6"
-            print(f"[CHAT_MODE] Complexity UPGRADE: deep → Opus")
-            # v2.1: Model escalation confirmation gate
-            try:
-                from app.llm.routing.confirmation_gate import (
-                    should_confirm_model_escalation,
-                    format_confirmation_sse,
-                )
-                confirm_req = should_confirm_model_escalation(
-                    from_tier="lookup", to_tier="deep",
-                    confidence=complexity.confidence,
-                    message=req.message,
-                )
-                if confirm_req:
-                    async def _confirm_stream():
-                        import json as _json
-                        yield format_confirmation_sse(confirm_req)
-                        yield f"data: {_json.dumps({'type': 'done', 'provider': 'local', 'model': 'confirmation_gate', 'total_length': 0})}\n\n"
-                    return StreamingResponse(
-                        _confirm_stream(),
-                        media_type="text/event-stream",
-                        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            print(f"[CHAT_MODE] Complexity UPGRADE: deep \u2192 Opus")
+            if not _skip_confirm:
+                # v2.1: Model escalation confirmation gate
+                try:
+                    from app.llm.routing.confirmation_gate import (
+                        should_confirm_model_escalation,
+                        format_confirmation_sse,
                     )
-            except ImportError:
-                pass
+                    confirm_req = should_confirm_model_escalation(
+                        from_tier="lookup", to_tier="deep",
+                        confidence=complexity.confidence,
+                        message=req.message,
+                    )
+                    if confirm_req:
+                        async def _confirm_stream():
+                            import json as _json
+                            yield format_confirmation_sse(confirm_req)
+                            yield f"data: {_json.dumps({'type': 'done', 'provider': 'local', 'model': 'confirmation_gate', 'total_length': 0})}\n\n"
+                        return StreamingResponse(
+                            _confirm_stream(),
+                            media_type="text/event-stream",
+                            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                        )
+                except ImportError:
+                    pass
+            else:
+                print(f"[CHAT_MODE] Confirmation gate skipped (chat panel request)")
         elif complexity.tier == "reasoning":
             provider = "openai"
             model = "gpt-5.2"
-            print(f"[CHAT_MODE] Complexity UPGRADE: reasoning → GPT-5.2")
-            # v2.1: Model escalation confirmation gate
-            try:
-                from app.llm.routing.confirmation_gate import (
-                    should_confirm_model_escalation,
-                    format_confirmation_sse,
-                )
-                confirm_req = should_confirm_model_escalation(
-                    from_tier="lookup", to_tier="reasoning",
-                    confidence=complexity.confidence,
-                    message=req.message,
-                )
-                if confirm_req:
-                    async def _confirm_stream():
-                        import json as _json
-                        yield format_confirmation_sse(confirm_req)
-                        yield f"data: {_json.dumps({'type': 'done', 'provider': 'local', 'model': 'confirmation_gate', 'total_length': 0})}\n\n"
-                    return StreamingResponse(
-                        _confirm_stream(),
-                        media_type="text/event-stream",
-                        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            print(f"[CHAT_MODE] Complexity UPGRADE: reasoning \u2192 GPT-5.2")
+            if not _skip_confirm:
+                # v2.1: Model escalation confirmation gate
+                try:
+                    from app.llm.routing.confirmation_gate import (
+                        should_confirm_model_escalation,
+                        format_confirmation_sse,
                     )
-            except ImportError:
-                pass
+                    confirm_req = should_confirm_model_escalation(
+                        from_tier="lookup", to_tier="reasoning",
+                        confidence=complexity.confidence,
+                        message=req.message,
+                    )
+                    if confirm_req:
+                        async def _confirm_stream():
+                            import json as _json
+                            yield format_confirmation_sse(confirm_req)
+                            yield f"data: {_json.dumps({'type': 'done', 'provider': 'local', 'model': 'confirmation_gate', 'total_length': 0})}\n\n"
+                        return StreamingResponse(
+                            _confirm_stream(),
+                            media_type="text/event-stream",
+                            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                        )
+                except ImportError:
+                    pass
+            else:
+                print(f"[CHAT_MODE] Confirmation gate skipped (chat panel request)")
         elif complexity.tier == "multimodal":
             # Route based on attachment count/type
             attachments = getattr(req, 'attachments', None) or []
@@ -209,16 +220,45 @@ def handle_chat_mode(
             provider = available
     
     # Build messages
-    messages = build_messages(
-        message=req.message,
-        project_id=req.project_id,
-        db=db,
-        include_history=req.include_history,
-        history_limit=req.history_limit,
-    )
+    # v6.0: If chat panel sent its own conversation history, use that instead of DB history.
+    # This prevents the panel from inheriting the main chat's conversation thread.
+    panel_hist = getattr(req, 'panel_history', None)
+    if panel_hist and isinstance(panel_hist, list) and len(panel_hist) > 0:
+        # Use panel's local history — already [{role, content}] format
+        messages = []
+        for entry in panel_hist[-20:]:  # Cap at 20 messages
+            role = entry.get('role', 'user')
+            content = entry.get('content', '')
+            if role in ('user', 'assistant') and content:
+                messages.append({'role': role, 'content': content})
+        messages.append({'role': 'user', 'content': req.message})
+        print(f"[CHAT_MODE] Using panel history: {len(messages)-1} prior messages + current")
+    else:
+        messages = build_messages(
+            message=req.message,
+            project_id=req.project_id,
+            db=db,
+            include_history=req.include_history,
+            history_limit=req.history_limit,
+        )
     
-    # Build system prompt (includes capability layer)
-    system_prompt = build_system_prompt(project, full_context)
+    # Build system prompt (includes capability layer + UI context)
+    ui_ctx = getattr(req, 'ui_context', None)
+    
+    # v6.0: Inject live tab data (e.g. portfolio positions) into context
+    if ui_ctx and getattr(ui_ctx, 'job_type', None):
+        try:
+            from app.llm.routing.ui_context_data import fetch_tab_data
+            tab_data = fetch_tab_data(ui_ctx.job_type, db)
+            if tab_data:
+                full_context += f"\n\n{tab_data}"
+                print(f"[CHAT_MODE] Tab data injected for {ui_ctx.job_type}: {len(tab_data)} chars")
+        except Exception as e:
+            print(f"[CHAT_MODE] Tab data injection failed: {e}")
+    
+    system_prompt = build_system_prompt(project, full_context, ui_context=ui_ctx)
+    if ui_ctx:
+        print(f"[CHAT_MODE] UI context injected: view={ui_ctx.view_type}, job={ui_ctx.job_type}, label={ui_ctx.label}")
     
     print(f"[CHAT_MODE] Calling generate_sse_stream: provider={provider}, model={model}, messages={len(messages)}")
     

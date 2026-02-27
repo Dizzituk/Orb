@@ -91,6 +91,24 @@ API_KEY_REGISTRY = {
         "url": "https://console.cloud.google.com/apis/credentials",
         "prefix_hint": "AI",
     },
+    "google_oauth_client_id": {
+        "display_name": "Google Drive OAuth Client ID",
+        "description": "OAuth Client ID for Google Drive access (Desktop app type). Create at console.cloud.google.com > Credentials",
+        "env_var": "GOOGLE_OAUTH_CLIENT_ID",
+        "required": False,
+        "category": "integrations",
+        "url": "https://console.cloud.google.com/apis/credentials",
+        "prefix_hint": "",
+    },
+    "google_oauth_client_secret": {
+        "display_name": "Google Drive OAuth Client Secret",
+        "description": "OAuth Client Secret for Google Drive access",
+        "env_var": "GOOGLE_OAUTH_CLIENT_SECRET",
+        "required": False,
+        "category": "integrations",
+        "url": "https://console.cloud.google.com/apis/credentials",
+        "prefix_hint": "",
+    },
     "meta_app_id": {
         "display_name": "Meta App ID",
         "description": "Meta Developer App ID — covers Facebook + Instagram via Graph API",
@@ -125,6 +143,15 @@ API_KEY_REGISTRY = {
         "required": False,
         "category": "social",
         "url": "https://developers.tiktok.com/",
+        "prefix_hint": "",
+    },
+    "facebook_page_id": {
+        "display_name": "Facebook Page ID",
+        "description": "Your Facebook Page ID — found in Page Settings > About. Required for publishing.",
+        "env_var": "FACEBOOK_PAGE_ID",
+        "required": False,
+        "category": "social",
+        "url": "https://www.facebook.com/settings/?tab=pages",
         "prefix_hint": "",
     },
     "tiktok_client_secret": {
@@ -229,3 +256,4 @@ class ApiKeyEntry(Base):
 
     created_at = Column(DateTime, default=_now)
     updated_at = Column(DateTime, default=_now, onupdate=_now)
+

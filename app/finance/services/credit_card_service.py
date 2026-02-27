@@ -277,3 +277,82 @@ def _get_tax_year(d: date) -> str:
     if d.month >= 4 and d.day >= 6 or d.month > 4:
         return f"{d.year}-{str(d.year + 1)[2:]}"
     return f"{d.year - 1}-{str(d.year)[2:]}"
+
+
+def import_parsed_transactions(
+    db: Session, card_id: int,
+    transactions: list,
+) -> CCImportSummary:
+    """Import pre-parsed transactions (from PDF parser) into the DB."""
+
+    card = db.query(CreditCard).get(card_id)
+    summary = CCImportSummary(card_name=card.name if card else "Unknown")
+
+    for tx in transactions:
+        summary.total_rows += 1
+        try:
+            # Skip credits/payments (these are payments TO the card)
+            if tx.is_credit:
+                continue
+
+            # Dedup
+            dedup = hashlib.md5(
+                f"{tx.transaction_date}{tx.amount}{tx.description[:50]}".encode()
+            ).hexdigest()
+
+            existing = db.query(CreditCardTransaction).filter(
+                CreditCardTransaction.dedup_hash == dedup,
+                CreditCardTransaction.card_id == card_id,
+            ).first()
+            if existing:
+                summary.duplicates += 1
+                continue
+
+            # Categorise
+            cat_result = categorise_transaction(db, tx.description, tx.amount)
+            scope = cat_result.expense_scope if cat_result else "unknown"
+            cat_id = None
+            auto_cat = False
+            if cat_result and cat_result.confidence >= 0.80:
+                cat_obj = db.query(ExpenseCategory).filter(
+                    ExpenseCategory.name == cat_result.category_name
+                ).first()
+                if cat_obj:
+                    cat_id = cat_obj.id
+                    auto_cat = True
+
+            tax_year = _get_tax_year(tx.transaction_date)
+
+            db_tx = CreditCardTransaction(
+                card_id=card_id,
+                transaction_date=tx.transaction_date,
+                description=tx.description,
+                amount=abs(tx.amount),
+                merchant_name=tx.description[:100],
+                category_id=cat_id,
+                expense_scope=scope,
+                is_tax_deductible=(scope == "business"),
+                user_confirmed=False,
+                tax_year=tax_year,
+                dedup_hash=dedup,
+            )
+            db.add(db_tx)
+            summary.imported += 1
+
+            if auto_cat:
+                summary.auto_categorised += 1
+            else:
+                summary.needs_review += 1
+
+            summary.total_spend += abs(tx.amount)
+            if scope == "business":
+                summary.business_total += abs(tx.amount)
+            elif scope == "personal":
+                summary.personal_total += abs(tx.amount)
+
+        except Exception as e:
+            logger.warning("[cc_pdf_import] Error: %s", e)
+            summary.errors += 1
+
+    db.commit()
+    return summary

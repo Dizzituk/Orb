@@ -8,6 +8,8 @@ and analytics feedback. All operations deterministic.
 Modules:
 - youtube: YouTube Data API v3 integration
 - instagram: Instagram Graph API integration
+- tiktok: TikTok Content Posting API integration
+- facebook: Facebook Graph API integration
 - scheduler: Publishing calendar and timing optimisation
 - analytics: Engagement metrics collection and feedback loop
 - publisher: Unified publishing interface across platforms

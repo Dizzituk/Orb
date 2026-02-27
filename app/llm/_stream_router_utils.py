@@ -11,6 +11,14 @@ logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 
 
+class UIContext(BaseModel):
+    """Context about which tab/view the user is currently viewing."""
+    view_type: Optional[str] = None       # 'chat' | 'settings' | 'job'
+    job_type: Optional[str] = None        # e.g. 'content', 'debug', 'project_builds'
+    workspace_id: Optional[str] = None    # e.g. content project UUID
+    label: Optional[str] = None           # human-readable label
+
+
 class StreamRequest(BaseModel):
     project_id: int
     message: str
@@ -25,6 +33,8 @@ class StreamRequest(BaseModel):
     job_state: Optional[str] = None
     confirmed_intent: Optional[str] = None  # v1.9: bypass translation for confirmed commands
     extracted_query: Optional[str] = None     # v2.2: carry extracted search query through confirmation roundtrip
+    ui_context: Optional[UIContext] = None    # v6.0: Universal Chat Panel — which tab/view the user is in
+    panel_history: Optional[list] = None         # v6.0: Chat panel's local conversation history [{role, content}]
 
 _EXPLICIT_COMMAND_INTENTS = {
     CanonicalIntent.RUN_PIPELINE,  # v5.4: unified pipeline

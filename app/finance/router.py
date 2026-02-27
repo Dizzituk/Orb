@@ -10,6 +10,7 @@ from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, HTTPException, UploadFile, File
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -19,6 +20,7 @@ from app.finance.services import finance_service
 from app.finance.models import (
     Transaction, DailyWorkLog, MileageLog,
     RecurringCost, SavingsGoal, ExpenseCategory,
+    CreditCardStatement,
 )
 
 logger = logging.getLogger(__name__)
@@ -319,6 +321,46 @@ async def ai_analyse_transaction(data: dict):
     return result.__dict__
 
 
+# ─── Card Payment Linking ─────────────────────────────────
+
+@router.get("/card-splits")
+async def get_card_splits(db: Session = Depends(get_db)):
+    """Get business/personal split ratios for all credit cards."""
+    from app.finance.services.card_payment_linker import get_all_card_splits
+    splits = get_all_card_splits(db)
+    return [s.__dict__ for s in splits]
+
+
+@router.post("/card-payments/auto-link")
+async def auto_link_card_payments_endpoint(db: Session = Depends(get_db)):
+    """Scan NatWest transactions and auto-link credit card payments."""
+    from app.finance.services.card_payment_linker import auto_link_card_payments
+    linked = auto_link_card_payments(db)
+    return {
+        "linked_count": len(linked),
+        "payments": [l.__dict__ for l in linked],
+    }
+
+
+@router.post("/card-payments/{tx_id}/link/{card_id}")
+async def link_card_payment_endpoint(
+    tx_id: int, card_id: int, db: Session = Depends(get_db)
+):
+    """Manually link a NatWest transaction to a credit card."""
+    from app.finance.services.card_payment_linker import link_card_payment
+    result = link_card_payment(db, tx_id, card_id)
+    if not result:
+        from fastapi import HTTPException
+        raise HTTPException(404, "Transaction or card not found")
+    return result.__dict__
+
+
+@router.get("/card-payments/unlinked")
+async def get_unlinked_card_payments_endpoint(db: Session = Depends(get_db)):
+    """Find NatWest transactions that look like card payments but aren't linked."""
+    from app.finance.services.card_payment_linker import get_unlinked_card_payments
+    return get_unlinked_card_payments(db)
+
 @router.post("/tax/ai-check-conflicts")
 async def ai_check_conflicts(data: dict, db: Session = Depends(get_db)):
     """Check for mileage vs actual costs method conflicts."""
@@ -418,107 +460,6 @@ async def list_savings_goals(status: str = "active", db: Session = Depends(get_d
     return q.all()
 
 
-
-# ─── Credit Cards ────────────────────────────────────────
-
-@router.get("/credit-cards")
-async def list_credit_cards(db: Session = Depends(get_db)):
-    """List registered credit cards."""
-    from app.finance.models import CreditCard
-    return db.query(CreditCard).filter(CreditCard.is_active == True).all()
-
-
-@router.post("/credit-cards")
-async def create_credit_card(data: dict, db: Session = Depends(get_db)):
-    """Register a new credit card."""
-    from app.finance.services.credit_card_service import get_or_create_card
-    card = get_or_create_card(
-        db, data["name"],
-        provider=data.get("provider"),
-        last_four=data.get("last_four"),
-        natwest_description=data.get("natwest_description"),
-    )
-    return card
-
-
-@router.post("/credit-cards/{card_id}/import-csv")
-async def import_card_csv(
-    card_id: int,
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-):
-    """Import a credit card CSV statement."""
-    from app.finance.services.credit_card_service import import_credit_card_csv
-    from app.finance.models import CreditCard
-
-    card = db.query(CreditCard).get(card_id)
-    if not card:
-        raise HTTPException(404, "Card not found")
-
-    content = await file.read()
-    csv_text = content.decode("utf-8-sig")
-
-    result = import_credit_card_csv(db, csv_text, card.name)
-    return result.__dict__
-
-
-@router.get("/credit-cards/{card_id}/transactions")
-async def list_card_transactions(
-    card_id: int,
-    scope: Optional[str] = None,
-    page: int = 1,
-    per_page: int = 50,
-    db: Session = Depends(get_db),
-):
-    """List transactions for a credit card."""
-    from app.finance.services.credit_card_service import get_card_transactions
-    return get_card_transactions(db, card_id, scope, page, per_page)
-
-
-@router.get("/credit-cards/{card_id}/summary")
-async def card_summary(card_id: int, db: Session = Depends(get_db)):
-    """Get spending summary for a credit card."""
-    from app.finance.services.credit_card_service import get_card_summary
-    return get_card_summary(db, card_id)
-
-
-@router.post("/credit-cards/{card_id}/transactions/{tx_id}/scope")
-async def toggle_card_tx_scope(card_id: int, tx_id: int, data: dict, db: Session = Depends(get_db)):
-    """Toggle a credit card transaction between business/personal."""
-    from app.finance.models import CreditCardTransaction
-    tx = db.query(CreditCardTransaction).filter(
-        CreditCardTransaction.id == tx_id,
-        CreditCardTransaction.card_id == card_id,
-    ).first()
-    if not tx:
-        raise HTTPException(404, "Transaction not found")
-    new_scope = data.get("expense_scope", "personal")
-    tx.expense_scope = new_scope
-    tx.is_tax_deductible = (new_scope == "business")
-    tx.user_confirmed = True
-    db.commit()
-    return {"updated": True, "new_scope": new_scope}
-
-
-@router.post("/credit-cards/{card_id}/transactions/batch-scope")
-async def batch_card_scope(card_id: int, data: dict, db: Session = Depends(get_db)):
-    """Batch update scope for credit card transactions matching criteria."""
-    from app.finance.models import CreditCardTransaction
-    match_value = data.get("match_value", "")
-    new_scope = data.get("expense_scope", "personal")
-
-    matches = db.query(CreditCardTransaction).filter(
-        CreditCardTransaction.card_id == card_id,
-        CreditCardTransaction.description.ilike(f"%{match_value}%"),
-    ).all()
-
-    for tx in matches:
-        tx.expense_scope = new_scope
-        tx.is_tax_deductible = (new_scope == "business")
-        tx.user_confirmed = True
-    db.commit()
-
-    return {"updated": len(matches), "match_value": match_value, "new_scope": new_scope}
 
 # ─── CSV Import ──────────────────────────────────────────
 
@@ -639,10 +580,161 @@ async def confirm_categorisation(
         "match_count": pattern.match_count,
     }
 
+# ─── Van HP & Amortisation ───────────────────────────────────────
+
+@router.get("/van/summary")
+def get_van_summary(db: Session = Depends(get_db)):
+    """Get full van finance summary with HMRC guidance."""
+    from app.finance.services.van_finance_service import calculate_van_summary
+    import dataclasses
+
+    summary = calculate_van_summary(db)
+    if not summary:
+        raise HTTPException(404, "No active van finance record")
+    return dataclasses.asdict(summary)
 
 
+@router.get("/van/amortisation")
+def get_van_amortisation(db: Session = Depends(get_db)):
+    """Get full HP amortisation schedule showing interest/capital split per month."""
+    from app.finance.services.hp_amortisation_service import build_amortisation_schedule
+    from app.finance.services.van_finance_service import get_van_finance
+
+    van = get_van_finance(db)
+    if not van:
+        raise HTTPException(404, "No active van finance record")
+
+    schedule = build_amortisation_schedule(
+        finance_amount=van.finance_amount,
+        apr=van.apr,
+        monthly_payment=van.monthly_payment,
+        total_payments=van.total_payments,
+        first_payment_date=van.first_payment_date,
+    )
+
+    return {
+        "finance_amount": schedule.finance_amount,
+        "apr": schedule.apr,
+        "monthly_payment": schedule.monthly_payment,
+        "total_payments": schedule.total_payments,
+        "total_interest_accrued": schedule.total_interest_accrued,
+        "total_interest_paid": schedule.total_interest_paid,
+        "total_capital_repaid": schedule.total_capital_repaid,
+        "is_negative_amortisation": schedule.is_negative_amortisation,
+        "final_balance": schedule.final_balance,
+        "payments": [
+            {
+                "month": p.month_number,
+                "date": str(p.payment_date) if p.payment_date else None,
+                "interest_due": p.interest_due,
+                "interest_paid": p.interest_paid,
+                "unpaid_interest": p.unpaid_interest,
+                "capital": p.capital_portion,
+                "balance": p.closing_balance,
+            }
+            for p in schedule.payments
+        ],
+    }
 
 
+@router.post("/van/categorise-hp")
+def categorise_hp_payments(db: Session = Depends(get_db)):
+    """Categorise all Moneybarn transactions with interest/capital split."""
+    from app.finance.services.hp_amortisation_service import categorise_moneybarn_transactions
+    return categorise_moneybarn_transactions(db)
 
 
+@router.post("/van/categorise-expenses")
+def categorise_van_expenses(db: Session = Depends(get_db)):
+    """Auto-categorise van-related expenses (RAC, insurance, fuel, etc)."""
+    from app.finance.services.hp_amortisation_service import auto_categorise_van_expenses
+    return auto_categorise_van_expenses(db)
+
+
+@router.get("/van/tax-year-interest")
+def get_tax_year_interest(
+    tax_year: str = "2025/2026",
+    db: Session = Depends(get_db),
+):
+    """Get HP interest claimable for a specific tax year."""
+    from app.finance.services.hp_amortisation_service import (
+        build_amortisation_schedule,
+        get_tax_year_summary,
+    )
+    from app.finance.services.van_finance_service import get_van_finance
+    from datetime import date
+
+    van = get_van_finance(db)
+    if not van:
+        raise HTTPException(404, "No active van finance record")
+
+    # Parse tax year
+    parts = tax_year.split("/")
+    start_year = int(parts[0])
+    ty_start = date(start_year, 4, 6)
+    ty_end = date(start_year + 1, 4, 5)
+
+    schedule = build_amortisation_schedule(
+        finance_amount=van.finance_amount,
+        apr=van.apr,
+        monthly_payment=van.monthly_payment,
+        total_payments=van.total_payments,
+        first_payment_date=van.first_payment_date,
+    )
+
+    summary = get_tax_year_summary(schedule, ty_start, ty_end)
+    biz_pct = van.business_use_percentage / 100.0
+
+    summary["aia_claimable"] = round(van.purchase_price * biz_pct, 2)
+    summary["interest_claimable_amount"] = round(summary["interest_total"] * biz_pct, 2)
+    summary["business_use_pct"] = van.business_use_percentage
+    summary["cost_method"] = van.cost_method
+
+    return summary
+
+
+# ─── Tax Pack Export (PDF + XLSX) ─────────────────────────
+
+@router.get("/tax/export/pdf")
+async def export_tax_pdf(
+    tax_year: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Download tax cover sheet as PDF."""
+    from app.finance.services.tax_export_service import generate_tax_pdf
+    try:
+        pdf_bytes = generate_tax_pdf(db, tax_year)
+    except Exception as e:
+        logger.error("[finance] PDF export failed: %s", e, exc_info=True)
+        raise HTTPException(500, f"Failed to generate PDF: {e}")
+
+    ty = tax_year or "2025-26"
+    filename = f"tax_pack_{ty.replace('-', '_')}.pdf"
+    return StreamingResponse(
+        iter([pdf_bytes]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/tax/export/xlsx")
+async def export_tax_xlsx(
+    tax_year: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Download full accounting workbook as Excel."""
+    from app.finance.services.tax_export_service import generate_tax_xlsx
+    try:
+        xlsx_bytes = generate_tax_xlsx(db, tax_year)
+    except Exception as e:
+        logger.error("[finance] XLSX export failed: %s", e, exc_info=True)
+        raise HTTPException(500, f"Failed to generate XLSX: {e}")
+
+    ty = tax_year or "2025-26"
+    filename = f"tax_workbook_{ty.replace('-', '_')}.xlsx"
+    return StreamingResponse(
+        iter([xlsx_bytes]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 

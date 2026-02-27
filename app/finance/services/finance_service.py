@@ -111,6 +111,7 @@ def list_transactions(
             "auto_categorised": tx.auto_categorised,
             "user_confirmed": tx.user_confirmed,
             "tax_year": tx.tax_year,
+            "linked_card_id": tx.linked_card_id,
         }
         serialised.append(d)
     return {"items": serialised, "total": total, "page": page, "per_page": per_page}
@@ -201,9 +202,19 @@ def create_daily_log(db: Session, data: dict) -> DailyWorkLog:
 # ─── Tax Calculation ─────────────────────────────────────
 
 def calculate_tax_estimate(db: Session, tax_year: Optional[str] = None) -> dict:
-    """Calculate current tax position for the given tax year."""
+    """Calculate current tax position for the given tax year.
+
+    Cost-method-aware: checks van finance record to determine whether
+    to use mileage rates or actual vehicle running costs.
+    """
+    from app.finance.models import VanFinance
+    from app.finance.engines.vehicle_costs_engine import calculate_vehicle_costs
+
     ty = tax_year or get_current_tax_year()
     engine = HMRCTaxEngine()
+    config = TaxYearConfig()
+    today = date.today()
+    weeks = max(1, (today - config.start_date).days // 7)
 
     # Sum income
     income = db.query(func.coalesce(func.sum(Transaction.amount), 0.0)).filter(
@@ -212,43 +223,75 @@ def calculate_tax_estimate(db: Session, tax_year: Optional[str] = None) -> dict:
         Transaction.is_deleted == False,
     ).scalar()
 
-    # Sum deductible expenses
+    # Sum non-vehicle deductible expenses (phone, tools, clothing etc.)
     expenses = db.query(func.coalesce(func.sum(Transaction.deductible_amount), 0.0)).filter(
         Transaction.tax_year == ty,
         Transaction.is_tax_deductible == True,
         Transaction.is_deleted == False,
     ).scalar()
 
-    # Mileage
-    mileage_summary = db.query(MileageYearSummary).filter(MileageYearSummary.tax_year == ty).first()
-    miles = mileage_summary.total_business_miles if mileage_summary else 0.0
+    # Determine cost method from van finance record
+    van = db.query(VanFinance).filter(VanFinance.is_active == True).first()
+    cost_method = (van.cost_method if van else None) or "mileage"
 
-    # Weeks elapsed
-    config = TaxYearConfig()
-    today = date.today()
-    weeks = max(1, (today - config.start_date).days // 7)
+    # Mileage data (needed for both methods — tracking even if not claiming)
+    mileage_summary = db.query(MileageYearSummary).filter(
+        MileageYearSummary.tax_year == ty
+    ).first()
+    miles = mileage_summary.total_business_miles if mileage_summary else 0.0
 
     # Food allowance — count qualifying days (10+ hours)
     qualifying_days = db.query(func.count(DailyWorkLog.id)).filter(
         DailyWorkLog.tax_year == ty,
         DailyWorkLog.qualifies_food_allowance == True,
     ).scalar() or 0
-    food_allowance_total = qualifying_days * 10.0  # £10/day HMRC benchmark
+    food_allowance_total = qualifying_days * 10.0
 
-    # Home office — HMRC simplified flat rate (£6/week for any hours)
+    # Home office — HMRC simplified flat rate
     home_office_weekly = 6.0
     home_office_total = round(home_office_weekly * weeks, 2)
 
-    # Add these to expenses before calculating
-    total_with_missed = expenses + food_allowance_total + home_office_total
-    breakdown = engine.calculate_full(income, total_with_missed, miles, weeks)
+    vehicle_costs = None
+    mileage_deduction = 0.0
 
-    # Attach the deduction details to the breakdown for the frontend
+    if cost_method == "actual_costs":
+        # Actual costs: sum categorised vehicle expenses + AIA + HP interest
+        vehicle_costs = calculate_vehicle_costs(
+            db, config.start_date, config.end_date,
+        )
+        vehicle_deduction = vehicle_costs.total_deductible
+        # Don't double-count: remove vehicle expenses from general expenses
+        # (fuel, insurance etc. might be in both deductible_amount and vehicle costs)
+        non_vehicle_expenses = max(0, expenses - vehicle_costs.total_running_costs)
+        total_deductions = (
+            non_vehicle_expenses + vehicle_deduction +
+            food_allowance_total + home_office_total
+        )
+        # Calculate tax without mileage
+        breakdown = engine.calculate_full(income, total_deductions, 0.0, weeks)
+    else:
+        # Mileage method: flat rate covers ALL vehicle costs
+        total_with_allowances = expenses + food_allowance_total + home_office_total
+        breakdown = engine.calculate_full(income, total_with_allowances, miles, weeks)
+        mileage_deduction = breakdown.mileage_deduction
+
+    # Attach details for the frontend
     breakdown.food_allowance_days = qualifying_days
     breakdown.food_allowance_total = food_allowance_total
     breakdown.home_office_weekly = home_office_weekly
     breakdown.home_office_total = home_office_total
     breakdown.recorded_expenses = round(expenses, 2)
+    breakdown.total_business_miles = miles
+
+    # Attach cost method and vehicle breakdown
+    result = breakdown.__dict__
+    result["cost_method"] = cost_method
+    if vehicle_costs:
+        result["vehicle_costs"] = vehicle_costs.to_dict()
+        # Override mileage_deduction to 0 for actual costs
+        result["mileage_deduction"] = 0.0
+    else:
+        result["vehicle_costs"] = None
 
     # Update TaxYear record
     ty_record = db.query(TaxYear).filter(TaxYear.tax_year == ty).first()
@@ -264,7 +307,7 @@ def calculate_tax_estimate(db: Session, tax_year: Optional[str] = None) -> dict:
         ty_record.last_calculated = datetime.now(timezone.utc)
         db.commit()
 
-    return breakdown.__dict__
+    return result
 
 
 # ─── Dashboard ───────────────────────────────────────────
@@ -324,6 +367,7 @@ def get_dashboard_data(db: Session) -> dict:
         "recent_transactions": recent,
         "tax_year": tax_year,
     }
+
 
 
 

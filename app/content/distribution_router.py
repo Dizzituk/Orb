@@ -212,6 +212,8 @@ def platform_status():
     """Check which platform integrations are configured."""
     from app.content.distribution.youtube import is_configured as yt_configured
     from app.content.distribution.instagram import is_configured as ig_configured
+    from app.content.distribution.tiktok import is_configured as tt_configured
+    from app.content.distribution.facebook import is_configured as fb_configured
 
     return {
         "youtube": {
@@ -223,13 +225,11 @@ def platform_status():
             "capabilities": ["reel", "carousel", "insights"],
         },
         "tiktok": {
-            "configured": False,
-            "capabilities": [],
-            "note": "TikTok API integration pending",
+            "configured": tt_configured(),
+            "capabilities": ["upload", "insights", "comments"],
         },
         "facebook": {
-            "configured": False,
-            "capabilities": [],
-            "note": "Facebook Graph API integration pending",
+            "configured": fb_configured(),
+            "capabilities": ["video", "reel", "photo", "text", "insights", "comments"],
         },
     }

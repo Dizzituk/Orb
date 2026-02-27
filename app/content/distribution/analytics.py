@@ -72,6 +72,28 @@ async def pull_analytics_for_output(
                 "shares": raw.get("shares", 0),
             }
 
+    elif platform == "tiktok":
+        from app.content.distribution.tiktok import get_video_insights
+        raw = await get_video_insights(post_id)
+        if raw:
+            metrics = {
+                "views": raw.get("views", 0),
+                "likes": raw.get("likes", 0),
+                "comments": raw.get("comments", 0),
+                "shares": raw.get("shares", 0),
+            }
+
+    elif platform == "facebook":
+        from app.content.distribution.facebook import get_post_insights
+        raw = await get_post_insights(post_id)
+        if raw:
+            metrics = {
+                "views": raw.get("impressions", 0),
+                "likes": raw.get("likes", 0),
+                "comments": raw.get("comments", 0),
+                "shares": raw.get("shares", 0),
+            }
+
     if not metrics:
         return None
 

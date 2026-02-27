@@ -43,6 +43,15 @@ from app.content.router import router as content_router
 from app.content.scout_router import router as content_scout_router
 from app.content.production_router import router as content_production_router
 from app.content.distribution_router import router as content_distribution_router
+from app.content.project_router import router as content_project_router
+from app.content.style_router import router as content_style_router
+from app.content.item_router import router as content_item_router
+from app.content.stream_router import router as content_stream_router
+import app.content.project_models  # noqa: F401 — register Content Hub tables with Base
+from app.content.engagement.router import router as engagement_router
+import app.content.engagement.models  # noqa: F401 — register Engagement tables with Base
+from app.builds.router import router as builds_router
+import app.builds.models  # noqa: F401 — register Build Projects tables with Base
 from app.settings.router import router as settings_router
 
 # Import refactored endpoints
@@ -206,6 +215,20 @@ def on_startup():
     except Exception as e:
         print(f"[startup] Finance seed skipped: {e}")
 
+    # v8.0: Seed lifestyle data (default goals, targets)
+    try:
+        from app.lifestyle.seed import seed_lifestyle_data
+        from app.db import SessionLocal
+        _ldb = SessionLocal()
+        _life_result = seed_lifestyle_data(_ldb)
+        if _life_result.get("goals_created", 0) > 0:
+            print(f"[startup] Lifestyle: seeded {_life_result['goals_created']} default goals")
+        else:
+            print("[startup] Lifestyle: [OK] data present")
+        _ldb.close()
+    except Exception as e:
+        print(f"[startup] Lifestyle seed skipped: {e}")
+
     # v2.2: Confidence graduation — promote high-confidence Tier 1 → Tier 0
     try:
         from app.translation.confidence_graduation import run_graduation
@@ -238,6 +261,18 @@ app.include_router(content_scout_router)
 app.include_router(content_production_router)
 app.include_router(content_distribution_router)
 
+# Engagement (comment scanning, auto-response, flagging)
+app.include_router(engagement_router)
+
+# Content Hub (project management, style references, items, SSE)
+app.include_router(content_project_router)
+app.include_router(content_style_router)
+app.include_router(content_item_router)
+app.include_router(content_stream_router)
+
+# Project Builds (pipeline workspace — Weaver → SpecGate → Implementer)
+app.include_router(builds_router)
+
 # Settings (API key management)
 app.include_router(settings_router)
 
@@ -252,6 +287,22 @@ app.include_router(investments_chat_router)
 # Finance / Accounting dashboard
 from app.finance.router import router as finance_router
 app.include_router(finance_router)
+
+# Finance - Google Drive integration
+from app.finance.drive_router import router as finance_drive_router
+app.include_router(finance_drive_router)
+
+# Finance - Van & Budget
+from app.finance.budget_router import router as finance_budget_router
+app.include_router(finance_budget_router)
+
+# Finance - Credit Cards
+from app.finance.credit_card_router import router as finance_cc_router
+app.include_router(finance_cc_router)
+
+# Lifestyle Engine (health, fitness, nutrition, surf)
+from app.lifestyle.router import router as lifestyle_router
+app.include_router(lifestyle_router)
 
 # Refactored endpoints (chat, chat_with_attachments, direct_llm)
 app.include_router(endpoints_router)

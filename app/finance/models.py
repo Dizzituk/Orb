@@ -87,6 +87,9 @@ class Transaction(Base):
     hours_worked = Column(Float, nullable=True)
     route_info = Column(String(200), nullable=True)
 
+    # Credit card payment linkage
+    linked_card_id = Column(Integer, ForeignKey("finance_credit_cards.id"), nullable=True)
+
     # Tax tracking
     tax_year = Column(String(7), nullable=False)
     tax_quarter = Column(Integer, nullable=True)
@@ -170,6 +173,124 @@ class CreditCardTransaction(Base):
 
     card = relationship("CreditCard", back_populates="card_transactions")
     category = relationship("ExpenseCategory")
+
+
+
+class CreditCardStatement(Base):
+    """Monthly statement record for a credit card.
+    Tracks balances over time to build a running history.
+    """
+
+    __tablename__ = "finance_credit_card_statements"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    card_id = Column(Integer, ForeignKey("finance_credit_cards.id"), nullable=False)
+    statement_date = Column(Date, nullable=False)
+    period_start = Column(Date, nullable=True)
+    period_end = Column(Date, nullable=True)
+    opening_balance = Column(Float, default=0.0)
+    closing_balance = Column(Float, default=0.0)
+    total_charges = Column(Float, default=0.0)
+    total_payments = Column(Float, default=0.0)
+    interest_charged = Column(Float, default=0.0)
+    minimum_payment = Column(Float, nullable=True)
+    transactions_imported = Column(Integer, default=0)
+    source_filename = Column(String(300), nullable=True)
+    drive_file_id = Column(String(200), nullable=True)
+    created_at = Column(DateTime, default=_now)
+
+    card = relationship("CreditCard")
+
+
+class DriveWatchFolder(Base):
+    """Google Drive folder mapped to a credit card for auto-import."""
+
+    __tablename__ = "finance_drive_watch_folders"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    card_id = Column(Integer, ForeignKey("finance_credit_cards.id"), nullable=False)
+    drive_folder_id = Column(String(200), nullable=False)
+    folder_name = Column(String(200), nullable=True)
+    last_checked = Column(DateTime, nullable=True)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=_now)
+
+    card = relationship("CreditCard")
+
+
+class DriveProcessedFile(Base):
+    """Tracks which Drive files have already been imported."""
+
+    __tablename__ = "finance_drive_processed_files"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    drive_file_id = Column(String(200), nullable=False, unique=True)
+    drive_filename = Column(String(300), nullable=False)
+    card_id = Column(Integer, ForeignKey("finance_credit_cards.id"), nullable=False)
+    statement_id = Column(Integer, ForeignKey("finance_credit_card_statements.id"), nullable=True)
+    transactions_imported = Column(Integer, default=0)
+    processed_at = Column(DateTime, default=_now)
+    status = Column(String(20), default="success")  # success | failed | partial
+    error_message = Column(String(500), nullable=True)
+
+
+
+class VanFinance(Base):
+    """Van hire purchase / finance agreement tracking.
+    
+    HMRC rules (important):
+    - If using MILEAGE RATE method: van finance is ALREADY covered by 45p/25p.
+      Cannot claim capital allowance OR interest separately.
+    - If using ACTUAL COSTS method: can claim AIA (full cost in year 1) 
+      plus interest on HP (not capital repayment).
+    - Cannot mix methods. Must choose one for the tax year.
+    """
+
+    __tablename__ = "finance_van_finance"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    vehicle_description = Column(String(200), nullable=False)  # "2019 Ford Transit Custom"
+    purchase_price = Column(Float, nullable=False)              # Total cash price of van
+    deposit_paid = Column(Float, default=0.0)
+    finance_amount = Column(Float, nullable=False)              # Amount financed (price - deposit)
+    apr = Column(Float, nullable=False)                         # Annual percentage rate
+    monthly_payment = Column(Float, nullable=False)
+    total_payments = Column(Integer, nullable=False)            # Total number of monthly payments
+    payments_made = Column(Integer, default=0)
+    first_payment_date = Column(Date, nullable=False)
+    finance_provider = Column(String(100), nullable=True)       # "Moneybarn"
+    agreement_number = Column(String(100), nullable=True)
+    business_use_percentage = Column(Float, default=100.0)      # % used for business
+    mot_due_date = Column(Date, nullable=True)
+    road_tax_due_date = Column(Date, nullable=True)
+    road_tax_amount = Column(Float, nullable=True)
+    is_active = Column(Boolean, default=True)
+    cost_method = Column(String(20), default="mileage")         # mileage | actual_costs
+    created_at = Column(DateTime, default=_now)
+    updated_at = Column(DateTime, default=_now, onupdate=_now)
+
+
+class BudgetItem(Base):
+    """Personal budget line items — rent, food, subscriptions, fuel etc.
+    
+    These are NOT tax deductible business expenses.
+    They represent personal outgoings that reduce disposable income.
+    """
+
+    __tablename__ = "finance_budget_items"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False)                  # "Rent", "Food", "Netflix"
+    category = Column(String(50), nullable=False)               # housing | food | transport | subscriptions | utilities | other
+    amount = Column(Float, nullable=False)
+    frequency = Column(String(20), default="monthly")           # weekly | fortnightly | monthly | quarterly | annual
+    weekly_equivalent = Column(Float, nullable=True)            # auto-calculated
+    is_fixed = Column(Boolean, default=True)                    # Fixed cost vs variable
+    is_active = Column(Boolean, default=True)
+    notes = Column(String(300), nullable=True)
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime, default=_now)
+    updated_at = Column(DateTime, default=_now, onupdate=_now)
 
 # ─── Mileage ────────────────────────────────────────────
 
@@ -382,6 +503,8 @@ class DailyWorkLog(Base):
     created_at = Column(DateTime, default=_now)
     updated_at = Column(DateTime, default=_now, onupdate=_now)
     tax_year = Column(String(7), nullable=False)
+
+
 
 
 

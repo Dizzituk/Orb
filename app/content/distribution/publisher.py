@@ -46,6 +46,10 @@ async def publish_output(
             result = await _publish_to_youtube(output)
         elif platform == "instagram":
             result = await _publish_to_instagram(output)
+        elif platform == "tiktok":
+            result = await _publish_to_tiktok(output)
+        elif platform == "facebook":
+            result = await _publish_to_facebook(output)
         else:
             result = {
                 "status": "unsupported_platform",
@@ -152,6 +156,88 @@ async def _publish_to_instagram(output: ContentOutput) -> Dict[str, Any]:
         return {
             "status": "published",
             "post_id": result["media_id"],
+        }
+
+    return {"status": "error", "error": "Publish failed"}
+
+
+async def _publish_to_tiktok(output: ContentOutput) -> Dict[str, Any]:
+    """Publish to TikTok via Content Posting API."""
+    from app.content.distribution.tiktok import upload_video, is_configured
+
+    if not is_configured():
+        return {
+            "status": "not_configured",
+            "note": "TikTok API credentials not set in .env",
+        }
+
+    if not output.primary_asset_path:
+        return {"status": "error", "error": "No video file to upload"}
+
+    metadata = output.platform_metadata or {}
+    caption = output.caption_text or ""
+
+    result = await upload_video(
+        video_path=output.primary_asset_path,
+        caption=caption,
+        privacy=metadata.get("privacy", "SELF_ONLY"),
+        post_mode=metadata.get("post_mode", "DIRECT_POST"),
+    )
+
+    if result and result.get("publish_id"):
+        return {
+            "status": "published",
+            "post_id": result["publish_id"],
+        }
+
+    return {"status": "error", "error": "Upload failed"}
+
+
+async def _publish_to_facebook(output: ContentOutput) -> Dict[str, Any]:
+    """Publish to Facebook via Graph API."""
+    from app.content.distribution.facebook import (
+        publish_video, publish_photo, publish_text_post, is_configured,
+    )
+
+    if not is_configured():
+        return {
+            "status": "not_configured",
+            "note": "Facebook credentials not set in .env",
+        }
+
+    fmt = output.output_format
+    caption = output.caption_text or ""
+    metadata = output.platform_metadata or {}
+
+    if fmt == "facebook_video":
+        video_url = metadata.get("public_video_url")
+        if not video_url:
+            return {
+                "status": "error",
+                "error": "Video requires public_video_url in metadata",
+            }
+        result = await publish_video(
+            video_url=video_url,
+            description=caption,
+            title=metadata.get("title"),
+            as_reel=metadata.get("as_reel", True),
+        )
+    elif fmt in ("facebook_photo", "instagram_carousel"):
+        image_url = metadata.get("public_image_url")
+        if not image_url:
+            return {"status": "error", "error": "Photo requires public_image_url"}
+        result = await publish_photo(image_url, caption)
+    else:
+        # Default to text/link post
+        result = await publish_text_post(
+            message=caption,
+            link=metadata.get("link"),
+        )
+
+    if result and result.get("post_id"):
+        return {
+            "status": "published",
+            "post_id": result["post_id"],
         }
 
     return {"status": "error", "error": "Publish failed"}
