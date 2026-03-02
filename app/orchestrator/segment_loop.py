@@ -211,33 +211,6 @@ async def run_segment_through_pipeline(
     if gate_result is not None:
         return gate_result
 
-    # --- Step 2b: Scaffold Engine (deterministic code generation) ---
-    try:
-        from app.orchestrator.scaffold.integration import (
-            is_scaffold_enabled, run_scaffold_engine,
-        )
-        if is_scaffold_enabled():
-            scaffold_result = run_scaffold_engine(
-                arch_text=arch_text,
-                segment_id=seg_id,
-                job_dir=job_dir_path,
-                file_scope=file_scope,
-                emit=emit,
-            )
-            if scaffold_result and scaffold_result.file_count > 0:
-                segment_context["scaffold_result"] = scaffold_result
-                emit(
-                    f"  [SCAFFOLD] {scaffold_result.file_count} file(s) scaffolded, "
-                    f"{scaffold_result.total_fills} fill(s), "
-                    f"{scaffold_result.complete_files} fully deterministic"
-                )
-            else:
-                emit("  [SCAFFOLD] No files scaffolded — falling back to full LLM generation")
-        # else: scaffold disabled, silent pass-through
-    except Exception as scaffold_err:
-        logger.warning("[SEGMENT_LOOP] Scaffold engine error (non-fatal): %s", scaffold_err)
-        emit(f"  [SCAFFOLD] Error (non-fatal): {scaffold_err} — continuing with full LLM")
-
     # --- Step 3a: Overwatcher pre-flight ---
     emit(f"  🔧 Running Overwatcher for {seg_id}...")
 

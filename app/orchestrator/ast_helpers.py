@@ -66,8 +66,17 @@ def extract_python_definitions(file_path: str) -> Dict[str, Any]:
     }
 
     try:
-        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-            source = f.read()
+        # v3.4-fix: Try sandbox first
+        _py_content = None
+        try:
+            from app.sandbox_fs import sandbox_read_text as _sbx_read
+            _py_content = _sbx_read(file_path)
+        except ImportError:
+            pass
+        if _py_content is None:
+            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                _py_content = f.read()
+        source = _py_content
     except OSError as e:
         logger.warning("[INTEGRATION_CHECK] Cannot read Python file %s: %s", file_path, e)
         result["error"] = str(e)
@@ -200,8 +209,17 @@ def extract_typescript_exports(file_path: str) -> Dict[str, Any]:
     }
 
     try:
-        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read()
+        # v3.4-fix: Try sandbox first — file may only exist there
+        _ts_content = None
+        try:
+            from app.sandbox_fs import sandbox_read_text as _sbx_read
+            _ts_content = _sbx_read(file_path)
+        except ImportError:
+            pass
+        if _ts_content is None:
+            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                _ts_content = f.read()
+        content = _ts_content
     except OSError as e:
         logger.warning("[INTEGRATION_CHECK] Cannot read TypeScript file %s: %s", file_path, e)
         result["error"] = str(e)

@@ -526,19 +526,95 @@ async def _handle_architecture(
     except Exception as e:
         logger.exception("[critical_pipeline] Pipeline failed: %s", e)
         yield _emit(f"\u274c **Pipeline failed:** {e}\n")
-        yield _done(
-            provider=pipeline_provider, model=pipeline_model,
-            total_length=sum(len(p) for p in response_parts), error=str(e),
-        )
-        return
+        result = None  # v3.4-fix: Fall through to empty-result handler for fallback
 
     if not result or not result.content:
-        yield _emit("\u274c **Pipeline returned empty result.**\n")
-        yield _done(
-            provider=pipeline_provider, model=pipeline_model,
-            total_length=sum(len(p) for p in response_parts),
-        )
-        return
+        # v3.4-fix: Retry with fallback provider on empty result.
+        # Empty results typically mean an API timeout or malformed response.
+        # Try up to 2 fallback providers before giving up.
+        _FALLBACK_MODELS = [
+            ("anthropic", "claude-sonnet-4-6"),
+            ("openai", "gpt-5.2"),
+            ("google", "gemini-2.5-flash"),
+        ]
+        _fallback_attempted = False
+        for _fb_provider, _fb_model in _FALLBACK_MODELS:
+            # Skip the provider that just failed
+            if _fb_provider == pipeline_provider:
+                continue
+            logger.warning(
+                "[critical_pipeline] v3.4 Empty result from %s/%s — "
+                "retrying with fallback %s/%s",
+                pipeline_provider, pipeline_model, _fb_provider, _fb_model,
+            )
+            yield _emit(
+                f"\u26a0\ufe0f **Empty result from {pipeline_provider}/{pipeline_model}** "
+                f"— retrying with {_fb_provider}/{_fb_model}...\n"
+            )
+            try:
+                result = await run_high_stakes_with_critique(
+                    task=task,
+                    provider_id=_fb_provider,
+                    model_id=_fb_model,
+                    envelope=envelope,
+                    job_type_str="architecture_design",
+                    file_map=None,
+                    db=db,
+                    spec_id=spec_id,
+                    spec_hash=spec_hash,
+                    spec_json=spec_json,
+                    spec_markdown=_critique_spec_markdown,
+                    use_json_critique=True,
+                    segment_contract_markdown=_segment_contract_for_critique or None,
+                    segment_file_scope=segment_context.get("file_scope") if segment_context else None,
+                    enrichment_markdown=_format_enrichment_for_critique(segment_context.get("enrichment")) if segment_context and segment_context.get("enrichment") else None,
+                    segment_id=_det_segment_id,
+                    segment_spec=_det_segment_spec,
+                    skeleton_contract=_det_skeleton_contract,
+                    skeleton_file_scope_det=_det_skeleton_file_scope,
+                    enrichment_data=_det_enrichment_data,
+                    manifest_dict=_det_manifest_dict,
+                    needle_estimate=_det_needle_estimate,
+                )
+            except Exception as _fb_exc:
+                logger.warning(
+                    "[critical_pipeline] v3.4 Fallback %s/%s also failed: %s",
+                    _fb_provider, _fb_model, _fb_exc,
+                )
+                yield _emit(
+                    f"\u274c **Fallback {_fb_provider}/{_fb_model} failed:** {_fb_exc}\n"
+                )
+                continue
+
+            if result and result.content:
+                _fallback_attempted = True
+                pipeline_provider = _fb_provider
+                pipeline_model = _fb_model
+                logger.info(
+                    "[critical_pipeline] v3.4 Fallback succeeded: %s/%s "
+                    "(%d chars)",
+                    _fb_provider, _fb_model, len(result.content),
+                )
+                yield _emit(
+                    f"\u2705 **Fallback succeeded:** {_fb_provider}/{_fb_model}\n"
+                )
+                break
+            else:
+                logger.warning(
+                    "[critical_pipeline] v3.4 Fallback %s/%s also returned empty",
+                    _fb_provider, _fb_model,
+                )
+                yield _emit(
+                    f"\u274c **Fallback {_fb_provider}/{_fb_model} also empty.**\n"
+                )
+
+        if not _fallback_attempted and (not result or not result.content):
+            yield _emit("\u274c **Pipeline returned empty result after all fallbacks.**\n")
+            yield _done(
+                provider=pipeline_provider, model=pipeline_model,
+                total_length=sum(len(p) for p in response_parts),
+            )
+            return
 
     # --- Stream result ---
     routing = getattr(result, 'routing_decision', {}) or {}

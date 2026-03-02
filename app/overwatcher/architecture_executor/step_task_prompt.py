@@ -21,6 +21,7 @@ from .prompts import (
     IMPLEMENTER_NEW_FILE_SYSTEM,
     IMPLEMENTER_MODIFY_FILE_SYSTEM,
     IMPLEMENTER_MODIFY_EDIT_SYSTEM,
+    IMPLEMENTER_VERIFY_FILE_SYSTEM,
 )
 from .path_resolution import _infer_lang_from_path
 
@@ -348,6 +349,66 @@ def build_modify_prompt(
     user_prompt += "Output the COMPLETE modified file. No markdown fences."
     return user_prompt, IMPLEMENTER_MODIFY_FILE_SYSTEM
 
+
+
+
+# ---------------------------------------------------------------------------
+# Verification prompt assembly  (v1.0 code block extraction)
+# ---------------------------------------------------------------------------
+
+def build_verify_prompt(
+    rel_path: str,
+    prefilled_content: str,
+    file_context_for_prompt: str,
+    contract_block: str,
+    job_context_section: str,
+    available_modules_evidence: str,
+) -> tuple[str, str]:
+    """Build (user_prompt, system_prompt) for verification of pre-filled code.
+
+    Used when code has been extracted from the architecture document and
+    the LLM's role is to verify and gap-fill rather than generate.
+
+    Args:
+        rel_path: Relative file path.
+        prefilled_content: Code extracted from the architecture document.
+        file_context_for_prompt: Architecture section text for context.
+        contract_block: Mandatory contract signatures (if any).
+        job_context_section: Cross-file context from other created files.
+        available_modules_evidence: Available modules list.
+
+    Returns:
+        (user_prompt, system_prompt) tuple.
+    """
+    user_prompt = (
+        f"## Pre-Filled File: `{rel_path}`\n\n"
+        f"The following code was extracted directly from the approved "
+        f"architecture document. It is the intended implementation.\n\n"
+        f"```\n{prefilled_content}\n```\n\n"
+    )
+
+    if contract_block:
+        user_prompt += f"{contract_block}\n\n"
+
+    user_prompt += (
+        f"## Architecture Specification (for reference)\n\n"
+        f"{file_context_for_prompt}\n\n"
+    )
+
+    if job_context_section:
+        user_prompt += f"{job_context_section}\n\n"
+
+    if available_modules_evidence:
+        user_prompt += available_modules_evidence
+
+    user_prompt += (
+        "Verify the pre-filled code above. If it is complete and correct, "
+        "output it UNCHANGED. Only fix genuine issues (missing imports, "
+        "syntax errors, incomplete sections). Do NOT rewrite working code. "
+        "Output ONLY the file content — no markdown fences, no explanations."
+    )
+
+    return user_prompt, IMPLEMENTER_VERIFY_FILE_SYSTEM
 
 # ---------------------------------------------------------------------------
 # LLM context injection  (v3.0 experience memory + RAG)

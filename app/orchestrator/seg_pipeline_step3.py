@@ -156,8 +156,6 @@ async def execute_architecture(
                 for mf in ms.file_scope:
                     manifest_all_files.add(mf.replace("\\", "/"))
 
-        # v1.0: Pass scaffold result if available
-        _scaffold_result = segment_context.get("scaffold_result")
 
         arch_result = await run_architecture_execution(
             spec=spec,
@@ -169,7 +167,6 @@ async def execute_architecture(
             interface_contract=seg_contract,
             skip_boot_check=True,
             manifest_all_files=manifest_all_files if manifest_all_files else None,
-            scaffold_result=_scaffold_result,
         )
 
         if arch_result.get("success", False):

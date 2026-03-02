@@ -15,6 +15,8 @@ from typing import Dict, List, Optional
 from ..sandbox_client import SandboxClient
 from .constants import MAX_STRIKES_PER_TASK, MODIFY_EDIT_MODE_THRESHOLD
 from .execution_state import ExecutionContext
+from .step_quarantine import check_quarantine_skip as _check_quarantine_skip
+from .step_write import _delegate_write, _record_success
 from .context import (
     _read_existing_file,
     _read_source_context,
@@ -29,6 +31,8 @@ from .helpers import (
     _check_python_syntax,
 )
 from .parsing import extract_section_for_file, _extract_verbatim_code_from_architecture
+from .arch_code_extractor import extract_code_for_files, ExtractionResult
+from .arch_code_merge import decide_merge_strategy, MergeDecision
 from .path_resolution import _resolve_multi_root_path, _infer_lang_from_path
 from .prompts import _parse_edit_pairs
 from .source_extraction import _detect_source_files_from_architecture
@@ -39,6 +43,7 @@ from .step_task_prompt import (
     prepend_strike_error,
     build_create_prompt,
     build_modify_prompt,
+    build_verify_prompt,
     inject_experience_and_rag,
     run_preflight_gate,
 )
@@ -47,88 +52,7 @@ from .step_task_verify import verify_written_file
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Quarantine skip check  (v5.13)
-# ---------------------------------------------------------------------------
-
-def _check_quarantine_skip(
-    rel_path: str,
-    abs_path: str,
-    file_info: dict,
-    ctx: ExecutionContext,
-    client: SandboxClient,
-) -> bool:
-    """Check if a MODIFY/DELETE target was already quarantined.
-
-    Returns True if the task should be skipped (file already handled).
-    """
-    rel_norm = rel_path.replace("\\", "/")
-    desc_lower = file_info.get("description", "").lower()
-
-    is_delete = any(kw in desc_lower for kw in [
-        "delete", "remove entirely", "superseded", "replaced by",
-        "no longer exists", "remove this file",
-    ])
-    if not is_delete:
-        section = extract_section_for_file(ctx.architecture_content, rel_path)
-        if section:
-            sec_lower = section.lower()
-            is_delete = any(phrase in sec_lower for phrase in [
-                "delete this file", "remove entirely", "removed entirely",
-                "file is removed", "this file is superseded",
-                "this file must be deleted", "must not exist",
-                "no longer exists", "must be removed",
-            ])
-
-    if not is_delete:
-        return False
-
-    # Build quarantine path
-    path_parts = rel_norm.rsplit("/", 1)
-    if len(path_parts) == 2:
-        q_abs = _resolve_multi_root_path(
-            f"{path_parts[0]}/.quarantined/{path_parts[1]}", ctx.sandbox_base,
-        )
-    else:
-        q_abs = _resolve_multi_root_path(
-            f".quarantined/{rel_norm}", ctx.sandbox_base,
-        )
-
-    try:
-        q_check = client.shell_run(
-            f'if (Test-Path -Path "{q_abs}" -PathType Leaf) '
-            f'{{ "QUARANTINED" }} else {{ "NONE" }}',
-            timeout_seconds=10,
-        )
-        if not (q_check.stdout and "QUARANTINED" in q_check.stdout):
-            return False
-
-        orig_check = client.shell_run(
-            f'if (Test-Path -Path "{abs_path}" -PathType Leaf) '
-            f'{{ "EXISTS" }} else {{ "GONE" }}',
-            timeout_seconds=10,
-        )
-        if orig_check.stdout and "GONE" in orig_check.stdout:
-            logger.info(
-                "[arch_exec] v5.13 QUARANTINE SKIP: %s — file already quarantined at %s",
-                rel_path, q_abs,
-            )
-            print(
-                f"[ARCH_EXEC] v5.13 ✓ SKIP (quarantined): {rel_path} — "
-                f"already moved to .quarantined/ by package_quarantine"
-            )
-            ctx.add_trace("QUARANTINE_SKIP", "success", {
-                "path": rel_path,
-                "quarantine_path": q_abs,
-                "reason": "File quarantined by package_quarantine, no action needed",
-            })
-            return True
-    except Exception as e:
-        logger.warning(
-            "[arch_exec] v5.13 Quarantine check failed for %s: %s — proceeding normally",
-            rel_path, e,
-        )
-    return False
+# Quarantine skip check (v5.13) - extracted to step_quarantine.py
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +66,7 @@ async def _process_single_task(
     client: SandboxClient,
     run_implementer_task,
     run_implementer_edit_task,
+    extraction_result: Optional[ExtractionResult] = None,
 ) -> bool:
     """Process one file task with three-strike error handling.
 
@@ -197,52 +122,70 @@ async def _process_single_task(
                 last_error = f"__init__.py write exception: {e}"
             break
 
-        # --- Scaffold shortcut (v1.0) ---
-        if ctx.scaffold_result and strike == 1:
+        # --- v1.0 Code Block Extraction: merge decision ---
+        merge_decision = None
+        if extraction_result and action == "create" and strike == 1:
             try:
-                from app.orchestrator.scaffold.integration import (
-                    get_scaffold_for_task, build_fill_prompt,
+
+                merge_decision = decide_merge_strategy(
+                    extraction_result, rel_path,
+                    action=action,
                 )
-                _scaffold = get_scaffold_for_task(ctx.scaffold_result, rel_path)
-                if _scaffold:
-                    if _scaffold.fill_count == 0:
-                        # Fully deterministic — skip LLM entirely
-                        file_content = _scaffold.content
-                        logger.info(
-                            "[arch_exec] SCAFFOLD deterministic: %s (%d chars)",
-                            rel_path, len(file_content),
+
+                if merge_decision.skip_llm and merge_decision.content:
+                    # Direct use: extracted code IS the file content
+                    file_content = merge_decision.content
+                    logger.info(
+                        "[arch_exec] v1.0 DIRECT_EXTRACTION: %s (%d chars, confidence=%.2f) — %s",
+                        rel_path, len(file_content), merge_decision.confidence,
+                        merge_decision.reason,
+                    )
+                    print(
+                        f"[ARCH_EXEC] v1.0 DIRECT_EXTRACTION: {rel_path} "
+                        f"({len(file_content)} chars) — skipping LLM"
+                    )
+                    ctx.add_trace("DIRECT_EXTRACTION", "success", {
+                        "path": rel_path,
+                        "chars": len(file_content),
+                        "confidence": merge_decision.confidence,
+                        "reason": merge_decision.reason,
+                    })
+
+                    # Write directly — same path as verbatim/deterministic extraction
+                    try:
+                        impl_result = await run_implementer_task(
+                            path=abs_path, content=file_content,
+                            action=action, ensure_parents=True, client=client,
                         )
-                        ctx.add_trace("SCAFFOLD_DETERMINISTIC", "success", {
-                            "path": rel_path, "chars": len(file_content),
-                        })
-                        try:
-                            impl_result = await run_implementer_task(
-                                path=abs_path, content=file_content,
-                                action=action, ensure_parents=True, client=client,
-                            )
-                            if impl_result.success:
-                                task_success = True
-                            else:
-                                last_error = f"Scaffold write failed: {impl_result.error}"
-                        except Exception as e:
-                            last_error = f"Scaffold write exception: {e}"
-                        break
-                    else:
-                        # Has fills — inject scaffold into architecture context
-                        # so LLM only fills the gaps, not generates everything
-                        _fill_prompt = build_fill_prompt(_scaffold)
-                        file_info["_scaffold_fill_prompt"] = _fill_prompt
-                        logger.info(
-                            "[arch_exec] SCAFFOLD with %d fill(s): %s",
-                            _scaffold.fill_count, rel_path,
-                        )
-                        ctx.add_trace("SCAFFOLD_WITH_FILLS", "prepared", {
-                            "path": rel_path, "fills": _scaffold.fill_count,
-                        })
-            except ImportError:
-                pass  # Scaffold module not available — continue normal path
-            except Exception as _se:
-                logger.warning("[arch_exec] Scaffold lookup failed for %s: %s", rel_path, _se)
+                        if impl_result.success:
+                            task_success = True
+                        else:
+                            last_error = f"Direct extraction write failed: {impl_result.error}"
+                    except Exception as e:
+                        last_error = f"Direct extraction write exception: {e}"
+                    break
+
+                elif merge_decision.use_verify_prompt:
+                    logger.info(
+                        "[arch_exec] v1.0 PREFILL_MODE: %s (confidence=%.2f) — %s",
+                        rel_path, merge_decision.confidence, merge_decision.reason,
+                    )
+                    print(
+                        f"[ARCH_EXEC] v1.0 PREFILL_MODE: {rel_path} — "
+                        f"LLM will verify extracted code"
+                    )
+                    ctx.add_trace("PREFILL_MODE", "prepared", {
+                        "path": rel_path,
+                        "confidence": merge_decision.confidence,
+                        "reason": merge_decision.reason,
+                    })
+
+            except Exception as me:
+                logger.warning(
+                    "[arch_exec] v1.0 Merge decision failed for %s (non-fatal): %s",
+                    rel_path, me,
+                )
+                merge_decision = None
 
         # --- Extract architecture context ---
         file_context = extract_section_for_file(ctx.architecture_content, rel_path)
@@ -284,10 +227,23 @@ async def _process_single_task(
                         "path": rel_path, "chars": len(verbatim_content),
                     })
 
-                user_prompt, system_prompt = build_create_prompt(
-                    rel_path, file_context_for_prompt, contract_block,
-                    job_context_section, ctx.available_modules_evidence,
-                )
+                # v1.0: Use verification prompt if merge decision says prefill
+                if (merge_decision and merge_decision.use_verify_prompt
+                        and merge_decision.content and strike == 1):
+                    user_prompt, system_prompt = build_verify_prompt(
+                        rel_path, merge_decision.content,
+                        file_context_for_prompt, contract_block,
+                        job_context_section, ctx.available_modules_evidence,
+                    )
+                    ctx.add_trace("VERIFY_PROMPT_USED", "injected", {
+                        "path": rel_path,
+                        "prefill_chars": len(merge_decision.content),
+                    })
+                else:
+                    user_prompt, system_prompt = build_create_prompt(
+                        rel_path, file_context_for_prompt, contract_block,
+                        job_context_section, ctx.available_modules_evidence,
+                    )
 
                 # Source file context injection (v3.0)
                 try:
@@ -347,21 +303,6 @@ async def _process_single_task(
                 system_prompt = inject_experience_and_rag(
                     system_prompt, rel_path, action, file_context[:200],
                 )
-
-                # Scaffold fill override: targeted fill prompt replaces
-                # the full generation prompt so the LLM only fills gaps
-                _sfp = file_info.get("_scaffold_fill_prompt")
-                if _sfp and strike == 1:
-                    user_prompt = _sfp
-                    system_prompt = (
-                        "You are a code completion assistant. You receive a scaffolded "
-                        "file template with LLM_FILL markers indicating gaps that need "
-                        "implementation. Fill ONLY those gaps. Preserve everything else "
-                        "exactly as-is. Output the complete file with no markdown fences."
-                    )
-                    ctx.add_trace("SCAFFOLD_FILL_PROMPT", "injected", {
-                        "path": rel_path,
-                    })
 
                 # Pre-flight gate
                 run_preflight_gate(ctx.interface_contract, rel_path, user_prompt, system_prompt)
@@ -479,118 +420,7 @@ async def _process_single_task(
     return task_success
 
 
-# ---------------------------------------------------------------------------
-# Write delegation
-# ---------------------------------------------------------------------------
-
-async def _delegate_write(
-    abs_path, rel_path, file_content, action,
-    use_edit_mode, client, ctx,
-    run_implementer_task, run_implementer_edit_task,
-):
-    """Delegate the file write to the Implementer (edit mode or full rewrite)."""
-    if use_edit_mode:
-        edit_pairs = _parse_edit_pairs(file_content)
-        if edit_pairs is None:
-            logger.warning("[arch_exec] v1.13 Edit pair parsing failed for %s — falling back", rel_path)
-            ctx.add_trace("EDIT_PARSE_FALLBACK", "parse_failed", {"path": rel_path})
-            return await run_implementer_task(
-                path=abs_path, content=file_content,
-                action=action, ensure_parents=True, client=client,
-            )
-
-        print(f"[ARCH_EXEC] v1.13 Applying {len(edit_pairs)} targeted edits to {rel_path}")
-        edit_result = await run_implementer_edit_task(
-            path=abs_path, edits=edit_pairs, client=client,
-        )
-
-        class _Adapter:
-            def __init__(self, er):
-                self.success = er.success
-                self.chars_written = er.chars_after
-                self.verified = er.verified
-                self.error = er.error
-
-        if edit_result.edits_failed > 0:
-            logger.warning(
-                "[arch_exec] v1.13 %d/%d edits failed for %s",
-                edit_result.edits_failed,
-                edit_result.edits_applied + edit_result.edits_failed,
-                rel_path,
-            )
-            ctx.add_trace("EDIT_PARTIAL", "some_failed", {
-                "path": rel_path,
-                "applied": edit_result.edits_applied,
-                "failed": edit_result.edits_failed,
-            })
-        return _Adapter(edit_result)
-
-    return await run_implementer_task(
-        path=abs_path, content=file_content,
-        action=action, ensure_parents=True, client=client,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Success recording
-# ---------------------------------------------------------------------------
-
-async def _record_success(
-    ctx: ExecutionContext,
-    client: SandboxClient,
-    rel_path: str,
-    abs_path: str,
-    action: str,
-    file_content: str,
-    use_edit_mode: bool,
-) -> None:
-    """Record a successful task: update counters, extract interfaces."""
-    if action == "create":
-        ctx.files_created += 1
-        ctx.created_file_contents[rel_path] = file_content
-    else:
-        ctx.files_modified += 1
-        if use_edit_mode:
-            try:
-                actual = await _read_existing_file(client, abs_path)
-                if actual:
-                    file_content = actual
-            except Exception:
-                pass
-        if rel_path.endswith('.py'):
-            try:
-                regs = _extract_router_registrations(file_content)
-                if regs:
-                    ctx.router_registrations.update(regs)
-            except Exception:
-                pass
-
-    ctx.artifacts_written.append(abs_path)
-    ctx.existing_sandbox_files.add(rel_path.replace("\\", "/"))
-
-    try:
-        summary = _extract_file_interfaces(rel_path, file_content)
-        ctx.job_context[rel_path] = summary
-    except Exception as e:
-        logger.warning("[arch_exec] v2.3 Interface extraction failed for %s: %s", rel_path, e)
-
-    # v3.2: Log content preview so we can see what was actually written
-    _content_len = len(file_content) if file_content else 0
-    _preview_lines = (file_content or '').split('\n')[:15]
-    _preview = '\n'.join(f'    | {ln}' for ln in _preview_lines)
-    _truncated = ' (truncated)' if file_content and len(file_content.split('\n')) > 15 else ''
-    logger.info(
-        "[arch_exec] ✓ %s %s (%d chars)\n%s%s",
-        action.upper(), rel_path, _content_len, _preview, _truncated,
-    )
-    print(f"[ARCH_EXEC] ✓ {action.upper()} {rel_path} ({_content_len} chars)")
-    print(f"[ARCH_EXEC] CONTENT PREVIEW ({rel_path}):\n{_preview}{_truncated}")
-    ctx.add_trace("FILE_TASK_SUCCESS", action, {
-        "path": rel_path, "absolute_path": abs_path,
-        "content_chars": _content_len,
-        "content_preview": '\n'.join(_preview_lines[:10]),
-        "job_context_files": list(ctx.job_context.keys()),
-    })
+# Write delegation & success recording — extracted to step_write.py
 
 
 # ---------------------------------------------------------------------------
@@ -629,10 +459,43 @@ async def process_all_tasks(
     )
     create_count = len(ctx.new_files)
 
+    # v1.0 Code Block Extraction: extract code from arch doc BEFORE task loop
+    extraction_result = None
+    if ctx.architecture_content:
+        try:
+            all_file_paths = [
+                f["path"] for f in (ctx.new_files + ctx.modified_files)
+            ]
+            extraction_result = extract_code_for_files(
+                ctx.architecture_content, all_file_paths,
+            )
+            if extraction_result.file_count > 0:
+                logger.info(
+                    "[arch_exec] v1.0 CODE_EXTRACTION: %d/%d files have "
+                    "extractable code from architecture",
+                    extraction_result.file_count, len(all_file_paths),
+                )
+                print(
+                    f"[ARCH_EXEC] v1.0 CODE_EXTRACTION: "
+                    f"{extraction_result.file_count}/{len(all_file_paths)} "
+                    f"files have extractable architecture code"
+                )
+                ctx.add_trace("CODE_EXTRACTION", "success", {
+                    "files_with_code": extraction_result.file_count,
+                    "total_files": len(all_file_paths),
+                    "warnings": extraction_result.warnings[:5],
+                })
+            else:
+                logger.info("[arch_exec] v1.0 CODE_EXTRACTION: no extractable code found")
+        except Exception as ce:
+            logger.warning("[arch_exec] v1.0 Code extraction failed (non-fatal): %s", ce)
+            extraction_result = None
+
     for i, task in enumerate(all_tasks, 1):
         await _process_single_task(
             task, i, ctx, client,
             run_implementer_task, run_implementer_edit_task,
+            extraction_result=extraction_result,
         )
 
         # v2.5: Two-pass boundary — after all CREATEs, refresh interfaces

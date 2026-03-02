@@ -6,6 +6,18 @@ import re
 from difflib import get_close_matches
 from typing import Any, Dict, List, Optional, Set, Tuple
 logger = logging.getLogger(__name__)
+
+# v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
+try:
+    from app.sandbox_fs import (
+        sandbox_isfile as _sbx_isfile,
+        sandbox_isdir as _sbx_isdir,
+        sandbox_exists as _sbx_exists,
+        sandbox_read_text as _sbx_read_text,
+    )
+    _SBX_FS_OK = True
+except ImportError:
+    _SBX_FS_OK = False
 logger = logging.getLogger(__name__)
 
 
@@ -305,10 +317,17 @@ def reconcile_deferred_consumers(
             if norm.endswith("/__init__.py"):
                 # This is a package init — read its exports
                 abs_path = os.path.join(sandbox_base, norm.replace("/", os.sep))
-                if os.path.isfile(abs_path):
+                if (_sbx_isfile(abs_path) if _SBX_FS_OK else os.path.isfile(abs_path)):
                     try:
-                        with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
-                            init_content = f.read()
+                        _sbx_content = _sbx_read_text(abs_path) if _SBX_FS_OK else None
+
+                        if _sbx_content is not None:
+                            init_content = _sbx_content
+
+                        else:
+
+                            with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                                init_content = f.read()
                         # Parse exports from __init__.py
                         _pkg_dir = norm.rsplit("/", 1)[0]  # e.g. "app/orchestrator/segment_loop"
                         _dotted = _pkg_dir.replace("/", ".")
@@ -346,13 +365,20 @@ def reconcile_deferred_consumers(
 
     for consumer_path in deferred:
         abs_path = os.path.join(sandbox_base, consumer_path.replace("/", os.sep))
-        if not os.path.isfile(abs_path):
+        if not (_sbx_isfile(abs_path) if _SBX_FS_OK else os.path.isfile(abs_path)):
             logger.warning("[consumer_recon] Deferred consumer not found: %s", abs_path)
             continue
 
         try:
-            with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
-                consumer_content = f.read()
+            _sbx_content = _sbx_read_text(abs_path) if _SBX_FS_OK else None
+
+            if _sbx_content is not None:
+                consumer_content = _sbx_content
+
+            else:
+
+                with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                    consumer_content = f.read()
         except Exception as e:
             logger.warning("[consumer_recon] Cannot read %s: %s", abs_path, e)
             continue

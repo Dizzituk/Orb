@@ -66,8 +66,6 @@ class ExecutionContext:
     skip_boot_check: bool = False
     manifest_all_files: Optional[Set[str]] = None
 
-    # --- Scaffold Engine (v1.0) ---
-    scaffold_result: Any = None
 
     def elapsed_ms(self) -> int:
         return int((time.time() - self.start_time) * 1000)

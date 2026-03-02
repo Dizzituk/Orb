@@ -347,9 +347,13 @@ async def _run_ai_review_pass(
         abs_path = os.path.join(sandbox_base, rel_path.replace("/", os.sep))
         if (_sbx_isfile(abs_path) if _SBX_FS_OK else os.path.isfile(abs_path)):
             try:
-                with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
-                    content = f.read(_MAX_REVIEW_CHARS)
-                file_contents[rel_path] = content
+                # v3.4-fix: Read from sandbox, not host
+                _fc_content = _sbx_read_text(abs_path) if _SBX_FS_OK else None
+                if _fc_content is not None:
+                    file_contents[rel_path] = _fc_content[:_MAX_REVIEW_CHARS]
+                else:
+                    with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                        file_contents[rel_path] = f.read(_MAX_REVIEW_CHARS)
             except Exception:
                 pass
 

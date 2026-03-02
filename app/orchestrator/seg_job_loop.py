@@ -572,8 +572,18 @@ def _apply_segment_result(ctx, seg_id, seg_spec, pipeline_result, idx, total):
 
 
 def _inject_dep_file_evidence(ctx, seg_spec, segment_context):
-    """v5.26: Read dependency output files and inject as evidence."""
+    """v5.26: Read dependency output files and inject as evidence.
+
+    v3.4-fix: Reads from SANDBOX via sandbox_read_text, not host open().
+    Dependency files are created by earlier segments inside the sandbox.
+    They do not exist on the host filesystem.
+    """
     from app.pot_spec.grounded.segment_schemas import SegmentStatus
+    try:
+        from app.sandbox_fs import sandbox_read_text as _sbx_read
+        _sbx_ok = True
+    except ImportError:
+        _sbx_ok = False
 
     dep_file_contents: Dict[str, str] = {}
     for dep_id in seg_spec.dependencies:
@@ -584,10 +594,22 @@ def _inject_dep_file_evidence(ctx, seg_spec, segment_context):
         ):
             for dep_file in (dep_state.output_files or []):
                 try:
-                    with open(
-                        dep_file, "r", encoding="utf-8", errors="replace",
-                    ) as df:
-                        dep_content = df.read(60_000)
+                    # v3.4-fix: Always read from sandbox — these files
+                    # were written by the implementer inside the sandbox
+                    # and do NOT exist on the host.
+                    dep_content = None
+                    if _sbx_ok:
+                        dep_content = _sbx_read(dep_file)
+                        if dep_content:
+                            dep_content = dep_content[:60_000]
+
+                    if not dep_content:
+                        logger.warning(
+                            "[SEGMENT_LOOP] v3.4 Dep file not readable via sandbox: %s",
+                            dep_file,
+                        )
+                        continue
+
                     rel_path = dep_file
                     for root in [
                         "D:\\Orb\\", "D:\\orb-desktop\\",

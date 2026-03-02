@@ -14,6 +14,10 @@ from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
+# v4.3: Spec gate uses HOST filesystem, not sandbox.
+_SBX_FS_OK = False
+
 
 def detect_refactor_pairs(
     file_scope: List[str],
@@ -54,7 +58,7 @@ def detect_refactor_pairs(
         if _fp_norm.endswith("__init__.py"):
             continue
         _abs = os.path.join("D:\\Orb", _fp_norm.replace("/", os.sep))
-        if not os.path.isfile(_abs):
+        if not (_sbx_isfile(_abs) if _SBX_FS_OK else os.path.isfile(_abs)):
             continue
         try:
             _fsize = os.path.getsize(_abs)
@@ -89,9 +93,8 @@ def detect_refactor_pairs(
                 f2.startswith(_pkg_prefix)
                 for f2 in _scope_norm if f2 != _fp_norm
             )
-            _on_disk = os.path.isfile(
-                os.path.join("D:\\Orb", _fp_norm.replace("/", os.sep))
-            )
+            _check_path = os.path.join("D:\\Orb", _fp_norm.replace("/", os.sep))
+            _on_disk = (_sbx_isfile(_check_path) if _SBX_FS_OK else os.path.isfile(_check_path))
             if _has_pkg and _on_disk:
                 _refactor_pairs.append((_fp_norm, _pkg_prefix))
                 _matched_sources.add(_fp_norm)
@@ -107,7 +110,7 @@ def detect_refactor_pairs(
     _unmatched = [
         fp for fp in _scope_norm
         if fp.endswith(".py") and "/" in fp and fp not in _matched_sources
-        and os.path.isfile(os.path.join("D:\\Orb", fp.replace("/", os.sep)))
+        and (_sbx_isfile(os.path.join("D:\\Orb", fp.replace("/", os.sep))) if _SBX_FS_OK else os.path.isfile(os.path.join("D:\\Orb", fp.replace("/", os.sep))))
     ]
     for _fp_norm in _unmatched:
         _parent = _fp_norm.rsplit("/", 1)[0]
