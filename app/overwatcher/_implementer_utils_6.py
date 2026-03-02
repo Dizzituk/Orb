@@ -1,12 +1,31 @@
 from __future__ import annotations
 import base64
 import logging
+import re
 from app.overwatcher._implementer_utils_2 import INLINE_BASE64_CHAR_LIMIT
 from app.overwatcher.sandbox_client import SandboxClient
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 logger = logging.getLogger(__name__)
-logger = logging.getLogger(__name__)
+
+
+# v3.4-fix: Scaffold marker pattern - matches [LLM_FILL: ...] placeholders
+_SCAFFOLD_MARKER_LINE = re.compile(r"^[ \t]*\[LLM_FILL[:\s][^\]]*\][ \t]*\r?\n?$", re.MULTILINE)
+_SCAFFOLD_MARKER_INLINE = re.compile(r"\[LLM_FILL[:\s][^\]]*\]")
+
+
+def _strip_scaffold_markers(content: str, path: str) -> str:
+    """Remove any surviving [LLM_FILL: ...] scaffold markers from content."""
+    cleaned, n_lines = _SCAFFOLD_MARKER_LINE.subn("", content)
+    cleaned, n_inline = _SCAFFOLD_MARKER_INLINE.subn("", cleaned)
+    total = n_lines + n_inline
+    if total > 0:
+        logger.warning(
+            "[implementer] v3.4 Stripped %d scaffold marker(s) from %s "
+            "(%d full-line, %d inline)",
+            total, path, n_lines, n_inline,
+        )
+    return cleaned
 
 
 def _write_content_to_sandbox(
@@ -32,6 +51,13 @@ def _write_content_to_sandbox(
     Returns:
         ShellResult from the sandbox client
     """
+    # v3.4-fix: Strip any surviving scaffold markers before write
+    content = _strip_scaffold_markers(content, path)
+
+    # v3.4-fix: Deduplicate imports (scaffold + LLM both add imports)
+    from app.overwatcher.import_dedup import deduplicate_imports
+    content = deduplicate_imports(content, path)
+
     encoded = base64.b64encode(content.encode('utf-8')).decode('ascii')
 
     if len(encoded) <= INLINE_BASE64_CHAR_LIMIT:

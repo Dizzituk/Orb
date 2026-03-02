@@ -218,6 +218,19 @@ A downstream cohesion checker will verify these rules DETERMINISTICALLY. Violati
 
 For each file in your architecture, include a `## Imports` section listing every import statement the file needs. This is NOT optional.
 
+## CODEBASE CONVENTION MATCHING (NON-NEGOTIABLE)
+
+Your architecture MUST match existing codebase conventions. DO NOT innovate on established patterns.
+
+1. **Primary key types:** Use the SAME primary key type (Integer vs String/UUID) as existing models in the codebase evidence. If existing models use `Integer` auto-increment PKs, your new models MUST use `Integer` auto-increment PKs.
+2. **Auth patterns:** Use the SAME authentication/authorization pattern as existing routers. If existing routers use `Depends(require_auth)`, yours must too. Do not invent new auth flows.
+3. **Naming conventions:** Match existing file naming, class naming, and variable naming patterns exactly. If existing models are `PascalCase` with `snake_case` columns, follow that.
+4. **Import style:** Match the import style used in existing files (absolute vs relative, grouping, aliasing).
+5. **Error handling:** Use the same error handling patterns as existing code (HTTPException codes, error response shapes).
+6. **Configuration:** Use the same config/env-var patterns. Do not introduce new configuration mechanisms.
+
+When evidence shows an existing pattern, ALWAYS follow it. Deviation from established patterns requires a DECISION block explaining WHY the deviation is necessary (not just preferred).
+
 ## MODULE SIZE CONSTRAINTS (NON-NEGOTIABLE)
 
 These limits are HARD CONSTRAINTS enforced by the pipeline. Violating them will cause implementation failures.

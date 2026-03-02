@@ -315,6 +315,8 @@ class VerificationResult:
     tests_failed: int = 0
     lint_errors: int = 0
     type_errors: int = 0
+    syntax_errors: int = 0                              # v1.1 Job 7: per-file syntax check
+    syntax_feedback: str = ""                            # Formatted feedback for retry
     
     summary: str = ""
     
@@ -327,6 +329,8 @@ class VerificationResult:
             "tests_failed": self.tests_failed,
             "lint_errors": self.lint_errors,
             "type_errors": self.type_errors,
+            "syntax_errors": self.syntax_errors,
+            "syntax_feedback": self.syntax_feedback,
             "summary": self.summary,
         }
     
@@ -338,6 +342,8 @@ class VerificationResult:
             command_results=[CommandResult.from_dict(cr) for cr in data.get("command_results", [])],
             tests_passed=data.get("tests_passed", 0),
             tests_failed=data.get("tests_failed", 0),
+            syntax_errors=data.get("syntax_errors", 0),
+            syntax_feedback=data.get("syntax_feedback", ""),
             lint_errors=data.get("lint_errors", 0),
             type_errors=data.get("type_errors", 0),
             summary=data.get("summary", ""),

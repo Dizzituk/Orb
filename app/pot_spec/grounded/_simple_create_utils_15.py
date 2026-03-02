@@ -9,6 +9,12 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 
+# v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
+# v4.3: Spec gate evidence reads from HOST filesystem, not sandbox.
+# The sandbox controller is only available during execution (Windows Sandbox).
+# Using it here causes "file not found" for files that exist on disk.
+_SBX_FS_OK = False
+
 
 def _read_text_any_encoding(file_path: str) -> str:
     """
@@ -61,7 +67,7 @@ def _find_integration_points(
     substring matching. Also searches for existing directories that
     match the task's concepts.
     """
-    from .simple_create import IntegrationPoint
+    from ._simple_create_utils_16 import IntegrationPoint
     points = []
     
     try:
@@ -145,7 +151,8 @@ def _extract_patterns(
     tech_stack: TechStack,
 ) -> Dict[str, str]:
     """Extract coding patterns from existing files."""
-    from .simple_create import IntegrationPoint, TechStack
+    from ._simple_create_utils_16 import IntegrationPoint
+    from ._simple_create_utils_17 import TechStack
     patterns = {}
     
     for point in integration_points:
@@ -203,20 +210,37 @@ def _host_read_file(file_path: str, max_chars: int = 0, project_paths: Optional[
     file_path = file_path.replace('/', os.sep).replace('\\', os.sep)
 
     # v4.1: Resolve relative paths against project roots
-    if not os.path.exists(file_path) and project_paths:
+    if not (_sbx_exists(file_path) if _SBX_FS_OK else os.path.exists(file_path)) and project_paths:
         for root in project_paths:
             candidate = os.path.join(root, file_path)
             candidate = candidate.replace('/', os.sep).replace('\\', os.sep)
-            if os.path.exists(candidate):
+            if (_sbx_exists(candidate) if _SBX_FS_OK else os.path.exists(candidate)):
                 logger.info("[SPEC_GATE_EVIDENCE] Resolved relative path: %s → %s", file_path, candidate)
                 file_path = candidate
                 break
 
-    if not os.path.exists(file_path):
-        logger.info("[SPEC_GATE_EVIDENCE] File not found: %s", file_path)
-        return False, f"File not found: {file_path}"
+    # v4.2: TypeScript barrel export fallback.
+    # If 'foo.ts' not found, try 'foo/index.ts' and 'foo/index.tsx'.
+    # Common TS pattern: `import { X } from './types'` resolves to types/index.ts
+    if not (_sbx_exists(file_path) if _SBX_FS_OK else os.path.exists(file_path)):
+        _tried_barrel = False
+        if file_path.endswith(('.ts', '.tsx')):
+            _stem = file_path.rsplit('.', 1)[0]
+            for _barrel_ext in ('/index.ts', '/index.tsx'):
+                _barrel = _stem + _barrel_ext
+                if (_sbx_exists(_barrel) if _SBX_FS_OK else os.path.exists(_barrel)):
+                    logger.info(
+                        "[SPEC_GATE_EVIDENCE] v4.2 Barrel fallback: %s → %s",
+                        file_path, _barrel,
+                    )
+                    file_path = _barrel
+                    _tried_barrel = True
+                    break
+        if not _tried_barrel:
+            logger.info("[SPEC_GATE_EVIDENCE] File not found: %s", file_path)
+            return False, f"File not found: {file_path}"
 
-    if not os.path.isfile(file_path):
+    if not (_sbx_isfile(file_path) if _SBX_FS_OK else os.path.isfile(file_path)):
         logger.info("[SPEC_GATE_EVIDENCE] Not a file: %s", file_path)
         return False, f"Path is not a file: {file_path}"
 
@@ -244,7 +268,7 @@ def build_create_spec(
     If LLM analysis is available, uses it for implementation steps and
     acceptance criteria. Falls back to weaver output if LLM unavailable.
     """
-    from .simple_create import CreateEvidence
+    from ._simple_create_utils_16 import CreateEvidence
     lines = []
     
     sanitized_goal = _sanitize_goal(goal, what_to_do)
@@ -287,29 +311,24 @@ def build_create_spec(
     lines.append("## Integration Points")
     lines.append("")
     
-    modify_points = [p for p in evidence.integration_points if p.action == "modify"]
-    reference_points = [p for p in evidence.integration_points if p.action != "modify"]
+    # v3.3: Deduplicated, single list. Architecture decides what to modify.
+    seen_names = set()
+    deduped_points = []
+    for p in evidence.integration_points:
+        if p.file_name not in seen_names:
+            seen_names.add(p.file_name)
+            deduped_points.append(p)
     
-    if modify_points:
-        lines.append("### Files to Modify (Suggested — architecture may choose alternatives)")
+    if deduped_points:
+        lines.append("### Discovered Files (architecture determines what to modify)")
         lines.append("")
-        lines.append("*These are LLM-suggested integration points from codebase analysis.*")
-        lines.append("*The architecture may use different files or approaches if they better serve the requirements.*")
-        lines.append("")
-        for p in modify_points[:5]:
-            lines.append(f"- `{p.file_name}` — {p.relevance}")
-        lines.append("")
-    
-    if reference_points:
-        lines.append("### Reference Files (patterns to follow — not mandatory)")
-        lines.append("")
-        for p in reference_points[:5]:
+        for p in deduped_points[:10]:
             lines.append(f"- `{p.file_name}` — {p.relevance}")
         lines.append("")
     
     # Suggested New Files
     if evidence.suggested_files:
-        lines.append("### New Files to Create (Suggested — architecture determines final structure)")
+        lines.append("### Suggested New Files")
         lines.append("")
         for f in evidence.suggested_files:
             lines.append(f"- `{f}`")
@@ -317,9 +336,9 @@ def build_create_spec(
     
     # v2.0: LLM Analysis or Requirements
     if evidence.llm_analysis:
-        lines.append("## LLM Architecture Analysis (Suggested — architecture determines final approach)")
+        lines.append("## Architecture Analysis")
         lines.append("")
-        lines.append("*This analysis was generated by LLM codebase review. It is guidance, not a binding requirement.*")
+        lines.append("")
         lines.append("")
         lines.append(evidence.llm_analysis)
         lines.append("")
@@ -334,18 +353,9 @@ def build_create_spec(
                     lines.append(stripped)
         lines.append("")
     
-    # Patterns (HOW)
-    if evidence.existing_patterns:
-        lines.append("## Existing Patterns to Follow")
-        lines.append("")
-        for name, pattern in list(evidence.existing_patterns.items())[:3]:
-            short_name = name.split(':')[-1] if ':' in name else name
-            lines.append(f"### Pattern from `{short_name}`")
-            lines.append("```")
-            pattern_preview = pattern[:400] + "..." if len(pattern) > 400 else pattern
-            lines.append(pattern_preview)
-            lines.append("```")
-            lines.append("")
+    # v3.3: Removed raw code excerpts from spec.
+    # The critical pipeline reads referenced files directly during implementation.
+    # Pasting stale 400-char snippets adds noise without value.
     
     # v2.0: Task-specific Acceptance Criteria
     lines.append("## Acceptance")

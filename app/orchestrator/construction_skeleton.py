@@ -28,6 +28,18 @@ from .construction_planner_models import ConstructionPlan, PhaseDefinition
 
 logger = logging.getLogger(__name__)
 
+# v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
+try:
+    from app.sandbox_fs import (
+        sandbox_isfile as _sbx_isfile,
+        sandbox_isdir as _sbx_isdir,
+        sandbox_exists as _sbx_exists,
+        sandbox_read_text as _sbx_read_text,
+    )
+    _SBX_FS_OK = True
+except ImportError:
+    _SBX_FS_OK = False
+
 CONSTRUCTION_SKELETON_BUILD_ID = "2026-02-14-v1.0-initial"
 print(f"[CONSTRUCTION_SKELETON_LOADED] BUILD_ID={CONSTRUCTION_SKELETON_BUILD_ID}")
 
@@ -110,13 +122,16 @@ def generate_phase_interface(
 
         for file_path in upstream.contract.exports:
             abs_path = _resolve_path(file_path, sandbox_base)
-            exists = abs_path is not None and os.path.isfile(abs_path)
+            exists = abs_path is not None and (_sbx_isfile(abs_path) if _SBX_FS_OK else os.path.isfile(abs_path))
             line_count = 0
 
             if exists:
                 try:
-                    with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
-                        line_count = f.read().count("\n") + 1
+                    _content = _sbx_read_text(abs_path) if _SBX_FS_OK else None
+                    if _content is None:
+                        with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                            _content = f.read()
+                    line_count = _content.count("\n") + 1
                 except Exception:
                     pass
 
@@ -221,7 +236,7 @@ def verify_phase_deliverables(
     missing = []
     for file_path in phase.contract.exports:
         abs_path = _resolve_path(file_path, sandbox_base)
-        if not abs_path or not os.path.isfile(abs_path):
+        if not abs_path or not (_sbx_isfile(abs_path) if _SBX_FS_OK else os.path.isfile(abs_path)):
             missing.append(file_path)
 
     return {

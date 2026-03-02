@@ -301,18 +301,34 @@ def _extract_fix_content(llm_result: Any) -> Optional[str]:
 
     return content
 
+# v3.3-fix: Frontend path prefixes that must resolve to D:\orb-desktop
+_PC_FRONTEND_PREFIX = "orb-desktop/"
+_PC_FRONTEND_ROOT = r"D:\orb-desktop"
+_PC_FRONTEND_BARE_PREFIXES = ("src/", "public/")
+
 def _write_file_to_sandbox(
     client: Any,
     rel_path: str,
     content: str,
     sandbox_base: str,
 ) -> bool:
-    """Write a file to the sandbox filesystem."""
+    """Write a file to the sandbox filesystem.
+
+    v3.3-fix: Now resolves frontend paths (orb-desktop/ prefix or bare
+    src/, public/) to D:\\orb-desktop instead of D:\\Orb\\src.
+    """
     normed = rel_path.replace("/", "\\")
-    if not (normed.startswith("C:") or normed.startswith("D:")):
-        abs_path = f"{sandbox_base}\\{normed}"
-    else:
+    normalized_fwd = rel_path.replace("\\", "/")
+
+    if normed.startswith("C:") or normed.startswith("D:"):
         abs_path = normed
+    elif normalized_fwd.startswith(_PC_FRONTEND_PREFIX):
+        frontend_rel = normalized_fwd[len(_PC_FRONTEND_PREFIX):]
+        abs_path = _PC_FRONTEND_ROOT + "\\" + frontend_rel.replace("/", "\\")
+    elif any(normalized_fwd.startswith(bp) for bp in _PC_FRONTEND_BARE_PREFIXES):
+        abs_path = _PC_FRONTEND_ROOT + "\\" + normed
+    else:
+        abs_path = f"{sandbox_base}\\{normed}"
 
     try:
         # Use base64 encoding to avoid PowerShell escaping issues
@@ -356,7 +372,13 @@ def _write_file_to_sandbox(
         return False
 
 def _parse_boot_failure(stdout: str, stderr: str) -> Tuple[str, Optional[str]]:
-    """Parse boot test output to identify error and failing file."""
+    """Parse boot test output to identify error and failing file.
+
+    v3.2: For AttributeError on imported types (e.g. 'type object X has no
+    attribute Y'), traces the import chain to find the file that *defines*
+    the broken class, not just the file that *uses* it. This is critical
+    because the fix needs to be applied to the defining module.
+    """
     combined = stdout + "\n" + stderr
     err_keywords = (
         'Error', 'Traceback', 'ImportError', 'ModuleNotFoundError',
@@ -369,21 +391,112 @@ def _parse_boot_failure(stdout: str, stderr: str) -> Tuple[str, Optional[str]]:
     ]
     summary = "\n".join(err_lines[:5]) or "Unknown boot failure"
 
-    # Find the LAST File reference in the traceback -- that's the actual cause
-    failing_file = None
+    # Collect all File references in the traceback as relative paths
+    all_files_in_trace: list = []
     file_matches = list(re.finditer(r'File "([^"]+)"', combined))
+    for match in file_matches:
+        path = match.group(1)
+        rel = _strip_sandbox_prefix(path)
+        if rel and (rel.startswith("app") or rel.startswith("main")):
+            all_files_in_trace.append(rel)
+
+    # v3.2: For AttributeError on a type/class, find the IMPORT SOURCE.
+    # Pattern: "from app.builds.models import PipelineStage" in the using file,
+    # then "AttributeError: type object 'PipelineStage' has no attribute 'weaver'"
+    # The fix needs to go to app/builds/models.py, not the using file.
+    attr_match = re.search(
+        r"AttributeError: type object '(\w+)' has no attribute '(\w+)'",
+        combined,
+    )
+    if attr_match and all_files_in_trace:
+        class_name = attr_match.group(1)
+        # The last file in the traceback is the using file — look for
+        # where it imports the class FROM.
+        using_file = all_files_in_trace[-1] if all_files_in_trace else None
+        import_source = _trace_import_source(combined, using_file, class_name)
+        if import_source:
+            logger.info(
+                "[phase_checkout] v3.2 AttributeError traced: %s defined in %s (used in %s)",
+                class_name, import_source, using_file,
+            )
+            return (summary, import_source)
+
+    # Default: last File reference in the traceback is the cause
+    failing_file = None
     for match in reversed(file_matches):
         path = match.group(1)
-        for prefix in (r"D:\Orb\\", r"D:\Orb/", r"C:\Orb\\", r"C:\Orb/",
-                       r"C:\Orb\Orb\\", r"C:\Orb\Orb/"):
-            if path.lower().startswith(prefix.lower()):
-                failing_file = path[len(prefix):]
-                break
-        if failing_file:
-            # Skip Python standard library files
-            if not failing_file.startswith("app") and not failing_file.startswith("main"):
-                failing_file = None
-                continue
+        rel = _strip_sandbox_prefix(path)
+        if rel and (rel.startswith("app") or rel.startswith("main")):
+            failing_file = rel
             break
 
     return (summary, failing_file)
+
+
+def _strip_sandbox_prefix(path: str) -> Optional[str]:
+    """Strip D:\\Orb\\ or similar sandbox prefix from an absolute path."""
+    for prefix in (
+        r"D:\Orb\\", "D:\\Orb\\", r"D:\Orb/", "D:/Orb/",
+        r"C:\Orb\\", r"C:\Orb/",
+        r"C:\Orb\Orb\\", r"C:\Orb\Orb/",
+    ):
+        if path.lower().startswith(prefix.lower()):
+            return path[len(prefix):]
+    # Also handle double-backslash paths from traceback formatting
+    m = re.match(r'[CD]:\\+Orb\\+(.*)', path, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    return None
+
+
+def _trace_import_source(
+    combined_output: str, using_file: Optional[str], class_name: str,
+) -> Optional[str]:
+    """v3.2: Trace where a class is imported from by scanning the traceback.
+
+    Looks for 'from X import <class_name>' in the traceback context or
+    infers the source module from the import chain visible in the File
+    references.
+
+    For example, if the traceback shows:
+      File "D:\\Orb\\app\\builds\\service.py", line 13, in <module>
+        from app.builds.models import BuildProject, PipelineStage
+    and the error is AttributeError on PipelineStage, we return
+    'app/builds/models.py' (converted to relative path with os.sep).
+    """
+    # Strategy 1: Look for explicit 'from X import class_name' in traceback
+    import_pattern = re.compile(
+        r'from\s+([\w.]+)\s+import\s+[\w\s,]*\b' + re.escape(class_name) + r'\b',
+    )
+    m = import_pattern.search(combined_output)
+    if m:
+        module_path = m.group(1).replace('.', os.sep) + '.py'
+        return module_path
+
+    # Strategy 2: If the traceback has the file chain A -> B -> error,
+    # and B is the last file, check if the PREVIOUS file in the chain
+    # is the module that defines the type.
+    file_matches = list(re.finditer(r'File "([^"]+)"', combined_output))
+    app_files = []
+    for fm in file_matches:
+        rel = _strip_sandbox_prefix(fm.group(1))
+        if rel and (rel.startswith("app") or rel.startswith("main")):
+            app_files.append(rel)
+
+    # If the import chain shows: router.py -> service.py -> (error on line
+    # that references PipelineStage), then service.py is where the import
+    # statement is. We already handled this with Strategy 1 above.
+    # As a fallback, look at the penultimate file.
+    if len(app_files) >= 2:
+        penultimate = app_files[-2]
+        # If the penultimate file's module name contains the class name
+        # (e.g. models.py likely defines PipelineStage), prefer it
+        penult_stem = os.path.basename(penultimate).replace('.py', '').lower()
+        if penult_stem in ('models', 'schemas', 'types', 'enums', 'constants'):
+            logger.info(
+                "[phase_checkout] v3.2 Penultimate file %s is likely defining module",
+                penultimate,
+            )
+            return penultimate
+
+    return None

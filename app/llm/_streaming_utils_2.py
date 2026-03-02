@@ -38,18 +38,33 @@ def _env_model(var_name: str) -> Optional[str]:
     return v or None
 
 def get_available_streaming_providers() -> Dict[str, bool]:
-    """Get dict of available streaming providers."""
-    return {
+    """Get dict of available streaming providers.
+    
+    v3.2: Uses 'google' as key (matching provider name used in routing)
+    instead of legacy 'gemini' key.
+    """
+    result = {
         "openai": HAS_OPENAI and bool(os.getenv("OPENAI_API_KEY")),
         "anthropic": HAS_ANTHROPIC and bool(os.getenv("ANTHROPIC_API_KEY")),
-        "gemini": HAS_GEMINI and bool(os.getenv("GOOGLE_API_KEY")),
+        "google": HAS_GEMINI and bool(os.getenv("GOOGLE_API_KEY")),
     }
+    # v3.2 debug: log key lengths so we can diagnose sync issues
+    _oai = os.getenv("OPENAI_API_KEY", "")
+    _ant = os.getenv("ANTHROPIC_API_KEY", "")
+    _goo = os.getenv("GOOGLE_API_KEY", "")
+    if not all(result.values()):
+        print(f"[PROVIDER_AVAIL] Key lengths: OAI={len(_oai)}, ANT={len(_ant)}, GOO={len(_goo)}")
+    return result
 
 def get_available_streaming_provider() -> Optional[str]:
-    """Get the first available provider name."""
+    """Get the first available provider name.
+    
+    v3.2: Prioritises google > anthropic > openai to match current config.
+    """
     providers = get_available_streaming_providers()
-    for name, available in providers.items():
-        if available:
+    # Check in priority order matching current pipeline config
+    for name in ("google", "anthropic", "openai"):
+        if providers.get(name, False):
             return name
     return None
 

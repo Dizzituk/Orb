@@ -79,6 +79,12 @@ class FileBrief:
     feedback: List[str] = field(default_factory=list)  # Previous failure feedback
     design_notes: str = ""                          # From architecture document
 
+    # v1.1: Deterministic frozen import block (Job 2)
+    frozen_import_section: str = ""                  # Pre-rendered frozen import prompt section
+
+    # v1.2: Code scaffold (Job 6)
+    scaffold_section: str = ""                        # Pre-built code skeleton with [LLM_FILL] markers
+
     # Metadata
     estimated_lines: int = 0
     profile: str = ""
@@ -140,8 +146,10 @@ class FileBrief:
                     parts.append(f"Signature: `{func.signature}`")
                 parts.append("")
 
-        # Imports
-        if self.imports:
+        # Imports — v1.1: frozen imports take priority when available
+        if self.frozen_import_section:
+            parts.append(self.frozen_import_section)
+        elif self.imports:
             parts.append("## Required Imports")
             parts.append("")
             parts.append("```python")
@@ -169,6 +177,10 @@ class FileBrief:
                 for sibling, symbols in self.consumes_from.items():
                     parts.append(f"- `{sibling}`: {', '.join(f'`{s}`' for s in symbols)}")
                 parts.append("")
+
+        # v1.2: Code scaffold (Job 6) — before design notes for salience
+        if self.scaffold_section:
+            parts.append(self.scaffold_section)
 
         # Design notes from architecture (secondary context)
         if self.design_notes:
@@ -218,8 +230,13 @@ def build_instruction(
     profile: CompilerProfile,
     file_path: str,
     functions: List[FileFunction],
+    operation: str = "CREATE",
 ) -> str:
-    """Build the profile-specific directive for a file's brief."""
+    """Build the profile-specific directive for a file's brief.
+
+    v2.0: operation param ensures CREATE files get CREATE directives
+    even when the global profile is MODIFY.
+    """
 
     if profile == CompilerProfile.REFACTOR:
         func_names = ", ".join(f"`{f.name}`" for f in functions[:5])
@@ -255,6 +272,13 @@ def build_instruction(
         )
 
     elif profile == CompilerProfile.MODIFY:
+        if operation == "CREATE":
+            return (
+                "**CREATE MODE — NEW FILE**\n\n"
+                "This file does not exist yet. Implement it from scratch "
+                "following the design notes and interface contract below. "
+                "Ensure all exported symbols are defined."
+            )
         return (
             "**MODIFY MODE — UPDATE EXISTING FILE**\n\n"
             "This file already exists. Apply the specified changes while "

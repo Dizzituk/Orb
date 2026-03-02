@@ -3,8 +3,12 @@ import json
 import logging
 import os
 from app.orchestrator._cohesion_check_utils import _build_cohesion_prompt
-from app.orchestrator._cohesion_check_utils import _parse_cohesion_response
-from app.orchestrator.cohesion_check import attempt_auto_fixes, logger, run_skeleton_compliance
+# NOTE: _parse_cohesion_response imported at call site to avoid circular dependency
+# _utils_5 imports CohesionIssue from this file, creating a loop
+# NOTE: attempt_auto_fixes and run_skeleton_compliance imported at call sites
+# to avoid circular dependency (_utils_7/_utils_11 import CohesionResult from this file)
+import logging
+logger = logging.getLogger(__name__)
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
@@ -210,6 +214,7 @@ async def run_cohesion_check(
     # LAYER 1: Deterministic skeleton compliance
     # =========================================================================
     logger.info("[cohesion_check] Layer 1: Running skeleton compliance check")
+    from app.orchestrator._cohesion_check_utils_7 import run_skeleton_compliance
     layer1_issues = run_skeleton_compliance(
         architectures=architectures,
         skeleton_json=contract_json,
@@ -232,6 +237,7 @@ async def run_cohesion_check(
         result.notes = "Layer 1 (skeleton compliance) found blocking issues"
 
         # Attempt tiered auto-fix
+        from app.orchestrator._cohesion_check_utils_11 import attempt_auto_fixes
         result = await attempt_auto_fixes(
             result=result,
             job_dir=job_dir,
@@ -301,6 +307,7 @@ async def run_cohesion_check(
         llm_response = llm_result_obj.content if llm_result_obj else None
 
         if llm_response:
+            from app.orchestrator._cohesion_check_utils_5 import _parse_cohesion_response
             llm_result = _parse_cohesion_response(llm_response)
             result.issues.extend(llm_result.issues)
             if llm_result.notes:
@@ -328,6 +335,7 @@ async def run_cohesion_check(
         # Reload architectures in case Layer 1 auto-fix already patched some
         reloaded = load_segment_architectures(job_dir, list(architectures.keys()))
 
+        from app.orchestrator._cohesion_check_utils_11 import attempt_auto_fixes
         result = await attempt_auto_fixes(
             result=result,
             job_dir=job_dir,

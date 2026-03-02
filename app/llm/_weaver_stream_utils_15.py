@@ -7,9 +7,14 @@ from app.llm._weaver_stream_utils_14 import FEATURE_COMPONENT_INDICATORS, META_M
 from sqlalchemy.orm import Session
 from typing import Any, Dict, List, Tuple
 logger = logging.getLogger(__name__)
-logger = logging.getLogger(__name__)
-_MEMORY_AVAILABLE = True
-memory_service = None
+
+# Import memory service for _gather_ramble_messages
+try:
+    from app.memory import service as memory_service
+    _MEMORY_AVAILABLE = True
+except ImportError:
+    memory_service = None
+    _MEMORY_AVAILABLE = False
 
 
 def _gather_ramble_messages(db: Session, project_id: int, max_messages: int = 50) -> List[Dict[str, Any]]:
@@ -50,7 +55,7 @@ def _extract_vision_context(messages: List[Dict[str, Any]]) -> str:
     v3.9.0: Returns a string describing UI elements that were identified
     from screenshot analysis. This context is passed to SpecGate.
     """
-    from .weaver_stream import _is_vision_context
+    from ._weaver_stream_utils_10 import _is_vision_context
     vision_parts = []
     
     for msg in messages:

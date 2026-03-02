@@ -4,6 +4,10 @@ import re
 from app.pot_spec.grounded._simple_create_utils_12 import _CONTENT_SIGNALS, _NEGATIVE_PATH_SEGMENTS, _find_file_in_projects
 from typing import Any, Dict, List
 
+# v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
+# v4.3: Spec gate uses HOST filesystem, not sandbox.
+_SBX_FS_OK = False
+
 
 KEYWORD_STOPWORDS = {
     # Articles, prepositions, conjunctions
@@ -102,22 +106,15 @@ def _resolve_mentioned_files(
     return results
 
 ARCHITECTURAL_FILE_PATTERNS = [
-    # Frontend entry points and primary components
-    (r'^InputSection\.(tsx|jsx)$', "Primary text input component", "modify"),
-    (r'^ChatWindow\.(tsx|jsx)$', "Main chat interface", "modify"),
-    (r'^Header\.(tsx|jsx)$', "App header/toolbar", "modify"),
+    # v3.3: Tightened - NO files auto-flagged as "modify".
+    # The LLM decides what to modify based on the actual task.
+    # These are structural reference points only.
     (r'^App\.(tsx|jsx)$', "Root component", "reference"),
-    (r'^main\.(tsx|jsx)$', "Entry point", "reference"),
-    (r'^index\.(tsx|jsx)$', "Entry point", "reference"),
-    # Frontend API layer
-    (r'^api\.(ts|js)$', "API client layer", "modify"),
-    (r'^streamingApi\.(ts|js)$', "Streaming API client", "modify"),
-    # Backend entry points
+    (r'^main\.(tsx|jsx)$', "Frontend entry point", "reference"),
+    (r'^index\.(tsx|jsx)$', "Frontend entry point", "reference"),
     (r'^main\.py$', "Backend entry point", "reference"),
-    # Types/interfaces
     (r'^types\.(ts|d\.ts)$', "Type definitions", "reference"),
 ]
-
 def _score_integration_point(file_path: str, project_path: str) -> int:
     """
     v3.6: Score an integration point based on content signals and path heuristics.

@@ -71,6 +71,8 @@ class SegmentState:
     error: Optional[str] = None                # Error message if FAILED
     output_files: List[str] = field(default_factory=list)  # Files created/modified
     evidence_provided_to: List[str] = field(default_factory=list)  # Downstream recipients
+    impl_model: Optional[str] = None     # v3.2-fix: Which model implemented this segment
+    impl_provider: Optional[str] = None  # v3.2-fix: Which provider implemented this segment
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -81,6 +83,8 @@ class SegmentState:
             "error": self.error,
             "output_files": self.output_files,
             "evidence_provided_to": self.evidence_provided_to,
+            "impl_model": self.impl_model,
+            "impl_provider": self.impl_provider,
         }
 
     @classmethod
@@ -103,6 +107,8 @@ class SegmentState:
             error=data.get("error"),
             output_files=output_files,
             evidence_provided_to=evidence_provided_to,
+            impl_model=data.get("impl_model"),
+            impl_provider=data.get("impl_provider"),
         )
 
 

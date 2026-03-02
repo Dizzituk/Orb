@@ -106,3 +106,32 @@ def link_job(project_id: str, job_id: str, db: Session = Depends(get_db)):
     if not p:
         raise HTTPException(404, "Build project not found")
     return build_service.to_response(p)
+
+
+# ── Per-project messages ──
+
+@router.get("/{project_id}/messages")
+def get_project_messages(project_id: str, db: Session = Depends(get_db)):
+    """Get pipeline chat log for a build project."""
+    from app.builds.messages import get_messages, BuildMessageResponse
+    messages = get_messages(db, project_id)
+    return [BuildMessageResponse.model_validate(m) for m in messages]
+
+
+@router.post("/{project_id}/messages", status_code=201)
+def add_project_message(
+    project_id: str,
+    role: str = "pipeline",
+    content: str = "",
+    stage: str = None,
+    provider: str = None,
+    model: str = None,
+    db: Session = Depends(get_db),
+):
+    """Add a message to a build project's pipeline log."""
+    from app.builds.messages import add_message, BuildMessageResponse
+    msg = add_message(
+        db, project_id, role=role, content=content,
+        stage=stage, provider=provider, model=model,
+    )
+    return BuildMessageResponse.model_validate(msg)

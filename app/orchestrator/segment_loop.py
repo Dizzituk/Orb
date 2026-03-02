@@ -188,6 +188,18 @@ async def run_segment_through_pipeline(
     seg_arch_path = save_architecture(arch_text, seg_id, job_id, emit)
     show_file_inventory(arch_text, emit)
 
+    # --- Step 1a: Record architectural decisions to ledger ---
+    _seg_ledger = segment_context.get("_ledger")
+    if _seg_ledger:
+        try:
+            from app.orchestrator.ledger_arch_extractor import extract_and_record_decisions
+            extract_and_record_decisions(
+                arch_text=arch_text, seg_id=seg_id,
+                ledger=_seg_ledger, job_dir=job_dir_path, emit=emit,
+            )
+        except Exception as _led_err:
+            logger.debug("[SEGMENT_LOOP] Ledger decision extraction failed (non-fatal): %s", _led_err)
+
     # --- Step 1b: Import validation ---
     arch_text = await validate_imports_and_regen(
         arch_text, seg_id, seg_job_id, job_id, segment_context,
@@ -198,6 +210,33 @@ async def run_segment_through_pipeline(
     gate_result = check_approval_gate(seg_id, job_id, segment_context, seg_arch_path, emit)
     if gate_result is not None:
         return gate_result
+
+    # --- Step 2b: Scaffold Engine (deterministic code generation) ---
+    try:
+        from app.orchestrator.scaffold.integration import (
+            is_scaffold_enabled, run_scaffold_engine,
+        )
+        if is_scaffold_enabled():
+            scaffold_result = run_scaffold_engine(
+                arch_text=arch_text,
+                segment_id=seg_id,
+                job_dir=job_dir_path,
+                file_scope=file_scope,
+                emit=emit,
+            )
+            if scaffold_result and scaffold_result.file_count > 0:
+                segment_context["scaffold_result"] = scaffold_result
+                emit(
+                    f"  [SCAFFOLD] {scaffold_result.file_count} file(s) scaffolded, "
+                    f"{scaffold_result.total_fills} fill(s), "
+                    f"{scaffold_result.complete_files} fully deterministic"
+                )
+            else:
+                emit("  [SCAFFOLD] No files scaffolded — falling back to full LLM generation")
+        # else: scaffold disabled, silent pass-through
+    except Exception as scaffold_err:
+        logger.warning("[SEGMENT_LOOP] Scaffold engine error (non-fatal): %s", scaffold_err)
+        emit(f"  [SCAFFOLD] Error (non-fatal): {scaffold_err} — continuing with full LLM")
 
     # --- Step 3a: Overwatcher pre-flight ---
     emit(f"  🔧 Running Overwatcher for {seg_id}...")
@@ -268,6 +307,7 @@ async def run_segmented_job(
         distill_journal,
         emit_quarantine_status,
         emit_final_summary,
+        compact_evidence_ledger,
     )
 
     emit = on_progress or (lambda msg: None)
@@ -328,6 +368,7 @@ async def run_segmented_job(
     # --- Phase 7: Finalise ---
     distill_journal(ctx)
     emit_quarantine_status(ctx)
+    compact_evidence_ledger(ctx)
     emit_final_summary(ctx)
 
     return ctx.state

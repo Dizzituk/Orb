@@ -25,6 +25,7 @@ def build_dispatch_table(registry: Any) -> List[Dict[str, Any]]:
         error_name: Optional[str] for unavailable error messages
         error_module: Optional[str] for unavailable error messages
     """
+    import os
     from app.llm.translation_routing import _get_spec_gate_config, _get_critical_pipeline_config
     from app.llm.legacy_triggers import ARCHMAP_PROVIDER, ARCHMAP_MODEL
 
@@ -120,13 +121,20 @@ def build_dispatch_table(registry: Any) -> List[Dict[str, Any]]:
             "stage": "refactor_loop",
             "no_standard_args": True,
         },
-        # --- Overwatcher ---
+        # --- Implementer (was Overwatcher — v3.2 merged into single stage) ---
+        # v3.2-fix: Added provider_override so stage trace correctly shows
+        # the implementer's actual model (anthropic/claude-sonnet) instead
+        # of the stream router's default (google/gemini-flash).
         {
             "intent": CanonicalIntent.OVERWATCHER_EXECUTE_CHANGES,
             "available": registry._OVERWATCHER_AVAILABLE,
             "handler": registry.generate_overwatcher_stream,
-            "stage": "overwatcher",
+            "stage": "implementer",
             "needs_conversation_id": True,
+            "provider_override": lambda: (
+                os.getenv("IMPLEMENTER_PROVIDER", "anthropic"),
+                os.getenv("IMPLEMENTER_MODEL", "claude-sonnet-4-6"),
+            ),
         },
         # --- RAG Codebase Query ---
         {

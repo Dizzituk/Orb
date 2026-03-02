@@ -297,6 +297,81 @@ def run_deterministic_spec_compliance_check(
     print(f"[DEBUG] [critique]   arch_stack={arch_stack}")
     print(f"[DEBUG] [critique]   stack_locked={stack_locked}")
     
+    # v2.3: Extract segment file extensions to detect frontend-only segments.
+    # When ALL files in a segment are frontend (.tsx/.ts/.css/.jsx/.html),
+    # Python mentions in the conversation are about the backend, not this segment.
+    _segment_is_frontend_only = False
+    if spec_json:
+        try:
+            _spec_data = json.loads(spec_json) if isinstance(spec_json, str) else spec_json
+            _seg_files = []
+            # Check new_files and files_to_modify in the spec
+            for _section_key in ("new_files", "files_to_modify", "outputs"):
+                _section = _spec_data.get(_section_key, [])
+                if isinstance(_section, list):
+                    for _item in _section:
+                        _path = _item.get("path", "") if isinstance(_item, dict) else str(_item)
+                        if _path:
+                            _seg_files.append(_path)
+                elif isinstance(_section, dict):
+                    _seg_files.extend(_section.keys())
+            # v2.4: Also check file_scope (used by segment specs)
+            _fs = _spec_data.get("file_scope", "")
+            if isinstance(_fs, str) and _fs:
+                _seg_files.extend([p.strip() for p in _fs.split(",") if p.strip()])
+            elif isinstance(_fs, list):
+                _seg_files.extend([str(p) for p in _fs if p])
+            # v2.5: Also check estimated_files array and segment file lists
+            for _ef_key in ("estimated_files", "segment_files"):
+                _ef = _spec_data.get(_ef_key, [])
+                if isinstance(_ef, list):
+                    for _efi in _ef:
+                        _efp = _efi.get("path", "") if isinstance(_efi, dict) else str(_efi)
+                        if _efp and _efp not in _seg_files:
+                            _seg_files.append(_efp)
+            _FRONTEND_EXTS = {".tsx", ".ts", ".jsx", ".js", ".css", ".scss", ".html", ".svg"}
+            if _seg_files and all(
+                any(_f.lower().endswith(ext) for ext in _FRONTEND_EXTS)
+                for _f in _seg_files
+            ):
+                _segment_is_frontend_only = True
+                logger.info("[critique] v2.3 Segment is frontend-only (%d files, all %s) "
+                            "— skipping Python stack mismatch check",
+                            len(_seg_files), _FRONTEND_EXTS)
+        except Exception:
+            pass
+
+    # v2.5: Fallback — if no files found from spec, extract from architecture text
+    # This catches the case where spec_json is the parent spec (no file_scope)
+    # but the architecture clearly operates on frontend files only.
+    if not _segment_is_frontend_only and arch_content:
+        # Match both src/path/file.tsx and src\path\file.tsx formats
+        _arch_file_refs = re.findall(
+            r'(?:src[/\\][\w./\\-]+\.(?:tsx?|jsx?|css|scss|html|svg))',
+            arch_content,
+        )
+        # Also match bare filenames like EducationView.tsx
+        if not _arch_file_refs:
+            _arch_file_refs = re.findall(
+                r'\b[A-Z][\w-]*\.(?:tsx?|jsx?)\b',
+                arch_content,
+            )
+        if _arch_file_refs:
+            _FRONTEND_EXTS_CHECK = {".tsx", ".ts", ".jsx", ".js", ".css", ".scss", ".html", ".svg"}
+            _all_frontend = all(
+                any(_f.lower().endswith(ext) for ext in _FRONTEND_EXTS_CHECK)
+                for _f in _arch_file_refs
+            )
+            # Also check no .py files are referenced in the architecture
+            _has_py_files = bool(re.search(r'(?:src|app)[/\\][\w/\\-]+\.py', arch_content))
+            if _all_frontend and not _has_py_files:
+                _segment_is_frontend_only = True
+                logger.info(
+                    "[critique] v2.5 Architecture references %d frontend file(s) and no .py files "
+                    "— treating as frontend-only segment",
+                    len(_arch_file_refs),
+                )
+
     # Check 1: STACK MISMATCH
     python_discussed = any("Python" in s for s in all_discussed_stack)
     ts_js_in_arch = any(
@@ -304,7 +379,7 @@ def run_deterministic_spec_compliance_check(
         if "TypeScript" in s or "JavaScript" in s or "Node" in s or "Electron" in s or "React" in s
     )
     
-    if python_discussed and ts_js_in_arch and not any("Python" in s for s in arch_stack):
+    if python_discussed and ts_js_in_arch and not any("Python" in s for s in arch_stack) and not _segment_is_frontend_only:
         issue_counter += 1
         lock_indicator = " [LOCKED]" if stack_locked else ""
         issues.append(CritiqueIssue(

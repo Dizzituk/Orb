@@ -56,6 +56,10 @@ def _read_file_via_sandbox(client: SandboxClient, path: str) -> Optional[str]:
 def _write_file_via_sandbox(client: SandboxClient, path: str, content: str) -> bool:
     """Write file content to sandbox via Base64 PowerShell command."""
     try:
+        # v3.4-fix: Strip surviving scaffold markers before write
+        from app.overwatcher._implementer_utils_6 import _strip_scaffold_markers
+        content = _strip_scaffold_markers(content, path)
+
         cmd = _build_write_command(path, content)
         result = client.shell_run(cmd, timeout_seconds=WRITE_TIMEOUT)
         

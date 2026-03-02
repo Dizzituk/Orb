@@ -18,6 +18,7 @@ v1.1 (2026-02-19): Added _sanitise_python_content and _check_python_syntax
 
 import ast
 import logging
+import os
 import re
 from typing import Any, Optional, Tuple
 
@@ -27,6 +28,7 @@ __all__ = [
     "_extract_llm_content",
     "_strip_markdown_fences",
     "_sanitise_python_content",
+    "_sanitise_typescript_content",
     "_check_python_syntax",
 ]
 
@@ -227,6 +229,140 @@ def _sanitise_python_content(content: str, file_path: str = "") -> Tuple[str, li
             )
             logger.warning(
                 "[helpers] v1.1 Stripped %d lines of markdown preamble from %s: %s",
+                preamble_end, file_path, stripped_text[:100],
+            )
+        content = '\n'.join(lines[preamble_end:])
+
+    return content, warnings
+
+
+# =============================================================================
+# v1.3: DETERMINISTIC TYPESCRIPT/JSX VALIDATION
+# =============================================================================
+
+# Valid TypeScript/JSX opening patterns.
+_TS_COMMENT_SINGLE = re.compile(r'^\s*//')
+_TS_COMMENT_BLOCK = re.compile(r'^\s*/\*')
+_TS_IMPORT = re.compile(r'^\s*import\s')
+_TS_EXPORT = re.compile(r'^\s*export\s')
+_TS_CONST = re.compile(r'^\s*const\s')
+_TS_LET = re.compile(r'^\s*let\s')
+_TS_VAR = re.compile(r'^\s*var\s')
+_TS_FUNCTION = re.compile(r'^\s*(?:async\s+)?function\s')
+_TS_CLASS = re.compile(r'^\s*class\s')
+_TS_INTERFACE = re.compile(r'^\s*interface\s')
+_TS_TYPE = re.compile(r'^\s*type\s+\w')
+_TS_ENUM = re.compile(r'^\s*enum\s')
+_TS_DECORATOR = re.compile(r'^\s*@')
+_TS_SHEBANG = re.compile(r'^#!')
+
+_TYPESCRIPT_START_PATTERNS = [
+    _TS_COMMENT_SINGLE,
+    _TS_COMMENT_BLOCK,
+    _TS_IMPORT,
+    _TS_EXPORT,
+    _TS_CONST,
+    _TS_LET,
+    _TS_VAR,
+    _TS_FUNCTION,
+    _TS_CLASS,
+    _TS_INTERFACE,
+    _TS_TYPE,
+    _TS_ENUM,
+    _TS_DECORATOR,
+    _TS_SHEBANG,
+    _PY_BLANK,  # Reuse: blank lines are fine in TS too
+]
+
+_TS_EXTENSIONS = {'.ts', '.tsx', '.jsx', '.js'}
+
+
+def _sanitise_typescript_content(content: str, file_path: str = "") -> Tuple[str, list]:
+    """Strip non-TypeScript preamble from LLM-generated content.
+
+    v1.3 (2026-03-01): Parallel to _sanitise_python_content for TS/TSX/JSX
+    files. The Implementer LLM sometimes prepends markdown architecture
+    notes, SSE progress headers, or commentary before the actual code.
+    This function detects and removes that preamble.
+
+    Args:
+        content: Raw LLM output (after markdown fence stripping).
+        file_path: For logging context.
+
+    Returns:
+        (cleaned_content, warnings) where warnings is a list of strings
+        describing what was stripped.
+    """
+    ext = os.path.splitext(file_path)[1].lower() if file_path else ''
+    if not content or ext not in _TS_EXTENSIONS:
+        return content, []
+
+    lines = content.split('\n')
+    warnings = []
+    preamble_end = 0
+    found_ts_start = False
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+
+        # Blank lines before code starts are fine
+        if not stripped:
+            continue
+
+        # Check if this looks like valid TypeScript
+        is_ts = any(p.match(line) for p in _TYPESCRIPT_START_PATTERNS)
+        if is_ts:
+            found_ts_start = True
+            preamble_end = i
+            break
+
+        # Check if this looks like markdown
+        is_markdown = any(p.match(line) for p in _MARKDOWN_LINE_PATTERNS)
+        if is_markdown:
+            continue  # Keep scanning
+
+        # Unrecognised line — keep scanning
+        continue
+
+    if not found_ts_start:
+        # Same all-prose detection as Python sanitiser
+        non_blank_lines = [l for l in lines if l.strip()]
+        markdown_count = sum(
+            1 for l in non_blank_lines
+            if any(p.match(l) for p in _MARKDOWN_LINE_PATTERNS)
+        )
+        _content_lower = content.lower()
+        _prose_indicators = [
+            "the following", "copy implementation", "exports:",
+            "do not rename", "must define", "this file",
+            "source files are being", "## ", "**",
+        ]
+        _has_prose_markers = any(ind in _content_lower for ind in _prose_indicators)
+        _high_markdown_ratio = (
+            len(non_blank_lines) > 0
+            and (markdown_count / len(non_blank_lines)) > 0.3
+        )
+        if _has_prose_markers or _high_markdown_ratio or len(non_blank_lines) > 3:
+            warning = (
+                f"v1.3 ALL_PROSE_REJECTED: {file_path} — content is 100% "
+                f"markdown/prose with no TypeScript code detected "
+                f"({len(non_blank_lines)} lines, {markdown_count} markdown). "
+                f"First line: {non_blank_lines[0][:100] if non_blank_lines else '(empty)'}..."
+            )
+            logger.error("[helpers] %s", warning)
+            return "", [warning]
+        return content, []
+
+    if preamble_end > 0:
+        stripped_lines = lines[:preamble_end]
+        stripped_text = '\n'.join(stripped_lines).strip()
+        if stripped_text:
+            warnings.append(
+                f"v1.3 SANITISE: Stripped {preamble_end} line(s) of non-TS "
+                f"preamble from {file_path}: {stripped_text[:150]}..."
+            )
+            logger.warning(
+                "[helpers] v1.3 Stripped %d lines of markdown preamble from %s: %s",
                 preamble_end, file_path, stripped_text[:100],
             )
         content = '\n'.join(lines[preamble_end:])

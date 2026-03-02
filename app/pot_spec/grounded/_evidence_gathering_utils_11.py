@@ -6,8 +6,6 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
-_SANDBOX_CLIENT_AVAILABLE = True
-call_fs_tree = None
 _MULTI_TARGET_AVAILABLE = True
 _SYSTEM_SCAN_AVAILABLE = True
 _CREATE_TARGET_AVAILABLE = True
@@ -15,94 +13,81 @@ extract_file_targets = None
 extract_scan_file_names = None
 extract_create_targets = None
 
+# v3.2-fix: Import centralised sandbox filesystem helpers.
+# These replace the broken call_fs_tree wiring that was always None.
+try:
+    from app.sandbox_fs import (
+        sandbox_exists as _sf_exists,
+        sandbox_isfile as _sf_isfile,
+        sandbox_listdir as _sf_listdir,
+        sandbox_file_size as _sf_file_size,
+    )
+    _SANDBOX_FS_AVAILABLE = True
+except ImportError:
+    _SANDBOX_FS_AVAILABLE = False
+    logger.error("[evidence_gathering] v3.2 CRITICAL: app.sandbox_fs not available")
+
 
 def sandbox_path_exists(path: str) -> Tuple[bool, Optional[Dict]]:
     """
-    v1.26: Check if a path exists in the SANDBOX filesystem.
-    
-    Uses call_fs_tree to check existence via sandbox controller.
-    v1.26.1: Case-insensitive matching on Windows.
-    
+    v1.26 / v3.2-fix: Check if a path exists in the SANDBOX filesystem.
+
+    v3.2-fix: Now uses centralised app.sandbox_fs helpers instead of
+    the broken call_fs_tree wiring (which was always None, causing
+    every call to fall back to host os.path.exists).
+
     Returns:
         (exists: bool, file_info: Optional[Dict])
         file_info contains 'size', 'mtime', 'actual_path' if file exists
     """
-    if not _SANDBOX_CLIENT_AVAILABLE or not call_fs_tree:
-        logger.warning("[evidence_gathering] v1.26 sandbox_path_exists: sandbox client not available, falling back to os.path.exists")
-        exists = os.path.exists(path)
-        return exists, None
+    if not _SANDBOX_FS_AVAILABLE:
+        logger.error("[evidence_gathering] v3.2 sandbox_path_exists: sandbox_fs not available — REFUSING to fall back to host")
+        return False, None
     
     try:
-        # Check if parent directory exists and contains this file/folder
-        parent_dir = os.path.dirname(path)
-        target_name = os.path.basename(path)
-        
-        logger.info("[evidence_gathering] v1.26.1 sandbox_path_exists: checking %s", path)
-        
-        status, data, error = call_fs_tree([parent_dir], max_files=100)
-        
-        if status != 200 or not data:
-            # v1.26.1: If parent doesn't exist, try case variations
-            # Try common case variations for Desktop/Documents/Test folders
-            parent_variations = [
-                parent_dir,
-                parent_dir.replace('\\Test', '\\test'),
-                parent_dir.replace('\\test', '\\Test'),
-                parent_dir.replace('Desktop\\Test', 'Desktop\\test'),
-                parent_dir.replace('Desktop\\test', 'Desktop\\Test'),
+        logger.info("[evidence_gathering] v3.2 sandbox_path_exists: checking %s", path)
+
+        # v3.2-fix: Use centralised sandbox_fs helpers (always hits sandbox,
+        # never falls back to host os.path).
+        found = _sf_exists(path)
+        if not found:
+            # Case-insensitive retry for common variations
+            variations = [
+                path.replace('\\Test', '\\test'),
+                path.replace('\\test', '\\Test'),
             ]
-            
-            for parent_var in parent_variations[1:]:  # Skip first, already tried
-                if parent_var == parent_dir:
-                    continue
-                status, data, error = call_fs_tree([parent_var], max_files=100)
-                if status == 200 and data:
-                    parent_dir = parent_var
-                    logger.info(
-                        "[evidence_gathering] v1.26.1 Found parent with case variation: %s",
-                        parent_var
-                    )
+            for var in variations:
+                if var != path and _sf_exists(var):
+                    path = var
+                    found = True
                     break
-            
-            if status != 200 or not data:
-                logger.info(
-                    "[evidence_gathering] v1.26.1 sandbox_path_exists: parent dir check failed for %s (status=%s, error=%s)",
-                    parent_dir, status, error
-                )
-                return False, None
-        
-        files = data.get("files", [])
-        
-        # Look for match (case-insensitive on Windows)
-        for f in files:
-            f_path = f.get("path", "") if isinstance(f, dict) else str(f)
-            f_name = os.path.basename(f_path)
-            
-            # v1.26.1: Case-insensitive comparison
-            if f_name.lower() == target_name.lower():
-                file_info = {
-                    "path": f_path,  # Return ACTUAL path from filesystem
-                    "actual_path": f_path,
-                    "size": f.get("size") if isinstance(f, dict) else None,
-                    "mtime": f.get("mtime") if isinstance(f, dict) else None,
-                    "is_dir": f.get("is_dir", False) if isinstance(f, dict) else False,
-                }
-                logger.info(
-                    "[evidence_gathering] v1.26.1 sandbox_path_exists: FOUND %s (actual: %s, size=%s)",
-                    path, f_path, file_info.get("size")
-                )
-                return True, file_info
-        
+
+        if not found:
+            logger.info(
+                "[evidence_gathering] v3.2 sandbox_path_exists: NOT FOUND %s",
+                path,
+            )
+            return False, None
+
+        # Build file_info from sandbox
+        size = _sf_file_size(path)
+        file_info = {
+            "path": path,
+            "actual_path": path,
+            "size": size,
+            "mtime": None,
+            "is_dir": not _sf_isfile(path),
+        }
         logger.info(
-            "[evidence_gathering] v1.26.1 sandbox_path_exists: NOT FOUND %s in %d files",
-            target_name, len(files)
+            "[evidence_gathering] v3.2 sandbox_path_exists: FOUND %s (size=%s)",
+            path, size,
         )
-        return False, None
-        
+        return True, file_info
+
     except Exception as e:
-        logger.warning(
-            "[evidence_gathering] v1.26 sandbox_path_exists: exception checking %s: %s",
-            path, e
+        logger.error(
+            "[evidence_gathering] v3.2 sandbox_path_exists: exception checking %s: %s",
+            path, e,
         )
         return False, None
 

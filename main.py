@@ -52,7 +52,10 @@ from app.content.engagement.router import router as engagement_router
 import app.content.engagement.models  # noqa: F401 — register Engagement tables with Base
 from app.builds.router import router as builds_router
 import app.builds.models  # noqa: F401 — register Build Projects tables with Base
+import app.builds.messages  # noqa: F401 — register Build Project Messages table with Base
 from app.settings.router import router as settings_router
+from app.transparency.router import router as transparency_router
+import app.transparency.models  # noqa: F401 — register Transparency tables with Base
 
 # Import refactored endpoints
 from app.endpoints import router as endpoints_router
@@ -240,6 +243,18 @@ def on_startup():
     except Exception as e:
         print(f"[startup] Confidence graduation skipped: {e}")
 
+    # v3.2-fix: Recover build projects with stale 'running' stages
+    try:
+        from app.builds.service import recover_stale_running_stages
+        from app.db import SessionLocal
+        _bdb = SessionLocal()
+        _reset_count = recover_stale_running_stages(_bdb)
+        if _reset_count > 0:
+            print(f"[startup] Builds recovery: reset {_reset_count} stale running stage(s)")
+        _bdb.close()
+    except Exception as e:
+        print(f"[startup] Builds recovery skipped: {e}")
+
 
 # ============================================================================
 # ROUTERS
@@ -275,6 +290,9 @@ app.include_router(builds_router)
 
 # Settings (API key management)
 app.include_router(settings_router)
+
+# Pipeline Transparency & User Feedback
+app.include_router(transparency_router)
 
 # Investments dashboard (portfolio, crypto, snapshots)
 from app.investments.router import router as investments_router
@@ -388,6 +406,30 @@ def read_index():
 def ping():
     """Health check endpoint."""
     return {"status": "ok"}
+
+
+@app.post("/admin/reset-flow/{project_id}")
+def reset_flow(project_id: int, auth=Depends(require_auth)):
+    """Reset spec flow state back to awaiting_spec_gate_confirm.
+
+    Preserves the Weaver output and vision context so 'Send to Spec Gate'
+    can be re-triggered without re-running the Weaver.
+    """
+    from app.llm.spec_flow_state import get_active_flow, set_flow_state, SpecFlowStage, _FLOW_STATES
+    state = _FLOW_STATES.get(project_id)
+    if not state:
+        return {"error": f"No flow state for project {project_id}"}
+    old_stage = state.stage.value
+    state.stage = SpecFlowStage.AWAITING_SPEC_GATE_CONFIRM
+    set_flow_state(state)
+    return {
+        "reset": True,
+        "project_id": project_id,
+        "old_stage": old_stage,
+        "new_stage": state.stage.value,
+        "weaver_output_preserved": bool(state.weaver_job_description),
+        "vision_context_preserved": bool(state.weaver_vision_context),
+    }
 
 
 # ============================================================================

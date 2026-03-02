@@ -103,6 +103,14 @@ async def run_high_stakes_with_critique(
     segment_contract_markdown: Optional[str] = None,
     segment_file_scope: Optional[List[str]] = None,
     enrichment_markdown: Optional[str] = None,
+    # v3.0: Deterministic verdict parameters
+    segment_id: Optional[str] = None,
+    segment_spec: Optional[Dict[str, Any]] = None,
+    skeleton_contract: Optional[Dict[str, Any]] = None,
+    skeleton_file_scope_det: Optional[List[str]] = None,
+    enrichment_data: Optional[Dict[str, Any]] = None,
+    manifest_dict: Optional[Dict[str, Any]] = None,
+    needle_estimate: Optional[int] = None,
 ) -> LLMResult:
     """Run high-stakes critique pipeline.
 
@@ -169,6 +177,14 @@ async def run_high_stakes_with_critique(
             segment_file_scope=segment_file_scope,
             enrichment_markdown=enrichment_markdown,
             trace=trace, audit_logger=audit_logger,
+            # v3.0: Deterministic verdict parameters
+            segment_id=segment_id,
+            segment_spec=segment_spec,
+            skeleton_contract=skeleton_contract,
+            skeleton_file_scope=skeleton_file_scope_det,
+            enrichment_data=enrichment_data,
+            manifest_dict=manifest_dict,
+            needle_estimate=needle_estimate,
         )
     else:
         return await run_legacy_pipeline(
@@ -270,14 +286,17 @@ async def _draft_with_evidence_loop(
             return StageResult(output="", success=False, error=str(exc))
 
     # Load evidence bundle
+    # v3.2: Codebase report DISABLED — stale bulk dump that adds noise.
+    # Architecture gets arch_map + segment-scoped evidence + evidence ledger.
+    # Overwatcher retains full project visibility for cross-segment oversight.
     evidence_bundle = None
     try:
         from app.pot_spec.evidence_collector import load_evidence
-        evidence_bundle = load_evidence()
+        evidence_bundle = load_evidence(include_codebase_report=False)
     except Exception:
         pass
 
-    max_loops = int(os.getenv("ASTRA_EVIDENCE_MAX_LOOPS", "2"))
+    max_loops = int(os.getenv("ASTRA_CP_EVIDENCE_MAX_LOOPS", os.getenv("ASTRA_EVIDENCE_MAX_LOOPS", "6")))  # v3.3: Separate CP ceiling, inherits from global
     stage_result = await run_stage_with_evidence(
         stage_name="critical", stage_fn=_stage_fn,
         context=JobContext(evidence_bundle=evidence_bundle), max_loops=max_loops,

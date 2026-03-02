@@ -8,7 +8,36 @@ logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 
 
-BUILD_ID = "2026-02-18-v1.3-llm-assignment-conflict-guard"
+BUILD_ID = "2026-02-28-v2.0-ownership-scoped-enrichment"
+
+
+def _map_source_ownership(
+    segments: list,
+    source_evidence: Dict[str, str],
+) -> Dict[str, Dict[str, str]]:
+    """Map each segment to the source files it owns (existing files in its file_scope).
+
+    Returns {segment_id: {rel_path: content}} — only files that exist on disk
+    and appear in source_evidence.  Segments with only CREATE targets get an
+    empty dict.
+    """
+    import os
+    ownership: Dict[str, Dict[str, str]] = {}
+    # Normalise source_evidence keys for matching
+    norm_evidence = {
+        k.replace("/", os.sep).replace("\\", os.sep).lower(): (k, v)
+        for k, v in source_evidence.items()
+    }
+    for seg in segments:
+        seg_sources: Dict[str, str] = {}
+        for rel_path in seg.file_scope:
+            norm = rel_path.replace("/", os.sep).replace("\\", os.sep).lower()
+            if norm in norm_evidence:
+                orig_key, content = norm_evidence[norm]
+                seg_sources[orig_key] = content
+        ownership[seg.segment_id] = seg_sources
+    return ownership
+
 
 async def enrich_segments(
     manifest: Any,
@@ -18,10 +47,13 @@ async def enrich_segments(
     project_id: int,
 ) -> Dict[str, Dict]:
     """
-    Main entry point for Stage 4B.
+    Main entry point for Stage 4B — ownership-scoped enrichment.
 
-    Runs all three layers sequentially and returns a dict of
-    {segment_id: enrichment_dict} for every segment in the manifest.
+    v2.0: Each segment is only enriched from source files it owns
+    (files in its file_scope that exist on disk).  Segments with only
+    CREATE targets (no existing source) get empty enrichment.  This
+    prevents cross-contamination where e.g. main.py functions get
+    incorrectly assigned to unrelated CREATE segments.
 
     Args:
         manifest: SegmentManifest instance
@@ -43,9 +75,27 @@ async def enrich_segments(
         logger.info("[SEGMENT_ENRICHMENT] < 2 segments — skipping enrichment")
         return {}
 
-    # Identify the primary source file (the monolith being refactored).
-    # In a typical refactor there's one large source file that all segments
-    # extract from.  If multiple source files exist, process the largest.
+    # v2.0: Map each segment to its owned source files (existing files only).
+    # Segments with only CREATE targets get empty ownership = no enrichment.
+    seg_ownership = _map_source_ownership(segments, source_evidence)
+    segs_with_source = {
+        sid: files for sid, files in seg_ownership.items() if files
+    }
+    if not segs_with_source:
+        logger.info(
+            "[SEGMENT_ENRICHMENT] v2.0 No segments own existing source files "
+            "(pure CREATE job) — skipping enrichment"
+        )
+        return {}
+
+    logger.info(
+        "[SEGMENT_ENRICHMENT] v2.0 Ownership map: %d/%d segment(s) own source files: %s",
+        len(segs_with_source), len(segments),
+        {sid: list(files.keys()) for sid, files in segs_with_source.items()},
+    )
+
+    # For backward compat with Layer 2/3 code that expects a single source_path,
+    # pick the largest owned file across all segments.
     source_path, source_code = _pick_primary_source(source_evidence)
     if not source_code:
         logger.warning("[SEGMENT_ENRICHMENT] No parseable source code found")
@@ -120,36 +170,102 @@ async def enrich_segments(
     )
 
     # =====================================================================
-    # Layer 3: LLM intelligence pass (one call per job)
+    # Layer 3: Deterministic intelligence pass (v3.0 — zero LLM calls)
     # Resolves unassigned symbols AND generates ordering/guidance/risk
     # =====================================================================
-    experience_patterns = _load_experience_patterns(db, manifest)
-
-    llm_intelligence = await _generate_implementation_intelligence(
-        manifest=manifest,
-        symbol_map=symbol_map,
-        extractions=per_segment_extractions,
-        unassigned_symbols=unassigned,
-        experience_patterns=experience_patterns,
-        source_path=source_path,
-    )
-
-    # Apply LLM assignments for previously unassigned symbols
-    if llm_intelligence and llm_intelligence.get("symbol_assignments"):
-        _apply_llm_assignments(
-            llm_intelligence["symbol_assignments"],
-            assignments,
-            per_segment_extractions,
-            all_symbols,
-            source_code,
-            segments,
+    llm_intelligence = None
+    try:
+        from app.orchestrator.enrichment_deterministic_layer3 import (
+            resolve_unassigned_symbols,
+            generate_deterministic_intelligence,
         )
-        # Rebuild symbol map with newly assigned symbols
-        symbol_map = _build_symbol_map(segments, per_segment_extractions)
-        logger.info(
-            "[SEGMENT_ENRICHMENT] Layer 3: LLM resolved %d additional symbol(s)",
-            len(llm_intelligence.get("symbol_assignments", {})),
+
+        # Resolve unassigned symbols with 5-heuristic cascade
+        det_resolved = resolve_unassigned_symbols(
+            unassigned=unassigned,
+            segments=segments,
+            assignments=assignments,
+            all_symbols=all_symbols,
+            source_code=source_code,
+            source_path=source_path,
         )
+
+        # Apply deterministic assignments
+        if det_resolved:
+            _apply_llm_assignments(
+                det_resolved,
+                assignments,
+                per_segment_extractions,
+                all_symbols,
+                source_code,
+                segments,
+            )
+            symbol_map = _build_symbol_map(segments, per_segment_extractions)
+            logger.info(
+                "[SEGMENT_ENRICHMENT] Layer 3 (det): resolved %d/%d symbol(s)",
+                len(det_resolved), len(unassigned),
+            )
+
+        # Generate ordering, risk, guidance deterministically
+        llm_intelligence = generate_deterministic_intelligence(
+            manifest=manifest,
+            symbol_map=symbol_map,
+            extractions=per_segment_extractions,
+            source_path=source_path,
+        )
+        logger.info("[SEGMENT_ENRICHMENT] Layer 3 (det): intelligence generated")
+
+    except ImportError:
+        logger.warning("[SEGMENT_ENRICHMENT] v3.0 det layer3 not available — falling back to LLM")
+        # Fallback to LLM if deterministic module unavailable
+        experience_patterns = _load_experience_patterns(db, manifest)
+        llm_intelligence = await _generate_implementation_intelligence(
+            manifest=manifest,
+            symbol_map=symbol_map,
+            extractions=per_segment_extractions,
+            unassigned_symbols=unassigned,
+            experience_patterns=experience_patterns,
+            source_path=source_path,
+        )
+        if llm_intelligence and llm_intelligence.get("symbol_assignments"):
+            _apply_llm_assignments(
+                llm_intelligence["symbol_assignments"],
+                assignments,
+                per_segment_extractions,
+                all_symbols,
+                source_code,
+                segments,
+            )
+            symbol_map = _build_symbol_map(segments, per_segment_extractions)
+    except Exception as _det_l3_err:
+        logger.warning("[SEGMENT_ENRICHMENT] v3.0 det layer3 error: %s", _det_l3_err)
+        # Non-fatal — proceed without Layer 3 intelligence
+
+    # =====================================================================
+    # v2.0: OWNERSHIP FILTER — strip symbols from segments that don't own
+    # the source file.  Only segments with existing source files in their
+    # file_scope keep their assigned symbols.  CREATE-only segments get
+    # wiped clean so they don't inherit unrelated code from other files.
+    # =====================================================================
+    for seg in segments:
+        seg_id = seg.segment_id
+        if seg_id not in segs_with_source:
+            # This segment owns no existing source files — clear all assignments
+            removed = len(assignments.get(seg_id, []))
+            if removed > 0:
+                logger.info(
+                    "[SEGMENT_ENRICHMENT] v2.0 OWNERSHIP FILTER: %s owns no source "
+                    "files — removed %d incorrectly assigned symbol(s): %s",
+                    seg_id, removed, assignments[seg_id],
+                )
+                assignments[seg_id] = []
+                per_segment_extractions[seg_id] = {
+                    "constants": [], "functions": [], "classes": [],
+                    "imports": [], "module_level": [],
+                }
+
+    # Rebuild symbol map after ownership filter
+    symbol_map = _build_symbol_map(segments, per_segment_extractions)
 
     # =====================================================================
     # v1.4: POST-ASSIGNMENT DUPLICATE FUNCTION DETECTION

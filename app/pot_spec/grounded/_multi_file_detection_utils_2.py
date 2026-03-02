@@ -130,7 +130,7 @@ def _detect_multi_file_intent(
         r"\bui\s+to\s+[a-z]",  # "UI to Astra"
         r"\bto\s+astra\b",  # explicit "to Astra"
         r"\borb\s+to\s+astra\b",  # explicit "Orb to Astra"
-        r"\breplace\s+.*?\s+with\s",  # "replace ... with"
+        r"\breplace\s+['\"][^'\"]+['\"]\s+with\s",  # "replace 'X' with" (quoted terms only)
         r"\bchange\s+.*?\s+to\s+astra\b",  # "change ... to Astra"
         r"\bso\s+it'?s\s+called\b",  # "so it's called"
         r"\bcalled\s+astra\b",  # "called Astra"

@@ -33,6 +33,14 @@ async def run_artifact_pipeline(
     enrichment_markdown: Optional[str],
     trace: Any,
     audit_logger: Any,
+    # v3.0: Deterministic verdict parameters
+    segment_id: Optional[str] = None,
+    segment_spec: Optional[Dict[str, Any]] = None,
+    skeleton_contract: Optional[Dict[str, Any]] = None,
+    skeleton_file_scope: Optional[List[str]] = None,
+    enrichment_data: Optional[Dict[str, Any]] = None,
+    manifest_dict: Optional[Dict[str, Any]] = None,
+    needle_estimate: Optional[int] = None,
 ) -> LLMResult:
     """Run Block 4-6 artifact pipeline with JSON critique and revision loop."""
     from app.llm.pipeline._high_stakes_helpers import (
@@ -89,6 +97,14 @@ async def run_artifact_pipeline(
         store_architecture_fn=store_architecture_artifact,
         segment_contract_markdown=segment_contract_markdown,
         enrichment_markdown=enrichment_markdown,
+        # v3.0: Deterministic verdict parameters
+        segment_id=segment_id,
+        segment_spec=segment_spec,
+        skeleton_contract=skeleton_contract,
+        skeleton_file_scope=skeleton_file_scope,
+        enrichment_data=enrichment_data,
+        manifest_dict=manifest_dict,
+        needle_estimate=needle_estimate,
     )
 
     if trace:

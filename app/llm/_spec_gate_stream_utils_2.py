@@ -6,10 +6,25 @@ from sqlalchemy.orm import Session
 from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
-get_spec_gate_config = None
-_FLOW_STATE_AVAILABLE = True
-get_active_flow = None
-specs_service = None
+# Import stage config for spec gate model resolution
+try:
+    from app.llm.stage_models import get_spec_gate_config
+except ImportError:
+    get_spec_gate_config = None
+
+# Import flow state for weaver job description
+try:
+    from app.llm.spec_flow_state import get_active_flow
+    _FLOW_STATE_AVAILABLE = True
+except ImportError:
+    get_active_flow = None
+    _FLOW_STATE_AVAILABLE = False
+
+# Import specs service for DB fallback (Weaver draft spec lookup)
+try:
+    from app.specs import service as specs_service
+except ImportError:
+    specs_service = None
 
 
 _USE_GROUNDED_SPEC_GATE = os.getenv("USE_GROUNDED_SPEC_GATE", "1") == "1"

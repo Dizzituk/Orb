@@ -8,9 +8,17 @@ from sqlalchemy.orm import Session
 from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
-specs_service = None
-SpecSchema = None
-SpecProvenance = None
+try:
+    from app.specs import service as specs_service
+except Exception:
+    specs_service = None
+try:
+    from app.specs.schema import Spec as SpecSchema
+    from app.specs.schema import SpecProvenance, SpecStatus
+except Exception:
+    SpecSchema = None
+    SpecProvenance = None
+    SpecStatus = None
 
 
 SPEC_GATE_PERSISTENCE_BUILD_ID = "2026-01-30-v2.3.2-always-persist-multi-target"

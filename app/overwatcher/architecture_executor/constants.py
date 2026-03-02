@@ -40,6 +40,12 @@ INTERFACE_SUMMARY_MAX_CHARS = 50000
 FRONTEND_PREFIX = "orb-desktop/"
 FRONTEND_ROOT = r"D:\orb-desktop"
 
+# v3.2-fix: Additional prefixes that unambiguously indicate frontend paths.
+# Architecture docs sometimes use bare "src/" or "public/" without the
+# orb-desktop/ prefix. These directories only exist under orb-desktop/,
+# not under D:\Orb, so routing them to FRONTEND_ROOT is safe.
+FRONTEND_BARE_PREFIXES = ("src/", "public/")
+
 # LLM system prompts
 
 IMPLEMENTER_NEW_FILE_SYSTEM = """You are a code implementation agent. You receive an architecture specification for a single file and you generate the COMPLETE file content.

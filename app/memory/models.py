@@ -139,6 +139,16 @@ class Message(Base):
     # For assistant messages: Content from <THINKING>...</THINKING> block (if present)
     reasoning = Column(EncryptedText, nullable=True)
     
+    # v10.0: Link to ConversationSession (CONV-MEMORY-001)
+    # Nullable for backward compatibility — existing messages have no session.
+    # New messages get session_id assigned by the conversation service.
+    session_id = Column(
+        Integer,
+        ForeignKey("conversation_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     project = relationship("Project", back_populates="messages")

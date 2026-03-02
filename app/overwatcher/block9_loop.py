@@ -309,6 +309,28 @@ async def run_chunk_block9(
         files_added = list(files_written.keys()) if files_written else []
         rollback_chunk(chunk, state.repo_path, backups, files_added)
         
+        # v1.1 (Job 7): If ONLY syntax errors failed (no test/lint/type
+        # failures), inject feedback directly and skip Overwatcher.
+        _syntax_fb = getattr(verification_result, "syntax_feedback", "")
+        _only_syntax_failed = (
+            _syntax_fb
+            and verification_result.syntax_errors > 0
+            and verification_result.tests_failed == 0
+            and verification_result.lint_errors == 0
+            and verification_result.type_errors == 0
+        )
+        if _only_syntax_failed:
+            logger.info(
+                "[block9] v1.1 Syntax-only failure — injecting direct feedback, "
+                "skipping Overwatcher (saves ~$0.10)"
+            )
+            state.fix_actions_context = verification_result.syntax_feedback
+            strike_count += 1
+            current_signature = compute_error_signature(
+                f"syntax_errors:{verification_result.syntax_errors}"
+            )
+            continue
+        
         # Build evidence bundle
         evidence = build_failure_evidence(
             state=state,

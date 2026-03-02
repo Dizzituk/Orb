@@ -26,6 +26,10 @@ from app.pot_spec.grounded._simple_create_utils_15 import _host_read_file
 
 logger = logging.getLogger(__name__)
 
+# v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
+# v4.3: Spec gate uses HOST filesystem, not sandbox.
+_SBX_FS_OK = False
+
 
 async def fulfil_evidence_requests(
     llm_analysis: str,
@@ -53,7 +57,8 @@ async def fulfil_evidence_requests(
     for loop_idx in range(_EVIDENCE_MAX_LOOPS):
         requests = parse_evidence_requests(current_analysis)
         if not requests:
-            logger.info("[SPEC_GATE_EVIDENCE] Loop %d: No ERs — done", loop_idx + 1)
+            logger.info("[SPEC_GATE_EVIDENCE] Loop %d: LLM emitted no ERs — evidence complete", loop_idx + 1)
+            print(f"[SPEC_GATE_EVIDENCE] Loop {loop_idx + 1}: LLM satisfied — no more evidence needed")
             break
 
         logger.info("[SPEC_GATE_EVIDENCE] Loop %d: %d ER(s)", loop_idx + 1, len(requests))
@@ -73,6 +78,17 @@ async def fulfil_evidence_requests(
             evidence_parts.append(_format_evidence_block(req_id, need, er_results))
 
         if not fulfilled_ids and not evidence_parts:
+            logger.info("[SPEC_GATE_EVIDENCE] Loop %d: No evidence gathered at all — stopping", loop_idx + 1)
+            break
+
+        # v4.3: Diminishing returns — if we sent ERs but NONE succeeded,
+        # the LLM is fishing in the wrong pond. Stop and force final output.
+        total_ers = len(requests)
+        if total_ers > 0 and len(fulfilled_ids) == 0:
+            logger.info(
+                "[SPEC_GATE_EVIDENCE] Loop %d: 0/%d ERs fulfilled — diminishing returns, forcing final",
+                loop_idx + 1, total_ers,
+            )
             break
 
         current_analysis = strip_fulfilled_requests(current_analysis, fulfilled_ids)
@@ -180,13 +196,13 @@ def _dispatch_tool_calls(
             file_path = args.get("path") or args.get("file_path", "")
             if file_path:
                 resolved = file_path.replace('/', os.sep).replace('\\', os.sep)
-                if not os.path.exists(resolved) and project_paths:
+                if not (_sbx_exists(resolved) if _SBX_FS_OK else os.path.exists(resolved)) and project_paths:
                     for root in project_paths:
                         candidate = os.path.join(root, resolved)
-                        if os.path.exists(candidate):
+                        if (_sbx_exists(candidate) if _SBX_FS_OK else os.path.exists(candidate)):
                             resolved = candidate
                             break
-                exists = os.path.exists(resolved)
+                exists = (_sbx_exists(resolved) if _SBX_FS_OK else os.path.exists(resolved))
                 results.append({
                     "tool": tool_name, "file_path": resolved,
                     "success": exists,
@@ -200,7 +216,7 @@ def _dispatch_tool_calls(
             if search_path:
                 for root in project_paths:
                     candidate = os.path.join(root, query.replace('.', os.sep))
-                    if os.path.isdir(candidate):
+                    if (_sbx_isdir(candidate) if _SBX_FS_OK else os.path.isdir(candidate)):
                         search_path = candidate
                         break
                 success, listing = _host_list_directory(search_path, project_paths=project_paths)

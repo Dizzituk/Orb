@@ -134,8 +134,10 @@ class MessageCreate(BaseModel):
     Schema for creating a new message.
     
     v0.12.4: Added model and reasoning fields.
+    v10.0: Added session_id for Conversational Memory Layer (CONV-MEMORY-001).
     - model: Which specific model generated the response (e.g., "gpt-4.1-mini")
     - reasoning: Chain-of-thought reasoning from <THINKING> tags (hidden from UI)
+    - session_id: Links message to a ConversationSession (optional, backward-compatible)
     """
     project_id: int
     role: str
@@ -143,6 +145,7 @@ class MessageCreate(BaseModel):
     provider: Optional[str] = None  # v0.16.0: Track which LLM provider generated the message
     model: Optional[str] = None  # v0.12.4: Track which model generated the response
     reasoning: Optional[str] = None  # v0.12.4: Store reasoning separately from content
+    session_id: Optional[int] = None  # v10.0: ConversationSession link (CONV-MEMORY-001)
 
 
 class MessageOut(BaseModel):

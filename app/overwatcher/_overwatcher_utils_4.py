@@ -1,9 +1,15 @@
 from __future__ import annotations
 import os
 from dataclasses import dataclass
-_STAGE_MODELS_AVAILABLE = True
-get_overwatcher_config = None
-get_stage_config = None
+
+# v3.2: Direct imports - fixes namespace isolation bug.
+try:
+    from app.llm.stage_models import get_overwatcher_config, get_stage_config
+    _STAGE_MODELS_AVAILABLE = True
+except ImportError:
+    get_overwatcher_config = None
+    get_stage_config = None
+    _STAGE_MODELS_AVAILABLE = False
 
 
 def _get_overwatcher_config():

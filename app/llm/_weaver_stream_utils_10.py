@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 import re
-from app.llm._weaver_stream_utils import DESIGN_PREF_WHITELIST_PATTERNS, REFACTOR_ACTION_PATTERNS
+from app.llm._weaver_stream_utils_15 import DESIGN_PREF_WHITELIST_PATTERNS, REFACTOR_ACTION_PATTERNS
 logger = logging.getLogger(__name__)
 
 

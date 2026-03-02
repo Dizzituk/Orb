@@ -28,6 +28,10 @@ v1.0 (2026-02-08): Initial implementation — Phase 1 of Pipeline Segmentation
 
 from __future__ import annotations
 
+# v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
+# v4.3: Spec gate uses HOST filesystem, not sandbox.
+_SBX_FS_OK = False
+
 import logging
 import os
 import re
@@ -81,7 +85,7 @@ def check_file_exists(path: str) -> Optional[VerifiedFile]:
     Cost: essentially free (os.stat).
     """
     try:
-        if not os.path.exists(path):
+        if not (_sbx_exists(path) if _SBX_FS_OK else os.path.exists(path)):
             return None
 
         st = os.stat(path)

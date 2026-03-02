@@ -7,9 +7,14 @@ from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
-_INCREMENTAL_HELPERS_AVAILABLE = True
-format_conversation_for_prompt = None
-logger = logging.getLogger(__name__)
+
+# v3.2: Direct import - fixes namespace isolation bug.
+try:
+    from app.llm.weaver_incremental import format_conversation_for_prompt
+    _INCREMENTAL_HELPERS_AVAILABLE = True
+except ImportError:
+    format_conversation_for_prompt = None
+    _INCREMENTAL_HELPERS_AVAILABLE = False
 
 
 WEAVER_MAX_OUTPUT_TOKENS = int(os.getenv("WEAVER_MAX_OUTPUT_TOKENS", "15000"))

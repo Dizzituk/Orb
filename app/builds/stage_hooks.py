@@ -1,0 +1,288 @@
+# FILE: app/builds/stage_hooks.py
+"""
+Stage Lifecycle Hooks — wraps pipeline stream handlers to report
+build project stage transitions and log output to per-project messages.
+
+This module provides a generator wrapper that:
+1. Before the stream starts: creates/finds a build project, notifies stage start
+2. During streaming: collects output tokens and forwards them
+3. After the stream ends: notifies stage passed/failed, persists output
+
+Usage: Called from command_dispatch.py around handler invocation.
+"""
+
+import json
+import logging
+from typing import AsyncGenerator, Optional
+
+from sqlalchemy.orm import Session
+
+from app.builds.pipeline_bridge import (
+    get_or_create_build_project,
+    notify_stage_start,
+    notify_stage_passed,
+    notify_stage_failed,
+    notify_stage_awaiting,
+)
+from app.transparency.collector import ReasoningCollector
+
+logger = logging.getLogger(__name__)
+
+# Map dispatch table stage names → pipeline stage enum values
+_STAGE_MAP = {
+    "weaver": "weaver",
+    "spec_gate": "spec_gate",
+    "pipeline": "critical_pipeline",
+    "critical_pipeline": "critical_pipeline",
+    "segment_loop": "critical_pipeline",
+    "overwatcher": "overwatcher",
+    "implementation": "implementer",
+    "implementer": "implementer",
+}
+
+# Stages that should trigger build project tracking
+_TRACKED_STAGES = set(_STAGE_MAP.keys())
+
+
+def is_tracked_stage(stage_name: str) -> bool:
+    """Check if a dispatch stage should trigger build project tracking."""
+    return stage_name in _TRACKED_STAGES
+
+
+def get_pipeline_stage(dispatch_stage: str) -> Optional[str]:
+    """Map a dispatch table stage name to a pipeline stage enum value."""
+    return _STAGE_MAP.get(dispatch_stage)
+
+
+def _extract_brief_from_conversation(db: Session, chat_project_id: int) -> Optional[str]:
+    """
+    Extract the user's ramble/brief from recent conversation history.
+    The command message itself ("how does that look all together") isn't useful
+    as a project name — we need the actual descriptive messages before it.
+    """
+    try:
+        from app.memory import service as memory_service
+        history = memory_service.get_message_history(db, chat_project_id, limit=10)
+        messages = history.messages if hasattr(history, 'messages') else history
+        # Walk backwards through messages to find the last substantive user message
+        # Skip the command trigger message itself
+        for msg in reversed(messages):
+            role = msg.role if hasattr(msg, 'role') else msg.get('role', '')
+            content = (msg.content if hasattr(msg, 'content') else msg.get('content', '')).strip()
+            if role == "user":
+                # Skip short/command/confirmation messages
+                if (
+                    len(content) > 30
+                    and "command:" not in content.lower()
+                    and not content.lower().startswith("confirmed:")
+                    and "confirm:" not in content.lower()[:20]
+                ):
+                    return content
+        # If no long message found, try any user message that isn't a command
+        for msg in reversed(messages):
+            role = msg.role if hasattr(msg, 'role') else msg.get('role', '')
+            content = (msg.content if hasattr(msg, 'content') else msg.get('content', '')).strip()
+            if role == "user":
+                if (
+                    "command:" not in content.lower()
+                    and not content.lower().startswith("confirmed:")
+                    and len(content) > 5
+                ):
+                    return content
+    except Exception as e:
+        logger.debug("[stage_hooks] Failed to extract brief from conversation: %s", e)
+    return None
+
+
+def _make_sse_event(data: dict) -> bytes:
+    """Create an SSE event as bytes (matching Weaver/SpecGate format)."""
+    return f"data: {json.dumps(data)}\n\n".encode("utf-8")
+
+
+def _parse_sse_chunk(chunk) -> Optional[dict]:
+    """Parse an SSE chunk (str or bytes) into a dict, or None if unparseable."""
+    try:
+        if isinstance(chunk, bytes):
+            text = chunk.decode("utf-8", errors="replace")
+        elif isinstance(chunk, str):
+            text = chunk
+        else:
+            return None
+
+        text = text.strip()
+        if text.startswith("data: "):
+            return json.loads(text[6:])
+    except (json.JSONDecodeError, ValueError, AttributeError):
+        pass
+    return None
+
+
+async def wrap_with_build_tracking(
+    stream: AsyncGenerator,
+    db: Session,
+    chat_project_id: int,
+    dispatch_stage: str,
+    message: Optional[str] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> AsyncGenerator:
+    """
+    Wrap a pipeline stream handler with build project lifecycle hooks.
+
+    Yields all events from the inner stream while:
+    - Creating/finding the build project on first call
+    - Notifying stage start
+    - Collecting output for per-project message log
+    - Notifying stage passed/failed on completion
+    - Emitting a build_project_update SSE event so the frontend can refresh
+    """
+    pipeline_stage = get_pipeline_stage(dispatch_stage)
+    if not pipeline_stage:
+        async for chunk in stream:
+            yield chunk
+        return
+
+    # Extract the actual brief from conversation history, not the command text
+    brief = _extract_brief_from_conversation(db, chat_project_id) or message
+
+    # Get or create build project
+    try:
+        build_project = get_or_create_build_project(
+            db, chat_project_id, brief=brief,
+        )
+        build_project_id = build_project.id
+        logger.info(
+            "[stage_hooks] Tracking stage '%s' on build project '%s' (%s)",
+            pipeline_stage, build_project.name, build_project_id,
+        )
+    except Exception as e:
+        logger.warning("[stage_hooks] Failed to get/create build project: %s", e)
+        async for chunk in stream:
+            yield chunk
+        return
+
+    # Notify stage start
+    notify_stage_start(db, build_project_id, pipeline_stage, detail="Started via command dispatch")
+    print(f"[STAGE_HOOKS] Stage '{pipeline_stage}' STARTED for build project '{build_project.name}' ({build_project_id})")
+
+    # Initialise transparency collector for this stage
+    stage_index_map = {"weaver": 0, "spec_gate": 1, "critical_pipeline": 2, "implementer": 3}
+    transparency = ReasoningCollector(
+        job_id=build_project.job_id or "",
+        run_id=f"run_{build_project_id[:8]}",
+        build_project_id=build_project_id,
+    )
+    transparency.start_stage(
+        stage_name=pipeline_stage,
+        stage_index=stage_index_map.get(pipeline_stage, 0),
+        metadata={"provider": provider, "model": model, "message_preview": (message or "")[:200]},
+    )
+
+    # Emit reasoning event start via SSE (guard against None)
+    if transparency._current_event:
+        yield _make_sse_event(transparency._current_event.to_sse_dict())
+
+    # Emit a build project update event so frontend can refresh the grid
+    yield _make_sse_event({
+        "type": "build_project_update",
+        "build_project_id": build_project_id,
+        "stage": pipeline_stage,
+        "status": "running",
+    })
+
+    # Stream through, collecting tokens for the per-project message log
+    output_parts = []
+    had_error = False
+    is_awaiting = False
+    spec_id = None
+    chunk_count = 0
+
+    print(f"[STAGE_HOOKS] About to iterate inner stream for stage '{pipeline_stage}'")
+    try:
+        async for chunk in stream:
+            chunk_count += 1
+            if chunk_count == 1:
+                print(f"[STAGE_HOOKS] First chunk received from inner stream (type={type(chunk).__name__}, len={len(chunk) if chunk else 0})")
+            # Forward the chunk as-is (preserving bytes or str type)
+            yield chunk
+
+            # Parse to collect output and detect status
+            parsed = _parse_sse_chunk(chunk)
+            if parsed:
+                event_type = parsed.get("type", "")
+                if event_type == "token":
+                    content = parsed.get("content", "")
+                    if content:
+                        output_parts.append(content)
+                elif event_type == "error":
+                    had_error = True
+                elif event_type in ("spec_blocked", "spec_questions"):
+                    is_awaiting = True
+                elif event_type in ("spec_ready", "spec_segmented"):
+                    spec_id = parsed.get("spec_id")
+
+    except Exception as e:
+        had_error = True
+        logger.warning("[stage_hooks] Stream error after %d chunks: %s", chunk_count, e)
+
+    print(f"[STAGE_HOOKS] Stage '{pipeline_stage}' stream FINISHED: {chunk_count} chunks, {sum(len(p) for p in output_parts)} output chars, error={had_error}, awaiting={is_awaiting}")
+
+    # Finish transparency trace for this stage
+    try:
+        t_status = "failed" if had_error else ("warning" if is_awaiting else "passed")
+        t_summary = f"{pipeline_stage} {'failed' if had_error else 'awaiting input' if is_awaiting else 'completed'}: {chunk_count} chunks, {sum(len(p) for p in output_parts)} chars output"
+        finished_event = await transparency.finish_stage(
+            status=t_status,
+            model_used=model or "",
+            reasoning_summary=t_summary,
+        )
+        # Emit final reasoning event via SSE so frontend sees the completed state
+        if finished_event:
+            yield _make_sse_event(finished_event.to_sse_dict())
+    except Exception as te:
+        logger.debug("[stage_hooks] Transparency finish failed: %s", te)
+    logger.info(
+        "[stage_hooks] Stage '%s' stream finished: %d chunks, %d output chars, error=%s, awaiting=%s",
+        pipeline_stage, chunk_count, sum(len(p) for p in output_parts), had_error, is_awaiting,
+    )
+
+    # Save output to per-project message log
+    full_output = "".join(output_parts)
+    if full_output:
+        try:
+            from app.builds.messages import add_message
+            add_message(
+                db, build_project_id,
+                role="assistant",
+                content=full_output,
+                stage=pipeline_stage,
+                provider=provider,
+                model=model,
+            )
+        except Exception as e:
+            logger.warning("[stage_hooks] Failed to save pipeline message: %s", e)
+
+    # Link spec if we got one
+    if spec_id:
+        try:
+            from app.builds import service as build_service
+            build_service.link_spec(db, build_project_id, spec_id)
+        except Exception:
+            pass
+
+    # Notify stage completion
+    if had_error:
+        notify_stage_failed(db, build_project_id, pipeline_stage, detail="Stream error")
+    elif is_awaiting:
+        notify_stage_awaiting(db, build_project_id, pipeline_stage, detail="Awaiting user input")
+    else:
+        notify_stage_passed(db, build_project_id, pipeline_stage)
+
+    # Emit final build project update event
+    final_status = "failed" if had_error else ("awaiting_input" if is_awaiting else "passed")
+    yield _make_sse_event({
+        "type": "build_project_update",
+        "build_project_id": build_project_id,
+        "stage": pipeline_stage,
+        "status": final_status,
+    })

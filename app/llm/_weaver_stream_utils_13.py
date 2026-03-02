@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Set
 
 def _hash_messages(messages: List[Dict[str, Any]]) -> Set[str]:
     """Hash a list of messages, returning a set of hashes."""
-    from .weaver_stream import _hash_message
+    from ._weaver_stream_utils_14 import _hash_message
     return {_hash_message(m) for m in messages}
 
 LEAKAGE_PATTERNS = [

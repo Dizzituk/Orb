@@ -35,7 +35,7 @@ from .phase_checkout_checks import (
 
 logger = logging.getLogger(__name__)
 
-PHASE_CHECKOUT_BUILD_ID = "2026-02-16-v2.8-boot-fix-hardening"
+PHASE_CHECKOUT_BUILD_ID = "2026-02-28-v3.2-demote-on-boot-fail"
 print(f"[PHASE_CHECKOUT_LOADED] BUILD_ID={PHASE_CHECKOUT_BUILD_ID}")
 
 
@@ -148,8 +148,67 @@ async def run_phase_checkout(
     else:
         _emit("[CHECK 2] Skeleton contract verification -- SKIPPED (no skeleton)")
 
-    # --- Check 3: Boot test with fix loop (PASS/FAIL GATE) ---
-    _emit("[CHECK 3] Application boot test (with fix loop)...")
+    # --- Check 3: Frontend syntax validation (INFORMATIONAL → FAIL if garbage) ---
+    _has_frontend = any(
+        f.endswith(('.ts', '.tsx', '.jsx'))
+        for f in segment_output_files
+    )
+    if _has_frontend:
+        _emit("[CHECK 3] Frontend TypeScript/TSX syntax validation...")
+        from .phase_checkout_frontend import check_frontend_syntax
+        result.frontend_check = check_frontend_syntax(
+            state=state,
+            sandbox_base=sandbox_base,
+            emit=_emit,
+        )
+        result.checks_run.append("frontend_syntax")
+        if result.frontend_check.get("status") == "fail":
+            _failures = result.frontend_check.get("failures", [])
+            _emit(
+                f"  [FAIL] {len(_failures)} frontend file(s) contain "
+                f"non-code content (SSE/markdown contamination)"
+            )
+            for _ff in _failures:
+                _emit(f"    - {_ff['file']}: {_ff['reason']}")
+        else:
+            _checked = result.frontend_check.get("files_checked", 0)
+            _emit(f"  [OK] Frontend syntax check passed ({_checked} files)")
+    else:
+        _emit("[CHECK 3] Frontend syntax validation -- SKIPPED (no TS/TSX files)")
+
+    # --- Check 3B: Frontend BUILD check + deterministic fix (v1.0 HARD GATE) ---
+    if _has_frontend:
+        _emit("[CHECK 3B] Frontend TypeScript compilation (tsc --noEmit)...")
+        try:
+            from .frontend_fix_loop import run_frontend_fix_loop
+            _frontend_fix = await run_frontend_fix_loop(
+                segment_files=segment_output_files,
+                emit=_emit,
+            )
+            result.frontend_build = _frontend_fix
+            result.checks_run.append("frontend_build")
+            if _frontend_fix.status == "pass":
+                _emit("  [OK] TypeScript compilation passed")
+            elif _frontend_fix.status == "fixed":
+                _emit(
+                    f"  [OK] TypeScript errors auto-fixed deterministically: "
+                    f"{', '.join(_frontend_fix.fixes_applied[:5])}"
+                )
+            elif _frontend_fix.status == "fail":
+                _emit(
+                    f"  [FAIL] TypeScript compilation failed: "
+                    f"{_frontend_fix.remaining_errors} error(s) remain"
+                )
+            else:
+                _emit(f"  [ERROR] Frontend build check: {_frontend_fix.status}")
+        except Exception as _fb_exc:
+            logger.warning("[phase_checkout] Frontend build check failed: %s", _fb_exc)
+            _emit(f"  [WARN] Frontend build check skipped: {_fb_exc}")
+    else:
+        _emit("[CHECK 3B] Frontend build check -- SKIPPED (no TS/TSX files)")
+
+    # --- Check 4: Boot test with fix loop (PASS/FAIL GATE) ---
+    _emit("[CHECK 4] Application boot test (with fix loop)...")
     result.boot_test = await run_boot_test_with_fix_loop(
         sandbox_base=sandbox_base,
         state=state,
@@ -171,14 +230,52 @@ async def run_phase_checkout(
     else:
         _emit(f"  [ERROR] Boot test error: {result.boot_test.error_summary}")
 
+    # --- Check 4B: Frontend boot test (Vite build) ---
+    if _has_frontend:
+        _emit("[CHECK 4B] Frontend Vite build check...")
+        try:
+            from .frontend_boot_check import run_frontend_boot_check
+            from app.overwatcher.sandbox_client import get_sandbox_client
+            _fe_client = get_sandbox_client()
+            _vite_result = run_frontend_boot_check(
+                client=_fe_client,
+                emit=_emit,
+            )
+            result.frontend_boot = _vite_result
+            result.checks_run.append("frontend_boot")
+            if _vite_result.status == "pass":
+                _emit(f"  [OK] Vite build passed ({_vite_result.duration_ms}ms)")
+            elif _vite_result.status == "fail":
+                _emit(f"  [FAIL] Vite build FAILED: {_vite_result.error_summary[:150]}")
+                for _ve in _vite_result.errors[:3]:
+                    _emit(f"    {_ve.file}: {_ve.message[:100]}")
+            else:
+                _emit(f"  [WARN] Vite build check: {_vite_result.status}")
+        except Exception as _vb_exc:
+            logger.warning("[phase_checkout] Frontend boot check failed: %s", _vb_exc)
+            _emit(f"  [WARN] Frontend boot check skipped: {_vb_exc}")
+    else:
+        _emit("[CHECK 4B] Frontend Vite build check -- SKIPPED (no frontend files)")
+
     # --- Aggregate and route ---
     # v2.0: Only the boot test determines pass/fail.
     # Size and contract checks are informational warnings -- earlier pipeline
     # stages (architecture, critique, cohesion) enforce those constraints.
     # Phase checkout's job is: does it boot? If not, can we fix it?
     boot_passed = (result.boot_test and result.boot_test.status == "pass")
+    # v3.4-fix: Vite build failure is a hard gate
+    frontend_boot_failed = (
+        hasattr(result, 'frontend_boot')
+        and result.frontend_boot
+        and result.frontend_boot.status == "fail"
+    )
+    frontend_failed = (
+        hasattr(result, 'frontend_check')
+        and result.frontend_check
+        and result.frontend_check.get('status') == 'fail'
+    )
 
-    if boot_passed:
+    if boot_passed and not frontend_failed and not frontend_boot_failed:
         result.status = "pass"
         warnings = []
         if result.size_validation and result.size_validation.status == "fail":
@@ -189,6 +286,78 @@ async def run_phase_checkout(
             _emit(f"\n[PASS] PHASE CHECKOUT PASSED (boot OK) with warnings: {', '.join(warnings)}")
         else:
             _emit("\n[PASS] PHASE CHECKOUT PASSED -- all checks green")
+    elif boot_passed and frontend_failed:
+        # v1.2 FIX: Distinguish scaffold-only failures from real contamination.
+        # LLM_FILL scaffold markers are an expected intermediate state — the
+        # implementer fills them. Routing to stage_8 for scaffold markers caused
+        # regression in job sg-a798331a (overwatcher rewrote JobPage.tsx from
+        # scratch, deleting all existing tab routing).
+        # Rule: If boot passes, scaffold-only failures are WARNINGS not FAILs.
+        _failures = result.frontend_check.get('failures', [])
+        _scaffold_only = all(
+            "scaffold marker" in f.get("reason", "").lower()
+            for f in _failures
+        )
+        _real_contamination = [
+            f for f in _failures
+            if "scaffold marker" not in f.get("reason", "").lower()
+        ]
+
+        if _scaffold_only:
+            # v3.4-fix: Scaffold markers surviving to phase checkout are now
+            # boot-blocking errors. The implementer (v3.4) strips [LLM_FILL]
+            # markers at write time. If any survive here, the write-time
+            # sanitiser missed them — this is a genuine failure that will
+            # crash Vite/tsc at runtime.
+            # Previous behaviour (v1.2) treated these as warnings to avoid
+            # the sg-a798331a regression. That regression is now prevented
+            # by the write-time strip in run_implementer_task instead.
+            result.status = "fail"
+            result.routing = FailureRouting(
+                target_stage="failed",
+                target_segment=None,
+                target_file=_failures[0]['file'] if _failures else None,
+                reason=(
+                    f"Scaffold markers survived write-time sanitiser: "
+                    f"{len(_failures)} file(s) still contain [LLM_FILL] placeholders"
+                ),
+                scoped_files=[f['file'] for f in _failures],
+                severity="major",
+            )
+            _emit(
+                f"\n[FAIL] PHASE CHECKOUT FAILED -- "
+                f"{len(_failures)} file(s) have unfilled scaffold markers "
+                f"(should have been stripped at write time)"
+            )
+            for _ff in _failures:
+                _emit(f"    ❌ {_ff['file']}: {_ff['reason'][:120]}")
+        elif _real_contamination:
+            # Real contamination (SSE garbage, markdown prose).
+            # Severity: 1 file = minor (surgical fix), 2+ files = major (fail cleanly).
+            _contam_severity = "minor" if len(_real_contamination) == 1 else "major"
+            _contam_stage = "stage_8_overwatcher" if _contam_severity == "minor" else "failed"
+            result.status = "fail"
+            result.routing = FailureRouting(
+                target_stage=_contam_stage,
+                target_segment=None,
+                target_file=_real_contamination[0]['file'],
+                reason=(
+                    f"Frontend syntax check failed: {len(_real_contamination)} "
+                    f"file(s) contain non-code content (severity={_contam_severity})"
+                ),
+                scoped_files=[f['file'] for f in _real_contamination],
+                severity=_contam_severity,
+            )
+            if _contam_severity == "minor":
+                _emit(f"\n[FAIL] PHASE CHECKOUT FAILED -- 1 file has garbage content (surgical fix)")
+                _emit(f"    ❌ {_real_contamination[0]['file']}: {_real_contamination[0]['reason'][:120]}")
+            else:
+                _emit(f"\n[FAIL] PHASE CHECKOUT FAILED -- {len(_real_contamination)} file(s) contaminated (major, not auto-fixable)")
+                for _ff in _real_contamination:
+                    _emit(f"    ❌ {_ff['file']}: {_ff['reason'][:120]}")
+        else:
+            result.status = "pass"
+            _emit("\n[PASS] PHASE CHECKOUT PASSED (boot OK, no actionable frontend failures)")
     else:
         result.status = "fail"
         result.routing = _determine_failure_routing(result, state)
@@ -196,6 +365,11 @@ async def run_phase_checkout(
         if result.routing.target_segment:
             _emit(f"  Target segment: {result.routing.target_segment}")
         _emit(f"  Reason: {result.routing.reason}")
+
+        # v3.2: Demote causal segment from COMPLETE to FAILED so state
+        # reflects the actual outcome. Without this, segments remain
+        # COMPLETE despite the application not booting.
+        _demote_failed_segments(result, state, job_dir, _emit)
 
     elapsed_ms = int((time.time() - start_time) * 1000)
     result.duration_ms = elapsed_ms
@@ -217,42 +391,151 @@ def _determine_failure_routing(
     Diagnose what failed and decide where to route the retry.
 
     v2.0: Only boot failures reach here (size/contract are warnings now).
+    v3.0: Added severity classification (minor/major).
+          - minor: single file, simple error → stage_8 can attempt surgical fix
+          - major: multiple files, structural issues → fail cleanly, no LLM heroics
+
+    Root cause for severity gate: job sg-a798331a regression. The overwatcher
+    was given free rein to "fix" a failure and rewrote JobPage.tsx from scratch,
+    destroying all existing tab routing. Major failures should not be handed
+    to an unconstrained LLM — they should fail cleanly so the human can decide.
     """
-    # Boot failures -- route based on error type
+    # Boot failures -- route based on error type and severity
     if result.boot_test and result.boot_test.status == "fail":
         err = (result.boot_test.error_summary or "").lower()
-        failing_seg = map_file_to_segment(
+        traceback_file = result.boot_test.traceback_file
+        failing_seg = map_file_to_segment(traceback_file, state)
+
+        # ── Severity classification ──────────────────────────────────
+        # Minor: single file identified, simple error type (syntax/import).
+        # Major: no traceable file, multi-file issue, or complex error.
+        _is_simple_error = (
+            "syntaxerror" in err
+            or "modulenotfounderror" in err
+            or "importerror" in err
+            or "nameerror" in err
+            or "attributeerror" in err
+        )
+        _has_traceable_file = traceback_file is not None and traceback_file != ""
+        _severity = "minor" if (_is_simple_error and _has_traceable_file) else "major"
+
+        # ── Minor: surgical fix scoped to the one broken file ────────
+        if _severity == "minor":
+            _scoped = [traceback_file]
+
+            if "syntaxerror" in err:
+                _reason = f"Syntax error in {traceback_file}"
+            elif "modulenotfounderror" in err or "importerror" in err:
+                _reason = (
+                    f"Import error in {traceback_file} "
+                    f"(fix loop exhausted): {result.boot_test.error_summary[:200]}"
+                )
+            else:
+                _reason = f"{traceback_file}: {result.boot_test.error_summary[:200]}"
+
+            return FailureRouting(
+                target_stage="stage_8_overwatcher",
+                target_segment=failing_seg,
+                target_file=traceback_file,
+                reason=_reason,
+                scoped_files=_scoped,
+                severity="minor",
+            )
+
+        # ── Major: fail cleanly, no LLM heroics ─────────────────────
+        return FailureRouting(
+            target_stage="failed",
+            target_segment=failing_seg,
+            target_file=traceback_file,
+            reason=f"Boot failure (major — not auto-fixable): {result.boot_test.error_summary[:200]}",
+            severity="major",
+        )
+
+    # No boot test result or unknown state — fail cleanly
+    return FailureRouting(
+        target_stage="failed",
+        reason="Unknown failure -- manual investigation required",
+        severity="major",
+    )
+
+
+# =============================================================================
+# v3.2: SEGMENT DEMOTION ON BOOT FAILURE
+# =============================================================================
+
+def _demote_failed_segments(
+    result: PhaseCheckoutResult,
+    state: Any,
+    job_dir: str,
+    emit: Any,
+) -> None:
+    """v3.2: When boot fails, demote the causal segment(s) from COMPLETE to FAILED.
+
+    The boot test identified which file caused the failure (traceback_file)
+    and which segment produced it (traceback_segment via map_file_to_segment).
+    That segment should NOT remain COMPLETE — it produced code that breaks
+    the application.
+
+    If no specific segment can be identified, we do NOT demote all segments
+    (that would be too aggressive). We log the situation for manual triage.
+    """
+    from app.orchestrator._segment_loop_utils_8 import update_segment_status
+
+    try:
+        from app.pot_spec.grounded.segment_schemas import SegmentStatus
+    except ImportError:
+        logger.warning("[phase_checkout] v3.2 Cannot import SegmentStatus for demotion")
+        return
+
+    causal_seg = None
+
+    # 1. Use the traceback_segment if already identified
+    if result.boot_test and result.boot_test.traceback_segment:
+        causal_seg = result.boot_test.traceback_segment
+
+    # 2. Fall back to routing target_segment
+    if not causal_seg and result.routing and result.routing.target_segment:
+        causal_seg = result.routing.target_segment
+
+    # 3. If we know the failing file but not the segment, try to match
+    if not causal_seg and result.boot_test and result.boot_test.traceback_file:
+        causal_seg = map_file_to_segment(
             result.boot_test.traceback_file, state
         )
 
-        if "syntaxerror" in err:
-            return FailureRouting(
-                target_stage="stage_8_overwatcher",
-                target_segment=failing_seg,
-                target_file=result.boot_test.traceback_file,
-                reason=f"Syntax error in {result.boot_test.traceback_file}",
+    if causal_seg:
+        seg_state = state.segments.get(causal_seg)
+        if seg_state and seg_state.status == SegmentStatus.COMPLETE.value:
+            error_msg = (
+                f"Boot check failed: {(result.boot_test.error_summary or '')[:200]}"
             )
-
-        if "modulenotfounderror" in err or "importerror" in err:
-            return FailureRouting(
-                target_stage="stage_8_overwatcher",
-                target_segment=failing_seg,
-                target_file=result.boot_test.traceback_file,
-                reason=f"Import error in {result.boot_test.traceback_file} "
-                       f"(fix loop exhausted): {result.boot_test.error_summary[:200]}",
+            update_segment_status(
+                state, causal_seg, SegmentStatus.FAILED, job_dir,
+                error=error_msg,
             )
-
-        return FailureRouting(
-            target_stage="stage_5_critical",
-            target_segment=failing_seg,
-            target_file=result.boot_test.traceback_file,
-            reason=f"Boot failure: {result.boot_test.error_summary[:200]}",
+            emit(
+                f"  ⬇️ v3.2 Demoted {causal_seg}: COMPLETE → FAILED "
+                f"(produced code that fails boot)"
+            )
+            logger.info(
+                "[phase_checkout] v3.2 Demoted %s from COMPLETE to FAILED: %s",
+                causal_seg, error_msg[:150],
+            )
+        else:
+            emit(
+                f"  ℹ️ v3.2 Causal segment {causal_seg} is "
+                f"{seg_state.status if seg_state else 'missing'} (no demotion needed)"
+            )
+    else:
+        emit(
+            "  ⚠️ v3.2 Could not identify causal segment for boot failure "
+            "— segments remain COMPLETE (manual triage needed)"
         )
-
-    return FailureRouting(
-        target_stage="stage_5_critical",
-        reason="Unknown failure -- re-run architecture generation",
-    )
+        logger.warning(
+            "[phase_checkout] v3.2 Boot failed but no causal segment identified. "
+            "traceback_file=%s",
+            result.boot_test.traceback_file if result.boot_test else None,
+        )
 
 
 # =============================================================================

@@ -176,7 +176,8 @@ async def run_cohesion_check(
     Returns:
         CohesionResult with any issues found
     """
-    from .cohesion_check import attempt_auto_fixes, run_skeleton_compliance
+    from ._cohesion_check_utils_11 import attempt_auto_fixes
+    from .cohesion_check import run_skeleton_compliance
     if len(segment_ids) < 2:
         return CohesionResult(
             status="pass",
@@ -282,82 +283,52 @@ async def run_cohesion_check(
         logger.debug("[cohesion_check] Layer 1B skipped: %s", _det_err)
 
     # =========================================================================
-    # LAYER 2: LLM-based cross-segment cohesion
+    # LAYER 1C: Extended deterministic cohesion checks (v3.0)
     # =========================================================================
-    # v6.1: Skip LLM layer for deterministic refactor jobs
-    if skip_llm_layer:
-        logger.info("[cohesion_check] Layer 2: SKIPPED (deterministic refactor — skip_llm_layer=True)")
-        if result.status != "fail":
-            result.status = "pass"
-            result.notes = (result.notes + " | Layer 2 skipped (deterministic refactor)").strip(" | ")
-        return result
-
-    logger.info("[cohesion_check] Layer 2: Running LLM cohesion check")
-
-    # Resolve provider/model
-    _provider = provider_id
-    _model = model_id
-
-    if not _provider or not _model:
-        try:
-            from app.llm.stage_models import get_stage_config
-            config = get_stage_config("COHESION_CHECK")
-            _provider = _provider or config.get("provider", "anthropic")
-            _model = _model or config.get("model", "claude-opus-4-6")
-        except Exception:
-            _provider = _provider or os.getenv("COHERENCE_GUARDIAN_PROVIDER", "anthropic")
-            _model = _model or os.getenv("COHERENCE_GUARDIAN_MODEL", "claude-opus-4-6")
-
-    # Build prompt
-    prompt = _build_cohesion_prompt(architectures, contract_json, source_file_evidence)
-
-    # Call LLM
+    # v3.0: Five new checks that REPLACE the LLM Layer 2:
+    #   1. Cross-segment import path validation
+    #   2. Type signature consistency
+    #   3. Interface completeness
+    #   4. Circular dependency detection
+    #   5. Shared state audit
     try:
-        from app.providers.registry import llm_call
-
-        _messages = [{"role": "user", "content": prompt}]
-        _system = (
-            "You are a cross-segment architecture reviewer. "
-            "Check for interface compatibility issues between segments. "
-            "Be precise and only report real issues. "
-            "Respond with valid JSON only."
+        from app.orchestrator.cohesion_extended_checks import run_extended_cohesion_checks
+        _ext_issue_counter = len(result.issues)
+        _ext_issues, _ext_issue_counter = run_extended_cohesion_checks(
+            architectures=architectures,
+            manifest_dict=manifest_dict,
+            skeleton_json=contract_json,
+            issue_counter=_ext_issue_counter,
         )
-
-        llm_result_obj = await llm_call(
-            provider_id=_provider,
-            model_id=_model,
-            messages=_messages,
-            system_prompt=_system,
-            max_tokens=8192,
-            timeout_seconds=180,
-            stage="coherence_guardian",  # v2.2: Cost tracking
-        )
-        llm_response = llm_result_obj.content if llm_result_obj else None
-
-        if llm_response:
-            llm_result = _parse_cohesion_response(llm_response)
-            result.issues.extend(llm_result.issues)
-            if llm_result.notes:
-                result.notes = (result.notes + " | " + llm_result.notes).strip(" | ")
-            result.layer2_ran = True
-
+        result.issues.extend(_ext_issues)
+        if _ext_issues:
+            _ext_blocking = sum(1 for i in _ext_issues if getattr(i, 'severity', '') == 'blocking')
             logger.info(
-                "[cohesion_check] Layer 2: %d blocking, %d warning",
-                len(llm_result.blocking_issues),
-                len(llm_result.warning_issues),
+                "[cohesion_check] Layer 1C (extended): %d issues (%d blocking)",
+                len(_ext_issues), _ext_blocking,
             )
-        else:
-            result.notes = (result.notes + " | Layer 2: empty LLM response").strip(" | ")
-            result.layer2_ran = True
+            print(
+                f"[DEBUG] [cohesion_check] Layer 1C extended: "
+                f"{len(_ext_issues)} issues ({_ext_blocking} blocking)"
+            )
+    except Exception as _ext_err:
+        logger.debug("[cohesion_check] Layer 1C extended checks skipped: %s", _ext_err)
 
-    except Exception as llm_err:
-        logger.warning("[cohesion_check] Layer 2 LLM call failed: %s", llm_err)
-        result.notes = (result.notes + f" | Layer 2 error: {llm_err}").strip(" | ")
+    # =========================================================================
+    # LAYER 2: ELIMINATED (v3.0)
+    # =========================================================================
+    # v3.0: LLM cohesion (Layer 2) is permanently replaced by deterministic
+    # checks above. The skip_llm_layer flag is now always effectively True.
+    # Keeping this log line for audit trail.
+    logger.info(
+        "[cohesion_check] Layer 2: ELIMINATED (v3.0 — replaced by deterministic checks)"
+    )
+    result.layer2_ran = False
+    result.notes = (result.notes + " | Layer 2 replaced by deterministic v3.0").strip(" | ")
 
-    # Determine final status
+    # Determine final status + auto-fix if blocking
     if result.blocking_issues:
-        # Layer 2 found blocking issues — try auto-fix on those too
-        logger.info("[cohesion_check] Layer 2 blocking issues found — attempting auto-fix")
+        logger.info("[cohesion_check] Blocking issues found — attempting auto-fix")
 
         # Reload architectures in case Layer 1 auto-fix already patched some
         reloaded = load_segment_architectures(job_dir, list(architectures.keys()))

@@ -169,19 +169,42 @@ async def stream_gemini(
         return getattr(obj, key, None)
 
     try:
-        gemini_model = genai.GenerativeModel(
-            model_name=use_model,
-            system_instruction=enhanced_prompt,
-        )
+        # v3.2: Gemini 3 rejects empty system_instruction — only pass if non-empty
+        model_kwargs = {"model_name": use_model}
+        if enhanced_prompt and enhanced_prompt.strip():
+            model_kwargs["system_instruction"] = enhanced_prompt
+        gemini_model = genai.GenerativeModel(**model_kwargs)
+
+        # v3.2: Filter out system messages — system content goes via system_instruction.
+        # Gemini 3 models reject history starting with a 'model' turn, and system
+        # messages were being miscast as model turns.
+        clean_messages = [m for m in messages if m.get("role") != "system"]
+        
+        if not clean_messages:
+            yield {"type": "error", "message": "No non-system messages to send to Gemini"}
+            return
+
+        # v3.2 debug: log message structure to diagnose empty content errors
+        print(f"[STREAM_GEMINI] Messages: {len(messages)} total, {len(clean_messages)} after system filter")
+        for i, m in enumerate(clean_messages):
+            c = m.get('content', '')
+            print(f"[STREAM_GEMINI]   [{i}] role={m.get('role')}, content_len={len(c) if c else 0}")
 
         history = []
-        for msg in messages[:-1]:
+        for msg in clean_messages[:-1]:
             role = "user" if msg["role"] == "user" else "model"
-            history.append({"role": role, "parts": [msg["content"]]})
+            content = msg.get("content", "")
+            if not content:
+                print(f"[STREAM_GEMINI] WARNING: Skipping empty {msg.get('role')} message in history")
+                continue
+            history.append({"role": role, "parts": [content]})
 
         chat = gemini_model.start_chat(history=history)
 
-        last_msg = messages[-1]["content"] if messages else ""
+        last_msg = clean_messages[-1].get("content", "") if clean_messages else ""
+        if not last_msg:
+            yield {"type": "error", "message": "Final message content is empty - nothing to send to Gemini"}
+            return
         response = chat.send_message(last_msg, stream=True)
 
         last_chunk = None

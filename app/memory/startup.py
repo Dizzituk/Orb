@@ -139,5 +139,14 @@ def init_memory_system() -> dict:
     # Step 3: Seed data
     summary["seeds"] = run_seeds()
 
+    # Step 4: Start conversation session lifecycle scheduler (v10.0)
+    try:
+        from app.memory.session_lifecycle import start_lifecycle_scheduler
+        start_lifecycle_scheduler(interval_minutes=15)
+        summary["lifecycle_scheduler"] = "started"
+    except Exception as e:
+        logger.error("[startup] Lifecycle scheduler failed: %s", e)
+        summary["lifecycle_scheduler"] = {"error": str(e)}
+
     logger.info("[startup] Memory system initialised: %s", summary)
     return summary

@@ -73,7 +73,22 @@ def _parse_file_inventory(architecture_text: str) -> List[Dict[str, str]]:
                     "description": desc,
                 })
 
-    return files
+    # v2.0: Deduplicate — architecture may mention the same file in
+    # multiple tables (e.g. "New Files" + "Modified Files" sections,
+    # or critique revision duplicating a table).  Keep first occurrence.
+    seen_paths: Set[str] = set()
+    deduped: List[Dict[str, str]] = []
+    for f in files:
+        norm = f["path"].replace("\\", "/").lower()
+        if norm not in seen_paths:
+            seen_paths.add(norm)
+            deduped.append(f)
+        else:
+            logger.info(
+                "[IMPL_COMPILER] v2.0 Dedup: dropped duplicate file inventory entry: %s",
+                f["path"],
+            )
+    return deduped
 
 def _assign_functions_to_files(
     file_inventory: List[Dict[str, str]],

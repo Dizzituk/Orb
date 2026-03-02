@@ -11,6 +11,18 @@ from app.orchestrator._final_checkout_utils_3 import _build_ai_review_prompt, _d
 from app.orchestrator._final_checkout_utils_4 import _apply_ai_review_fix, _generate_missing_file, _parse_review_response
 from typing import Any, Callable, Dict, List, Optional
 logger = logging.getLogger(__name__)
+
+# v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
+try:
+    from app.sandbox_fs import (
+        sandbox_isfile as _sbx_isfile,
+        sandbox_isdir as _sbx_isdir,
+        sandbox_exists as _sbx_exists,
+        sandbox_read_text as _sbx_read_text,
+    )
+    _SBX_FS_OK = True
+except ImportError:
+    _SBX_FS_OK = False
 logger = logging.getLogger(__name__)
 
 
@@ -333,7 +345,7 @@ async def _run_ai_review_pass(
     file_contents: Dict[str, str] = {}
     for rel_path in review_files:
         abs_path = os.path.join(sandbox_base, rel_path.replace("/", os.sep))
-        if os.path.isfile(abs_path):
+        if (_sbx_isfile(abs_path) if _SBX_FS_OK else os.path.isfile(abs_path)):
             try:
                 with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
                     content = f.read(_MAX_REVIEW_CHARS)
@@ -374,23 +386,46 @@ async def _run_ai_review_pass(
         logger.warning("[final_checkout] AI review failed: %s", exc)
         return AIReviewResult(status="error", notes=f"AI review failed: {exc}")
 
+# v3.3-fix: Frontend path prefixes that must resolve to D:\orb-desktop
+_FC_FRONTEND_PREFIX = "orb-desktop/"
+_FC_FRONTEND_ROOT = r"D:\orb-desktop"
+_FC_FRONTEND_BARE_PREFIXES = ("src/", "src\\", "public/", "public\\")
+
 def _write_file_to_sandbox(
     client: Any,
     rel_path: str,
     content: str,
     sandbox_base: str,
 ) -> bool:
-    """Write a file to the sandbox."""
+    """Write a file to the sandbox.
+
+    v3.3-fix: Now resolves frontend paths (orb-desktop/ prefix or bare
+    src/, public/) to D:\\orb-desktop instead of D:\\Orb\\src.
+    """
     if not client:
         return False
 
     try:
         import base64
         normed = rel_path.replace("/", "\\")
-        if not (normed.startswith("C:") or normed.startswith("D:")):
-            abs_path = f"{sandbox_base}\\{normed}"
-        else:
+        normalized_fwd = rel_path.replace("\\", "/")
+
+        if normed.startswith("C:") or normed.startswith("D:"):
+            # Already absolute
             abs_path = normed
+        elif normalized_fwd.startswith(_FC_FRONTEND_PREFIX):
+            # Strip orb-desktop/ prefix, resolve against frontend root
+            frontend_rel = normalized_fwd[len(_FC_FRONTEND_PREFIX):]
+            abs_path = _FC_FRONTEND_ROOT + "\\" + frontend_rel.replace("/", "\\")
+        elif any(normalized_fwd.startswith(bp.replace("\\", "/")) for bp in _FC_FRONTEND_BARE_PREFIXES):
+            # Bare src/ or public/ — these only exist under orb-desktop
+            abs_path = _FC_FRONTEND_ROOT + "\\" + normed
+        else:
+            abs_path = f"{sandbox_base}\\{normed}"
+
+        # v3.4-fix: Strip surviving scaffold markers before write
+        from app.overwatcher._implementer_utils_6 import _strip_scaffold_markers
+        content = _strip_scaffold_markers(content, rel_path)
 
         b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
         temp_path = abs_path + ".tmp_fc"

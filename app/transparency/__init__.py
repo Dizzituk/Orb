@@ -1,0 +1,18 @@
+# FILE: app/transparency/__init__.py
+"""
+Pipeline Transparency & User Feedback System.
+
+Provides:
+- ReasoningEvent emission from pipeline stages
+- Collapsible reasoning traces in the UI
+- User corrections pinned to specific decisions
+- Correction matching for deterministic learning
+
+Modules:
+- schemas: Data structures for events and corrections
+- collector: ReasoningCollector — persist + stream events
+- corrections: CorrectionStore — CRUD for user corrections
+- matcher: CorrectionMatcher — query relevant past corrections
+- models: SQLAlchemy models for DB tables
+- router: FastAPI endpoints
+"""

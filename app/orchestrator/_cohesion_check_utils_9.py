@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 def _parse_cohesion_response(llm_output: str) -> CohesionResult:
     """Parse the LLM's cohesion check response."""
-    from .cohesion_check import CohesionIssue, CohesionResult
+    from ._cohesion_check_utils_6 import CohesionIssue, CohesionResult
     # Strip markdown fences
     cleaned = llm_output.strip()
     if cleaned.startswith("```"):
@@ -64,7 +64,7 @@ def _apply_tier1_fix(issue: CohesionIssue, arch_text: str) -> Optional[str]:
 
     Returns patched text or None if fix couldn't be applied.
     """
-    from .cohesion_check import CohesionIssue
+    from ._cohesion_check_utils_6 import CohesionIssue
     cat = issue.category
 
     # --- Import depth fixes ---
@@ -112,6 +112,86 @@ def _apply_tier1_fix(issue: CohesionIssue, arch_text: str) -> Optional[str]:
 
     return None
 
+def _get_tier2_category_guidance(issue) -> str:
+    """Return category-specific editing instructions for Tier 2 LLM fixes.
+
+    v1.1 (2026-03-01): Concrete examples per category to guide the LLM
+    toward structural fixes rather than superficial text edits.
+    """
+    cat = issue.category
+
+    if cat == "import_mismatch":
+        return (
+            "This is an IMPORT MISMATCH. The architecture references an import \n"
+            "path or symbol name that doesn't match what the source segment exports.\n"
+            "\n"
+            "HOW TO FIX:\n"
+            f"- Find every occurrence of the ACTUAL value: '{issue.actual or 'unknown'}'\n"
+            f"- Replace with the EXPECTED value: '{issue.expected or 'unknown'}'\n"
+            "- Check import statements, function calls, type references, and descriptions.\n"
+            "- If the fix changes a module path (e.g. 'from app.foo' to 'from app.bar'),\n"
+            "  update ALL import statements referencing the old path.\n"
+            "\n"
+            "EXAMPLE:\n"
+            "Before: from app.education.scraper import scrape_url\n"
+            "After:  from app.education.scraper import scrape_content_from_url"
+        )
+
+    if cat == "missing_export":
+        return (
+            "This is a MISSING EXPORT. Another segment imports a symbol that this \n"
+            "segment's architecture doesn't define.\n"
+            "\n"
+            "HOW TO FIX:\n"
+            f"- Find the code block for the file that should export the symbol.\n"
+            f"- Add the missing function/class/constant definition.\n"
+            f"- Ensure it matches the signature the importing segment expects.\n"
+            "- If the expected value contains a function signature, use it exactly.\n"
+        )
+
+    if cat == "naming_mismatch":
+        return (
+            "This is a NAMING MISMATCH. A symbol is defined with one name but \n"
+            "referenced with a different name in the architecture.\n"
+            "\n"
+            "HOW TO FIX:\n"
+            f"- Find: '{issue.actual or 'unknown'}'\n"
+            f"- Replace with: '{issue.expected or 'unknown'}'\n"
+            "- Do this EVERYWHERE in the document (definitions, imports, calls).\n"
+        )
+
+    if cat == "shape_mismatch":
+        return (
+            "This is a SHAPE MISMATCH. A function's parameters or return type \n"
+            "don't match what the calling segment expects.\n"
+            "\n"
+            "HOW TO FIX:\n"
+            f"- Find the function definition in the code block.\n"
+            f"- Expected signature: {issue.expected or 'see description'}\n"
+            f"- Actual signature: {issue.actual or 'see description'}\n"
+            "- Change the ACTUAL to match the EXPECTED.\n"
+            "- Also update any return type annotations if mentioned.\n"
+        )
+
+    if cat == "contract_violation":
+        return (
+            "This is a CONTRACT VIOLATION. The architecture breaks a skeleton \n"
+            "contract from the spec.\n"
+            "\n"
+            "HOW TO FIX:\n"
+            f"- The expected contract: {issue.expected or 'see description'}\n"
+            "- Ensure the architecture's code block matches this contract exactly.\n"
+            "- Pay attention to function names, parameter types, and return types.\n"
+        )
+
+    # Generic fallback
+    return (
+        f"Category: {cat}\n"
+        f"Apply the suggested fix as precisely as possible.\n"
+        f"Only change what is needed to resolve this specific issue.\n"
+    )
+
+
 async def _apply_tier2_fix(
     issue: CohesionIssue,
     arch_text: str,
@@ -128,7 +208,7 @@ async def _apply_tier2_fix(
 
     Returns patched full text or None if fix couldn't be applied.
     """
-    from .cohesion_check import CohesionIssue
+    from ._cohesion_check_utils_6 import CohesionIssue
     try:
         from app.providers.registry import llm_call
     except ImportError:
@@ -188,24 +268,37 @@ async def _apply_tier2_fix(
         _suffix = ""
         _using_section = False
 
-    prompt = f"""Fix ONE specific issue in this architecture {'section' if _using_section else 'document'}.
+    # v1.1: Improved Tier 2 prompt with structured fix instructions.
+    # Previous prompt was too vague ("fix one issue") and had 0% success.
+    # New prompt gives category-specific instructions with concrete examples.
+    _category_guidance = _get_tier2_category_guidance(issue)
 
-ISSUE ({issue.category}, {issue.severity}):
-{issue.description}
+    prompt = f"""You are editing an architecture document to fix a cohesion issue.
 
-SUGGESTED FIX:
-{issue.suggested_fix}
+ISSUE DETAILS:
+- ID: {issue.issue_id}
+- Category: {issue.category}
+- Severity: {issue.severity}
+- Description: {issue.description}
+- Expected: {issue.expected or 'N/A'}
+- Actual: {issue.actual or 'N/A'}
+- Suggested fix: {issue.suggested_fix}
+- Segment: {seg_id}
 
-SEGMENT: {seg_id}
+CATEGORY-SPECIFIC GUIDANCE:
+{_category_guidance}
 
-{'ARCHITECTURE SECTION' if _using_section else 'ARCHITECTURE DOCUMENT'}:
+{'ARCHITECTURE SECTION' if _using_section else 'ARCHITECTURE DOCUMENT'} TO EDIT:
 {_section_text}
 
-INSTRUCTIONS:
-- Apply ONLY the fix described above. Change nothing else.
-- Return the {'COMPLETE SECTION' if _using_section else 'COMPLETE DOCUMENT'} with the fix applied.
-- Do NOT add commentary, explanations, or markdown fences.
-- Preserve ALL existing content, formatting, and structure.
+RULES:
+1. Apply ONLY the specific fix described above. Change nothing else.
+2. Return the {'COMPLETE SECTION' if _using_section else 'COMPLETE DOCUMENT'} with the fix applied.
+3. Do NOT add commentary, explanations, or markdown fences.
+4. Preserve ALL existing content, formatting, headers, and structure.
+5. If the fix involves changing a function signature, update ALL references
+   to that function in the document (imports, calls, descriptions).
+6. If the fix involves renaming a symbol, do a global find-replace.
 """
 
     try:
@@ -263,7 +356,7 @@ INSTRUCTIONS:
 
 def save_cohesion_result(result: CohesionResult, job_dir: str) -> str:
     """Save cohesion result to disk alongside the manifest."""
-    from .cohesion_check import CohesionResult
+    from ._cohesion_check_utils_6 import CohesionResult
     segments_dir = os.path.join(job_dir, "segments")
     os.makedirs(segments_dir, exist_ok=True)
     path = os.path.join(segments_dir, "cohesion_check.json")
@@ -274,7 +367,7 @@ def save_cohesion_result(result: CohesionResult, job_dir: str) -> str:
 
 def load_cohesion_result(job_dir: str) -> Optional[CohesionResult]:
     """Load cohesion result from disk. Returns None if not found."""
-    from .cohesion_check import CohesionResult
+    from ._cohesion_check_utils_6 import CohesionResult
     path = os.path.join(job_dir, "segments", "cohesion_check.json")
     if not os.path.isfile(path):
         return None

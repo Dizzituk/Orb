@@ -246,6 +246,12 @@ async def generate_weaver_stream(
         async for chunk in stream_fn(messages=llm_messages, model=model):
             content = None
             if isinstance(chunk, dict):
+                # v3.2: Surface LLM errors instead of silently swallowing them
+                if chunk.get("type") == "error":
+                    err_msg = chunk.get("message", "Unknown LLM error")
+                    print(f"[WEAVER] LLM ERROR from {provider}/{model}: {err_msg}")
+                    yield _serialize_sse({"type": "token", "content": f"\n\n⚠️ Weaver LLM error: {err_msg}"})
+                    continue
                 content = chunk.get("text") or chunk.get("content")
                 if chunk.get("type") == "metadata":
                     continue

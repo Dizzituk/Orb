@@ -7,16 +7,37 @@ from app.llm._overwatcher_stream_utils_4 import _build_evidence_bundle, _get_ove
 from sqlalchemy.orm import Session
 from typing import Any, AsyncGenerator, Callable, Optional
 logger = logging.getLogger(__name__)
-logger = logging.getLogger(__name__)
-memory_service = None
-memory_schemas = None
-specs_service = None
-get_work_artifacts = None
-mark_job_complete = None
-mark_job_failed = None
-OVERWATCHER_AVAILABLE = True
-run_overwatcher_command = None
-OverwatcherCommandResult = None
+
+# v3.2: Direct imports - fixes namespace isolation bug where parent's
+# imports didn't propagate to this utils module.
+try:
+    from app.memory import service as memory_service, schemas as memory_schemas
+except ImportError:
+    memory_service = None
+    memory_schemas = None
+
+try:
+    from app.specs import service as specs_service
+except ImportError:
+    specs_service = None
+
+try:
+    from app.jobs.service import get_work_artifacts, mark_job_complete, mark_job_failed
+except ImportError:
+    get_work_artifacts = None
+    mark_job_complete = None
+    mark_job_failed = None
+
+try:
+    from app.overwatcher.overwatcher_command import (
+        run_overwatcher_command,
+        OverwatcherCommandResult,
+    )
+    OVERWATCHER_AVAILABLE = True
+except ImportError:
+    run_overwatcher_command = None
+    OverwatcherCommandResult = None
+    OVERWATCHER_AVAILABLE = False
 
 
 ARTIFACT_ROOT = os.getenv("ORB_JOB_ARTIFACT_ROOT", r"D:\Orb\jobs")
@@ -135,6 +156,85 @@ async def generate_overwatcher_stream(
     ow_provider, ow_model = _get_overwatcher_provider_model()
     
     try:
+        # =================================================================
+        # v3.2: SEGMENTED SPEC INTERCEPT
+        # Check if the latest spec is a segmented job. If so, delegate to
+        # the segment implementation loop which handles multi-file
+        # architecture execution, sandbox builds, and verification.
+        # =================================================================
+        try:
+            if specs_service:
+                _check_spec = specs_service.get_latest_validated_spec(db, project_id)
+                if _check_spec and (
+                    _check_spec.spec_id.startswith('sg-')
+                    or 'Segmented' in (getattr(_check_spec, 'title', '') or '')
+                ):
+                    logger.info(
+                        "[overwatcher_stream] v3.2 Segmented spec detected: %s - "
+                        "delegating to segment implementation loop",
+                        _check_spec.spec_id,
+                    )
+                    yield sse_token(
+                        "🔀 **Segmented Job Detected**\n\n"
+                        f"Spec `{_check_spec.spec_id}` is a multi-segment job. "
+                        f"Routing to segment implementation pipeline...\n\n"
+                    )
+                    # NOTE: stage_hooks wraps this stream as stage='implementer'
+                    # (via dispatch table), so the build project UI updates automatically.
+                    #
+                    # v3.2: Pre-flight — promote PENDING segments that already have
+                    # architecture docs to APPROVED so implement_only can process them.
+                    try:
+                        from app.orchestrator.segment_state import load_state, save_state, get_job_dir
+                        from app.orchestrator.segment_loop_stream import _find_latest_job_with_manifest
+                        from app.pot_spec.grounded.segment_schemas import SegmentStatus
+                        import os as _os
+                        _found_job = _find_latest_job_with_manifest(project_id, db)
+                        if not _found_job:
+                            raise ValueError("No job with manifest found")
+                        _jdir = get_job_dir(_found_job)
+                        _st = load_state(_jdir)
+                        _promoted = 0
+                        for _sid, _ss in _st.segments.items():
+                            if _ss.status == SegmentStatus.PENDING.value:
+                                _arch = _os.path.join(_jdir, 'segments', _sid, 'arch', 'arch_v1.md')
+                                if _os.path.isfile(_arch):
+                                    _ss.status = SegmentStatus.APPROVED.value
+                                    _promoted += 1
+                        if _promoted:
+                            save_state(_st, _jdir)
+                            logger.info(
+                                "[overwatcher_stream] v3.2 Promoted %d PENDING→APPROVED segments",
+                                _promoted,
+                            )
+                            yield sse_token(
+                                f"\u2705 Promoted {_promoted} segment(s) from PENDING to APPROVED "
+                                f"(architecture already exists)\n\n"
+                            )
+                    except Exception as promo_err:
+                        logger.debug("[overwatcher_stream] v3.2 Pre-flight promotion failed: %s", promo_err)
+
+                    _seg_error = None
+                    try:
+                        from app.orchestrator.segment_loop_stream import generate_segment_loop_stream
+                        async for chunk in generate_segment_loop_stream(
+                            project_id=project_id,
+                            db=db,
+                            conversation_id=conversation_id,
+                            implement_only=True,
+                        ):
+                            yield chunk
+                    except Exception as seg_err:
+                        _seg_error = seg_err
+                        logger.exception("[overwatcher_stream] v3.2 Segment loop error: %s", seg_err)
+                        yield sse_error(f"Segment implementation failed: {seg_err}")
+                        yield sse_event("done", error=str(seg_err))
+                    # stage_hooks will mark implementer as passed/failed on stream end
+                    # segment_loop_stream emits its own done event on success
+                    return
+        except Exception as check_err:
+            logger.debug("[overwatcher_stream] v3.2 Segmented check failed (non-fatal): %s", check_err)
+
         yield sse_token("🔧 **Overwatcher Execution**\n\n")
         emit("🔧 **Overwatcher Execution**\n\n")
         

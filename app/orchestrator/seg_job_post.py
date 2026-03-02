@@ -252,11 +252,35 @@ async def run_phase_checkout(ctx: JobCtx) -> None:
         if checkout_result.passed:
             logger.info("[SEGMENT_LOOP] v5.0 Phase Checkout PASSED")
         elif checkout_result.routing:
-            logger.warning(
-                "[SEGMENT_LOOP] v5.0 Phase Checkout FAILED → route to %s (seg=%s)",
-                checkout_result.routing.target_stage,
-                checkout_result.routing.target_segment or "all",
-            )
+            _sev = getattr(checkout_result.routing, 'severity', 'unknown')
+            _stage = checkout_result.routing.target_stage
+            _scoped = getattr(checkout_result.routing, 'scoped_files', None)
+
+            if _sev == "major":
+                # v1.3: Major failures fail cleanly — no LLM heroics.
+                logger.warning(
+                    "[SEGMENT_LOOP] v5.0 Phase Checkout FAILED (MAJOR) — "
+                    "not auto-fixable. Reason: %s",
+                    checkout_result.routing.reason,
+                )
+                ctx.emit(
+                    f"❌ Phase Checkout FAILED (major severity) — "
+                    f"not sending to auto-fix. Reason: {checkout_result.routing.reason}"
+                )
+            else:
+                logger.warning(
+                    "[SEGMENT_LOOP] v5.0 Phase Checkout FAILED → route to %s "
+                    "(seg=%s, severity=%s, scoped=%s)",
+                    _stage,
+                    checkout_result.routing.target_segment or "all",
+                    _sev,
+                    [os.path.basename(f) for f in _scoped] if _scoped else "all",
+                )
+                if _scoped:
+                    ctx.emit(
+                        f"🔧 Phase Checkout: surgical fix needed in "
+                        f"{', '.join(os.path.basename(f) for f in _scoped)}"
+                    )
 
     except (ImportError, Exception) as pc_err:
         logger.warning("[SEGMENT_LOOP] v5.0 Phase Checkout error: %s", pc_err)
@@ -359,6 +383,22 @@ def emit_quarantine_status(ctx: JobCtx) -> None:
             "\n📦 Quarantine: Job FAILED — original files safe in .quarantined/ folders."
         )
         ctx.emit("  To rollback: 'Astra, command: rollback quarantine'")
+
+
+def compact_evidence_ledger(ctx: JobCtx) -> None:
+    """v4.3: Compact ledger after all segments complete."""
+    if not getattr(ctx, "ledger", None):
+        return
+    try:
+        from app.orchestrator.ledger_compactor import compact_ledger
+        compact_ledger(
+            ledger=ctx.ledger,
+            job_dir=ctx.job_dir_path,
+            pass_number=1,
+            emit=ctx.emit,
+        )
+    except Exception as exc:
+        logger.debug("[SEGMENT_LOOP] Ledger compaction failed (non-fatal): %s", exc)
 
 
 def emit_final_summary(ctx: JobCtx) -> None:

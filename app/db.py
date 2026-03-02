@@ -145,6 +145,12 @@ def init_db():
     # v8.0: Import Lifestyle Engine models (weight, nutrition, workouts, goals)
     from app.lifestyle import models as lifestyle_models  # noqa: F401
 
+    # v9.0: Import Pipeline Transparency models (reasoning events, user corrections)
+    from app.transparency import models as transparency_models  # noqa: F401
+
+    # v10.0: Import Conversational Memory Layer models (sessions, summaries)
+    from app.memory import conversation_models  # noqa: F401
+
     # v4.0: create_all with checkfirst=True (default) handles tables.
     # SQLite may raise OperationalError for pre-existing indexes.
     # We catch and log these rather than crashing startup.
@@ -164,6 +170,9 @@ def init_db():
     # v4.0: Run memory module migrations (project columns, astra-core seed)
     from app.memory.migrations import run_memory_migrations
     run_memory_migrations()
+
+    # v10.0: Run conversation memory migrations (session_id on messages)
+    _migrate_conversation_memory_schema()
 
     # v4.1: Register domain stores with the MemoryRouter singleton
     from app.memory.startup import init_memory_system
@@ -255,6 +264,49 @@ def ensure_embedding_schema():
         ensure_embedding_schema()  # Before embedding operations
     """
     _migrate_arch_code_chunks_schema()
+
+
+# =============================================================================
+# SCHEMA MIGRATIONS (v10.0 — Conversational Memory Layer)
+# =============================================================================
+
+def _migrate_conversation_memory_schema():
+    """
+    Ensure the messages table has the session_id column.
+
+    SQLAlchemy create_all() creates the new conversation_sessions and
+    conversation_summaries tables, but won't add a column to the
+    existing messages table. This migration does that.
+
+    Safe to call multiple times (idempotent).
+    v10.0: CONV-MEMORY-001 Phase 1.
+    """
+    import logging
+    from sqlalchemy import inspect, text
+
+    log = logging.getLogger(__name__)
+
+    inspector = inspect(engine)
+    if "messages" not in inspector.get_table_names():
+        log.debug("[db_migrate] messages table doesn't exist yet, skipping")
+        return
+
+    existing = {col["name"] for col in inspector.get_columns("messages")}
+
+    if "session_id" not in existing:
+        with engine.connect() as conn:
+            try:
+                conn.execute(text(
+                    "ALTER TABLE messages ADD COLUMN session_id INTEGER "
+                    "REFERENCES conversation_sessions(id) ON DELETE SET NULL"
+                ))
+                conn.commit()
+                log.info("[db_migrate] Added messages.session_id column")
+                print("[db_migrate] Added messages.session_id column")
+            except Exception as e:
+                log.warning("[db_migrate] Failed to add session_id: %s", e)
+    else:
+        log.debug("[db_migrate] messages.session_id already exists")
 
 
 

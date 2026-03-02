@@ -8,6 +8,10 @@ from app.pot_spec.grounded._spec_runner_utils_11 import _generate_aliases_for_ro
 from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
+# v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
+# v4.3: Spec gate uses HOST filesystem, not sandbox.
+_SBX_FS_OK = False
+
 
 @lru_cache(maxsize=1)
 def _discover_project_roots() -> Dict[str, Any]:
@@ -41,14 +45,14 @@ def _discover_project_roots() -> Dict[str, Any]:
 
     # --- Source 1: INDEX.json (best - has per-file zone metadata) ---
     index_path = os.path.join(_ARCH_INDEX_DIR, "INDEX.json")
-    if os.path.isfile(index_path):
+    if (_sbx_isfile(index_path) if _SBX_FS_OK else os.path.isfile(index_path)):
         try:
             with open(index_path, 'r', encoding='utf-8') as f:
                 index_data = json.load(f)
 
             roots = index_data.get("roots", [])
             # Filter to roots that actually exist on disk
-            roots = [r for r in roots if os.path.isdir(r)]
+            roots = [r for r in roots if (_sbx_isdir(r) if _SBX_FS_OK else os.path.isdir(r))]
 
             if roots:
                 result["roots"] = roots
@@ -90,7 +94,7 @@ def _discover_project_roots() -> Dict[str, Any]:
                 with open(report_files[0], 'r', encoding='utf-8') as f:
                     report_data = json.load(f)
                 roots = report_data.get("metadata", {}).get("roots_scanned", [])
-                roots = [r for r in roots if os.path.isdir(r)]
+                roots = [r for r in roots if (_sbx_isdir(r) if _SBX_FS_OK else os.path.isdir(r))]
 
                 if roots:
                     result["roots"] = roots
@@ -192,13 +196,13 @@ def _extract_file_scope_from_spec(
         _disc = _discover_project_roots()
         for _r in _disc.get('roots', []):
             _candidate = os.path.join(_r, 'app')
-            if os.path.isdir(_candidate):
+            if (_sbx_isdir(_candidate) if _SBX_FS_OK else os.path.isdir(_candidate)):
                 _app_root = _candidate
                 break
         if _app_root:
             _app_subdirs = {
                 d.lower() for d in os.listdir(_app_root)
-                if os.path.isdir(os.path.join(_app_root, d)) and not d.startswith('_')
+                if (_sbx_isdir(os.path.join(_app_root, d)) if _SBX_FS_OK else os.path.isdir(os.path.join(_app_root, d))) and not d.startswith('_')
             }
     except Exception:
         pass

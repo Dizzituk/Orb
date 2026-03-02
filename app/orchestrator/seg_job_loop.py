@@ -322,6 +322,7 @@ async def _handle_approved(ctx, seg_id, seg_spec, idx, total):
         contract_set=ctx.contract_set,
         source_file_evidence=ctx.source_evidence,
         enrichment=ctx.enrichment_data.get(seg_spec.segment_id),
+        ledger=ctx.ledger,
     )
 
     from app.orchestrator.seg_pipeline_step3 import execute_architecture
@@ -380,6 +381,7 @@ async def _handle_pending_implement_only(ctx, seg_id, seg_spec, idx, total):
         contract_set=ctx.contract_set,
         source_file_evidence=ctx.source_evidence,
         enrichment=ctx.enrichment_data.get(seg_spec.segment_id),
+        ledger=ctx.ledger,
     )
     segment_context["_facade_auto_execute"] = True
 
@@ -434,6 +436,7 @@ async def _execute_segment(ctx, seg_id, seg_spec, idx, total):
         contract_set=ctx.contract_set,
         source_file_evidence=ctx.source_evidence,
         enrichment=ctx.enrichment_data.get(seg_spec.segment_id),
+        ledger=ctx.ledger,
     )
 
     # Inject cohesion feedback for regen
@@ -492,6 +495,35 @@ def _apply_segment_result(ctx, seg_id, seg_spec, pipeline_result, idx, total):
                 ctx.state, seg_id, SegmentStatus.APPROVED, ctx.job_dir_path,
             )
             ctx.emit(f"  ✅ {seg_id}: APPROVED — architecture ready for review")
+
+            # v1.0 Fix 3: Back-propagate exports to skeleton contracts
+            try:
+                from app.orchestrator.cross_segment_interfaces import (
+                    backpropagate_exports_to_skeleton,
+                )
+                _skel_path = os.path.join(
+                    ctx.job_dir_path, "segments", "skeleton_contract.json",
+                )
+                _arch_path = os.path.join(
+                    ctx.job_dir_path, "segments", seg_id, "arch", "arch_v1.md",
+                )
+                if os.path.isfile(_arch_path):
+                    with open(_arch_path, "r", encoding="utf-8") as _af:
+                        _arch_text = _af.read()
+                    _bp_count = backpropagate_exports_to_skeleton(
+                        seg_id, _arch_text, _skel_path,
+                    )
+                    if _bp_count:
+                        ctx.emit(
+                            f"  🔗 Back-propagated {_bp_count} export(s) "
+                            f"to skeleton contracts"
+                        )
+            except Exception as _bp_err:
+                logger.debug(
+                    "[SEGMENT_LOOP] Export backprop failed (non-fatal): %s",
+                    _bp_err,
+                )
+
             return "progress"
 
         output_files = pipeline_result.get("output_files", [])
@@ -501,6 +533,8 @@ def _apply_segment_result(ctx, seg_id, seg_spec, pipeline_result, idx, total):
         update_segment_status(
             ctx.state, seg_id, SegmentStatus.COMPLETE, ctx.job_dir_path,
             output_files=output_files,
+            impl_model=pipeline_result.get("impl_model"),
+            impl_provider=pipeline_result.get("impl_provider"),
         )
 
         contract_warnings = verify_contracts_fulfilled(
@@ -509,8 +543,10 @@ def _apply_segment_result(ctx, seg_id, seg_spec, pipeline_result, idx, total):
         if contract_warnings:
             ctx.emit(f"  ⚠️ Contract warnings: {len(contract_warnings)}")
 
+        _impl_model = pipeline_result.get("impl_model", "")
+        _impl_tag = f" via {_impl_model}" if _impl_model else ""
         ctx.emit(
-            f"  ✅ {seg_id}: COMPLETE ({len(output_files)} output file(s))"
+            f"  ✅ {seg_id}: COMPLETE ({len(output_files)} file(s){_impl_tag})"
         )
         return "progress"
 

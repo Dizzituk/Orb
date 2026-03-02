@@ -174,6 +174,8 @@ async def _process_single_task(
     last_error: Optional[str] = None
     job_checker_errors: List[str] = []
     structured_sig_mismatches: list = []
+    use_edit_mode = False  # v3.2: Initialise before loop to avoid UnboundLocalError
+    file_content = None    # v3.2: Same — referenced in _record_success after loop
 
     for strike in range(1, MAX_STRIKES_PER_TASK + 1):
         logger.info("[arch_exec] %s strike %d/%d", rel_path, strike, MAX_STRIKES_PER_TASK)
@@ -194,6 +196,53 @@ async def _process_single_task(
             except Exception as e:
                 last_error = f"__init__.py write exception: {e}"
             break
+
+        # --- Scaffold shortcut (v1.0) ---
+        if ctx.scaffold_result and strike == 1:
+            try:
+                from app.orchestrator.scaffold.integration import (
+                    get_scaffold_for_task, build_fill_prompt,
+                )
+                _scaffold = get_scaffold_for_task(ctx.scaffold_result, rel_path)
+                if _scaffold:
+                    if _scaffold.fill_count == 0:
+                        # Fully deterministic — skip LLM entirely
+                        file_content = _scaffold.content
+                        logger.info(
+                            "[arch_exec] SCAFFOLD deterministic: %s (%d chars)",
+                            rel_path, len(file_content),
+                        )
+                        ctx.add_trace("SCAFFOLD_DETERMINISTIC", "success", {
+                            "path": rel_path, "chars": len(file_content),
+                        })
+                        try:
+                            impl_result = await run_implementer_task(
+                                path=abs_path, content=file_content,
+                                action=action, ensure_parents=True, client=client,
+                            )
+                            if impl_result.success:
+                                task_success = True
+                            else:
+                                last_error = f"Scaffold write failed: {impl_result.error}"
+                        except Exception as e:
+                            last_error = f"Scaffold write exception: {e}"
+                        break
+                    else:
+                        # Has fills — inject scaffold into architecture context
+                        # so LLM only fills the gaps, not generates everything
+                        _fill_prompt = build_fill_prompt(_scaffold)
+                        file_info["_scaffold_fill_prompt"] = _fill_prompt
+                        logger.info(
+                            "[arch_exec] SCAFFOLD with %d fill(s): %s",
+                            _scaffold.fill_count, rel_path,
+                        )
+                        ctx.add_trace("SCAFFOLD_WITH_FILLS", "prepared", {
+                            "path": rel_path, "fills": _scaffold.fill_count,
+                        })
+            except ImportError:
+                pass  # Scaffold module not available — continue normal path
+            except Exception as _se:
+                logger.warning("[arch_exec] Scaffold lookup failed for %s: %s", rel_path, _se)
 
         # --- Extract architecture context ---
         file_context = extract_section_for_file(ctx.architecture_content, rel_path)
@@ -298,6 +347,21 @@ async def _process_single_task(
                 system_prompt = inject_experience_and_rag(
                     system_prompt, rel_path, action, file_context[:200],
                 )
+
+                # Scaffold fill override: targeted fill prompt replaces
+                # the full generation prompt so the LLM only fills gaps
+                _sfp = file_info.get("_scaffold_fill_prompt")
+                if _sfp and strike == 1:
+                    user_prompt = _sfp
+                    system_prompt = (
+                        "You are a code completion assistant. You receive a scaffolded "
+                        "file template with LLM_FILL markers indicating gaps that need "
+                        "implementation. Fill ONLY those gaps. Preserve everything else "
+                        "exactly as-is. Output the complete file with no markdown fences."
+                    )
+                    ctx.add_trace("SCAFFOLD_FILL_PROMPT", "injected", {
+                        "path": rel_path,
+                    })
 
                 # Pre-flight gate
                 run_preflight_gate(ctx.interface_contract, rel_path, user_prompt, system_prompt)
@@ -510,10 +574,21 @@ async def _record_success(
     except Exception as e:
         logger.warning("[arch_exec] v2.3 Interface extraction failed for %s: %s", rel_path, e)
 
-    logger.info("[arch_exec] ✓ %s %s", action.upper(), rel_path)
-    print(f"[ARCH_EXEC] ✓ {action.upper()} {rel_path}")
+    # v3.2: Log content preview so we can see what was actually written
+    _content_len = len(file_content) if file_content else 0
+    _preview_lines = (file_content or '').split('\n')[:15]
+    _preview = '\n'.join(f'    | {ln}' for ln in _preview_lines)
+    _truncated = ' (truncated)' if file_content and len(file_content.split('\n')) > 15 else ''
+    logger.info(
+        "[arch_exec] ✓ %s %s (%d chars)\n%s%s",
+        action.upper(), rel_path, _content_len, _preview, _truncated,
+    )
+    print(f"[ARCH_EXEC] ✓ {action.upper()} {rel_path} ({_content_len} chars)")
+    print(f"[ARCH_EXEC] CONTENT PREVIEW ({rel_path}):\n{_preview}{_truncated}")
     ctx.add_trace("FILE_TASK_SUCCESS", action, {
         "path": rel_path, "absolute_path": abs_path,
+        "content_chars": _content_len,
+        "content_preview": '\n'.join(_preview_lines[:10]),
         "job_context_files": list(ctx.job_context.keys()),
     })
 
@@ -528,6 +603,25 @@ async def process_all_tasks(
 ) -> None:
     """Process all file tasks (creates then modifies) with the strike loop."""
     from app.overwatcher.implementer import run_implementer_task, run_implementer_edit_task
+
+    # v1.0: Ensure frontend root exists if any tasks target it
+    from .path_resolution import ensure_frontend_root_exists
+    from .constants import FRONTEND_PREFIX, FRONTEND_ROOT
+    _has_frontend_tasks = any(
+        f.get('path', '').startswith(FRONTEND_PREFIX)
+        or f.get('path', '').startswith('src/')
+        or f.get('path', '').startswith('public/')
+        for f in (ctx.new_files + ctx.modified_files)
+    )
+    if _has_frontend_tasks:
+        _fe_ok = ensure_frontend_root_exists(client)
+        if _fe_ok:
+            logger.info("[arch_exec] v1.0 Frontend root confirmed: %s", FRONTEND_ROOT)
+        else:
+            logger.warning(
+                "[arch_exec] v1.0 Frontend root %s unavailable "
+                "-- frontend files may fail", FRONTEND_ROOT,
+            )
 
     all_tasks = (
         [{"info": f, "action": "create"} for f in ctx.new_files]

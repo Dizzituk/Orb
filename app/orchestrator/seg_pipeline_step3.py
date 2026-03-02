@@ -156,6 +156,9 @@ async def execute_architecture(
                 for mf in ms.file_scope:
                     manifest_all_files.add(mf.replace("\\", "/"))
 
+        # v1.0: Pass scaffold result if available
+        _scaffold_result = segment_context.get("scaffold_result")
+
         arch_result = await run_architecture_execution(
             spec=spec,
             architecture_content=recon_arch_text,
@@ -166,6 +169,7 @@ async def execute_architecture(
             interface_contract=seg_contract,
             skip_boot_check=True,
             manifest_all_files=manifest_all_files if manifest_all_files else None,
+            scaffold_result=_scaffold_result,
         )
 
         if arch_result.get("success", False):
@@ -176,6 +180,10 @@ async def execute_architecture(
                 for e in arch_result.get("trace", [])
                 if e.get("stage", "").startswith("WARN")
             ]
+            # v3.2-fix: Forward impl_model/impl_provider so segment
+            # state and trace logs show the correct model.
+            result["impl_model"] = arch_result.get("impl_model", "")
+            result["impl_provider"] = arch_result.get("impl_provider", "")
             emit(
                 f"  ✅ Overwatcher + Implementer completed for {seg_id} "
                 f"({len(result['output_files'])} artifact(s) written)"
@@ -306,6 +314,33 @@ def _compile_briefs(
         except Exception:
             pass
 
+        # v1.1 (Job 2): Load skeleton contracts for deterministic import injection
+        _skeleton_data = None
+        _all_skeletons = None
+        try:
+            _skel_path = os.path.join(
+                get_job_dir(parent_job_id), "segments", "skeleton_contract.json"
+            )
+            if os.path.exists(_skel_path):
+                import json as _json
+                with open(_skel_path, "r", encoding="utf-8") as _sf:
+                    _skel_full = _json.load(_sf)
+                _all_skeletons = _skel_full.get("skeletons", [])
+                # Find this segment's skeleton
+                for _sk in _all_skeletons:
+                    if _sk.get("segment_id") == seg_id.split("__")[-1]:
+                        _skeleton_data = _sk
+                        break
+                if _skeleton_data:
+                    logger.info(
+                        "[SEGMENT_LOOP] v1.1 Loaded skeleton for %s (%d exports)",
+                        seg_id, len(_skeleton_data.get("exports", [])),
+                    )
+        except Exception as _sk_err:
+            logger.warning(
+                "[SEGMENT_LOOP] v1.1 Skeleton load failed (non-fatal): %s", _sk_err
+            )
+
         compilation = compile_implementation_briefs(
             architecture_text=arch_text,
             enrichment=compiler_enrichment,
@@ -317,6 +352,8 @@ def _compile_briefs(
             implementation_feedback=segment_context.get("implementation_feedback", ""),
             import_validation_feedback=segment_context.get("import_validation_feedback", ""),
             sibling_enrichments=sibling_enrichments,
+            skeleton=_skeleton_data,
+            all_skeletons=_all_skeletons,
         )
 
         emit(

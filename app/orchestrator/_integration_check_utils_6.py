@@ -6,6 +6,18 @@ from app.orchestrator.segment_state import JobState
 from app.pot_spec.grounded.segment_schemas import SegmentManifest, SegmentSpec, SegmentStatus
 from typing import Dict, List, Set, Tuple
 
+# v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
+try:
+    from app.sandbox_fs import (
+        sandbox_isfile as _sbx_isfile,
+        sandbox_isdir as _sbx_isdir,
+        sandbox_exists as _sbx_exists,
+        sandbox_read_text as _sbx_read_text,
+    )
+    _SBX_FS_OK = True
+except ImportError:
+    _SBX_FS_OK = False
+
 
 INTEGRATION_CHECK_BUILD_ID = "2026-02-08-v1.0-phase3"
 
@@ -36,7 +48,7 @@ def _collect_segment_outputs(
         files = list(seg_state.output_files) if seg_state.output_files else []
 
         output_dir = os.path.join(job_dir, "segments", seg_id, "output")
-        if os.path.isdir(output_dir):
+        if (_sbx_isdir(output_dir) if _SBX_FS_OK else os.path.isdir(output_dir)):
             for root, _dirs, filenames in os.walk(output_dir):
                 for fname in filenames:
                     full = os.path.normpath(os.path.join(root, fname))
@@ -56,9 +68,9 @@ def _get_project_roots(job_dir: str) -> List[str]:
     """Determine project roots for import resolution."""
     roots = list(_DEFAULT_PROJECT_ROOTS)
     segments_dir = os.path.join(job_dir, "segments")
-    if os.path.isdir(segments_dir):
+    if (_sbx_isdir(segments_dir) if _SBX_FS_OK else os.path.isdir(segments_dir)):
         roots.append(segments_dir)
-    return [r for r in roots if os.path.isdir(r)]
+    return [r for r in roots if (_sbx_isdir(r) if _SBX_FS_OK else os.path.isdir(r))]
 
 def _verify_exposes(
     seg_spec: SegmentSpec,
@@ -75,7 +87,7 @@ def _verify_exposes(
 
     all_defined: Set[str] = set()
     for f in output_files:
-        if os.path.isfile(f):
+        if (_sbx_isfile(f) if _SBX_FS_OK else os.path.isfile(f)):
             all_defined.update(get_all_defined_names(f))
 
     for class_name in exposes.class_names:

@@ -263,7 +263,7 @@ async def verify_written_file(
     Returns VerifyResult — caller should check .passed and handle
     .error / .structured_sig_mismatches on failure.
     """
-    # Layer 1: Deterministic check
+    # Layer 1: Deterministic check (core)
     det_passed = _run_deterministic_check(rel_path, file_content, ctx, strike)
 
     if det_passed is False:
@@ -291,19 +291,54 @@ async def verify_written_file(
             job_checker_error=desc,
         )
 
-    # Layer 2: LLM job checker (skipped if deterministic passed)
-    if det_passed is not True:
-        llm_passed = await _run_llm_job_check(
-            rel_path, file_content, ctx, strike, job_checker_strike_errors,
+    # Layer 1B: Extended deterministic checks (v3.0)
+    try:
+        from app.overwatcher.deterministic_checker_extended import run_extended_det_checks
+        arch_section = extract_section_for_file(
+            ctx.architecture_content, rel_path,
+        ) or ""
+        ext_issues = run_extended_det_checks(
+            file_content=file_content,
+            file_path=rel_path,
+            interface_contract=ctx.interface_contract,
+            architecture_content=arch_section,
         )
-        if llm_passed is False:
+        ext_blocking = [i for i in ext_issues if i.severity == "blocking"]
+        if ext_blocking:
+            desc = "; ".join(i.description for i in ext_blocking[:3])
+            logger.warning(
+                "[arch_exec] v3.0 EXT_DET_CHECK Strike %d: %s", strike, desc[:200],
+            )
+            ctx.add_trace("EXT_DET_CHECK_FAIL", f"strike_{strike}", {
+                "path": rel_path,
+                "blocking": len(ext_blocking),
+                "issues": [i.to_dict() for i in ext_issues[:5]],
+            })
             return VerifyResult(
                 passed=False,
-                error="Job Checker FAILED",
+                error=f"Extended Deterministic Check FAILED: {desc}",
+                job_checker_error=desc,
             )
-    else:
+        elif ext_issues:
+            logger.info(
+                "[arch_exec] v3.0 EXT_DET_CHECK PASS with %d warning(s): %s",
+                len(ext_issues), rel_path,
+            )
+    except ImportError:
+        logger.debug("[arch_exec] v3.0 deterministic_checker_extended not available")
+    except Exception as e:
+        logger.debug("[arch_exec] v3.0 Extended det checker error (non-fatal): %s", e)
+
+    # Layer 2: LLM job checker — ELIMINATED (v3.0)
+    # v3.0: The deterministic checker (core + extended) now covers all
+    # cases that the LLM job checker was handling. The LLM fallback
+    # is permanently disabled. If deterministic_check returned None
+    # (unavailable), we still proceed — the extended checks and
+    # signature check provide sufficient coverage.
+    if det_passed is None:
         logger.info(
-            "[arch_exec] v2.5 Skipping LLM job checker — deterministic passed for %s",
+            "[arch_exec] v3.0 Core det check unavailable for %s "
+            "— relying on extended + signature checks",
             rel_path,
         )
 

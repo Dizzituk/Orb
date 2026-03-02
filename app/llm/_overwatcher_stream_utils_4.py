@@ -7,11 +7,22 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
-logger = logging.getLogger(__name__)
-get_active_job_for_project = None
-get_job_for_spec = None
-STAGE_MODELS_AVAILABLE = True
-get_overwatcher_config = None
+
+# v3.2: Direct imports - fixes namespace isolation bug where parent's
+# imports didn't propagate to this utils module.
+try:
+    from app.jobs.service import get_active_job_for_project, get_job_for_spec
+except ImportError:
+    get_active_job_for_project = None
+    get_job_for_spec = None
+
+try:
+    from app.llm.stage_models import get_overwatcher_config
+    STAGE_MODELS_AVAILABLE = True
+except ImportError:
+    get_overwatcher_config = None
+    STAGE_MODELS_AVAILABLE = False
+
 ARTIFACT_ROOT = os.getenv("ORB_JOB_ARTIFACT_ROOT", r"D:\Orb\jobs")
 
 

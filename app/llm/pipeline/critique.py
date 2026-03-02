@@ -79,6 +79,12 @@ from app.llm.pipeline.critique_parts.evidence_resolution import (
 from app.llm.pipeline.critique_parts.scope_creep import run_scope_creep_check
 from app.llm.pipeline.critique_parts.spec_compliance import run_deterministic_spec_compliance_check
 
+# v3.0: Unified deterministic verdict engine
+from app.llm.pipeline.critique_parts.deterministic_verdict import (
+    run_deterministic_verdict,
+    should_skip_llm_critique,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -164,6 +170,14 @@ async def call_json_critic(
     envelope: JobEnvelope,
     segment_contract_markdown: Optional[str] = None,
     enrichment_markdown: Optional[str] = None,  # v5.18: AST-extracted symbols
+    # v3.0: Deterministic verdict parameters
+    segment_id: Optional[str] = None,
+    segment_spec: Optional[Dict[str, Any]] = None,
+    skeleton_contract: Optional[Dict[str, Any]] = None,
+    skeleton_file_scope: Optional[List[str]] = None,
+    enrichment_data: Optional[Dict[str, Any]] = None,
+    manifest_dict: Optional[Dict[str, Any]] = None,
+    needle_estimate: Optional[int] = None,
 ) -> CritiqueResult:
     """Call critic with JSON output schema. Returns structured CritiqueResult."""
     critique_provider, critique_model, critique_max_tokens = _get_critique_model_config()
@@ -245,6 +259,52 @@ async def call_json_critic(
     else:
         print(f"[DEBUG] [critique] v2.0 Skipping evidence resolution check: {len(pending_requests)} pending EVIDENCE_REQUEST(s)")
     
+    # =========================================================================
+    # v3.0: UNIFIED DETERMINISTIC VERDICT (7 contract checks)
+    # =========================================================================
+    _det_verdict = run_deterministic_verdict(
+        arch_content=arch_content,
+        segment_id=segment_id,
+        spec_json=spec_json,
+        spec_markdown=spec_markdown,
+        segment_spec=segment_spec,
+        skeleton_contract=skeleton_contract,
+        skeleton_file_scope=skeleton_file_scope,
+        enrichment_data=enrichment_data,
+        manifest_dict=manifest_dict,
+        needle_estimate=needle_estimate,
+    )
+
+    # If verdict has blocking issues, return immediately — no LLM needed
+    if not _det_verdict.passed:
+        print(f"[DEBUG] [critique] v3.0 DETERMINISTIC FAIL: {_det_verdict.blocking_count} blocking, {_det_verdict.warning_count} warnings")
+        logger.warning(
+            "[critique] v3.0 Deterministic verdict BLOCKED: %d blocking, %d warnings",
+            _det_verdict.blocking_count, _det_verdict.warning_count,
+        )
+        return _det_verdict.to_critique_result()
+
+    # If verdict passed, decide whether to skip LLM based on needle
+    if should_skip_llm_critique(_det_verdict, needle_estimate):
+        _needle_str = str(needle_estimate) if needle_estimate is not None else "unknown"
+        print(
+            f"[DEBUG] [critique] v3.0 DETERMINISTIC PASS — skipping LLM critique "
+            f"(needle={_needle_str}, checks={_det_verdict.checks_run}, "
+            f"warnings={_det_verdict.warning_count})"
+        )
+        logger.info(
+            "[critique] v3.0 Skipping LLM critique: deterministic PASS, needle=%s",
+            _needle_str,
+        )
+        return _det_verdict.to_critique_result()
+
+    # High-complexity segment — deterministic passed but run LLM safety net
+    print(
+        f"[DEBUG] [critique] v3.0 Deterministic PASS but needle={needle_estimate} >= 7 "
+        f"— running LLM safety net"
+    )
+    # Fall through to existing LLM critique below...
+
     print(f"[DEBUG] [critique] v1.3 Deterministic check PASSED - proceeding to LLM critique")
     
     if spec_markdown:

@@ -28,6 +28,10 @@ from app.pot_spec.grounded._spec_runner_deterministic_refactor import (
     build_deterministic_manifest,
 )
 
+# v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
+# v4.3: Spec gate uses HOST filesystem, not sandbox.
+_SBX_FS_OK = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,6 +42,7 @@ async def run_segmentation_check(
     job_id: str,
     goal: str,
     round_n: int,
+    is_create_job: bool = False,
 ) -> Tuple[Any, Optional[Any], bool]:
     """
     Run Step 4b: Segmentation check.
@@ -76,8 +81,14 @@ async def run_segmentation_check(
                     len(_added), _added[:5],
                 )
 
-        logger.info("[spec_runner] v5.16 File scope: %d file(s)", len(_file_scope))
-        print(f"[spec_runner] v5.16 FILE_SCOPE: {len(_file_scope)} file(s): {_file_scope[:5]}")
+        # v5.17: Resolve file scope paths against real filesystem.
+        # LLM-extracted paths may use wrong locations (e.g. src/types.ts
+        # instead of src/types/index.ts, or src/Sidebar.tsx instead of
+        # src/components/sidebar/Sidebar.tsx). Resolve before segmentation.
+        _file_scope = _resolve_file_scope_paths(_file_scope)
+
+        logger.info("[spec_runner] v5.17 File scope: %d file(s)", len(_file_scope))
+        print(f"[spec_runner] v5.17 FILE_SCOPE: {len(_file_scope)} file(s): {_file_scope[:5]}")
 
         if not _file_scope:
             return None, None, False
@@ -91,9 +102,15 @@ async def run_segmentation_check(
         )
 
         # v6.1: Deterministic refactor check
-        _deterministic_manifest = _try_deterministic_refactor(
-            _file_scope, spot_markdown, job_id,
-        )
+        # v6.2: SKIP for create jobs — create specs mention 'extract'/'refactor'
+        # in reference patterns but are NOT refactor jobs
+        _deterministic_manifest = None
+        if not is_create_job:
+            _deterministic_manifest = _try_deterministic_refactor(
+                _file_scope, spot_markdown, job_id,
+            )
+        else:
+            logger.info("[spec_runner] v6.2 Skipping deterministic refactor check (create job)")
 
         if _deterministic_manifest:
             segmentation_manifest = _deterministic_manifest
@@ -157,6 +174,147 @@ async def run_segmentation_check(
 # =============================================================================
 # INTERNAL HELPERS
 # =============================================================================
+
+def _resolve_file_scope_paths(file_scope: List[str]) -> List[str]:
+    """v5.17: Resolve LLM-extracted file paths against the real filesystem.
+
+    LLM analysis often produces paths that are close but wrong:
+    - src/types.ts instead of src/types/index.ts (barrel export)
+    - src/Sidebar.tsx instead of src/components/sidebar/Sidebar.tsx
+
+    Resolution strategies (in order):
+    1. Direct check: path exists at a project root -> keep as-is
+    2. Barrel fallback: foo.ts -> foo/index.ts or foo/index.tsx
+    3. Architecture index search: find the file by name in known paths
+
+    Returns a new list with resolved paths (same length, deduped).
+    """
+    from app.pot_spec.grounded._spec_runner_utils_13 import _discover_project_roots
+
+    disc = _discover_project_roots()
+    roots = disc.get("roots", [])
+    if not roots:
+        roots = [r"D:\Orb", r"D:\orb-desktop"]
+
+    # Load architecture index for filename search fallback
+    arch_paths: List[str] = []
+    try:
+        from app.pot_spec.grounded._segmentation_utils_3 import _load_architecture_file_list
+        arch_paths = _load_architecture_file_list()
+    except Exception:
+        pass
+
+    resolved: List[str] = []
+    seen: set = set()
+
+    for raw_path in file_scope:
+        norm = raw_path.replace("/", os.sep).replace("\\", os.sep)
+        result = _try_resolve_single(norm, roots, arch_paths)
+        key = result.replace("\\", "/").lower()
+        if key not in seen:
+            seen.add(key)
+            resolved.append(result)
+
+    if resolved != file_scope:
+        _changes = [
+            (old, new) for old, new in zip(file_scope, resolved)
+            if old.replace("\\", "/").lower() != new.replace("\\", "/").lower()
+        ]
+        if _changes:
+            logger.info(
+                "[spec_runner] v5.17 Resolved %d path(s): %s",
+                len(_changes),
+                [f"{o} -> {n}" for o, n in _changes[:5]],
+            )
+
+    return resolved
+
+
+def _try_resolve_single(
+    rel_path: str,
+    roots: List[str],
+    arch_paths: List[str],
+) -> str:
+    """Try to resolve a single relative path to its real location."""
+    # Strategy 1: Direct existence check against project roots
+    for root in roots:
+        candidate = os.path.join(root, rel_path)
+        if os.path.exists(candidate):
+            return rel_path  # Path is correct as-is
+
+    # Strategy 2: Barrel export fallback (TypeScript)
+    # src/types.ts -> src/types/index.ts
+    if rel_path.endswith((".ts", ".tsx")):
+        stem = rel_path.rsplit(".", 1)[0]
+        ext = rel_path.rsplit(".", 1)[1]
+        for barrel_name in ("index.ts", "index.tsx"):
+            barrel_path = stem + os.sep + barrel_name
+            for root in roots:
+                if os.path.exists(os.path.join(root, barrel_path)):
+                    logger.info(
+                        "[spec_runner] v5.17 Barrel resolve: %s -> %s",
+                        rel_path, barrel_path,
+                    )
+                    return barrel_path
+
+    # Strategy 3: Architecture index filename search
+    # src/Sidebar.tsx -> src/components/sidebar/Sidebar.tsx
+    if arch_paths:
+        filename = os.path.basename(rel_path)
+        filename_lower = filename.lower()
+        matches = [
+            ap for ap in arch_paths
+            if ap.lower().endswith(os.sep + filename_lower)
+            or ap.lower().endswith("/" + filename_lower)
+        ]
+        if len(matches) == 1:
+            # Unique match — safe to use
+            resolved = matches[0]
+            # Normalise to relative path (strip project root prefix)
+            for root in roots:
+                root_prefix = root.replace("/", os.sep)
+                if not root_prefix.endswith(os.sep):
+                    root_prefix += os.sep
+                if resolved.startswith(root_prefix):
+                    resolved = resolved[len(root_prefix):]
+                    break
+            if resolved != rel_path:
+                logger.info(
+                    "[spec_runner] v5.17 Index resolve: %s -> %s",
+                    rel_path, resolved,
+                )
+            return resolved
+        elif len(matches) > 1:
+            # Multiple matches — try to pick the one most similar to the LLM path
+            # Prefer matches that share directory segments with the original
+            rel_parts = set(rel_path.replace("\\", "/").lower().split("/")[:-1])
+            best = None
+            best_score = -1
+            for m in matches:
+                m_parts = set(m.replace("\\", "/").lower().split("/")[:-1])
+                score = len(rel_parts & m_parts)
+                if score > best_score:
+                    best_score = score
+                    best = m
+            if best and best_score > 0:
+                resolved = best
+                for root in roots:
+                    root_prefix = root.replace("/", os.sep)
+                    if not root_prefix.endswith(os.sep):
+                        root_prefix += os.sep
+                    if resolved.startswith(root_prefix):
+                        resolved = resolved[len(root_prefix):]
+                        break
+                if resolved != rel_path:
+                    logger.info(
+                        "[spec_runner] v5.17 Index resolve (best of %d): %s -> %s",
+                        len(matches), rel_path, resolved,
+                    )
+                return resolved
+
+    # No resolution found — return as-is (will be treated as CREATE target)
+    return rel_path
+
 
 def _run_size_analysis(
     file_scope: List[str],
@@ -259,7 +417,7 @@ def _exclude_external_consumers(
     for _fp3 in _norm_scope:
         if _fp3 not in _products:
             _abs = os.path.join("D:\\Orb", _fp3.replace("/", os.sep))
-            if os.path.isfile(_abs):
+            if (_sbx_isfile(_abs) if _SBX_FS_OK else os.path.isfile(_abs)):
                 _deferred.append(_fp3)
 
     if _deferred:

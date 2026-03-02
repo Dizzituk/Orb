@@ -3,10 +3,14 @@ import os
 import re
 from typing import List
 
+# v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
+# v4.3: Spec gate uses HOST filesystem, not sandbox.
+_SBX_FS_OK = False
+
 
 SIMPLE_CREATE_BUILD_ID = "2026-02-09-v5.1-pre-resolve-mentioned-files"
 
-_EVIDENCE_MAX_LOOPS = int(os.getenv("ASTRA_EVIDENCE_MAX_LOOPS", "3"))  # v4.2: Increased from 2 to 3
+_EVIDENCE_MAX_LOOPS = int(os.getenv("ASTRA_EVIDENCE_MAX_LOOPS", "8"))  # v4.3: Safety ceiling only. Normal exit is LLM emitting no more ERs.
 
 _CREATE_ANALYSIS_MODEL = os.getenv("ASTRA_CREATE_ANALYSIS_MODEL", "")
 
@@ -27,7 +31,7 @@ def _find_file_in_projects(
     }
     found = []
     for root_path in project_paths:
-        if not os.path.isdir(root_path):
+        if not (_sbx_isdir(root_path) if _SBX_FS_OK else os.path.isdir(root_path)):
             continue
         for dirpath, dirnames, filenames in os.walk(root_path):
             # Prune junk dirs

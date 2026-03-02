@@ -231,6 +231,16 @@ def should_confirm_model_escalation(
         "reasoning": "GPT-5.2",
         "multimodal": "Gemini 3.1 Pro",
     }
+    tier_providers = {
+        "deep": "anthropic",
+        "reasoning": "openai",
+        "multimodal": "google",
+    }
+    tier_model_ids = {
+        "deep": "claude-opus-4-6",
+        "reasoning": "gpt-5.2",
+        "multimodal": "gemini-3.1-pro-preview",
+    }
     model_name = tier_model_names.get(to_tier, to_tier)
     action = f"{from_tier}_to_{to_tier}"
     pattern_key = _make_pattern_key("model_escalation", action, message)
@@ -248,7 +258,8 @@ def should_confirm_model_escalation(
         detail=f"Your message looks like it needs a more capable model ({to_tier} tier).",
         original_message=message,
         proposed_action=action,
-        proposed_model=model_name,
+        proposed_provider=tier_providers.get(to_tier, ""),
+        proposed_model=tier_model_ids.get(to_tier, ""),
         confidence=confidence,
         pattern_key=pattern_key,
     )
@@ -351,6 +362,13 @@ def format_confirmation_sse(
         payload["proposed_intent"] = req.proposed_intent
         # Frontend reads event.intent for the confirm button label
         payload["intent"] = req.proposed_intent
+    elif req.gate_type == "model_escalation":
+        # v2.2: For model escalation, synthesise an intent so the frontend
+        # can send it back via confirmed_intent and the backend can recognise
+        # the escalation roundtrip instead of re-classifying from scratch.
+        payload["intent"] = f"MODEL_ESCALATION:{req.proposed_action}"
+        payload["proposed_provider"] = req.proposed_provider or ""
+        payload["proposed_model"] = req.proposed_model or ""
     # v2.2: Thread extracted query so frontend can send it back on confirm
     if extracted_query:
         payload["extracted_query"] = extracted_query

@@ -29,6 +29,10 @@ from app.pot_spec.grounded._spec_runner_utils_10 import (
     SPEC_RUNNER_BUILD_ID,
     _build_simple_spec,
 )
+
+# v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
+# v4.3: Spec gate uses HOST filesystem, not sandbox.
+_SBX_FS_OK = False
 from app.pot_spec.grounded._spec_runner_utils_12 import _extract_project_paths
 from app.pot_spec.grounded._spec_runner_utils_13 import _extract_file_scope_from_spec
 from app.pot_spec.grounded._spec_runner_segmentation import run_segmentation_check
@@ -160,8 +164,10 @@ async def run_spec_gate_grounded(
         # =============================================================
         # STEP 4: Segmentation check
         # =============================================================
+        _is_create_job = not (multi_file_meta and multi_file_meta.get("is_multi_file"))
         seg_manifest, needle_est, early_return = await run_segmentation_check(
             spot_markdown, combined_text, multi_file_op, job_id, goal, round_n,
+            is_create_job=_is_create_job,
         )
 
         if early_return and seg_manifest:
@@ -289,7 +295,7 @@ async def _handle_create_path(
             validation_status="needs_clarification",
         )
 
-    valid_paths = [p for p in project_paths if os.path.isdir(p)]
+    valid_paths = [p for p in project_paths if (_sbx_isdir(p) if _SBX_FS_OK else os.path.isdir(p))]
 
     if _CREATE_BUILDER_AVAILABLE and valid_paths:
         try:

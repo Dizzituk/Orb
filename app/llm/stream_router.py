@@ -152,6 +152,48 @@ async def stream_chat(
     # and dispatch directly to the command handler.
     # =========================================================================
     if req.confirmed_intent:
+        # v2.2: MODEL_ESCALATION confirmed — route original message with upgraded model
+        if req.confirmed_intent.startswith("MODEL_ESCALATION:"):
+            action = req.confirmed_intent.split(":", 1)[1]  # e.g. "lookup_to_reasoning"
+            logger.info(f"[stream_router] Model escalation confirmed: {action}")
+            # Log the approval for auto-approve learning
+            try:
+                from app.llm.routing.confirmation_gate import process_confirmation_response, _make_pattern_key
+                pattern_key = _make_pattern_key("model_escalation", action, req.message)
+                process_confirmation_response(
+                    pattern_key=pattern_key,
+                    gate_type="model_escalation",
+                    proposed_action=action,
+                    approved=True,
+                    original_message=req.message,
+                    confidence=0.0,
+                )
+            except Exception as e:
+                logger.warning(f"[stream_router] Failed to log escalation decision: {e}")
+            # Route as chat with the escalated model
+            # v3.2: Read from env instead of hardcoding OpenAI
+            import os as _os
+            tier_map = {
+                "lookup_to_deep": (
+                    _os.getenv("CHAT_DEEP_PROVIDER", "anthropic"),
+                    _os.getenv("CHAT_DEEP_MODEL", "claude-opus-4-6"),
+                ),
+                "lookup_to_reasoning": (
+                    _os.getenv("CHAT_PROVIDER", "google"),
+                    _os.getenv("CHAT_MODEL", "gemini-2.5-flash"),
+                ),
+                "lookup_to_multimodal": ("google", "gemini-3.1-pro-preview"),
+            }
+            provider, model = tier_map.get(action, (None, None))
+            if provider and model:
+                req.provider = provider
+                req.model = model
+                from app.memory.service import get_project
+                project = get_project(db, req.project_id)
+                return handle_chat_mode(req, project, db, trace)
+            # Fallback if unknown action
+            logger.warning(f"[stream_router] Unknown escalation action: {action}")
+
         try:
             direct_intent = CanonicalIntent(req.confirmed_intent)
             logger.info(f"[stream_router] Confirmed intent bypass: {direct_intent.value}")
@@ -243,7 +285,15 @@ async def stream_chat(
         if translation_result.mode == TranslationMode.CHAT:
             logger.info("[translation] CHAT MODE - bypassing job classification")
             # v5.4: Capture preferences and context from chat messages
-            after_user_message(req.message, project_id=str(req.project_id), user_id=user_id)
+            # v10.0: Pass db_session for conversation session management
+            after_user_message(
+                req.message,
+                project_id=str(req.project_id),
+                user_id=user_id,
+                provider=getattr(req, 'provider', None),
+                model=getattr(req, 'model', None),
+                db_session=db,
+            )
             return handle_chat_mode(req, project, db, trace)
         
         # =================================================================
@@ -331,7 +381,15 @@ async def stream_chat(
                 intent_val = translation_result.resolved_intent.value if translation_result.resolved_intent else None
                 if intent_val:
                     on_intent_confirmed(req.message, intent_val, user_id)
-                after_user_message(req.message, project_id=str(req.project_id), user_id=user_id)
+                # v10.0: Pass db_session for conversation session management
+                after_user_message(
+                    req.message,
+                    project_id=str(req.project_id),
+                    user_id=user_id,
+                    provider=getattr(req, 'provider', None),
+                    model=getattr(req, 'model', None),
+                    db_session=db,
+                )
                 
                 response = handle_command_execution(
                     req, translation_result, db, trace, conversation_id, stage_trace

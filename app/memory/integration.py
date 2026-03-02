@@ -96,13 +96,21 @@ def after_user_message(
     message: str,
     project_id: str = "astra-core",
     user_id: str = "default",
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    db_session=None,
 ) -> None:
     """
     Called after processing a user message.
 
-    Runs two checks:
+    Runs three checks:
       a) Does the message contain a preference statement?
       b) Does the message contain extractable facts/decisions?
+      c) Should a conversation summary be generated? (v10.0)
+
+    v10.0: Added conversation session management and summary triggering.
+           Accepts provider/model for session tracking and db_session for
+           session operations.
 
     Wires: chat_routing.handle_chat_mode()
            + stream_router command mode message save
@@ -144,6 +152,155 @@ def after_user_message(
         _extract_context_facts(message, project_id)
     except Exception as e:
         logger.debug("[integration] Context extraction skipped: %s", e)
+
+    # c) Conversation session management + summary triggering (v10.0)
+    _handle_conversation_session(
+        project_id=project_id,
+        provider=provider,
+        model=model,
+        db=db_session,
+    )
+
+
+def _handle_conversation_session(
+    project_id: str,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    db=None,
+) -> None:
+    """
+    Manage conversation session lifecycle and trigger summary generation.
+
+    v10.0: CONV-MEMORY-001 Phase 2 integration.
+
+    Steps:
+      1. Get or create the active session for this project.
+      2. Bump session activity (message count, model tracking).
+      3. Check if a summary should be generated.
+      4. If yes, spawn summary generation as a background task.
+    """
+    if db is None:
+        logger.debug("[integration] No db_session for conversation session management")
+        return
+
+    try:
+        # Convert project_id to int (may be passed as string from some callers)
+        pid = int(project_id) if isinstance(project_id, str) and project_id.isdigit() else None
+        if pid is None:
+            # Non-numeric project_id (e.g. "astra-core") — look up by project_key
+            from app.memory.models import Project
+            proj = db.query(Project).filter(
+                Project.project_key == project_id
+            ).first()
+            pid = proj.id if proj else None
+
+        if pid is None:
+            logger.debug("[integration] Could not resolve project_id=%s", project_id)
+            return
+
+        from app.memory.conversation_service import (
+            get_or_create_active_session,
+            bump_session_activity,
+        )
+        from app.memory.summary_trigger import should_generate_summary
+
+        session = get_or_create_active_session(db, pid)
+
+        # v10.0 FIX: Backfill orphan messages that were created before
+        # the session hook ran (message is saved in handle_chat_mode
+        # BEFORE after_user_message fires). Also catches pre-existing
+        # messages from before the conv memory layer was deployed.
+        _backfill_orphan_messages(db, pid, session.id)
+
+        bump_session_activity(db, session, provider=provider, model=model)
+
+        if should_generate_summary(db, session):
+            _spawn_summary_task(db, session)
+
+    except Exception as e:
+        logger.debug("[integration] Conversation session handling failed: %s", e)
+
+
+def _backfill_orphan_messages(
+    db, project_id: int, session_id: int,
+) -> None:
+    """
+    Claim messages that have no session_id into the current session.
+
+    This handles two cases:
+      a) The current request's message — saved by handle_chat_mode()
+         before after_user_message() runs, so it has session_id=NULL.
+      b) Pre-existing messages from before the conv memory layer existed.
+
+    Only backfills recent messages (last 20) to avoid claiming ancient
+    history into a new session.
+    """
+    try:
+        from app.memory.models import Message
+
+        orphans = (
+            db.query(Message)
+            .filter(
+                Message.project_id == project_id,
+                Message.session_id.is_(None),
+            )
+            .order_by(Message.id.desc())
+            .limit(20)
+            .all()
+        )
+
+        if orphans:
+            for msg in orphans:
+                msg.session_id = session_id
+            db.commit()
+            logger.debug(
+                "[integration] Backfilled %d orphan messages into session %d",
+                len(orphans), session_id,
+            )
+    except Exception as e:
+        logger.debug("[integration] Orphan backfill failed: %s", e)
+
+
+def _spawn_summary_task(db, session) -> None:
+    """
+    Spawn summary generation as a non-blocking background task.
+
+    Uses asyncio.create_task if we're inside an event loop,
+    otherwise logs and skips (summary will catch up on next trigger).
+    """
+    import asyncio
+
+    async def _run_summary():
+        try:
+            # Use a fresh DB session for the background task to avoid
+            # SQLAlchemy thread-safety issues with the request session.
+            from app.db import get_db_session
+            bg_db = get_db_session()
+            try:
+                from app.memory.summary_generator import generate_summary
+                from app.memory.conversation_service import get_session
+                # Re-fetch session in the new DB session
+                bg_session = get_session(bg_db, session.id)
+                if bg_session:
+                    await generate_summary(bg_db, bg_session)
+            finally:
+                bg_db.close()
+        except Exception as e:
+            logger.warning("[integration] Background summary failed: %s", e)
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_run_summary())
+        logger.info(
+            "[integration] Summary generation spawned for session %d",
+            session.id,
+        )
+    except RuntimeError:
+        # No running event loop — can't spawn async task
+        logger.debug(
+            "[integration] No event loop — summary deferred for session %d",
+            session.id,
+        )
 
 
 def _extract_context_facts(message: str, project_id: str) -> None:

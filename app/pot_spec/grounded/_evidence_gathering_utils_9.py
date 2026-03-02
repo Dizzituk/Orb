@@ -5,9 +5,19 @@ import re
 from typing import List, Optional, Tuple
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
-_SANDBOX_CLIENT_AVAILABLE = True
-call_fs_tree = None
-call_fs_contents = None
+# v3.2-fix: Import centralised sandbox filesystem helpers.
+try:
+    from app.sandbox_fs import (
+        sandbox_exists as _sf_exists,
+        sandbox_isfile as _sf_isfile,
+        sandbox_isdir as _sf_isdir,
+        sandbox_read_text as _sf_read_text,
+        sandbox_listdir as _sf_listdir,
+    )
+    _SANDBOX_FS_AVAILABLE = True
+except ImportError:
+    _SANDBOX_FS_AVAILABLE = False
+    logger.error("[evidence_gathering] v3.2 CRITICAL: app.sandbox_fs not available")
 
 
 ANCHOR_RESOLUTION_MAP = {
@@ -39,7 +49,7 @@ ANCHOR_RESOLUTION_MAP = {
     "G:": ["G:\\"],
 }
 
-COMMON_FILE_EXTENSIONS = ['.txt', '.md', '.py', '.json', '.yaml', '.yml', '.js', '.ts', '.html', '.css']
+COMMON_FILE_EXTENSIONS = ['.txt', '.md', '.py', '.json', '.yaml', '.yml', '.js', '.jsx', '.ts', '.tsx', '.html', '.css', '.scss', '.svg', '.mjs']
 
 PATH_REFERENCE_STOPWORDS = {
     'the', 'a', 'an', 'my', 'your', 'this', 'that', 'it',
@@ -53,147 +63,69 @@ PATH_REFERENCE_STOPWORDS = {
 
 def sandbox_read_file(path: str, max_chars: int = 8000) -> Tuple[bool, Optional[str]]:
     """
-    v1.26.1: Read file content from SANDBOX filesystem.
-    
-    Uses call_fs_contents to read via sandbox controller.
-    v1.26.1: Case-insensitive path resolution.
-    
+    v3.2-fix: Read file content from SANDBOX filesystem.
+
+    Uses centralised app.sandbox_fs helpers. NO host fallback.
+    If the sandbox is unreachable, returns (False, None) so the pipeline
+    knows evidence is missing rather than silently using stale host data.
+
     Returns:
         (success: bool, content: Optional[str])
     """
-    from .evidence_gathering import sandbox_path_exists
-    if not _SANDBOX_CLIENT_AVAILABLE or not call_fs_contents:
-        logger.warning("[evidence_gathering] v1.26 sandbox_read_file: sandbox client not available")
-        try:
-            with open(path, 'r', encoding='utf-8', errors='replace') as f:
-                content = f.read(max_chars)
-            return True, content
-        except Exception as e:
-            logger.warning("[evidence_gathering] v1.26 sandbox_read_file fallback failed: %s", e)
-            return False, None
-    
+    if not _SANDBOX_FS_AVAILABLE:
+        logger.error("[evidence_gathering] v3.2 sandbox_read_file: sandbox_fs not available")
+        return False, None
+
     try:
-        # v1.26.1: First resolve the actual path (case-insensitive)
-        exists, file_info = sandbox_path_exists(path)
-        if exists and file_info:
-            actual_path = file_info.get("actual_path", path)
-        elif not exists:
-            # v2.3 FIX: If sandbox_path_exists says file doesn't exist, don't
-            # attempt reads that will fail and produce misleading HARD READ FAIL
-            # errors. This commonly happens when GPT's evidence loop requests reads
-            # of files that are CREATE targets (not yet implemented).
-            logger.info(
-                "[evidence_gathering] v2.3 sandbox_read_file: path does not exist, skipping: %s",
+        # Check existence via sandbox first
+        if not _sf_exists(path):
+            # Case-insensitive retry
+            found = False
+            for var in [
+                path.replace('\\Test', '\\test'),
+                path.replace('\\test', '\\Test'),
+            ]:
+                if var != path and _sf_exists(var):
+                    path = var
+                    found = True
+                    break
+            if not found:
+                logger.info(
+                    "[evidence_gathering] v3.2 sandbox_read_file: path does not exist: %s",
+                    path,
+                )
+                return False, None
+
+        logger.info("[evidence_gathering] v3.2 sandbox_read_file: reading %s", path)
+
+        content = _sf_read_text(path)
+        if content is None:
+            logger.error(
+                "[evidence_gathering] v3.2 HARD READ FAIL: %s exists in sandbox but unreadable",
                 path,
             )
             return False, None
-        else:
-            actual_path = path
-        
-        logger.info("[evidence_gathering] v1.26.1 sandbox_read_file: reading %s (actual: %s)", path, actual_path)
-        
-        status, data, error = call_fs_contents([actual_path])
-        
-        if status != 200 or not data:
-            logger.warning(
-                "[evidence_gathering] v1.28 sandbox_read_file: failed for %s (status=%s, error=%s) — trying host fallback",
-                actual_path, status, error
-            )
-            # v2.2 FIX: Fall back to host filesystem when sandbox returns non-200
-            # This handles paths that exist on the host but not in the sandbox
-            # (e.g., D:\orb-desktop frontend files when sandbox only has D:\Orb backend)
-            try:
-                with open(path, 'r', encoding='utf-8', errors='replace') as f:
-                    fallback_content = f.read(max_chars)
-                logger.info(
-                    "[evidence_gathering] v2.2 sandbox_read_file: HOST FALLBACK SUCCESS %s (%d chars)",
-                    path, len(fallback_content)
-                )
-                return True, fallback_content
-            except Exception as host_err:
-                logger.warning(
-                    "[evidence_gathering] v2.2 sandbox_read_file: host fallback also failed for %s: %s",
-                    path, host_err
-                )
-                return False, None
-        
-        # v1.28 FIX: Use 'files' array like sandbox_inspector (not 'contents' dict)
-        files = data.get("files", [])
-        
-        if not files:
-            logger.warning(
-                "[evidence_gathering] v1.28 sandbox_read_file: no files in response for %s",
-                actual_path
-            )
-            return False, None
-        
-        # Get content from first file
-        content = files[0].get("content")
-        if not content:
-            logger.warning(
-                "[evidence_gathering] v1.35 sandbox_read_file: no content in file object for %s — trying direct read fallback",
-                actual_path
-            )
-            # v1.35 FIX: Fallback to direct open() when sandbox returns empty content
-            # This handles cases where the sandbox controller finds the file but
-            # returns no content (encoding issues, empty files reported wrong, etc.)
-            try:
-                with open(actual_path, 'r', encoding='utf-8', errors='replace') as f:
-                    fallback_content = f.read(max_chars)
-                if fallback_content is not None:
-                    # Distinguish genuinely empty files from read failures
-                    if len(fallback_content) == 0:
-                        logger.info(
-                            "[evidence_gathering] v1.35 sandbox_read_file: file IS genuinely empty: %s",
-                            actual_path
-                        )
-                        return True, ""  # File exists but is empty — that's valid evidence
-                    logger.info(
-                        "[evidence_gathering] v1.35 sandbox_read_file: FALLBACK SUCCESS %s (%d chars)",
-                        actual_path, len(fallback_content)
-                    )
-                    return True, fallback_content
-            except Exception as fallback_err:
-                logger.warning(
-                    "[evidence_gathering] v1.35 sandbox_read_file: direct read fallback also failed for %s: %s",
-                    actual_path, fallback_err
-                )
-            # v2.1: HARD FAIL — file exists but BOTH read methods returned nothing.
-            # This is NOT a normal "file not found" — the sandbox confirmed the file
-            # exists but we cannot read its content. This MUST surface as an error,
-            # not be silently swallowed.
-            print(
-                f"[ERROR] [evidence_gathering] v2.1 HARD READ FAIL: File exists at "
-                f"{actual_path} but BOTH sandbox and direct read returned no content. "
-                f"Evidence grounding is BROKEN for this file."
-            )
-            logger.error(
-                "[evidence_gathering] v2.1 HARD READ FAIL: %s exists but unreadable by both methods",
-                actual_path
-            )
-            return False, None
-        
+
         # Truncate if too long
         if len(content) > max_chars:
             logger.info(
-                "[evidence_gathering] v1.28 sandbox_read_file: truncating %s from %d to %d chars",
-                actual_path, len(content), max_chars
+                "[evidence_gathering] v3.2 sandbox_read_file: truncating %s from %d to %d chars",
+                path, len(content), max_chars,
             )
             content = content[:max_chars]
-        
+
         logger.info(
-            "[evidence_gathering] v1.28 sandbox_read_file: SUCCESS %s (%d chars)",
-            actual_path, len(content)
+            "[evidence_gathering] v3.2 sandbox_read_file: SUCCESS %s (%d chars)",
+            path, len(content),
         )
         return True, content
-        
+
     except Exception as e:
-        logger.warning(
-            "[evidence_gathering] v1.26 sandbox_read_file: exception reading %s: %s",
-            path, e
+        logger.error(
+            "[evidence_gathering] v3.2 sandbox_read_file: exception reading %s: %s",
+            path, e,
         )
         return False, None
-
 def extract_path_references(text: str) -> List[str]:
     """
     v1.26: Extract path references from user text.
@@ -226,7 +158,7 @@ def extract_path_references(text: str) -> List[str]:
             references.append(match)
     
     # Standalone filename with extension
-    extension_pattern = r'["\']?([\w\-]+\.(?:txt|md|py|json|yaml|yml|js|ts|html|css))["\']?'
+    extension_pattern = r'["\']?([\w\-]+\.(?:txt|md|py|json|yaml|yml|jsx?|tsx?|html|css|scss|svg|mjs))["\']?'
     matches = re.findall(extension_pattern, text, re.IGNORECASE)
     for match in matches:
         if is_valid_reference(match) and match not in references:
@@ -328,82 +260,79 @@ USER_SCAN_ROOTS = [
 
 def scan_root_for_file(root: str, filename: str, max_depth: int = 2) -> Optional[str]:
     """
-    v1.31: Scan a root directory for a file by name.
-    
+    v3.2-fix: Scan a root directory for a file by name via SANDBOX.
+
     Scans shallowly (max_depth levels) to avoid scanning entire drives.
     Tries with and without common extensions.
-    
+
     Args:
         root: Root directory to scan
         filename: File name to search for (with or without extension)
         max_depth: Maximum directory depth to scan (default 2)
-        
+
     Returns:
         Full path if found, None otherwise
     """
-    if not _SANDBOX_CLIENT_AVAILABLE or not call_fs_tree:
-        logger.warning("[evidence_gathering] v1.31 scan_root_for_file: sandbox client not available")
+    if not _SANDBOX_FS_AVAILABLE:
+        logger.error("[evidence_gathering] v3.2 scan_root_for_file: sandbox_fs not available")
         return None
-    
+
     logger.info(
-        "[evidence_gathering] v1.31 scan_root_for_file: searching for '%s' in '%s' (depth=%d)",
-        filename, root, max_depth
+        "[evidence_gathering] v3.2 scan_root_for_file: searching for '%s' in '%s' (depth=%d)",
+        filename, root, max_depth,
     )
-    
+
     # Build list of name variants to look for
     filename_lower = filename.lower()
     has_extension = '.' in filename and len(filename.split('.')[-1]) <= 4
-    
+
     variants = [filename_lower]
     if not has_extension:
         for ext in COMMON_FILE_EXTENSIONS:
             variants.append(filename_lower + ext)
-    
+
     try:
-        # List files in root
-        status, data, error = call_fs_tree([root], max_files=200)
-        
-        if status != 200 or not data:
-            logger.info(
-                "[evidence_gathering] v1.31 scan_root_for_file: failed to list %s (status=%s, error=%s)",
-                root, status, error
-            )
-            return None
-        
-        files = data.get("files", [])
-        
-        for f in files:
-            f_path = f.get("path", "") if isinstance(f, dict) else str(f)
-            f_name = os.path.basename(f_path).lower()
-            is_dir = f.get("is_dir", False) if isinstance(f, dict) else False
-            
+        # List files in root via sandbox
+        entries = _sf_listdir(root)
+
+        for f in entries:
+            if isinstance(f, dict):
+                f_path = f.get("path", "")
+                f_name = os.path.basename(f_path).lower()
+                is_dir = f.get("is_dir", False)
+            else:
+                f_path = str(f)
+                f_name = os.path.basename(f_path).lower()
+                is_dir = False
+
             # Check if this file matches
             if not is_dir and f_name in variants:
                 logger.info(
-                    "[evidence_gathering] v1.31 scan_root_for_file: FOUND '%s' at '%s'",
-                    filename, f_path
+                    "[evidence_gathering] v3.2 scan_root_for_file: FOUND '%s' at '%s'",
+                    filename, f_path,
                 )
                 return f_path
-            
+
             # Recurse into subdirectories if we haven't hit max depth
             if is_dir and max_depth > 1:
-                # Don't recurse into system directories
                 dir_name = os.path.basename(f_path).lower()
-                skip_dirs = {'windows', 'program files', 'program files (x86)', 'appdata', 
-                             '$recycle.bin', 'system volume information', 'programdata',
-                             '.git', 'node_modules', '__pycache__', '.venv'}
+                skip_dirs = {
+                    'windows', 'program files', 'program files (x86)',
+                    'appdata', '$recycle.bin', 'system volume information',
+                    'programdata', '.git', 'node_modules', '__pycache__', '.venv',
+                }
                 if dir_name in skip_dirs:
                     continue
-                
+
                 found = scan_root_for_file(f_path, filename, max_depth - 1)
                 if found:
                     return found
-        
+
         return None
-        
+
     except Exception as e:
-        logger.warning(
-            "[evidence_gathering] v1.31 scan_root_for_file: exception scanning %s: %s",
-            root, e
+        logger.error(
+            "[evidence_gathering] v3.2 scan_root_for_file: exception scanning %s: %s",
+            root, e,
         )
         return None

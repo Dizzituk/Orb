@@ -4,7 +4,9 @@ import logging
 import os
 import re
 from app.orchestrator._cohesion_check_utils import _extract_import_replacements, _inject_logging_import
-from app.orchestrator.cohesion_check import CohesionIssue, CohesionResult, logger
+from app.orchestrator._cohesion_check_utils_6 import CohesionIssue, CohesionResult
+import logging
+logger = logging.getLogger(__name__)
 from typing import Optional
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)

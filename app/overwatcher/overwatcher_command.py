@@ -94,6 +94,23 @@ async def run_overwatcher_command(
             result.error = "No validated spec found. Run Spec Gate first, or use use_smoke_test=True."
             result.add_trace("SPEC_RESOLVE", "failed", {"error": result.error})
             return result
+    elif spec.is_segmented_spec:
+        # v3.2: Segmented specs delegate to the segment loop.
+        # The Overwatcher command runs the segment implementation pipeline
+        # which handles architecture execution, sandbox builds, and verification
+        # for each segment in dependency order.
+        result.spec = spec
+        result.add_trace("SPEC_RESOLVE", "segmented", {
+            "spec_id": spec.spec_id, "title": spec.title,
+        })
+        logger.info("[ow_cmd] v3.2 SEGMENTED SPEC %s - delegating to segment loop", spec.spec_id)
+        handled = await _execute_segmented_spec(
+            spec=spec, job_id=job_id, project_id=project_id,
+            llm_call_fn=llm_call_fn, artifact_root=artifact_root,
+            db_session=db_session, result=result,
+        )
+        if handled:
+            return result
     else:
         # v4.4: POT spec routing BEFORE get_target_file()
         if spec.is_pot_spec and spec.pot_tasks and spec.pot_tasks.is_valid:
@@ -258,6 +275,40 @@ async def _run_overwatcher_gate(spec, evidence, llm_call_fn, artifact_root, resu
             result.error = "LLM function required for non-smoke-test jobs"
             result.add_trace("OVERWATCHER_ERROR", "failed", {"error": result.error})
             return False
+
+
+async def _execute_segmented_spec(
+    *,
+    spec: Any,
+    job_id: str,
+    project_id: int,
+    llm_call_fn: Optional[Callable],
+    artifact_root: str,
+    db_session: Any,
+    result: OverwatcherCommandResult,
+) -> bool:
+    """v3.2: Handle segmented spec in the command layer.
+
+    This is a safety net — the primary intercept is in the stream handler
+    (_overwatcher_stream_utils_5.py) which delegates to
+    generate_segment_loop_stream(implement_only=True) for proper SSE streaming.
+
+    If we reach here, it means the stream-level intercept didn't fire.
+    We report the error clearly so the user knows what to do.
+
+    Mutates *result* in place. Returns True (always handled).
+    """
+    result.error = (
+        f"Segmented spec {spec.spec_id} requires the segment implementation loop. "
+        f"This should have been intercepted at the stream layer. "
+        f"Try: 'Astra, command: implement segments'"
+    )
+    result.add_trace("SEGMENT_LOOP", "fallback_error", {
+        "spec_id": spec.spec_id,
+        "hint": "Use 'implement segments' command for segmented specs",
+    })
+    logger.warning("[ow_cmd] v3.2 Segmented spec %s reached command layer — stream intercept missed", spec.spec_id)
+    return True
 
 
 # Exports (backwards compatible)

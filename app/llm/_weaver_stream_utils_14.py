@@ -5,10 +5,22 @@ import re
 from app.llm._weaver_stream_utils_13 import LEAKAGE_PATTERNS
 from typing import Any, Dict
 logger = logging.getLogger(__name__)
-logger = logging.getLogger(__name__)
-stream_openai = None
-stream_anthropic = None
-stream_gemini = None
+# Import streaming functions — these must be available for _get_streaming_function
+try:
+    from app.llm.streaming import stream_openai, stream_anthropic, stream_gemini
+except ImportError:
+    try:
+        from app.llm.streaming import stream_openai
+    except ImportError:
+        stream_openai = None
+    try:
+        from app.llm.streaming import stream_anthropic
+    except ImportError:
+        stream_anthropic = None
+    try:
+        from app.llm.streaming import stream_gemini
+    except ImportError:
+        stream_gemini = None
 
 
 def _get_streaming_function(provider: str):
@@ -125,7 +137,7 @@ def _normalize_typos(text: str) -> str:
     
     Uses word boundaries to avoid substring collisions.
     """
-    from .weaver_stream import TYPO_NORMALIZATIONS
+    from ._weaver_stream_utils_15 import TYPO_NORMALIZATIONS
     result = text
     normalized_any = False
     

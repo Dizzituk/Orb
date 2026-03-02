@@ -68,41 +68,43 @@ class StageConfig:
 # Default (provider, model, max_tokens, timeout) per stage
 # Used when env vars not set - intentionally cheap/fast for safety
 
+# v3.2: Defaults aligned with current .env config (google/anthropic only)
+# These only fire when .env vars are missing for a stage.
 STAGE_DEFAULTS: Dict[str, Tuple[str, str, int, int]] = {
     # Core pipeline stages
-    "WEAVER":             ("openai",    "gpt-4.1-mini",               8000,  60),
-    "SPEC_GATE":          ("openai",    "gpt-4.1-mini",               4000,  90),
-    "PLANNER":            ("openai",    "gpt-4.1-mini",               60000, 120),
-    "ARCHITECTURE":       ("anthropic", "claude-opus-4-5-20251101",   60000, 300),
-    "CRITIQUE":           ("openai",    "gpt-4.1",                    60000, 180),
-    "REVISION":           ("anthropic", "claude-opus-4-5-20251101",   60000, 300),
-    "IMPLEMENTER":        ("anthropic", "claude-sonnet-4-5-20250929", 60000, 300),
-    "OVERWATCHER":        ("openai",    "gpt-4.1",                    1200,  60),
-    "CRITICAL_PIPELINE":  ("openai",    "gpt-5.2",                    60000, 600),
-    
+    "WEAVER":             ("google",    "gemini-3-flash-preview",      8000,  60),
+    "SPEC_GATE":          ("google",    "gemini-3.1-pro-preview",      4000,  90),
+    "PLANNER":            ("google",    "gemini-2.5-flash",            60000, 120),
+    "ARCHITECTURE":       ("anthropic", "claude-opus-4-6",             60000, 300),
+    "CRITIQUE":           ("google",    "gemini-3.1-pro-preview",      60000, 180),
+    "REVISION":           ("anthropic", "claude-sonnet-4-6",           60000, 300),
+    "IMPLEMENTER":        ("anthropic", "claude-sonnet-4-6",           60000, 300),
+    "OVERWATCHER":        ("google",    "gemini-2.5-flash",            1200,  60),
+    "CRITICAL_PIPELINE":  ("google",    "gemini-3-flash-preview",      60000, 600),
+
     # Supervisor (Phase 2A — interface contracts between segments)
-    "CRITICAL_SUPERVISOR": ("anthropic", "claude-opus-4-6", 8000, 120),
-    "COHESION_CHECK":      ("anthropic", "claude-opus-4-6", 4000, 120),
-    "NEEDLE_CLASSIFIER":   ("openai",    "gpt-4.1-mini",               500,  30),
-    "SMART_SEGMENTATION":  ("openai",    "gpt-4.1-mini",               2000, 45),
+    "CRITICAL_SUPERVISOR": ("anthropic", "claude-opus-4-6",            8000, 120),
+    "COHESION_CHECK":      ("anthropic", "claude-opus-4-6",            4000, 120),
+    "NEEDLE_CLASSIFIER":   ("google",    "gemini-2.5-flash-lite",      500,  30),
+    "SMART_SEGMENTATION":  ("google",    "gemini-2.5-flash",           2000, 45),
     # Phase 3C: Needle-based model tiers for architecture generation
-    "ARCH_TIER_LOW":       ("openai",    "gpt-5.2",                     60000, 600),
-    "ARCH_TIER_HIGH":      ("openai",    "gpt-5.2",                     60000, 600),
-    # Phase 3D: Cohesion autofix micro-patch (cheap model for small targeted fixes)
-    "COHESION_MICRO_PATCH": ("openai",    "gpt-4.1-mini",              8000, 60),
+    "ARCH_TIER_LOW":       ("google",    "gemini-2.5-flash",           60000, 600),
+    "ARCH_TIER_HIGH":      ("anthropic", "claude-opus-4-6",            60000, 600),
+    # Phase 3D: Cohesion autofix micro-patch
+    "COHESION_MICRO_PATCH": ("google",   "gemini-2.5-flash",           8000, 60),
     # Phase 4A: Post-write verification
-    "JOB_CHECKER":         ("anthropic", "claude-sonnet-4-5-20250929",  1500, 45),
+    "JOB_CHECKER":         ("anthropic", "claude-sonnet-4-6",          1500, 45),
     # Phase 4C: Weaver conversation compaction
-    "WEAVER_COMPACTION":   ("openai",    "gpt-4.1-mini",               1500, 45),
-    
+    "WEAVER_COMPACTION":   ("google",    "gemini-2.5-flash",           1500, 45),
+
     # Support stages
-    "CHAT":               ("openai",    "gpt-4.1-mini",               4000,  30),
-    "ARCHMAP":            ("anthropic", "claude-opus-4-5-20251101",   60000, 300),
-    "SUMMARIZER":         ("openai",    "gpt-4.1-mini",               2000,  60),
-    "CLASSIFIER":         ("openai",    "gpt-4.1-mini",               500,   10),
-    
+    "CHAT":               ("google",    "gemini-2.5-flash",            4000,  30),
+    "ARCHMAP":            ("anthropic", "claude-opus-4-6",             60000, 300),
+    "SUMMARIZER":         ("google",    "gemini-2.5-flash-lite",       2000,  60),
+    "CLASSIFIER":         ("google",    "gemini-2.5-flash-lite",       500,   10),
+
     # Legacy/aliases
-    "OVERWATCH":          ("openai",    "gpt-4.1",                    1200,  60),  # Alias for OVERWATCHER
+    "OVERWATCH":          ("google",    "gemini-2.5-flash",            1200,  60),
 }
 
 
@@ -181,9 +183,9 @@ def get_stage_config(stage: str) -> StageConfig:
     if defaults:
         default_provider, default_model, default_tokens, default_timeout = defaults
     else:
-        # Ultimate fallback
-        default_provider = "openai"
-        default_model = "gpt-4.1-mini"
+        # Ultimate fallback (v3.2: google instead of openai)
+        default_provider = "google"
+        default_model = "gemini-2.5-flash"
         default_tokens = 4000
         default_timeout = 60
     
@@ -277,8 +279,8 @@ def _infer_provider_from_model(model: str) -> str:
     elif "gpt" in model_lower or "o1" in model_lower or "o3" in model_lower:
         return "openai"
     else:
-        # Unknown model, default to openai
-        return "openai"
+        # Unknown model, default to google (v3.2)
+        return "google"
 
 
 def get_stage_provider(stage: str) -> str:

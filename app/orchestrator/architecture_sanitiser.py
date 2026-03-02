@@ -17,7 +17,13 @@ loop iterations and cause downstream failures:
   2. OUT-OF-SCOPE FILES: Files in the architecture's File Inventory
      that aren't in this segment's file_scope from the manifest
      - The LLM invents extra files not assigned to this segment
-     - Fix: Remove from File Inventory, log warning
+     - Fix: For MODIFY operations, strip from inventory (scope creep).
+       For CREATE operations, warn only (allow modular sub-files).
+
+  v1.1 (2026-03-01): Scope check distinguishes CREATE vs MODIFY.
+       CREATE files warned-not-stripped to allow modular architecture.
+       Fixes sg-2a3c378d where 3 sub-routers were stripped forcing
+       all logic into a near-limit 18.8KB monolithic api.py.
 
   3. PREVIOUSLY HALLUCINATED PATHS: Paths that the segmentation stage
      already flagged as hallucinated
@@ -39,7 +45,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
-BUILD_ID = "2026-02-16-v1.0-architecture-sanitiser"
+BUILD_ID = "2026-03-01-v1.1-architecture-sanitiser"
 print(f"[ARCHITECTURE_SANITISER_LOADED] BUILD_ID={BUILD_ID}")
 
 
@@ -223,10 +229,14 @@ def _fix_out_of_scope_files(
     segment_id: Optional[str] = None,
 ) -> Tuple[str, List[Dict[str, str]]]:
     """
-    Remove File Inventory entries for files not in this segment's file_scope.
+    Handle File Inventory entries for files not in this segment's file_scope.
 
-    The LLM sometimes invents additional files beyond what the segment owns.
-    These cause confusion and may conflict with other segments.
+    v1.1: Distinguishes CREATE vs MODIFY operations:
+      - MODIFY out-of-scope: STRIP (this segment should not edit files it
+        doesn't own - that's scope creep that breaks other segments).
+      - CREATE out-of-scope: WARN ONLY (the LLM may be designing legitimate
+        modular sub-files like sub-routers for a large API endpoint).
+        The cohesion check downstream will validate compatibility.
     """
     fixes: List[Dict[str, str]] = []
 
@@ -234,11 +244,16 @@ def _fix_out_of_scope_files(
     if not inventory_paths:
         return arch_text, fixes
 
+    # Determine which paths are CREATE vs MODIFY from the architecture text
+    create_paths = _extract_paths_by_operation(arch_text, "new")
+    modify_paths = _extract_paths_by_operation(arch_text, "modified")
+    create_norm = {p.replace("\\", "/").lower() for p in create_paths}
+    modify_norm = {p.replace("\\", "/").lower() for p in modify_paths}
+
     # Normalise file_scope for comparison
     scope_normalised: Set[str] = set()
     for sp in file_scope:
         scope_normalised.add(sp.replace("\\", "/").lower())
-        # Also add without leading app/ prefix in case of mismatch
         if sp.replace("\\", "/").lower().startswith("app/"):
             scope_normalised.add(sp.replace("\\", "/").lower()[4:])
 
@@ -251,34 +266,92 @@ def _fix_out_of_scope_files(
             if normalised == scope_path or normalised.endswith("/" + scope_path):
                 in_scope = True
                 break
-            # Also check if scope_path ends with this path
             if scope_path.endswith("/" + normalised) or scope_path == normalised:
                 in_scope = True
                 break
-            # Handle relative vs absolute
             if normalised.endswith(scope_path) or scope_path.endswith(normalised):
                 in_scope = True
                 break
 
         if not in_scope:
-            logger.warning(
-                "[ARCHITECTURE_SANITISER] OUT-OF-SCOPE file in architecture: %s "
-                "(segment %s, scope has %d files)",
-                path, segment_id, len(file_scope),
-            )
+            is_modify = normalised in modify_norm
+            # Default to CREATE if ambiguous (safer - don't strip)
+            is_create = (normalised in create_norm) or (not is_modify)
 
-            arch_text = _remove_file_inventory_row(arch_text, path)
-
-            fixes.append({
-                "type": "out_of_scope",
-                "path": path,
-                "description": (
-                    f"Removed '{path}' — not in this segment's file_scope. "
-                    f"May belong to a different segment."
-                ),
-            })
+            if is_modify:
+                # MODIFY out-of-scope: STRIP (scope creep protection)
+                logger.warning(
+                    "[ARCHITECTURE_SANITISER] OUT-OF-SCOPE MODIFY stripped: %s "
+                    "(segment %s, scope has %d files)",
+                    path, segment_id, len(file_scope),
+                )
+                arch_text = _remove_file_inventory_row(arch_text, path)
+                fixes.append({
+                    "type": "out_of_scope_modify_stripped",
+                    "path": path,
+                    "description": (
+                        f"Stripped MODIFY '{path}' - this segment does not own "
+                        f"this file. Editing it would conflict with other segments."
+                    ),
+                })
+            else:
+                # CREATE out-of-scope: WARN ONLY (allow modular design)
+                logger.info(
+                    "[ARCHITECTURE_SANITISER] v1.1 OUT-OF-SCOPE CREATE allowed: %s "
+                    "(segment %s - modular sub-file, cohesion will validate)",
+                    path, segment_id,
+                )
+                fixes.append({
+                    "type": "out_of_scope_create_allowed",
+                    "path": path,
+                    "description": (
+                        f"Allowed CREATE '{path}' - not in file_scope but "
+                        f"appears to be a modular sub-file. Cohesion check will "
+                        f"validate cross-segment compatibility."
+                    ),
+                })
 
     return arch_text, fixes
+
+
+def _extract_paths_by_operation(
+    arch_text: str,
+    operation: str,
+) -> List[str]:
+    """Extract file paths from a specific File Inventory sub-table.
+
+    Args:
+        arch_text: Full architecture text.
+        operation: 'new' or 'modified'
+
+    Returns:
+        List of file paths found under that sub-heading.
+    """
+    paths: List[str] = []
+    op_pattern = re.compile(
+        rf'###?\s*{operation}\s+files',
+        re.IGNORECASE,
+    )
+
+    in_section = False
+    for line in arch_text.split('\n'):
+        stripped = line.strip()
+
+        if op_pattern.match(stripped):
+            in_section = True
+            continue
+
+        if in_section and stripped.startswith('#') and not stripped.startswith('#|'):
+            break
+
+        if not in_section:
+            continue
+
+        match = re.search(r'\|\s*`([^`]+)`\s*\|', stripped)
+        if match:
+            paths.append(match.group(1).strip())
+
+    return paths
 
 
 # =============================================================================

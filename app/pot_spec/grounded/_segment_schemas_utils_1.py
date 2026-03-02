@@ -163,6 +163,12 @@ class CreateTarget:
             reason=data.get("reason", ""),
         )
 
+def _load_segment_spec(data: Dict[str, Any]):
+    """Late-import SegmentSpec to avoid circular dependency with parent module."""
+    from app.pot_spec.grounded.segment_schemas import SegmentSpec
+    return SegmentSpec.from_dict(data)
+
+
 @dataclass
 class SegmentManifest:
     """
@@ -242,7 +248,7 @@ class SegmentManifest:
             parent_spec_id=data.get("parent_spec_id"),
             parent_spec_hash=data.get("parent_spec_hash"),
             deferred_consumer_files=data.get("deferred_consumer_files", []),
-            segments=[SegmentSpec.from_dict(s) for s in data.get("segments", [])],
+            segments=[_load_segment_spec(s) for s in data.get("segments", [])],
             requirement_map=data.get("requirement_map", {}),
             total_segments=data.get("total_segments", 0),
             total_files=data.get("total_files", 0),

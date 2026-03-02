@@ -234,3 +234,61 @@ def to_summary(project: BuildProject) -> BuildProjectSummary:
         created_at=project.created_at,
         updated_at=project.updated_at,
     )
+
+
+# ── Startup Recovery ──
+
+def recover_stale_running_stages(db: Session) -> int:
+    """v3.2-fix: Reset any stages stuck in 'running' to 'failed' on startup.
+
+    When the app is closed while a pipeline stage is actively running,
+    that stage remains in 'running' state in the database. On restart,
+    no process is driving it, so the UI shows a permanently stuck spinner
+    or stale 'running' badge. This function resets all such stages to
+    'failed' so the user can re-trigger them.
+
+    Should be called once during application startup.
+
+    Returns:
+        Number of stages that were reset.
+    """
+    projects = db.query(BuildProject).all()
+    reset_count = 0
+
+    for project in projects:
+        for stage, attr in _STAGE_STATUS_ATTR.items():
+            if getattr(project, attr) == StageStatus.running:
+                setattr(project, attr, StageStatus.failed)
+                logger.info(
+                    "[builds] Startup recovery: %s.%s running → failed (project '%s')",
+                    project.id, stage.value, project.name,
+                )
+                # Append to stage log
+                log = list(project.stage_log or [])
+                log.append({
+                    "stage": stage.value,
+                    "event": "failed",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "detail": "Reset on startup — was running when app closed",
+                })
+                project.stage_log = log
+                reset_count += 1
+
+        # If the project itself was 'in_progress' and has stale stages, mark it
+        if project.status == BuildStatus.in_progress:
+            # Check if any stage is still running (shouldn't be after above loop)
+            any_running = any(
+                getattr(project, attr) == StageStatus.running
+                for attr in _STAGE_STATUS_ATTR.values()
+            )
+            if not any_running:
+                # Don't change to failed — user may want to re-run
+                pass
+
+    if reset_count > 0:
+        db.commit()
+        logger.info("[builds] Startup recovery: reset %d stale running stage(s)", reset_count)
+    else:
+        logger.debug("[builds] Startup recovery: no stale stages found")
+
+    return reset_count

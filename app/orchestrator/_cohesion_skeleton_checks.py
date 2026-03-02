@@ -20,6 +20,18 @@ from app.orchestrator._cohesion_check_utils_10 import CohesionIssue
 
 logger = logging.getLogger(__name__)
 
+# v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
+try:
+    from app.sandbox_fs import (
+        sandbox_isfile as _sbx_isfile,
+        sandbox_isdir as _sbx_isdir,
+        sandbox_exists as _sbx_exists,
+        sandbox_read_text as _sbx_read_text,
+    )
+    _SBX_FS_OK = True
+except ImportError:
+    _SBX_FS_OK = False
+
 
 def check_undeclared_dependencies(
     architectures: Dict[str, str],
@@ -188,9 +200,22 @@ def check_duplicate_functions(
     manifest_dict: Optional[Dict[str, Any]],
     issue_counter: int,
 ) -> tuple[list[CohesionIssue], int]:
-    """Check 7: Duplicate function detection across segments."""
+    """Check 7: Duplicate function detection across segments.
+
+    v3.2-fix: Two critical improvements:
+    1. Skip code-fenced regions — architecture docs contain integration
+       examples with function defs that aren't part of the segment's own
+       code.  Without fence tracking, these produce false "duplicate"
+       detections (e.g. main.py::on_startup shown as example in seg-01).
+    2. File-path scoping — functions are keyed by (file_path, func_name)
+       instead of just func_name.  Two segments owning different files
+       that happen to share a function name (e.g. router.py::get and
+       main.py::get) are NOT duplicates.
+    """
     issues: list[CohesionIssue] = []
-    _func_locations: Dict[str, List[tuple]] = {}
+    # Key: (normalised_file_path, func_name)
+    # Value: list of (seg_id, file_scope_str, line_count, det_source)
+    _func_locations: Dict[tuple, List[tuple]] = {}
 
     for seg_id, arch_content in architectures.items():
         _seg_files: set = set()
@@ -204,30 +229,53 @@ def check_duplicate_functions(
                 _seg_files = set(_seg_data.get("file_scope", []))
                 _seg_source = _seg_data.get("deterministic_source", "")
 
-        for _m in re.finditer(r'(?:async\s+)?def\s+(\w+)\s*\(', arch_content):
-            _fname = _m.group(1)
+        # --- v3.2-fix: extract functions only from NON-fenced lines,
+        #     and track which architecture file-section they belong to.
+        _current_file = _guess_primary_file(arch_content, _seg_files)
+        _in_fence = False
+
+        for _line in arch_content.splitlines():
+            # Toggle fence state
+            if _line.strip().startswith('```'):
+                _in_fence = not _in_fence
+                continue
+
+            # Skip everything inside code fences
+            if _in_fence:
+                continue
+
+            # Track file-section headers like "### 2.1. app/education/models.py"
+            _file_ref = _extract_file_from_header(_line, _seg_files)
+            if _file_ref:
+                _current_file = _file_ref
+                continue
+
+            # Match function defs in markdown prose / pseudo-code
+            _def_match = re.match(
+                r'\s*(?:async\s+)?def\s+(\w+)\s*\(', _line,
+            )
+            if not _def_match:
+                # Also match backtick-wrapped references like `def on_startup(`
+                _def_match = re.match(
+                    r'.*`(?:async\s+)?def\s+(\w+)\s*\(`', _line,
+                )
+            if not _def_match:
+                continue
+
+            _fname = _def_match.group(1)
             if _fname.startswith('__') and _fname.endswith('__'):
                 continue
             if _fname.startswith('test_'):
                 continue
 
-            _start = _m.start()
-            _next_def = re.search(
-                r'\n(?:async\s+)?def\s+\w+\s*\(|\nclass\s+\w+',
-                arch_content[_start + 10:],
-            )
-            _line_count = 0
-            if _next_def:
-                _chunk = arch_content[_start:_start + 10 + _next_def.start()]
-                _line_count = _chunk.count('\n')
-            else:
-                _line_count = arch_content[_start:].count('\n')
-
-            _func_locations.setdefault(_fname, []).append(
-                (seg_id, ", ".join(sorted(_seg_files)[:3]), _line_count, _seg_source)
+            _norm_file = _current_file.replace("\\", "/").lower()
+            _key = (_norm_file, _fname)
+            _func_locations.setdefault(_key, []).append(
+                (seg_id, ", ".join(sorted(_seg_files)[:3]), 0, _seg_source)
             )
 
-    for _fname, _locs in _func_locations.items():
+    # Now flag only true duplicates: same (file, function) in >1 segment
+    for (_file_key, _fname), _locs in _func_locations.items():
         _by_source: Dict[str, List[tuple]] = {}
         for _loc in _locs:
             _src = _loc[3] if len(_loc) > 3 else ""
@@ -237,18 +285,16 @@ def check_duplicate_functions(
             _unique_segs = set(loc[0] for loc in _src_group)
             if len(_unique_segs) <= 1:
                 continue
-            _max_lines = max(loc[2] for loc in _src_group)
-            _severity = "blocking" if _max_lines > 100 else "warning"
             _seg_list = ", ".join(sorted(_unique_segs))
 
             issue_counter += 1
             issues.append(CohesionIssue(
                 issue_id=f"SKEL-{issue_counter:03d}",
-                severity=_severity,
+                severity="blocking",
                 category="duplicate_function",
                 description=(
-                    f"Function '{_fname}' is defined in {len(_unique_segs)} segments: "
-                    f"{_seg_list}. Estimated {_max_lines}+ lines."
+                    f"Function '{_fname}' in '{_file_key}' is defined in "
+                    f"{len(_unique_segs)} segments: {_seg_list}."
                 ),
                 source_segment=sorted(_unique_segs)[0],
                 related_segment=sorted(_unique_segs)[1] if len(_unique_segs) > 1 else "",
@@ -258,6 +304,35 @@ def check_duplicate_functions(
                 ),
             ))
     return issues, issue_counter
+
+
+def _guess_primary_file(
+    arch_content: str, seg_files: set,
+) -> str:
+    """Return the first file mentioned in the architecture, or 'unknown'."""
+    for _fp in sorted(seg_files):
+        _norm = _fp.replace("\\", "/").lower()
+        if _norm in arch_content.lower():
+            return _fp
+    return list(seg_files)[0] if seg_files else "unknown"
+
+
+def _extract_file_from_header(
+    line: str, seg_files: set,
+) -> Optional[str]:
+    """If `line` is a markdown header referencing a file path, return it."""
+    if not re.match(r'^#{1,6}\s+', line):
+        return None
+    _lower = line.lower().replace("\\", "/")
+    for _fp in seg_files:
+        _norm = _fp.replace("\\", "/").lower()
+        if _norm in _lower:
+            return _fp
+        # Also try just the filename
+        _basename = _norm.rsplit("/", 1)[-1]
+        if _basename in _lower and (".py" in _basename or ".tsx" in _basename or ".ts" in _basename):
+            return _fp
+    return None
 
 
 def check_phantom_symbols(
@@ -276,10 +351,12 @@ def check_phantom_symbols(
     for _ef_path in _evidence_paths:
         for _base in ["D:\\Orb", "D:/Orb"]:
             _full = os.path.join(_base, _ef_path.replace("/", os.sep))
-            if os.path.isfile(_full):
+            if (_sbx_isfile(_full) if _SBX_FS_OK else os.path.isfile(_full)):
                 try:
-                    with open(_full, "r", encoding="utf-8") as _f:
-                        _src = _f.read()
+                    _src = (_sbx_read_text(_full) if _SBX_FS_OK else None)
+                    if _src is None:
+                        with open(_full, "r", encoding="utf-8") as _f:
+                            _src = _f.read()
                     for _m in re.finditer(r'(?:async\s+)?def\s+(\w+)\s*\(', _src):
                         _monolith_symbols.add(_m.group(1))
                     for _m in re.finditer(r'class\s+(\w+)\s*[\(:]', _src):

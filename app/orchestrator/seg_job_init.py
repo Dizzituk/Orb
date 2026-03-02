@@ -57,6 +57,58 @@ async def try_single_segment_fast_path(ctx: JobCtx) -> Optional[Any]:
         f"{'...' if len(seg_spec.file_scope) > 5 else ''}"
     )
 
+    # v5.4.1 (2026-03-01): Single-segment jobs still need skeleton contracts
+    # and source evidence so the architecture template engine can fire.
+    # Without these, the LLM flies blind and misclassifies CREATE vs MODIFY.
+    _fast_skeleton = None
+    try:
+        from app.orchestrator.skeleton_contracts import (
+            generate_skeleton_contract, save_skeleton_contract,
+            load_skeleton_contract,
+        )
+        ctx.contract_set = load_skeleton_contract(ctx.job_dir_path)
+        if not ctx.contract_set or not ctx.contract_set.skeletons:
+            ctx.contract_set = generate_skeleton_contract(
+                manifest_dict=ctx.manifest.to_dict(),
+                job_id=ctx.job_id,
+            )
+            if ctx.contract_set and ctx.contract_set.skeletons:
+                save_skeleton_contract(ctx.contract_set, ctx.job_dir_path)
+        if ctx.contract_set and ctx.contract_set.skeletons:
+            for _sk in ctx.contract_set.skeletons:
+                if _sk.segment_id == seg_id:
+                    _fast_skeleton = _sk
+                    break
+            logger.info(
+                "[SEGMENT_LOOP] v5.4.1 Fast path: skeleton generated (%d export(s))",
+                sum(len(s.exports) for s in ctx.contract_set.skeletons),
+            )
+    except Exception as _sk_err:
+        logger.debug("[SEGMENT_LOOP] v5.4.1 Fast path skeleton skipped: %s", _sk_err)
+
+    # v5.4.1: Load source file evidence for files that exist on disk
+    _fast_source_evidence = {}
+    try:
+        from app.orchestrator._segment_loop_utils_6 import _load_source_file_evidence
+        _fast_source_evidence = _load_source_file_evidence(ctx.manifest) or {}
+        if _fast_source_evidence:
+            logger.info(
+                "[SEGMENT_LOOP] v5.4.1 Fast path: loaded %d source evidence file(s)",
+                len(_fast_source_evidence),
+            )
+    except Exception as _ev_err:
+        logger.debug("[SEGMENT_LOOP] v5.4.1 Fast path evidence skipped: %s", _ev_err)
+
+    # v5.4.1: Build design token registry (non-fatal)
+    try:
+        from app.orchestrator.arch_template.token_cache import build_and_cache_registry
+        build_and_cache_registry(
+            job_dir=ctx.job_dir_path,
+            frontend_base=os.environ.get("ORB_FRONTEND_ROOT", r"D:\orb-desktop"),
+        )
+    except Exception:
+        pass
+
     segment_context = {
         "segment_id": seg_id,
         "segment_spec": seg_spec.to_dict(),
@@ -68,6 +120,7 @@ async def try_single_segment_fast_path(ctx: JobCtx) -> Optional[Any]:
         "requirements": seg_spec.requirements,
         "acceptance_criteria": seg_spec.acceptance_criteria,
         "dependencies": [],
+        "source_file_evidence": _fast_source_evidence,
     }
 
     from app.orchestrator.segment_loop import run_segment_through_pipeline
@@ -159,6 +212,22 @@ def init_skeleton_contracts(ctx: JobCtx) -> None:
         )
         ctx.emit(f"⚠️ Skeleton generation failed (non-fatal): {skel_err}")
         ctx.contract_set = None
+
+    # v1.0 (Job 5): Build design token registry alongside skeleton contracts
+    try:
+        from app.orchestrator.arch_template.token_cache import build_and_cache_registry
+        _token_reg = build_and_cache_registry(
+            job_dir=ctx.job_dir_path,
+            frontend_base=os.environ.get("ORB_FRONTEND_ROOT", r"D:\orb-desktop"),
+        )
+        if _token_reg:
+            _meta = _token_reg.get("_meta", {})
+            ctx.emit(
+                f"\U0001f3a8 Design tokens: {_meta.get('total_tokens', 0)} tokens "
+                f"from {len(_meta.get('source_files', []))} CSS file(s)"
+            )
+    except Exception as _tok_err:
+        logger.debug("[SEGMENT_LOOP] Token registry build skipped: %s", _tok_err)
 
 
 def init_source_evidence(ctx: JobCtx) -> None:

@@ -94,8 +94,38 @@ def handle_chat_mode(
     """
     print(f"[CHAT_MODE] Handling chat for project={req.project_id}, message={req.message[:50]}...")
     
+    # v6.1: Always persist the user's message BEFORE any confirmation gate.
+    # Without this, if the confirmation gate fires, the message is never saved
+    # and downstream handlers (Weaver) can't find the conversation.
+    try:
+        from app.memory import schemas as _mem_schemas
+        memory_service.create_message(
+            db,
+            _mem_schemas.MessageCreate(
+                project_id=req.project_id,
+                role="user",
+                content=req.message,
+                provider="system",
+            ),
+        )
+    except Exception as e:
+        print(f"[CHAT_MODE] Failed to persist user message: {e}")
+    
     # Build context
     full_context = build_full_context(db, req.project_id, req.message, req.use_semantic_search)
+    
+    # v7.0: Pre-gather codebase context for trusted models.
+    # Reads files from the sandbox (read-only) via RAG-guided discovery.
+    # This gives Opus/Gemini 3.1 actual codebase knowledge in standard chat.
+    try:
+        from app.llm.routing.chat_codebase_reader import (
+            gather_codebase_context,
+        )
+        # We don't know the final model yet (complexity may upgrade it),
+        # so we store the message and gather later, after model selection.
+        _codebase_gather_pending = True
+    except ImportError:
+        _codebase_gather_pending = False
     
     # v5.5: Frontend model override (from model switcher dropdown)
     if req.provider and req.model:
@@ -113,23 +143,22 @@ def handle_chat_mode(
         print(f"[CHAT_MODE] Complexity: tier={complexity.tier}, target={complexity.model_target}, "
               f"confidence={complexity.confidence}, signals={complexity.signals}")
         
-        # Map complexity tier to provider/model
-        # deep        → Claude Opus 4.6  (architecture, multi-domain planning)
-        # reasoning   → GPT-5.2          (comparisons, debugging, implementation)
-        # multimodal  → Gemini 3.1 Pro   (images, video, multi-attachment)
-        # lookup      → GPT-5 Mini       (factual, memory, simple questions)
-        # ping_pong   → GPT-5 Mini       (greetings, acknowledgements)
+        # v3.2: Read chat provider/model from .env stage config.
+        # All tiers use the configured CHAT provider by default.
+        # Only "deep" escalates to Opus, and "multimodal" to Gemini vision.
+        import os as _os
+        _chat_provider = _os.getenv("CHAT_PROVIDER", "google")
+        _chat_model = _os.getenv("CHAT_MODEL", "gemini-2.5-flash")
+
         # v6.0: Chat panel requests (with ui_context) skip the confirmation gate.
-        # The user explicitly asked a question — no ambiguity about intent.
-        # Main chat window can still get gated once its UI is wired up.
         _skip_confirm = getattr(req, 'ui_context', None) is not None
 
         if complexity.tier == "deep":
-            provider = "anthropic"
-            model = "claude-opus-4-6"
-            print(f"[CHAT_MODE] Complexity UPGRADE: deep \u2192 Opus")
+            # Deep/architectural queries → Opus (or env override)
+            provider = _os.getenv("CHAT_DEEP_PROVIDER", "anthropic")
+            model = _os.getenv("CHAT_DEEP_MODEL", "claude-opus-4-6")
+            print(f"[CHAT_MODE] Complexity UPGRADE: deep -> {provider}/{model}")
             if not _skip_confirm:
-                # v2.1: Model escalation confirmation gate
                 try:
                     from app.llm.routing.confirmation_gate import (
                         should_confirm_model_escalation,
@@ -155,11 +184,11 @@ def handle_chat_mode(
             else:
                 print(f"[CHAT_MODE] Confirmation gate skipped (chat panel request)")
         elif complexity.tier == "reasoning":
-            provider = "openai"
-            model = "gpt-5.2"
-            print(f"[CHAT_MODE] Complexity UPGRADE: reasoning \u2192 GPT-5.2")
+            # v3.2: Reasoning uses configured chat provider, not hardcoded OpenAI
+            provider = _chat_provider
+            model = _chat_model
+            print(f"[CHAT_MODE] Reasoning tier -> {provider}/{model}")
             if not _skip_confirm:
-                # v2.1: Model escalation confirmation gate
                 try:
                     from app.llm.routing.confirmation_gate import (
                         should_confirm_model_escalation,
@@ -185,39 +214,43 @@ def handle_chat_mode(
             else:
                 print(f"[CHAT_MODE] Confirmation gate skipped (chat panel request)")
         elif complexity.tier == "multimodal":
-            # Route based on attachment count/type
             attachments = getattr(req, 'attachments', None) or []
             if len(attachments) >= 2:
-                # Multiple attachments → Gemini 3.1 Pro (big context, multimodal)
                 provider = "google"
                 model = "gemini-3.1-pro-preview"
-                print(f"[CHAT_MODE] Multimodal ({len(attachments)} files) → Gemini 3.1 Pro")
+                print(f"[CHAT_MODE] Multimodal ({len(attachments)} files) -> Gemini 3.1 Pro")
             else:
-                # Single image/file → Gemini 2.5 Flash (fast, cheap vision)
                 provider = "google"
                 model = "gemini-2.5-flash"
-                print(f"[CHAT_MODE] Multimodal (single) → Gemini 2.5 Flash")
+                print(f"[CHAT_MODE] Multimodal (single) -> Gemini 2.5 Flash")
         else:
-            # lookup or ping_pong
-            provider = "openai"
-            model = "gpt-5-mini"
-            print(f"[CHAT_MODE] Using GPT-5 Mini for {complexity.tier}")
+            # lookup or ping_pong — use configured chat model
+            provider = _chat_provider
+            model = _chat_model
+            print(f"[CHAT_MODE] {complexity.tier} -> {provider}/{model}")
     
-    # Check provider availability
-    available = get_available_streaming_provider()
-    print(f"[CHAT_MODE] Available streaming provider: {available}")
-    
-    if provider not in ("openai", "anthropic", "google", "gemini"):
-        print(f"[CHAT_MODE] WARNING: Unknown provider '{provider}', defaulting to available: {available}")
-        provider = available or "openai"
-    
+    # v3.2: Check provider availability — but DON'T silently swap provider
+    # while keeping the original model (that causes openai+gemini mismatches).
     providers_available = get_available_streaming_providers()
     print(f"[CHAT_MODE] Provider availability: {providers_available}")
     
-    if not providers_available.get(provider, False) and not providers_available.get("gemini" if provider == "google" else provider, False):
-        print(f"[CHAT_MODE] Provider {provider} not available, falling back to {available}")
+    if not providers_available.get(provider, False):
+        # Provider key not available — try to find a working alternative
+        available = get_available_streaming_provider()
         if available:
+            print(f"[CHAT_MODE] Provider '{provider}' not available, falling back to {available} WITH its default model")
             provider = available
+            # CRITICAL: Also switch the model to match the new provider.
+            # Without this, we'd send e.g. 'gemini-2.5-flash' to the OpenAI API.
+            import os as _os2
+            if provider == "google":
+                model = _os2.getenv("CHAT_MODEL", "gemini-2.5-flash")
+            elif provider == "anthropic":
+                model = _os2.getenv("ANTHROPIC_DEFAULT_MODEL", "claude-sonnet-4-6")
+            elif provider == "openai":
+                model = _os2.getenv("OPENAI_DEFAULT_MODEL", "gpt-4.1-mini")
+        else:
+            print(f"[CHAT_MODE] WARNING: No providers available at all")
     
     # Build messages
     # v6.0: If chat panel sent its own conversation history, use that instead of DB history.
@@ -256,7 +289,41 @@ def handle_chat_mode(
         except Exception as e:
             print(f"[CHAT_MODE] Tab data injection failed: {e}")
     
+    # v7.0: Gather codebase context for trusted models (sandbox read-only)
+    codebase_ctx = ""
+    if _codebase_gather_pending:
+        try:
+            codebase_ctx = gather_codebase_context(
+                message=req.message, model=model, db=db,
+            )
+            if codebase_ctx:
+                full_context += f"\n\n{codebase_ctx}"
+                print(f"[CHAT_MODE] Codebase context injected: {len(codebase_ctx)} chars")
+        except Exception as e:
+            print(f"[CHAT_MODE] Codebase context failed (non-fatal): {e}")
+    
     system_prompt = build_system_prompt(project, full_context, ui_context=ui_ctx)
+    
+    # v7.0: When codebase context was injected, override the capability layer
+    # to prevent the model from trying to explore manually.
+    # The capability layer says "you CAN execute code, explore directories"
+    # which causes the model to hallucinate tool calls. Replace that section.
+    if _codebase_gather_pending and codebase_ctx:
+        _CHAT_TOOLS_OVERRIDE = (
+            "   - You CAN: read files, write files, execute code, explore directories\n"
+        )
+        _CHAT_TOOLS_REPLACEMENT = (
+            "   - Codebase files have been PRE-LOADED into your context below.\n"
+            "   - You do NOT have tool access in chat mode. Do NOT generate tool_call blocks.\n"
+            "   - Do NOT call execute_command or shell commands.\n"
+            "   - Reference the [CODEBASE CONTEXT] files directly in your response.\n"
+        )
+        if _CHAT_TOOLS_OVERRIDE in system_prompt:
+            system_prompt = system_prompt.replace(
+                _CHAT_TOOLS_OVERRIDE, _CHAT_TOOLS_REPLACEMENT,
+            )
+            print("[CHAT_MODE] Capability layer overridden for codebase-aware chat")
+    
     if ui_ctx:
         print(f"[CHAT_MODE] UI context injected: view={ui_ctx.view_type}, job={ui_ctx.job_type}, label={ui_ctx.label}")
     
@@ -363,19 +430,49 @@ def handle_normal_routing(
     else:
         provider, model = select_provider_for_job_type(job_type)
     
-    # Provider availability check
-    available = get_available_streaming_provider()
-    if not available:
-        raise HTTPException(status_code=503, detail="No LLM provider available")
-    
+    # v3.2: Provider availability check with matched model fallback
     providers_available = get_available_streaming_providers()
     if not providers_available.get(provider, False):
+        available = get_available_streaming_provider()
+        if not available:
+            raise HTTPException(status_code=503, detail="No LLM provider available")
+        print(f"[NORMAL_ROUTING] Provider '{provider}' not available, falling back to {available}")
         provider = available
-        model = DEFAULT_MODELS.get(provider, DEFAULT_MODELS["openai"])
+        model = DEFAULT_MODELS.get(provider, DEFAULT_MODELS.get("google", "gemini-2.5-flash"))
     
     # Build messages and system prompt
     messages = build_messages(req.message, req.project_id, db, req.include_history, req.history_limit)
+    
+    # v7.0: Inject codebase context for trusted models (same as handle_chat_mode)
+    _nr_codebase_ctx = ""
+    try:
+        from app.llm.routing.chat_codebase_reader import (
+            gather_codebase_context, is_trusted_model,
+        )
+        if is_trusted_model(model):
+            _nr_codebase_ctx = gather_codebase_context(
+                message=req.message, model=model, db=db,
+            )
+            if _nr_codebase_ctx:
+                full_context += f"\n\n{_nr_codebase_ctx}"
+                print(f"[NORMAL_ROUTING] Codebase context injected: {len(_nr_codebase_ctx)} chars")
+    except Exception as e:
+        print(f"[NORMAL_ROUTING] Codebase context failed (non-fatal): {e}")
+    
     system_prompt = build_system_prompt(project, full_context)
+    
+    # v7.0: Override capability layer when codebase context is present
+    if _nr_codebase_ctx:
+        _TOOLS_LINE = "   - You CAN: read files, write files, execute code, explore directories\n"
+        _TOOLS_REPLACE = (
+            "   - Codebase files have been PRE-LOADED into your context below.\n"
+            "   - You do NOT have tool access in chat mode. Do NOT generate tool_call blocks.\n"
+            "   - Do NOT call execute_command or shell commands.\n"
+            "   - Reference the [CODEBASE CONTEXT] files directly in your response.\n"
+        )
+        if _TOOLS_LINE in system_prompt:
+            system_prompt = system_prompt.replace(_TOOLS_LINE, _TOOLS_REPLACE)
+            print("[NORMAL_ROUTING] Capability layer overridden for codebase-aware response")
     
     # High-stakes routing
     if provider == "anthropic" and is_opus_model(model) and is_high_stakes_job(job_type_value):

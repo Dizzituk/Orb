@@ -63,6 +63,8 @@ SCOPE_FRONTEND = {
     'a ui': True, 'ui button': True, 'ui feature': True, 'ui text': True,
     'change the ui': True, 'modify the ui': True, 'update the ui': True,
     'the frontend': True, 'front-end': True, 'frontend ui': True,
+    # v5.3: Bare 'frontend' — Weaver outputs use 'Frontend required:' without 'the'
+    'frontend': True,
     # v5.2: REMOVED 'text input' — too ambiguous.
     # 'text input' in AI/ML context means text-type data ingestion, not a UI field.
     # Also REMOVED 'context window' and 'input window' in v4.7 for same reason.
@@ -76,6 +78,8 @@ SCOPE_FRONTEND = {
 SCOPE_BACKEND = {
     'the backend': True, 'back-end': True, 'backend api': True,
     'fastapi': True, 'api endpoint': True, 'server': True,
+    # v5.3: Bare 'backend' for symmetry with frontend
+    'backend': True,
     # NOTE: Static keyword dicts are a dead end for scope detection.
     # The real fix is to use INDEX.json zone data (every file is already
     # tagged as 'backend' or 'frontend'). When the job mentions files or

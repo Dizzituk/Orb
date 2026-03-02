@@ -35,7 +35,17 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-TTS_BUILD_ID = "2026-02-24-v1.0-google-cloud-tts"
+# Ensure TTS logs are visible in the console (standalone service)
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)-7s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    logger.addHandler(_handler)
+    logger.setLevel(logging.DEBUG)
+
+TTS_BUILD_ID = "2026-02-28-v1.1-error-logging"
 
 # ── Config ──────────────────────────────────────────────────────────────
 
@@ -62,6 +72,76 @@ VOICE_CACHE_TTL = 3600  # Refresh every hour
 # ── State ───────────────────────────────────────────────────────────────
 
 _selected_voice = DEFAULT_VOICE
+
+# ── Bootstrap: sync API keys from encrypted DB ─────────────────────────
+# The TTS server runs as a separate process from the main backend.
+# API keys live in the encrypted DB (master key via Credential Manager),
+# not in .env. We must sync them to os.environ before serving.
+
+def _read_master_key_from_credential_manager() -> Optional[str]:
+    """Read ORB_MASTER_KEY from Windows Credential Manager (same store as Electron/keytar)."""
+    import ctypes
+    import ctypes.wintypes as wt
+
+    class CREDENTIAL(ctypes.Structure):
+        _fields_ = [
+            ('Flags', wt.DWORD), ('Type', wt.DWORD),
+            ('TargetName', wt.LPWSTR), ('Comment', wt.LPWSTR),
+            ('LastWritten', wt.FILETIME), ('CredentialBlobSize', wt.DWORD),
+            ('CredentialBlob', ctypes.POINTER(ctypes.c_byte)),
+            ('Persist', wt.DWORD), ('AttributeCount', wt.DWORD),
+            ('Attributes', ctypes.c_void_p), ('TargetAlias', wt.LPWSTR),
+            ('UserName', wt.LPWSTR),
+        ]
+
+    PCREDENTIAL = ctypes.POINTER(CREDENTIAL)
+    cred = PCREDENTIAL()
+    # keytar stores credentials as 'ServiceName/AccountName'
+    ok = ctypes.windll.advapi32.CredReadW(
+        'OrbMasterKey/default', 1, 0, ctypes.byref(cred),
+    )
+    if not ok:
+        return None
+    blob = ctypes.string_at(
+        cred.contents.CredentialBlob, cred.contents.CredentialBlobSize,
+    )
+    ctypes.windll.advapi32.CredFree(cred)
+    return blob.decode('utf-8')
+
+
+def _sync_api_keys():
+    """Load API keys from encrypted DB into os.environ.
+
+    The TTS server runs as a standalone process (not spawned by Electron),
+    so ORB_MASTER_KEY isn't in the environment. We read it directly from
+    Windows Credential Manager, then unlock the DB and sync keys.
+    """
+    try:
+        # If master key isn't already in env, read from Credential Manager
+        if not os.getenv('ORB_MASTER_KEY'):
+            key = _read_master_key_from_credential_manager()
+            if key:
+                os.environ['ORB_MASTER_KEY'] = key
+                logger.info("[tts] Loaded master key from Credential Manager")
+            else:
+                logger.warning("[tts] No master key in env or Credential Manager")
+                return
+
+        from app.crypto import require_master_key_or_exit
+        require_master_key_or_exit()
+
+        from app.db import init_db, SessionLocal
+        init_db()
+
+        from app.settings.service import sync_all_to_env
+        db = SessionLocal()
+        count = sync_all_to_env(db)
+        db.close()
+        logger.info("[tts] Synced %d API keys from encrypted DB", count)
+    except Exception as e:
+        logger.warning("[tts] Could not sync API keys from DB: %s — falling back to .env", e)
+
+_sync_api_keys()
 
 # ── FastAPI app ─────────────────────────────────────────────────────────
 
@@ -127,13 +207,14 @@ async def _fetch_voices_from_google() -> list:
     if _voice_cache and (now - _voice_cache_time) < VOICE_CACHE_TTL:
         return _voice_cache
 
-    if not GOOGLE_API_KEY:
+    api_key = os.getenv("GOOGLE_API_KEY", "") or GOOGLE_API_KEY
+    if not api_key:
         return []
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
-                f"{VOICES_API_URL}?key={GOOGLE_API_KEY}"
+                f"{VOICES_API_URL}?key={api_key}"
             )
         if resp.status_code != 200:
             logger.error("[tts] Failed to fetch voices: %d", resp.status_code)
@@ -187,7 +268,10 @@ async def _fetch_voices_from_google() -> list:
 
 async def _synthesize(text: str, voice_name: str, speed: float = 1.0) -> bytes:
     """Call Google Cloud TTS REST API and return MP3 bytes."""
-    if not GOOGLE_API_KEY:
+    # Re-read API key every call — the key may have been synced from DB
+    # after this module was imported (settings sync runs during startup).
+    api_key = os.getenv("GOOGLE_API_KEY", "") or GOOGLE_API_KEY
+    if not api_key:
         raise HTTPException(500, "GOOGLE_API_KEY not set in environment")
 
     # Determine language code from voice name (e.g. "en-GB-WaveNet-B" → "en-GB")
@@ -208,7 +292,7 @@ async def _synthesize(text: str, voice_name: str, speed: float = 1.0) -> bytes:
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(
-            f"{TTS_API_URL}?key={GOOGLE_API_KEY}",
+            f"{TTS_API_URL}?key={api_key}",
             json=payload,
         )
 
@@ -234,24 +318,36 @@ async def ping():
 @app.post("/tts/speak")
 async def speak(req: SpeakRequest):
     """Synthesise text to speech. Returns MP3 audio."""
-    if not req.text.strip():
-        raise HTTPException(400, "Empty text")
+    try:
+        if not req.text.strip():
+            raise HTTPException(400, "Empty text")
 
-    voice = req.voice or _selected_voice
-    speed = req.speed if req.speed is not None else DEFAULT_SPEED
+        voice = req.voice or _selected_voice
+        speed = req.speed if req.speed is not None else DEFAULT_SPEED
 
-    logger.info("[tts] Speak: %d chars, voice=%s, speed=%.1f", len(req.text), voice, speed)
-    audio = await _synthesize(req.text, voice, speed)
+        logger.info("[tts] Speak: %d chars, voice=%s, speed=%.1f", len(req.text), voice, speed)
+        audio = await _synthesize(req.text, voice, speed)
 
-    return Response(content=audio, media_type="audio/mpeg")
+        return Response(content=audio, media_type="audio/mpeg")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("[tts] Speak FAILED: %s: %s", type(e).__name__, e, exc_info=True)
+        raise HTTPException(500, f"TTS speak error: {type(e).__name__}: {e}")
 
 
 @app.post("/tts/preview")
 async def preview(req: PreviewRequest):
     """Preview a voice with sample text."""
-    sample = "Hello, I'm ASTRA. This is how I sound with this voice."
-    audio = await _synthesize(sample, req.voice, DEFAULT_SPEED)
-    return Response(content=audio, media_type="audio/mpeg")
+    try:
+        sample = "Hello, I'm ASTRA. This is how I sound with this voice."
+        audio = await _synthesize(sample, req.voice, DEFAULT_SPEED)
+        return Response(content=audio, media_type="audio/mpeg")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("[tts] Preview FAILED: %s: %s", type(e).__name__, e, exc_info=True)
+        raise HTTPException(500, f"TTS preview error: {type(e).__name__}: {e}")
 
 
 @app.get("/tts/voices")

@@ -1,4 +1,4 @@
-﻿# FILE: app/llm/routing/prompt_builders.py
+# FILE: app/llm/routing/prompt_builders.py
 """
 System prompt and message builders for stream routing.
 
@@ -68,6 +68,15 @@ You are NOT responsible for implementation - that happens in later pipeline stag
 - Confirm scope ("So you want X that does Y, right?")
 - Mention any obvious considerations ("This will need a backend endpoint too")
 - Let the user know the pipeline will handle the implementation
+
+## CODEBASE CONTEXT
+
+If your context includes a [CODEBASE CONTEXT] block, source files have been
+pre-loaded for you from the sandbox. You already have the code. Do NOT:
+- Call execute_command, shell commands, or generate tool_call JSON to explore files
+- Say "let me look at the codebase" or "give me a moment to dig"
+Instead, reference the loaded files directly. Cite patterns, variable names,
+component structures, and CSS tokens from the code you can already see.
 
 ## EXAMPLES
 
@@ -352,12 +361,37 @@ def build_messages(
     TRUNCATE_TAIL = 1_000
     SECTION_SOFT_CAP = 3_500
     
+    # v10.0: Reduce raw history when a conversation summary is available.
+    # Summary provides the broader context; raw messages provide recency.
+    SUMMARY_HISTORY_LIMIT = 8  # When summary exists, only load last N messages
+    
     messages_list = []
     has_scan_breadcrumb = False
     
+    # v10.0: Check for conversation summary and inject it
+    summary_block = ""
+    try:
+        from app.memory.summary_injection import build_summary_context
+        summary_block = build_summary_context(db, project_id)
+    except Exception as e:
+        logger.debug("[prompt_builders] Summary injection skipped: %s", e)
+    
+    if summary_block:
+        # Summary exists — it's injected via build_full_context() into the
+        # system prompt (not here as a message, because Anthropic and Gemini
+        # strip role="system" from message lists). We still reduce raw history
+        # since the summary provides the older context.
+        effective_limit = min(history_limit, SUMMARY_HISTORY_LIMIT)
+        logger.info(
+            "[prompt_builders] Summary available, reducing history from %d to %d",
+            history_limit, effective_limit,
+        )
+    else:
+        effective_limit = history_limit
+    
     if include_history:
         try:
-            history = memory_service.list_messages(db, project_id, limit=history_limit)
+            history = memory_service.list_messages(db, project_id, limit=effective_limit)
             
             # Identify large assistant messages
             large_assistant_msgs = [
@@ -494,6 +528,18 @@ def build_full_context(
     except Exception:
         pass  # Non-fatal — memory system may not be initialised yet
     
+    # v10.0: Conversation summary injection into system context.
+    # Injected here (not in build_messages) because Anthropic and Gemini
+    # strip role="system" from the message list. The system prompt is the
+    # one place all three providers reliably receive context.
+    try:
+        from app.memory.summary_injection import build_summary_context
+        summary_ctx = build_summary_context(db, project_id)
+        if summary_ctx:
+            full_context += "\n\n" + summary_ctx
+    except Exception:
+        pass  # Non-fatal
+
     return full_context
 
 

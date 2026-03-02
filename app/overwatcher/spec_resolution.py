@@ -41,6 +41,7 @@ class ResolvedSpec:
     v1.2: Added get_output_mode() and get_insertion_format() accessor methods.
     v2.0 (2026-02-02): Added POT spec support with is_pot_spec and pot_tasks fields.
     v3.0 (2026-02-06): Added architecture spec support for Critical Pipeline outputs.
+    v3.2 (2026-02-28): Added segmented spec routing for multi-segment jobs.
     """
     spec_id: str
     spec_hash: str
@@ -54,6 +55,8 @@ class ResolvedSpec:
     # v3.0: Architecture spec support
     is_architecture_spec: bool = False
     architecture_markdown: Optional[str] = None
+    # v3.2: Segmented spec support (multi-segment pipeline jobs)
+    is_segmented_spec: bool = False
     
     @property
     def is_smoke_test(self) -> bool:
@@ -237,6 +240,27 @@ def resolve_latest_spec(
             return None
         
         logger.info(f"[resolve_spec] Found spec {spec.spec_id}")
+        
+        # v3.2: SEGMENTED SPEC DETECTION
+        # Segmented specs (from SpecGate v3.0 grounded pipeline) use sg- prefix
+        # and have a manifest in the jobs directory. They need the segment loop,
+        # not the single-file Overwatcher/Implementer path.
+        spec_title = getattr(spec, 'title', '') or ''
+        if spec.spec_id.startswith('sg-') or 'Segmented' in spec_title:
+            logger.info(
+                "[resolve_spec] v3.2 SEGMENTED SPEC: %s (%s) - routing to segment loop",
+                spec.spec_id, spec_title,
+            )
+            return ResolvedSpec(
+                spec_id=spec.spec_id,
+                spec_hash=spec.spec_hash,
+                project_id=project_id,
+                title=spec_title,
+                created_at=spec.created_at.isoformat() if hasattr(spec, 'created_at') and spec.created_at else None,
+                spec_content=None,
+                deliverable=None,
+                is_segmented_spec=True,
+            )
         
         # Log all available attributes for debugging
         attrs = [a for a in dir(spec) if not a.startswith('_')]

@@ -8,12 +8,89 @@ Restored to match original monolith signatures expected by orchestrator.py.
 """
 
 import logging
+import os
 from typing import Dict, List, Optional
 
-from .constants import FRONTEND_PREFIX, FRONTEND_ROOT
+from .constants import FRONTEND_PREFIX, FRONTEND_ROOT, FRONTEND_BARE_PREFIXES
 from ..sandbox_client import SandboxClient
 
 logger = logging.getLogger(__name__)
+
+
+def ensure_frontend_root_exists(client: SandboxClient) -> bool:
+    """Ensure the frontend root directory exists in the sandbox.
+
+    v1.0 (2026-03-01): When the sandbox clones only D:\\Orb (backend),
+    the frontend root D:\\orb-desktop doesn't exist. This function creates
+    it so frontend files can be written without phantom directory creation
+    under D:\\Orb.
+
+    Args:
+        client: SandboxClient for shell commands.
+
+    Returns:
+        True if the directory exists or was created, False on error.
+    """
+    try:
+        cmd = f'Test-Path -Path "{FRONTEND_ROOT}" -PathType Container'
+        result = client.shell_run(cmd, timeout_seconds=10)
+        if result.stdout and result.stdout.strip().lower() == 'true':
+            return True
+
+        # Create the frontend root and common subdirectories
+        mkdir_cmd = (
+            f'New-Item -Path "{FRONTEND_ROOT}" -ItemType Directory -Force | Out-Null; '
+            f'New-Item -Path "{FRONTEND_ROOT}\\src" -ItemType Directory -Force | Out-Null; '
+            f'New-Item -Path "{FRONTEND_ROOT}\\src\\components" -ItemType Directory -Force | Out-Null; '
+            f'New-Item -Path "{FRONTEND_ROOT}\\public" -ItemType Directory -Force | Out-Null'
+        )
+        result = client.shell_run(mkdir_cmd, timeout_seconds=15)
+        logger.info(
+            "[path_resolution] v1.0 Created frontend root: %s",
+            FRONTEND_ROOT,
+        )
+        return True
+    except Exception as e:
+        logger.warning(
+            "[path_resolution] v1.0 Failed to create frontend root %s: %s",
+            FRONTEND_ROOT, e,
+        )
+        return False
+
+
+def validate_write_path(abs_path: str, rel_path: str) -> str:
+    """Validate a resolved write path and detect phantom directory creation.
+
+    v1.0 (2026-03-01): When a file targets D:\\orb-desktop but the sandbox
+    doesn't have it, the implementer would create phantom directories under
+    D:\\Orb (e.g. D:\\Orb\\src\\components\\education\\). This function
+    detects and rejects such paths.
+
+    Args:
+        abs_path: Resolved absolute path.
+        rel_path: Original relative path from architecture.
+
+    Returns:
+        The validated abs_path.
+
+    Raises:
+        ValueError: If the path would create phantom directories.
+    """
+    normalised = abs_path.replace('/', '\\')
+
+    # Detect phantom: path under D:\Orb that looks like frontend structure
+    backend_root = 'D:\\Orb'  # Single backslash in the actual string value
+    if normalised.startswith(backend_root):
+        remainder = normalised[len(backend_root):].lstrip('\\')
+        # If the remaining path starts with src/ or public/ — it's phantom
+        if remainder.startswith('src\\') or remainder.startswith('public\\'):
+            raise ValueError(
+                f"Phantom frontend path detected: {abs_path} — "
+                f"frontend files should resolve to {FRONTEND_ROOT}, not {backend_root}. "
+                f"Original path: {rel_path}"
+            )
+
+    return abs_path
 
 
 def _resolve_multi_root_path(rel_path: str, sandbox_base: str) -> str:
@@ -26,6 +103,10 @@ def _resolve_multi_root_path(rel_path: str, sandbox_base: str) -> str:
     Architecture map and prompt both use orb-desktop/ prefix for frontend files.
     This function strips the prefix and resolves to the correct root.
 
+    v3.2-fix: Also detects bare frontend prefixes (src/, public/) that lack
+    the orb-desktop/ prefix. These directories only exist under orb-desktop/,
+    so they are routed to FRONTEND_ROOT directly without stripping.
+
     Args:
         rel_path: Relative path from architecture document
         sandbox_base: Resolved backend base (e.g. D:\Orb)
@@ -35,16 +116,28 @@ def _resolve_multi_root_path(rel_path: str, sandbox_base: str) -> str:
     """
     normalized = rel_path.replace("\\", "/")
 
+    _sep = os.sep  # Avoid backslash in f-string expressions
+
     if normalized.startswith(FRONTEND_PREFIX):
         # Strip the orb-desktop/ prefix and resolve against frontend root
         frontend_rel = normalized[len(FRONTEND_PREFIX):]
-        abs_path = f"{FRONTEND_ROOT}\\{frontend_rel.replace('/', '\\')}"
+        abs_path = FRONTEND_ROOT + _sep + frontend_rel.replace('/', _sep)
         logger.info("[arch_exec] v2.2 Frontend path: %s -> %s", rel_path, abs_path)
         return abs_path
-    else:
-        # Backend path — resolve against sandbox_base as before
-        abs_path = f"{sandbox_base}\\{normalized.replace('/', '\\')}"
-        return abs_path
+
+    # v3.2-fix: Bare frontend prefixes (src/, public/) without orb-desktop/
+    for bare_prefix in FRONTEND_BARE_PREFIXES:
+        if normalized.startswith(bare_prefix):
+            abs_path = FRONTEND_ROOT + _sep + normalized.replace('/', _sep)
+            logger.info(
+                "[arch_exec] v3.2 Bare frontend path: %s -> %s",
+                rel_path, abs_path,
+            )
+            return abs_path
+
+    # Backend path — resolve against sandbox_base as before
+    abs_path = sandbox_base + _sep + normalized.replace('/', _sep)
+    return abs_path
 
 
 def _ensure_python_init_files(
@@ -127,7 +220,7 @@ def _ensure_python_init_files(
     init_files_to_create: List[Dict[str, str]] = []
 
     for init_path in sorted(dirs_needing_init):
-        abs_path = f"{sandbox_base}\\{init_path.replace('/', '\\')}"
+        abs_path = sandbox_base + os.sep + init_path.replace('/', os.sep)
 
         # Check if file exists in sandbox
         try:

@@ -35,6 +35,19 @@ from app.llm.routing._command_dispatch_utils import (
 
 logger = logging.getLogger(__name__)
 
+# Build project lifecycle hooks (safe import)
+try:
+    from app.builds.stage_hooks import (
+        is_tracked_stage,
+        wrap_with_build_tracking,
+    )
+    _BUILD_TRACKING_AVAILABLE = True
+except Exception as _e:
+    _BUILD_TRACKING_AVAILABLE = False
+    is_tracked_stage = None
+    wrap_with_build_tracking = None
+    logger.warning("[command_dispatch] Build tracking not available: %s", _e)
+
 # Build table once at import time
 _DISPATCH_TABLE = build_dispatch_table(_registry)
 
@@ -158,8 +171,27 @@ def handle_command_execution(
         if extra:
             kwargs.update(extra)
 
+    # Wrap with build project tracking if this is a tracked pipeline stage
+    generator = handler(**kwargs)
+
+    if (
+        _BUILD_TRACKING_AVAILABLE
+        and is_tracked_stage(entry["stage"])
+        and hasattr(req, "project_id")
+        and req.project_id
+    ):
+        generator = wrap_with_build_tracking(
+            stream=generator,
+            db=db,
+            chat_project_id=req.project_id,
+            dispatch_stage=entry["stage"],
+            message=req.message,
+            provider=trace_provider if "trace_provider" in dir() else None,
+            model=trace_model if "trace_model" in dir() else None,
+        )
+
     return StreamingResponse(
-        handler(**kwargs),
+        generator,
         media_type="text/event-stream",
         headers=_SSE_HEADERS,
     )

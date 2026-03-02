@@ -110,6 +110,8 @@ class FailureRouting:
     target_file: Optional[str] = None  # specific file that failed
     reason: str = ""
     rollback_required: bool = False
+    scoped_files: Optional[List[str]] = None  # v1.2: surgical scope — only these files may be touched
+    severity: str = "minor"                    # v1.3: "minor" = surgical fix, "major" = fail cleanly
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -118,6 +120,8 @@ class FailureRouting:
             "target_file": self.target_file,
             "reason": self.reason,
             "rollback_required": self.rollback_required,
+            "scoped_files": self.scoped_files,
+            "severity": self.severity,
         }
 
 
@@ -133,8 +137,10 @@ class PhaseCheckoutResult:
 
     # Individual checks
     boot_test: Optional[BootTestResult] = None
+    frontend_boot: Optional[Any] = None  # v3.4: FrontendBootResult
     size_validation: Optional[SizeValidationResult] = None
     contract_check: Optional[ContractCheckResult] = None
+    frontend_check: Optional[Dict[str, Any]] = None  # v1.0: Frontend syntax check result
 
     # Routing (if failed)
     routing: Optional[FailureRouting] = None
@@ -157,8 +163,10 @@ class PhaseCheckoutResult:
             "job_id": self.job_id,
             "status": self.status,
             "boot_test": self.boot_test.__dict__ if self.boot_test else None,
+            "frontend_boot": self.frontend_boot.__dict__ if hasattr(self.frontend_boot, "__dict__") and self.frontend_boot else None,
             "size_validation": self.size_validation.to_dict() if self.size_validation else None,
             "contract_check": self.contract_check.to_dict() if self.contract_check else None,
+            "frontend_check": self.frontend_check,
             "routing": self.routing.to_dict() if self.routing else None,
             "attempt": self.attempt,
             "max_attempts": self.max_attempts,

@@ -18,6 +18,18 @@ from app.orchestrator.segment_state import save_state, get_job_dir
 
 logger = logging.getLogger(__name__)
 
+# v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
+try:
+    from app.sandbox_fs import (
+        sandbox_isfile as _sbx_isfile,
+        sandbox_isdir as _sbx_isdir,
+        sandbox_exists as _sbx_exists,
+        sandbox_read_text as _sbx_read_text,
+    )
+    _SBX_FS_OK = True
+except ImportError:
+    _SBX_FS_OK = False
+
 MAX_COHESION_RETRIES = 3
 
 
@@ -26,8 +38,21 @@ async def run_cohesion_loop(ctx: JobCtx) -> None:
     After architecture generation, run cohesion check. If blocking issues
     remain after auto-fix, auto-regenerate flagged segments through
     Critical Pipeline with cohesion feedback, then re-check.
+
+    v3.4-fix: Skip entirely during implementation runs (implement_only=True).
+    Cohesion validates architecture-level interface contracts. During
+    implementation, the arch_exec writes files in dependency order — seg-04
+    reads what seg-01/02/03 actually created. Cohesion at this stage would
+    check against files that may not exist yet, generating false positives.
     """
     from app.pot_spec.grounded.segment_schemas import SegmentStatus
+
+    # v3.4-fix: Cohesion is an architecture-phase check only
+    if getattr(ctx, "implement_only", False):
+        logger.info("[SEGMENT_LOOP] v3.4 Skipping cohesion check (implement_only=True)")
+        ctx.cohesion_passed = True
+        ctx.cohesion_retry_count = 0
+        return
 
     ctx.cohesion_retry_count = 0
     ctx.cohesion_passed = False
@@ -123,6 +148,58 @@ async def _run_single_cohesion_check(
         source_file_evidence=ctx.source_evidence,
         skip_llm_layer=is_det_job,
     )
+
+    # v1.0 Fix 2: Deterministic cross-segment interface validation
+    try:
+        from app.orchestrator.cross_segment_interfaces import (
+            validate_cross_segment_interfaces,
+        )
+        import json as _json
+        _manifest_path = os.path.join(
+            ctx.job_dir_path, "segments", "manifest.json",
+        )
+        if os.path.isfile(_manifest_path):
+            with open(_manifest_path, "r", encoding="utf-8") as _mf:
+                _manifest_data = _json.load(_mf)
+            _iface_issues = validate_cross_segment_interfaces(
+                ctx.job_dir_path, _manifest_data.get("segments", []),
+            )
+            if _iface_issues:
+                logger.info(
+                    "[cohesion] Fix 2: Found %d interface issue(s)",
+                    len(_iface_issues),
+                )
+                # Merge into cohesion result
+                from app.orchestrator._cohesion_check_utils_10 import CohesionIssue
+                for _ii in _iface_issues:
+                    _ci = CohesionIssue(
+                        issue_id=_ii["issue_id"],
+                        severity=_ii["severity"],
+                        category=_ii["category"],
+                        description=_ii["description"],
+                        source_segment=_ii.get("source_segment", ""),
+                        related_segment=_ii.get("related_segment", ""),
+                        file_path=_ii.get("file_path", ""),
+                        expected=_ii.get("expected", ""),
+                        actual=_ii.get("actual", ""),
+                        suggested_fix=_ii.get("suggested_fix", ""),
+                        auto_fix_tier=_ii.get("auto_fix_tier", 0),
+                    )
+                    cohesion_result.issues.append(_ci)
+                # Recompute status if we added blocking issues
+                _new_blocking = [
+                    i for i in cohesion_result.issues
+                    if i.severity == "blocking" and not i.auto_fixed
+                ]
+                if _new_blocking and cohesion_result.status == "pass":
+                    cohesion_result.status = "fail"
+                    ctx.emit(
+                        f"⚠️ Interface validation found "
+                        f"{len(_new_blocking)} blocking mismatch(es)"
+                    )
+    except Exception as _iv_err:
+        logger.debug("[cohesion] Interface validation error: %s", _iv_err)
+
     save_cohesion_result(cohesion_result, ctx.job_dir_path)
 
     # Journal emission
@@ -258,6 +335,7 @@ async def _regen_flagged_segments(ctx, cohesion_result, regen_segs):
             contract_set=ctx.contract_set,
             source_file_evidence=ctx.source_evidence,
             enrichment=ctx.enrichment_data.get(seg_spec.segment_id),
+            ledger=ctx.ledger,
         )
 
         seg_state = ctx.state.segments.get(regen_seg_id)
@@ -348,16 +426,32 @@ def _collect_protected_files(ctx, regen_segs) -> set:
     return protected
 
 
+# v3.4-fix: Frontend path prefixes that resolve to D:\orb-desktop
+_COH_FE_ROOT = r"D:\orb-desktop"
+_COH_FE_BARE = ("src/", "src\\", "public/", "public\\")
+
+
 def _check_protected_files(ctx, protected_files):
-    """v5.35: Verify protected files survived regen."""
+    """v5.35: Verify protected files survived regen.
+
+    v3.4-fix: Frontend path resolution — bare src/ or public/ paths
+    resolve to D:\\orb-desktop, matching the write path used by arch_exec.
+    """
     missing = []
     for pf in protected_files:
+        normalized_fwd = pf.replace("\\", "/")
         candidates = [
             pf,
             os.path.join("D:/Orb", pf),
             pf.replace("/", os.sep),
         ]
-        if not any(os.path.isfile(c) for c in candidates):
+        # v3.4-fix: Add frontend path candidate
+        if any(normalized_fwd.startswith(bp.replace("\\", "/")) for bp in _COH_FE_BARE):
+            candidates.append(os.path.join(_COH_FE_ROOT, pf.replace("/", os.sep)))
+        elif normalized_fwd.startswith("orb-desktop/"):
+            fe_rel = normalized_fwd[len("orb-desktop/"):]
+            candidates.append(os.path.join(_COH_FE_ROOT, fe_rel.replace("/", os.sep)))
+        if not any((_sbx_isfile(c) if _SBX_FS_OK else os.path.isfile(c)) for c in candidates):
             missing.append(pf)
 
     if missing:

@@ -56,6 +56,8 @@ def compile_implementation_briefs(
     implementation_feedback: str = "",
     import_validation_feedback: str = "",
     sibling_enrichments: Optional[Dict[str, Dict]] = None,
+    skeleton: Optional[Dict[str, Any]] = None,
+    all_skeletons: Optional[List[Dict[str, Any]]] = None,
 ) -> CompilationResult:
     """
     Main entry point: compile all evidence into per-file briefs.
@@ -81,6 +83,24 @@ def compile_implementation_briefs(
         "[IMPL_COMPILER] Compiling briefs for %s (profile=%s)",
         segment_id, profile.value,
     )
+
+    # Step 0 (v1.1): Generate deterministic frozen imports from skeleton contracts
+    frozen_imports: Dict[str, Any] = {}
+    if skeleton:
+        try:
+            from app.orchestrator.deterministic_imports import generate_frozen_imports_for_segment
+            frozen_imports = generate_frozen_imports_for_segment(
+                skeleton=skeleton,
+                architecture_text=architecture_text,
+                all_skeletons=all_skeletons,
+            )
+            if frozen_imports:
+                logger.info(
+                    "[IMPL_COMPILER] v1.1 Generated frozen imports for %d file(s)",
+                    len(frozen_imports),
+                )
+        except Exception as exc:
+            logger.warning("[IMPL_COMPILER] Frozen import generation failed (non-fatal): %s", exc)
 
     # Step 1: Get file inventory from architecture
     file_inventory = _parse_file_inventory(architecture_text)
@@ -200,8 +220,44 @@ def compile_implementation_briefs(
         design_notes = _extract_file_design_notes(architecture_text, fpath)
         estimated_lines = sum(f.line_count for f in functions) + len(file_imports) + 10
         total_lines += estimated_lines
-        instruction = build_instruction(profile, fpath, functions)
+        instruction = build_instruction(profile, fpath, functions, operation=operation)
         file_feedback = _filter_feedback_for_file(all_feedback, fpath)
+
+        # v1.1: Inject frozen imports if available for this file
+        _frozen_section = ""
+        _norm_fpath = fpath.replace("\\", "/")
+        if _norm_fpath in frozen_imports:
+            _frozen_section = frozen_imports[_norm_fpath].to_prompt_section()
+            logger.info(
+                "[IMPL_COMPILER] v1.1 Frozen imports injected for %s (%d lines)",
+                fpath, len(frozen_imports[_norm_fpath].import_lines),
+            )
+
+        # v1.2 (Job 6): Generate code scaffold for CREATE files
+        _scaffold_section = ""
+        if operation.upper() == "CREATE":
+            try:
+                from app.orchestrator.scaffolds.engine import (
+                    generate_scaffold_for_file,
+                    build_scaffold_prompt_section,
+                )
+                _scaffold_code, _scaffold_pattern = generate_scaffold_for_file(
+                    file_path=_norm_fpath,
+                    operation=operation,
+                    architecture_text=design_notes,
+                    exports=file_exports,
+                    frozen_imports=_frozen_section,
+                )
+                if _scaffold_code:
+                    _scaffold_section = build_scaffold_prompt_section(
+                        _scaffold_code, _scaffold_pattern,
+                    )
+                    logger.info(
+                        "[IMPL_COMPILER] v1.2 Scaffold injected for %s (%s, %d chars)",
+                        fpath, _scaffold_pattern, len(_scaffold_code),
+                    )
+            except Exception as _scf_exc:
+                logger.debug("[IMPL_COMPILER] Scaffold generation skipped: %s", _scf_exc)
 
         brief = FileBrief(
             file_path=fpath,
@@ -217,6 +273,8 @@ def compile_implementation_briefs(
             design_notes=design_notes,
             estimated_lines=estimated_lines,
             profile=profile.value,
+            frozen_import_section=_frozen_section,
+            scaffold_section=_scaffold_section,
         )
         briefs.append(brief)
 

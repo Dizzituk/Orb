@@ -16,6 +16,8 @@ def update_segment_status(
     *,
     error: Optional[str] = None,
     output_files: Optional[List[str]] = None,
+    impl_model: Optional[str] = None,
+    impl_provider: Optional[str] = None,
 ) -> None:
     """
     Update a segment's status and persist state.json immediately.
@@ -36,6 +38,11 @@ def update_segment_status(
         seg.completed_at = _now_iso()
         if output_files is not None:
             seg.output_files = output_files
+        # v3.2-fix: Record which model implemented this segment
+        if impl_model:
+            seg.impl_model = impl_model
+        if impl_provider:
+            seg.impl_provider = impl_provider
     elif new_status == SegmentStatus.FAILED:
         seg.completed_at = _now_iso()
         seg.error = error

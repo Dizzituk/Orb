@@ -9,6 +9,18 @@ from app.orchestrator._final_checkout_utils_2 import _find_closest_name
 from app.orchestrator._final_checkout_utils_3 import _extract_files_from_issue, _llm_fix_import, _write_file_to_sandbox_stub
 from typing import Any, Callable, Dict, List, Optional
 logger = logging.getLogger(__name__)
+
+# v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
+try:
+    from app.sandbox_fs import (
+        sandbox_isfile as _sbx_isfile,
+        sandbox_isdir as _sbx_isdir,
+        sandbox_exists as _sbx_exists,
+        sandbox_read_text as _sbx_read_text,
+    )
+    _SBX_FS_OK = True
+except ImportError:
+    _SBX_FS_OK = False
 logger = logging.getLogger(__name__)
 
 
@@ -96,7 +108,7 @@ async def _fix_import_resolution_issue(
     consumer_file = issue.file_b
     provider_file = issue.file_a
 
-    if not consumer_file or not os.path.isfile(consumer_file):
+    if not consumer_file or not (_sbx_isfile(consumer_file) if _SBX_FS_OK else os.path.isfile(consumer_file)):
         # Try reading from sandbox
         if sandbox_client:
             consumer_content = _read_file_via_sandbox(
@@ -106,8 +118,15 @@ async def _fix_import_resolution_issue(
             return False
     else:
         try:
-            with open(consumer_file, "r", encoding="utf-8", errors="replace") as f:
-                consumer_content = f.read()
+            _sbx_content = _sbx_read_text(consumer_file) if _SBX_FS_OK else None
+
+            if _sbx_content is not None:
+                consumer_content = _sbx_content
+
+            else:
+
+                with open(consumer_file, "r", encoding="utf-8", errors="replace") as f:
+                    consumer_content = f.read()
         except Exception:
             return False
 
@@ -129,7 +148,7 @@ async def _fix_import_resolution_issue(
         except ImportError:
             return False
 
-        if provider_file and os.path.isfile(provider_file):
+        if provider_file and (_sbx_isfile(provider_file) if _SBX_FS_OK else os.path.isfile(provider_file)):
             provider_names = get_all_defined_names(provider_file)
         elif sandbox_client and provider_file:
             provider_content = _read_file_via_sandbox(
@@ -225,10 +244,17 @@ async def _apply_ai_review_fix(
         content = None
         abs_path = os.path.join(sandbox_base, rel_path.replace("/", os.sep))
 
-        if os.path.isfile(abs_path):
+        if (_sbx_isfile(abs_path) if _SBX_FS_OK else os.path.isfile(abs_path)):
             try:
-                with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
-                    content = f.read()
+                _sbx_content = _sbx_read_text(abs_path) if _SBX_FS_OK else None
+
+                if _sbx_content is not None:
+                    content = _sbx_content
+
+                else:
+
+                    with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                        content = f.read()
             except Exception:
                 pass
 

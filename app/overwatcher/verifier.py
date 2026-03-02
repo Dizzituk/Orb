@@ -335,6 +335,33 @@ async def verify_chunk(
     # Load legacy failures
     legacy = load_legacy_failures(repo_path)
     
+    # 0. (v1.1 Job 7) Per-file syntax validation — catches trivial errors
+    #    before expensive LLM-based verification steps.
+    syntax_errors = 0
+    syntax_feedback = ""
+    try:
+        from app.overwatcher.sandbox_client import get_sandbox_client
+        from app.orchestrator.syntax_validator import validate_files_batch
+        from app.orchestrator.syntax_feedback import (
+            format_syntax_errors_for_retry,
+        )
+        _syntax_client = get_sandbox_client()
+        _syntax_result = validate_files_batch(
+            client=_syntax_client,
+            file_paths=touched_files,
+        )
+        syntax_errors = _syntax_result.total_errors
+        if not _syntax_result.all_passed:
+            syntax_feedback = format_syntax_errors_for_retry(
+                _syntax_result.errors_by_file,
+            )
+            logger.warning(
+                "[verifier] v1.1 Syntax check failed: %d error(s) in %d file(s)",
+                syntax_errors, _syntax_result.failed,
+            )
+    except Exception as _syn_exc:
+        logger.debug("[verifier] Syntax check skipped: %s", _syn_exc)
+    
     # 1. Run chunk-specific verification commands first
     for cmd in chunk.verification.commands:
         result = run_command(cmd, repo_path, timeout=chunk.verification.timeout_seconds)
@@ -368,12 +395,26 @@ async def verify_chunk(
             evidence_path.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
             evidence_paths.append(str(evidence_path))
     
+    # v1.2 (Job 9): Invalidate pattern cache for touched areas
+    try:
+        from app.pot_spec.pattern_cache import get_pattern_cache
+        _pcache = get_pattern_cache()
+        _invalidated_areas = set()
+        for tf in touched_files:
+            _area = "/".join(tf.replace("\\", "/").split("/")[:3])
+            if _area not in _invalidated_areas:
+                _pcache.invalidate_area(_area)
+                _invalidated_areas.add(_area)
+    except Exception:
+        pass
+
     # Determine overall status
     all_passed = all(r.passed for r in results)
     
     # Check for new failures (not in legacy)
     # For now, we're strict: any failure blocks
-    if all_passed and tests_failed == 0 and lint_errors == 0 and type_errors == 0:
+    if (all_passed and tests_failed == 0 and lint_errors == 0
+            and type_errors == 0 and syntax_errors == 0):
         status = VerificationStatus.PASSED
     else:
         status = VerificationStatus.FAILED
@@ -386,6 +427,8 @@ async def verify_chunk(
         tests_failed=tests_failed,
         lint_errors=lint_errors,
         type_errors=type_errors,
+        syntax_errors=syntax_errors,
+        syntax_feedback=syntax_feedback,
         evidence_paths=evidence_paths,
         legacy_failures=legacy_failures,
     )

@@ -11,6 +11,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 
+# v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
+# v4.3: Spec gate uses HOST filesystem, not sandbox.
+_SBX_FS_OK = False
+
 
 @dataclass 
 class TechStack:
@@ -22,6 +26,78 @@ class TechStack:
     styling: Optional[str] = None             # CSS, Tailwind, styled-components
     state_management: Optional[str] = None    # Redux, Zustand, Context
     api_pattern: Optional[str] = None         # REST, GraphQL
+
+# ── v2.2: Frontend root injection ────────────────────────────────────
+# Visual/UI terms that imply frontend work without needing the literal
+# word "frontend".  These are semantic signals — things humans say when
+# describing how something LOOKS, not how the backend works.
+_VISUAL_INTENT_SIGNALS = {
+    # Layout & structure
+    'dashboard', 'card', 'cards', 'grid', 'layout', 'sidebar', 'panel',
+    'tab', 'tabs', 'modal', 'dialog', 'drawer', 'navbar', 'header',
+    'footer', 'page', 'view', 'screen',
+    # Style & appearance
+    'dark theme', 'dark mode', 'light theme', 'colour', 'color',
+    'hex', '#111', '#1e1', 'background', 'accent', 'icon', 'icons',
+    'font', 'typography', 'css', 'tailwind', 'styled',
+    # Interaction & UX
+    'button', 'click', 'hover', 'toggle', 'dropdown', 'input field',
+    'form', 'checkbox', 'progress bar', 'percentage bar', 'slider',
+    'tooltip', 'notification', 'toast',
+    # Component names (common in React/Vue)
+    '.tsx', '.jsx', '.vue', '.svelte', 'component', 'components',
+    'react', 'vue', 'angular',
+    # Visual concepts
+    'how it looks', 'visual', 'display', 'render', 'ui design',
+    'user interface', 'screenshot', 'mockup', 'wireframe',
+    'aesthetic', 'style', 'theme', 'branded',
+}
+
+
+def _inject_frontend_root_if_needed(
+    project_paths: list[str],
+    combined_text: str,
+) -> list[str]:
+    """Ensure frontend root is in project_paths when the job implies UI work.
+
+    Uses semantic signals (visual terms, component names, style references)
+    rather than requiring the user to literally say 'frontend'.  If the job
+    description talks about how something LOOKS, it needs frontend files.
+
+    Returns project_paths unchanged if no frontend injection is needed,
+    or a new list with the frontend root appended.
+    """
+    from ._spec_runner_utils_13 import _discover_project_roots
+
+    discovery = _discover_project_roots()
+    fe_roots = discovery.get('frontend_paths', [])
+    if not fe_roots:
+        return project_paths  # No frontend root known — nothing to inject
+
+    # Already have a frontend root?
+    paths_lower = {p.lower().replace('/', '\\').rstrip('\\') for p in project_paths}
+    for fr in fe_roots:
+        if fr.lower().replace('/', '\\').rstrip('\\') in paths_lower:
+            return project_paths  # Frontend root already present
+
+    # Check for visual/UI intent in the combined text
+    text_lower = combined_text.lower()
+    matched = [sig for sig in _VISUAL_INTENT_SIGNALS if sig in text_lower]
+
+    if matched:
+        new_paths = list(project_paths) + list(fe_roots)
+        print(
+            f"[simple_create] v2.2 FRONTEND ROOT INJECTED: {fe_roots} "
+            f"(visual signals: {matched[:5]})"
+        )
+        logger.info(
+            "[simple_create] v2.2 Frontend root injected: %s (signals: %s)",
+            fe_roots, matched[:5],
+        )
+        return new_paths
+
+    return project_paths
+
 
 async def _run_llm_analysis(
     goal: str,
@@ -204,6 +280,13 @@ async def build_grounded_create_spec(
     from .simple_create import _fulfil_evidence_requests
     logger.info("[simple_create] v2.0 Building LLM-grounded CREATE spec")
     print(f"[simple_create] v2.0 GROUNDED CREATE: {goal[:60]}...")
+
+    # v2.2: FRONTEND ROOT INJECTION
+    # If the job description implies frontend work (visual terms, UI concepts,
+    # component names, style references) but no frontend root is in project_paths,
+    # inject the discovered frontend root so the LLM sees real frontend integration
+    # points instead of inventing paths under the backend root.
+    project_paths = _inject_frontend_root_if_needed(project_paths, combined_text=f"{goal} {what_to_do}")
     
     # v2.0: Extract CONCEPTS (not raw keywords)
     combined_text = f"{goal} {what_to_do}"
@@ -217,7 +300,7 @@ async def build_grounded_create_spec(
     # Detect tech stack for each project path
     tech_stack = TechStack()
     for path in project_paths:
-        if os.path.isdir(path):
+        if (_sbx_isdir(path) if _SBX_FS_OK else os.path.isdir(path)):
             detected = _detect_tech_stack(path, sandbox_client)
             for attr in ['frontend_framework', 'frontend_language', 'backend_framework',
                         'backend_language', 'styling', 'state_management', 'api_pattern']:
@@ -229,7 +312,7 @@ async def build_grounded_create_spec(
     # v2.0: Find integration points using CONCEPTS (not raw keywords)
     all_points = []
     for path in project_paths:
-        if os.path.isdir(path):
+        if (_sbx_isdir(path) if _SBX_FS_OK else os.path.isdir(path)):
             points = _find_integration_points(path, concepts, sandbox_client)
             all_points.extend(points)
     

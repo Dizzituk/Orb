@@ -11,6 +11,7 @@ Includes:
 - v1.5 FIX: Deterministic cycle breaking (facade detection, Kahn's)
 - v1.6: Monolith replacement detection
 - v3.0: Safety net deduplication
+- v3.1: Reference-only file demotion + evidence-based dependency inference
 """
 from __future__ import annotations
 
@@ -51,7 +52,9 @@ def _build_manifest_from_concepts(
     _resolve_dependencies(segments, concept_groups)
     _break_cycles(segments, _topological_sort_fn)
     _relocate_existing_files(segments)
+    _demote_reference_only_files(segments, file_scope)
     _apply_transitive_deps(segments)
+    _infer_evidence_dependencies(segments)
     _assign_requirements(segments, requirements)
 
     manifest = SegmentManifest(
@@ -371,6 +374,98 @@ def _relocate_existing_files(segments: List[SegmentSpec]) -> None:
 
 
 # =============================================================================
+# STEP 4B: Demote reference-only files from foreign domains (v3.1)
+# =============================================================================
+
+def _demote_reference_only_files(
+    segments: List[SegmentSpec],
+    original_file_scope: List[str],
+) -> None:
+    """
+    v3.1: Detect and demote files from unrelated domains to evidence_files.
+
+    When the spec references a file from an existing domain purely as a pattern
+    (e.g. app/builds/schemas.py mentioned as reference when building
+    app/education/schemas.py), the file scope extractor picks it up as a
+    modification target. This function detects such cross-domain reference
+    files and demotes them to evidence_files.
+
+    Heuristic: if a segment contains files from two different app/ subpackages,
+    and one subpackage has only existing (verified) files while the other has
+    CREATE targets, the existing files from the foreign subpackage are reference-only.
+    """
+    demoted_count = 0
+
+    for seg in segments:
+        if len(seg.file_scope) < 2:
+            continue
+
+        grounding = seg.grounding_data
+        if not grounding or not isinstance(grounding, dict):
+            continue
+
+        # Build set of verified (existing) file paths
+        verified_paths = set()
+        for vf in grounding.get("verified_files", []):
+            vf_path = vf.get("path", "") if isinstance(vf, dict) else str(vf)
+            if vf_path:
+                verified_paths.add(vf_path.replace("\\", "/").lower())
+
+        # Build set of CREATE target file paths
+        create_paths = set()
+        for ct in grounding.get("create_targets", []):
+            ct_path = ct.get("path", "") if isinstance(ct, dict) else str(ct)
+            if ct_path:
+                create_paths.add(ct_path.replace("\\", "/").lower())
+
+        if not verified_paths or not create_paths:
+            continue
+
+        # Detect subpackage directories for each category
+        def _get_subpkg(path_norm: str) -> str:
+            """Extract app/X subpackage from a path, or empty string."""
+            parts = path_norm.split("/")
+            if len(parts) >= 2 and parts[0] == "app":
+                return f"app/{parts[1]}"
+            return ""
+
+        create_pkgs = {_get_subpkg(p) for p in create_paths} - {""}
+        verified_pkgs = {_get_subpkg(p) for p in verified_paths} - {""}
+
+        # Foreign packages = verified packages that have NO create targets
+        foreign_pkgs = verified_pkgs - create_pkgs
+        if not foreign_pkgs:
+            continue
+
+        # Demote files from foreign packages: file_scope → evidence_files
+        new_scope = []
+        for f in seg.file_scope:
+            f_norm = f.replace("\\", "/").lower()
+            f_pkg = _get_subpkg(f_norm)
+            if f_pkg in foreign_pkgs and f_norm in verified_paths:
+                if f not in seg.evidence_files:
+                    seg.evidence_files.append(f)
+                demoted_count += 1
+                logger.info(
+                    "[segmentation] v3.1 Demoted reference-only file %s from %s "
+                    "(foreign pkg '%s', not in create targets)",
+                    f, seg.segment_id, f_pkg,
+                )
+            else:
+                new_scope.append(f)
+
+        if len(new_scope) < len(seg.file_scope):
+            seg.file_scope = new_scope
+            seg.estimated_files = len(new_scope)
+
+    if demoted_count > 0:
+        logger.info(
+            "[segmentation] v3.1 Demoted %d reference-only file(s) from foreign domains",
+            demoted_count,
+        )
+
+
+# =============================================================================
 # STEP 5: Transitive dependency closure (v1.2)
 # =============================================================================
 
@@ -423,6 +518,67 @@ def _apply_transitive_deps(segments: List[SegmentSpec]) -> None:
                                 seg.evidence_files.append(dep_file)
 
     logger.info("[segmentation] v1.2 Transitive dependency closure complete (%d rounds)", rounds)
+
+
+# =============================================================================
+# STEP 5B: Infer missing dependencies from evidence_files (v3.1)
+# =============================================================================
+
+def _infer_evidence_dependencies(segments: List[SegmentSpec]) -> None:
+    """
+    v3.1: If segment X lists files from segment Y in evidence_files,
+    X should depend on Y (Y must be built first so X can read its outputs).
+
+    This catches cases where the LLM segmenter forgets a dependency edge
+    but correctly placed files in evidence_files. For example, seg-08
+    (main.py integration) lists app/education/__init__.py in evidence but
+    has no dependency on the facade segment that creates it.
+
+    Skips facade segments to avoid creating cycles (facades already depend
+    on everything).
+    """
+    # Build file → owner segment mapping (only for CREATE targets / file_scope)
+    file_to_owner: Dict[str, str] = {}
+    for seg in segments:
+        for f in seg.file_scope:
+            f_norm = f.replace("\\", "/").lower()
+            file_to_owner[f_norm] = seg.segment_id
+
+    # Detect facades (they already depend on everything)
+    facade_ids = set()
+    for seg in segments:
+        if any(f.replace("\\", "/").endswith("__init__.py") for f in seg.file_scope):
+            title_lower = (seg.title or "").lower()
+            if any(kw in title_lower for kw in ["facade", "init", "package"]):
+                facade_ids.add(seg.segment_id)
+
+    added_count = 0
+    for seg in segments:
+        if seg.segment_id in facade_ids:
+            continue
+
+        existing_deps = set(seg.dependencies)
+        for ev_file in seg.evidence_files:
+            ev_norm = ev_file.replace("\\", "/").lower()
+            owner_id = file_to_owner.get(ev_norm)
+            if owner_id and owner_id != seg.segment_id and owner_id not in existing_deps:
+                # Don't add dependency on facades (would create cycles)
+                if owner_id in facade_ids:
+                    continue
+                seg.dependencies.append(owner_id)
+                existing_deps.add(owner_id)
+                added_count += 1
+                logger.info(
+                    "[segmentation] v3.1 Inferred dependency: %s → %s "
+                    "(evidence file %s owned by %s)",
+                    seg.segment_id, owner_id, ev_file, owner_id,
+                )
+
+    if added_count > 0:
+        logger.info(
+            "[segmentation] v3.1 Inferred %d missing dependencies from evidence_files",
+            added_count,
+        )
 
 
 # =============================================================================

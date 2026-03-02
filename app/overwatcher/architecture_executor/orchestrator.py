@@ -42,6 +42,7 @@ async def run_architecture_execution(
     interface_contract: str = "",
     skip_boot_check: bool = False,
     manifest_all_files: Optional[Set[str]] = None,
+    scaffold_result: Any = None,
 ) -> Dict[str, Any]:
     """Supervise architecture-level spec execution.
 
@@ -69,6 +70,7 @@ async def run_architecture_execution(
         skip_boot_check=skip_boot_check,
         manifest_all_files=manifest_all_files,
         llm_call_fn=llm_call_fn,
+        scaffold_result=scaffold_result,
     )
 
     ctx.add_trace("ARCHITECTURE_EXECUTION_START", "started", {
@@ -207,6 +209,8 @@ async def run_architecture_execution(
         "trace": ctx.trace,
         "artifacts_written": ctx.artifacts_written,
         "summary": summary,
+        "impl_provider": ctx.impl_provider,
+        "impl_model": ctx.impl_model,
     }
 
 

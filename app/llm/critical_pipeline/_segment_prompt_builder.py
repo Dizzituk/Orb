@@ -124,6 +124,15 @@ def build_segment_injection(
             len(_si_sibling_ifaces),
         )
 
+    # v1.0: Upstream architecture evidence (for deps that are approved but not complete)
+    _si_upstream_arch = segment_context.get("upstream_architecture_evidence", "")
+    if _si_upstream_arch:
+        _si_parts.append(_si_upstream_arch)
+        logger.info(
+            "[segment_prompt] v1.0 Injected %d chars of upstream architecture evidence",
+            len(_si_upstream_arch),
+        )
+
     # Source file evidence
     _si_source_files = segment_context.get("source_file_evidence", {})
     if _si_source_files:
@@ -178,6 +187,15 @@ def build_segment_injection(
     if _si_evidence:
         _build_upstream_evidence_section(_si_parts, _si_evidence)
 
+        # v4.3: Evidence Ledger — decisions, constraints, facts from earlier stages
+    _si_ledger = segment_context.get("ledger_evidence", "")
+    if _si_ledger:
+        _si_parts.append(_si_ledger)
+        logger.info(
+            "[segment_prompt] Injected %d chars of evidence ledger",
+            len(_si_ledger),
+        )
+
     # Cohesion regen feedback
     _si_cohesion = segment_context.get("cohesion_issues", "")
     if _si_cohesion:
@@ -206,6 +224,13 @@ def build_segment_injection(
         _si_parts.append("DO NOT repeat the design patterns that caused these failures.\n")
 
     # Complete sibling export map (v5.36)
+    # v2.0: Codebase pattern reference for CREATE-only segments.
+    # When a segment has no existing source files, find an existing sibling
+    # component to use as a pattern reference (e.g. InvestmentsView for
+    # EducationView).  This gives the architecture LLM real codebase
+    # patterns: icon usage, API fetch style, loading states, CSS classes.
+    _inject_codebase_pattern_reference(_si_parts, segment_context)
+
     _build_sibling_export_map(_si_parts, segment_context, job_id)
 
     return "\n".join(_si_parts)
@@ -436,4 +461,170 @@ def _build_sibling_export_map(
         logger.warning(
             "[segment_prompt] v5.36 Sibling export map failed (non-fatal): %s",
             _sib_err,
+        )
+
+
+# =========================================================================
+# v2.0: CODEBASE PATTERN REFERENCE
+# =========================================================================
+
+# Mapping of parent directory patterns to known sibling reference files.
+# Key = parent dir pattern (lowercase), Value = list of candidate reference
+# paths to try (first found wins).  Paths are relative to project roots.
+_SIBLING_REFERENCE_MAP = {
+    # Frontend view components — reference an existing view
+    "components/": [
+        "src/components/investments/InvestmentsView.tsx",
+        "src/components/finance/FinanceView.tsx",
+        "src/components/content/ContentView.tsx",
+        "src/components/lifestyle/LifestyleView.tsx",
+    ],
+    # Frontend types — reference existing type definitions
+    "types/": [
+        "src/types/index.ts",
+    ],
+    # Backend routers — reference an existing router
+    "routers/": [
+        "app/content/router.py",
+        "app/astra_memory/router.py",
+        "app/introspection/router.py",
+    ],
+    # Backend models — reference an existing model
+    "models/": [
+        "app/content/project_models.py",
+        "app/investments/models.py",
+        "app/finance/models.py",
+    ],
+    # Backend app modules (app/education/, app/foo/) — reference existing module
+    "app/": [
+        "app/content/router.py",
+        "app/investments/models.py",
+    ],
+}
+
+_PROJECT_ROOTS = ["D:\\Orb", "D:\\orb-desktop"]
+_MAX_REFERENCE_CHARS = 8000  # Cap per file to avoid bloating the prompt
+
+
+def _inject_codebase_pattern_reference(
+    parts: List[str],
+    segment_context: dict,
+) -> None:
+    """v2.0: Inject an existing sibling component as a pattern reference.
+
+    Only triggers when ALL files in the segment are CREATE targets (no
+    existing source evidence).  Finds the best matching existing file
+    from the codebase and injects it as a read-only pattern reference
+    so the architecture LLM can match existing codebase conventions.
+    """
+    file_scope = segment_context.get("file_scope", [])
+    if not file_scope:
+        return
+
+    # Check if THIS segment owns any existing source files (not just
+    # whether the global source_evidence dict is non-empty).
+    source_evidence = segment_context.get("source_file_evidence", {})
+    norm_scope = {f.replace("\\", "/").lower() for f in file_scope}
+    has_own_sources = any(
+        k.replace("\\", "/").lower() in norm_scope
+        for k in source_evidence
+    )
+    if has_own_sources:
+        # Segment owns existing source files — no need for pattern reference
+        return
+
+    # Determine what kind of files we're creating
+    # Normalise to forward slashes for matching
+    norm_files = [f.replace("\\", "/").lower() for f in file_scope]
+
+    # Find best matching sibling reference
+    reference_path = None
+    for pattern, candidates in _SIBLING_REFERENCE_MAP.items():
+        if any(pattern in f for f in norm_files):
+            for candidate in candidates:
+                for root in _PROJECT_ROOTS:
+                    abs_path = os.path.join(
+                        root, candidate.replace("/", os.sep)
+                    )
+                    if os.path.isfile(abs_path):
+                        reference_path = abs_path
+                        break
+                if reference_path:
+                    break
+        if reference_path:
+            break
+
+    if not reference_path:
+        return
+
+    try:
+        # v2.1 (Job 9): Check pattern cache before filesystem read
+        content = None
+        _cache_hit = False
+        try:
+            from app.pot_spec.pattern_cache import get_pattern_cache
+            _pcache = get_pattern_cache()
+            _cached = _pcache.get(reference_path)
+            if _cached:
+                content = _cached.content
+                _cache_hit = True
+                logger.info(
+                    "[segment_prompt] v2.1 Pattern cache HIT: %s (hits=%d)",
+                    reference_path, _cached.hit_count,
+                )
+        except Exception:
+            pass
+
+        if content is None:
+            with open(reference_path, "r", encoding="utf-8", errors="replace") as fh:
+                content = fh.read(_MAX_REFERENCE_CHARS)
+
+            # v2.1: Cache the result for next time
+            if len(content) >= 50:
+                try:
+                    _pcache = get_pattern_cache()
+                    _pext = os.path.splitext(reference_path)[1]
+                    _ptype = "component" if _pext in (".tsx", ".ts") else "module"
+                    _pcache.put(reference_path, content, pattern_type=_ptype)
+                except Exception:
+                    pass
+
+        if len(content) < 50:
+            return
+
+        rel_path = reference_path
+        for root in _PROJECT_ROOTS:
+            if reference_path.startswith(root):
+                rel_path = reference_path[len(root) + 1:].replace(os.sep, "/")
+                break
+
+        _cache_tag = " [cached]" if _cache_hit else ""
+        parts.append("### 📚 Codebase Pattern Reference (v2.1)\n")
+        parts.append(
+            "The following existing file serves the same role as what you are "
+            "building. Use it as a **pattern reference** for: import style, "
+            "component structure, API fetch patterns, icon usage, CSS class "
+            "naming, loading/error state handling, and export conventions.\n"
+        )
+        parts.append(
+            "**DO NOT copy this file.** Use it to understand the conventions, "
+            "then build your new components following the same patterns.\n"
+        )
+
+        truncated = ""
+        if len(content) >= _MAX_REFERENCE_CHARS:
+            truncated = f"  [truncated at {_MAX_REFERENCE_CHARS} chars]"
+
+        ext = os.path.splitext(reference_path)[1]
+        lang = "typescript" if ext in (".tsx", ".ts") else "python"
+        parts.append(f"**`{rel_path}`** ({len(content):,} chars){truncated}{_cache_tag}")
+        parts.append(f"```{lang}\n{content}\n```\n")
+
+        logger.info(
+            "[segment_prompt] v2.1 Codebase pattern reference: %s (%d chars%s)",
+            rel_path, len(content), _cache_tag,
+        )
+    except Exception as e:
+        logger.warning(
+            "[segment_prompt] v2.1 Pattern reference failed (non-fatal): %s", e
         )

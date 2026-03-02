@@ -4,14 +4,29 @@ import os
 from typing import Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
-_SANDBOX_CLIENT_AVAILABLE = True
-call_fs_tree = None
+# v3.2-fix: Import centralised sandbox filesystem helpers.
+try:
+    from app.sandbox_fs import (
+        sandbox_exists as _sf_exists,
+        sandbox_isfile as _sf_isfile,
+        sandbox_isdir as _sf_isdir,
+        sandbox_read_text as _sf_read_text,
+        sandbox_listdir as _sf_listdir,
+    )
+    _SANDBOX_FS_AVAILABLE = True
+except ImportError:
+    _SANDBOX_FS_AVAILABLE = False
+    logger.error("[evidence_gathering] v3.2 CRITICAL: app.sandbox_fs not available")
 _CONFIG_AVAILABLE = True
 FILESYSTEM_QUERY_ALLOWED_ROOTS = []
 FILESYSTEM_QUERY_BLOCKED_PATHS = []
 
 
-EVIDENCE_GATHERING_BUILD_ID = "2026-02-12-v2.2-index-json-path-fallback"
+EVIDENCE_GATHERING_BUILD_ID = "2026-02-28-v2.3-index-json-cache-init"
+
+# Module-level cache for INDEX.json lookups (used by _resolve_via_index_json)
+_INDEX_JSON_CACHE = None   # {basename_lower: [abs_path, ...]}
+_INDEX_JSON_MTIME = 0.0
 
 EVIDENCE_ALLOWED_ROOTS = FILESYSTEM_QUERY_ALLOWED_ROOTS if _CONFIG_AVAILABLE else [
     "D:\\",
@@ -35,23 +50,23 @@ def sandbox_list_directory(path: str) -> Tuple[bool, List[Dict]]:
         (success: bool, files: List[Dict])
         Each file dict contains 'path', 'name', 'size', 'is_dir'
     """
-    if not _SANDBOX_CLIENT_AVAILABLE or not call_fs_tree:
-        logger.warning("[evidence_gathering] v1.26 sandbox_list_directory: sandbox client not available")
+    if not _SANDBOX_FS_AVAILABLE:
+        logger.error("[evidence_gathering] v3.2 sandbox_list_directory: sandbox_fs not available")
         return False, []
     
     try:
         logger.info("[evidence_gathering] v1.26 sandbox_list_directory: listing %s", path)
         
-        status, data, error = call_fs_tree([path], max_files=100)
-        
-        if status != 200 or not data:
-            logger.warning(
-                "[evidence_gathering] v1.26 sandbox_list_directory: failed for %s (status=%s, error=%s)",
-                path, status, error
+        entries = _sf_listdir(path)
+
+        if not entries:
+            logger.info(
+                "[evidence_gathering] v3.2 sandbox_list_directory: empty or unreachable for %s",
+                path,
             )
             return False, []
-        
-        files = data.get("files", [])
+
+        files = entries
         
         result = []
         for f in files:
@@ -99,7 +114,7 @@ def read_interface_signatures(
     and TypeScript/React (.ts, .tsx, .js, .jsx).
     
     Args:
-        path: Absolute file path on the host filesystem
+        path: Absolute file path (read via sandbox)
         max_chars: Maximum characters to read for signature extraction
     
     Returns:
@@ -111,10 +126,17 @@ def read_interface_signatures(
     import re as _re
     
     try:
-        with open(path, 'r', encoding='utf-8', errors='replace') as f:
-            content = f.read(max_chars)
-    except OSError as e:
-        logger.warning("[evidence_gathering] v2.2 read_interface_signatures: cannot read %s: %s", path, e)
+        if _SANDBOX_FS_AVAILABLE:
+            content = _sf_read_text(path)
+            if content is None:
+                logger.warning("[evidence_gathering] v3.2 read_interface_signatures: cannot read %s via sandbox", path)
+                return False, [], None
+            content = content[:max_chars]
+        else:
+            logger.error("[evidence_gathering] v3.2 read_interface_signatures: sandbox_fs not available for %s", path)
+            return False, [], None
+    except Exception as e:
+        logger.warning("[evidence_gathering] v3.2 read_interface_signatures: cannot read %s: %s", path, e)
         return False, [], None
     
     excerpt = content[:500]

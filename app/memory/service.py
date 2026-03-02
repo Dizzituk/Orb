@@ -420,6 +420,7 @@ def create_message(db: Session, data: schemas.MessageCreate) -> models.Message:
         provider=data.provider,  # v0.12.4: Was missing
         model=data.model,  # v0.12.4: Was missing
         reasoning=data.reasoning,  # v0.12.4: New field
+        session_id=data.session_id,  # v10.0: ConversationSession link
     )
     db.add(msg)
     db.commit()

@@ -259,6 +259,14 @@ async def run_revision_loop(
     env_context: Optional[Dict[str, Any]] = None,
     segment_contract_markdown: Optional[str] = None,  # v5.4 Phase 2B
     enrichment_markdown: Optional[str] = None,  # v5.18: AST-extracted symbols
+    # v3.0: Deterministic verdict parameters
+    segment_id: Optional[str] = None,
+    segment_spec: Optional[Dict[str, Any]] = None,
+    skeleton_contract: Optional[Dict[str, Any]] = None,
+    skeleton_file_scope: Optional[List[str]] = None,
+    enrichment_data: Optional[Dict[str, Any]] = None,
+    manifest_dict: Optional[Dict[str, Any]] = None,
+    needle_estimate: Optional[int] = None,
     # Callback to store revised architecture
     store_architecture_fn=None,
 ) -> Tuple[str, int, bool, CritiqueResult]:

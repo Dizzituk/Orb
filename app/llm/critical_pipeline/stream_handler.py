@@ -67,9 +67,9 @@ from app.llm.critical_pipeline.prompt_builder import (
     extract_spec_constraints,
     build_architecture_system_prompt,
 )
-from app.llm.critical_pipeline._stream_handler_utils_1 import _build_segment_critique_spec, _format_enrichment_for_critique, _handle_micro, _handle_scan
-from app.llm.critical_pipeline._stream_handler_utils_2 import _done, _save_to_memory, _token, generate_critical_pipeline_stream
-from app.llm.critical_pipeline._stream_handler_utils import _sse
+from app.llm.critical_pipeline._stream_handler_utils import _build_segment_critique_spec, _format_enrichment_for_critique, _handle_micro, _handle_scan
+from app.llm.critical_pipeline._stream_handler_utils_1 import _done, _save_to_memory, _token, generate_critical_pipeline_stream
+from app.llm.critical_pipeline._stream_handler_utils_2 import _sse
 from app.llm.critical_pipeline._segment_prompt_builder import build_segment_injection
 
 logger = logging.getLogger(__name__)
@@ -144,17 +144,19 @@ async def _handle_architecture(
     # --- Evidence ---
     yield _emit("\ud83d\udcda **Gathering evidence...**\n")
 
-    refactor = is_refactor_job(spec_data, message)
-    if refactor:
-        logger.info("[critical_pipeline] Codebase report: INJECTED (refactor job)")
-    else:
-        logger.info("[critical_pipeline] Codebase report: SKIPPED (non-refactor job)")
+    # v3.2: Codebase report DISABLED for architecture stage.
+    # The arch map + segment-scoped evidence + evidence ledger files
+    # provide all the context needed. The codebase report is a bulk
+    # dump that adds ~5.5K tokens of noise per segment and is often
+    # stale. Overwatcher has full project visibility if cross-segment
+    # issues need catching.
+    logger.info("[critical_pipeline] Codebase report: DISABLED (v3.2 - arch map + segment evidence sufficient)")
 
     cp_evidence = gather_critical_pipeline_evidence(
         spec_data=spec_data, message=message,
-        include_arch_map=True, include_codebase_report=refactor,
+        include_arch_map=True, include_codebase_report=False,
         include_file_evidence=True,
-        arch_map_max_lines=800, codebase_max_lines=500,
+        arch_map_max_lines=800,
     )
 
     evidence_status = []
@@ -198,10 +200,11 @@ async def _handle_architecture(
     _memory_injection = ""
     try:
         from app.experience.retrieval import retrieve_for_stage, format_injection
+        _is_refactor = is_refactor_job(spec_data, message)
         _mem_patterns = retrieve_for_stage(
             db, stage="critical_pipeline",
             context=f"Generating architecture for: {original_request[:200]}",
-            job_type="refactor" if refactor else None,
+            job_type="refactor" if _is_refactor else None,
             max_results=8,
         )
         if _mem_patterns:
@@ -237,7 +240,117 @@ async def _handle_architecture(
     if segment_context:
         _segment_contract_for_critique = segment_context.get("interface_contract", "")
 
+    # =====================================================================
+    # v1.0 (Job 4): Architecture Template Engine — pre-fill deterministic sections
+    # =====================================================================
+    _arch_template = ""
+    if segment_context:
+        try:
+            from app.orchestrator.arch_template.engine import (
+                generate_architecture_template,
+                build_llm_instruction_prefix,
+            )
+            # Load skeleton contracts
+            _tmpl_skeleton = None
+            _tmpl_all_skeletons = None
+            _tmpl_seg_id = segment_context.get("segment_id", "")
+            _tmpl_parent_job = job_id.split("__")[0] if "__" in job_id else job_id
+            try:
+                _skel_path = os.path.join(
+                    os.getenv("ORB_JOB_ARTIFACT_ROOT", "jobs"),
+                    "jobs", _tmpl_parent_job, "segments", "skeleton_contract.json",
+                )
+                if os.path.exists(_skel_path):
+                    with open(_skel_path, "r", encoding="utf-8") as _sf:
+                        _skel_full = json.load(_sf)
+                    _tmpl_all_skeletons = _skel_full.get("skeletons", [])
+                    for _sk in _tmpl_all_skeletons:
+                        if _sk.get("segment_id") == _tmpl_seg_id:
+                            _tmpl_skeleton = _sk
+                            break
+            except Exception as _sk_err:
+                logger.debug("[arch_template] Skeleton load: %s", _sk_err)
+
+            if _tmpl_skeleton:
+                # Build evidence context from file evidence
+                _tmpl_evidence = {}
+                if cp_evidence and cp_evidence.multi_target_files:
+                    for _tf in cp_evidence.multi_target_files:
+                        if hasattr(_tf, 'path') and hasattr(_tf, 'content'):
+                            _tmpl_evidence[_tf.path] = _tf.content
+                        elif isinstance(_tf, dict):
+                            _tmpl_evidence[_tf.get('path', '')] = _tf.get('content', '')
+
+                # Build design tokens — prefer cached registry, fallback to evidence CSS
+                _tmpl_tokens = None
+                try:
+                    from app.orchestrator.arch_template.token_cache import get_or_build_registry
+                    _tmpl_job_dir = os.path.join(
+                        os.getenv("ORB_JOB_ARTIFACT_ROOT", "jobs"),
+                        "jobs", _tmpl_parent_job,
+                    )
+                    _tmpl_tokens = get_or_build_registry(
+                        job_dir=_tmpl_job_dir,
+                        frontend_base=os.getenv("ORB_FRONTEND_ROOT", r"D:\orb-desktop"),
+                    )
+                except Exception:
+                    # Fallback: extract from evidence CSS
+                    try:
+                        from app.orchestrator.arch_template.token_registry import (
+                            build_token_registry_from_content,
+                        )
+                        _css_evidence = {
+                            k: v for k, v in _tmpl_evidence.items()
+                            if k.endswith(".css")
+                        }
+                        if _css_evidence:
+                            _tmpl_tokens = build_token_registry_from_content(_css_evidence)
+                    except Exception:
+                        pass
+
+                # Build segment spec dict
+                # Try multiple sources for grounding_data
+                _tmpl_grounding = segment_context.get("_grounding_data", {})
+                if not _tmpl_grounding:
+                    _tmpl_ss = segment_context.get("segment_spec", {})
+                    _tmpl_grounding = _tmpl_ss.get("grounding_data", {}) if isinstance(_tmpl_ss, dict) else {}
+                # Use skeleton dependencies (segment_context.dependencies is often empty)
+                _tmpl_deps = _tmpl_skeleton.get("dependencies", [])
+                if not _tmpl_deps:
+                    _tmpl_deps = segment_context.get("dependencies", [])
+                _tmpl_seg_spec = {
+                    "segment_id": _tmpl_seg_id,
+                    "file_scope": segment_context.get("file_scope", []),
+                    "requirements": segment_context.get("requirements", []),
+                    "dependencies": _tmpl_deps,
+                    "grounding_data": _tmpl_grounding,
+                }
+
+                template = generate_architecture_template(
+                    segment_spec=_tmpl_seg_spec,
+                    skeleton=_tmpl_skeleton,
+                    all_skeletons=_tmpl_all_skeletons,
+                    spec_id=spec_id,
+                    spec_hash=spec_hash,
+                    design_tokens=_tmpl_tokens,
+                    evidence_context=_tmpl_evidence,
+                    requirements=segment_context.get("requirements"),
+                )
+                _arch_template = build_llm_instruction_prefix(template)
+                yield _emit(
+                    f"\U0001f9e9 **Architecture template:** "
+                    f"{len(template)} chars pre-filled from skeleton contracts\n"
+                )
+                logger.info(
+                    "[arch_template] Template generated: %d chars for %s",
+                    len(template), _tmpl_seg_id,
+                )
+        except Exception as _tmpl_err:
+            logger.warning("[arch_template] Template generation failed (non-fatal): %s", _tmpl_err)
+
     _user_content = f"Generate architecture for:\n\n{original_request}\n\n"
+    if _arch_template:
+        _user_content += f"{_arch_template}\n\n---\n\n"
     if _segment_injection:
         _user_content += f"---\n\n{_segment_injection}\n---\n\n"
     _user_content += f"Spec:\n{json.dumps(spec_data, indent=2)}"
@@ -328,6 +441,62 @@ async def _handle_architecture(
         critique_mode="deep", artifact_bindings=len(artifact_bindings),
     )
 
+    # v3.0: Extract deterministic verdict data from segment_context
+    _det_segment_id = segment_context.get("segment_id") if segment_context else None
+    _det_segment_spec = segment_context.get("segment_spec") if segment_context else None
+    _det_skeleton_file_scope = segment_context.get("file_scope") if segment_context else None
+    _det_enrichment_data = None
+    _det_skeleton_contract = None
+    _det_manifest_dict = None
+    _det_needle_estimate = None
+    if segment_context:
+        # Extract needle from grounding data
+        _gd = segment_context.get("_grounding_data")
+        if _gd and isinstance(_gd, dict):
+            _ne = _gd.get("needle_estimate")
+            if isinstance(_ne, dict):
+                _det_needle_estimate = _ne.get("needle_estimate")
+            elif isinstance(_ne, int):
+                _det_needle_estimate = _ne
+        # Try to load skeleton contract and manifest from job dir
+        try:
+            _seg_spec = segment_context.get("segment_spec", {})
+            _parent_spec_id = _seg_spec.get("parent_spec_id", "") if isinstance(_seg_spec, dict) else ""
+            if _parent_spec_id and job_id:
+                import os as _os
+                _jobs_base = _os.path.join("jobs", "jobs")
+                # Try parent job dir (for skeleton + manifest)
+                for _candidate in [_parent_spec_id, job_id]:
+                    _seg_dir = _os.path.join(_jobs_base, _candidate, "segments")
+                    _skel_path = _os.path.join(_seg_dir, "skeleton_contract.json")
+                    _man_path = _os.path.join(_seg_dir, "manifest.json")
+                    if _os.path.isfile(_skel_path) and not _det_skeleton_contract:
+                        import json as _json
+                        with open(_skel_path, "r", encoding="utf-8") as _f:
+                            _det_skeleton_contract = _json.load(_f)
+                    if _os.path.isfile(_man_path) and not _det_manifest_dict:
+                        import json as _json
+                        with open(_man_path, "r", encoding="utf-8") as _f:
+                            _det_manifest_dict = _json.load(_f)
+        except Exception as _skel_err:
+            logger.debug("[critical_pipeline] v3.0 Could not load skeleton/manifest: %s", _skel_err)
+        # Enrichment data — try to load all segment enrichments
+        if _det_manifest_dict:
+            try:
+                import os as _os, json as _json
+                _det_enrichment_data = {}
+                _jobs_base = _os.path.join("jobs", "jobs")
+                for _seg_entry in _det_manifest_dict.get("segments", []):
+                    _sid = _seg_entry.get("segment_id", "")
+                    for _candidate in [_parent_spec_id, job_id]:
+                        _enr_path = _os.path.join(_jobs_base, _candidate, "segments", _sid, "enrichment.json")
+                        if _os.path.isfile(_enr_path):
+                            with open(_enr_path, "r", encoding="utf-8") as _f:
+                                _det_enrichment_data[_sid] = _json.load(_f)
+                            break
+            except Exception as _enr_err:
+                logger.debug("[critical_pipeline] v3.0 Could not load enrichment: %s", _enr_err)
+
     try:
         result = await run_high_stakes_with_critique(
             task=task,
@@ -345,6 +514,14 @@ async def _handle_architecture(
             segment_contract_markdown=_segment_contract_for_critique or None,
             segment_file_scope=segment_context.get("file_scope") if segment_context else None,
             enrichment_markdown=_format_enrichment_for_critique(segment_context.get("enrichment")) if segment_context and segment_context.get("enrichment") else None,
+            # v3.0: Deterministic verdict parameters
+            segment_id=_det_segment_id,
+            segment_spec=_det_segment_spec,
+            skeleton_contract=_det_skeleton_contract,
+            skeleton_file_scope_det=_det_skeleton_file_scope,
+            enrichment_data=_det_enrichment_data,
+            manifest_dict=_det_manifest_dict,
+            needle_estimate=_det_needle_estimate,
         )
     except Exception as e:
         logger.exception("[critical_pipeline] Pipeline failed: %s", e)
@@ -393,11 +570,12 @@ async def _handle_architecture(
         pass
 
     yield _emit("\u2705 **Pipeline Complete**\n\n")
+    _crit_status = "\u2705 PASSED" if critique_passed else f"\u26a0\ufe0f {blocking_issues} blocking issues"
     yield _emit(
         f"**Architecture ID:** `{arch_id}`\n"
         f"**Final Version:** v{final_version}\n"
         f"**Critique Mode:** deep (blocker filtering enabled)\n"
-        f'**Critique Status:** {"\u2705 PASSED" if critique_passed else f"\u26a0\ufe0f {blocking_issues} blocking issues"}\n'
+        f'**Critique Status:** {_crit_status}\n'
         f"**Provider:** {result.provider}\n"
         f"**Model:** {result.model}\n"
         f"**Tokens:** {result.total_tokens:,}\n"

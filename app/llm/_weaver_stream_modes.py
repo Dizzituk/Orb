@@ -85,10 +85,23 @@ def _build_update_prompt(
     new_ramble = _format_ramble(new_user_messages)
     previous_output = checkpoint["last_output"] if checkpoint else ""
 
+    # v1.1 (Job 8): Pre-classify new content
+    preclassified_block = ""
+    try:
+        from app.llm.weaver_rules_engine import classify_conversation
+        from app.llm.weaver_rules_inject import format_preclassified_block
+        _classified = classify_conversation(new_ramble)
+        preclassified_block = format_preclassified_block(_classified)
+        if preclassified_block:
+            preclassified_block = f"\n\n{preclassified_block}\n"
+    except Exception:
+        pass
+
     user_prompt = (
         f"Previous job description:\n\n{previous_output}\n\n"
         f"New requirements from user (extract and add EVERY feature):\n\n"
-        f"{new_ramble}\n{prefs_context}{exec_context}\n\n"
+        f"{new_ramble}\n{prefs_context}{exec_context}"
+        f"{preclassified_block}\n\n"
         f"Output the complete updated job description with all new features added:"
     )
     start_msg = (
@@ -104,9 +117,22 @@ def _build_create_prompt(
     prefs_context: str,
     exec_context: str,
 ) -> Tuple[str, str, str]:
+    # v1.1 (Job 8): Pre-classify conversation content
+    preclassified_block = ""
+    try:
+        from app.llm.weaver_rules_engine import classify_conversation
+        from app.llm.weaver_rules_inject import format_preclassified_block
+        _classified = classify_conversation(ramble_text)
+        preclassified_block = format_preclassified_block(_classified)
+        if preclassified_block:
+            preclassified_block = f"\n\n{preclassified_block}\n"
+    except Exception:
+        pass
+
     user_prompt = (
         f"Organize this conversation into a job description:\n\n"
-        f"{ramble_text}{prefs_context}{exec_context}\n\n"
+        f"{ramble_text}{prefs_context}{exec_context}"
+        f"{preclassified_block}\n\n"
         f"Remember:\n"
         f"- Include ALL requirements the user stated (don't drop anything)\n"
         f"- Preserve any ambiguities (list them, don't resolve them)\n"
@@ -114,7 +140,8 @@ def _build_create_prompt(
         f"- Code-answerable gaps go in \"SpecGate must resolve\" (NOT questions for user)\n"
         f"- Only put genuinely subjective/preference questions in \"Questions for user\"\n"
         f"- When in doubt, it's a SpecGate directive, not a user question\n"
-        f"- Preserve the user's domain terminology"
+        f"- Preserve the user's domain terminology\n"
+        f"- If pre-classified items are provided above, use them as your starting point"
     )
     start_msg = (
         f"**Organizing your thoughts...**\n\n"

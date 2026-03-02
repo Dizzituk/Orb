@@ -130,6 +130,9 @@ def get_capability_context() -> str:
     lines.append(f"### Sandbox: {'✅ ALLOWED' if sandbox.get('allowed', True) else '❌ FORBIDDEN'}")
     if sandbox.get('allowed', True):
         lines.append(f"   - Controller: {caps.get('infrastructure', {}).get('sandbox_controller', {}).get('url', 'http://192.168.250.2:8765')}")
+        lines.append("   - Platform: Windows (NOT Linux — do not use Linux commands like find, ls, cat)")
+        lines.append("   - Backend repo:  D:\\Orb (Python/FastAPI)")
+        lines.append("   - Frontend repo: D:\\orb-desktop (React/TypeScript/Vite)")
         lines.append("   - You CAN: read files, write files, execute code, explore directories")
         lines.append("   - User space (Desktop, working dirs): ✅ ALLOWED")
         lines.append("   - System zone (OS files, registry): ❌ FORBIDDEN")

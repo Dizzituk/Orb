@@ -23,6 +23,10 @@ from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
+# v4.3: Spec gate uses HOST filesystem, not sandbox.
+_SBX_FS_OK = False
+
 
 # =========================================================================
 # AST-based signature extraction
@@ -242,7 +246,7 @@ def summarise_file_signatures(path: str) -> Optional[str]:
     if not sigs:
         return None
 
-    size = os.path.getsize(path) if os.path.isfile(path) else 0
+    size = os.path.getsize(path) if (_sbx_isfile(path) if _SBX_FS_OK else os.path.isfile(path)) else 0
     header = f"{path} [{size} bytes] — {len(sigs)} signatures"
     body = "\n".join(f"  {s}" for s in sigs[:30])
     return f"{header}\n{body}"

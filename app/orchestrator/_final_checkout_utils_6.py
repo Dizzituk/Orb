@@ -10,6 +10,18 @@ from app.orchestrator._final_checkout_utils_5 import _check_cross_phase_with_fix
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+# v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
+try:
+    from app.sandbox_fs import (
+        sandbox_isfile as _sbx_isfile,
+        sandbox_isdir as _sbx_isdir,
+        sandbox_exists as _sbx_exists,
+        sandbox_read_text as _sbx_read_text,
+    )
+    _SBX_FS_OK = True
+except ImportError:
+    _SBX_FS_OK = False
+
 
 @dataclass
 class SpecCoverageResult:
@@ -330,19 +342,39 @@ async def run_final_checkout(
 
     return result
 
+
+# v3.4-fix: Frontend path prefixes that resolve to D:\orb-desktop
+_FE_PREFIX = "orb-desktop/"
+_FE_ROOT = r"D:\orb-desktop"
+_FE_BARE = ("src/", "src\\", "public/", "public\\")
+
+
 def _file_exists_on_sandbox(
     client: Any,
     rel_path: str,
     sandbox_base: str,
 ) -> bool:
-    """Check if a file exists on the sandbox."""
+    """Check if a file exists on the sandbox.
+
+    v3.4-fix: Frontend path resolution - bare src/ or orb-desktop/src/
+    paths resolve to D:\\orb-desktop, not D:\\Orb\\src (which does not exist).
+    Matches the same logic used by _write_file_to_sandbox in utils_5.
+    """
     if client:
         try:
             normed = rel_path.replace("/", "\\")
-            if not (normed.startswith("C:") or normed.startswith("D:")):
-                abs_path = f"{sandbox_base}\\{normed}"
-            else:
+            normalized_fwd = rel_path.replace("\\", "/")
+
+            if normed.startswith("C:") or normed.startswith("D:"):
                 abs_path = normed
+            elif normalized_fwd.startswith(_FE_PREFIX):
+                frontend_rel = normalized_fwd[len(_FE_PREFIX):]
+                abs_path = _FE_ROOT + "\\" + frontend_rel.replace("/", "\\")
+            elif any(normalized_fwd.startswith(bp.replace("\\", "/")) for bp in _FE_BARE):
+                abs_path = _FE_ROOT + "\\" + normed
+            else:
+                abs_path = f"{sandbox_base}\\{normed}"
+
             result = client.shell_run(
                 f'Test-Path -Path "{abs_path}" -PathType Leaf',
                 timeout_seconds=10,
@@ -351,6 +383,13 @@ def _file_exists_on_sandbox(
         except Exception:
             pass
 
-    # Fallback to host filesystem
-    abs_path = os.path.join(sandbox_base, rel_path.replace("/", os.sep))
-    return os.path.isfile(abs_path)
+    # Fallback to host filesystem - apply same frontend resolution
+    normalized_fwd = rel_path.replace("\\", "/")
+    if normalized_fwd.startswith(_FE_PREFIX):
+        frontend_rel = normalized_fwd[len(_FE_PREFIX):]
+        abs_path = os.path.join(_FE_ROOT, frontend_rel.replace("/", os.sep))
+    elif any(normalized_fwd.startswith(bp.replace("\\", "/")) for bp in _FE_BARE):
+        abs_path = os.path.join(_FE_ROOT, rel_path.replace("/", os.sep))
+    else:
+        abs_path = os.path.join(sandbox_base, rel_path.replace("/", os.sep))
+    return (_sbx_isfile(abs_path) if _SBX_FS_OK else os.path.isfile(abs_path))

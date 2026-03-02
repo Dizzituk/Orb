@@ -29,6 +29,10 @@ v1.1 (2026-02-14): Split into sub-modules for cap compliance.
 
 from __future__ import annotations
 
+# v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
+# v4.3: Spec gate uses HOST filesystem, not sandbox.
+_SBX_FS_OK = False
+
 import logging
 import os
 from collections import Counter
@@ -65,7 +69,7 @@ def _resolve_to_disk(
     normalised = rel_path.replace("/", os.sep).replace("\\", os.sep)
     for root in roots:
         abs_path = os.path.join(root, normalised)
-        if os.path.isfile(abs_path):
+        if (_sbx_isfile(abs_path) if _SBX_FS_OK else os.path.isfile(abs_path)):
             return abs_path
     return None
 

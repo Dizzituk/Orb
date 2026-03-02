@@ -92,18 +92,18 @@ logger.info(f"[evidence_gathering] Module loaded: BUILD_ID={EVIDENCE_GATHERING_B
 # SANDBOX CLIENT IMPORTS (v1.26)
 # =============================================================================
 
+# v3.2-fix: The old zobie sandbox_client import was never wired through
+# to the utility modules, so evidence gathering always fell back to host
+# os.path.  All utility modules now import directly from app.sandbox_fs.
+# This block is kept only for backward compat with any code that checks
+# _SANDBOX_CLIENT_AVAILABLE.
 try:
-    from app.llm.local_tools.zobie.sandbox_client import (
-        call_fs_tree,
-        call_fs_contents,
-    )
+    from app.sandbox_fs import sandbox_exists, sandbox_isfile, sandbox_read_text
     _SANDBOX_CLIENT_AVAILABLE = True
-    logger.info("[evidence_gathering] v1.26 Sandbox client loaded successfully")
+    logger.info("[evidence_gathering] v3.2 sandbox_fs loaded successfully")
 except ImportError as e:
     _SANDBOX_CLIENT_AVAILABLE = False
-    logger.warning("[evidence_gathering] v1.26 Sandbox client not available: %s", e)
-    call_fs_tree = None
-    call_fs_contents = None
+    logger.error("[evidence_gathering] v3.2 CRITICAL: sandbox_fs not available: %s", e)
 
 
 # =============================================================================
@@ -292,9 +292,8 @@ class EvidencePackage:
 # PATH RESOLUTION FUNCTIONS (v1.27 - MULTI-TARGET AWARE)
 # =============================================================================
 
-# v2.2: INDEX.json cache for fast lookups (loaded once, refreshed if stale)
-_INDEX_JSON_CACHE: Optional[Dict[str, List[str]]] = None  # {basename_lower: [abs_path, ...]}
-_INDEX_JSON_MTIME: float = 0.0
+# v2.2: INDEX.json cache lives in _evidence_gathering_utils_8.py
+# (where _resolve_via_index_json() uses it via `global` declaration)
 
 
 # =============================================================================
@@ -347,9 +346,39 @@ def resolve_and_validate_path(
             # Only read if it's a file (not directory)
             is_dir = file_info.get("is_dir", False)
             if not is_dir:
-                # v1.27: Read more content for multi-target reads
-                max_chars = 50000 if read_full_content else 8000
-                success, content = sandbox_read_file(resolved_path, max_chars=max_chars)
+                # v1.35 (Job 9): Check pattern cache before sandbox read
+                # Skip cache for full_content reads — cached content is
+                # truncated to 10KB which is too short for 50KB reads.
+                _ev_cached = False
+                if not read_full_content:
+                    try:
+                        from app.pot_spec.pattern_cache import get_pattern_cache
+                        _ev_cache = get_pattern_cache()
+                        _ev_hit = _ev_cache.get(resolved_path)
+                        if _ev_hit:
+                            content = _ev_hit.content
+                            success = True
+                            _ev_cached = True
+                            logger.debug(
+                                "[evidence_gathering] v1.35 Cache HIT: %s",
+                                resolved_path,
+                            )
+                    except Exception:
+                        _ev_cached = False
+
+                if not _ev_cached:
+                    # v1.27: Read more content for multi-target reads
+                    max_chars = 50000 if read_full_content else 8000
+                    success, content = sandbox_read_file(resolved_path, max_chars=max_chars)
+
+                    # v1.35: Cache the read for next time
+                    if success and content and len(content) >= 50:
+                        try:
+                            _ev_cache = get_pattern_cache()
+                            _ev_cache.put(resolved_path, content, pattern_type="evidence")
+                        except Exception:
+                            pass
+
                 if success and content:
                     evidence.readable = True
                     evidence.content_preview = content[:500] if len(content) > 500 else content

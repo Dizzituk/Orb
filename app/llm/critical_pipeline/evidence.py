@@ -398,7 +398,16 @@ def list_directory_for_critical_pipeline(path: str) -> List[Dict[str, Any]]:
         if success:
             return files
 
-    # Fallback to direct listing
+    # v3.2-fix: Fallback to sandbox_fs listdir (not host os.listdir)
+    try:
+        from app.sandbox_fs import sandbox_listdir as _sbx_ls
+        entries = _sbx_ls(path)
+        if entries:
+            return entries
+    except ImportError:
+        pass
+
+    # Last resort: host filesystem (should not normally reach here)
     try:
         result = []
         for item in os.listdir(path):

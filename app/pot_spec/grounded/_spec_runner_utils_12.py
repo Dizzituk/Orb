@@ -23,7 +23,7 @@ def _extract_project_paths(text: str, search_term: str = None, replace_term: str
     - "rename Orb to Astra in Orb Desktop" -> D:\\orb-desktop ONLY  
     - "rename Orb to Astra across the codebase" -> D:\\orb-desktop + D:\\Orb
     """
-    from .spec_runner import _discover_project_roots
+    from ._spec_runner_utils_13 import _discover_project_roots
     if not text:
         return []
     
@@ -62,6 +62,39 @@ def _extract_project_paths(text: str, search_term: str = None, replace_term: str
                 print(f"[spec_runner] v4.5 DISCOVERED PROJECT: '{alias}' -> {alias_paths}")
                 paths.extend(alias_paths)
     
+    # Step 3b: SCOPE-AWARE ROOT INJECTION (v4.6)
+    # If alias matching found some paths but the scope flags indicate
+    # frontend/backend is needed and we're missing the corresponding root,
+    # inject it from discovery.
+    #
+    # v4.6.1: Also detect frontend scope from VISUAL INTENT SIGNALS.
+    # Users describe frontend work by talking about how things LOOK
+    # (dashboard, cards, dark theme, progress bar) without literally
+    # saying "frontend". These semantic signals are just as valid.
+    if not has_frontend_scope:
+        from ._simple_create_utils_17 import _VISUAL_INTENT_SIGNALS
+        visual_matches = [s for s in _VISUAL_INTENT_SIGNALS if s in text_lower]
+        if visual_matches:
+            has_frontend_scope = True
+            print(f"[spec_runner] v4.6.1 VISUAL INTENT detected frontend scope: {visual_matches[:5]}")
+
+    if paths:
+        fe_paths = discovery["frontend_paths"] or _FALLBACK_FRONTEND_PATHS
+        be_paths = discovery["backend_paths"] or _FALLBACK_BACKEND_PATHS
+        has_fe = any(p.lower().replace('/', '\\') in {fp.lower().replace('/', '\\') for fp in fe_paths} for p in paths)
+        has_be = any(p.lower().replace('/', '\\') in {bp.lower().replace('/', '\\') for bp in be_paths} for p in paths)
+
+        if has_frontend_scope and not has_fe:
+            for fp in fe_paths:
+                if fp not in paths:
+                    print(f"[spec_runner] v4.6 SCOPE INJECTION: frontend root '{fp}' added (scope=frontend but no frontend path matched)")
+                    paths.append(fp)
+        if has_backend_scope and not has_be:
+            for bp in be_paths:
+                if bp not in paths:
+                    print(f"[spec_runner] v4.6 SCOPE INJECTION: backend root '{bp}' added (scope=backend but no backend path matched)")
+                    paths.append(bp)
+
     # Step 4: Check for explicit paths like "D:\orb-desktop" or "D:\Orb"
     # v4.3.4: Only match short, valid folder names (max 20 chars)
     # This prevents garbage like "D:\Orb Desktop front-end UI text"

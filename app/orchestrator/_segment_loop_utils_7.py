@@ -282,6 +282,7 @@ def build_segment_context(
     contract_set: Any = None,
     source_file_evidence: Optional[Dict[str, str]] = None,
     enrichment: Optional[Dict[str, Any]] = None,  # v5.17: Stage 4B enrichment data
+    ledger: Any = None,  # v4.3: Evidence ledger for prompt injection
 ) -> Dict[str, Any]:
     """
     Build the execution context for a segment.
@@ -322,6 +323,19 @@ def build_segment_context(
             # Try nested — spec_json might wrap it
             _grounding_data = parent_spec.get("grounding")
 
+    # v4.3: Format evidence ledger for this segment
+    _ledger_markdown = ""
+    if ledger is not None:
+        try:
+            from app.orchestrator.evidence_ledger import format_ledger_for_prompt
+            _ledger_markdown = format_ledger_for_prompt(
+                ledger, segment.segment_id, job_dir_path,
+                include_file_content=False,
+            )
+        except Exception as _le:
+            logger.warning("[build_segment_context] Failed to format ledger for %s: %s",
+                           segment.segment_id, _le)
+
     return {
         "segment_id": segment.segment_id,
         "segment_spec": segment.to_dict(),
@@ -338,4 +352,70 @@ def build_segment_context(
         "source_file_evidence": source_file_evidence or {},
         "enrichment": enrichment,  # v5.17: Stage 4B enrichment bundle
         "sibling_interfaces": _build_sibling_interfaces(segment, state, job_dir_path),  # v2.5: Deterministic evidence
+        "upstream_architecture_evidence": _build_upstream_arch_evidence(segment, state, job_dir_path, parent_spec),  # v1.0: Cross-segment evidence
+        "ledger_evidence": _ledger_markdown,  # v4.3: Formatted evidence ledger
+        "_ledger": ledger,  # v4.3: Raw ledger ref for decision write-back
     }
+
+
+def _build_upstream_arch_evidence(
+    segment: "SegmentSpec",
+    state: "JobState",
+    job_dir_path: str,
+    parent_spec: dict,
+) -> str:
+    """
+    v1.0 (2026-03-01): Build upstream architecture evidence for segments
+    whose dependencies are APPROVED but not yet COMPLETE.
+
+    When sibling_interfaces returns nothing (because deps haven't been
+    implemented yet), this function reads their approved architecture
+    documents and extracts function signatures, class definitions, and
+    exports. This gives the downstream architecture LLM exact symbols
+    to import instead of guessing.
+
+    Returns formatted markdown evidence text, or empty string.
+    """
+    try:
+        from app.orchestrator.upstream_evidence import build_upstream_evidence_text
+        # Only bother if sibling_interfaces would be empty
+        # (i.e. deps are approved but not complete)
+        has_incomplete_deps = False
+        for dep_id in (segment.dependencies or []):
+            dep_state = state.segments.get(dep_id)
+            if dep_state and dep_state.status in ('approved', 'in_progress'):
+                has_incomplete_deps = True
+                break
+
+        if not has_incomplete_deps:
+            return ""
+
+        # Get the manifest from parent_spec or from disk
+        manifest = None
+        try:
+            from app.orchestrator.segment_state import load_state
+            manifest_path = os.path.join(job_dir_path, "segments", "manifest.json")
+            if os.path.isfile(manifest_path):
+                import json
+                from app.pot_spec.grounded.segment_schemas import SegmentManifest
+                with open(manifest_path, 'r', encoding='utf-8') as f:
+                    manifest = SegmentManifest.from_dict(json.load(f))
+        except Exception as e:
+            logger.debug("[upstream_arch_evidence] Cannot load manifest: %s", e)
+            return ""
+
+        if manifest is None:
+            return ""
+
+        return build_upstream_evidence_text(
+            segment_id=segment.segment_id,
+            state=state,
+            job_dir_path=job_dir_path,
+            manifest=manifest,
+        )
+    except ImportError:
+        logger.debug("[upstream_arch_evidence] upstream_evidence module not available")
+        return ""
+    except Exception as e:
+        logger.debug("[upstream_arch_evidence] Failed: %s", e)
+        return ""

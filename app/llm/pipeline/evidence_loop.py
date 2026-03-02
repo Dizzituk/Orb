@@ -232,6 +232,18 @@ async def run_stage_with_evidence(
             evidence_results[req_id] = call_results
             fulfilled_ids.add(req_id)
 
+
+        # v4.3: Diminishing returns - if all ERs dispatched but none returned content, stop
+        _any_content = any(
+            any(r.get("content") or r.get("auto_read") for r in evidence_results.get(req.get("id", ""), []))
+            for req in requests
+        )
+        if requests and not _any_content:
+            logger.info(
+                "[evidence_loop] %s loop %d: 0/%d ERs produced content - stopping",
+                stage_name, loop_idx + 1, len(requests),
+            )
+            break
         # Strip fulfilled requests -> RESOLVED_REQUEST stubs
         result.output = strip_fulfilled_requests(result.output, fulfilled_ids)
 

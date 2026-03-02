@@ -7,6 +7,10 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 
+# v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
+# v4.3: Spec gate uses HOST filesystem, not sandbox.
+_SBX_FS_OK = False
+
 
 @dataclass
 class IntegrationPoint:
@@ -31,7 +35,7 @@ class CreateEvidence:
 
 def _detect_tech_stack(project_path: str, sandbox_client: Any = None) -> TechStack:
     """Detect the technology stack of a project."""
-    from .simple_create import TechStack
+    from ._simple_create_utils_17 import TechStack
     stack = TechStack()
     
     # Check for common config files
@@ -51,7 +55,7 @@ def _detect_tech_stack(project_path: str, sandbox_client: Any = None) -> TechSta
     for filename, detection in indicators.items():
         check_path = os.path.join(project_path, filename)
         try:
-            if os.path.exists(check_path):
+            if (_sbx_exists(check_path) if _SBX_FS_OK else os.path.exists(check_path)):
                 setattr(stack, detection[0], detection[1])
         except Exception:
             pass
@@ -59,7 +63,7 @@ def _detect_tech_stack(project_path: str, sandbox_client: Any = None) -> TechSta
     # Check package.json for React/Vue/state management
     try:
         pkg_path = os.path.join(project_path, "package.json")
-        if os.path.exists(pkg_path):
+        if (_sbx_exists(pkg_path) if _SBX_FS_OK else os.path.exists(pkg_path)):
             import json
             with open(pkg_path, 'r', encoding='utf-8') as f:
                 pkg = json.load(f)
@@ -82,7 +86,7 @@ def _detect_tech_stack(project_path: str, sandbox_client: Any = None) -> TechSta
     # Uses _read_text_any_encoding to handle UTF-16 requirements.txt (common on Windows)
     try:
         req_path = os.path.join(project_path, "requirements.txt")
-        if os.path.exists(req_path):
+        if (_sbx_exists(req_path) if _SBX_FS_OK else os.path.exists(req_path)):
             reqs = _read_text_any_encoding(req_path).lower()
             if reqs:  # Only proceed if we actually read content
                 if "fastapi" in reqs:
@@ -101,7 +105,7 @@ def _detect_tech_stack(project_path: str, sandbox_client: Any = None) -> TechSta
     if not stack.backend_framework and stack.backend_language == "Python":
         try:
             main_path = os.path.join(project_path, "main.py")
-            if os.path.exists(main_path):
+            if (_sbx_exists(main_path) if _SBX_FS_OK else os.path.exists(main_path)):
                 with open(main_path, 'r', encoding='utf-8') as f:
                     main_content = f.read(2000)  # First 2KB is enough
                 if 'fastapi' in main_content.lower() or 'FastAPI' in main_content:

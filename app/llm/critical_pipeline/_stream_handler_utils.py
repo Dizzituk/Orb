@@ -136,26 +136,28 @@ def _build_segment_critique_spec(
             parts.append(str(consumes))
         parts.append("")
 
-    # Parent spec as REFERENCE (not authoritative for this segment)
+    # v4.3: Replaced full parent spec dump with goal + constraints only.
+    # Full parent spec contains other segments' details causing scope drift.
     if parent_spec_markdown:
-        parts.append("## Parent Job Spec (REFERENCE ONLY)")
-        parts.append(
-            "The following is the parent job spec for context. "
-            "Constraints in the parent spec (e.g. 'no new files', "
-            "'refactor single file') apply to the OVERALL job, not "
-            "to this individual segment. This segment may legitimately "
-            "create new files, import from sibling-created modules, or "
-            "perform operations that appear to violate parent-level "
-            "constraints but are correct at the segment level."
-        )
-        parts.append("")
-        # Include truncated parent spec for context
-        _parent_truncated = parent_spec_markdown[:4000]
-        if len(parent_spec_markdown) > 4000:
-            _parent_truncated += f"\n... (truncated from {len(parent_spec_markdown):,} chars)"
-        parts.append(_parent_truncated)
-        parts.append("")
-
+        _goal_line = ""
+        _constraints = []
+        for _pline in parent_spec_markdown.split("\n"):
+            _pstripped = _pline.strip()
+            if _pstripped.startswith("## Goal") or _pstripped.startswith("# SPoT Spec"):
+                continue
+            if not _goal_line and _pstripped and not _pstripped.startswith("#"):
+                _goal_line = _pstripped
+            if chr(9940) in _pstripped:
+                _constraints.append(_pstripped)
+        if _goal_line or _constraints:
+            parts.append("## Parent Job Context (goal + constraints only)")
+            if _goal_line:
+                parts.append(f"**Goal**: {_goal_line}")
+            if _constraints:
+                parts.append("**Global Constraints**:")
+                for _c in _constraints[:10]:
+                    parts.append(_c)
+            parts.append("")
     return "\n".join(parts)
 
 def _format_enrichment_for_critique(enrichment: dict) -> str:
