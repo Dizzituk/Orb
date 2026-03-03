@@ -316,6 +316,49 @@ def _extract_new_file_paths(arch_content: str) -> List[str]:
     return paths
 
 
+
+def _check_sandbox_file_exists(candidates: List[str]) -> bool:
+    """
+    Check if any candidate path exists in the SANDBOX (not host).
+
+    v1.0 (2026-03-03): Fix 6 — the host filesystem retains files from
+    previous pipeline runs. The sandbox is reset between jobs and
+    represents the true state of the project.
+
+    Falls back to host os.path.isfile() if the sandbox bridge is
+    unreachable (e.g. sandbox not running).
+    """
+    import requests
+
+    bridge_url = "http://192.168.250.2:8765"
+    for path in candidates:
+        try:
+            resp = requests.post(
+                f"{bridge_url}/shell/run",
+                json={
+                    "cmd": ["powershell", "-NoProfile", "-Command",
+                            f"Test-Path '{path}' -PathType Leaf"],
+                    "timeout_sec": 5,
+                },
+                timeout=8,
+            )
+            data = resp.json()
+            stdout = (data.get("stdout") or "").strip()
+            if stdout == "True":
+                logger.info(
+                    "[det_critique] File exists in SANDBOX: %s", path,
+                )
+                return True
+        except Exception as e:
+            # Sandbox unreachable — fall back to host check
+            logger.warning(
+                "[det_critique] Sandbox check failed for %s: %s, "
+                "falling back to host", path, e,
+            )
+            if os.path.isfile(path):
+                return True
+    return False
+
 def check_create_modify_classification(
     arch_content: str,
     segment_spec: Optional[Dict[str, Any]] = None,
@@ -368,7 +411,9 @@ def check_create_modify_classification(
 
         exists_in_index = any(v in fs_index for v in lookup_variants)
 
-        # Direct filesystem check as fallback
+        # Direct filesystem check as fallback — check SANDBOX, not host
+        # v1.2 (2026-03-03): Fix 6 — host has stale files from previous
+        # runs; sandbox is the ground truth for what exists.
         exists_on_disk = False
         if not exists_in_index:
             raw = claimed_new.replace("/", os.sep)
@@ -376,12 +421,11 @@ def check_create_modify_classification(
                 os.path.join(frontend_root, raw),
                 os.path.join(backend_root, raw),
             ]
-            # Also try stripping orb-desktop/ prefix
             if raw.startswith("orb-desktop" + os.sep):
                 stripped = raw[len("orb-desktop" + os.sep):]
                 candidates.append(os.path.join(frontend_root, stripped))
 
-            exists_on_disk = any(os.path.isfile(c) for c in candidates)
+            exists_on_disk = _check_sandbox_file_exists(candidates)
 
         if exists_in_index or exists_on_disk:
             issues.append({

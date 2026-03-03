@@ -4,12 +4,12 @@ import os
 import re
 from app.pot_spec.grounded._spec_runner_utils_13 import _discover_project_roots, _extract_acceptance_from_spec
 from typing import List
+from app.pot_spec.grounded._sbx_fs import _sbx_isfile, _sbx_isdir
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 
 # v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
 # v4.3: Spec gate uses HOST filesystem, not sandbox.
-_SBX_FS_OK = False
 
 
 def _reconcile_ac_names_against_source(
@@ -57,7 +57,7 @@ def _reconcile_ac_names_against_source(
         abs_paths_to_try.append(rel_path)
 
         for abs_path in abs_paths_to_try:
-            if not (_sbx_isfile(abs_path) if _SBX_FS_OK else os.path.isfile(abs_path)):
+            if not _sbx_isfile(abs_path):
                 continue
             try:
                 with open(abs_path, 'r', encoding='utf-8', errors='replace') as f:

@@ -409,7 +409,17 @@ def _check_prop_compatibility(
                 for file_path, file_info in all_exports.get(producer_id, {}).items():
                     if component in file_info.get("exports", []):
                         # Found the producer — check its props interface
-                        for props_name, props_body in file_info.get("props", {}).items():
+                        # v2.0 FIX: Only match the Props interface that belongs
+                        # to the EXPORTED component, not internal sub-components.
+                        # e.g. CourseGrid -> CourseGridProps, not CourseCardProps
+                        # Fallback: if no exact match exists, check all (old behaviour).
+                        _expected_props_name = f"{component}Props"
+                        _all_props = file_info.get("props", {})
+                        _has_exact_match = _expected_props_name in _all_props
+                        for props_name, props_body in _all_props.items():
+                            # If we have an exact match, skip non-matching internal Props
+                            if _has_exact_match and props_name != _expected_props_name:
+                                continue
                             declared_props = set(
                                 re.findall(r"(\w+)\s*[?:]", props_body)
                             )

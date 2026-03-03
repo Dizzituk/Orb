@@ -30,7 +30,6 @@ from __future__ import annotations
 
 # v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
 # v4.3: Spec gate uses HOST filesystem, not sandbox.
-_SBX_FS_OK = False
 
 import logging
 import os
@@ -39,6 +38,7 @@ import stat
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from app.pot_spec.grounded._sbx_fs import _sbx_exists
 from .segment_schemas import (
     CreateTarget,
     GroundingData,
@@ -85,7 +85,7 @@ def check_file_exists(path: str) -> Optional[VerifiedFile]:
     Cost: essentially free (os.stat).
     """
     try:
-        if not (_sbx_exists(path) if _SBX_FS_OK else os.path.exists(path)):
+        if not _sbx_exists(path):
             return None
 
         st = os.stat(path)

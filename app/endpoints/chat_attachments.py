@@ -292,7 +292,22 @@ def chat_with_attachments(
                 print(f"[chat_attachments] Mapped to vision tier: {tier}")
         except Exception as e:
             print(f"[chat_attachments] Classifier failed, using default tier: {e}")
+            classification = None
             tier = "fast"
+
+        # v9.0: VIDEO_CODE_TOOLS — single model with video + tool access
+        if classification and classification.job_type == JobType.VIDEO_CODE_TOOLS:
+            print(f"[chat_attachments] VIDEO_CODE_TOOLS detected — routing to video+tools pipeline")
+            from app.endpoints._video_code_tools import route_video_code_tools
+            return route_video_code_tools(
+                video_attachments=video_attachments,
+                user_message=user_message,
+                project_id=project_id,
+                project=project,
+                attachments_summary=attachments_summary,
+                db=db,
+                model=selected_model,
+            )
         
         override_model_name = override_model_id if frontier_override_active and tier == "override" else None
         

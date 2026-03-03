@@ -73,7 +73,13 @@ Prefer single-responsibility modules with one primary function per file. Thin \
 orchestrators that call focused sub-modules are always preferred over monolithic files.
 
 RULES:
-- Every file in the input MUST appear in exactly one segment.
+- NOT every file needs a segment. If a file requires NO CODE CHANGES for \
+this feature (e.g. it already handles the new case through existing generic \
+routing, or it is only listed for context/discovery), EXCLUDE it from all \
+segments entirely. Context-only files waste architecture generation tokens \
+and risk introducing regressions by rewriting working code verbatim. \
+Only include files that need actual modifications or creation.
+- Every file that DOES need changes MUST appear in exactly one segment.
 - Segment count should match the target_segments parameter (±1 is acceptable).
 - Each segment needs a short descriptive title (e.g., "Voice Transcription", \
 "Route Optimisation", "Core Data Models").

@@ -226,18 +226,19 @@ def should_confirm_model_escalation(
         return None
 
     # Build the proposed action description
+    # v2.3: Deep tier now defaults to Gemini 3.1 Pro customtools
     tier_model_names = {
-        "deep": "Claude Opus 4.6",
+        "deep": "Gemini 3.1 Pro (customtools)",
         "reasoning": "GPT-5.2",
         "multimodal": "Gemini 3.1 Pro",
     }
     tier_providers = {
-        "deep": "anthropic",
+        "deep": "google",
         "reasoning": "openai",
         "multimodal": "google",
     }
     tier_model_ids = {
-        "deep": "claude-opus-4-6",
+        "deep": "gemini-3.1-pro-preview-customtools",
         "reasoning": "gpt-5.2",
         "multimodal": "gemini-3.1-pro-preview",
     }

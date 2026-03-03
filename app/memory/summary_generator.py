@@ -5,7 +5,7 @@ Generates and updates conversation summaries using a cheap/fast LLM.
 Strategy:
   1. Load existing summary (if any) + unsummarised messages.
   2. Build a structured prompt asking the model to merge/update.
-  3. Call the configured SUMMARY_MODEL (default: gemini-2.0-flash-lite).
+  3. Call the configured SUMMARY_MODEL (default: gemini-2.5-flash-lite).
   4. Parse the JSON response into SummaryContent schema.
   5. Persist as a new ConversationSummary version.
 
@@ -41,10 +41,10 @@ def _get_summary_model() -> tuple[str, str]:
 
     Reads from env vars with cheap defaults:
       SUMMARY_PROVIDER = google
-      SUMMARY_MODEL    = gemini-2.0-flash-lite
+      SUMMARY_MODEL    = gemini-2.5-flash-lite
     """
     provider = os.getenv("SUMMARY_PROVIDER", "google")
-    model = os.getenv("SUMMARY_MODEL", "gemini-2.0-flash-lite")
+    model = os.getenv("SUMMARY_MODEL", "gemini-2.5-flash-lite")
     return provider, model
 
 

@@ -3,6 +3,7 @@ import os
 import time
 from .construction_planner_models import ConstructionPlan
 from .phase_checkout_checks import run_boot_test_with_fix_loop
+from .electron_boot_check import run_electron_boot_check, ElectronBootResult
 from .strike_tracker import StrikeRecord, StrikeTracker
 from app.orchestrator._final_checkout_utils_2 import _build_minimal_state_from_plan
 from app.orchestrator._final_checkout_utils_3 import _build_plan_from_manifest, _run_boot_with_strike_tracking, _save_result
@@ -11,16 +12,12 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 # v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
-try:
-    from app.sandbox_fs import (
-        sandbox_isfile as _sbx_isfile,
-        sandbox_isdir as _sbx_isdir,
-        sandbox_exists as _sbx_exists,
-        sandbox_read_text as _sbx_read_text,
-    )
-    _SBX_FS_OK = True
-except ImportError:
-    _SBX_FS_OK = False
+from app.sandbox_fs import (
+    sandbox_isfile as _sbx_isfile,
+    sandbox_isdir as _sbx_isdir,
+    sandbox_exists as _sbx_exists,
+    sandbox_read_text as _sbx_read_text,
+)
 
 
 @dataclass
@@ -294,6 +291,33 @@ async def run_final_checkout(
         _emit("\n[CHECK 5] Final boot confirmation -- SKIPPED (boot already failed)")
 
     # ---------------------------------------------------------------
+    # CHECK 5b: Real Electron Boot (v1.0 — full runtime validation)
+    # ---------------------------------------------------------------
+    electron_boot_result = None
+    if result.boot_test_status == "pass" and sandbox_client:
+        _emit("\n[CHECK 5b] Full Electron boot (runtime validation)...")
+        try:
+            electron_boot_result = run_electron_boot_check(
+                client=sandbox_client,
+                emit=_emit,
+            )
+            result.checks_run.append("electron_boot")
+            if not electron_boot_result.success:
+                _emit(f"  ⚠️  Vite compiled OK but Electron boot found issues:")
+                _emit(f"      {electron_boot_result.error_summary[:200]}")
+                if electron_boot_result.errors:
+                    result.boot_test_status = "warning"
+            else:
+                _emit(f"  ✅ Full Electron boot confirmed clean ({electron_boot_result.boot_time_ms}ms)")
+        except Exception as _ebc_err:
+            logger.warning("[final_checkout] Electron boot check failed: %s", _ebc_err)
+            _emit(f"  [SKIPPED] Electron boot check failed: {_ebc_err}")
+    elif result.boot_test_status != "pass":
+        _emit("\n[CHECK 5b] Electron boot -- SKIPPED (vite build already failed)")
+    elif not sandbox_client:
+        _emit("\n[CHECK 5b] Electron boot -- SKIPPED (no sandbox connection)")
+
+    # ---------------------------------------------------------------
     # AGGREGATE
     # ---------------------------------------------------------------
     all_ok = (
@@ -392,4 +416,4 @@ def _file_exists_on_sandbox(
         abs_path = os.path.join(_FE_ROOT, rel_path.replace("/", os.sep))
     else:
         abs_path = os.path.join(sandbox_base, rel_path.replace("/", os.sep))
-    return (_sbx_isfile(abs_path) if _SBX_FS_OK else os.path.isfile(abs_path))
+    return _sbx_isfile(abs_path)

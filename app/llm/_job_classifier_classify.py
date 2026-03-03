@@ -25,7 +25,9 @@ ROUTER_DEBUG = os.getenv("ORB_ROUTER_DEBUG", "0") == "1"
 def _debug_log(msg: str):
     """Print debug message if ROUTER_DEBUG is enabled."""
     if ROUTER_DEBUG:
-        print(f"[router-debug] {msg}")
+        # Replace unicode arrows that break cp1252 console encoding
+        safe_msg = msg.replace("\u2192", "->").replace("\u2190", "<-")
+        print(f"[router-debug] {safe_msg}")
 
 
 def _make_decision(
@@ -113,6 +115,52 @@ def _has_architecture_keywords(message_lower: str) -> bool:
 def _has_heavy_text_keywords(message_lower: str) -> bool:
     """Check for heavy text work keywords."""
     return any(kw in message_lower for kw in RoutingConfig.TEXT_HEAVY_KEYWORDS)
+
+
+def _has_codebase_intent(message_lower: str) -> bool:
+    """Check if message expresses intent to explore/analyse the codebase.
+
+    v9.0: Used to detect compound intent (video + codebase) so the classifier
+    routes to a model with both multimodal input AND tool access, rather than
+    the vision-only pipeline.
+
+    Matches phrases like:
+    - "go through the code base"
+    - "look at the code"
+    - "check the implementation"
+    - "debug this in the codebase"
+    """
+    # Phrase-level patterns (high confidence)
+    codebase_phrases = [
+        "code base", "codebase", "code-base",
+        "go through the code", "look at the code", "check the code",
+        "look through the code", "search the code", "find in the code",
+        "look at the implementation", "check the implementation",
+        "read the file", "read the source", "look at the file",
+        "go into the code", "check the file", "search the file",
+        "explore the code", "navigate the code",
+        "ground this in", "ground it in",
+        "what's in the code", "what is in the code",
+        "find the relevant", "look at the relevant",
+        "check the backend", "check the frontend",
+        "look at the backend", "look at the frontend",
+        "go through the project", "look at the project",
+        "check the source", "examine the code",
+        "check what we have", "what we already have",
+        "what's already in place", "already in place",
+        "come up with a plan",  # planning intent combined with video = code work
+    ]
+    # Two or more of these single-word signals in the same message
+    code_signal_words = [
+        "debug", "implement", "refactor", "fix", "pipeline",
+        "component", "module", "router", "endpoint", "schema",
+        "frontend", "backend", "api",
+    ]
+    if any(phrase in message_lower for phrase in codebase_phrases):
+        return True
+    # Require 2+ signal words to avoid false positives on casual mentions
+    signal_count = sum(1 for w in code_signal_words if w in message_lower)
+    return signal_count >= 2
 
 
 def _classify_pdf(
@@ -250,10 +298,10 @@ def classify_job(
         if modality_flags.get('file_map'):
             _debug_log(f"  file_map generated: {len(modality_flags['file_map'])} chars")
 
-    # 4. VIDEO+CODE DEBUG PIPELINE
+    # 4. VIDEO+CODE DEBUG PIPELINE (code file attachments)
     if modality_flags["has_video"] and modality_flags["has_code"]:
         if ROUTER_DEBUG:
-            _debug_log(f"  → VIDEO+CODE detected")
+            _debug_log(f"  → VIDEO+CODE detected (file attachments)")
             _debug_log(f"  → Returning VIDEO_CODE_DEBUG")
         return _make_decision(
             JobType.VIDEO_CODE_DEBUG,
@@ -261,7 +309,24 @@ def classify_job(
             file_map=modality_flags.get('file_map'),
         )
 
-    # 5. VIDEO ATTACHMENTS → GEMINI 3 PRO
+    # 4.5 VIDEO + CODEBASE INTENT (v9.0)
+    # If the message mentions codebase/code exploration alongside a video,
+    # route to Gemini 3.1 Pro customtools — one model, video in, tools out.
+    # This must come BEFORE the video short-circuit in Section 5.
+    if modality_flags["has_video"] and _has_codebase_intent(message_lower):
+        video_count = modality_flags["video_count"]
+        total_video_size = sum(a.size_bytes for a in modality_flags["video_attachments"])
+        if ROUTER_DEBUG:
+            _debug_log(f"Section 4.5: VIDEO + CODEBASE INTENT")
+            _debug_log(f"  -> {video_count} video(s) + codebase intent in message")
+            _debug_log(f"  -> Returning VIDEO_CODE_TOOLS (Gemini 3.1 Pro customtools)")
+        return _make_decision(
+            JobType.VIDEO_CODE_TOOLS,
+            f"Video+Codebase intent: {video_count} video(s), {total_video_size / 1024 / 1024:.1f}MB + code intent -> Gemini 3.1 Pro customtools",
+            file_map=modality_flags.get('file_map'),
+        )
+
+    # 5. VIDEO ATTACHMENTS → GEMINI 3 PRO (pure vision, no code intent)
     video_attachments = modality_flags["video_attachments"]
     image_attachments = modality_flags["image_attachments"]
 

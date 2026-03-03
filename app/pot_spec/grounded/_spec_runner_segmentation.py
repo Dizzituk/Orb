@@ -14,6 +14,7 @@ import os
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.pot_spec.grounded._sbx_fs import _sbx_isfile, _sbx_isdir
 from app.pot_spec.grounded._spec_runner_utils_11 import (
     _extract_requirements_from_spec,
     _get_job_dir_for_segmentation,
@@ -30,7 +31,6 @@ from app.pot_spec.grounded._spec_runner_deterministic_refactor import (
 
 # v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
 # v4.3: Spec gate uses HOST filesystem, not sandbox.
-_SBX_FS_OK = False
 
 logger = logging.getLogger(__name__)
 
@@ -417,7 +417,7 @@ def _exclude_external_consumers(
     for _fp3 in _norm_scope:
         if _fp3 not in _products:
             _abs = os.path.join("D:\\Orb", _fp3.replace("/", os.sep))
-            if (_sbx_isfile(_abs) if _SBX_FS_OK else os.path.isfile(_abs)):
+            if _sbx_isfile(_abs):
                 _deferred.append(_fp3)
 
     if _deferred:

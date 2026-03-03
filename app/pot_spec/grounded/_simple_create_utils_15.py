@@ -6,6 +6,7 @@ from app.pot_spec.grounded._simple_create_utils_12 import _extract_acceptance_fr
 from app.pot_spec.grounded._simple_create_utils_13 import ARCHITECTURAL_FILE_PATTERNS, _score_integration_point
 from app.pot_spec.grounded._simple_create_utils_14 import CONCEPT_DIRECTORY_PATTERNS, _EVIDENCE_MAX_FILE_CHARS, _sanitize_goal
 from typing import Any, Dict, List, Optional, Tuple
+from app.pot_spec.grounded._sbx_fs import _sbx_isfile, _sbx_isdir, _sbx_exists
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 
@@ -13,7 +14,6 @@ logger = logging.getLogger(__name__)
 # v4.3: Spec gate evidence reads from HOST filesystem, not sandbox.
 # The sandbox controller is only available during execution (Windows Sandbox).
 # Using it here causes "file not found" for files that exist on disk.
-_SBX_FS_OK = False
 
 
 def _read_text_any_encoding(file_path: str) -> str:
@@ -210,11 +210,11 @@ def _host_read_file(file_path: str, max_chars: int = 0, project_paths: Optional[
     file_path = file_path.replace('/', os.sep).replace('\\', os.sep)
 
     # v4.1: Resolve relative paths against project roots
-    if not (_sbx_exists(file_path) if _SBX_FS_OK else os.path.exists(file_path)) and project_paths:
+    if not _sbx_exists(file_path) and project_paths:
         for root in project_paths:
             candidate = os.path.join(root, file_path)
             candidate = candidate.replace('/', os.sep).replace('\\', os.sep)
-            if (_sbx_exists(candidate) if _SBX_FS_OK else os.path.exists(candidate)):
+            if _sbx_exists(candidate):
                 logger.info("[SPEC_GATE_EVIDENCE] Resolved relative path: %s → %s", file_path, candidate)
                 file_path = candidate
                 break
@@ -222,13 +222,13 @@ def _host_read_file(file_path: str, max_chars: int = 0, project_paths: Optional[
     # v4.2: TypeScript barrel export fallback.
     # If 'foo.ts' not found, try 'foo/index.ts' and 'foo/index.tsx'.
     # Common TS pattern: `import { X } from './types'` resolves to types/index.ts
-    if not (_sbx_exists(file_path) if _SBX_FS_OK else os.path.exists(file_path)):
+    if not _sbx_exists(file_path):
         _tried_barrel = False
         if file_path.endswith(('.ts', '.tsx')):
             _stem = file_path.rsplit('.', 1)[0]
             for _barrel_ext in ('/index.ts', '/index.tsx'):
                 _barrel = _stem + _barrel_ext
-                if (_sbx_exists(_barrel) if _SBX_FS_OK else os.path.exists(_barrel)):
+                if _sbx_exists(_barrel):
                     logger.info(
                         "[SPEC_GATE_EVIDENCE] v4.2 Barrel fallback: %s → %s",
                         file_path, _barrel,
@@ -240,7 +240,7 @@ def _host_read_file(file_path: str, max_chars: int = 0, project_paths: Optional[
             logger.info("[SPEC_GATE_EVIDENCE] File not found: %s", file_path)
             return False, f"File not found: {file_path}"
 
-    if not (_sbx_isfile(file_path) if _SBX_FS_OK else os.path.isfile(file_path)):
+    if not _sbx_isfile(file_path):
         logger.info("[SPEC_GATE_EVIDENCE] Not a file: %s", file_path)
         return False, f"Path is not a file: {file_path}"
 

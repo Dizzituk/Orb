@@ -61,7 +61,21 @@ def build_segment_injection(
         "and produce code for the files listed below. "
         "Files marked CREATE do not exist on disk yet — do NOT emit "
         "EVIDENCE_REQUEST to read them. All source code you need is provided "
-        "in the Source File Evidence and Segment Enrichment sections below.\n"
+        "in the Source File Evidence and Segment Enrichment sections below.\n\n"
+        "**NO-CHANGES ESCAPE HATCH**: If after reviewing the source evidence "
+        "you determine that ALL files in this segment ALREADY support the "
+        "feature without any code changes (e.g. existing generic routing "
+        "already handles the new case), you MUST output ONLY the following "
+        "instead of a full architecture document:\n\n"
+        "```\n"
+        "SPEC_ID: <spec_id>\n"
+        "SPEC_HASH: <spec_hash>\n\n"
+        "## NO_CHANGES_NEEDED\n\n"
+        "Reason: <one-line explanation of why no changes are required>\n"
+        "```\n\n"
+        "Do NOT reproduce files verbatim with zero changes. That wastes "
+        "tokens and risks regressions. If the existing code already works, "
+        "say so and move on.\n"
     )
 
     # --- File scope with CREATE/MODIFY/READ-ONLY markers ---

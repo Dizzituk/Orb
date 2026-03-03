@@ -6,8 +6,9 @@ When a lower-tier model determines the query exceeds its
 capability, it returns an escalation signal. This module
 processes that signal and re-routes to the next tier up.
 
-Escalation chain:
-    local → local_rag → sonnet → opus
+Escalation chain (automatic):
+    local → local_rag → sonnet → gemini_deep
+    opus = manual only (via UI model switcher)
     specialist stays at specialist (no escalation)
 
 The escalation is always preferred over a bad answer.
@@ -45,19 +46,32 @@ logger = logging.getLogger(__name__)
 # Escalation chain
 # =========================================================================
 
+# v2.0: Escalation chain updated.
+# "gemini_deep" is now the automatic ceiling — Gemini 3.1 Pro customtools
+# handles codebase scanning, structural queries, and tool-driven exploration
+# at ~50% the cost of Opus.
+# "opus" is still in the map but NOT in the chain — only reachable via
+# manual UI model switcher when the user decides Gemini isn't cutting it.
 ESCALATION_CHAIN = {
     "local": "local_rag",
     "local_rag": "sonnet",
-    "sonnet": "opus",
-    "opus": None,           # Top of chain — no further escalation
+    "sonnet": "gemini_deep",
+    "gemini_deep": None,    # Top of automatic chain
+    "opus": None,           # Manual escalation only (via UI model switcher)
     "specialist": None,     # Specialist stays specialist
 }
 
 # Map model targets to provider/model combos
+# v2.0: Added gemini_deep tier, reads from env for easy model swaps
+import os as _os
 MODEL_TARGET_MAP = {
     "local": {"provider": "local", "model": "ollama"},
     "local_rag": {"provider": "local", "model": "ollama", "rag": True},
     "sonnet": {"provider": "anthropic", "model": "sonnet"},
+    "gemini_deep": {
+        "provider": _os.getenv("CHAT_DEEP_PROVIDER", "google"),
+        "model": _os.getenv("CHAT_DEEP_MODEL", "gemini-3.1-pro-preview-customtools"),
+    },
     "opus": {"provider": "anthropic", "model": "opus"},
     "specialist": {"provider": "google", "model": "gemini-pro"},
 }

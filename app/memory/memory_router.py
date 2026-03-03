@@ -226,6 +226,10 @@ class MemoryRouter:
             if not keywords:
                 return []
 
+            # v2.1: Cap keywords to prevent SQLite expression tree overflow
+            if len(keywords) > 20:
+                keywords = keywords[:20]
+
             conditions = []
             for kw in keywords:
                 if len(kw) < 2:

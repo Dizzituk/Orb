@@ -9,16 +9,12 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 # v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
-try:
-    from app.sandbox_fs import (
-        sandbox_isfile as _sbx_isfile,
-        sandbox_isdir as _sbx_isdir,
-        sandbox_exists as _sbx_exists,
-        sandbox_read_text as _sbx_read_text,
-    )
-    _SBX_FS_OK = True
-except ImportError:
-    _SBX_FS_OK = False
+from app.sandbox_fs import (
+    sandbox_isfile as _sbx_isfile,
+    sandbox_isdir as _sbx_isdir,
+    sandbox_exists as _sbx_exists,
+    sandbox_read_text as _sbx_read_text,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -67,9 +63,9 @@ def check_output_file_sizes(
                 content = _read_file_via_sandbox(client, rel_path, sandbox_base)
             if content is None:
                 abs_path = _resolve_output_path(rel_path, sandbox_base)
-                if abs_path and (_sbx_isfile(abs_path) if _SBX_FS_OK else os.path.isfile(abs_path)):
+                if abs_path and _sbx_isfile(abs_path):
                     try:
-                        _sbx_content = _sbx_read_text(abs_path) if _SBX_FS_OK else None
+                        _sbx_content = _sbx_read_text(abs_path)
 
                         if _sbx_content is not None:
                             content = _sbx_content
@@ -165,7 +161,7 @@ def check_skeleton_contracts(
                 exists = _file_exists_in_sandbox(client, export.file_path, sandbox_base)
             else:
                 abs_path = _resolve_output_path(export.file_path, sandbox_base)
-                exists = abs_path and (_sbx_isfile(abs_path) if _SBX_FS_OK else os.path.isfile(abs_path))
+                exists = abs_path and _sbx_isfile(abs_path)
 
             if not exists:
                 violations.append(ContractViolation(

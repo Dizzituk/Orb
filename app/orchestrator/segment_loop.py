@@ -180,6 +180,23 @@ async def run_segment_through_pipeline(
 
     arch_text = arch_result["arch_text"]
 
+    # --- Step 0.9: NO_CHANGES_NEEDED detection (v7.1) ---
+    # If the Critical Pipeline determined no code changes are needed for
+    # this segment, skip all downstream steps (sanitise, implement, etc.).
+    # This prevents verbatim file reproduction that wastes tokens and
+    # risks regressions.
+    if "## NO_CHANGES_NEEDED" in arch_text:
+        _nc_reason = "unknown"
+        for _nc_line in arch_text.split("\n"):
+            if _nc_line.strip().startswith("Reason:"):
+                _nc_reason = _nc_line.strip()[7:].strip()
+                break
+        emit(f"  ⏭️ {seg_id}: NO CHANGES NEEDED — {_nc_reason}")
+        logger.info("[SEGMENT_LOOP] %s: NO_CHANGES_NEEDED — %s", seg_id, _nc_reason)
+        result["success"] = True
+        result["no_changes_needed"] = True
+        return result
+
     # --- Step 1: Sanitise ---
     file_scope = segment_context.get("file_scope", segment.file_scope)
     arch_text = sanitise_architecture(arch_text, seg_id, file_scope, emit)
@@ -324,6 +341,62 @@ async def run_segmented_job(
     # --- Phase 3: Process segments ---
     compute_execution_order(ctx)
     await process_segments(ctx)
+
+    # --- Phase 3B: Post-implementation validation (Fix 5) ---
+    # Syntax checks + CSS class cohesion — deterministic, no LLM cost
+    try:
+        from app.orchestrator.post_impl_validation import (
+            run_post_implementation_validation,
+        )
+        _piv_result = run_post_implementation_validation(
+            job_dir=ctx.job_dir_path,
+            frontend_dir=r"D:\orb-desktop",
+            on_progress=ctx.emit,
+        )
+        if not _piv_result.get("passed"):
+            _piv_summary = _piv_result.get("summary", {})
+            ctx.emit(
+                f"\n⚠️ Post-implementation validation found issues: "
+                f"{_piv_summary.get('blocking', 0)} blocking, "
+                f"{_piv_summary.get('css_mismatches', 0)} CSS mismatch(es)"
+            )
+            # Store issues in context for potential re-generation feedback
+            ctx._post_impl_issues = _piv_result.get("issues", [])
+        else:
+            ctx._post_impl_issues = []
+    except Exception as _piv_err:
+        logger.warning("[SEGMENT_LOOP] Post-impl validation failed: %s", _piv_err)
+        ctx.emit(f"  ⚠️ Post-impl validation skipped: {_piv_err}")
+        ctx._post_impl_issues = []
+
+    # --- Phase 3C: CSS cohesion fix loop (Fix 5b) ---
+    # If Phase 3B found CSS mismatches, re-generate CSS with class inventory
+    css_mismatches = [
+        i for i in getattr(ctx, "_post_impl_issues", [])
+        if i.get("check") == "css_class_cohesion"
+    ]
+    if css_mismatches:
+        try:
+            from app.orchestrator.post_impl_css_fixer import run_css_fix_loop
+            _css_fix = run_css_fix_loop(
+                job_dir=ctx.job_dir_path,
+                frontend_root=r"D:\orb-desktop",
+                emit=ctx.emit,
+                max_attempts=2,
+            )
+            if _css_fix.get("passed"):
+                ctx.emit("  ✅ CSS cohesion fix loop: PASSED")
+            else:
+                remaining = _css_fix.get("remaining_mismatches", [])
+                ctx.emit(
+                    f"  ⚠️ CSS cohesion fix loop: {len(remaining)} "
+                    f"mismatch(es) remain"
+                )
+        except Exception as _css_err:
+            logger.warning("[SEGMENT_LOOP] CSS fix loop failed: %s", _css_err)
+            ctx.emit(f"  ⚠️ CSS fix loop skipped: {_css_err}")
+    elif getattr(ctx, "_post_impl_issues", None) is not None:
+        ctx.emit("  ✅ No CSS mismatches — fix loop not needed")
 
     # --- Phase 4: Post-execution reconciliation ---
     run_post_execution_reconciliation(ctx)

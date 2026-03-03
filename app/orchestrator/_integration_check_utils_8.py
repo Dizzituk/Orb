@@ -12,16 +12,12 @@ from typing import Any, Callable, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 # v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
-try:
-    from app.sandbox_fs import (
-        sandbox_isfile as _sbx_isfile,
-        sandbox_isdir as _sbx_isdir,
-        sandbox_exists as _sbx_exists,
-        sandbox_read_text as _sbx_read_text,
-    )
-    _SBX_FS_OK = True
-except ImportError:
-    _SBX_FS_OK = False
+from app.sandbox_fs import (
+    sandbox_isfile as _sbx_isfile,
+    sandbox_isdir as _sbx_isdir,
+    sandbox_exists as _sbx_exists,
+    sandbox_read_text as _sbx_read_text,
+)
 logger = logging.getLogger(__name__)
 ProgressCallback = Optional[Callable[[str], None]]
 
@@ -110,7 +106,7 @@ def _check_import_resolution(
 
     for seg_id, files in segment_outputs.items():
         for file_path in files:
-            if not (_sbx_isfile(file_path) if _SBX_FS_OK else os.path.isfile(file_path)):
+            if not _sbx_isfile(file_path):
                 continue
             ext = os.path.splitext(file_path)[1].lower()
 
@@ -208,7 +204,7 @@ def _check_file_references(
 
     for seg_id, files in segment_outputs.items():
         for file_path in files:
-            if not (_sbx_isfile(file_path) if _SBX_FS_OK else os.path.isfile(file_path)):
+            if not _sbx_isfile(file_path):
                 continue
             ext = os.path.splitext(file_path)[1].lower()
             imports = get_all_imports(file_path)
@@ -349,7 +345,7 @@ def run_integration_check(
                 for seg_id, files in segment_outputs.items():
                     extracted[seg_id] = {}
                     for f in files:
-                        if not (_sbx_isfile(f) if _SBX_FS_OK else os.path.isfile(f)):
+                        if not _sbx_isfile(f):
                             continue
                         ext = os.path.splitext(f)[1].lower()
                         if ext == ".py":

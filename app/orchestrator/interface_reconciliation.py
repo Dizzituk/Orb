@@ -39,16 +39,12 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 # v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
-try:
-    from app.sandbox_fs import (
-        sandbox_isfile as _sbx_isfile,
-        sandbox_isdir as _sbx_isdir,
-        sandbox_exists as _sbx_exists,
-        sandbox_read_text as _sbx_read_text,
-    )
-    _SBX_FS_OK = True
-except ImportError:
-    _SBX_FS_OK = False
+from app.sandbox_fs import (
+    sandbox_isfile as _sbx_isfile,
+    sandbox_isdir as _sbx_isdir,
+    sandbox_exists as _sbx_exists,
+    sandbox_read_text as _sbx_read_text,
+)
 
 INTERFACE_RECONCILIATION_BUILD_ID = "2026-02-15-v1.0-initial"
 print(f"[INTERFACE_RECONCILIATION_LOADED] BUILD_ID={INTERFACE_RECONCILIATION_BUILD_ID}")
@@ -294,9 +290,9 @@ def read_dependency_interfaces_from_sandbox(
                     pass
 
             # Fallback: read directly (via sandbox)
-            if file_content is None and (_sbx_isfile(abs_path) if _SBX_FS_OK else os.path.isfile(abs_path)):
+            if file_content is None and _sbx_isfile(abs_path):
                 try:
-                    file_content = _sbx_read_text(abs_path) if _SBX_FS_OK else None
+                    file_content = _sbx_read_text(abs_path)
                     if file_content is None:
                         with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
                             file_content = f.read()

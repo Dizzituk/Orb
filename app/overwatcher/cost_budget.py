@@ -223,40 +223,22 @@ def should_downgrade_tier(stage: str) -> bool:
     """
     Check if a stage should use a cheaper model due to budget pressure.
 
-    Non-critical stages get downgraded when daily budget is in warning zone.
-    Critical stages (spec_gate, overwatcher) are never auto-downgraded.
+    v1.1 (2026-03-02): DISABLED. Always returns False.
     """
-    CRITICAL_STAGES = {"spec_gate", "overwatcher", "architecture"}
-
-    if stage in CRITICAL_STAGES:
-        return False
-
-    daily = check_daily_budget()
-    return daily.level in (BudgetLevel.WARNING, BudgetLevel.EXCEEDED, BudgetLevel.CRITICAL)
-
+    return False
 
 def is_call_allowed(stage: str, break_glass: bool = False) -> tuple:
     """
     Check if an LLM call is allowed given current budget.
 
     Returns: (allowed: bool, reason: str)
+
+    v1.1 (2026-03-02): Budget enforcement DISABLED. Cost tracking still
+    active via cost_recorder but no calls are ever blocked. The budget
+    system was causing SpecGate and other stages to silently fall back
+    to heuristic mode when the daily limit was hit.
     """
-    if break_glass:
-        return True, "break-glass active"
-
-    daily = check_daily_budget()
-
-    if daily.level == BudgetLevel.CRITICAL:
-        return False, daily.message
-
-    if daily.level == BudgetLevel.EXCEEDED:
-        # Only block non-critical stages
-        CRITICAL_STAGES = {"spec_gate", "overwatcher"}
-        if stage not in CRITICAL_STAGES:
-            return False, f"{daily.message} — non-critical stage blocked"
-
-    return True, "within budget"
-
+    return True, "budget enforcement disabled"
 
 __all__ = [
     "BudgetLevel",

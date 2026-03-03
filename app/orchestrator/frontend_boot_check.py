@@ -42,6 +42,9 @@ class ViteError:
     file: str
     message: str
 
+    def to_dict(self) -> dict:
+        return {"file": self.file, "message": self.message}
+
 
 @dataclass
 class FrontendBootResult:
@@ -51,6 +54,14 @@ class FrontendBootResult:
     error_summary: str = ""
     raw_output: str = ""
     duration_ms: int = 0
+
+    def to_dict(self) -> dict:
+        return {
+            "status": self.status,
+            "errors": [e.to_dict() for e in self.errors],
+            "error_summary": self.error_summary,
+            "duration_ms": self.duration_ms,
+        }
 
 
 def run_frontend_boot_check(

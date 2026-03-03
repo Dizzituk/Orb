@@ -6,7 +6,6 @@ from typing import Any, Dict, List
 
 # v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
 # v4.3: Spec gate uses HOST filesystem, not sandbox.
-_SBX_FS_OK = False
 
 
 KEYWORD_STOPWORDS = {

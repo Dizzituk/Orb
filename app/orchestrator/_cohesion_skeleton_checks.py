@@ -21,16 +21,12 @@ from app.orchestrator._cohesion_check_utils_10 import CohesionIssue
 logger = logging.getLogger(__name__)
 
 # v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
-try:
-    from app.sandbox_fs import (
-        sandbox_isfile as _sbx_isfile,
-        sandbox_isdir as _sbx_isdir,
-        sandbox_exists as _sbx_exists,
-        sandbox_read_text as _sbx_read_text,
-    )
-    _SBX_FS_OK = True
-except ImportError:
-    _SBX_FS_OK = False
+from app.sandbox_fs import (
+    sandbox_isfile as _sbx_isfile,
+    sandbox_isdir as _sbx_isdir,
+    sandbox_exists as _sbx_exists,
+    sandbox_read_text as _sbx_read_text,
+)
 
 
 def check_undeclared_dependencies(
@@ -351,9 +347,9 @@ def check_phantom_symbols(
     for _ef_path in _evidence_paths:
         for _base in ["D:\\Orb", "D:/Orb"]:
             _full = os.path.join(_base, _ef_path.replace("/", os.sep))
-            if (_sbx_isfile(_full) if _SBX_FS_OK else os.path.isfile(_full)):
+            if _sbx_isfile(_full):
                 try:
-                    _src = (_sbx_read_text(_full) if _SBX_FS_OK else None)
+                    _src = _sbx_read_text(_full)
                     if _src is None:
                         with open(_full, "r", encoding="utf-8") as _f:
                             _src = _f.read()

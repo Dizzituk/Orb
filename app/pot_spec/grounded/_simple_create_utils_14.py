@@ -4,12 +4,12 @@ import os
 import re
 from app.pot_spec.grounded._simple_create_utils_13 import CONCEPT_KEYWORDS, KEYWORD_STOPWORDS, MIN_KEYWORD_LENGTH, NEGATION_PATTERNS, PLACEHOLDER_GOALS
 from typing import List, Optional, Tuple
+from app.pot_spec.grounded._sbx_fs import _sbx_isfile, _sbx_isdir, _sbx_exists
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 
 # v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
 # v4.3: Spec gate uses HOST filesystem, not sandbox.
-_SBX_FS_OK = False
 
 
 _EVIDENCE_MAX_FILE_CHARS = int(os.getenv("ASTRA_EVIDENCE_MAX_FILE_CHARS", "50000"))
@@ -141,11 +141,11 @@ def _suggest_new_files(
         path_lower = path.lower()
         if 'desktop' in path_lower or 'frontend' in path_lower or 'ui' in path_lower:
             frontend_path = path
-        elif (_sbx_exists(os.path.join(path, 'requirements.txt')) if _SBX_FS_OK else os.path.exists(os.path.join(path, 'requirements.txt'))):
+        elif _sbx_exists(os.path.join(path, 'requirements.txt')):
             backend_path = path
-        elif (_sbx_exists(os.path.join(path, 'package.json')) if _SBX_FS_OK else os.path.exists(os.path.join(path, 'package.json'))):
+        elif _sbx_exists(os.path.join(path, 'package.json')):
             frontend_path = path
-        elif (_sbx_exists(os.path.join(path, 'app')) if _SBX_FS_OK else os.path.exists(os.path.join(path, 'app'))):
+        elif _sbx_exists(os.path.join(path, 'app')):
             backend_path = path
     
     # v4.6: REMOVED all hardcoded concept-to-file mappings.
@@ -169,25 +169,25 @@ def _host_list_directory(dir_path: str, max_entries: int = 200, project_paths: O
     dir_path = dir_path.replace('/', os.sep).replace('\\', os.sep)
 
     # v4.1: Resolve relative paths against project roots
-    if not (_sbx_exists(dir_path) if _SBX_FS_OK else os.path.exists(dir_path)) and project_paths:
+    if not _sbx_exists(dir_path) and project_paths:
         for root in project_paths:
             candidate = os.path.join(root, dir_path)
             candidate = candidate.replace('/', os.sep).replace('\\', os.sep)
-            if (_sbx_exists(candidate) if _SBX_FS_OK else os.path.exists(candidate)):
+            if _sbx_exists(candidate):
                 logger.info("[SPEC_GATE_EVIDENCE] Resolved relative dir: %s \u2192 %s", dir_path, candidate)
                 dir_path = candidate
                 break
 
-    if not (_sbx_exists(dir_path) if _SBX_FS_OK else os.path.exists(dir_path)):
+    if not _sbx_exists(dir_path):
         return False, f"Directory not found: {dir_path}"
-    if not (_sbx_isdir(dir_path) if _SBX_FS_OK else os.path.isdir(dir_path)):
+    if not _sbx_isdir(dir_path):
         return False, f"Path is not a directory: {dir_path}"
 
     try:
         entries = []
         for entry in sorted(os.listdir(dir_path)):
             full = os.path.join(dir_path, entry)
-            tag = "[DIR]" if (_sbx_isdir(full) if _SBX_FS_OK else os.path.isdir(full)) else "[FILE]"
+            tag = "[DIR]" if _sbx_isdir(full) else "[FILE]"
             entries.append(f"  {tag} {entry}")
             if len(entries) >= max_entries:
                 entries.append(f"  ... ({len(os.listdir(dir_path)) - max_entries} more entries)")

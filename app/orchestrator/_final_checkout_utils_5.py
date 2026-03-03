@@ -13,16 +13,12 @@ from typing import Any, Callable, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 # v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
-try:
-    from app.sandbox_fs import (
-        sandbox_isfile as _sbx_isfile,
-        sandbox_isdir as _sbx_isdir,
-        sandbox_exists as _sbx_exists,
-        sandbox_read_text as _sbx_read_text,
-    )
-    _SBX_FS_OK = True
-except ImportError:
-    _SBX_FS_OK = False
+from app.sandbox_fs import (
+    sandbox_isfile as _sbx_isfile,
+    sandbox_isdir as _sbx_isdir,
+    sandbox_exists as _sbx_exists,
+    sandbox_read_text as _sbx_read_text,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -345,10 +341,10 @@ async def _run_ai_review_pass(
     file_contents: Dict[str, str] = {}
     for rel_path in review_files:
         abs_path = os.path.join(sandbox_base, rel_path.replace("/", os.sep))
-        if (_sbx_isfile(abs_path) if _SBX_FS_OK else os.path.isfile(abs_path)):
+        if _sbx_isfile(abs_path):
             try:
                 # v3.4-fix: Read from sandbox, not host
-                _fc_content = _sbx_read_text(abs_path) if _SBX_FS_OK else None
+                _fc_content = _sbx_read_text(abs_path)
                 if _fc_content is not None:
                     file_contents[rel_path] = _fc_content[:_MAX_REVIEW_CHARS]
                 else:

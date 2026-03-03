@@ -180,12 +180,22 @@ _CONTEXTUAL_PATTERNS = [
 # Keywords that indicate the user is asking about the codebase, not the web.
 # Single-word guards use whole-word matching; multi-word guards use substring.
 _CODEBASE_GUARD_WORDS_SINGLE = {
+    # Backend / pipeline terms
     "codebase", "pipeline", "specgate", "overwatcher", "weaver",
     "sandbox", "module", "function", "endpoint",
     "router", "handler", "fixture", "refactor",
+    # Frontend / build terms (v2.3)
+    "component", "components", "stylesheet", "jsx", "tsx",
+    "frontend", "backend", "vite", "react", "typescript",
+    # Build intent terms (v2.3)
+    "build", "create", "implement", "dummy", "tab",
+    "screenshot", "screenshots", "spacing", "styling",
 }
 _CODEBASE_GUARD_WORDS_MULTI = {
     "code base", "spec gate",
+    # Frontend / UI phrases (v2.3)
+    "front end", "front-end", "the code", "search the code",
+    "the style", "the styles",
 }
 
 
@@ -354,9 +364,20 @@ def check_web_search_trigger(text: str) -> Tier0RuleResult:
 
     Strips conversational prefixes first, then matches against
     explicit and contextual patterns.
+
+    v2.3: Added length guard — messages over 50 words are never web
+    searches. Long natural language descriptions of build tasks were
+    being misclassified because they incidentally contained words like
+    "search" and "online".
     """
     text_stripped = text.strip()
     if not text_stripped or len(text_stripped) < 5:
+        return Tier0RuleResult(matched=False)
+
+    # v2.3: Length guard — web search queries are short.
+    # A 50+ word message is a build description or conversation, not a search.
+    word_count = len(text_stripped.split())
+    if word_count > 50:
         return Tier0RuleResult(matched=False)
 
     # Strip conversational prefixes:

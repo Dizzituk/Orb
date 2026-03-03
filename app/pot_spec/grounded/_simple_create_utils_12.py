@@ -2,10 +2,10 @@ from __future__ import annotations
 import os
 import re
 from typing import List
+from app.pot_spec.grounded._sbx_fs import _sbx_isfile, _sbx_isdir
 
 # v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
 # v4.3: Spec gate uses HOST filesystem, not sandbox.
-_SBX_FS_OK = False
 
 
 SIMPLE_CREATE_BUILD_ID = "2026-02-09-v5.1-pre-resolve-mentioned-files"
@@ -31,7 +31,7 @@ def _find_file_in_projects(
     }
     found = []
     for root_path in project_paths:
-        if not (_sbx_isdir(root_path) if _SBX_FS_OK else os.path.isdir(root_path)):
+        if not _sbx_isdir(root_path):
             continue
         for dirpath, dirnames, filenames in os.walk(root_path):
             # Prune junk dirs

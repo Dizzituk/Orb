@@ -62,7 +62,7 @@ def _default_importance_for_job_type(job_type: JobType) -> Importance:
     if job_type in (getattr(JobType, "CRITIQUE_REVIEW", None),) and job_type is not None:
         return high
 
-    if job_type in (JobType.VIDEO_CODE_DEBUG, JobType.VIDEO_HEAVY):
+    if job_type in (JobType.VIDEO_CODE_DEBUG, JobType.VIDEO_HEAVY, JobType.VIDEO_CODE_TOOLS):
         return high
 
     if job_type in (JobType.CODE_MEDIUM, JobType.TEXT_HEAVY):
@@ -80,7 +80,7 @@ def _default_modalities_for_job_type(job_type: JobType) -> List[Modality]:
 
     # Add VIDEO if the enum supports it and job type implies it.
     video = getattr(Modality, "VIDEO", None)
-    if video is not None and job_type in (JobType.VIDEO_HEAVY, JobType.VIDEO_CODE_DEBUG):
+    if video is not None and job_type in (JobType.VIDEO_HEAVY, JobType.VIDEO_CODE_DEBUG, JobType.VIDEO_CODE_TOOLS):
         mods.append(video)
 
     # Some schemas use IMAGE for screenshots. Add only if available and job type implies mixed media.

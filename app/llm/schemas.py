@@ -120,6 +120,7 @@ class JobType(str, Enum):
     
     # =========== PIPELINE-SPECIFIC ROUTES (v0.14.1) ===========
     VIDEO_CODE_DEBUG = "video.code.debug"  # 2-step: Gemini3 transcribe → Sonnet code
+    VIDEO_CODE_TOOLS = "video.code.tools"  # v9.0: Single-model video+tool pipeline (Gemini 3.1 Pro customtools)
 
 
 class Provider(str, Enum):
@@ -229,6 +230,8 @@ class RoutingConfig:
         
         # Video+Code debug route
         JobType.VIDEO_CODE_DEBUG: (Provider.GOOGLE, "GEMINI_VIDEO_MODEL", "gemini-3-pro-preview"),
+        # v9.0: Video+Code with tool access (single model)
+        JobType.VIDEO_CODE_TOOLS: (Provider.GOOGLE, "CHAT_DEEP_MODEL", "gemini-3.1-pro-preview-customtools"),
     }
     
     # === LEGACY → PRIMARY ROUTING MAP ===

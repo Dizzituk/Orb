@@ -34,6 +34,14 @@ from app.memory.api_router import router as memory_router
 from app.llm.stream_router import router as stream_router
 from app.llm.telemetry_router import router as telemetry_router
 from app.llm.web_search_router import router as web_search_router
+
+# Briefing system (morning news digests)
+try:
+    from app.briefing.briefing_router import router as briefing_router
+    _BRIEFING_AVAILABLE = True
+except ImportError as e:
+    _BRIEFING_AVAILABLE = False
+    print(f"[main] Briefing system not available: {e}")
 from app.embeddings.router import router as embeddings_router, search_router as embeddings_search_router
 from app.introspection.router import router as introspection_router
 from app.astra_memory.router import router as astra_memory_router
@@ -255,6 +263,17 @@ def on_startup():
     except Exception as e:
         print(f"[startup] Builds recovery skipped: {e}")
 
+    # v1.0: Morning Briefing scheduler
+    if _BRIEFING_AVAILABLE:
+        try:
+            from app.briefing.briefing_scheduler import start_scheduler_background
+            import asyncio
+            loop = asyncio.get_event_loop()
+            start_scheduler_background(loop)
+            print("[startup] Briefing scheduler: [OK] background task started")
+        except Exception as e:
+            print(f"[startup] Briefing scheduler: [WARN] {e}")
+
 
 # ============================================================================
 # ROUTERS
@@ -265,6 +284,8 @@ app.include_router(memory_router)
 app.include_router(stream_router)
 app.include_router(telemetry_router)
 app.include_router(web_search_router)
+if _BRIEFING_AVAILABLE:
+    app.include_router(briefing_router)
 app.include_router(embeddings_router)
 app.include_router(embeddings_search_router)
 app.include_router(astra_memory_router)

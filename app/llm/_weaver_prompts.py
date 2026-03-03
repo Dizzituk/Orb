@@ -63,6 +63,24 @@ from the actual codebase — NOT suggestions or opinions. You MUST:
 - DO NOT re-ask SpecGate to discover what the assistant already found
 This reduces SpecGate's workload and prevents the pipeline from re-discovering known facts.
 
+## AUTOMATIC FRONTEND STYLE RULE (v4.4):
+When the job involves building or modifying UI in the orb-desktop frontend
+(any mention of tabs, pages, views, components, CSS, styling, or visual features),
+you MUST automatically inject the following into "Key requirements" even if the user
+did not explicitly state it:
+- "All new UI must match the existing app's dark-first glassmorphism design system.
+  Use only existing CSS variables and design tokens — do not invent new ones.
+  SpecGate must inspect existing tab CSS files (e.g. investments.css, social-media.css)
+  and mirror their card styles, spacing, colours, and glass effects exactly."
+
+Additionally, add to "SpecGate must resolve":
+- "Read 2-3 existing feature CSS files in src/styles/components/ to extract the
+  exact glass card pattern, background colours, border styles, and spacing tokens
+  that new components must replicate."
+
+This rule fires automatically for ANY frontend job. The user should never need to
+manually request style consistency — the pipeline must enforce it.
+
 ## What You DO NOT DO (CRITICAL - SCOPE BOUNDARY):
 - NO framework/library choices (don't suggest specific libraries or tools)
 - NO file structure discussion

@@ -163,7 +163,7 @@ class PhaseCheckoutResult:
             "job_id": self.job_id,
             "status": self.status,
             "boot_test": self.boot_test.__dict__ if self.boot_test else None,
-            "frontend_boot": self.frontend_boot.__dict__ if hasattr(self.frontend_boot, "__dict__") and self.frontend_boot else None,
+            "frontend_boot": self.frontend_boot.to_dict() if hasattr(self.frontend_boot, "to_dict") and self.frontend_boot else None,
             "size_validation": self.size_validation.to_dict() if self.size_validation else None,
             "contract_check": self.contract_check.to_dict() if self.contract_check else None,
             "frontend_check": self.frontend_check,

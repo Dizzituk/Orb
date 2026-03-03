@@ -25,6 +25,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
+from app.pot_spec.grounded._sbx_fs import _sbx_isfile, _sbx_isdir
 from app.pot_spec.grounded._spec_runner_utils_10 import (
     SPEC_RUNNER_BUILD_ID,
     _build_simple_spec,
@@ -32,7 +33,6 @@ from app.pot_spec.grounded._spec_runner_utils_10 import (
 
 # v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
 # v4.3: Spec gate uses HOST filesystem, not sandbox.
-_SBX_FS_OK = False
 from app.pot_spec.grounded._spec_runner_utils_12 import _extract_project_paths
 from app.pot_spec.grounded._spec_runner_utils_13 import _extract_file_scope_from_spec
 from app.pot_spec.grounded._spec_runner_segmentation import run_segmentation_check
@@ -295,7 +295,7 @@ async def _handle_create_path(
             validation_status="needs_clarification",
         )
 
-    valid_paths = [p for p in project_paths if (_sbx_isdir(p) if _SBX_FS_OK else os.path.isdir(p))]
+    valid_paths = [p for p in project_paths if _sbx_isdir(p)]
 
     if _CREATE_BUILDER_AVAILABLE and valid_paths:
         try:

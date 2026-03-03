@@ -32,6 +32,43 @@ from .helpers import (
 )
 from .parsing import extract_section_for_file, _extract_verbatim_code_from_architecture
 from .arch_code_extractor import extract_code_for_files, ExtractionResult
+
+
+# ---------------------------------------------------------------------------
+# v1.1: Strip implementation briefs before code extraction
+# ---------------------------------------------------------------------------
+def _strip_brief_sections(arch_text: str) -> str:
+    """Remove Implementation Brief sections from architecture text.
+
+    The implementation compiler prepends per-file briefs to the arch doc.
+    These contain scaffold code blocks (empty shells) that the code
+    extractor must NOT pick up. The real code blocks from the
+    architecture document are what we want.
+
+    Strategy: find "## IMPLEMENTATION BRIEFS" and strip everything from
+    the start of the document up to (but not including) the real
+    architecture content. The real arch always starts with "SPEC_ID:"
+    which is the definitive boundary marker.
+
+    v1.2 (2026-03-02): Fixed over-stripping that removed arch content.
+    The previous version tracked --- separators but the arch doc itself
+    contains --- separators, causing the entire document to be stripped.
+    """
+    marker = "## IMPLEMENTATION BRIEFS"
+    if marker not in arch_text:
+        return arch_text
+
+    # The real architecture always starts with SPEC_ID: or SPEC_HASH:
+    # Find that boundary and strip everything before it.
+    lines = arch_text.split("\n")
+    for i, line in enumerate(lines):
+        if line.startswith("SPEC_ID:") or line.startswith("SPEC_HASH:"):
+            remaining = "\n".join(lines[i:])
+            return remaining
+
+    # Fallback: if no SPEC_ID found, return unmodified to avoid data loss
+    return arch_text
+
 from .arch_code_merge import decide_merge_strategy, MergeDecision
 from .path_resolution import _resolve_multi_root_path, _infer_lang_from_path
 from .prompts import _parse_edit_pairs
@@ -466,8 +503,10 @@ async def process_all_tasks(
             all_file_paths = [
                 f["path"] for f in (ctx.new_files + ctx.modified_files)
             ]
+            # v1.1: Strip implementation briefs to avoid scaffold contamination
+            clean_arch = _strip_brief_sections(ctx.architecture_content)
             extraction_result = extract_code_for_files(
-                ctx.architecture_content, all_file_paths,
+                clean_arch, all_file_paths,
             )
             if extraction_result.file_count > 0:
                 logger.info(

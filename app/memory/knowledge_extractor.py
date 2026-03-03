@@ -41,7 +41,7 @@ def _get_extraction_model() -> tuple[str, str]:
     Reuses the summary model config — same cost tier.
     """
     provider = os.getenv("SUMMARY_PROVIDER", "google")
-    model = os.getenv("SUMMARY_MODEL", "gemini-2.0-flash-lite")
+    model = os.getenv("SUMMARY_MODEL", "gemini-2.5-flash-lite")
     return provider, model
 
 

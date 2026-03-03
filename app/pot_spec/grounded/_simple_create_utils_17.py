@@ -8,12 +8,12 @@ from app.pot_spec.grounded._simple_create_utils_15 import _extract_patterns, _fi
 from app.pot_spec.grounded._simple_create_utils_16 import CreateEvidence, IntegrationPoint, _detect_tech_stack
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from app.pot_spec.grounded._sbx_fs import _sbx_isfile, _sbx_isdir
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 
 # v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
 # v4.3: Spec gate uses HOST filesystem, not sandbox.
-_SBX_FS_OK = False
 
 
 @dataclass 
@@ -300,7 +300,7 @@ async def build_grounded_create_spec(
     # Detect tech stack for each project path
     tech_stack = TechStack()
     for path in project_paths:
-        if (_sbx_isdir(path) if _SBX_FS_OK else os.path.isdir(path)):
+        if _sbx_isdir(path):
             detected = _detect_tech_stack(path, sandbox_client)
             for attr in ['frontend_framework', 'frontend_language', 'backend_framework',
                         'backend_language', 'styling', 'state_management', 'api_pattern']:
@@ -312,7 +312,7 @@ async def build_grounded_create_spec(
     # v2.0: Find integration points using CONCEPTS (not raw keywords)
     all_points = []
     for path in project_paths:
-        if (_sbx_isdir(path) if _SBX_FS_OK else os.path.isdir(path)):
+        if _sbx_isdir(path):
             points = _find_integration_points(path, concepts, sandbox_client)
             all_points.extend(points)
     

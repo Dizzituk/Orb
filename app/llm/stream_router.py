@@ -497,17 +497,37 @@ def _handle_weaver_design_questions(req, db, trace, stage_trace, translation_res
         # The user's reply may not be in the DB yet when Weaver reads messages,
         # causing hash-based dedup to see "nothing new". This ensures the reply
         # is always visible to the weaver regardless of persistence timing.
+        generator = generate_weaver_stream(
+            project_id=req.project_id,
+            message=req.message,
+            db=db,
+            trace=trace,
+            conversation_id=str(req.project_id),
+            is_continuation=True,
+            captured_answers=None,
+            pending_user_message=req.message,
+        )
+        
+        # v9.0: Wrap re-weave in build tracking so the builds tab updates.
+        # Previously the re-weave bypassed wrap_with_build_tracking, so the
+        # build project kept the stale first-weave output.
+        try:
+            from app.builds.stage_hooks import is_tracked_stage, wrap_with_build_tracking
+            if is_tracked_stage("weaver"):
+                generator = wrap_with_build_tracking(
+                    stream=generator,
+                    db=db,
+                    chat_project_id=req.project_id,
+                    dispatch_stage="weaver",
+                    message=req.message,
+                    provider=weaver_provider,
+                    model=weaver_model,
+                )
+        except ImportError:
+            pass  # Build tracking not available — stream still works
+        
         return StreamingResponse(
-            generate_weaver_stream(
-                project_id=req.project_id,
-                message=req.message,
-                db=db,
-                trace=trace,
-                conversation_id=str(req.project_id),
-                is_continuation=True,
-                captured_answers=None,
-                pending_user_message=req.message,
-            ),
+            generator,
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )

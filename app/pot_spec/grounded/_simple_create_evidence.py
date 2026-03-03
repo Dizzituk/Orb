@@ -4,6 +4,7 @@ Evidence fulfilment loop for SpecGate CREATE path.
 
 Parses EVIDENCE_REQUEST blocks from LLM analysis, reads requested files
 from host filesystem, and re-prompts LLM with real evidence.
+from app.pot_spec.grounded._sbx_fs import _sbx_isfile, _sbx_isdir, _sbx_exists
 Extracted from simple_create.py.
 """
 from __future__ import annotations
@@ -28,7 +29,6 @@ logger = logging.getLogger(__name__)
 
 # v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
 # v4.3: Spec gate uses HOST filesystem, not sandbox.
-_SBX_FS_OK = False
 
 
 async def fulfil_evidence_requests(
@@ -196,13 +196,13 @@ def _dispatch_tool_calls(
             file_path = args.get("path") or args.get("file_path", "")
             if file_path:
                 resolved = file_path.replace('/', os.sep).replace('\\', os.sep)
-                if not (_sbx_exists(resolved) if _SBX_FS_OK else os.path.exists(resolved)) and project_paths:
+                if not _sbx_exists(resolved) and project_paths:
                     for root in project_paths:
                         candidate = os.path.join(root, resolved)
-                        if (_sbx_exists(candidate) if _SBX_FS_OK else os.path.exists(candidate)):
+                        if _sbx_exists(candidate):
                             resolved = candidate
                             break
-                exists = (_sbx_exists(resolved) if _SBX_FS_OK else os.path.exists(resolved))
+                exists = _sbx_exists(resolved)
                 results.append({
                     "tool": tool_name, "file_path": resolved,
                     "success": exists,
@@ -216,7 +216,7 @@ def _dispatch_tool_calls(
             if search_path:
                 for root in project_paths:
                     candidate = os.path.join(root, query.replace('.', os.sep))
-                    if (_sbx_isdir(candidate) if _SBX_FS_OK else os.path.isdir(candidate)):
+                    if _sbx_isdir(candidate):
                         search_path = candidate
                         break
                 success, listing = _host_list_directory(search_path, project_paths=project_paths)

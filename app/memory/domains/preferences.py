@@ -229,10 +229,21 @@ class PreferenceStore:
         limit: int,
         min_relevance: float,
     ) -> list[MemoryResult]:
-        """Run keyword search against astra_preferences."""
+        """Run keyword search against astra_preferences.
+
+        v2.1: Cap keywords at 20 to prevent SQLite expression tree overflow.
+        Each keyword generates 3 LIKE conditions (key, namespace, applies_to),
+        so 20 keywords = 60 conditions — well within SQLite's 1000 depth limit.
+        Long messages (e.g. voice-to-text build descriptions) were generating
+        900+ conditions and hitting 'Expression tree is too large'.
+        """
         keywords = _extract_keywords(text)
         if not keywords:
             return []
+
+        # v2.1: Cap at 20 keywords to prevent SQLite expression tree overflow
+        if len(keywords) > 20:
+            keywords = keywords[:20]
 
         # Build keyword match conditions
         conditions = []

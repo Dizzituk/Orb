@@ -97,6 +97,15 @@ DEEP_KEYWORDS = {
     "pipeline", "roadmap", "domain", "integrate",
     "integration", "capability", "capabilities",
     "end-to-end", "production", "deploy",
+    # v9.0: Codebase exploration intent → needs tool access (deep tier)
+    # These count as deep because they require iterative tool exploration.
+    # A single hit is enough when combined with ANY other signal.
+    "code base", "codebase", "go through the code",
+    "look at the code", "look through the code",
+    "check the code", "explore the code",
+    "go through the project", "look at the project",
+    "check the backend", "check the frontend",
+    "come up with a plan",
 }
 
 # Reasoning indicators
@@ -319,9 +328,12 @@ def _resolve_tier(
     Priority: deep > reasoning > lookup > ping_pong
     Context depth pushes toward higher tiers.
     """
-    # Deep: 2+ deep keywords OR 1 deep + long message
+    # Deep: 2+ deep keywords OR 1 deep + long message OR 1 deep + reasoning
     # v2: Very long messages (100+ words) with reasoning keywords are also deep
-    if deep_hits >= 2 or (deep_hits >= 1 and word_count > 30):
+    # v9.0: 1 deep + 1 reasoning = deep (catches "go through codebase" + "plan")
+    if (deep_hits >= 2
+            or (deep_hits >= 1 and word_count > 30)
+            or (deep_hits >= 1 and reasoning_hits >= 1)):
         conf = min(0.95, 0.7 + (deep_hits * 0.1))
         return ("deep", conf)
 

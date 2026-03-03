@@ -2,11 +2,13 @@
 """
 Chat and normal routing handlers for stream routing.
 
+v1.1 (2026-03-03): Integrated Grounding Gate — claims-dependent and contested
+    queries now force a web search before the LLM responds.
 v1.0 (2026-01-20): Extracted from stream_router.py for modularity.
 
 This module provides:
-- `handle_chat_mode()` - Lightweight chat routing
-- `handle_normal_routing()` - Standard job-type routing
+- `handle_chat_mode()` - Lightweight chat routing (now with grounding gate)
+- `handle_normal_routing()` - Standard job-type routing (now with grounding gate)
 - `handle_legacy_triggers()` - Fallback for when translation layer unavailable
 """
 
@@ -64,6 +66,15 @@ from .prompt_builders import (
 )
 
 from .rag_fallback import is_architecture_query
+
+# v1.1: Grounding Gate — forces web search for claims-dependent queries
+try:
+    from app.grounding.chat_integration import run_grounding_sync
+    _GROUNDING_AVAILABLE = True
+except ImportError:
+    _GROUNDING_AVAILABLE = False
+    run_grounding_sync = None
+    logging.warning("[chat_routing] Grounding gate not available")
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +156,8 @@ def handle_chat_mode(
         
         # v3.2: Read chat provider/model from .env stage config.
         # All tiers use the configured CHAT provider by default.
-        # Only "deep" escalates to Opus, and "multimodal" to Gemini vision.
+        # "deep" escalates to Gemini 3.1 Pro customtools, "multimodal" to Gemini vision.
+        # Opus only via manual UI model switcher.
         import os as _os
         _chat_provider = _os.getenv("CHAT_PROVIDER", "google")
         _chat_model = _os.getenv("CHAT_MODEL", "gemini-2.5-flash")
@@ -154,9 +166,11 @@ def handle_chat_mode(
         _skip_confirm = getattr(req, 'ui_context', None) is not None
 
         if complexity.tier == "deep":
-            # Deep/architectural queries → Opus (or env override)
-            provider = _os.getenv("CHAT_DEEP_PROVIDER", "anthropic")
-            model = _os.getenv("CHAT_DEEP_MODEL", "claude-opus-4-6")
+            # Deep/architectural queries → Gemini 3.1 Pro customtools (or env override)
+            # v9.0: Default changed from Opus to Gemini customtools for cost savings.
+            # Opus available via manual UI model switcher when needed.
+            provider = _os.getenv("CHAT_DEEP_PROVIDER", "google")
+            model = _os.getenv("CHAT_DEEP_MODEL", "gemini-3.1-pro-preview-customtools")
             print(f"[CHAT_MODE] Complexity UPGRADE: deep -> {provider}/{model}")
             if not _skip_confirm:
                 try:
@@ -304,25 +318,80 @@ def handle_chat_mode(
     
     system_prompt = build_system_prompt(project, full_context, ui_context=ui_ctx)
     
-    # v7.0: When codebase context was injected, override the capability layer
-    # to prevent the model from trying to explore manually.
-    # The capability layer says "you CAN execute code, explore directories"
-    # which causes the model to hallucinate tool calls. Replace that section.
-    if _codebase_gather_pending and codebase_ctx:
-        _CHAT_TOOLS_OVERRIDE = (
-            "   - You CAN: read files, write files, execute code, explore directories\n"
-        )
-        _CHAT_TOOLS_REPLACEMENT = (
-            "   - Codebase files have been PRE-LOADED into your context below.\n"
-            "   - You do NOT have tool access in chat mode. Do NOT generate tool_call blocks.\n"
-            "   - Do NOT call execute_command or shell commands.\n"
-            "   - Reference the [CODEBASE CONTEXT] files directly in your response.\n"
-        )
-        if _CHAT_TOOLS_OVERRIDE in system_prompt:
-            system_prompt = system_prompt.replace(
-                _CHAT_TOOLS_OVERRIDE, _CHAT_TOOLS_REPLACEMENT,
+    # v1.1: GROUNDING GATE — intercept claims-dependent queries
+    _grounding_meta = {}
+    if _GROUNDING_AVAILABLE and run_grounding_sync is not None:
+        try:
+            system_prompt, _grounding_meta = run_grounding_sync(
+                message=req.message,
+                system_prompt=system_prompt,
+                context={"user_id": getattr(req, "user_id", "default")},
             )
-            print("[CHAT_MODE] Capability layer overridden for codebase-aware chat")
+            if _grounding_meta.get("grounding_applied"):
+                print(
+                    f"[CHAT_MODE] Grounding gate ACTIVE: "
+                    f"category={_grounding_meta.get('category')}, "
+                    f"sources={_grounding_meta.get('source_count')}, "
+                    f"domain={_grounding_meta.get('domain_hint')}"
+                )
+            else:
+                print(
+                    f"[CHAT_MODE] Grounding gate: no grounding needed "
+                    f"(category={_grounding_meta.get('category', 'n/a')}, "
+                    f"reason={_grounding_meta.get('reason', 'personal')})"
+                )
+        except Exception as e:
+            print(f"[CHAT_MODE] Grounding gate error (non-fatal): {e}")
+    
+    # v8.0: Give trusted models real tool access instead of stripping it.
+    # When a trusted model (Opus etc.) is selected, provide actual tools
+    # so it can read files, list dirs, search, run commands for real.
+    # The pre-loaded codebase context is STILL injected (gives a head start)
+    # but the model can now explore further on its own.
+    _chat_tools = None
+    try:
+        from app.llm.chat_tool_loop import is_tool_eligible, get_chat_tools
+        if is_tool_eligible(provider, model):
+            _chat_tools = get_chat_tools()
+            print(f"[CHAT_MODE] Tool access ENABLED for {provider}/{model} ({len(_chat_tools)} tools)")
+            # v8.1: Inject research-only role into system prompt for tool-enabled chat
+            _TOOL_ROLE_BLOCK = (
+                "\n\n## TOOL ACCESS -- RESEARCH MODE\n"
+                "You have READ-ONLY tool access (read_file, list_files, search_files, read_logs).\n"
+                "Use these tools to explore the codebase and gather information.\n\n"
+                "YOUR ROLE: You are a RESEARCHER, not a builder.\n"
+                "- Explore files, read code, understand patterns, discover design tokens\n"
+                "- Report your findings as text in the chat -- describe what you found\n"
+                "- Present component structures, CSS variables, layout patterns, file paths\n"
+                "- This research will be picked up by the Weaver to create accurate build specs\n\n"
+                "DO NOT:\n"
+                "- Generate code blocks, full file contents, or implementation files\n"
+                "- Try to create, write, or modify any files\n"
+                "- Produce implementation plans or architecture documents\n"
+                "- Dump raw file contents -- summarise and highlight the relevant patterns\n\n"
+                "GOOD OUTPUT: Describe patterns, tokens, and structures you found.\n"
+                "BAD OUTPUT: Producing hundreds of lines of implementation code.\n"
+            )
+            system_prompt += _TOOL_ROLE_BLOCK
+        else:
+            # Non-trusted models: strip tool claims to prevent hallucination
+            if _codebase_gather_pending and codebase_ctx:
+                _CHAT_TOOLS_OVERRIDE = (
+                    "   - You CAN: read files, write files, execute code, explore directories\n"
+                )
+                _CHAT_TOOLS_REPLACEMENT = (
+                    "   - Codebase files have been PRE-LOADED into your context below.\n"
+                    "   - You do NOT have tool access in chat mode. Do NOT generate tool_call blocks.\n"
+                    "   - Do NOT call execute_command or shell commands.\n"
+                    "   - Reference the [CODEBASE CONTEXT] files directly in your response.\n"
+                )
+                if _CHAT_TOOLS_OVERRIDE in system_prompt:
+                    system_prompt = system_prompt.replace(
+                        _CHAT_TOOLS_OVERRIDE, _CHAT_TOOLS_REPLACEMENT,
+                    )
+                    print("[CHAT_MODE] Capability layer overridden for non-trusted model")
+    except ImportError:
+        print("[CHAT_MODE] chat_tool_loop not available, no tool access")
     
     if ui_ctx:
         print(f"[CHAT_MODE] UI context injected: view={ui_ctx.view_type}, job={ui_ctx.job_type}, label={ui_ctx.label}")
@@ -340,6 +409,7 @@ def handle_chat_mode(
             db=db,
             trace=trace,
             enable_reasoning=req.enable_reasoning,
+            tools=_chat_tools,
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -461,18 +531,60 @@ def handle_normal_routing(
     
     system_prompt = build_system_prompt(project, full_context)
     
-    # v7.0: Override capability layer when codebase context is present
-    if _nr_codebase_ctx:
-        _TOOLS_LINE = "   - You CAN: read files, write files, execute code, explore directories\n"
-        _TOOLS_REPLACE = (
-            "   - Codebase files have been PRE-LOADED into your context below.\n"
-            "   - You do NOT have tool access in chat mode. Do NOT generate tool_call blocks.\n"
-            "   - Do NOT call execute_command or shell commands.\n"
-            "   - Reference the [CODEBASE CONTEXT] files directly in your response.\n"
-        )
-        if _TOOLS_LINE in system_prompt:
-            system_prompt = system_prompt.replace(_TOOLS_LINE, _TOOLS_REPLACE)
-            print("[NORMAL_ROUTING] Capability layer overridden for codebase-aware response")
+    # v1.1: GROUNDING GATE — intercept claims-dependent queries in normal routing
+    if _GROUNDING_AVAILABLE and run_grounding_sync is not None:
+        try:
+            system_prompt, _nr_grounding = run_grounding_sync(
+                message=req.message,
+                system_prompt=system_prompt,
+                context={"user_id": getattr(req, "user_id", "default")},
+            )
+            if _nr_grounding.get("grounding_applied"):
+                print(
+                    f"[NORMAL_ROUTING] Grounding gate ACTIVE: "
+                    f"category={_nr_grounding.get('category')}, "
+                    f"sources={_nr_grounding.get('source_count')}"
+                )
+        except Exception as e:
+            print(f"[NORMAL_ROUTING] Grounding gate error (non-fatal): {e}")
+    
+    # v8.0: Give trusted models real tool access in normal routing too
+    _nr_tools = None
+    try:
+        from app.llm.chat_tool_loop import is_tool_eligible, get_chat_tools
+        if is_tool_eligible(provider, model):
+            _nr_tools = get_chat_tools()
+            print(f"[NORMAL_ROUTING] Tool access ENABLED for {provider}/{model} ({len(_nr_tools)} tools)")
+            # v8.1: Same research role for normal routing
+            _TOOL_ROLE_BLOCK = (
+                "\n\n## TOOL ACCESS -- RESEARCH MODE\n"
+                "You have READ-ONLY tool access (read_file, list_files, search_files, read_logs).\n"
+                "Use these tools to explore the codebase and gather information.\n\n"
+                "YOUR ROLE: You are a RESEARCHER, not a builder.\n"
+                "- Explore files, read code, understand patterns, discover design tokens\n"
+                "- Report your findings as text in the chat -- describe what you found\n"
+                "- Present component structures, CSS variables, layout patterns, file paths\n"
+                "- This research will be picked up by the Weaver to create accurate build specs\n\n"
+                "DO NOT:\n"
+                "- Generate code blocks, full file contents, or implementation files\n"
+                "- Try to create, write, or modify any files\n"
+                "- Produce implementation plans or architecture documents\n"
+                "- Dump raw file contents -- summarise and highlight the relevant patterns\n"
+            )
+            system_prompt += _TOOL_ROLE_BLOCK
+        elif _nr_codebase_ctx:
+            _TOOLS_LINE = "   - You CAN: read files, write files, execute code, explore directories\n"
+            _TOOLS_REPLACE = (
+                "   - Codebase files have been PRE-LOADED into your context below.\n"
+                "   - You do NOT have tool access in chat mode. Do NOT generate tool_call blocks.\n"
+                "   - Do NOT call execute_command or shell commands.\n"
+                "   - Reference the [CODEBASE CONTEXT] files directly in your response.\n"
+            )
+            if _TOOLS_LINE in system_prompt:
+                system_prompt = system_prompt.replace(_TOOLS_LINE, _TOOLS_REPLACE)
+                print("[NORMAL_ROUTING] Capability layer overridden for non-trusted model")
+    except ImportError:
+        print("[NORMAL_ROUTING] chat_tool_loop not available")
     
     # High-stakes routing
     if provider == "anthropic" and is_opus_model(model) and is_high_stakes_job(job_type_value):
@@ -506,6 +618,7 @@ def handle_normal_routing(
             db=db,
             trace=trace,
             enable_reasoning=req.enable_reasoning,
+            tools=_nr_tools,
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},

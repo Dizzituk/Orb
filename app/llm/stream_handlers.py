@@ -44,6 +44,7 @@ async def generate_sse_stream(
     db: Session,
     trace: Optional["RoutingTrace"] = None,
     enable_reasoning: bool = False,
+    tools: Optional[List[dict]] = None,
 ):
     """Generate SSE stream for normal LLM chat."""
     # v1.1: Debug logging
@@ -54,12 +55,27 @@ async def generate_sse_stream(
     chunk_count = 0
     
     try:
-        async for chunk in stream_llm(
-            provider=provider,
-            model=model,
-            messages=messages,
-            system_prompt=system_prompt,
-        ):
+        # v2.0: Use tool loop when tools are provided, plain stream otherwise
+        if tools:
+            from app.llm.chat_tool_loop import stream_with_tools
+            _stream = stream_with_tools(
+                messages=messages,
+                system_prompt=system_prompt,
+                provider=provider,
+                model=model,
+                tools=tools,
+                enable_reasoning=enable_reasoning,
+                max_tokens=16384,  # v2.0: Tool sessions need room for exploration + response
+            )
+        else:
+            _stream = stream_llm(
+                provider=provider,
+                model=model,
+                messages=messages,
+                system_prompt=system_prompt,
+            )
+
+        async for chunk in _stream:
             # v1.1: Log chunk types for debugging
             if chunk_count == 0:
                 print(f"[SSE_STREAM] First chunk received: {type(chunk)}")
@@ -84,6 +100,23 @@ async def generate_sse_stream(
                     continue
                 
                 content = chunk.get("text", "") or chunk.get("content", "")
+                # v2.0: Handle tool events from chat_tool_loop
+                if chunk.get("type") == "tool_call":
+                    yield "data: " + json.dumps({
+                        "type": "tool_call",
+                        "name": chunk.get("name", ""),
+                        "input": chunk.get("input", {}),
+                    }) + "\n\n"
+                    continue
+
+                if chunk.get("type") == "tool_result":
+                    yield "data: " + json.dumps({
+                        "type": "tool_result",
+                        "name": chunk.get("name", ""),
+                        "result_preview": chunk.get("result_preview", ""),
+                    }) + "\n\n"
+                    continue
+
                 if chunk.get("type") == "reasoning":
                     reasoning_text += content
                     if enable_reasoning:

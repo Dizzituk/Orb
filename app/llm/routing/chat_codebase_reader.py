@@ -34,6 +34,7 @@ TRUSTED_MODELS: Set[str] = {
     "claude-opus-4-6",
     "claude-opus-4-5-20250929",
     "gemini-3.1-pro-preview",
+    "gemini-3.1-pro-preview-customtools",
     "gemini-2.5-pro",
 }
 

@@ -10,16 +10,12 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 logger = logging.getLogger(__name__)
 
 # v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
-try:
-    from app.sandbox_fs import (
-        sandbox_isfile as _sbx_isfile,
-        sandbox_isdir as _sbx_isdir,
-        sandbox_exists as _sbx_exists,
-        sandbox_read_text as _sbx_read_text,
-    )
-    _SBX_FS_OK = True
-except ImportError:
-    _SBX_FS_OK = False
+from app.sandbox_fs import (
+    sandbox_isfile as _sbx_isfile,
+    sandbox_isdir as _sbx_isdir,
+    sandbox_exists as _sbx_exists,
+    sandbox_read_text as _sbx_read_text,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -199,7 +195,7 @@ def _check_duplicate_definitions(
     table_defs: Dict[str, List[Tuple[str, str]]] = {}
     for seg_id, files in segment_outputs.items():
         for f in files:
-            if not (_sbx_isfile(f) if _SBX_FS_OK else os.path.isfile(f)):
+            if not _sbx_isfile(f):
                 continue
             ext = os.path.splitext(f)[1].lower()
             basename = os.path.basename(f).lower()
@@ -235,7 +231,7 @@ def _check_duplicate_definitions(
     route_defs: Dict[str, List[Tuple[str, str]]] = {}
     for seg_id, files in segment_outputs.items():
         for f in files:
-            if not (_sbx_isfile(f) if _SBX_FS_OK else os.path.isfile(f)):
+            if not _sbx_isfile(f):
                 continue
             ext = os.path.splitext(f)[1].lower()
             basename = os.path.basename(f).lower()

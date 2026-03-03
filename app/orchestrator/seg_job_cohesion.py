@@ -19,16 +19,12 @@ from app.orchestrator.segment_state import save_state, get_job_dir
 logger = logging.getLogger(__name__)
 
 # v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
-try:
-    from app.sandbox_fs import (
-        sandbox_isfile as _sbx_isfile,
-        sandbox_isdir as _sbx_isdir,
-        sandbox_exists as _sbx_exists,
-        sandbox_read_text as _sbx_read_text,
-    )
-    _SBX_FS_OK = True
-except ImportError:
-    _SBX_FS_OK = False
+from app.sandbox_fs import (
+    sandbox_isfile as _sbx_isfile,
+    sandbox_isdir as _sbx_isdir,
+    sandbox_exists as _sbx_exists,
+    sandbox_read_text as _sbx_read_text,
+)
 
 MAX_COHESION_RETRIES = 3
 
@@ -451,7 +447,7 @@ def _check_protected_files(ctx, protected_files):
         elif normalized_fwd.startswith("orb-desktop/"):
             fe_rel = normalized_fwd[len("orb-desktop/"):]
             candidates.append(os.path.join(_COH_FE_ROOT, fe_rel.replace("/", os.sep)))
-        if not any((_sbx_isfile(c) if _SBX_FS_OK else os.path.isfile(c)) for c in candidates):
+        if not any(_sbx_isfile(c) for c in candidates):
             missing.append(pf)
 
     if missing:
