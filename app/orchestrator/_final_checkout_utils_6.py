@@ -318,11 +318,46 @@ async def run_final_checkout(
         _emit("\n[CHECK 5b] Electron boot -- SKIPPED (no sandbox connection)")
 
     # ---------------------------------------------------------------
+    # CHECK 5c: Vite Production Build (v1.4 -- hard gate)
+    # ---------------------------------------------------------------
+    # Dev-mode boot (CHECK 3/5) uses lazy module loading and won't
+    # catch parse errors in unvisited routes. A production build
+    # (vite build) fails hard on duplicate declarations, syntax
+    # errors, and missing imports -- exactly the class of bug that
+    # passed dev-mode boot in job sg-bc6118fe.
+    vite_build_passed = True
+    if result.boot_test_status == "pass" and sandbox_client:
+        _emit("`n[CHECK 5c] Vite production build (hard gate)...")
+        try:
+            from app.orchestrator.frontend_boot_check import run_frontend_boot_check
+            _vite_prod = run_frontend_boot_check(
+                client=sandbox_client,
+                emit=_emit,
+            )
+            result.checks_run.append("vite_production_build")
+            if _vite_prod.status == "pass":
+                _emit(f"  ✅ Vite production build PASSED ({_vite_prod.duration_ms}ms)")
+            else:
+                vite_build_passed = False
+                _emit(f"  ❌ Vite production build FAILED: {_vite_prod.error_summary[:200]}")
+                for _ve in getattr(_vite_prod, 'errors', [])[:5]:
+                    _emit(f"    {_ve}")
+                result.boot_test_status = "fail"
+        except Exception as _vb_exc:
+            logger.warning("[final_checkout] Vite build check failed: %s", _vb_exc)
+            _emit(f"  [SKIPPED] Vite build check failed: {_vb_exc}")
+    elif result.boot_test_status != "pass":
+        _emit("`n[CHECK 5c] Vite build -- SKIPPED (boot already failed)")
+    elif not sandbox_client:
+        _emit("`n[CHECK 5c] Vite build -- SKIPPED (no sandbox connection)")
+
+    # ---------------------------------------------------------------
     # AGGREGATE
     # ---------------------------------------------------------------
     all_ok = (
         result.spec_coverage.status == "pass"
         and result.boot_test_status == "pass"
+        and vite_build_passed
     )
     result.status = "pass" if all_ok else "fail"
     result.duration_ms = int((time.time() - start) * 1000)

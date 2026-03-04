@@ -108,6 +108,107 @@ def route_video_code_tools(
     )
 
 
+def _gather_architecture_context(user_message: str) -> str:
+    """Build a condensed architecture summary for the video+code pipeline.
+
+    Combines:
+    1. Architecture map summary (project structure, key files)
+    2. RAG search results relevant to the user's message
+    3. Frontend component tree for UI-related queries
+
+    This gives the model a head start so it doesn't burn tool rounds
+    on basic codebase discovery.
+    """
+    parts = []
+
+    # 1. Load architecture map (condensed — first ~4000 chars covers
+    #    executive summary + system architecture + entry points)
+    try:
+        arch_path = os.path.join("D:\\Orb", ".architecture", "ARCHITECTURE_MAP.md")
+        if os.path.isfile(arch_path):
+            with open(arch_path, "r", encoding="utf-8") as f:
+                arch_content = f.read()
+            # Take executive summary + first few sections (~4000 chars)
+            # This covers tech stack, entry points, core infrastructure
+            lines = arch_content.splitlines()
+            summary_lines = []
+            char_count = 0
+            for line in lines:
+                summary_lines.append(line)
+                char_count += len(line)
+                if char_count > 4000:
+                    break
+            parts.append("\n".join(summary_lines))
+            logger.info("[video-code-tools] Injected architecture map: %d chars", char_count)
+    except Exception as e:
+        logger.debug("[video-code-tools] Could not load architecture map: %s", e)
+
+    # 2. Frontend component tree from INDEX.json
+    try:
+        index_path = os.path.join("D:\\Orb", ".architecture", "INDEX.json")
+        if os.path.isfile(index_path):
+            import json
+            with open(index_path, "r", encoding="utf-8") as f:
+                idx = json.load(f)
+
+            fe_files = [f for f in idx.get("files", []) if "orb-desktop" in f.get("path", "")]
+            if fe_files:
+                # Build a compact directory tree
+                tree = {}
+                for f in fe_files:
+                    path = f["path"].replace("D:\\orb-desktop\\", "").replace("\\", "/")
+                    dir_part = "/".join(path.split("/")[:-1]) or "."
+                    if dir_part not in tree:
+                        tree[dir_part] = []
+                    tree[dir_part].append(f["name"])
+
+                tree_lines = ["\n### Frontend File Tree (orb-desktop/)"]
+                for dir_path in sorted(tree.keys()):
+                    if dir_path.startswith("src/"):
+                        files = tree[dir_path]
+                        tree_lines.append(f"  {dir_path}/: {', '.join(sorted(files))}")
+                parts.append("\n".join(tree_lines))
+                logger.info("[video-code-tools] Injected frontend tree: %d dirs", len(tree))
+    except Exception as e:
+        logger.debug("[video-code-tools] Could not load frontend tree: %s", e)
+
+    # 3. RAG search for message-relevant files
+    if user_message:
+        try:
+            from app.db import get_db_sync
+            from app.rag.retrieval.arch_search import search_architecture
+            db = next(get_db_sync())
+            try:
+                results = search_architecture(db, query=user_message, top_k=10)
+                if results:
+                    rag_lines = ["\n### Relevant Files (RAG search)"]
+                    for r in results:
+                        path = r.get("path", r.get("file_path", ""))
+                        score = r.get("score", 0)
+                        desc = r.get("description", r.get("summary", ""))[:120]
+                        rag_lines.append(f"  {path} (relevance: {score:.2f}) — {desc}")
+                    parts.append("\n".join(rag_lines))
+                    logger.info("[video-code-tools] Injected RAG results: %d files", len(results))
+            finally:
+                db.close()
+        except Exception as e:
+            logger.debug("[video-code-tools] RAG search failed: %s", e)
+
+    if not parts:
+        return "No architecture data available. Use tools to explore the codebase."
+
+    return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Retry / timeout config
+# ---------------------------------------------------------------------------
+MAX_RETRIES = 3
+RETRY_DELAYS = [5, 15, 30]  # seconds between retries
+# Vision-only model for two-phase fallback (cheaper, no tools needed)
+VISION_EXTRACT_MODEL = "gemini-2.5-flash"
+
+
 async def _run_video_code_pipeline(
     video_attachments: List[dict],
     user_message: str,
@@ -115,9 +216,13 @@ async def _run_video_code_pipeline(
     project_description: str,
     model: str,
 ) -> str:
-    """Async pipeline: upload video, call model with tools, return text."""
+    """Async pipeline with 3-tier resilience:
+
+    Tier 1: Single-model (video + tools) with retry/backoff
+    Tier 2: Two-phase — extract from video first, then tool-ground separately
+    Tier 3: Graceful fallback — return raw extraction if grounding fails
+    """
     import google.generativeai as genai
-    from app.llm.chat_tool_loop import get_chat_tools, execute_chat_tool, TOOL_TIER_READ
 
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
@@ -125,56 +230,87 @@ async def _run_video_code_pipeline(
 
     genai.configure(api_key=api_key)
 
-    # Step 1: Upload videos to Gemini File API
-    uploaded_files = []
-    try:
-        for video_att in video_attachments:
-            video_path = video_att.get("path")
-            filename = video_att.get("filename", "video.mp4")
-            print(f"[video-code-tools] Uploading video: {filename}")
-
-            video_file = genai.upload_file(path=str(video_path))
-
-            # Wait for processing
-            while video_file.state.name == "PROCESSING":
-                time.sleep(2)
-                video_file = genai.get_file(video_file.name)
-
-            if video_file.state.name == "FAILED":
-                print(f"[video-code-tools] Video processing failed: {filename}")
-                continue
-
-            uploaded_files.append(video_file)
-            print(f"[video-code-tools] Video ready: {filename}")
-
-    except Exception as e:
-        logger.error("[video-code-tools] Video upload failed: %s", e)
-        return f"Error uploading video: {e}"
-
+    # ---- Upload videos (shared across all tiers) ----
+    uploaded_files = await _upload_videos(genai, video_attachments)
     if not uploaded_files:
         return "Error: All video uploads failed."
 
-    # Step 2: Build tools (read-only)
-    tools = get_chat_tools(TOOL_TIER_READ)
+    arch_context = _gather_architecture_context(user_message)
 
-    # Convert to Gemini format
-    from app.llm._streaming_utils_3 import _convert_tools_to_gemini
-    gemini_tools = _convert_tools_to_gemini(tools)
+    # ---- TIER 1: Single-model with retry ----
+    tier1_result = await _tier1_single_model(
+        genai=genai,
+        uploaded_files=uploaded_files,
+        user_message=user_message,
+        project_name=project_name,
+        project_description=project_description,
+        model=model,
+        arch_context=arch_context,
+    )
+    if tier1_result:
+        await _cleanup_videos(genai, uploaded_files)
+        return tier1_result
 
-    # Step 3: Build system prompt
-    system_prompt = f"""You are ASTRA's debug assistant analysing a video recording of the application.
+    # ---- TIER 2: Two-phase (extract then ground) ----
+    print("[video-code-tools] TIER 1 failed — falling back to two-phase extraction")
+    tier2_result = await _tier2_two_phase(
+        genai=genai,
+        uploaded_files=uploaded_files,
+        user_message=user_message,
+        project_name=project_name,
+        project_description=project_description,
+        model=model,
+        arch_context=arch_context,
+    )
+    await _cleanup_videos(genai, uploaded_files)
+    if tier2_result:
+        return tier2_result
 
-Project: {project_name}. {project_description}
+    # ---- TIER 3: Should never reach here (tier 2 always returns something) ----
+    return "Video analysis failed after all retry tiers. Please try with a shorter video or try again later."
 
-YOUR ROLE: You are a RESEARCHER with video context AND codebase access.
 
-WORKFLOW:
-1. First, watch and understand the video the user has provided
-2. Then use your tools to explore the codebase and find relevant files
-3. Ground your analysis in actual code — reference specific files and line numbers
-4. Provide a concrete, actionable plan based on what you see in the video AND the code
+async def _upload_videos(genai: Any, video_attachments: List[dict]) -> List[Any]:
+    """Upload videos to Gemini File API. Returns list of ready file refs."""
+    uploaded = []
+    for video_att in video_attachments:
+        video_path = video_att.get("path")
+        filename = video_att.get("filename", "video.mp4")
+        try:
+            print(f"[video-code-tools] Uploading video: {filename}")
+            video_file = genai.upload_file(path=str(video_path))
+            while video_file.state.name == "PROCESSING":
+                time.sleep(2)
+                video_file = genai.get_file(video_file.name)
+            if video_file.state.name == "FAILED":
+                print(f"[video-code-tools] Video processing failed: {filename}")
+                continue
+            uploaded.append(video_file)
+            print(f"[video-code-tools] Video ready: {filename}")
+        except Exception as e:
+            logger.error("[video-code-tools] Video upload failed for %s: %s", filename, e)
+    return uploaded
 
-TOOLS AVAILABLE (read-only):
+
+async def _cleanup_videos(genai: Any, uploaded_files: List[Any]) -> None:
+    """Delete uploaded videos from Gemini File API."""
+    for vf in uploaded_files:
+        try:
+            genai.delete_file(vf.name)
+        except Exception as e:
+            print(f"[video-code-tools] Cleanup warning: {e}")
+
+
+def _build_system_prompt(
+    project_name: str,
+    project_description: str,
+    arch_context: str,
+    with_tools: bool = True,
+) -> str:
+    """Build the system prompt. Shared between tier 1 and tier 2 grounding."""
+    tools_section = ""
+    if with_tools:
+        tools_section = """\nTOOLS AVAILABLE (read-only):
 - read_file: Read file contents from the codebase
 - list_files: List directory contents
 - search_files: Search for files by pattern
@@ -187,39 +323,192 @@ DO NOT:
 - Make changes to the codebase
 - Guess at file contents — always read them first"""
 
-    # Step 4: Build model with tools
+    workflow = (
+        """WORKFLOW:
+1. First, watch and understand the video the user has provided
+2. Use the architecture map above to identify which files are relevant — don't waste tool calls on discovery
+3. Use your tools to read specific files and verify details
+4. Ground your analysis in actual code — reference specific files and line numbers
+5. Provide a concrete, actionable plan based on what you see in the video AND the code"""
+        if with_tools
+        else """WORKFLOW:
+1. Watch the video carefully and extract EVERYTHING — every feature request, UI element, component mentioned, file referenced, and workflow described
+2. Structure your extraction as a detailed specification
+3. Reference the architecture map to identify likely file paths for each item mentioned
+4. Be exhaustive — this extraction will be used to ground a codebase analysis"""
+    )
+
+    return f"""You are ASTRA's debug assistant analysing a video recording of the application.
+
+Project: {project_name}. {project_description}
+
+YOUR ROLE: You are a RESEARCHER with video context AND codebase access.
+
+## CODEBASE ARCHITECTURE
+{arch_context}
+
+{workflow}
+{tools_section}"""
+
+
+async def _tier1_single_model(
+    genai: Any,
+    uploaded_files: List[Any],
+    user_message: str,
+    project_name: str,
+    project_description: str,
+    model: str,
+    arch_context: str,
+) -> Optional[str]:
+    """Tier 1: Video + tools in one model call, with retry/backoff."""
+    from app.llm.chat_tool_loop import get_chat_tools, TOOL_TIER_READ
+    from app.llm._streaming_utils_3 import _convert_tools_to_gemini
+
+    tools = get_chat_tools(TOOL_TIER_READ)
+    gemini_tools = _convert_tools_to_gemini(tools)
+    system_prompt = _build_system_prompt(project_name, project_description, arch_context, with_tools=True)
+
     model_kwargs = {"model_name": model}
-    if system_prompt:
-        model_kwargs["system_instruction"] = system_prompt
+    model_kwargs["system_instruction"] = system_prompt
     if gemini_tools:
         model_kwargs["tools"] = gemini_tools
-
     gemini_model = genai.GenerativeModel(**model_kwargs)
 
-    # Step 5: Build initial prompt with video
-    prompt_parts = list(uploaded_files)  # Video file references
-    prompt_text = user_message or "Analyse this video and help me understand what's happening."
-    prompt_parts.append(prompt_text)
+    prompt_parts = list(uploaded_files)
+    prompt_parts.append(user_message or "Analyse this video and help me understand what's happening.")
 
-    # Step 6: Run tool loop
+    for attempt in range(MAX_RETRIES):
+        try:
+            print(f"[video-code-tools] TIER 1 attempt {attempt + 1}/{MAX_RETRIES}")
+            result = await _run_tool_loop(
+                gemini_model=gemini_model,
+                initial_parts=prompt_parts,
+                max_rounds=MAX_VIDEO_TOOL_ROUNDS,
+            )
+            if result and not result.startswith("Error"):
+                print(f"[video-code-tools] TIER 1 succeeded on attempt {attempt + 1}")
+                return result
+        except Exception as e:
+            is_timeout = "504" in str(e) or "Deadline" in str(e) or "timeout" in str(e).lower()
+            logger.warning(
+                "[video-code-tools] TIER 1 attempt %d failed%s: %s",
+                attempt + 1, " (timeout)" if is_timeout else "", e,
+            )
+            if attempt < MAX_RETRIES - 1:
+                delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
+                print(f"[video-code-tools] Retrying in {delay}s...")
+                await asyncio.sleep(delay)
+
+    print("[video-code-tools] TIER 1 exhausted all retries")
+    return None
+
+
+async def _tier2_two_phase(
+    genai: Any,
+    uploaded_files: List[Any],
+    user_message: str,
+    project_name: str,
+    project_description: str,
+    model: str,
+    arch_context: str,
+) -> str:
+    """Tier 2: Extract from video first (no tools), then ground with tools.
+
+    Phase A: Cheap/fast model watches video and extracts everything into text.
+    Phase B: Tools model gets the extraction + architecture and grounds it in code.
+
+    If Phase B fails, returns Phase A extraction as graceful fallback (Tier 3).
+    """
+    # ---- Phase A: Video extraction (no tools, simpler model) ----
+    extraction = None
+    extract_prompt = _build_system_prompt(
+        project_name, project_description, arch_context, with_tools=False,
+    )
+
     try:
-        reply_text = await _run_tool_loop(
-            gemini_model=gemini_model,
-            initial_parts=prompt_parts,
+        print(f"[video-code-tools] TIER 2 Phase A: extracting with {VISION_EXTRACT_MODEL}")
+        extract_model = genai.GenerativeModel(
+            model_name=VISION_EXTRACT_MODEL,
+            system_instruction=extract_prompt,
+        )
+        prompt_parts = list(uploaded_files)
+        prompt_parts.append(
+            user_message
+            + "\n\nExtract EVERYTHING from this video: every feature, UI element, "
+            "file reference, component name, workflow step, and requirement. "
+            "Be exhaustive — this will be used to build a grounded implementation plan."
+        )
+        response = extract_model.generate_content(prompt_parts)
+        extraction = response.text
+        print(f"[video-code-tools] TIER 2 Phase A complete: {len(extraction)} chars extracted")
+    except Exception as e:
+        logger.error("[video-code-tools] TIER 2 Phase A (extraction) failed: %s", e)
+        return "Video analysis failed: could not extract content from video. Please try with a shorter video."
+
+    if not extraction:
+        return "Video analysis failed: extraction returned empty. Please try again."
+
+    # ---- Phase B: Ground extraction with tools (no video, just text) ----
+    try:
+        from app.llm.chat_tool_loop import get_chat_tools, TOOL_TIER_READ
+        from app.llm._streaming_utils_3 import _convert_tools_to_gemini
+
+        print(f"[video-code-tools] TIER 2 Phase B: grounding with {model}")
+        tools = get_chat_tools(TOOL_TIER_READ)
+        gemini_tools = _convert_tools_to_gemini(tools)
+
+        ground_prompt = f"""You are ASTRA's debug assistant grounding a video analysis in actual code.
+
+Project: {project_name}. {project_description}
+
+## CODEBASE ARCHITECTURE
+{arch_context}
+
+WORKFLOW:
+1. Read the video extraction below carefully
+2. Use your tools to read the specific files mentioned and verify they match the description
+3. Ground every claim in actual code — reference specific files and line numbers
+4. Produce a concrete, actionable plan with file paths and code references
+
+TOOLS AVAILABLE (read-only):
+- read_file, list_files, search_files, read_logs, read_pipeline_state
+
+DO NOT guess at file contents — always read them first."""
+
+        model_kwargs = {"model_name": model}
+        model_kwargs["system_instruction"] = ground_prompt
+        if gemini_tools:
+            model_kwargs["tools"] = gemini_tools
+        ground_model = genai.GenerativeModel(**model_kwargs)
+
+        grounding_message = (
+            f"Here is a detailed extraction from the user's video:\n\n"
+            f"---\n{extraction}\n---\n\n"
+            f"Original user request: {user_message}\n\n"
+            f"Now ground this in the actual codebase. Read the relevant files "
+            f"and produce a concrete implementation plan with real file paths and line numbers."
+        )
+
+        result = await _run_tool_loop(
+            gemini_model=ground_model,
+            initial_parts=[grounding_message],
             max_rounds=MAX_VIDEO_TOOL_ROUNDS,
         )
+        if result and not result.startswith("Error"):
+            print(f"[video-code-tools] TIER 2 Phase B complete: {len(result)} chars")
+            return result
+
     except Exception as e:
-        logger.error("[video-code-tools] Tool loop failed: %s", e)
-        reply_text = f"Error during analysis: {e}"
+        logger.warning("[video-code-tools] TIER 2 Phase B (grounding) failed: %s", e)
 
-    # Step 7: Clean up uploaded videos
-    for vf in uploaded_files:
-        try:
-            genai.delete_file(vf.name)
-        except Exception as cleanup_err:
-            print(f"[video-code-tools] Cleanup warning: {cleanup_err}")
-
-    return reply_text
+    # ---- Tier 3: Graceful fallback — return raw extraction ----
+    print("[video-code-tools] TIER 3: Returning ungrounded extraction as fallback")
+    return (
+        f"**Note: Video extraction completed but codebase grounding failed. "
+        f"The analysis below is based on video content only — file references are estimated "
+        f"from the architecture map, not verified by reading the actual code.**\n\n"
+        f"{extraction}"
+    )
 
 
 async def _run_tool_loop(

@@ -70,6 +70,37 @@ class StageLogEntry(BaseModel):
     detail: Optional[str] = None
 
 
+class StageNarrativeSection(BaseModel):
+    """A section within a stage narrative entry."""
+    heading: str                          # e.g. "Inputs", "Decisions", "Output"
+    body: str                             # Markdown-formatted content
+
+
+class StageNarrative(BaseModel):
+    """Rich narrative for a pipeline stage execution.
+
+    Captures what happened, why, and what came out. Each stage
+    can have multiple narrative entries (e.g. per-segment in
+    Critical Pipeline, per-file in Implementer).
+    """
+    title: str                                        # e.g. "Weaver Synthesis"
+    timestamp: str                                    # ISO timestamp
+    duration_ms: Optional[int] = None                 # How long the stage took
+    model_used: Optional[str] = None                  # Which LLM model ran
+    input_summary: Optional[str] = None               # What went in (brief description)
+    output_summary: Optional[str] = None              # What came out (brief description)
+    sections: List[StageNarrativeSection] = []        # Detailed breakdown
+    files_touched: List[str] = []                     # Files created/modified
+    warnings: List[str] = []                          # Any warnings or issues
+    tokens_used: Optional[int] = None                 # Token count if available
+
+
+class AppendNarrativeRequest(BaseModel):
+    """Request to append a narrative entry to a stage."""
+    stage: str
+    narrative: StageNarrative
+
+
 class BuildProjectResponse(BaseModel):
     id: str
     name: str
@@ -85,6 +116,8 @@ class BuildProjectResponse(BaseModel):
     total_segments: int = 0
     completed_segments: int = 0
     stage_log: List[StageLogEntry] = []
+    stage_narratives: dict = {}           # {stage_name: [StageNarrative]}
+    build_report: Optional[str] = None    # Compiled markdown report
     created_at: datetime
     updated_at: datetime
 

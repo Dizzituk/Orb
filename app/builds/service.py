@@ -179,6 +179,188 @@ def link_job(db: Session, project_id: str, job_id: str) -> Optional[BuildProject
     return project
 
 
+# ── Narrative ──
+
+def append_narrative(
+    db: Session,
+    project_id: str,
+    stage: str,
+    narrative_dict: dict,
+) -> Optional[BuildProject]:
+    """Append a rich narrative entry to a pipeline stage.
+
+    Each stage can accumulate multiple narrative entries as it executes.
+    For example, Critical Pipeline adds one per segment, Implementer
+    adds one per file written.
+
+    Args:
+        db: Database session
+        project_id: Build project ID
+        stage: Pipeline stage name (e.g. "weaver", "critical_pipeline")
+        narrative_dict: Dict matching StageNarrative schema
+
+    Returns:
+        Updated BuildProject or None if not found.
+    """
+    project = get_project(db, project_id)
+    if not project:
+        return None
+
+    narratives = dict(project.stage_narratives or {})
+    if stage not in narratives:
+        narratives[stage] = []
+    narratives[stage].append(narrative_dict)
+    project.stage_narratives = narratives
+
+    db.commit()
+    db.refresh(project)
+    logger.info(
+        "[builds] Appended narrative to %s.%s (%d entries)",
+        project_id, stage, len(narratives[stage]),
+    )
+    return project
+
+
+def compile_build_report(
+    db: Session,
+    project_id: str,
+) -> Optional[str]:
+    """Compile the full build report from brief + narratives + deliverables.
+
+    Generates a single markdown document that can be read by a human
+    or sent to the Debug workspace for situational awareness.
+
+    Returns the report markdown, also saves it to the project.
+    """
+    project = get_project(db, project_id)
+    if not project:
+        return None
+
+    parts = []
+
+    # Header
+    parts.append(f"# Build Report: {project.name}")
+    parts.append(f"**Project ID:** {project.id}")
+    parts.append(f"**Status:** {project.status.value}")
+    parts.append(f"**Created:** {project.created_at.isoformat()}")
+    if project.job_id:
+        parts.append(f"**Job ID:** {project.job_id}")
+    if project.spec_id:
+        parts.append(f"**Spec ID:** {project.spec_id}")
+    parts.append("")
+
+    # Original Brief
+    parts.append("## Original Brief")
+    parts.append("")
+    if project.original_brief:
+        parts.append(project.original_brief)
+    else:
+        parts.append("*No brief recorded.*")
+    parts.append("")
+
+    # Stage-by-stage narrative
+    stage_order = ["weaver", "spec_gate", "critical_pipeline", "overwatcher", "implementer"]
+    stage_labels = {
+        "weaver": "Weaver",
+        "spec_gate": "SpecGate",
+        "critical_pipeline": "Critical Pipeline",
+        "overwatcher": "Overwatcher",
+        "implementer": "Implementer",
+    }
+    narratives = project.stage_narratives or {}
+
+    for stage_key in stage_order:
+        entries = narratives.get(stage_key, [])
+        if not entries:
+            continue
+
+        label = stage_labels.get(stage_key, stage_key)
+        parts.append(f"## {label}")
+        parts.append("")
+
+        for entry in entries:
+            title = entry.get("title", "")
+            ts = entry.get("timestamp", "")
+            duration = entry.get("duration_ms")
+            model = entry.get("model_used")
+            input_sum = entry.get("input_summary")
+            output_sum = entry.get("output_summary")
+            sections = entry.get("sections", [])
+            files = entry.get("files_touched", [])
+            warnings = entry.get("warnings", [])
+
+            if title:
+                parts.append(f"### {title}")
+            if ts:
+                timing = f"*{ts}*"
+                if duration:
+                    timing += f" ({duration}ms)"
+                if model:
+                    timing += f" — {model}"
+                parts.append(timing)
+            parts.append("")
+
+            if input_sum:
+                parts.append(f"**Input:** {input_sum}")
+                parts.append("")
+            if output_sum:
+                parts.append(f"**Output:** {output_sum}")
+                parts.append("")
+
+            for section in sections:
+                heading = section.get("heading", "")
+                body = section.get("body", "")
+                if heading:
+                    parts.append(f"**{heading}**")
+                if body:
+                    parts.append(body)
+                parts.append("")
+
+            if files:
+                parts.append(f"**Files:** {', '.join(files)}")
+                parts.append("")
+            if warnings:
+                for w in warnings:
+                    parts.append(f"⚠️ {w}")
+                parts.append("")
+
+    # Stage Log (timeline)
+    log = project.stage_log or []
+    if log:
+        parts.append("## Stage Log Timeline")
+        parts.append("")
+        for entry in log:
+            ts = entry.get("timestamp", "")[:19]
+            stage = entry.get("stage", "")
+            event = entry.get("event", "")
+            detail = entry.get("detail", "")
+            line = f"- **{ts}** {stage} → {event}"
+            if detail:
+                line += f": {detail}"
+            parts.append(line)
+        parts.append("")
+
+    # Deliverables
+    if project.target_path:
+        parts.append("## Deliverables")
+        parts.append("")
+        parts.append(f"**Target path:** {project.target_path}")
+        parts.append("")
+
+    report = "\n".join(parts)
+
+    # Save to project
+    project.build_report = report
+    db.commit()
+    db.refresh(project)
+
+    logger.info(
+        "[builds] Compiled build report for %s (%d chars)",
+        project_id, len(report),
+    )
+    return report
+
+
 # ── Response Builders ──
 
 def _get_stages(project: BuildProject) -> List[StageInfo]:
@@ -218,6 +400,8 @@ def to_response(project: BuildProject) -> BuildProjectResponse:
         total_segments=project.total_segments,
         completed_segments=project.completed_segments,
         stage_log=_parse_stage_log(project),
+        stage_narratives=project.stage_narratives or {},
+        build_report=project.build_report,
         created_at=project.created_at,
         updated_at=project.updated_at,
     )

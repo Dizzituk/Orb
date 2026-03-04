@@ -233,31 +233,15 @@ def compile_implementation_briefs(
                 fpath, len(frozen_imports[_norm_fpath].import_lines),
             )
 
-        # v1.2 (Job 6): Generate code scaffold for CREATE files
+        # v1.2 (Job 6): Code scaffold for CREATE files — DISABLED v1.3.
+        # Root cause of preamble contamination in job sg-bc6118fe:
+        # scaffold templates inject generic stubs (interfaces, props, consts)
+        # that duplicate what the arch doc already specifies in full.
+        # The LLM writes both, creating duplicate declarations that break
+        # Vite/tsc builds. The arch doc IS the scaffold — frozen imports
+        # (v1.1) provide the deterministic import block, and design_notes
+        # carry the complete code structure. No template needed.
         _scaffold_section = ""
-        if operation.upper() == "CREATE":
-            try:
-                from app.orchestrator.scaffolds.engine import (
-                    generate_scaffold_for_file,
-                    build_scaffold_prompt_section,
-                )
-                _scaffold_code, _scaffold_pattern = generate_scaffold_for_file(
-                    file_path=_norm_fpath,
-                    operation=operation,
-                    architecture_text=design_notes,
-                    exports=file_exports,
-                    frozen_imports=_frozen_section,
-                )
-                if _scaffold_code:
-                    _scaffold_section = build_scaffold_prompt_section(
-                        _scaffold_code, _scaffold_pattern,
-                    )
-                    logger.info(
-                        "[IMPL_COMPILER] v1.2 Scaffold injected for %s (%s, %d chars)",
-                        fpath, _scaffold_pattern, len(_scaffold_code),
-                    )
-            except Exception as _scf_exc:
-                logger.debug("[IMPL_COMPILER] Scaffold generation skipped: %s", _scf_exc)
 
         brief = FileBrief(
             file_path=fpath,

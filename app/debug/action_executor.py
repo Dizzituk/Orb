@@ -2,11 +2,15 @@
 """
 Action Executor: Translates LLM tool calls into real operations.
 
-Phase 1: Read-only operations (local filesystem + sandbox controller).
-Phase 2: Write operations via sandbox bridge.
+v9.1 (2026-03-04): Sandbox-first for ALL file operations.
+The sandbox is a persistent Hyper-V clone of the host desktop with the
+full codebase. All read/write/search/list operations go through the
+sandbox controller API at 192.168.250.2:8765.
 
-All operations go through the existing sandbox controller where applicable.
-Host filesystem access is strictly read-only and limited to scan output files.
+Host filesystem access is limited to:
+- Architecture maps (.architecture/) — these are build artefacts on the host
+- Logs (D:/Orb/logs/) — the ASTRA backend runs on the host
+- Pipeline state — in-memory on the host
 """
 
 from __future__ import annotations
@@ -18,35 +22,79 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
-# =============================================================================
-# HOST ACCESS CONTROL
-# =============================================================================
-
-# Files/directories the debug assistant can read on the host
-HOST_READABLE_PATHS = {
-    Path("D:/Orb/.architecture"),
-    Path("D:/Orb/logs"),
-    Path("D:/Orb/config"),
-    Path("D:/Orb/app"),
-    Path("D:/Orb/main.py"),
-    Path("D:/Orb/requirements.txt"),
-    Path("D:/Orb/TECH_DEBT.md"),
-}
-
 # Sandbox controller base URL
 SANDBOX_CONTROLLER_URL = "http://192.168.250.2:8765"
 
+# Known path aliases: models often send relative paths.
+# Map them to absolute sandbox paths.
+_PATH_ALIASES = [
+    ("orb-desktop/", "D:/orb-desktop/"),
+    ("orb-desktop\\", "D:\\orb-desktop\\"),
+    ("src/", "D:/orb-desktop/src/"),
+    ("src\\", "D:\\orb-desktop\\src\\"),
+    ("app/", "D:/Orb/app/"),
+    ("app\\", "D:\\Orb\\app\\"),
+    ("Orb/", "D:/Orb/"),
+    ("Orb\\", "D:\\Orb\\"),
+]
 
-def _is_host_readable(path: str) -> bool:
-    """Check if a path is in the host-readable allow list."""
-    p = Path(path).resolve()
-    for allowed in HOST_READABLE_PATHS:
-        try:
-            p.relative_to(allowed.resolve())
+
+def _resolve_sandbox_path(path: str) -> str:
+    """Resolve relative/aliased paths to absolute sandbox paths.
+
+    Models frequently send paths like 'orb-desktop/src/App.tsx' or
+    'src/components/debug/DebugView.tsx'. These need to become absolute
+    paths that the sandbox controller can find.
+    """
+    # Already absolute
+    if len(path) > 2 and path[1] == ":":
+        return path
+
+    # Try alias matching
+    for prefix, replacement in _PATH_ALIASES:
+        if path.startswith(prefix):
+            resolved = replacement + path[len(prefix):]
+            logger.debug("[action_executor] Path alias: '%s' -> '%s'", path, resolved)
+            return resolved
+
+    # Default: assume it's relative to D:/Orb
+    resolved = f"D:/Orb/{path}"
+    logger.debug("[action_executor] Path default: '%s' -> '%s'", path, resolved)
+    return resolved
+
+
+# Host-only data: architecture maps and logs live on the host, not sandbox
+_HOST_ONLY_PREFIXES = [
+    "D:/Orb/.architecture",
+    "D:\\Orb\\.architecture",
+    "D:/Orb/logs",
+    "D:\\Orb\\logs",
+]
+
+
+def _is_host_only(path: str) -> bool:
+    """Check if path is host-only data (architecture maps, logs)."""
+    for prefix in _HOST_ONLY_PREFIXES:
+        if path.startswith(prefix):
             return True
-        except ValueError:
-            continue
     return False
+
+
+def _read_host_file(path: str, head: int = None, tail: int = None) -> Optional[str]:
+    """Read a file from the host filesystem. Returns None if not found."""
+    p = Path(path)
+    if not p.exists():
+        return None
+    try:
+        content = p.read_text(encoding="utf-8", errors="replace")
+        lines = content.splitlines()
+        if head:
+            lines = lines[:head]
+        elif tail:
+            lines = lines[-tail:]
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error reading host file: {e}"
 
 
 # =============================================================================
@@ -54,7 +102,7 @@ def _is_host_readable(path: str) -> bool:
 # =============================================================================
 
 async def execute_read_file(params: Dict[str, Any]) -> str:
-    """Read a file from the host filesystem or sandbox."""
+    """Read a file from the sandbox (or host for architecture/logs)."""
     path = params.get("path", "")
     head = params.get("head")
     tail = params.get("tail")
@@ -62,24 +110,19 @@ async def execute_read_file(params: Dict[str, Any]) -> str:
     if not path:
         return "Error: path is required."
 
-    # Try host first (for development codebase access)
-    p = Path(path)
-    if p.exists() and _is_host_readable(path):
-        try:
-            content = p.read_text(encoding="utf-8", errors="replace")
-            lines = content.splitlines()
-            if head:
-                lines = lines[:head]
-            elif tail:
-                lines = lines[-tail:]
-            return "\n".join(lines)
-        except Exception as e:
-            return f"Error reading file: {e}"
+    path = _resolve_sandbox_path(path)
 
-    # Try via sandbox controller
+    # Host-only data (architecture maps, logs)
+    if _is_host_only(path):
+        result = _read_host_file(path, head, tail)
+        if result is not None:
+            return result
+        return f"File not found on host: {path}"
+
+    # Everything else: sandbox controller
     try:
         import httpx
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
                 f"{SANDBOX_CONTROLLER_URL}/fs/contents",
                 json={"paths": [path], "max_file_size": 500000, "include_line_numbers": True},
@@ -88,42 +131,114 @@ async def execute_read_file(params: Dict[str, Any]) -> str:
                 data = resp.json()
                 files = data.get("files", [])
                 if files:
-                    content = files[0].get("content", "")
                     if files[0].get("error"):
                         return f"Error: {files[0]['error']}"
+                    content = files[0].get("content", "")
                     if head:
                         content = "\n".join(content.splitlines()[:head])
                     elif tail:
                         content = "\n".join(content.splitlines()[-tail:])
                     return content
-                return f"File not found: {path}"
+                return f"File not found in sandbox: {path}"
             return f"Sandbox error ({resp.status_code}): {resp.text}"
     except Exception as e:
-        return f"Both host and sandbox read failed for {path}: {e}"
+        return f"Sandbox read failed for {path}: {e}"
 
 
 async def execute_list_files(params: Dict[str, Any]) -> str:
-    """List directory contents."""
+    """List directory contents in the sandbox."""
     path = params.get("path", "")
     if not path:
         return "Error: path is required."
 
-    p = Path(path)
-    if p.exists() and p.is_dir():
-        try:
-            entries = []
-            for item in sorted(p.iterdir()):
-                prefix = "[DIR]" if item.is_dir() else "[FILE]"
-                entries.append(f"{prefix} {item.name}")
-            return "\n".join(entries) if entries else "(empty directory)"
-        except Exception as e:
-            return f"Error listing directory: {e}"
+    path = _resolve_sandbox_path(path)
 
-    return f"Directory not found or not accessible: {path}"
+    # Host-only directories
+    if _is_host_only(path):
+        p = Path(path)
+        if p.exists() and p.is_dir():
+            try:
+                entries = []
+                for item in sorted(p.iterdir()):
+                    prefix = "[DIR]" if item.is_dir() else "[FILE]"
+                    entries.append(f"{prefix} {item.name}")
+                return "\n".join(entries) if entries else "(empty directory)"
+            except Exception as e:
+                return f"Error listing directory: {e}"
+        return f"Directory not found: {path}"
+
+    # Sandbox controller
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{SANDBOX_CONTROLLER_URL}/fs/list",
+                json={"path": path},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                entries = data.get("entries", [])
+                if entries:
+                    lines = []
+                    for entry in entries:
+                        name = entry.get("name", "?")
+                        is_dir = entry.get("is_dir", False)
+                        prefix = "[DIR]" if is_dir else "[FILE]"
+                        lines.append(f"{prefix} {name}")
+                    return "\n".join(lines)
+                return f"(empty directory or not found: {path})"
+            return f"Sandbox error ({resp.status_code}): {resp.text}"
+    except Exception as e:
+        return f"Sandbox list failed for {path}: {e}"
+
+
+async def execute_search_files(params: Dict[str, Any]) -> str:
+    """Search for files matching a pattern in the sandbox."""
+    root = params.get("path", "D:/Orb")
+    pattern = params.get("pattern", "**/*")
+
+    root = _resolve_sandbox_path(root)
+
+    # Host-only directories (architecture)
+    if _is_host_only(root):
+        try:
+            p = Path(root)
+            if not p.exists():
+                return f"Directory not found: {root}"
+            matches = list(p.glob(pattern))
+            skip_dirs = {".git", "node_modules", ".venv", "__pycache__", "dist", "build"}
+            filtered = [m for m in matches if not any(sd in m.parts for sd in skip_dirs)]
+            if not filtered:
+                return f"No files matching '{pattern}' in {root}"
+            result_lines = [str(m) for m in filtered[:100]]
+            suffix = f"\n... ({len(filtered)} total)" if len(filtered) > 100 else ""
+            return "\n".join(result_lines) + suffix
+        except Exception as e:
+            return f"Search error: {e}"
+
+    # Sandbox controller
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{SANDBOX_CONTROLLER_URL}/fs/search",
+                json={"root": root, "pattern": pattern, "max_results": 100},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                matches = data.get("matches", [])
+                if not matches:
+                    return f"No files matching '{pattern}' in {root}"
+                result_lines = [str(m) for m in matches[:100]]
+                suffix = f"\n... ({len(matches)} total)" if len(matches) > 100 else ""
+                return "\n".join(result_lines) + suffix
+            return f"Sandbox error ({resp.status_code}): {resp.text}"
+    except Exception as e:
+        return f"Sandbox search failed for {root}: {e}"
 
 
 async def execute_read_pipeline_state(params: Dict[str, Any]) -> str:
-    """Get current pipeline state."""
+    """Get current pipeline state (host-side, in-memory)."""
     parts = []
 
     try:
@@ -158,7 +273,7 @@ async def execute_read_pipeline_state(params: Dict[str, Any]) -> str:
 
 
 async def execute_read_logs(params: Dict[str, Any]) -> str:
-    """Read filtered log entries."""
+    """Read filtered log entries (host-side)."""
     level = params.get("level", "ALL").upper()
     limit = params.get("limit", 50)
 
@@ -183,36 +298,8 @@ async def execute_read_logs(params: Dict[str, Any]) -> str:
         return f"Error reading logs: {e}"
 
 
-async def execute_search_files(params: Dict[str, Any]) -> str:
-    """Search for files matching a pattern."""
-    root = params.get("path", "D:/Orb")
-    pattern = params.get("pattern", "**/*")
-
-    try:
-        p = Path(root)
-        if not p.exists():
-            return f"Directory not found: {root}"
-
-        matches = list(p.glob(pattern))
-        # Filter out common noise
-        skip_dirs = {".git", "node_modules", ".venv", "__pycache__", "dist", "build"}
-        filtered = [
-            m for m in matches
-            if not any(sd in m.parts for sd in skip_dirs)
-        ]
-
-        if not filtered:
-            return f"No files matching '{pattern}' in {root}"
-
-        result_lines = [str(m) for m in filtered[:100]]
-        suffix = f"\n... ({len(filtered)} total)" if len(filtered) > 100 else ""
-        return "\n".join(result_lines) + suffix
-    except Exception as e:
-        return f"Search error: {e}"
-
-
 # =============================================================================
-# PHASE 2: WRITE TOOLS (sandbox-only)
+# WRITE TOOLS (sandbox-only)
 # =============================================================================
 
 async def execute_write_file(params: Dict[str, Any]) -> str:
@@ -221,6 +308,8 @@ async def execute_write_file(params: Dict[str, Any]) -> str:
     content = params.get("content", "")
     if not path:
         return "Error: path is required."
+
+    path = _resolve_sandbox_path(path)
 
     try:
         import httpx
@@ -245,7 +334,6 @@ async def execute_edit_file(params: Dict[str, Any]) -> str:
     if not path or not old_text:
         return "Error: path and old_text are required."
 
-    # Read current content
     current = await execute_read_file({"path": path})
     if current.startswith("Error"):
         return current
@@ -302,13 +390,13 @@ async def execute_run_command(params: Dict[str, Any]) -> str:
 # =============================================================================
 
 TOOL_HANDLERS = {
-    # Phase 1: read-only
+    # Read (sandbox, except architecture/logs on host)
     "read_file":           execute_read_file,
     "list_files":          execute_list_files,
     "read_pipeline_state": execute_read_pipeline_state,
     "read_logs":           execute_read_logs,
     "search_files":        execute_search_files,
-    # Phase 2: write access
+    # Write (sandbox only)
     "write_file":          execute_write_file,
     "edit_file":           execute_edit_file,
     "run_command":         execute_run_command,
@@ -316,16 +404,7 @@ TOOL_HANDLERS = {
 
 
 async def execute_tool(tool_name: str, params: Dict[str, Any]) -> str:
-    """
-    Execute a tool call from the LLM.
-
-    Args:
-        tool_name: Name of the tool to execute.
-        params: Tool parameters from the LLM.
-
-    Returns:
-        String result to feed back to the LLM.
-    """
+    """Execute a tool call from the LLM."""
     handler = TOOL_HANDLERS.get(tool_name)
     if not handler:
         return f"Unknown tool: {tool_name}"

@@ -108,6 +108,55 @@ def link_job(project_id: str, job_id: str, db: Session = Depends(get_db)):
     return build_service.to_response(p)
 
 
+# ── Narrative & Reports ──
+
+@router.post("/{project_id}/narrative", response_model=BuildProjectResponse)
+def append_narrative(
+    project_id: str,
+    stage: str,
+    title: str,
+    input_summary: str = "",
+    output_summary: str = "",
+    db: Session = Depends(get_db),
+):
+    """Append a rich narrative entry to a stage. Called by pipeline handlers."""
+    p = build_service.append_narrative(
+        db, project_id, stage,
+        {
+            "title": title,
+            "timestamp": __import__("datetime").datetime.now(
+                __import__("datetime").timezone.utc
+            ).isoformat(),
+            "input_summary": input_summary or None,
+            "output_summary": output_summary or None,
+            "sections": [],
+            "files_touched": [],
+            "warnings": [],
+        },
+    )
+    if not p:
+        raise HTTPException(404, "Build project not found")
+    return build_service.to_response(p)
+
+
+@router.post("/{project_id}/report")
+def compile_report(project_id: str, db: Session = Depends(get_db)):
+    """Compile the full build report from all stages."""
+    report = build_service.compile_build_report(db, project_id)
+    if report is None:
+        raise HTTPException(404, "Build project not found")
+    return {"report": report}
+
+
+@router.get("/{project_id}/report")
+def get_report(project_id: str, db: Session = Depends(get_db)):
+    """Get the compiled build report if it exists."""
+    p = build_service.get_project(db, project_id)
+    if not p:
+        raise HTTPException(404, "Build project not found")
+    return {"report": p.build_report}
+
+
 # ── Per-project messages ──
 
 @router.get("/{project_id}/messages")

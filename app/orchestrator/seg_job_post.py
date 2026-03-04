@@ -282,12 +282,145 @@ async def run_phase_checkout(ctx: JobCtx) -> None:
                         f"{', '.join(os.path.basename(f) for f in _scoped)}"
                     )
 
+                    # v1.4: Deterministic surgical fix for minor failures.
+                    # Preamble contamination (content before first import) is
+                    # fixable without LLM — strip everything before the first
+                    # import line. This was the gap that let job sg-bc6118fe
+                    # pass Phase Checkout with a known-broken file.
+                    _reason = getattr(checkout_result.routing, 'reason', '')
+                    _is_preamble = (
+                        'garbage' in _reason.lower()
+                        or 'preamble' in _reason.lower()
+                        or 'contamina' in _reason.lower()
+                        or 'non-code' in _reason.lower()
+                    )
+                    if _is_preamble and _scoped:
+                        _fixed_count = _deterministic_preamble_fix(
+                            _scoped, ctx.emit,
+                        )
+                        if _fixed_count:
+                            ctx.emit(
+                                f"  ✅ Deterministic preamble fix applied to "
+                                f"{_fixed_count} file(s)"
+                            )
+
     except (ImportError, Exception) as pc_err:
         logger.warning("[SEGMENT_LOOP] v5.0 Phase Checkout error: %s", pc_err)
         ctx.emit(f"⚠️ Phase Checkout could not run: {pc_err}")
         ctx.state.phase_checkout_boot = "error"
 
     save_state(ctx.state, ctx.job_dir_path)
+
+
+def _deterministic_preamble_fix(
+    scoped_files: list,
+    emit: Any = None,
+) -> int:
+    """Deterministic preamble fix — strip content before first import.
+
+    v1.4 (2026-03-04): Fixes preamble contamination where scaffold stubs
+    or arch-doc snippets are prepended before the import block. This is
+    a pure deterministic fix — no LLM needed.
+
+    Operates in the sandbox via sandbox_client for frontend files,
+    or directly on host for backend files.
+
+    Returns number of files fixed.
+    """
+    _emit = emit or (lambda msg: None)
+    fixed = 0
+
+    for filepath in scoped_files:
+        try:
+            norm = filepath.replace("\\", "/")
+            is_frontend = (
+                "orb-desktop" in norm
+                or norm.endswith(".tsx")
+                or norm.endswith(".ts")
+                or norm.endswith(".jsx")
+            )
+
+            if is_frontend:
+                from app.overwatcher.sandbox_client import get_sandbox_client
+                client = get_sandbox_client()
+                result = client.shell_run(
+                    f'Get-Content "{filepath}" -Raw -Encoding UTF8',
+                    cwd_target="REPO",
+                )
+                file_content = result.stdout or ""
+            else:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    file_content = f.read()
+
+            if not file_content.strip():
+                continue
+
+            lines = file_content.split("\n")
+
+            # Find first import line
+            first_import = -1
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if (
+                    stripped.startswith("import ")
+                    or stripped.startswith("from ")
+                    or stripped.startswith("import{")
+                ):
+                    first_import = i
+                    break
+
+            if first_import <= 0:
+                # No preamble (import is first line) or no imports at all
+                continue
+
+            # Check if there's actual code content before the import
+            pre_import = "\n".join(lines[:first_import]).strip()
+            if not pre_import or pre_import.startswith("//") or pre_import.startswith("/*"):
+                # Only comments before import — that's fine
+                comment_only = all(
+                    l.strip().startswith("//")
+                    or l.strip().startswith("/*")
+                    or l.strip().startswith("*")
+                    or l.strip() == ""
+                    for l in lines[:first_import]
+                )
+                if comment_only:
+                    continue
+
+            # Strip everything before the first import
+            cleaned = "\n".join(lines[first_import:])
+            _emit(
+                f"    [PREAMBLE FIX] {os.path.basename(filepath)}: "
+                f"stripped {first_import} line(s) before first import"
+            )
+            logger.info(
+                "[PREAMBLE_FIX] %s: stripped %d lines of preamble",
+                filepath, first_import,
+            )
+
+            if is_frontend:
+                import base64
+                encoded = base64.b64encode(
+                    cleaned.encode("utf-8")
+                ).decode("ascii")
+                client.shell_run(
+                    f'[System.IO.File]::WriteAllBytes("{filepath}", '
+                    f'[Convert]::FromBase64String("{encoded}"))',
+                    cwd_target="REPO",
+                )
+            else:
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.write(cleaned)
+
+            fixed += 1
+
+        except Exception as exc:
+            logger.warning(
+                "[PREAMBLE_FIX] Failed to fix %s: %s", filepath, exc,
+            )
+            _emit(f"    ⚠️ Preamble fix failed for {os.path.basename(filepath)}: {exc}")
+
+    return fixed
 
 
 async def run_final_checkout(ctx: JobCtx) -> None:

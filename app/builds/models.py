@@ -82,6 +82,19 @@ class BuildProject(Base):
     # Stage logs — JSON array of {stage, event, timestamp, detail}
     stage_log = Column(JSON, nullable=True, default=list)
 
+    # Rich stage narratives — JSON dict keyed by stage name.
+    # Each value is a list of StageNarrative entries with sections,
+    # inputs, outputs, decisions, and timing. This is the deep history
+    # that drives the Stage Log expandable dropdowns and the final
+    # build report compilation.
+    # Structure: {stage_name: [{title, timestamp, sections: [{heading, body}], ...}]}
+    stage_narratives = Column(JSON, nullable=True, default=dict)
+
+    # Compiled build report — generated when pipeline completes.
+    # Single markdown/JSON document combining brief, stage narratives,
+    # and deliverables. This is the file that gets sent to Debug.
+    build_report = Column(Text, nullable=True)
+
     # Link to the chat project ID used for conversation context
     chat_project_id = Column(Integer, nullable=True)
 

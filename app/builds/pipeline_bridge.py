@@ -165,6 +165,64 @@ def notify_stage_awaiting(
         return None
 
 
+def notify_narrative(
+    db: Session,
+    build_project_id: str,
+    stage: str,
+    title: str,
+    input_summary: str = "",
+    output_summary: str = "",
+    sections: list = None,
+    files_touched: list = None,
+    warnings: list = None,
+    model_used: str = "",
+    duration_ms: int = 0,
+    tokens_used: int = 0,
+) -> Optional[BuildProject]:
+    """Push a rich narrative entry to the build project stage log.
+
+    Called by pipeline handlers to record what happened at each stage
+    with full detail — inputs, decisions, outputs, files, timing.
+
+    This is the primary mechanism for building up the deep history
+    that appears in the Stage Log expandable dropdowns.
+    """
+    from datetime import datetime, timezone
+
+    narrative = {
+        "title": title,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "duration_ms": duration_ms or None,
+        "model_used": model_used or None,
+        "input_summary": input_summary or None,
+        "output_summary": output_summary or None,
+        "sections": sections or [],
+        "files_touched": files_touched or [],
+        "warnings": warnings or [],
+        "tokens_used": tokens_used or None,
+    }
+
+    try:
+        return build_service.append_narrative(
+            db, build_project_id, stage, narrative,
+        )
+    except Exception as e:
+        logger.warning("[pipeline_bridge] Failed to append narrative: %s", e)
+        return None
+
+
+def compile_report(
+    db: Session,
+    build_project_id: str,
+) -> Optional[str]:
+    """Compile the full build report. Called when pipeline completes."""
+    try:
+        return build_service.compile_build_report(db, build_project_id)
+    except Exception as e:
+        logger.warning("[pipeline_bridge] Failed to compile report: %s", e)
+        return None
+
+
 def _extract_project_name(brief: str) -> str:
     """
     Extract a short project name from the brief text.

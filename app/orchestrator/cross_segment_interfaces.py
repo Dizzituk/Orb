@@ -331,14 +331,27 @@ def _extract_imports_from_arch(arch_text: str) -> Dict[str, List[str]]:
         code = code_match.group(1)
 
         # Match: import { X, Y } from './path'
+        # v1.1-fix: Also handles inline type modifiers:
+        #   import { type X, type Y } — strip 'type ' prefix from each name
+        #   so 'type DebugJobSummary' resolves to 'DebugJobSummary'.
         for m in re.finditer(
             r"import\s+(?:type\s+)?\{\s*([^}]+)\}\s+from\s+['\"]([^'\"]+)['\"]",
             code,
         ):
             names_str = m.group(1)
             path = m.group(2)
-            names = [n.strip().split(" as ")[0].strip()
-                     for n in names_str.split(",") if n.strip()]
+            names = []
+            for n in names_str.split(","):
+                n = n.strip()
+                if not n:
+                    continue
+                # Strip inline 'type ' modifier: "type Foo" -> "Foo"
+                if n.startswith("type "):
+                    n = n[5:].strip()
+                # Strip alias: "Foo as Bar" -> "Foo"
+                n = n.split(" as ")[0].strip()
+                if n:
+                    names.append(n)
             imports.setdefault(path, []).extend(names)
 
         # Match: import X from './path'
@@ -358,22 +371,34 @@ def _find_matching_export_file(
     import_path: str,
     producer_exports: Dict[str, Dict[str, Any]],
 ) -> Optional[str]:
-    """Find which producer file matches an import path."""
+    """Find which producer file matches an import path.
+
+    v1.1-fix: Uses full path suffix matching instead of basename-only.
+    Previous behaviour matched './chat-panel/useChatPanel' to ANY file
+    named useChatPanel in any segment's scope (e.g. ChatPanel.tsx in
+    the same directory owned by a different segment). Now requires the
+    full path suffix to match, preventing cross-segment misattribution.
+    """
     # Normalise import path: ./educationData -> educationData
     norm_import = import_path.lstrip("./").replace("\\", "/")
+    import_stem = re.sub(r"\.(tsx?|jsx?|css)$", "", norm_import)
+
+    best_match = None
+    best_match_len = 0
 
     for export_path in producer_exports:
         norm_export = export_path.replace("\\", "/")
-        # Strip extension for matching
         export_stem = re.sub(r"\.(tsx?|jsx?|css)$", "", norm_export)
-        import_stem = re.sub(r"\.(tsx?|jsx?|css)$", "", norm_import)
 
-        if export_stem.endswith(import_stem) or import_stem.endswith(
-            os.path.basename(export_stem)
-        ):
-            return export_path
+        # Full suffix match — import path must match the tail of export path
+        if export_stem.endswith(import_stem) or import_stem.endswith(export_stem):
+            # Prefer longest match (most specific path)
+            match_len = min(len(export_stem), len(import_stem))
+            if match_len > best_match_len:
+                best_match = export_path
+                best_match_len = match_len
 
-    return None
+    return best_match
 
 
 def _check_prop_compatibility(
