@@ -6,8 +6,7 @@ from app.pot_spec.grounded._simple_create_utils_12 import _extract_acceptance_fr
 from app.pot_spec.grounded._simple_create_utils_13 import ARCHITECTURAL_FILE_PATTERNS, _score_integration_point
 from app.pot_spec.grounded._simple_create_utils_14 import CONCEPT_DIRECTORY_PATTERNS, _EVIDENCE_MAX_FILE_CHARS, _sanitize_goal
 from typing import Any, Dict, List, Optional, Tuple
-from app.pot_spec.grounded._sbx_fs import _sbx_isfile, _sbx_isdir, _sbx_exists
-logger = logging.getLogger(__name__)
+from app.pot_spec.grounded._sbx_fs import _sbx_isfile, _sbx_isdir, _sbx_exists, _sbx_read, _sbx_ls
 logger = logging.getLogger(__name__)
 
 # v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
@@ -18,42 +17,13 @@ logger = logging.getLogger(__name__)
 
 def _read_text_any_encoding(file_path: str) -> str:
     """
-    v2.1: Read a text file trying multiple encodings.
-    
-    Some files (e.g., pip freeze output on Windows) are UTF-16 encoded.
-    If default encoding fails to produce readable content, try alternatives.
+    v10.0: Read a text file from the sandbox.
+
+    The sandbox controller handles encoding internally.
+    No host fallbacks. No multi-encoding retry.
     """
-    # Try encodings in order of likelihood
-    encodings = ['utf-8', 'utf-16', 'utf-16-le', 'utf-16-be', 'latin-1']
-    
-    for enc in encodings:
-        try:
-            with open(file_path, 'r', encoding=enc) as f:
-                content = f.read()
-            # Sanity check: UTF-16 files read as UTF-8 will have null bytes
-            # appearing as spaces between every character
-            if enc == 'utf-8' and '\x00' in content:
-                continue  # Try next encoding
-            # Another sanity check: if every other char is a space and content
-            # is very long, it's probably UTF-16 misread as UTF-8
-            if enc == 'utf-8' and len(content) > 100:
-                sample = content[:200]
-                space_ratio = sample.count(' ') / len(sample) if sample else 0
-                if space_ratio > 0.35:  # More than 35% spaces is suspicious
-                    continue
-            return content
-        except (UnicodeDecodeError, UnicodeError):
-            continue
-        except Exception:
-            continue
-    
-    # Last resort: read as binary and decode with errors='replace'
-    try:
-        with open(file_path, 'rb') as f:
-            raw = f.read()
-        return raw.decode('utf-8', errors='replace')
-    except Exception:
-        return ""
+    content = _sbx_read(file_path)
+    return content if content is not None else ""
 
 def _find_integration_points(
     project_path: str,
@@ -70,49 +40,54 @@ def _find_integration_points(
     from ._simple_create_utils_16 import IntegrationPoint
     points = []
     
-    try:
-        for root, dirs, files in os.walk(project_path):
-            # Skip non-source directories
-            dirs[:] = [d for d in dirs if d not in {
-                'node_modules', '.git', '__pycache__', '.venv', 'venv',
-                'dist', 'build', '.next', 'coverage', '.architecture',
-                '_backup_before_audit', '_patches',
-            }]
-            
-            rel_root = os.path.relpath(root, project_path)
-            
-            for filename in files:
-                # Only check source files
-                if not filename.endswith(('.tsx', '.jsx', '.ts', '.js', '.py', '.css')):
-                    continue
-                
-                full_path = os.path.join(root, filename)
-                
-                # v2.0: Match against SPECIFIC architectural patterns (regex on full filename)
+    skip_dirs = {
+        'node_modules', '.git', '__pycache__', '.venv', 'venv',
+        'dist', 'build', '.next', 'coverage', '.architecture',
+        '_backup_before_audit', '_patches',
+    }
+    source_exts = ('.tsx', '.jsx', '.ts', '.js', '.py', '.css')
+
+    def _scan_dir(dir_path: str, rel_root: str) -> None:
+        try:
+            entries = _sbx_ls(dir_path)
+        except Exception as e:
+            logger.warning("[simple_create] Error scanning %s: %s", dir_path, e)
+            return
+        for name in entries:
+            if name in skip_dirs:
+                continue
+            full_path = os.path.join(dir_path, name)
+            ext = os.path.splitext(name)[1].lower()
+            if ext and ext in source_exts:
+                # It's a source file
                 for pattern, relevance, action in ARCHITECTURAL_FILE_PATTERNS:
-                    if re.match(pattern, filename, re.IGNORECASE):
+                    if re.match(pattern, name, re.IGNORECASE):
                         points.append(IntegrationPoint(
                             file_path=full_path,
-                            file_name=filename,
+                            file_name=name,
                             relevance=relevance,
                             action=action,
                         ))
                         break
-                
-                # v2.0: Match files in concept-relevant directories
                 for concept in concepts:
                     dir_patterns = CONCEPT_DIRECTORY_PATTERNS.get(concept, [])
                     for dir_pat in dir_patterns:
-                        # Check if file is under a directory matching the concept
                         if dir_pat in rel_root.lower():
                             if not any(p.file_path == full_path for p in points):
                                 points.append(IntegrationPoint(
                                     file_path=full_path,
-                                    file_name=filename,
+                                    file_name=name,
                                     relevance=f"In '{dir_pat}/' directory (relevant to {concept})",
                                     action="reference",
                                 ))
                             break
+            elif not ext:
+                # Likely a directory — recurse
+                child_rel = os.path.join(rel_root, name) if rel_root != '.' else name
+                _scan_dir(full_path, child_rel)
+
+    try:
+        _scan_dir(project_path, '.')
     except Exception as e:
         logger.warning("[simple_create] Error scanning project: %s", e)
     
@@ -159,9 +134,8 @@ def _extract_patterns(
         if point.action != "modify":
             continue
         
-        try:
-            with open(point.file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
+        content = _sbx_read(point.file_path)
+        if content:
             
             # Extract React component pattern
             if point.file_name.endswith(('.tsx', '.jsx')):
@@ -187,11 +161,64 @@ def _extract_patterns(
                 )
                 if fetch_match:
                     patterns["api_call_pattern"] = fetch_match.group(0)[:600]
-                    
-        except Exception as e:
-            logger.debug("[simple_create] Could not read %s: %s", point.file_path, e)
     
     return patterns
+
+def _resolve_evidence_path(
+    file_path: str,
+    project_paths: Optional[List[str]] = None,
+) -> Optional[str]:
+    """Resolve a bare or relative file path to an absolute sandbox path.
+
+    v10.0: Uses architecture INDEX.json first (fast, no sandbox round-trips),
+    then tries common subdirectory patterns, then direct root+path.
+    All existence checks go through the sandbox. No host fallbacks.
+
+    Returns the resolved absolute path, or None if not found.
+    """
+    basename = os.path.basename(file_path)
+
+    # Strategy 1: Architecture INDEX.json lookup (host operational data)
+    try:
+        import json as _json
+        _idx_path = os.path.join("D:\\Orb", ".architecture", "INDEX.json")
+        if os.path.isfile(_idx_path):
+            with open(_idx_path, "r", encoding="utf-8") as _f:
+                _idx = _json.load(_f)
+            for _entry in _idx.get("files", []):
+                _name = _entry.get("name", "")
+                _path = _entry.get("path", "")
+                if _name == basename and _path:
+                    if _sbx_isfile(_path):
+                        return _path
+                # Also try matching the relative path suffix
+                if _path and _path.replace("\\", "/").endswith(
+                    file_path.replace("\\", "/")
+                ):
+                    if _sbx_isfile(_path):
+                        return _path
+    except Exception:
+        pass
+
+    # Strategy 2: Try common subdirectory patterns via sandbox
+    _subdirs = [
+        "src", "app", "src/components", "src/services", "src/types",
+        "src/components/chat-panel", "src/components/debug",
+        "src/components/builds",
+    ]
+    if project_paths:
+        for root in project_paths:
+            for subdir in _subdirs:
+                candidate = os.path.join(root, subdir, file_path)
+                if _sbx_isfile(candidate):
+                    return candidate
+            # Direct root + path
+            candidate = os.path.join(root, file_path)
+            if _sbx_isfile(candidate):
+                return candidate
+
+    return None
+
 
 def _host_read_file(file_path: str, max_chars: int = 0, project_paths: Optional[List[str]] = None) -> Tuple[bool, str]:
     """Read a file from the host filesystem for evidence fulfilment.
@@ -209,15 +236,12 @@ def _host_read_file(file_path: str, max_chars: int = 0, project_paths: Optional[
     # Normalise path separators for Windows
     file_path = file_path.replace('/', os.sep).replace('\\', os.sep)
 
-    # v4.1: Resolve relative paths against project roots
-    if not _sbx_exists(file_path) and project_paths:
-        for root in project_paths:
-            candidate = os.path.join(root, file_path)
-            candidate = candidate.replace('/', os.sep).replace('\\', os.sep)
-            if _sbx_exists(candidate):
-                logger.info("[SPEC_GATE_EVIDENCE] Resolved relative path: %s → %s", file_path, candidate)
-                file_path = candidate
-                break
+    # v10.0: Resolve relative/bare paths using INDEX.json + sandbox checks
+    if not _sbx_exists(file_path):
+        resolved = _resolve_evidence_path(file_path, project_paths)
+        if resolved:
+            logger.info("[SPEC_GATE_EVIDENCE] Resolved path: %s → %s", file_path, resolved)
+            file_path = resolved
 
     # v4.2: TypeScript barrel export fallback.
     # If 'foo.ts' not found, try 'foo/index.ts' and 'foo/index.tsx'.

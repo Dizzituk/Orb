@@ -114,6 +114,12 @@ class ReasoningEvent:
     evidence_sources: List[EvidenceSource] = field(default_factory=list)
     decisions: List[DecisionPoint] = field(default_factory=list)
 
+    # IO operations — Layer 3 (file read/write tracking)
+    # Each entry is an IOEvent from app.transparency.io_events.
+    # Stored as a list here to avoid circular imports — the collector
+    # appends IOEvent instances, and to_dict() calls .to_dict() on each.
+    io_events: list = field(default_factory=list)
+
     # Cost/performance
     model_used: str = ""          # "gemini-2.5-flash" | "deterministic" | etc.
     token_cost_usd: float = 0.0
@@ -137,6 +143,10 @@ class ReasoningEvent:
             "reasoning_detail": self.reasoning_detail,
             "evidence_sources": [e.to_dict() for e in self.evidence_sources],
             "decisions": [d.to_dict() for d in self.decisions],
+            "io_events": [
+                e.to_dict() if hasattr(e, "to_dict") else e
+                for e in self.io_events
+            ],
             "model_used": self.model_used,
             "token_cost_usd": self.token_cost_usd,
             "duration_ms": self.duration_ms,

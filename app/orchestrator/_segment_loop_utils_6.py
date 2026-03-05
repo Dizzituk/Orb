@@ -115,15 +115,12 @@ def _load_source_file_evidence(
     project_roots: Optional[List[str]] = None,
 ) -> Dict[str, str]:
     """
-    v2.2: Pre-load existing source files for refactor jobs.
+    v3.1: Pre-load existing source files from the SANDBOX.
 
-    Scans ALL segments' file_scope entries across the manifest, finds files
-    that already exist on disk (i.e. source files being refactored, not
-    CREATE targets), reads their content, and returns it.
-
-    This ensures every segment has access to the original source code it's
-    extracting from — preventing the LLM from fabricating function signatures,
-    constant values, and API shapes.
+    Scans ALL segments' file_scope entries across the manifest, reads files
+    from the SANDBOX (the only source of truth for the repo), and returns
+    their content. This ensures every segment has access to the real source
+    code — preventing the LLM from fabricating function signatures.
 
     Args:
         manifest: The full segment manifest
@@ -131,7 +128,7 @@ def _load_source_file_evidence(
                        Defaults to ["D:\\Orb", "D:\\orb-desktop"].
 
     Returns:
-        Dict of {relative_path: file_content} for files that exist on disk.
+        Dict of {relative_path: file_content} for files found in sandbox.
         Content is capped at 250K chars per file.
     """
     if project_roots is None:
@@ -141,6 +138,14 @@ def _load_source_file_evidence(
     source_files: Dict[str, str] = {}
     seen_paths: set = set()
 
+    # Get sandbox client once for all reads
+    try:
+        from app.overwatcher.sandbox_client import SandboxClient
+        client = SandboxClient()
+    except Exception as e:
+        logger.warning("[segment_loop] v3.1 Cannot create sandbox client: %s", e)
+        return source_files
+
     for seg in manifest.segments:
         for rel_path in seg.file_scope:
             normalised = rel_path.replace("/", os.sep).replace("\\", os.sep).lower()
@@ -148,32 +153,73 @@ def _load_source_file_evidence(
                 continue
             seen_paths.add(normalised)
 
-            # Try to find on disk under each project root
+            # Try each project root in the SANDBOX
             for root in project_roots:
                 abs_path = os.path.join(root, rel_path.replace("/", os.sep).replace("\\", os.sep))
-                if os.path.isfile(abs_path):
-                    try:
-                        with open(abs_path, "r", encoding="utf-8", errors="replace") as fh:
-                            content = fh.read(MAX_SOURCE_CHARS)
+                try:
+                    cmd = f'Get-Content -Path "{abs_path}" -Raw -Encoding UTF8'
+                    result = client.shell_run(
+                        cmd=["powershell", "-NoProfile", "-Command", cmd],
+                    )
+                    stdout = result.get("stdout", "") if isinstance(result, dict) else getattr(result, "stdout", "")
+                    if stdout and stdout.strip():
+                        content = stdout[:MAX_SOURCE_CHARS]
                         source_files[rel_path] = content
                         logger.info(
-                            "[segment_loop] v2.2 Source file pre-loaded: %s (%d chars)",
+                            "[segment_loop] v3.1 Source file pre-loaded from sandbox: %s (%d chars)",
                             rel_path, len(content),
                         )
-                    except Exception as exc:
-                        logger.warning(
-                            "[segment_loop] v2.2 Failed to read source file %s: %s",
-                            abs_path, exc,
-                        )
-                    break
+                        break
+                except Exception as exc:
+                    logger.debug(
+                        "[segment_loop] v3.1 Not found in sandbox at %s: %s",
+                        abs_path, exc,
+                    )
+                    continue
 
     if source_files:
         print(
             f"[segment_loop] 📖 Pre-loaded {len(source_files)} source file(s) "
-            f"for refactor evidence: {', '.join(source_files.keys())}"
+            f"from sandbox: {', '.join(source_files.keys())}"
         )
 
     return source_files
+
+def _read_file_via_sandbox(abs_path: str) -> Optional[str]:
+    """
+    v3.1 Read a file from the SANDBOX filesystem via the sandbox bridge.
+
+    During implementation, earlier segments write files to the sandbox —
+    not the host. We MUST read from the sandbox to see those files.
+    The sandbox is the ONLY source of truth. No host fallback.
+    """
+    try:
+        from app.overwatcher.sandbox_client import SandboxClient
+        client = SandboxClient()
+        read_cmd = f'Get-Content -Path "{abs_path}" -Raw -Encoding UTF8'
+        result = client.shell_run(
+            cmd=["powershell", "-NoProfile", "-Command", read_cmd]
+        )
+        stdout = ""
+        if isinstance(result, dict):
+            stdout = result.get("stdout", "")
+        else:
+            stdout = getattr(result, "stdout", "")
+        if stdout and stdout.strip():
+            logger.debug(
+                "[build_sibling_interfaces] v3.0 Read %d chars from sandbox: %s",
+                len(stdout), abs_path,
+            )
+            return stdout
+    except Exception as e:
+        logger.debug(
+            "[build_sibling_interfaces] v3.0 Sandbox read failed for %s: %s",
+            abs_path, e,
+        )
+
+    logger.debug("[build_sibling_interfaces] v3.1 Empty/missing in sandbox: %s", abs_path)
+    return None
+
 
 def _build_sibling_interfaces(
     segment: "SegmentSpec",
@@ -181,14 +227,15 @@ def _build_sibling_interfaces(
     job_dir_path: str,
 ) -> str:
     """
-    v2.5 Deterministic sibling interface extraction.
+    v3.0 Deterministic sibling interface extraction via SANDBOX.
 
     For each completed upstream segment, reads the actual implemented files
-    from disk and extracts their public interface using AST. Returns formatted
-    evidence text that gets injected into the architecture/implementation prompt.
+    from the SANDBOX (not host) and extracts their public interface using AST.
+    Returns formatted evidence text injected into the architecture/implementation
+    prompt.
 
-    This means the LLM sees EXACT function signatures, exports, and types
-    from real code — zero hallucination risk.
+    v3.0: Reads via sandbox bridge so newly-created files from earlier
+    segments are visible. Falls back to host for pre-existing files.
     """
     try:
         from app.overwatcher.deterministic_checker import (
@@ -207,23 +254,31 @@ def _build_sibling_interfaces(
         for fpath in (dep_state.output_files or []):
             if not fpath.endswith(".py"):
                 continue
-            # Read the file from disk
             abs_path = fpath
             if not os.path.isabs(fpath):
                 abs_path = os.path.join("D:/Orb", fpath)
+            file_content = _read_file_via_sandbox(abs_path)
+            if file_content is None:
+                logger.debug(
+                    "[build_sibling_interfaces] Could not read %s from sandbox or host",
+                    fpath,
+                )
+                continue
             try:
-                content = open(abs_path, encoding="utf-8").read()
-                iface = extract_segment_interface(fpath, content)
+                iface = extract_segment_interface(fpath, file_content)
                 interfaces.append(iface)
             except Exception as e:
-                logger.debug("[build_sibling_interfaces] Could not read %s: %s", fpath, e)
+                logger.debug(
+                    "[build_sibling_interfaces] Interface extraction failed for %s: %s",
+                    fpath, e,
+                )
 
     if not interfaces:
         return ""
 
     formatted = format_segment_interfaces(interfaces)
     logger.info(
-        "[build_sibling_interfaces] v2.5 Extracted %d sibling interfaces for %s",
+        "[build_sibling_interfaces] v3.0 Extracted %d sibling interfaces for %s (via sandbox)",
         len(interfaces), segment.segment_id,
     )
     return formatted

@@ -32,6 +32,7 @@ from app.memory.architecture_models import (
     ArchitectureFileContent,
 )
 from app.rag.models import ArchCodeChunk
+from app.sandbox_fs import sandbox_read_text, sandbox_isfile, sandbox_listdir
 
 logger = logging.getLogger(__name__)
 
@@ -66,45 +67,47 @@ class RescanReport:
 
 
 def _hash_file(path: str) -> Optional[str]:
-    """SHA-256 hash of file content."""
-    try:
-        with open(path, "rb") as f:
-            return hashlib.sha256(f.read()).hexdigest()
-    except (OSError, IOError):
+    """SHA-256 hash of file content via sandbox."""
+    content = sandbox_read_text(path)
+    if content is None:
         return None
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-def _walk_codebase() -> Dict[str, os.stat_result]:
+def _walk_codebase() -> Dict[str, dict]:
     """
-    Walk the codebase and return all Python files with their stat info.
-    
+    Walk the codebase via sandbox and return all Python files.
+
     Returns:
-        {absolute_path: stat_result}
+        {absolute_path: {"size": int}} — sandbox doesn't provide full stat,
+        so we store a minimal dict for compatibility.
     """
-    files = {}
-    
+    files: Dict[str, dict] = {}
+
+    def _scan_dir(dir_path: str) -> None:
+        entries = sandbox_listdir(dir_path)
+        for entry in entries:
+            name = entry.get("name", "")
+            path = entry.get("path", os.path.join(dir_path, name))
+            if not name:
+                continue
+            if name in SKIP_DIRS:
+                continue
+            ext = os.path.splitext(name)[1].lower()
+            if ext == ".py":
+                size = entry.get("size_bytes", 0) or 0
+                files[path] = {"size": size}
+            elif not ext:
+                # Likely a directory — recurse
+                _scan_dir(path)
+
     for root_path in SCAN_ROOTS:
-        if os.path.isfile(root_path):
-            if root_path.endswith(".py"):
-                try:
-                    files[root_path] = os.stat(root_path)
-                except OSError:
-                    pass
+        if root_path.endswith(".py"):
+            if sandbox_isfile(root_path):
+                files[root_path] = {"size": 0}
             continue
-        
-        for dirpath, dirnames, filenames in os.walk(root_path):
-            # Skip excluded directories
-            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
-            
-            for fname in filenames:
-                if not fname.endswith(".py"):
-                    continue
-                full_path = os.path.join(dirpath, fname)
-                try:
-                    files[full_path] = os.stat(full_path)
-                except OSError:
-                    continue
-    
+        _scan_dir(root_path)
+
     return files
 
 
@@ -317,17 +320,20 @@ def rescan_codebase(
     for path in sorted(disk_paths - db_paths):
         try:
             stat = disk_files[path]
-            source = open(path, "r", encoding="utf-8").read()
+            source = sandbox_read_text(path)
+            if not source:
+                report.errors.append(f"Add {path}: could not read from sandbox")
+                continue
             content_hash = hashlib.sha256(source.encode()).hexdigest()
-            
+
             # Add to file index
             fi = ArchitectureFileIndex(
                 scan_id=scan_id,
                 path=path,
                 name=os.path.basename(path),
                 ext=os.path.splitext(path)[1],
-                size_bytes=stat.st_size,
-                mtime=datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                size_bytes=len(source.encode("utf-8")),
+                mtime=datetime.utcnow().isoformat(),
                 zone="backend",
                 root=r"D:\Orb",
                 line_count=source.count("\n") + 1,
@@ -366,21 +372,25 @@ def rescan_codebase(
         fi = db_files[path]
         stat = disk_files[path]
         
-        # Quick check: size and mtime
-        disk_size = stat.st_size
-        disk_mtime = datetime.fromtimestamp(stat.st_mtime).isoformat()
-        
-        if fi.size_bytes == disk_size and fi.mtime == disk_mtime:
+        # Quick check: size (sandbox doesn't give mtime reliably)
+        disk_info = disk_files[path]
+        disk_size = disk_info.get("size", 0)
+
+        if fi.size_bytes == disk_size and disk_size > 0:
             report.unchanged += 1
             continue
-        
-        # File changed — re-extract
+
+        # File may have changed — re-extract
         try:
-            source = open(path, "r", encoding="utf-8").read()
-            
+            source = sandbox_read_text(path)
+            if not source:
+                report.errors.append(f"Modify {path}: could not read from sandbox")
+                continue
+
             # Update file index
-            fi.size_bytes = disk_size
-            fi.mtime = disk_mtime
+            actual_size = len(source.encode("utf-8"))
+            fi.size_bytes = actual_size
+            fi.mtime = datetime.utcnow().isoformat()
             fi.line_count = source.count("\n") + 1
             
             # Replace chunks

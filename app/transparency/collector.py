@@ -12,6 +12,7 @@ Also provides helpers for:
 - Recording evidence and decisions (Layer 2)
 
 v1.0 (2026-02): Initial implementation
+v1.1 (2026-03): Added IO event tracking (Pipeline Logging Overhaul)
 """
 
 from __future__ import annotations
@@ -26,6 +27,11 @@ from app.transparency.schemas import (
     EvidenceSource,
     ReasoningEvent,
 )
+
+# Lazy import to avoid circular dependency — io_events imports nothing from here
+def _lazy_io_event_type():
+    from app.transparency.io_events import IOEvent
+    return IOEvent
 
 logger = logging.getLogger(__name__)
 
@@ -235,6 +241,40 @@ class ReasoningCollector:
             "stage_name": self._current_event.stage_name,
             "decision": decision.to_dict(),
         })
+
+    # =========================================================================
+    # IO EVENTS (Layer 3 — file read/write tracking)
+    # =========================================================================
+
+    def add_io_event(self, io_event) -> None:
+        """Record an IO operation (file read/write/check).
+
+        Emits via SSE for live display. If the event is a sandbox
+        violation, emits an additional sandbox_violation event so
+        the frontend can highlight it in red.
+        """
+        if not self._current_event:
+            return
+
+        # Store on the current reasoning event
+        if not hasattr(self._current_event, "io_events"):
+            self._current_event.io_events = []
+        self._current_event.io_events.append(io_event)
+
+        # Emit the IO operation via SSE
+        self._emit_sse({
+            "type": "io_operation",
+            "stage_name": self._current_event.stage_name,
+            "io_event": io_event.to_dict(),
+        })
+
+        # If violation, emit a distinct violation event too
+        if getattr(io_event, "is_violation", False):
+            self._emit_sse({
+                "type": "sandbox_violation",
+                "stage_name": self._current_event.stage_name,
+                "io_event": io_event.to_dict(),
+            })
 
     # =========================================================================
     # SSE EMISSION

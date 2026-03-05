@@ -15,4 +15,6 @@ Modules:
 - matcher: CorrectionMatcher — query relevant past corrections
 - models: SQLAlchemy models for DB tables
 - router: FastAPI endpoints
+- io_events: IOEvent dataclass for file read/write tracking
+- io_tracker: IOTracker — context-var-based IO operation recorder
 """

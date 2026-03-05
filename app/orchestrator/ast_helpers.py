@@ -55,7 +55,7 @@ def extract_python_definitions(file_path: str) -> Dict[str, Any]:
         }
 
     On parse failure returns a dict with empty lists and an "error" key.
-    Uses host-direct filesystem access.
+    v3.5: Reads from sandbox only — sandbox is the sole source of truth.
     """
     result: Dict[str, Any] = {
         "classes": [],
@@ -66,19 +66,15 @@ def extract_python_definitions(file_path: str) -> Dict[str, Any]:
     }
 
     try:
-        # v3.4-fix: Try sandbox first
-        _py_content = None
-        try:
-            from app.sandbox_fs import sandbox_read_text as _sbx_read
-            _py_content = _sbx_read(file_path)
-        except ImportError:
-            pass
-        if _py_content is None:
-            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                _py_content = f.read()
-        source = _py_content
-    except OSError as e:
-        logger.warning("[INTEGRATION_CHECK] Cannot read Python file %s: %s", file_path, e)
+        # v3.5: Sandbox is the ONLY source of truth for repo files
+        from app.sandbox_fs import sandbox_read_text as _sbx_read
+        source = _sbx_read(file_path)
+        if source is None:
+            logger.debug("[ast_helpers] File not found in sandbox: %s", file_path)
+            result["error"] = f"Not found in sandbox: {file_path}"
+            return result
+    except Exception as e:
+        logger.warning("[ast_helpers] Cannot read Python file %s: %s", file_path, e)
         result["error"] = str(e)
         return result
 
@@ -209,19 +205,15 @@ def extract_typescript_exports(file_path: str) -> Dict[str, Any]:
     }
 
     try:
-        # v3.4-fix: Try sandbox first — file may only exist there
-        _ts_content = None
-        try:
-            from app.sandbox_fs import sandbox_read_text as _sbx_read
-            _ts_content = _sbx_read(file_path)
-        except ImportError:
-            pass
-        if _ts_content is None:
-            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                _ts_content = f.read()
-        content = _ts_content
-    except OSError as e:
-        logger.warning("[INTEGRATION_CHECK] Cannot read TypeScript file %s: %s", file_path, e)
+        # v3.5: Sandbox is the ONLY source of truth for repo files
+        from app.sandbox_fs import sandbox_read_text as _sbx_read
+        content = _sbx_read(file_path)
+        if content is None:
+            logger.debug("[ast_helpers] File not found in sandbox: %s", file_path)
+            result["error"] = f"Not found in sandbox: {file_path}"
+            return result
+    except Exception as e:
+        logger.warning("[ast_helpers] Cannot read TypeScript file %s: %s", file_path, e)
         result["error"] = str(e)
         return result
 

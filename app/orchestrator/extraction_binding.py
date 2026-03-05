@@ -26,6 +26,7 @@ import json
 import logging
 import os
 from typing import Any, Dict, List, Optional
+from app.sandbox_fs import sandbox_read_text as _sbx_read_text
 
 logger = logging.getLogger(__name__)
 

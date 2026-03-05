@@ -179,6 +179,21 @@ async def _handle_architecture(
         max_arch_chars=12000, max_codebase_chars=8000,
     )
 
+    # --- Pre-flight: file existence + exports (deterministic, zero LLM cost) ---
+    _preflight_section = ""
+    _preflight_file_scope = segment_context.get("file_scope", []) if segment_context else []
+    if _preflight_file_scope:
+        try:
+            from app.llm.critical_pipeline.preflight import gather_preflight_facts
+            _preflight_section = gather_preflight_facts(_preflight_file_scope)
+            if _preflight_section:
+                evidence_context = _preflight_section + "\n\n" + evidence_context
+                yield _emit(
+                    f"\U0001f50d **Pre-flight:** {len(_preflight_file_scope)} file(s) checked in sandbox\n"
+                )
+        except Exception as _pf_err:
+            logger.debug("[critical_pipeline] Pre-flight skipped: %s", _pf_err)
+
     # --- Prompt ---
     yield _emit("\ud83d\udd27 **Building architecture prompt...**\n\n")
 

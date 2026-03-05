@@ -57,23 +57,15 @@ def check_output_file_sizes(
 
     for seg_id, seg_state in state.segments.items():
         for rel_path in (seg_state.output_files or []):
-            # Read file content -- prefer sandbox, fallback to host
+            # v3.5: Sandbox is the ONLY source of truth for repo files
             content = None
             if use_sandbox and client:
                 content = _read_file_via_sandbox(client, rel_path, sandbox_base)
             if content is None:
                 abs_path = _resolve_output_path(rel_path, sandbox_base)
-                if abs_path and _sbx_isfile(abs_path):
+                if abs_path:
                     try:
-                        _sbx_content = _sbx_read_text(abs_path)
-
-                        if _sbx_content is not None:
-                            content = _sbx_content
-
-                        else:
-
-                            with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
-                                content = f.read()
+                        content = _sbx_read_text(abs_path)
                     except Exception:
                         continue
 

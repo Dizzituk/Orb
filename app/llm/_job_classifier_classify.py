@@ -149,6 +149,16 @@ def _has_codebase_intent(message_lower: str) -> bool:
         "check what we have", "what we already have",
         "what's already in place", "already in place",
         "come up with a plan",  # planning intent combined with video = code work
+        # v9.1: RAG/memory/architecture signals — user wants grounded analysis
+        "rag memory", "the rag", "your memory",
+        "architecture", "architectural",
+        "find all the elements", "find the elements",
+        "find all the files", "find the files",
+        "find all the components", "find the components",
+        "what needs to change", "what needs changing",
+        "what to build", "what to implement",
+        "how to build", "how to implement",
+        "come up with an implementation",
     ]
     # Two or more of these single-word signals in the same message
     code_signal_words = [

@@ -23,6 +23,7 @@ class PipelineStageEnum(str, Enum):
     critical_pipeline = "critical_pipeline"
     overwatcher = "overwatcher"
     implementer = "implementer"
+    final_checkout = "final_checkout"
     complete = "complete"
 
 
@@ -112,6 +113,7 @@ class BuildProjectResponse(BaseModel):
     job_id: Optional[str] = None
     target_path: Optional[str] = None
     original_brief: Optional[str] = None
+    weaver_extraction: Optional[dict] = None  # Trimmed Weaver output: requirements, preferences, constraints
     chat_project_id: Optional[int] = None
     total_segments: int = 0
     completed_segments: int = 0

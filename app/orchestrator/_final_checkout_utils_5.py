@@ -2,14 +2,10 @@ from __future__ import annotations
 import logging
 import os
 import re
-import time
-from .construction_planner_models import ConstructionPlan
-from .construction_skeleton import verify_phase_deliverables
-from .strike_tracker import FixOutcome, StrikeTracker, StrikeVerdict
-from app.orchestrator._final_checkout_utils_2 import _MAX_REVIEW_CHARS, _MAX_REVIEW_FILES, _REVIEW_PRIORITY_PATTERNS, _REVIEW_SYSTEM_PROMPT
-from app.orchestrator._final_checkout_utils_3 import _build_ai_review_prompt, _detect_and_fix_integration_issues
-from app.orchestrator._final_checkout_utils_4 import _apply_ai_review_fix, _generate_missing_file, _parse_review_response
-from typing import Any, Callable, Dict, List, Optional
+from .phase_checkout_models import ContractCheckResult, ContractViolation, SizeValidationResult, SizeViolation
+from app.orchestrator._phase_checkout_checks_utils_2 import _KNOWN_PREEXISTING_FAILURES, _SILENT_IMPORT_PATTERNS, _file_exists_in_sandbox, _find_largest_function
+from app.pot_spec.grounded.size_models import MAX_FILE_KB, MAX_FILE_LINES, MAX_FUNCTION_LINES
+from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 # v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
@@ -22,435 +18,356 @@ from app.sandbox_fs import (
 logger = logging.getLogger(__name__)
 
 
-async def _check_spec_coverage_with_fixes(
-    file_scope: List[str],
+BOOT_MAX_FIX_ATTEMPTS = int(os.environ.get("PHASE_CHECKOUT_MAX_FIX_ATTEMPTS", "12"))
+
+BOOT_STRIKE_LIMIT = int(os.environ.get("PHASE_CHECKOUT_STRIKE_LIMIT", "3"))
+
+def check_output_file_sizes(
+    state: Any,
     sandbox_base: str,
-    sandbox_client: Any,
-    original_spec: Optional[str],
-    tracker: StrikeTracker,
-    emit: Optional[Callable] = None,
-) -> SpecCoverageResult:
+    baseline_function_sizes: Optional[Dict[str, int]] = None,
+) -> SizeValidationResult:
     """
-    Verify all spec files exist. If missing, attempt to generate them.
+    Scan segment-produced output files for size constraint violations.
 
-    Uses StrikeTracker: if generation fails for the same file repeatedly,
-    escalate after 3 strikes.
+    v2.0: Only checks files that segments actually produced (output_files).
+    Pre-existing source files that are being replaced/decomposed are NOT checked.
+
+    v6.1 FIX 3: baseline_function_sizes is a dict of {function_name: line_count}
+    from the source monolith scan. If a transplanted function is <= its baseline
+    size, it's a pre-existing violation, not a new one. Skip it.
+
+    Checks:
+    - File line count <= MAX_FILE_LINES (400)
+    - File size <= MAX_FILE_KB (15 KB)
+    - Largest function body <= MAX_FUNCTION_LINES (200)
     """
-    from .final_checkout import SpecCoverageResult, _file_exists_on_sandbox
-    _emit = emit or (lambda msg: None)
+    from .phase_checkout_checks import _read_file_via_sandbox, _resolve_output_path
+    violations: List[SizeViolation] = []
+    files_checked = 0
 
-    # First pass: check what exists
-    missing = []
-    found = 0
-    for rel_path in file_scope:
-        exists = _file_exists_on_sandbox(sandbox_client, rel_path, sandbox_base)
-        if exists:
-            found += 1
-        else:
-            missing.append(rel_path)
+    # v2.0: Check files via sandbox, not host filesystem
+    try:
+        from app.overwatcher.sandbox_client import get_sandbox_client
+        client = get_sandbox_client()
+        use_sandbox = client.is_connected()
+    except Exception:
+        use_sandbox = False
+        client = None
 
-    if not missing:
-        tracker.record_resolution()
-        return SpecCoverageResult(
-            status="pass",
-            expected_files=len(file_scope),
-            found_files=found,
-        )
+    for seg_id, seg_state in state.segments.items():
+        for rel_path in (seg_state.output_files or []):
+            # v3.5: Sandbox is the ONLY source of truth for repo files
+            content = None
+            if use_sandbox and client:
+                content = _read_file_via_sandbox(client, rel_path, sandbox_base)
+            if content is None:
+                abs_path = _resolve_output_path(rel_path, sandbox_base)
+                if abs_path:
+                    try:
+                        content = _sbx_read_text(abs_path)
+                    except Exception:
+                        continue
 
-    _emit(f"  {len(missing)} file(s) missing from spec — attempting generation...")
-    generated = []
+            if content is None:
+                continue
 
-    for rel_path in missing:
-        fix_start = time.time()
-        error_text = f"missing_file:{rel_path}"
-        verdict = tracker.report_error(error_text)
+            files_checked += 1
+            line_count = content.count("\n") + 1
+            kb_size = round(len(content.encode("utf-8")) / 1024, 1)
 
-        if verdict == StrikeVerdict.HARD_STOP:
-            _emit(f"    [STRIKE 3] Hard stop on {rel_path} — cannot generate")
-            tracker.record_hard_stop(error_text)
-            break
+            if line_count > MAX_FILE_LINES:
+                violations.append(SizeViolation(
+                    file_path=rel_path, line_count=line_count,
+                    kb_size=kb_size, produced_by_segment=seg_id,
+                    violation_type="file_too_large",
+                ))
+            elif kb_size > MAX_FILE_KB:
+                violations.append(SizeViolation(
+                    file_path=rel_path, line_count=line_count,
+                    kb_size=kb_size, produced_by_segment=seg_id,
+                    violation_type="file_too_large_kb",
+                ))
 
-        strategy = "generate_from_spec" if verdict == StrikeVerdict.PROCEED else "generate_stub"
-        _emit(f"    [{verdict.value}] Generating {rel_path} (strategy: {strategy})")
+            # Function-level check (Python only)
+            if rel_path.endswith(".py"):
+                max_fn_lines, max_fn_name = _find_largest_function(content)
+                if max_fn_lines > MAX_FUNCTION_LINES:
+                    # v6.1 FIX 3: Check if this is a pre-existing oversized function
+                    _is_baseline = False
+                    if baseline_function_sizes and max_fn_name:
+                        _baseline_size = baseline_function_sizes.get(max_fn_name, 0)
+                        if _baseline_size > 0 and max_fn_lines <= _baseline_size:
+                            _is_baseline = True
+                            logger.info(
+                                "[phase_checkout] v6.1 Skipping pre-existing size violation: "
+                                "%s (%d lines, baseline %d)",
+                                max_fn_name, max_fn_lines, _baseline_size,
+                            )
 
-        success = await _generate_missing_file(
-            rel_path=rel_path,
-            sandbox_base=sandbox_base,
-            sandbox_client=sandbox_client,
-            original_spec=original_spec,
-            strategy=strategy,
-            emit=_emit,
-        )
+                    if not _is_baseline:
+                        violations.append(SizeViolation(
+                            file_path=rel_path, line_count=line_count,
+                            kb_size=kb_size, max_function_lines=max_fn_lines,
+                            max_function_name=max_fn_name,
+                            produced_by_segment=seg_id,
+                            violation_type="function_too_large",
+                        ))
 
-        duration = int((time.time() - fix_start) * 1000)
-
-        if success:
-            generated.append(rel_path)
-            found += 1
-            tracker.record_attempt(
-                error_detail=error_text,
-                fix_strategy=strategy,
-                fix_description=f"Generated {rel_path}",
-                outcome=FixOutcome.RESOLVED,
-                duration_ms=duration,
-            )
-        else:
-            tracker.record_attempt(
-                error_detail=error_text,
-                fix_strategy=strategy,
-                fix_description=f"Failed to generate {rel_path}",
-                outcome=FixOutcome.SAME_ERROR,
-                duration_ms=duration,
-            )
-
-    # Recheck
-    still_missing = [f for f in missing if f not in generated]
-
-    if not still_missing:
-        tracker.record_resolution()
-
-    return SpecCoverageResult(
-        status="pass" if not still_missing else "fail",
-        expected_files=len(file_scope),
-        found_files=found,
-        missing_files=still_missing,
-        files_generated=generated,
-    )
-
-async def _check_cross_phase_with_fixes(
-    plan: ConstructionPlan,
-    sandbox_base: str,
-    sandbox_client: Any,
-    tracker: StrikeTracker,
-    emit: Optional[Callable] = None,
-    state: Any = None,
-    manifest: Any = None,
-) -> CrossPhaseResult:
-    """
-    Verify cross-phase contracts and fix violations.
-
-    Three layers of checking:
-    1. Deliverable existence: does each promised file exist?
-    2. Import resolution: do cross-segment imports resolve correctly?
-    3. Interface contracts: do exposes/consumes match actual definitions?
-
-    Fix strategy:
-    - missing_deliverable: generate the file from spec
-    - import_mismatch: read the provider file to see what it exports,
-      fix the consumer's import to use the correct name. Provider is
-      ground truth (written first), consumer is what gets fixed.
-    - missing_export: add the missing name to the provider's __all__ or
-      re-export it from __init__.py
-    """
-    from .final_checkout import CrossPhaseResult, _file_exists_on_sandbox
-    _emit = emit or (lambda msg: None)
-    violations = []
-    fixes_applied = []
-
-    # --- Layer 1: Deliverable existence ---
-    for phase in plan.phases:
-        result = verify_phase_deliverables(plan, phase, sandbox_base)
-        if result["status"] == "fail":
-            for mf in result.get("missing", []):
-                violation = {
-                    "phase_id": phase.phase_id,
-                    "violation_type": "missing_deliverable",
-                    "detail": f"Phase {phase.phase_number} promised '{mf}' but it's missing",
-                }
-
-                error_text = f"cross_phase_missing:{mf}"
-                verdict = tracker.report_error(error_text)
-
-                if verdict == StrikeVerdict.HARD_STOP:
-                    violations.append(violation)
-                    tracker.record_hard_stop(error_text)
-                    continue
-
-                fix_start = time.time()
-                exists = _file_exists_on_sandbox(sandbox_client, mf, sandbox_base)
-
-                if exists:
-                    tracker.record_attempt(
-                        error_detail=error_text,
-                        fix_strategy="path_verification",
-                        fix_description=f"File exists on sandbox: {mf}",
-                        outcome=FixOutcome.RESOLVED,
-                        duration_ms=int((time.time() - fix_start) * 1000),
-                    )
-                    fixes_applied.append({
-                        "violation": violation,
-                        "fix": "File found on sandbox (host path mismatch)",
-                    })
-                else:
-                    tracker.record_attempt(
-                        error_detail=error_text,
-                        fix_strategy="verify_existence",
-                        fix_description=f"File not found on sandbox either: {mf}",
-                        outcome=FixOutcome.SAME_ERROR,
-                        duration_ms=int((time.time() - fix_start) * 1000),
-                    )
-                    violations.append(violation)
-
-    # --- Layer 2: Import resolution + interface contracts ---
-    # Use the integration check's detection, then fix what it finds
-    if state and manifest:
-        import_issues = await _detect_and_fix_integration_issues(
-            state=state,
-            manifest=manifest,
-            sandbox_base=sandbox_base,
-            sandbox_client=sandbox_client,
-            tracker=tracker,
-            emit=_emit,
-        )
-        for issue_dict in import_issues.get("unresolved", []):
-            violations.append(issue_dict)
-        for fix_dict in import_issues.get("fixed", []):
-            fixes_applied.append(fix_dict)
-
-    if not violations:
-        tracker.record_resolution()
-
-    return CrossPhaseResult(
-        status="pass" if not violations else "fail",
-        phases_checked=len(plan.phases),
+    return SizeValidationResult(
+        status="fail" if violations else "pass",
+        files_checked=files_checked,
         violations=violations,
-        fixes_applied=fixes_applied,
     )
 
-async def _run_ai_review_with_fixes(
-    original_spec: Optional[str],
-    file_scope: List[str],
+def check_skeleton_contracts(
+    state: Any,
+    skeleton: Any,
     sandbox_base: str,
-    sandbox_client: Any,
-    tracker: StrikeTracker,
-    emit: Optional[Callable] = None,
-) -> AIReviewResult:
+) -> ContractCheckResult:
     """
-    Run AI review. If critical issues are found, attempt targeted fixes.
+    Verify each segment delivered its skeleton-promised exports.
 
-    v3.0: After initial review, if score < 6/10 and critical issues exist,
-    send each critical issue back to the LLM with the file content for
-    a targeted fix. Then re-score. Uses strike rule for repeated failures.
+    v2.0: Checks file existence via sandbox (not host filesystem).
+    Scope violations for package creation are handled -- if a segment
+    creates a package from a monolith, the package path is valid scope.
     """
-    from .final_checkout import AIReviewResult
-    _emit = emit or (lambda msg: None)
+    from .phase_checkout_checks import _resolve_output_path
+    violations: List[ContractViolation] = []
 
-    if not original_spec:
-        tracker.record_resolution()
-        return AIReviewResult(
-            status="skipped",
-            notes="No original spec provided for review comparison",
-        )
-
-    # --- Initial review ---
-    review = await _run_ai_review_pass(
-        original_spec=original_spec,
-        file_scope=file_scope,
-        sandbox_base=sandbox_base,
-        emit=_emit,
-    )
-
-    if review.status in ("skipped", "error"):
-        tracker.record_resolution()
-        return review
-
-    if review.overall_score >= 6.0 or not review.critical_issues:
-        tracker.record_resolution()
-        return review
-
-    # --- Score below threshold — attempt fixes ---
-    _emit(f"  Score {review.overall_score}/10 with {len(review.critical_issues)} critical issues — attempting fixes...")
-
-    for issue in review.critical_issues[:3]:  # Cap at 3 fixes per round
-        error_text = f"ai_review_issue:{issue[:100]}"
-        verdict = tracker.report_error(error_text)
-
-        if verdict == StrikeVerdict.HARD_STOP:
-            _emit(f"    [STRIKE 3] Hard stop on AI review issue")
-            tracker.record_hard_stop(error_text)
-            break
-
-        strategy = "targeted_fix" if verdict == StrikeVerdict.PROCEED else "conservative_fix"
-        _emit(f"    [{verdict.value}] Fixing: {issue[:80]}...")
-
-        fix_start = time.time()
-        fixed = await _apply_ai_review_fix(
-            issue=issue,
-            file_scope=file_scope,
-            sandbox_base=sandbox_base,
-            sandbox_client=sandbox_client,
-            original_spec=original_spec,
-            strategy=strategy,
-            emit=_emit,
-        )
-        duration = int((time.time() - fix_start) * 1000)
-
-        tracker.record_attempt(
-            error_detail=error_text,
-            fix_strategy=strategy,
-            fix_description=f"AI review fix for: {issue[:100]}",
-            outcome=FixOutcome.RESOLVED if fixed else FixOutcome.SAME_ERROR,
-            duration_ms=duration,
-        )
-
-    # --- Re-score after fixes ---
-    _emit("  Re-scoring after fixes...")
-    review = await _run_ai_review_pass(
-        original_spec=original_spec,
-        file_scope=file_scope,
-        sandbox_base=sandbox_base,
-        emit=_emit,
-    )
-
-    if review.overall_score >= 6.0:
-        tracker.record_resolution()
-    else:
-        tracker.record_hard_stop(f"AI review score still {review.overall_score}/10")
-
-    return review
-
-async def _run_ai_review_pass(
-    original_spec: Optional[str],
-    file_scope: List[str],
-    sandbox_base: str,
-    emit: Optional[Callable] = None,
-) -> AIReviewResult:
-    """Single pass of AI review (no fix attempts)."""
-    from .final_checkout import AIReviewResult
-    _emit = emit or (lambda msg: None)
-
-    # Select files for review
-    priority_files: List[str] = []
-    other_files: List[str] = []
-
-    for rel_path in file_scope:
-        if any(re.search(pat, rel_path, re.IGNORECASE) for pat in _REVIEW_PRIORITY_PATTERNS):
-            priority_files.append(rel_path)
-        else:
-            other_files.append(rel_path)
-
-    review_files = priority_files[:_MAX_REVIEW_FILES]
-    remaining_slots = _MAX_REVIEW_FILES - len(review_files)
-    if remaining_slots > 0:
-        review_files.extend(other_files[:remaining_slots])
-
-    if not review_files:
-        return AIReviewResult(status="skipped", notes="No files available for review")
-
-    # Read file contents
-    file_contents: Dict[str, str] = {}
-    for rel_path in review_files:
-        abs_path = os.path.join(sandbox_base, rel_path.replace("/", os.sep))
-        if _sbx_isfile(abs_path):
-            try:
-                # v3.4-fix: Read from sandbox, not host
-                _fc_content = _sbx_read_text(abs_path)
-                if _fc_content is not None:
-                    file_contents[rel_path] = _fc_content[:_MAX_REVIEW_CHARS]
-                else:
-                    with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
-                        file_contents[rel_path] = f.read(_MAX_REVIEW_CHARS)
-            except Exception:
-                pass
-
-    if not file_contents:
-        return AIReviewResult(status="skipped", notes="Could not read any files for review")
-
-    _emit(f"  Reviewing {len(file_contents)} file(s)")
-
-    # Build prompt and call LLM
-    prompt = _build_ai_review_prompt(original_spec, file_contents)
-
+    # v2.0: Use sandbox for file existence checks
     try:
-        from app.providers.registry import llm_call
+        from app.overwatcher.sandbox_client import get_sandbox_client
+        client = get_sandbox_client()
+        use_sandbox = client.is_connected()
+    except Exception:
+        use_sandbox = False
+        client = None
 
-        provider_id = os.getenv("FINAL_CHECKOUT_PROVIDER", "anthropic")
-        model_id = os.getenv("FINAL_CHECKOUT_MODEL", "claude-opus-4-6")
+    for skel in skeleton.skeletons:
+        seg_id = skel.segment_id
 
-        llm_result = await llm_call(
-            provider_id=provider_id,
-            model_id=model_id,
-            messages=[{"role": "user", "content": prompt}],
-            system_prompt=_REVIEW_SYSTEM_PROMPT,
-            max_tokens=int(os.getenv("FINAL_CHECKOUT_MAX_OUTPUT_TOKENS", "8000")),
-            timeout_seconds=int(os.getenv("FINAL_CHECKOUT_TIMEOUT_SECONDS", "240")),
-        )
+        for export in skel.exports:
+            exists = False
+            if use_sandbox and client:
+                exists = _file_exists_in_sandbox(client, export.file_path, sandbox_base)
+            else:
+                abs_path = _resolve_output_path(export.file_path, sandbox_base)
+                exists = abs_path and _sbx_isfile(abs_path)
 
-        response = llm_result.content if llm_result else None
-        if not response:
-            return AIReviewResult(status="error", notes="Empty LLM response")
+            if not exists:
+                violations.append(ContractViolation(
+                    segment_id=seg_id,
+                    violation_type="missing_export",
+                    detail=f"Export '{export.file_path}' not found in sandbox",
+                ))
 
-        return _parse_review_response(response, len(file_contents))
+        # v2.0: Scope check -- allow package paths that extend the original scope
+        # v3.0: Strip absolute path prefix before comparison. Output files have
+        # absolute Windows paths (D:\Orb\app\...) while file_scope has relative
+        # paths (app/...). Without stripping, every file is a false positive.
+        seg_state = state.segments.get(seg_id)
+        if seg_state and seg_state.output_files:
+            scope_set = {_norm(f) for f in skel.file_scope}
+            _base_prefix = _norm(sandbox_base).rstrip("/") + "/"
+            for out_file in seg_state.output_files:
+                normed = _norm(out_file)
+                # v3.0: Strip sandbox base prefix to get relative path
+                if normed.startswith(_base_prefix):
+                    normed = normed[len(_base_prefix):]
+                if normed not in scope_set:
+                    # v2.0: Check if this is a package expansion -- if the file
+                    # is under a directory that matches a scope entry (minus .py),
+                    # it's a valid package decomposition, not a scope violation.
+                    is_package_expansion = False
+                    for scope_entry in scope_set:
+                        # e.g. scope has "app/overwatcher/architecture_executor.py"
+                        # output is "app/overwatcher/architecture_executor/constants.py"
+                        base_no_ext = scope_entry.rsplit(".", 1)[0] if "." in scope_entry else scope_entry
+                        if normed.startswith(base_no_ext + "/"):
+                            is_package_expansion = True
+                            break
+                    if not is_package_expansion:
+                        violations.append(ContractViolation(
+                            segment_id=seg_id,
+                            violation_type="scope_violation",
+                            detail=f"Output '{out_file}' not in segment file_scope",
+                        ))
 
-    except Exception as exc:
-        logger.warning("[final_checkout] AI review failed: %s", exc)
-        return AIReviewResult(status="error", notes=f"AI review failed: {exc}")
+    return ContractCheckResult(
+        status="fail" if violations else "pass",
+        violations=violations,
+    )
 
-# v3.3-fix: Frontend path prefixes that must resolve to D:\orb-desktop
-_FC_FRONTEND_PREFIX = "orb-desktop/"
-_FC_FRONTEND_ROOT = r"D:\orb-desktop"
-_FC_FRONTEND_BARE_PREFIXES = ("src/", "src\\", "public/", "public\\")
-
-def _write_file_to_sandbox(
+def _write_file_to_sandbox_abs(
     client: Any,
-    rel_path: str,
+    abs_path: str,
     content: str,
-    sandbox_base: str,
 ) -> bool:
-    """Write a file to the sandbox.
-
-    v3.3-fix: Now resolves frontend paths (orb-desktop/ prefix or bare
-    src/, public/) to D:\\orb-desktop instead of D:\\Orb\\src.
-    """
-    if not client:
-        return False
-
+    """Write a file to sandbox using absolute path (for investigation fixes)."""
+    import base64
     try:
-        import base64
-        normed = rel_path.replace("/", "\\")
-        normalized_fwd = rel_path.replace("\\", "/")
-
-        if normed.startswith("C:") or normed.startswith("D:"):
-            # Already absolute
-            abs_path = normed
-        elif normalized_fwd.startswith(_FC_FRONTEND_PREFIX):
-            # Strip orb-desktop/ prefix, resolve against frontend root
-            frontend_rel = normalized_fwd[len(_FC_FRONTEND_PREFIX):]
-            abs_path = _FC_FRONTEND_ROOT + "\\" + frontend_rel.replace("/", "\\")
-        elif any(normalized_fwd.startswith(bp.replace("\\", "/")) for bp in _FC_FRONTEND_BARE_PREFIXES):
-            # Bare src/ or public/ — these only exist under orb-desktop
-            abs_path = _FC_FRONTEND_ROOT + "\\" + normed
-        else:
-            abs_path = f"{sandbox_base}\\{normed}"
-
-        # v3.4-fix: Strip surviving scaffold markers before write
-        from app.overwatcher._implementer_utils_6 import _strip_scaffold_markers
-        content = _strip_scaffold_markers(content, rel_path)
-
         b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
-        temp_path = abs_path + ".tmp_fc"
-
-        # Ensure parent directory exists
-        parent = "\\".join(abs_path.replace("/", "\\").split("\\")[:-1])
+        tmp_path = abs_path.rsplit("\\", 1)[0] + "\\_orb_phase_fix.b64"
+        # Write base64
+        chunk_size = 60000
+        for i in range(0, len(b64), chunk_size):
+            chunk = b64[i:i + chunk_size]
+            op = "-NoNewline" if i == 0 else "-Append -NoNewline"
+            client.shell_run(
+                f'Set-Content -Path "{tmp_path}" -Value "{chunk}" {op} -Encoding ASCII',
+                timeout_seconds=15,
+            )
+        # Decode and write
         client.shell_run(
-            f'New-Item -ItemType Directory -Force -Path "{parent}" | Out-Null',
-            timeout_seconds=10,
-        )
-
-        # Write via base64
-        client.shell_run(
-            f'Set-Content -Path "{temp_path}" -Value "{b64}" -NoNewline -Encoding ASCII',
-            timeout_seconds=10,
-        )
-        client.shell_run(
-            f'$b = [System.IO.File]::ReadAllText("{temp_path}"); '
-            f'$bytes = [System.Convert]::FromBase64String($b); '
+            f'$b64 = [System.IO.File]::ReadAllText("{tmp_path}"); '
+            f'$bytes = [System.Convert]::FromBase64String($b64); '
             f'[System.IO.File]::WriteAllBytes("{abs_path}", $bytes); '
-            f'Remove-Item -Path "{temp_path}" -Force -ErrorAction SilentlyContinue; '
+            f'Remove-Item -Path "{tmp_path}" -Force -ErrorAction SilentlyContinue; '
             f'"WRITE_OK"',
             timeout_seconds=15,
         )
         return True
     except Exception as exc:
-        logger.warning("[final_checkout] write_file_to_sandbox failed: %s", exc)
+        logger.warning("[phase_checkout] Write to sandbox failed: %s", exc)
         return False
+
+def _check_stderr_for_silent_import_failures(
+    stderr: str,
+    stdout: str = "",
+) -> Optional[str]:
+    """
+    v2.7: Scan boot output for import failures that were silently caught.
+
+    The boot test passed (BOOT_CHECK_PASS in stdout) but output may contain
+    warnings about modules that failed to import. These are real bugs —
+    the module loaded but some functionality is broken.
+
+    v2.7 changes:
+    - Also scans stdout (print-based warnings, not just logging stderr)
+    - Fixes regex group mismatch: for "cannot import name X from Y",
+      now correctly checks Y (the module) not X (the name) for app.* prefix
+    - Checks both group(1) and group(2) where available
+
+    Only flags import failures for project modules (app.*). Ignores
+    known pre-existing third-party failures (numpy, scipy, etc.).
+
+    Returns an error summary string if a silent failure is found, or None.
+    """
+    # Scan both stderr and stdout — import warnings can appear in either
+    combined = f"{stderr or ''}\n{stdout or ''}"
+    if not combined.strip():
+        return None
+
+    for pattern in _SILENT_IMPORT_PATTERNS:
+        for match in pattern.finditer(combined):
+            full_match = match.group(0)
+
+            # Collect all captured groups as potential module references
+            groups = [g for g in match.groups() if g]
+
+            # Check if ANY captured group references a project module
+            is_project_module = False
+            for g in groups:
+                g_root = g.split(".")[0]
+                if g_root in _KNOWN_PREEXISTING_FAILURES:
+                    break  # Known third-party — skip entire match
+                if g.startswith("app.") or g.startswith("src."):
+                    is_project_module = True
+            else:
+                # Loop completed without break (not a known pre-existing failure)
+                if is_project_module:
+                    return full_match
+
+                # Also flag if output explicitly mentions architecture_executor
+                if "architecture_executor" in full_match.lower():
+                    return full_match
+
+    return None
+
+def _try_reconciliation_import_fix(
+    client: Any,
+    actual_base: str,
+    failing_file: str,
+    broken_content: str,
+    error_summary: str,
+    state: Any,
+    emit: Any,
+) -> Optional[Tuple[str, str]]:
+    """
+    v2.1: Use post-execution reconciliation to fix import errors smartly.
+
+    Instead of commenting out a broken import, this reads the target module
+    from the sandbox, extracts what it actually exports, and rewrites the
+    import line with the correct name.
+
+    e.g. "cannot import name 'collect_file_inventory' from 'init_files'"
+    -> reads init_files.py, finds it exports '_ensure_python_init_files'
+    -> rewrites the import line
+
+    Returns (fixed_content, description) or None.
+    """
+    from .phase_checkout_checks import _read_file_via_sandbox
+    _emit = emit or (lambda msg: None)
+
+    try:
+        from app.orchestrator.post_execution_reconciliation import (
+            _build_export_registry,
+            detect_import_mismatches,
+            apply_import_fixes,
+        )
+    except ImportError:
+        return None
+
+    # Parse the error to find what module was being imported from
+    cannot_import = re.search(r"cannot import name '([^']+)' from '([^']+)'", error_summary)
+    if not cannot_import:
+        return None
+
+    bad_name = cannot_import.group(1)
+    source_module = cannot_import.group(2)
+
+    # Find the source module's file on the sandbox
+    # The module path might be dotted: app.overwatcher.architecture_executor.init_files
+    module_stem = source_module.rsplit(".", 1)[-1]  # e.g. "init_files"
+
+    # Collect all segment output files to build registry
+    all_contents: Dict[str, str] = {}
+    for seg_id, seg_state in state.segments.items():
+        for rel_path in (seg_state.output_files or []):
+            if not rel_path.endswith(".py"):
+                continue
+            content = _read_file_via_sandbox(client, rel_path, actual_base)
+            if content:
+                all_contents[rel_path] = content
+
+    if not all_contents:
+            try:
+                # v3.5: Sandbox is the ONLY source of truth
+                _fc_content = _sbx_read_text(abs_path)
+                if _fc_content is not None:
+                    file_contents[rel_path] = _fc_content[:_MAX_REVIEW_CHARS]
+            except Exception:
+                pass
+    # Filter to fixes for the specific error we're trying to fix
+    relevant_fixes = [f for f in fixes if f.wrong_name == bad_name]
+
+    if not relevant_fixes:
+        _emit(f"    [RECON] No match found for '{bad_name}' in module exports")
+        return None
+
+    # Apply the fix(es)
+    fixed_content = apply_import_fixes(broken_content, relevant_fixes)
+    if fixed_content == broken_content:
+        return None
+
+    fix_desc = "; ".join(
+        f"'{f.wrong_name}'->'{f.correct_name}' ({f.fix_method})"
+        for f in relevant_fixes
+    )
+    _emit(f"    [RECON] Smart fix: {fix_desc}")
+    return (fixed_content, f"Reconciliation: {fix_desc}")
+
+def _norm(path: str) -> str:
+    """Normalise path for comparison."""
+    return path.replace("\\", "/").lower().strip("/")

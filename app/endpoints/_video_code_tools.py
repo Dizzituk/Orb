@@ -344,6 +344,16 @@ Project: {project_name}. {project_description}
 
 YOUR ROLE: You are a RESEARCHER with video context AND codebase access.
 
+## PROJECT ROOTS (IMPORTANT)
+This project has TWO separate directory roots:
+- Backend (Python/FastAPI): D:/Orb/
+- Frontend (React/TypeScript/Electron): D:/orb-desktop/
+
+When using tools, ALWAYS use absolute paths:
+- For backend files: D:/Orb/app/...
+- For frontend files: D:/orb-desktop/src/...
+NEVER search D:/Orb for frontend files — they are in D:/orb-desktop.
+
 ## CODEBASE ARCHITECTURE
 {arch_context}
 

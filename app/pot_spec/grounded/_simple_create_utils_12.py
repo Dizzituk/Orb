@@ -20,30 +20,57 @@ def _find_file_in_projects(
     max_results: int = 3,
 ) -> List[str]:
     """
-    v5.1: Walk project directories to find files matching the given filename.
+    v10.0: Find files matching filename using the architecture INDEX.json
+    and sandbox existence checks. No host os.walk.
 
-    Returns up to max_results absolute paths. Skips common junk directories.
+    Strategy:
+    1. Check architecture INDEX.json for known paths matching the filename
+    2. Try common subdirectory patterns (src/, app/) via sandbox
+    3. Fall back to direct root+filename check via sandbox
+
+    Returns up to max_results absolute paths.
     """
-    skip_dirs = {
-        '__pycache__', '.git', 'node_modules', '.venv', 'venv',
-        '.tox', '.mypy_cache', '.pytest_cache', 'dist', 'build',
-        '.next', '.nuxt', 'eggs', '*.egg-info',
-    }
     found = []
+    basename = os.path.basename(filename)
+
+    # Strategy 1: Search architecture INDEX.json for matching filenames
+    try:
+        import json as _json
+        _idx_path = os.path.join("D:\\Orb", ".architecture", "INDEX.json")
+        if os.path.isfile(_idx_path):  # INDEX.json is host operational data
+            with open(_idx_path, "r", encoding="utf-8") as _f:
+                _idx = _json.load(_f)
+            for _file_entry in _idx.get("files", []):
+                _entry_name = _file_entry.get("name", "")
+                _entry_path = _file_entry.get("path", "")
+                if _entry_name == basename and _entry_path:
+                    # Verify it exists in the sandbox before returning
+                    if _sbx_isfile(_entry_path):
+                        found.append(_entry_path)
+                        if len(found) >= max_results:
+                            return found
+    except Exception:
+        pass
+
+    if found:
+        return found
+
+    # Strategy 2: Try common subdirectory patterns via sandbox
+    _subdirs = ["src", "app", "src/components", "src/services", "src/types"]
     for root_path in project_paths:
-        if not _sbx_isdir(root_path):
-            continue
-        for dirpath, dirnames, filenames in os.walk(root_path):
-            # Prune junk dirs
-            dirnames[:] = [
-                d for d in dirnames
-                if d not in skip_dirs and not d.endswith('.egg-info')
-            ]
-            if filename in filenames:
-                full = os.path.join(dirpath, filename)
-                found.append(full)
+        for subdir in _subdirs:
+            candidate = os.path.join(root_path, subdir, filename)
+            if _sbx_isfile(candidate):
+                found.append(candidate)
                 if len(found) >= max_results:
                     return found
+        # Also try direct root + filename
+        candidate = os.path.join(root_path, filename)
+        if _sbx_isfile(candidate):
+            found.append(candidate)
+            if len(found) >= max_results:
+                return found
+
     return found
 
 _CONTENT_SIGNALS = [

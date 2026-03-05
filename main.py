@@ -42,7 +42,7 @@ try:
 except ImportError as e:
     _BRIEFING_AVAILABLE = False
     print(f"[main] Briefing system not available: {e}")
-from app.embeddings.router import router as embeddings_router, search_router as embeddings_search_router
+from app.embeddings.router import router as embeddings_router
 from app.introspection.router import router as introspection_router
 from app.astra_memory.router import router as astra_memory_router
 from app.rag.router import router as rag_router
@@ -287,7 +287,6 @@ app.include_router(web_search_router)
 if _BRIEFING_AVAILABLE:
     app.include_router(briefing_router)
 app.include_router(embeddings_router)
-app.include_router(embeddings_search_router)
 app.include_router(astra_memory_router)
 app.include_router(shared_context_router, dependencies=[Depends(require_auth)])
 

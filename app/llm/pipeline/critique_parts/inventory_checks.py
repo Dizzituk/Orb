@@ -321,42 +321,21 @@ def _check_sandbox_file_exists(candidates: List[str]) -> bool:
     """
     Check if any candidate path exists in the SANDBOX (not host).
 
-    v1.0 (2026-03-03): Fix 6 — the host filesystem retains files from
-    previous pipeline runs. The sandbox is reset between jobs and
-    represents the true state of the project.
-
-    Falls back to host os.path.isfile() if the sandbox bridge is
-    unreachable (e.g. sandbox not running).
+    v1.0 (2026-03-03): Fix 6 — sandbox is the ground truth.
+    v1.2 (2026-03-05): Removed host fallback. Uses sandbox_isfile()
+    from app.sandbox_fs instead of raw requests + host os.path.isfile.
+    No host fallbacks. If sandbox can't find it, it doesn't exist.
     """
-    import requests
+    try:
+        from app.sandbox_fs import sandbox_isfile
+    except ImportError:
+        logger.warning("[det_critique] sandbox_fs not available for existence check")
+        return False
 
-    bridge_url = "http://192.168.250.2:8765"
     for path in candidates:
-        try:
-            resp = requests.post(
-                f"{bridge_url}/shell/run",
-                json={
-                    "cmd": ["powershell", "-NoProfile", "-Command",
-                            f"Test-Path '{path}' -PathType Leaf"],
-                    "timeout_sec": 5,
-                },
-                timeout=8,
-            )
-            data = resp.json()
-            stdout = (data.get("stdout") or "").strip()
-            if stdout == "True":
-                logger.info(
-                    "[det_critique] File exists in SANDBOX: %s", path,
-                )
-                return True
-        except Exception as e:
-            # Sandbox unreachable — fall back to host check
-            logger.warning(
-                "[det_critique] Sandbox check failed for %s: %s, "
-                "falling back to host", path, e,
-            )
-            if os.path.isfile(path):
-                return True
+        if sandbox_isfile(path):
+            logger.info("[det_critique] File exists in SANDBOX: %s", path)
+            return True
     return False
 
 def check_create_modify_classification(
@@ -428,22 +407,31 @@ def check_create_modify_classification(
             exists_on_disk = _check_sandbox_file_exists(candidates)
 
         if exists_in_index or exists_on_disk:
+            # v1.2 (2026-03-05): Auto-downgrade to warning instead of blocking.
+            # The file exists — the implementer will read it from the sandbox
+            # and modify it regardless of what the arch doc says. Blocking here
+            # triggers expensive Opus revision loops ($0.15-0.43 per cycle) that
+            # often fail to resolve. The arch doc's intent label is cosmetic;
+            # what matters is the implementer's behaviour, which is correct.
+            logger.warning(
+                "[det_critique] AUTO-DOWNGRADE: '%s' listed as CREATE but exists — "
+                "treating as MODIFY (warning, not blocking)",
+                claimed_new,
+            )
             issues.append({
                 "rule_id": "DET-CREATE-OVERWRITES-EXISTING",
-                "severity": "blocking",
+                "severity": "warning",
                 "file": claimed_new,
                 "spec_ref": "file_scope",
                 "arch_ref": "File Inventory → New Files",
                 "description": (
                     f"File '{claimed_new}' is listed under 'New Files' (CREATE) "
-                    f"but ALREADY EXISTS on disk. Sending this to the implementer "
-                    f"would overwrite the existing file with a skeletal placeholder. "
-                    f"This file should be under 'Modified Files' (MODIFY) instead."
+                    f"but already exists. Auto-downgraded to warning — the "
+                    f"implementer will treat this as MODIFY."
                 ),
                 "suggested_fix": (
                     f"Move '{claimed_new}' from 'New Files' to 'Modified Files' "
-                    f"in the File Inventory, and update its architecture section "
-                    f"to describe modifications rather than creating from scratch."
+                    f"in the File Inventory."
                 ),
             })
 

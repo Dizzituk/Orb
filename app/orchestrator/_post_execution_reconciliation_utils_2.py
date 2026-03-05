@@ -322,8 +322,7 @@ def reconcile_deferred_consumers(
 
                         else:
 
-                            with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
-                                init_content = f.read()
+                            init_content = _sbx_read_text(abs_path)
                         # Parse exports from __init__.py
                         _pkg_dir = norm.rsplit("/", 1)[0]  # e.g. "app/orchestrator/segment_loop"
                         _dotted = _pkg_dir.replace("/", ".")
@@ -373,8 +372,7 @@ def reconcile_deferred_consumers(
 
             else:
 
-                with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
-                    consumer_content = f.read()
+                consumer_content = _sbx_read_text(abs_path)
         except Exception as e:
             logger.warning("[consumer_recon] Cannot read %s: %s", abs_path, e)
             continue

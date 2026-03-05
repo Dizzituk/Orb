@@ -5,6 +5,7 @@ import logging
 import os
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
+from app.sandbox_fs import sandbox_read_text as _sbx_read_text
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 

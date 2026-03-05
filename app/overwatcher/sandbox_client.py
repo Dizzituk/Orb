@@ -288,12 +288,27 @@ class SandboxClient:
         params = {"path": path}
         data = self._request("GET", "/repo/file", params=params)
         
-        return FileContent(
+        result = FileContent(
             path=data.get("path", ""),
             sha256=data.get("sha256", ""),
             bytes=data.get("bytes", 0),
             content=data.get("content", ""),
         )
+
+        # IO Tracking: record sandbox reads when IOTracker is active
+        try:
+            from app.transparency.io_tracker import get_active_tracker
+            tracker = get_active_tracker()
+            if tracker:
+                tracker.record_read(
+                    path=path,
+                    source="sandbox",
+                    bytes_count=result.bytes,
+                )
+        except ImportError:
+            pass
+
+        return result
     
     def write_file(
         self,
@@ -330,12 +345,29 @@ class SandboxClient:
         
         data = self._request("POST", "/fs/write", json_body=body)
         
-        return WriteResult(
+        result = WriteResult(
             ok=data.get("ok", False),
             path=data.get("path", ""),
             bytes=data.get("bytes", 0),
             sha256=data.get("sha256", ""),
         )
+
+        # IO Tracking: record sandbox writes when IOTracker is active
+        if result.ok:
+            try:
+                from app.transparency.io_tracker import get_active_tracker
+                tracker = get_active_tracker()
+                if tracker:
+                    write_path = result.path or f"{target}/{subdir or ''}/{filename}"
+                    tracker.record_write(
+                        path=write_path,
+                        target="sandbox",
+                        bytes_count=result.bytes,
+                    )
+            except ImportError:
+                pass
+
+        return result
     
     def shell_run(
         self,

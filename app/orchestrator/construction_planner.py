@@ -24,6 +24,7 @@ from .construction_planner_models import (
     PhaseContract,
     PhaseDefinition,
 )
+from app.sandbox_fs import sandbox_read_text as _sbx_read_text
 
 logger = logging.getLogger(__name__)
 

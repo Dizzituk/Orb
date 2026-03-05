@@ -42,6 +42,7 @@ from app.orchestrator.refactor_segmenter_models import (
     RefactorBuildPlan,
     SegmentPlan,
 )
+from app.sandbox_fs import sandbox_read_text as _sbx_read_text
 
 logger = logging.getLogger(__name__)
 
@@ -294,8 +295,7 @@ def run_deterministic_refactor(
     for root in project_roots:
         abs_path = os.path.join(root, source_file_path.replace("/", os.sep))
         if os.path.isfile(abs_path):
-            with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
-                source_code = f.read()
+            source_code = _sbx_read_text(abs_path)
             break
 
     if source_code is None:

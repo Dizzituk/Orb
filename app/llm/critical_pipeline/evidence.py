@@ -368,37 +368,41 @@ def read_file_for_critical_pipeline(
     """
     Read a single file for Critical Pipeline.
 
-    Uses sandbox client if available, falls back to direct read.
+    Uses sandbox client if available, then sandbox_fs. No host fallback.
     """
     if FULL_EVIDENCE_AVAILABLE and sandbox_read_file:
         success, content = sandbox_read_file(path, max_chars=max_chars)
         if success:
             return content
 
-    # Fallback to direct read
+    # Sandbox-only fallback via sandbox_fs
     try:
-        with open(path, 'r', encoding='utf-8', errors='replace') as f:
-            return f.read(max_chars)
-    except Exception as e:
-        logger.warning(
-            "[critical_pipeline] read_file_for_critical_pipeline failed for %s: %s",
-            path, e,
-        )
-        return None
+        from app.sandbox_fs import sandbox_read_text
+        content = sandbox_read_text(path)
+        if content is not None:
+            return content[:max_chars]
+    except ImportError:
+        pass
+
+    logger.warning(
+        "[critical_pipeline] read_file_for_critical_pipeline: file not found in sandbox: %s",
+        path,
+    )
+    return None
 
 
 def list_directory_for_critical_pipeline(path: str) -> List[Dict[str, Any]]:
     """
     List directory contents for Critical Pipeline.
 
-    Uses sandbox client if available, falls back to os.listdir.
+    Uses sandbox client if available, then sandbox_fs. No host fallback.
     """
     if FULL_EVIDENCE_AVAILABLE and sandbox_list_directory:
         success, files = sandbox_list_directory(path)
         if success:
             return files
 
-    # v3.2-fix: Fallback to sandbox_fs listdir (not host os.listdir)
+    # Sandbox-only fallback via sandbox_fs
     try:
         from app.sandbox_fs import sandbox_listdir as _sbx_ls
         entries = _sbx_ls(path)
@@ -407,24 +411,8 @@ def list_directory_for_critical_pipeline(path: str) -> List[Dict[str, Any]]:
     except ImportError:
         pass
 
-    # Last resort: host filesystem (should not normally reach here)
-    try:
-        result = []
-        for item in os.listdir(path):
-            item_path = os.path.join(path, item)
-            result.append({
-                "path": item_path,
-                "name": item,
-                "is_dir": os.path.isdir(item_path),
-                "size": (
-                    os.path.getsize(item_path)
-                    if os.path.isfile(item_path) else None
-                ),
-            })
-        return result
-    except Exception as e:
-        logger.warning(
-            "[critical_pipeline] list_directory_for_critical_pipeline failed for %s: %s",
-            path, e,
-        )
-        return []
+    logger.warning(
+        "[critical_pipeline] list_directory_for_critical_pipeline: dir not found in sandbox: %s",
+        path,
+    )
+    return []

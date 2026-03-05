@@ -14,6 +14,8 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+from app.sandbox_fs import sandbox_isfile, sandbox_read_text
+
 logger = logging.getLogger(__name__)
 
 
@@ -560,7 +562,7 @@ def _inject_codebase_pattern_reference(
                     abs_path = os.path.join(
                         root, candidate.replace("/", os.sep)
                     )
-                    if os.path.isfile(abs_path):
+                    if sandbox_isfile(abs_path):
                         reference_path = abs_path
                         break
                 if reference_path:
@@ -590,8 +592,11 @@ def _inject_codebase_pattern_reference(
             pass
 
         if content is None:
-            with open(reference_path, "r", encoding="utf-8", errors="replace") as fh:
-                content = fh.read(_MAX_REFERENCE_CHARS)
+            content = sandbox_read_text(reference_path)
+            if content:
+                content = content[:_MAX_REFERENCE_CHARS]
+            else:
+                return
 
             # v2.1: Cache the result for next time
             if len(content) >= 50:

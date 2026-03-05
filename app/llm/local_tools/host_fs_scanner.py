@@ -1,6 +1,11 @@
-# FILE: D:\tools\zobie_mapper\host_fs_scanner.py
-"""
-Host Filesystem Scanner - Scans local filesystem directly (no sandbox controller).
+# FILE: app/llm/local_tools/host_fs_scanner.py
+r"""
+Host Filesystem Scanner - v10.0 sandbox-only.
+
+All repo code reads go through the sandbox controller.
+os.walk replaced with SandboxClient.repo_tree().
+os.open replaced with sandbox_read_text().
+Output writes to .architecture/ remain on host (operational data).
 
 Supports:
 - Multiple scan roots (C:\Users\*, D:\*)
@@ -14,6 +19,7 @@ Environment variables:
     HOST_SCAN_ROOTS: Comma-separated list of roots (default: C:\Users,D:\)
     HOST_SCAN_MAX_FILE_BYTES: Max file size to read (default: 512000)
 
+v10.0 (2026-03): Sandbox-only reads. os.walk -> SandboxClient.repo_tree().
 v1.0 (2026-01): Initial implementation for Plateau 1 coverage
 """
 
@@ -462,69 +468,53 @@ def scan_filesystem(
     """
     tree_entries = []
     seen_paths = set()
-    
-    # Phase 1: Build file tree
+
+    # Phase 1: Build file tree via sandbox controller
+    # Use SandboxClient.repo_tree() for a single-call tree scan instead of os.walk
     file_count = 0
-    
-    for root in roots:
-        if not os.path.exists(root):
-            continue
-            
-        for dirpath, dirnames, filenames in os.walk(root, topdown=True):
-            # Check hard excludes
-            if _is_hard_excluded(dirpath):
-                dirnames[:] = []
+
+    try:
+        from app.overwatcher.sandbox_client import get_sandbox_client
+        sbx = get_sandbox_client()
+        repo_files = sbx.repo_tree(include_hashes=False, max_files=max_files)
+
+        for entry in repo_files:
+            fpath = entry.path.replace("\\", "/")
+            fpath_lower = fpath.lower()
+
+            if fpath_lower in seen_paths:
                 continue
-                
-            # Filter out excluded directories (modifies in place for efficiency)
-            dirnames[:] = [d for d in dirnames 
-                          if not _is_excluded_dir(os.path.join(dirpath, d))
-                          and not d.startswith(".")]
-            
-            for fname in filenames:
-                if file_count >= max_files:
-                    break
-                    
-                fpath = os.path.join(dirpath, fname)
-                
-                # Skip if already seen (symlinks can cause duplicates)
-                fpath_lower = fpath.lower()
-                if fpath_lower in seen_paths:
-                    continue
-                seen_paths.add(fpath_lower)
-                
-                # Skip excluded files
-                if _is_excluded_file(fpath):
-                    continue
-                if fname.startswith(".") and fname not in {".env.example", ".gitignore", ".gitattributes"}:
-                    continue
-                    
-                try:
-                    stat = os.stat(fpath)
-                    size = stat.st_size
-                    mtime = datetime.fromtimestamp(stat.st_mtime).isoformat()
-                except Exception:
-                    continue
-                    
-                # Normalize path for consistent output
-                rel_path = fpath.replace("\\", "/")
-                
-                tree_entries.append({
-                    "path": rel_path,
-                    "size": size,
-                    "mtime": mtime,
-                })
-                file_count += 1
-                
-                if progress_callback and file_count % 1000 == 0:
-                    progress_callback(f"Discovered {file_count} files...")
-            
+            seen_paths.add(fpath_lower)
+
+            if _is_hard_excluded(fpath):
+                continue
+            if _is_excluded_dir(fpath):
+                continue
+            if _is_excluded_file(fpath):
+                continue
+
+            fname = os.path.basename(fpath)
+            if fname.startswith(".") and fname not in {".env.example", ".gitignore", ".gitattributes"}:
+                continue
+
+            tree_entries.append({
+                "path": fpath,
+                "size": entry.size_bytes,
+                "mtime": datetime.now().isoformat(),
+            })
+            file_count += 1
+
+            if progress_callback and file_count % 1000 == 0:
+                progress_callback(f"Discovered {file_count} files...")
+
             if file_count >= max_files:
                 break
-        
-        if file_count >= max_files:
-            break
-    
+
+    except Exception as e:
+        logger.warning("[host_fs_scanner] Sandbox repo_tree failed: %s", e)
+        if progress_callback:
+            progress_callback(f"Sandbox tree scan failed: {e}")
+
     if progress_callback:
         progress_callback(f"Tree complete: {len(tree_entries)} files")
     
@@ -597,10 +587,11 @@ def scan_filesystem(
             progress_callback(f"Scanning {i}/{len(scan_list)}: {os.path.basename(path)}")
         
         try:
-            # Convert back to OS path for reading
-            os_path = path.replace("/", os.sep)
-            with open(os_path, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read(MAX_FILE_BYTES)
+            from app.sandbox_fs import sandbox_read_text as _sbx_read
+            content = _sbx_read(path.replace("/", os.sep))
+            if content is None:
+                continue
+            content = content[:MAX_FILE_BYTES]
         except Exception:
             continue
         

@@ -211,6 +211,34 @@ def notify_narrative(
         return None
 
 
+def save_weaver_extraction(
+    db: Session,
+    build_project_id: str,
+    extraction: dict,
+) -> Optional[BuildProject]:
+    """Persist the trimmed Weaver extraction to the build project.
+
+    Stores key requirements, design preferences, and constraints
+    from the Weaver output. NOT the full Weaver dump — just enough
+    to show job intent in the Brief tab.
+    """
+    try:
+        project = build_service.get_project(db, build_project_id)
+        if not project:
+            return None
+        project.weaver_extraction = extraction
+        db.commit()
+        db.refresh(project)
+        logger.info(
+            "[pipeline_bridge] Saved Weaver extraction for %s (%d keys)",
+            build_project_id, len(extraction),
+        )
+        return project
+    except Exception as e:
+        logger.warning("[pipeline_bridge] Failed to save Weaver extraction: %s", e)
+        return None
+
+
 def compile_report(
     db: Session,
     build_project_id: str,

@@ -20,7 +20,7 @@ import logging
 import os
 import re
 from typing import Dict, List, Optional, Tuple
-from app.pot_spec.grounded._sbx_fs import _sbx_isfile, _sbx_isdir
+from app.pot_spec.grounded._sbx_fs import _sbx_isfile, _sbx_isdir, _sbx_read
 
 logger = logging.getLogger(__name__)
 
@@ -231,11 +231,10 @@ def summarise_file_signatures(path: str) -> Optional[str]:
     Useful for quick one-off summarisation without an EvidencePackage.
     Returns None if file cannot be read.
     """
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read(50_000)  # 50KB cap
-    except OSError:
+    content = _sbx_read(path)
+    if content is None:
         return None
+    content = content[:50_000]  # 50KB cap
 
     ext = os.path.splitext(path)[1].lower()
     if ext == ".py":
@@ -246,8 +245,7 @@ def summarise_file_signatures(path: str) -> Optional[str]:
     if not sigs:
         return None
 
-    size = os.path.getsize(path) if _sbx_isfile(path) else 0
-    header = f"{path} [{size} bytes] — {len(sigs)} signatures"
+    header = f"{path} [{len(content)} bytes] — {len(sigs)} signatures"
     body = "\n".join(f"  {s}" for s in sigs[:30])
     return f"{header}\n{body}"
 

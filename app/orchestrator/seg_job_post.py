@@ -349,8 +349,8 @@ def _deterministic_preamble_fix(
                 )
                 file_content = result.stdout or ""
             else:
-                with open(filepath, "r", encoding="utf-8") as f:
-                    file_content = f.read()
+                from app.sandbox_fs import sandbox_read_text
+                file_content = sandbox_read_text(filepath) or ""
 
             if not file_content.strip():
                 continue

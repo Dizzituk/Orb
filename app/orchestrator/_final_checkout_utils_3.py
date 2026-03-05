@@ -151,16 +151,21 @@ async def _llm_fix_import(
     try:
         from app.providers.registry import llm_call
 
-        # Read provider file for context
+        # v3.5: Read provider file from sandbox (only source of truth)
         provider_content = ""
-        if provider_file and os.path.isfile(provider_file):
-            with open(provider_file, "r", encoding="utf-8", errors="replace") as f:
-                provider_content = f.read(6000)
-        elif sandbox_client:
+        if provider_file and sandbox_client:
             provider_content = _read_file_via_sandbox(
                 sandbox_client, provider_file, sandbox_base
             ) or ""
             provider_content = provider_content[:6000]
+        elif provider_file:
+            try:
+                from app.sandbox_fs import sandbox_read_text
+                _pc = sandbox_read_text(provider_file)
+                if _pc:
+                    provider_content = _pc[:6000]
+            except Exception:
+                pass
 
         prompt = (
             f"Fix the import error in the CONSUMER file.\n\n"

@@ -2,6 +2,7 @@ from __future__ import annotations
 import os
 import re
 from app.pot_spec.grounded._simple_create_utils_12 import _CONTENT_SIGNALS, _NEGATIVE_PATH_SEGMENTS, _find_file_in_projects
+from app.pot_spec.grounded._sbx_fs import _sbx_read
 from typing import Any, Dict, List
 
 # v3.2-fix: Sandbox-aware filesystem checks for codebase paths.
@@ -130,14 +131,12 @@ def _score_integration_point(file_path: str, project_path: str) -> int:
 
     filename = os.path.basename(file_path).lower()
     if filename in ('main.py', 'app.py', 'index.py', 'server.py'):
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                head = f.read(3072)
+        head = _sbx_read(file_path)
+        if head:
+            head = head[:3072]
             for pattern, delta in _CONTENT_SIGNALS:
                 if pattern.search(head):
                     score += delta
-        except Exception:
-            pass
 
     return score
 

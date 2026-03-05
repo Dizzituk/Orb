@@ -8,6 +8,7 @@ from app.orchestrator.ast_helpers import extract_typescript_exports, resolve_typ
 from app.orchestrator.integration_check import IntegrationIssue, logger
 from app.pot_spec.grounded.segment_schemas import SegmentManifest, SegmentSpec
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from app.sandbox_fs import sandbox_read_text as _sbx_read_text
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 
@@ -192,8 +193,7 @@ def _check_duplicate_definitions(
                 if ext != ".sql":
                     continue
             try:
-                with open(f, "r", encoding="utf-8", errors="replace") as fh:
-                    content = fh.read()
+                content = _sbx_read_text(f)
                 for match in _SQL_TABLE_RE.finditer(content):
                     table_name = match.group(1).lower()
                     table_defs.setdefault(table_name, []).append((f, seg_id))
@@ -227,8 +227,7 @@ def _check_duplicate_definitions(
             if not any(kw in basename for kw in ("route", "router", "endpoint", "api", "view")):
                 continue
             try:
-                with open(f, "r", encoding="utf-8", errors="replace") as fh:
-                    content = fh.read()
+                content = _sbx_read_text(f)
                 pattern = _PY_ROUTE_RE if ext == ".py" else _TS_ROUTE_RE
                 for match in pattern.finditer(content):
                     route_path = match.group(1).lower()

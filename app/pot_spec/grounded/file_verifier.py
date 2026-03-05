@@ -38,7 +38,7 @@ import stat
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from app.pot_spec.grounded._sbx_fs import _sbx_exists
+from app.pot_spec.grounded._sbx_fs import _sbx_exists, _sbx_read, _sbx_ls
 from .segment_schemas import (
     CreateTarget,
     GroundingData,
@@ -88,16 +88,14 @@ def check_file_exists(path: str) -> Optional[VerifiedFile]:
         if not _sbx_exists(path):
             return None
 
-        st = os.stat(path)
-        mtime_dt = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
-
+        # Sandbox doesn't support stat — return verified with path only
         return VerifiedFile(
             path=path,
-            last_modified=mtime_dt.isoformat(),
-            size_bytes=st.st_size if stat.S_ISREG(st.st_mode) else None,
+            last_modified=datetime.now(timezone.utc).isoformat(),
+            size_bytes=None,
         )
-    except OSError as e:
-        logger.warning("[file_verifier] check_file_exists: OS error for %s: %s", path, e)
+    except Exception as e:
+        logger.warning("[file_verifier] check_file_exists: error for %s: %s", path, e)
         return None
 
 
@@ -141,13 +139,12 @@ def read_file_signatures(path: str, max_chars: int = MAX_SIGNATURE_READ_CHARS) -
     """
     result = InterfaceRead(path=path)
 
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read(max_chars)
-    except OSError as e:
-        logger.warning("[file_verifier] read_file_signatures: cannot read %s: %s", path, e)
+    full_content = _sbx_read(path)
+    if full_content is None:
+        logger.warning("[file_verifier] read_file_signatures: cannot read %s from sandbox", path)
         result.read_ok = False
         return result
+    content = full_content[:max_chars]
 
     result.raw_excerpt = content[:500]  # Store first 500 chars as preview
 
@@ -284,19 +281,24 @@ def scan_directory_files(
         List of absolute file paths.
     """
     result: List[str] = []
+    skip_dirs = {"__pycache__", "node_modules", ".git", ".venv", "build", "dist"}
     try:
-        for root, _dirs, files in os.walk(directory):
-            # Skip common non-source directories
-            basename = os.path.basename(root)
-            if basename in {"__pycache__", "node_modules", ".git", ".venv", "build", "dist"}:
+        entries = _sbx_ls(directory)
+        for name in entries:
+            if name in skip_dirs:
                 continue
-            for fname in files:
-                if extensions:
-                    ext = os.path.splitext(fname)[1].lower()
-                    if ext not in extensions:
-                        continue
-                result.append(os.path.join(root, fname))
-    except OSError as e:
+            full_path = os.path.join(directory, name)
+            # Check if it looks like a file (has extension) or directory
+            ext = os.path.splitext(name)[1].lower()
+            if ext:
+                # It's a file
+                if extensions and ext not in extensions:
+                    continue
+                result.append(full_path)
+            else:
+                # Likely a directory — recurse
+                result.extend(scan_directory_files(full_path, extensions))
+    except Exception as e:
         logger.warning("[file_verifier] scan_directory_files: error scanning %s: %s", directory, e)
 
     return result

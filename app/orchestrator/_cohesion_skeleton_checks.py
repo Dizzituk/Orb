@@ -351,8 +351,7 @@ def check_phantom_symbols(
                 try:
                     _src = _sbx_read_text(_full)
                     if _src is None:
-                        with open(_full, "r", encoding="utf-8") as _f:
-                            _src = _f.read()
+                        continue
                     for _m in re.finditer(r'(?:async\s+)?def\s+(\w+)\s*\(', _src):
                         _monolith_symbols.add(_m.group(1))
                     for _m in re.finditer(r'class\s+(\w+)\s*[\(:]', _src):

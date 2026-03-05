@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import time
 import uuid
+from app.sandbox_fs import sandbox_read_text as _sbx_read_text
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional
@@ -102,8 +103,7 @@ def _run_extraction(file_path: str) -> dict:
     from app.orchestrator.surgical_extractor import extract_easiest
 
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            source = f.read()
+        source = _sbx_read_text(file_path)
 
         new_source, new_module, plan, result = extract_easiest(file_path, source)
 
@@ -177,8 +177,7 @@ def _apply_extraction(
         orig_stem = os.path.splitext(os.path.basename(original_module_path))[0]
         new_stem = os.path.splitext(os.path.basename(new_module_path))[0]
         # Re-read source (we just wrote it) and fix the import
-        with open(file_path, "r", encoding="utf-8") as f:
-            updated_source = f.read()
+        updated_source = _sbx_read_text(file_path)
         # Replace the module name in the import line
         updated_source = updated_source.replace(
             f"from {_path_to_package(os.path.dirname(original_module_path))}.{orig_stem} import",
@@ -249,8 +248,7 @@ def run_refactor_pass(
     )
 
     # Backup original source
-    with open(file_path, "r", encoding="utf-8") as f:
-        backup_source = f.read()
+    backup_source = _sbx_read_text(file_path)
 
     # Run extraction
     extraction = _run_extraction(file_path)

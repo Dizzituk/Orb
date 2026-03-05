@@ -37,7 +37,7 @@ import os
 from collections import Counter
 from typing import Any, Dict, List, Optional
 
-from app.pot_spec.grounded._sbx_fs import _sbx_isfile, _sbx_isdir
+from app.pot_spec.grounded._sbx_fs import _sbx_isfile, _sbx_isdir, _sbx_read
 from .size_models import (
     AVG_CHARS_PER_LINE,
     DEFAULT_PROJECT_ROOTS,
@@ -89,11 +89,11 @@ def _read_source_files(
     for rel_path in file_scope:
         abs_path = _resolve_to_disk(rel_path, project_roots)
         if abs_path:
-            try:
-                with open(abs_path, "r", encoding="utf-8", errors="replace") as fh:
-                    sources[rel_path] = fh.read(MAX_CHARS)
-            except Exception as exc:
-                logger.warning("[size_analyzer] Failed to read %s: %s", abs_path, exc)
+            content = _sbx_read(abs_path)
+            if content is not None:
+                sources[rel_path] = content[:MAX_CHARS]
+            else:
+                logger.warning("[size_analyzer] Failed to read %s from sandbox", abs_path)
 
     return sources
 

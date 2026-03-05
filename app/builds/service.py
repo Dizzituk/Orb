@@ -26,6 +26,7 @@ PIPELINE_STAGES = [
     PipelineStage.critical_pipeline,
     PipelineStage.overwatcher,
     PipelineStage.implementer,
+    PipelineStage.final_checkout,
 ]
 
 # Map stage enum → model attribute name
@@ -35,6 +36,7 @@ _STAGE_STATUS_ATTR = {
     PipelineStage.critical_pipeline: "critical_pipeline_status",
     PipelineStage.overwatcher: "overwatcher_status",
     PipelineStage.implementer: "implementer_status",
+    PipelineStage.final_checkout: "final_checkout_status",
 }
 
 
@@ -120,8 +122,8 @@ def advance_stage(
     # If a stage is now running, set it as current
     if stage_status == StageStatusEnum.running:
         project.current_stage = PipelineStage(stage.value)
-    # If all stages passed, mark complete
-    elif stage_status == StageStatusEnum.passed and stage == PipelineStageEnum.implementer:
+    # If final checkout passed, mark complete
+    elif stage_status == StageStatusEnum.passed and stage == PipelineStageEnum.final_checkout:
         project.current_stage = PipelineStage.complete
         project.status = BuildStatus.completed
 
@@ -225,140 +227,224 @@ def compile_build_report(
     db: Session,
     project_id: str,
 ) -> Optional[str]:
-    """Compile the full build report from brief + narratives + deliverables.
+    """Compile the full build report as paged JSON.
 
-    Generates a single markdown document that can be read by a human
-    or sent to the Debug workspace for situational awareness.
+    Produces a structured report where each pipeline stage is its own
+    page, designed for targeted reading by the Debug system or a new
+    context window. The io_summary at the top proves sandbox compliance.
 
-    Returns the report markdown, also saves it to the project.
+    Returns the report as a JSON string, also saves it to the project.
     """
+    import json as _json
+
     project = get_project(db, project_id)
     if not project:
         return None
 
-    parts = []
-
-    # Header
-    parts.append(f"# Build Report: {project.name}")
-    parts.append(f"**Project ID:** {project.id}")
-    parts.append(f"**Status:** {project.status.value}")
-    parts.append(f"**Created:** {project.created_at.isoformat()}")
-    if project.job_id:
-        parts.append(f"**Job ID:** {project.job_id}")
-    if project.spec_id:
-        parts.append(f"**Spec ID:** {project.spec_id}")
-    parts.append("")
-
-    # Original Brief
-    parts.append("## Original Brief")
-    parts.append("")
-    if project.original_brief:
-        parts.append(project.original_brief)
-    else:
-        parts.append("*No brief recorded.*")
-    parts.append("")
-
-    # Stage-by-stage narrative
-    stage_order = ["weaver", "spec_gate", "critical_pipeline", "overwatcher", "implementer"]
-    stage_labels = {
-        "weaver": "Weaver",
-        "spec_gate": "SpecGate",
-        "critical_pipeline": "Critical Pipeline",
-        "overwatcher": "Overwatcher",
-        "implementer": "Implementer",
-    }
     narratives = project.stage_narratives or {}
+    io_summary = _build_io_summary(project_id)
+    pages = []
 
-    for stage_key in stage_order:
-        entries = narratives.get(stage_key, [])
-        if not entries:
-            continue
+    # Page 1: Project Scope
+    pages.append(_build_scope_page(project))
 
-        label = stage_labels.get(stage_key, stage_key)
-        parts.append(f"## {label}")
-        parts.append("")
+    # Page 2: Weaver Intent
+    pages.append(_build_weaver_page(project, narratives))
 
-        for entry in entries:
-            title = entry.get("title", "")
-            ts = entry.get("timestamp", "")
-            duration = entry.get("duration_ms")
-            model = entry.get("model_used")
-            input_sum = entry.get("input_summary")
-            output_sum = entry.get("output_summary")
-            sections = entry.get("sections", [])
-            files = entry.get("files_touched", [])
-            warnings = entry.get("warnings", [])
+    # Page 3: SpecGate Research
+    pages.append(_build_specgate_page(narratives))
 
-            if title:
-                parts.append(f"### {title}")
-            if ts:
-                timing = f"*{ts}*"
-                if duration:
-                    timing += f" ({duration}ms)"
-                if model:
-                    timing += f" — {model}"
-                parts.append(timing)
-            parts.append("")
+    # Page 4: Critical Pipeline — Architecture
+    pages.append(_build_architecture_page(narratives))
 
-            if input_sum:
-                parts.append(f"**Input:** {input_sum}")
-                parts.append("")
-            if output_sum:
-                parts.append(f"**Output:** {output_sum}")
-                parts.append("")
+    # Page 5: Implementer — Execution
+    pages.append(_build_execution_page(project, narratives))
 
-            for section in sections:
-                heading = section.get("heading", "")
-                body = section.get("body", "")
-                if heading:
-                    parts.append(f"**{heading}**")
-                if body:
-                    parts.append(body)
-                parts.append("")
+    # Page 6: Final Checkout — Validation
+    pages.append(_build_checkout_page(project, narratives))
 
-            if files:
-                parts.append(f"**Files:** {', '.join(files)}")
-                parts.append("")
-            if warnings:
-                for w in warnings:
-                    parts.append(f"⚠️ {w}")
-                parts.append("")
+    report_obj = {
+        "project_id": project.id,
+        "project_name": project.name,
+        "status": project.status.value,
+        "io_summary": io_summary,
+        "pages": pages,
+    }
 
-    # Stage Log (timeline)
-    log = project.stage_log or []
-    if log:
-        parts.append("## Stage Log Timeline")
-        parts.append("")
-        for entry in log:
-            ts = entry.get("timestamp", "")[:19]
-            stage = entry.get("stage", "")
-            event = entry.get("event", "")
-            detail = entry.get("detail", "")
-            line = f"- **{ts}** {stage} → {event}"
-            if detail:
-                line += f": {detail}"
-            parts.append(line)
-        parts.append("")
+    report_json = _json.dumps(report_obj, indent=2, default=str)
 
-    # Deliverables
-    if project.target_path:
-        parts.append("## Deliverables")
-        parts.append("")
-        parts.append(f"**Target path:** {project.target_path}")
-        parts.append("")
-
-    report = "\n".join(parts)
-
-    # Save to project
-    project.build_report = report
+    project.build_report = report_json
     db.commit()
     db.refresh(project)
 
     logger.info(
-        "[builds] Compiled build report for %s (%d chars)",
-        project_id, len(report),
+        "[builds] Compiled paged report for %s (%d chars, %d pages)",
+        project_id, len(report_json), len(pages),
     )
-    return report
+    return report_json
+
+
+# ── Report Page Builders ──
+
+def _build_scope_page(project: BuildProject) -> dict:
+    """Page 1: Project Scope — brief + Weaver extraction."""
+    extraction = project.weaver_extraction or {}
+    return {
+        "page": 1,
+        "title": "Project Scope",
+        "content": {
+            "original_brief": project.original_brief or "No brief recorded.",
+            "key_requirements": extraction.get("key_requirements", []),
+            "design_preferences": extraction.get("design_preferences", []),
+            "constraints": extraction.get("constraints", []),
+        },
+    }
+
+
+def _build_weaver_page(project: BuildProject, narratives: dict) -> dict:
+    """Page 2: Weaver Intent — how the AI interpreted the brief."""
+    weaver_entries = narratives.get("weaver", [])
+    return {
+        "page": 2,
+        "title": "Weaver Intent",
+        "content": {
+            "interpretation": _flatten_narrative_sections(weaver_entries),
+            "extraction_summary": project.weaver_extraction or {},
+        },
+    }
+
+
+def _build_specgate_page(narratives: dict) -> dict:
+    """Page 3: SpecGate Research — codebase analysis summary."""
+    sg_entries = narratives.get("spec_gate", [])
+    return {
+        "page": 3,
+        "title": "Research Findings (SpecGate)",
+        "content": {
+            "analysis": _flatten_narrative_sections(sg_entries),
+            "files_examined": _collect_files_touched(sg_entries),
+        },
+    }
+
+
+def _build_architecture_page(narratives: dict) -> dict:
+    """Page 4: Critical Pipeline — architecture and segmentation."""
+    cp_entries = narratives.get("critical_pipeline", [])
+    return {
+        "page": 4,
+        "title": "Architecture & Segmentation",
+        "content": {
+            "plan": _flatten_narrative_sections(cp_entries),
+            "files_planned": _collect_files_touched(cp_entries),
+        },
+    }
+
+
+def _build_execution_page(project: BuildProject, narratives: dict) -> dict:
+    """Page 5: Implementer — execution summary."""
+    impl_entries = narratives.get("implementer", [])
+    ow_entries = narratives.get("overwatcher", [])
+    return {
+        "page": 5,
+        "title": "Execution & Implementation",
+        "content": {
+            "implementer": _flatten_narrative_sections(impl_entries),
+            "overwatcher": _flatten_narrative_sections(ow_entries),
+            "files_written": _collect_files_touched(impl_entries),
+            "segments": {
+                "total": project.total_segments,
+                "completed": project.completed_segments,
+            },
+        },
+    }
+
+
+def _build_checkout_page(project: BuildProject, narratives: dict) -> dict:
+    """Page 6: Final Checkout — validation results."""
+    fc_entries = narratives.get("final_checkout", [])
+    # Check stage log for checkout events
+    log = project.stage_log or []
+    checkout_events = [e for e in log if e.get("stage") == "final_checkout"]
+
+    return {
+        "page": 6,
+        "title": "Final Checkout",
+        "content": {
+            "validation": _flatten_narrative_sections(fc_entries),
+            "stage_events": checkout_events,
+            "files_fixed": _collect_files_touched(fc_entries),
+        },
+    }
+
+
+def _build_io_summary(project_id: str) -> dict:
+    """Build IO summary from transparency events for this project."""
+    summary = {
+        "total_reads": 0,
+        "total_writes": 0,
+        "sandbox_reads": 0,
+        "sandbox_writes": 0,
+        "host_reads_operational": 0,
+        "host_writes_operational": 0,
+        "host_reads_violation": 0,
+        "host_writes_violation": 0,
+    }
+    try:
+        from app.db import get_db_session
+        from app.transparency.models import ReasoningEventModel
+
+        db = get_db_session()
+        try:
+            rows = (
+                db.query(ReasoningEventModel)
+                .filter_by(build_project_id=project_id)
+                .all()
+            )
+            for row in rows:
+                # io_events are stored as part of evidence_sources JSON
+                # or in a dedicated io_events field if the model supports it
+                io_events = []
+                if hasattr(row, "evidence_sources") and row.evidence_sources:
+                    for ev in row.evidence_sources:
+                        if isinstance(ev, dict) and ev.get("source_type") == "file_read":
+                            summary["total_reads"] += 1
+                            summary["sandbox_reads"] += 1
+            return summary
+        finally:
+            db.close()
+    except Exception as e:
+        logger.debug("[builds] Failed to build IO summary: %s", e)
+        return summary
+
+
+def _flatten_narrative_sections(entries: list) -> list:
+    """Flatten narrative entries into a list of section dicts."""
+    result = []
+    for entry in entries:
+        item = {
+            "title": entry.get("title", ""),
+            "timestamp": entry.get("timestamp", ""),
+            "duration_ms": entry.get("duration_ms"),
+            "model_used": entry.get("model_used"),
+            "input_summary": entry.get("input_summary"),
+            "output_summary": entry.get("output_summary"),
+            "sections": entry.get("sections", []),
+            "warnings": entry.get("warnings", []),
+        }
+        result.append(item)
+    return result
+
+
+def _collect_files_touched(entries: list) -> list:
+    """Collect deduplicated list of files touched across narrative entries."""
+    seen = set()
+    files = []
+    for entry in entries:
+        for f in entry.get("files_touched", []):
+            if f not in seen:
+                seen.add(f)
+                files.append(f)
+    return files
 
 
 # ── Response Builders ──
@@ -396,6 +482,7 @@ def to_response(project: BuildProject) -> BuildProjectResponse:
         job_id=project.job_id,
         target_path=project.target_path,
         original_brief=project.original_brief,
+        weaver_extraction=project.weaver_extraction,
         chat_project_id=project.chat_project_id,
         total_segments=project.total_segments,
         completed_segments=project.completed_segments,

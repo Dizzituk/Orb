@@ -121,8 +121,7 @@ async def _fix_import_resolution_issue(
 
             else:
 
-                with open(consumer_file, "r", encoding="utf-8", errors="replace") as f:
-                    consumer_content = f.read()
+                consumer_content = _sbx_read_text(consumer_file)
         except Exception:
             return False
 
@@ -249,8 +248,7 @@ async def _apply_ai_review_fix(
 
                 else:
 
-                    with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
-                        content = f.read()
+                    content = _sbx_read_text(abs_path)
             except Exception:
                 pass
 

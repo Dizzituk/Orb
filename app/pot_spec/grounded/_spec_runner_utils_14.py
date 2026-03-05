@@ -4,7 +4,7 @@ import os
 import re
 from app.pot_spec.grounded._spec_runner_utils_13 import _discover_project_roots, _extract_acceptance_from_spec
 from typing import List
-from app.pot_spec.grounded._sbx_fs import _sbx_isfile, _sbx_isdir
+from app.pot_spec.grounded._sbx_fs import _sbx_isfile, _sbx_isdir, _sbx_read
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 
@@ -60,8 +60,9 @@ def _reconcile_ac_names_against_source(
             if not _sbx_isfile(abs_path):
                 continue
             try:
-                with open(abs_path, 'r', encoding='utf-8', errors='replace') as f:
-                    content = f.read()
+                content = _sbx_read(abs_path)
+                if not content:
+                    continue
                 # Extract __all__ entries
                 all_match = re.search(r'__all__\s*=\s*\[([^\]]+)\]', content, re.DOTALL)
                 if all_match:

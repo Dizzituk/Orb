@@ -106,8 +106,7 @@ def _walk_python_files() -> Dict[str, int]:
 def _count_symbols(path: str) -> dict:
     """Count top-level symbols in a Python file using AST."""
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            source = f.read()
+        source = _sbx_read_text(path)
         tree = ast.parse(source)
     except (SyntaxError, OSError, UnicodeDecodeError):
         return {"functions": 0, "classes": 0, "constants": 0, "lines": 0}
@@ -153,8 +152,7 @@ def _build_import_map(files: Dict[str, int]) -> Dict[str, Set[str]]:
 
     for path in files:
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                source = f.read()
+            source = _sbx_read_text(path)
             tree = ast.parse(source)
         except (SyntaxError, OSError, UnicodeDecodeError):
             continue

@@ -36,6 +36,7 @@ from app.orchestrator.codebase_scanner_models import (
 from app.orchestrator._codebase_scanner_utils_2 import CODEBASE_SCANNER_BUILD_ID, _BUILTINS, _build_signature, _get_name, _is_constant_name, _is_data_structure, _is_internal, _normalise_hash
 from app.orchestrator._codebase_scanner_utils_3 import _STDLIB_MODULES, _build_call_graph, _build_cross_file_edges, _check_dead_code, _check_shadowed_builtins, _check_unused_imports, _detect_circular_imports, _detect_duplicate_functions
 from app.orchestrator._codebase_scanner_health import run_smart_health_checks
+from app.sandbox_fs import sandbox_read_text as _sbx_read_text
 
 # Lazy import for JS scanner (only when JS files encountered)
 _js_scanner = None
@@ -366,15 +367,15 @@ def _read_source(
     rel_path: str,
     project_roots: List[str],
 ) -> Optional[str]:
-    """Try to read a source file from disk under any project root."""
+    """v3.5: Read a source file from the SANDBOX under any project root."""
     for root in project_roots:
         abs_path = os.path.join(root, rel_path.replace("/", os.sep))
-        if os.path.isfile(abs_path):
-            try:
-                with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
-                    return f.read()
-            except Exception as e:
-                logger.warning("[codebase_scanner] Error reading %s: %s", abs_path, e)
+        try:
+            content = _sbx_read_text(abs_path)
+            if content is not None:
+                return content
+        except Exception as e:
+            logger.warning("[codebase_scanner] Error reading %s from sandbox: %s", abs_path, e)
     return None
 
 

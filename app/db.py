@@ -174,6 +174,9 @@ def init_db():
     # v10.0: Run conversation memory migrations (session_id on messages)
     _migrate_conversation_memory_schema()
 
+    # v11.0: Run pipeline logging overhaul migrations
+    _migrate_pipeline_logging_schema()
+
     # v4.1: Register domain stores with the MemoryRouter singleton
     from app.memory.startup import init_memory_system
     init_memory_system()
@@ -307,6 +310,56 @@ def _migrate_conversation_memory_schema():
                 log.warning("[db_migrate] Failed to add session_id: %s", e)
     else:
         log.debug("[db_migrate] messages.session_id already exists")
+
+
+# =============================================================================
+# SCHEMA MIGRATIONS (v11.0 — Pipeline Logging Overhaul)
+# =============================================================================
+
+def _migrate_pipeline_logging_schema():
+    """Add final_checkout_status and weaver_extraction columns to build_projects.
+
+    Part of the Pipeline Logging & Reporting Overhaul:
+    - final_checkout_status: tracks the new Final Checkout pipeline stage
+    - weaver_extraction: JSON storing trimmed Weaver output (requirements,
+      preferences, constraints) for the Brief tab
+
+    Safe to call multiple times (idempotent).
+    v11.0: PIPELINE-LOGGING-001.
+    """
+    import logging
+    from sqlalchemy import inspect, text
+
+    log = logging.getLogger(__name__)
+
+    inspector = inspect(engine)
+    if "build_projects" not in inspector.get_table_names():
+        log.debug("[db_migrate] build_projects table doesn't exist yet, skipping")
+        return
+
+    existing = {col["name"] for col in inspector.get_columns("build_projects")}
+
+    columns_to_add = [
+        ("final_checkout_status", "VARCHAR(20)", "'pending'"),
+        ("weaver_extraction", "TEXT", None),  # JSON stored as TEXT in SQLite
+    ]
+
+    for col_name, col_type, default_val in columns_to_add:
+        if col_name not in existing:
+            with engine.connect() as conn:
+                try:
+                    if default_val is not None:
+                        sql = f"ALTER TABLE build_projects ADD COLUMN {col_name} {col_type} DEFAULT {default_val}"
+                    else:
+                        sql = f"ALTER TABLE build_projects ADD COLUMN {col_name} {col_type}"
+                    conn.execute(text(sql))
+                    conn.commit()
+                    log.info("[db_migrate] Added build_projects.%s column", col_name)
+                    print(f"[db_migrate] Added build_projects.{col_name} column")
+                except Exception as e:
+                    log.warning("[db_migrate] Failed to add %s: %s", col_name, e)
+        else:
+            log.debug("[db_migrate] build_projects.%s already exists", col_name)
 
 
 

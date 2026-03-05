@@ -32,6 +32,7 @@ from .phase_checkout_checks import (
     run_boot_test_with_fix_loop,
     map_file_to_segment,
 )
+from app.sandbox_fs import sandbox_read_text as _sbx_read_text
 
 logger = logging.getLogger(__name__)
 
@@ -98,8 +99,7 @@ async def run_phase_checkout(
                 for _det_source in _det_sources:
                     _source_abs = os.path.join(sandbox_base, _det_source.replace("/", os.sep))
                     if os.path.isfile(_source_abs):
-                        with open(_source_abs, "r", encoding="utf-8") as _sf:
-                            _src = _sf.read()
+                        _src = _sbx_read_text(_source_abs)
                         try:
                             _tree = _ast.parse(_src)
                             for _n in _ast.walk(_tree):

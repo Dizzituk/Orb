@@ -18,11 +18,14 @@ def _run_single_boot(
     from .phase_checkout_checks import _parse_boot_failure
     venv = actual_base + r"\.venv\Scripts\python.exe"
     # v2.2: Force UTF-8 to prevent UnicodeEncodeError from emoji in generated code
+    # v3.3 (2026-03-05): Run init_db() before importing app to ensure
+    # new ORM columns/tables are created. Prevents 'no such column' errors.
     cmd = (
         f'$env:PYTHONIOENCODING="ascii:replace"; $env:PYTHONUTF8="0" ; '
         f'cd "{actual_base}" ; '
         f'& "{venv}" -c '
         f'"import sys; sys.path.insert(0, r\'{actual_base}\'); '
+        f'from app.db import init_db; init_db(); '
         f'from main import app; print(\'BOOT_CHECK_PASS\')"'
     )
 

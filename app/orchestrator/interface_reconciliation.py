@@ -254,13 +254,13 @@ def read_dependency_interfaces_from_sandbox(
     all_interfaces: List[Dict[str, Any]] = []
     segment_map: Dict[str, str] = {}  # file_path -> segment_id
 
+    # v1.1: Use SandboxClient from overwatcher (same as arch_exec)
+    client = None
     try:
-        from app.services.sandbox import get_sandbox_client
-        client = get_sandbox_client()
+        from app.overwatcher.sandbox_client import SandboxClient
+        client = SandboxClient()
     except Exception as e:
         logger.warning("[interface_recon] Cannot get sandbox client: %s", e)
-        client = None
-
     for dep_id in segment.dependencies:
         dep_state = completed_segments.get(dep_id)
         if dep_state is None:
@@ -280,22 +280,23 @@ def read_dependency_interfaces_from_sandbox(
             abs_path = os.path.join(sandbox_base, rel_path.replace("/", os.sep))
             file_content = None
 
-            # Try reading via sandbox client first (remote sandbox)
+            # v1.1: Read via SandboxClient.shell_run (sandbox is only source of truth)
             if client is not None:
                 try:
-                    result = client.read_file(abs_path)
-                    if result and result.get("content"):
-                        file_content = result["content"]
+                    cmd = f'Get-Content -Path "{abs_path}" -Raw -Encoding UTF8'
+                    result = client.shell_run(
+                        cmd=["powershell", "-NoProfile", "-Command", cmd],
+                    )
+                    stdout = result.get("stdout", "") if isinstance(result, dict) else getattr(result, "stdout", "")
+                    if stdout and stdout.strip():
+                        file_content = stdout
                 except Exception:
                     pass
 
-            # Fallback: read directly (via sandbox)
-            if file_content is None and _sbx_isfile(abs_path):
+            # Secondary: sandbox_fs bridge (/fs/contents endpoint)
+            if file_content is None:
                 try:
                     file_content = _sbx_read_text(abs_path)
-                    if file_content is None:
-                        with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
-                            file_content = f.read()
                 except Exception as e:
                     logger.warning("[interface_recon] Cannot read %s: %s", abs_path, e)
                     continue

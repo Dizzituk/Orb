@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from .construction_planner_models import ConstructionPlan, PhaseDefinition
+from app.sandbox_fs import sandbox_read_text as _sbx_read_text
 
 logger = logging.getLogger(__name__)
 
@@ -125,8 +126,7 @@ def generate_phase_interface(
                 try:
                     _content = _sbx_read_text(abs_path)
                     if _content is None:
-                        with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
-                            _content = f.read()
+                        _content = _sbx_read_text(abs_path)
                     line_count = _content.count("\n") + 1
                 except Exception:
                     pass

@@ -41,6 +41,7 @@ class PipelineStage(str, enum.Enum):
     critical_pipeline = "critical_pipeline"  # Architecture + segmentation
     overwatcher = "overwatcher"     # Overwatcher supervision
     implementer = "implementer"     # Implementation / code generation
+    final_checkout = "final_checkout"  # Final validation — boot test, AI review
     complete = "complete"           # Pipeline finished successfully
 
 
@@ -70,6 +71,11 @@ class BuildProject(Base):
     critical_pipeline_status = Column(SAEnum(StageStatus), default=StageStatus.pending, nullable=False)
     overwatcher_status = Column(SAEnum(StageStatus), default=StageStatus.pending, nullable=False)
     implementer_status = Column(SAEnum(StageStatus), default=StageStatus.pending, nullable=False)
+    final_checkout_status = Column(SAEnum(StageStatus), default=StageStatus.pending, nullable=False)
+
+    # Weaver extraction — trimmed structured output from the Weaver
+    # Stores key requirements, design preferences, constraints (not the full Weaver dump)
+    weaver_extraction = Column(JSON, nullable=True)
 
     # Links to pipeline artefacts (spec IDs, job IDs, etc.)
     spec_id = Column(String, nullable=True)

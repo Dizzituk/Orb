@@ -25,6 +25,7 @@ from app.builds.pipeline_bridge import (
     notify_stage_awaiting,
 )
 from app.transparency.collector import ReasoningCollector
+from app.transparency.io_tracker import IOTracker
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ _STAGE_MAP = {
     "overwatcher": "overwatcher",
     "implementation": "implementer",
     "implementer": "implementer",
+    "final_checkout": "final_checkout",
 }
 
 # Stages that should trigger build project tracking
@@ -117,6 +119,95 @@ def _parse_sse_chunk(chunk) -> Optional[dict]:
     return None
 
 
+def _extract_weaver_intent(weaver_output: str) -> Optional[dict]:
+    """Extract key requirements, design preferences, and constraints from Weaver output.
+
+    The Weaver produces bold-bullet structured outlines like:
+        - **Key requirements**
+          - Transform Debug Assistant from...
+          - **Debug tab UX**
+            - Clicking the Debug tab...
+        - **Design preferences**
+          - Debug Projects should look...
+        - **Constraints**
+          - Must be grounded in...
+
+    This parser finds each top-level bold section header, then collects
+    all indented sub-bullets beneath it as the section content.
+    """
+    import re
+
+    extraction: dict = {
+        "key_requirements": [],
+        "design_preferences": [],
+        "constraints": [],
+    }
+
+    # Category detection patterns
+    _CATEGORY_MAP = [
+        (re.compile(r"key\s*requirement|requirement|feature|function", re.I), "key_requirements"),
+        (re.compile(r"design\s*preference|\bdesign\b|\bstyle\b|\bui\b|\bux\b|\bvisual\b|\baesthetic\b", re.I), "design_preferences"),
+        (re.compile(r"constraint|rule|limit|tech.*stack|restriction|must.*not", re.I), "constraints"),
+    ]
+
+    lines = weaver_output.split("\n")
+    current_category: Optional[str] = None
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        # Measure indentation to distinguish root-level from nested bullets
+        leading_spaces = len(line) - len(line.lstrip(" "))
+
+        # Detect top-level section headers: "- **Key requirements**"
+        # Must be at root level (0-1 spaces indent) with bold text
+        if leading_spaces <= 1:
+            top_match = re.match(r"^-\s+\*\*(.+?)\*\*\s*$", stripped)
+            if top_match:
+                heading_text = top_match.group(1).strip()
+                matched = False
+                for pattern, category in _CATEGORY_MAP:
+                    if pattern.search(heading_text):
+                        current_category = category
+                        matched = True
+                        break
+                if not matched:
+                    current_category = None
+                continue
+            # Non-bold root bullet — new unknown section, stop collecting
+            if re.match(r"^-\s+", stripped):
+                current_category = None
+                continue
+
+        # If we're inside a known category, collect ALL indented content
+        if current_category is not None and leading_spaces >= 2:
+            sub_match = re.match(r"^\s{2,}-\s+(.+)", line)
+            if sub_match:
+                item_text = sub_match.group(1).strip()
+                # Strip bold wrapper if present (e.g. "**Debug tab UX**")
+                item_text = re.sub(r"^\*\*(.+?)\*\*:?$", r"\1", item_text)
+                if len(item_text) > 5:
+                    extraction[current_category].append(item_text)
+
+    # Fallback: if the parser found nothing (different Weaver format), grab
+    # all substantial bullets as requirements
+    total = sum(len(v) for v in extraction.values())
+    if total == 0:
+        fallback = re.findall(r"^\s*-\s+(.{15,})", weaver_output, re.MULTILINE)
+        if fallback:
+            extraction["key_requirements"] = [
+                re.sub(r"^\*\*(.+?)\*\*:?\s*", r"\1: ", item.strip())
+                for item in fallback[:15]
+                if not re.match(r"^\*\*(?:Organizing|Analyzing)\b", item.strip())
+            ]
+
+    if any(v for v in extraction.values()):
+        return extraction
+    return None
+
+
 async def wrap_with_build_tracking(
     stream: AsyncGenerator,
     db: Session,
@@ -166,7 +257,7 @@ async def wrap_with_build_tracking(
     print(f"[STAGE_HOOKS] Stage '{pipeline_stage}' STARTED for build project '{build_project.name}' ({build_project_id})")
 
     # Initialise transparency collector for this stage
-    stage_index_map = {"weaver": 0, "spec_gate": 1, "critical_pipeline": 2, "implementer": 3}
+    stage_index_map = {"weaver": 0, "spec_gate": 1, "critical_pipeline": 2, "implementer": 3, "final_checkout": 4}
     transparency = ReasoningCollector(
         job_id=build_project.job_id or "",
         run_id=f"run_{build_project_id[:8]}",
@@ -190,6 +281,10 @@ async def wrap_with_build_tracking(
         "status": "running",
     })
 
+    # IO Tracker: set context var so all sandbox_fs / SandboxClient calls
+    # within the inner stream handlers are automatically logged.
+    io_tracker = IOTracker(collector=transparency, stage_name=pipeline_stage)
+
     # Stream through, collecting tokens for the per-project message log
     output_parts = []
     had_error = False
@@ -199,27 +294,28 @@ async def wrap_with_build_tracking(
 
     print(f"[STAGE_HOOKS] About to iterate inner stream for stage '{pipeline_stage}'")
     try:
-        async for chunk in stream:
-            chunk_count += 1
-            if chunk_count == 1:
-                print(f"[STAGE_HOOKS] First chunk received from inner stream (type={type(chunk).__name__}, len={len(chunk) if chunk else 0})")
-            # Forward the chunk as-is (preserving bytes or str type)
-            yield chunk
+        with io_tracker:
+            async for chunk in stream:
+                chunk_count += 1
+                if chunk_count == 1:
+                    print(f"[STAGE_HOOKS] First chunk received from inner stream (type={type(chunk).__name__}, len={len(chunk) if chunk else 0})")
+                # Forward the chunk as-is (preserving bytes or str type)
+                yield chunk
 
-            # Parse to collect output and detect status
-            parsed = _parse_sse_chunk(chunk)
-            if parsed:
-                event_type = parsed.get("type", "")
-                if event_type == "token":
-                    content = parsed.get("content", "")
-                    if content:
-                        output_parts.append(content)
-                elif event_type == "error":
-                    had_error = True
-                elif event_type in ("spec_blocked", "spec_questions"):
-                    is_awaiting = True
-                elif event_type in ("spec_ready", "spec_segmented"):
-                    spec_id = parsed.get("spec_id")
+                # Parse to collect output and detect status
+                parsed = _parse_sse_chunk(chunk)
+                if parsed:
+                    event_type = parsed.get("type", "")
+                    if event_type == "token":
+                        content = parsed.get("content", "")
+                        if content:
+                            output_parts.append(content)
+                    elif event_type == "error":
+                        had_error = True
+                    elif event_type in ("spec_blocked", "spec_questions"):
+                        is_awaiting = True
+                    elif event_type in ("spec_ready", "spec_segmented"):
+                        spec_id = parsed.get("spec_id")
 
     except Exception as e:
         had_error = True
@@ -261,6 +357,17 @@ async def wrap_with_build_tracking(
             )
         except Exception as e:
             logger.warning("[stage_hooks] Failed to save pipeline message: %s", e)
+
+    # Extract and save Weaver structured data (Brief Tab enrichment)
+    if pipeline_stage == "weaver" and full_output and not had_error:
+        try:
+            extraction = _extract_weaver_intent(full_output)
+            if extraction:
+                from app.builds.pipeline_bridge import save_weaver_extraction
+                save_weaver_extraction(db, build_project_id, extraction)
+                print(f"[STAGE_HOOKS] Saved Weaver extraction: {list(extraction.keys())}")
+        except Exception as we:
+            logger.debug("[stage_hooks] Weaver extraction failed: %s", we)
 
     # Link spec if we got one
     if spec_id:

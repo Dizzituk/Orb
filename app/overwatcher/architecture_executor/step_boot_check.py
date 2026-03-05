@@ -39,12 +39,17 @@ def _run_boot_check(client: SandboxClient, sandbox_base: str) -> tuple:
 
     v3.1: Fixed error reporting — prefer traceback/import errors from
     stdout, not non-fatal stderr warnings.
+    v3.3 (2026-03-05): Runs init_db() before importing app to ensure
+    any new ORM columns/tables are created via create_all + migrations.
+    This prevents 'no such column' errors when the implementer adds
+    new model fields.
     """
     venv_python = sandbox_base + "\\.venv\\Scripts\\python.exe"
     boot_cmd = (
         f'cd "{sandbox_base}" ; '
         f'& "{venv_python}" -c '
         f'"import sys; sys.path.insert(0, r\'{sandbox_base}\'); '
+        f'from app.db import init_db; init_db(); '
         f'from main import app; print(\'BOOT_CHECK_PASS\')"'
     )
     result = client.shell_run(boot_cmd, timeout_seconds=30)

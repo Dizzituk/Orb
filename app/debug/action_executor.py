@@ -46,9 +46,16 @@ def _resolve_sandbox_path(path: str) -> str:
     'src/components/debug/DebugView.tsx'. These need to become absolute
     paths that the sandbox controller can find.
     """
-    # Already absolute
+    # Already absolute Windows path (D:\... or D:/...)
     if len(path) > 2 and path[1] == ":":
         return path
+
+    # Strip leading slashes — models sometimes send Unix-style /app/...
+    path = path.lstrip("/\\ ")
+
+    # Bare empty or root → default to D:/Orb
+    if not path or path == ".":
+        return "D:/Orb"
 
     # Try alias matching
     for prefix, replacement in _PATH_ALIASES:
@@ -146,14 +153,14 @@ async def execute_read_file(params: Dict[str, Any]) -> str:
 
 
 async def execute_list_files(params: Dict[str, Any]) -> str:
-    """List directory contents in the sandbox."""
+    """List directory contents via sandbox controller /fs/tree endpoint."""
     path = params.get("path", "")
     if not path:
         return "Error: path is required."
 
     path = _resolve_sandbox_path(path)
 
-    # Host-only directories
+    # Host-only directories (architecture, logs)
     if _is_host_only(path):
         p = Path(path)
         if p.exists() and p.is_dir():
@@ -167,22 +174,24 @@ async def execute_list_files(params: Dict[str, Any]) -> str:
                 return f"Error listing directory: {e}"
         return f"Directory not found: {path}"
 
-    # Sandbox controller
+    # Sandbox controller: /fs/tree with roots + max_depth=1
     try:
         import httpx
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
-                f"{SANDBOX_CONTROLLER_URL}/fs/list",
-                json={"path": path},
+                f"{SANDBOX_CONTROLLER_URL}/fs/tree",
+                json={"roots": [path], "max_depth": 1},
             )
             if resp.status_code == 200:
                 data = resp.json()
-                entries = data.get("entries", [])
-                if entries:
+                files = data.get("files", [])
+                if files:
                     lines = []
-                    for entry in entries:
-                        name = entry.get("name", "?")
-                        is_dir = entry.get("is_dir", False)
+                    for f in files:
+                        name = f.get("name", "?")
+                        ext = f.get("ext", "")
+                        # Directories have no extension and typically no size
+                        is_dir = not ext and f.get("size_bytes") is None
                         prefix = "[DIR]" if is_dir else "[FILE]"
                         lines.append(f"{prefix} {name}")
                     return "\n".join(lines)
@@ -193,7 +202,9 @@ async def execute_list_files(params: Dict[str, Any]) -> str:
 
 
 async def execute_search_files(params: Dict[str, Any]) -> str:
-    """Search for files matching a pattern in the sandbox."""
+    """Search for files matching a pattern via sandbox /fs/tree + client-side filter."""
+    import fnmatch
+
     root = params.get("path", "D:/Orb")
     pattern = params.get("pattern", "**/*")
 
@@ -216,21 +227,44 @@ async def execute_search_files(params: Dict[str, Any]) -> str:
         except Exception as e:
             return f"Search error: {e}"
 
-    # Sandbox controller
+    # Sandbox controller: use /fs/tree with deep scan, then filter client-side
+    # Convert glob pattern to something we can match against filenames/paths
+    # e.g. "**/*.tsx" -> match any .tsx file; "Debug*" -> match files starting with Debug
     try:
         import httpx
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        # Use deeper max_depth for recursive searches
+        max_depth = 10 if "**/" in pattern or pattern.startswith("*") else 3
+        async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.post(
-                f"{SANDBOX_CONTROLLER_URL}/fs/search",
-                json={"root": root, "pattern": pattern, "max_results": 100},
+                f"{SANDBOX_CONTROLLER_URL}/fs/tree",
+                json={"roots": [root], "max_depth": max_depth},
             )
             if resp.status_code == 200:
                 data = resp.json()
-                matches = data.get("matches", [])
-                if not matches:
+                files = data.get("files", [])
+                if not files:
+                    return f"No files found in {root}"
+
+                # Filter by pattern
+                skip_dirs = {".git", "node_modules", ".venv", "__pycache__", "dist", "build"}
+                # Normalise the glob: strip leading **/ for fnmatch
+                match_pattern = pattern.lstrip("*/") if pattern.startswith("**/") else pattern
+
+                matched = []
+                for f in files:
+                    fpath = f.get("path", "")
+                    fname = f.get("name", "")
+                    # Skip noise directories
+                    if any(sd in fpath for sd in skip_dirs):
+                        continue
+                    # Match against filename or relative path
+                    if fnmatch.fnmatch(fname, match_pattern) or fnmatch.fnmatch(fpath, pattern):
+                        matched.append(fpath)
+
+                if not matched:
                     return f"No files matching '{pattern}' in {root}"
-                result_lines = [str(m) for m in matches[:100]]
-                suffix = f"\n... ({len(matches)} total)" if len(matches) > 100 else ""
+                result_lines = matched[:100]
+                suffix = f"\n... ({len(matched)} total)" if len(matched) > 100 else ""
                 return "\n".join(result_lines) + suffix
             return f"Sandbox error ({resp.status_code}): {resp.text}"
     except Exception as e:

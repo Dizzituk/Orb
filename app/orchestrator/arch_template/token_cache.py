@@ -52,14 +52,14 @@ def _read_css_from_host(frontend_base: str = r"D:\orb-desktop") -> Dict[str, str
 
     for rel_path in _CORE_CSS_PATHS:
         abs_path = os.path.join(frontend_base, rel_path)
-        if os.path.exists(abs_path):
-            try:
-                with open(abs_path, "r", encoding="utf-8") as f:
-                    css_contents[rel_path] = f.read()
-                logger.debug("[token_cache] Read %s (%d chars)", rel_path, len(css_contents[rel_path]))
-            except Exception as exc:
-                logger.debug("[token_cache] Failed to read %s: %s", rel_path, exc)
-
+        try:
+            from app.sandbox_fs import sandbox_read_text
+            _css = sandbox_read_text(abs_path)
+            if _css is not None:
+                css_contents[rel_path] = _css
+                logger.debug("[token_cache] Read %s from sandbox (%d chars)", rel_path, len(_css))
+        except Exception as exc:
+            logger.debug("[token_cache] Failed to read %s: %s", rel_path, exc)
     return css_contents
 
 
