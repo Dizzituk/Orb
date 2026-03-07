@@ -297,7 +297,48 @@ def _extract_file_scope_from_spec(
             for f in multi.get('target_files', []):
                 if isinstance(f, str):
                     _add_path(f)
-    
+
+    # --- v5.18: Aggressive fallback for missed paths ---
+    # If we found very few files (<3), do a broader scan.
+    # The LLM spec often lists paths in formats the stricter regexes miss:
+    #   - "D:/Orb/app/debug/models.py — DB models" (em dash breaks boundary)
+    #   - Paths inside **bold** or other markdown formatting
+    #   - Paths after bullets without proper whitespace
+    # This broader pattern catches any plausible file path anywhere in the text.
+    if len(paths) < 3 and spec_markdown:
+        _broad_rel = re.compile(
+            r'((?:app|src|orb-desktop)[/\\]'
+            r'[\w/\\.-]+\.(?:py|ts|tsx|js|jsx|css|json|yaml|yml|md))',
+        )
+        _broad_abs = re.compile(
+            r'([A-Za-z]:[/\\]'
+            r'[\w/\\.-]+\.(?:py|ts|tsx|js|jsx|css|json|yaml|yml|md))',
+        )
+        _before_count = len(paths)
+        for m in _broad_rel.finditer(spec_markdown):
+            _add_path(m.group(1).replace('/', os.sep))
+        for m in _broad_abs.finditer(spec_markdown):
+            normalised = m.group(1).replace('/', '\\')
+            _found = False
+            for _root in _known_roots:
+                if normalised.lower().startswith(_root + '\\'):
+                    rel_part = normalised[len(_root) + 1:]
+                    if rel_part:
+                        _add_path(rel_part)
+                        _found = True
+                    break
+            if not _found:
+                for prefix in ('app\\', 'src\\', 'tests\\', 'orb-desktop\\'):
+                    idx = normalised.lower().find(prefix)
+                    if idx >= 0:
+                        _add_path(normalised[idx:])
+                        _found = True
+                        break
+            if not _found:
+                _add_path(m.group(1))
+        if len(paths) > _before_count:
+            print(f"[spec_runner] v5.18 BROAD SCAN rescued {len(paths) - _before_count} additional path(s) (total={len(paths)})")
+
     return paths
 
 def _extract_acceptance_from_spec(spec_markdown: Optional[str]) -> List[str]:

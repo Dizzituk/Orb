@@ -257,12 +257,76 @@ async def run_phase_checkout(
     else:
         _emit("[CHECK 4B] Frontend Vite build check -- SKIPPED (no frontend files)")
 
+    # --- Pre-compute boot_passed for use in Check 5 and aggregation ---
+    boot_passed = (result.boot_test and result.boot_test.status == "pass")
+
+    # --- Check 5: Big-Model Verification (v8.0 — agentic pipeline enhancement) ---
+    # When enabled, a big model reads all written files + spec + boot results
+    # and produces a targeted diagnosis. Only runs if boot passed (no point
+    # diagnosing if the app doesn't start).
+    _model_verdict = None
+    try:
+        from app.agentic_pipeline.config import AGENTIC_PIPELINE_ENABLED
+    except ImportError:
+        AGENTIC_PIPELINE_ENABLED = False
+
+    if AGENTIC_PIPELINE_ENABLED and boot_passed:
+        _emit("[CHECK 5] Big-model verification (agentic pipeline)...")
+        try:
+            from app.agentic_pipeline.phase_checkout_model import run_phase_checkout as _run_model_checkout
+            from app.llm.overwatcher_stream import create_overwatcher_llm_fn
+            _llm_fn = create_overwatcher_llm_fn()
+            if _llm_fn:
+                # Read all written files from sandbox
+                _written = {}
+                for f in segment_output_files:
+                    _content = _sbx_read_text(f)
+                    if _content:
+                        _written[f] = _content
+
+                # Load spec summary
+                _spec_path = os.path.join(job_dir, "spec.json")
+                _spec_summary = "(not available)"
+                if os.path.isfile(_spec_path):
+                    with open(_spec_path, "r") as _sf:
+                        _spec_data = json.load(_sf)
+                    _spec_summary = _spec_data.get("summary", _spec_data.get("objective", ""))
+
+                _boot_str = "PASS" if boot_passed else f"FAIL: {result.boot_test.error_summary[:200] if result.boot_test else 'unknown'}"
+                _build_str = "PASS" if (hasattr(result, 'frontend_build') and result.frontend_build and result.frontend_build.status == 'pass') else "FAIL or N/A"
+
+                _model_verdict = await _run_model_checkout(
+                    spec_summary=_spec_summary,
+                    written_files=_written,
+                    boot_result=_boot_str,
+                    build_result=_build_str,
+                    llm_call_fn=_llm_fn,
+                    on_progress=_emit,
+                )
+                result.checks_run.append("model_verification")
+
+                if _model_verdict.passed:
+                    _emit(f"  [OK] Big-model verification passed (confidence={_model_verdict.confidence:.2f})")
+                else:
+                    _emit(f"  [WARN] Big-model found {len(_model_verdict.fix_items)} issue(s):")
+                    for _fi in _model_verdict.fix_items[:5]:
+                        _emit(f"    - [{_fi.fix_type.value}] {_fi.file_path}: {_fi.description[:100]}")
+            else:
+                _emit("  [SKIP] No LLM provider available for big-model verification")
+        except Exception as _mv_err:
+            logger.warning("[phase_checkout] v8.0 Big-model verification failed (non-fatal): %s", _mv_err)
+            _emit(f"  [WARN] Big-model verification skipped: {_mv_err}")
+    elif not AGENTIC_PIPELINE_ENABLED:
+        pass  # v8.0 not enabled — skip silently
+    else:
+        _emit("[CHECK 5] Big-model verification -- SKIPPED (boot failed)")
+
     # --- Aggregate and route ---
     # v2.0: Only the boot test determines pass/fail.
     # Size and contract checks are informational warnings -- earlier pipeline
     # stages (architecture, critique, cohesion) enforce those constraints.
     # Phase checkout's job is: does it boot? If not, can we fix it?
-    boot_passed = (result.boot_test and result.boot_test.status == "pass")
+    # (boot_passed already computed above for Check 5)
     # v3.4-fix: Vite build failure is a hard gate
     frontend_boot_failed = (
         hasattr(result, 'frontend_boot')

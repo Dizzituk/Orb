@@ -33,6 +33,12 @@ from .helpers import (
 from .parsing import extract_section_for_file, _extract_verbatim_code_from_architecture
 from .arch_code_extractor import extract_code_for_files, ExtractionResult
 
+# v8.0: Extraction-only mode flag
+try:
+    from app.agentic_pipeline.config import EXTRACTION_ONLY as _EXTRACTION_ONLY
+except ImportError:
+    _EXTRACTION_ONLY = False
+
 
 # ---------------------------------------------------------------------------
 # v1.1: Strip implementation briefs before code extraction
@@ -203,6 +209,35 @@ async def _process_single_task(
                     break
 
                 elif merge_decision.use_verify_prompt:
+                    # v8.0: In extraction-only mode, use the prefill content
+                    # directly instead of sending to LLM for verification.
+                    if _EXTRACTION_ONLY and merge_decision.content:
+                        file_content = merge_decision.content
+                        logger.info(
+                            "[arch_exec] v8.0 EXTRACTION_ONLY (prefill→direct): %s (%d chars)",
+                            rel_path, len(file_content),
+                        )
+                        print(
+                            f"[ARCH_EXEC] v8.0 EXTRACTION_ONLY: {rel_path} "
+                            f"({len(file_content)} chars) — using prefill as final"
+                        )
+                        ctx.add_trace("EXTRACTION_ONLY_PREFILL", "direct_use", {
+                            "path": rel_path, "chars": len(file_content),
+                            "confidence": merge_decision.confidence,
+                        })
+                        try:
+                            impl_result = await run_implementer_task(
+                                path=abs_path, content=file_content,
+                                action=action, ensure_parents=True, client=client,
+                            )
+                            if impl_result.success:
+                                task_success = True
+                            else:
+                                last_error = f"Extraction-only write failed: {impl_result.error}"
+                        except Exception as e:
+                            last_error = f"Extraction-only write exception: {e}"
+                        break
+
                     logger.info(
                         "[arch_exec] v1.0 PREFILL_MODE: %s (confidence=%.2f) — %s",
                         rel_path, merge_decision.confidence, merge_decision.reason,
@@ -343,6 +378,21 @@ async def _process_single_task(
 
                 # Pre-flight gate
                 run_preflight_gate(ctx.interface_contract, rel_path, user_prompt, system_prompt)
+
+                # v8.0: Extraction-only mode — skip LLM call for CREATE files
+                # MODIFY files still need LLM (no deterministic edit path yet)
+                if _EXTRACTION_ONLY and action == "create":
+                    last_error = (
+                        f"EXTRACTION_ONLY: No extractable code for {rel_path} "
+                        f"and LLM fallback is disabled. This is a Stage 1 problem — "
+                        f"the agentic loop should have produced extractable code."
+                    )
+                    logger.warning("[arch_exec] v8.0 %s", last_error)
+                    print(f"[ARCH_EXEC] v8.0 EXTRACTION_ONLY: {rel_path} — no code, no LLM fallback")
+                    ctx.add_trace("EXTRACTION_ONLY_NO_CODE", f"strike_{strike}", {
+                        "path": rel_path, "error": last_error,
+                    })
+                    break
 
                 # LLM call
                 llm_result = await ctx.llm_call_fn(

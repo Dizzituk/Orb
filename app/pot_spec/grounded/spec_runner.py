@@ -130,12 +130,13 @@ async def run_spec_gate_grounded(
         # STEP 2: Detect if this needs a scan
         # =============================================================
         project_paths = _extract_project_paths(combined_text)
-        multi_file_meta = _detect_multi_file_intent(
-            combined_text=combined_text,
-            constraints_hint=constraints_hint,
-            project_paths=project_paths,
-            vision_results=constraints_hint.get('vision_results') if constraints_hint else None,
-        )
+        # v8.0: Multi-file refactor detection DISABLED.
+        # It repeatedly misclassifies CREATE/architecture jobs as refactors
+        # by inferring false search/replace terms from natural language
+        # (e.g. 'placeholder'->'real', 'Orb'->'project', 'frontend'->'backend').
+        # The CREATE spec path handles all job types correctly.
+        # TODO: Re-enable with stricter guards when actual refactor jobs are needed.
+        multi_file_meta = None
 
         # =============================================================
         # STEP 3: Build spec (scan path or create path)

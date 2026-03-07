@@ -237,7 +237,7 @@ Rewrite the COMPLETE CSS file so that:
 4. Keep all existing styles that are correctly matched
 5. Output ONLY the CSS file content, no markdown fences, no explanations
 
-CRITICAL: Output the raw CSS only. No \`\`\`css blocks. No commentary."""
+CRITICAL: Output the raw CSS only. No ```css blocks. No commentary."""
 
 # --- LLM call for CSS regeneration --------------------------------------- #
 

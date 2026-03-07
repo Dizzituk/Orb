@@ -270,7 +270,155 @@ async def run_segmented_job(
 
     v7.0: Decomposed — stages are now in seg_job_init.py, seg_job_loop.py,
     seg_job_cohesion.py, and seg_job_post.py.
+
+    v8.0 (2026-03-05): Agentic pipeline routing.
+    If ASTRA_AGENTIC_PIPELINE=true, routes to the new three-stage
+    agentic pipeline instead of the per-segment loop.
+    If ASTRA_COMPARISON_MODE=true, runs the agentic pipeline in
+    parallel for comparison without affecting the production path.
     """
+    # --- v9.0: ASTRA v2 Pipeline routing ---
+    try:
+        from app.pipeline_v2.config import V2_ENABLED
+    except ImportError:
+        V2_ENABLED = False
+
+    if V2_ENABLED:
+        logger.info("[SEGMENT_LOOP] v9.0 ASTRA V2 PIPELINE ENABLED")
+        try:
+            from app.pipeline_v2.orchestrator import run_v2_pipeline
+            _v2_job_dir = os.path.join("D:\\Orb", "jobs", "jobs", job_id)
+
+            _v2_manifest = {}
+            _v2_spec = {}
+            _v2_intent = ""
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as _mf:
+                    _v2_manifest = json.load(_mf)
+                _spec_path = os.path.join(os.path.dirname(manifest_path), "..", "spec.json")
+                if os.path.isfile(_spec_path):
+                    with open(_spec_path, "r", encoding="utf-8") as _sf:
+                        _v2_spec = json.load(_sf)
+                # Load intent from weaver if available
+                _intent_path = os.path.join(_v2_job_dir, "intent.txt")
+                if os.path.isfile(_intent_path):
+                    with open(_intent_path, "r", encoding="utf-8") as _if:
+                        _v2_intent = _if.read()
+                elif parent_spec:
+                    _v2_intent = parent_spec.get("summary", str(parent_spec)[:2000])
+            except Exception as _load_err:
+                logger.error("[SEGMENT_LOOP] v9.0 Failed to load v2 inputs: %s", _load_err)
+
+            if _v2_manifest:
+                v2_result = await run_v2_pipeline(
+                    job_id=job_id,
+                    manifest=_v2_manifest,
+                    spec=_v2_spec or parent_spec,
+                    intent_text=_v2_intent or str(parent_spec)[:2000],
+                    job_dir=_v2_job_dir,
+                    on_progress=on_progress,
+                )
+                from app.orchestrator.segment_state import JobState as _V2JobState
+                return _V2JobState(
+                    job_id=job_id,
+                    overall_status="complete" if v2_result.success else "failed",
+                    total_segments=len(_v2_manifest.get("segments", [])),
+                )
+        except Exception as _v2_err:
+            logger.error("[SEGMENT_LOOP] v9.0 V2 pipeline CRASHED: %s", _v2_err, exc_info=True)
+            from app.orchestrator.segment_state import JobState as _V2JobState
+            return _V2JobState(job_id=job_id, overall_status="failed", total_segments=0)
+
+    # --- v8.0: Agentic pipeline routing ---
+    try:
+        from app.agentic_pipeline.config import (
+            AGENTIC_PIPELINE_ENABLED, COMPARISON_MODE_ENABLED,
+        )
+    except ImportError:
+        AGENTIC_PIPELINE_ENABLED = False
+        COMPARISON_MODE_ENABLED = False
+
+    # --- v8.0: Agentic pipeline as PRIMARY path ---
+    if AGENTIC_PIPELINE_ENABLED:
+        # --- v8.1: implement_only guard ---
+        # When called from the Implementer button (implement_only=True),
+        # the agentic pipeline has ALREADY run during the Critical Pipeline
+        # stage. Do NOT re-run it. Instead, run extraction + final checkout
+        # on the arch docs that already exist in the job dir.
+        if implement_only:
+            logger.info("[SEGMENT_LOOP] v8.1 implement_only=True + agentic pipeline — running extraction + checkout only")
+            from app.orchestrator.agentic_implement import run_implement_only_from_agentic
+            return await run_implement_only_from_agentic(
+                job_id=job_id,
+                manifest_path=manifest_path,
+                on_progress=on_progress,
+            )
+
+        logger.info("[SEGMENT_LOOP] v8.0 AGENTIC PIPELINE ENABLED — routing to three-stage pipeline")
+        try:
+            from app.agentic_pipeline.pipeline import run_agentic_pipeline
+            from app.llm.overwatcher_stream import create_overwatcher_llm_fn
+            _ag_llm = create_overwatcher_llm_fn()
+            if not _ag_llm:
+                logger.error("[SEGMENT_LOOP] v8.0 Agentic pipeline LLM unavailable — falling back to existing pipeline")
+            else:
+                _ag_job_dir = os.path.join("D:\\Orb", "jobs", "jobs", job_id)
+
+                # Load manifest + skeleton for the agentic pipeline
+                _ag_manifest_data = {}
+                _ag_skeleton = {}
+                try:
+                    with open(manifest_path, "r", encoding="utf-8") as _mf:
+                        _ag_manifest_data = json.load(_mf)
+                    _skel_path = os.path.join(os.path.dirname(manifest_path), "skeleton_contract.json")
+                    if os.path.isfile(_skel_path):
+                        with open(_skel_path, "r", encoding="utf-8") as _sf:
+                            _ag_skeleton = json.load(_sf)
+                except Exception as _load_err:
+                    logger.error("[SEGMENT_LOOP] v8.0 Failed to load manifest/skeleton: %s", _load_err)
+
+                if _ag_manifest_data:
+                    # Get sandbox client for file writes
+                    _ag_sandbox = None
+                    try:
+                        from app.overwatcher.sandbox_client import get_sandbox_client
+                        _ag_sandbox = get_sandbox_client()
+                    except Exception as _sbx_err:
+                        logger.warning("[SEGMENT_LOOP] v8.0 Sandbox client unavailable: %s", _sbx_err)
+
+                    ag_result = await run_agentic_pipeline(
+                        job_id=job_id,
+                        manifest=_ag_manifest_data,
+                        skeleton_contract=_ag_skeleton,
+                        job_dir=_ag_job_dir,
+                        llm_call_fn=_ag_llm,
+                        sandbox_client=_ag_sandbox,
+                        on_progress=on_progress,
+                    )
+                    logger.info(
+                        "[SEGMENT_LOOP] v8.0 Agentic pipeline result: success=%s, docs=%d, files=%d, calls=%d, time=%.1fs",
+                        ag_result.success, len(ag_result.arch_docs),
+                        len(ag_result.files_written), ag_result.total_llm_calls,
+                        ag_result.total_duration_seconds,
+                    )
+                    # Build a minimal JobState for the result
+                    from app.orchestrator.segment_state import JobState as _AgJobState
+                    _ag_state = _AgJobState(
+                        job_id=job_id,
+                        overall_status="complete" if ag_result.success else "failed",
+                        total_segments=len(_ag_manifest_data.get("segments", [])),
+                    )
+                    return _ag_state
+        except Exception as _ag_err:
+            logger.error("[SEGMENT_LOOP] v8.0 Agentic pipeline CRASHED: %s", _ag_err, exc_info=True)
+            # NO FALLBACK. The agentic pipeline IS the pipeline.
+            from app.orchestrator.segment_state import JobState as _AgJobState
+            _ag_state = _AgJobState(job_id=job_id, overall_status="failed", total_segments=0)
+            return _ag_state
+
+    if COMPARISON_MODE_ENABLED and not AGENTIC_PIPELINE_ENABLED:
+        logger.info("[SEGMENT_LOOP] v8.0 Comparison mode enabled — will run after existing pipeline completes")
+
     from app.orchestrator.segment_pipeline_ctx import JobCtx
     from app.orchestrator.seg_job_init import (
         load_manifest,
@@ -416,5 +564,31 @@ async def run_segmented_job(
     emit_quarantine_status(ctx)
     compact_evidence_ledger(ctx)
     emit_final_summary(ctx)
+
+    # --- v8.0: Run agentic pipeline comparison AFTER existing pipeline completes ---
+    if COMPARISON_MODE_ENABLED and not AGENTIC_PIPELINE_ENABLED:
+        try:
+            from app.agentic_pipeline.comparison_runner import run_agentic_comparison
+            from app.llm.overwatcher_stream import create_overwatcher_llm_fn
+            _cmp_llm = create_overwatcher_llm_fn()
+            if _cmp_llm:
+                _cmp_job_dir = os.path.join("D:\\Orb", "jobs", "jobs", job_id)
+                logger.info("[SEGMENT_LOOP] v8.0 Existing pipeline complete — running agentic comparison for %s", job_id)
+                try:
+                    cmp_result = await run_agentic_comparison(
+                        job_id=job_id, manifest_path=manifest_path,
+                        job_dir=_cmp_job_dir, llm_call_fn=_cmp_llm,
+                        on_progress=on_progress,
+                    )
+                    logger.info(
+                        "[SEGMENT_LOOP] v8.0 Comparison FINISHED: agentic=%s, docs=%d, calls=%d",
+                        cmp_result.agentic_success, cmp_result.agentic_arch_doc_count, cmp_result.agentic_llm_calls,
+                    )
+                except Exception as _cmp_err:
+                    logger.error("[SEGMENT_LOOP] v8.0 Comparison CRASHED: %s", _cmp_err, exc_info=True)
+            else:
+                logger.warning("[SEGMENT_LOOP] v8.0 Comparison skipped: LLM function unavailable")
+        except Exception as _cmp_setup_err:
+            logger.warning("[SEGMENT_LOOP] v8.0 Comparison setup failed: %s", _cmp_setup_err)
 
     return ctx.state

@@ -28,6 +28,7 @@ from __future__ import annotations
 import ast
 import logging
 import os
+from app.sandbox_fs import sandbox_read_text as _sbx_read_text
 import re
 from dataclasses import dataclass, field
 from difflib import get_close_matches
@@ -266,8 +267,7 @@ def run_post_execution_reconciliation(
             abs_path = os.path.join(sandbox_base, rel_path.replace("/", os.sep))
             try:
                 if os.path.isfile(abs_path):
-                    with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
-                        content = f.read()
+                    content = _sbx_read_text(abs_path)
                     all_file_contents[rel_path] = content
                     segment_file_map[rel_path] = seg_id
                     result.files_scanned += 1

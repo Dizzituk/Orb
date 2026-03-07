@@ -10,7 +10,13 @@ from .spec_models import MultiFileOperation
 from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
-_SANDBOX_CLIENT_AVAILABLE = True
+# v8.0: get_sandbox_client intentionally left as None.
+# The multi-file refactor detection path misclassifies architecture specs
+# as rename jobs when the sandbox is reachable. The CREATE spec path
+# (which fires when sandbox is unavailable) produces correct results.
+# TODO: Fix the refactor classifier to not trigger on architecture specs
+# before re-enabling sandbox access here.
+_SANDBOX_CLIENT_AVAILABLE = False
 get_sandbox_client = None
 _LLM_CALL_AVAILABLE = True
 llm_call = None
@@ -68,6 +74,12 @@ STOPWORDS = frozenset({
     'extras', 'features', 'scope', 'task', 'micro', 'plan', 'audit',
     'safe', 'reference', 'references', 'occurrence', 'occurrences',
     'case', 'insensitive', 'sensitive',
+    # v8.0: Generic English words that appear naturally in architecture specs.
+    # These were causing false refactor classification on CREATE jobs.
+    'frontend', 'backend', 'placeholder', 'real', 'new', 'old', 'current',
+    'existing', 'original', 'updated', 'modified', 'simple', 'complex',
+    'default', 'custom', 'standard', 'basic', 'advanced', 'legacy', 'modern',
+    'where', 'when', 'how', 'what', 'which', 'who', 'why',
 })
 
 UNICODE_QUOTES = '"\'""\'\''

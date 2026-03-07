@@ -117,6 +117,25 @@ app.add_middleware(
 def on_startup():
     os.makedirs("data", exist_ok=True)
     os.makedirs("data/files", exist_ok=True)
+
+    # v8.0: Suppress harmless "Event loop is closed" errors from httpx/google-genai.
+    # The google-generativeai SDK's internal httpx.AsyncClient gets garbage-collected
+    # after streaming completes, and its __aexit__ fires on a closed event loop.
+    # This is cosmetic — no data loss or functional impact.
+    import asyncio
+    _loop = asyncio.get_event_loop()
+    _original_handler = _loop.get_exception_handler()
+
+    def _suppress_loop_closed(loop, context):
+        exc = context.get("exception")
+        if isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc):
+            return  # Suppress silently
+        if _original_handler:
+            _original_handler(loop, context)
+        else:
+            loop.default_exception_handler(context)
+
+    _loop.set_exception_handler(_suppress_loop_closed)
     
     # v0.18.0: File logging — all logger.* calls written to D:\Orb\logs\astra.log
     try:
@@ -366,6 +385,18 @@ try:
     print("[startup] Debug Assistant: [OK] registered")
 except ImportError as e:
     print(f"[startup] Debug Assistant not available: {e}")
+
+# Debug Projects (project-based debug workspace)
+try:
+    from app.debug.project_router import router as debug_project_router
+    app.include_router(
+        debug_project_router,
+        tags=["Debug Projects"],
+        dependencies=[Depends(require_auth)]
+    )
+    print("[startup] Debug Projects: [OK] registered")
+except ImportError as e:
+    print(f"[startup] Debug Projects not available: {e}")
 
 # Log introspection (read-only, requires auth)
 app.include_router(

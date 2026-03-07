@@ -7,7 +7,7 @@ workspace only and NEVER allow scanning the host PC filesystem.
 
 CRITICAL SECURITY REQUIREMENT:
 - Scans can ONLY target D:/Orb and D:/orb-desktop (SAFE_DEFAULT_SCAN_ROOTS)
-- Bare drive letters (D:\, C:\) MUST be rejected
+- Bare drive letters (D:\\, C:\\) MUST be rejected
 - "Entire D drive" MUST be interpreted as "entire allowed workspace"
 """
 

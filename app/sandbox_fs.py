@@ -43,14 +43,43 @@ def _get_controller_url() -> str:
     return _DEFAULT_URL
 
 
+# Known repo roots for resolving relative paths.
+# The sandbox controller rejects relative paths like "app/debug/models.py"
+# and requires absolute paths like "D:/Orb/app/debug/models.py".
+_REPO_ROOTS = ["D:/Orb", "D:/orb-desktop"]
+
+
 def _normalise_sandbox_path(path: str) -> str:
     """Normalise a path for the sandbox controller.
 
-    The sandbox controller expects forward slashes. Windows backslash
-    paths (D:\\orb-desktop\\src\\...) fail with 'File not found' while
-    forward slash equivalents (D:/orb-desktop/src/...) succeed.
+    The sandbox controller expects absolute forward-slash paths.
+    - Converts backslashes to forward slashes.
+    - Resolves relative paths (e.g. 'app/debug/models.py') to absolute
+      by prepending the appropriate repo root.
+
+    v8.0: Fixes bug where relative paths like 'app/astra_memory/models.py'
+    were sent to the sandbox as-is, returning 'Path not allowed'.
     """
-    return path.replace("\\", "/")
+    p = path.replace("\\", "/")
+
+    # Already absolute (has drive letter like D:/ or C:/)
+    if len(p) >= 2 and p[1] == ":":
+        return p
+
+    # Relative path — resolve against known repo roots.
+    # Try each root; first match wins.
+    for root in _REPO_ROOTS:
+        candidate = f"{root}/{p}"
+        # Quick heuristic: backend paths start with app/ or main.py etc.
+        # Frontend paths start with src/ or package.json etc.
+        if p.startswith("src/") or p.startswith("public/"):
+            if "orb-desktop" in root:
+                return candidate
+        elif "orb-desktop" not in root:
+            return candidate
+
+    # Fallback: prepend first root
+    return f"{_REPO_ROOTS[0]}/{p}"
 
 
 def _post(endpoint: str, payload: dict) -> Tuple[Optional[int], Optional[dict], str]:

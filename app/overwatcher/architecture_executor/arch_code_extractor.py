@@ -192,6 +192,140 @@ def _parse_all_code_blocks(text: str) -> List[ExtractedCodeBlock]:
 
 
 # ---------------------------------------------------------------------------
+# Post-code tail stripping
+# ---------------------------------------------------------------------------
+
+# Patterns that indicate arch-doc prose leaked into extracted code.
+# These appear after the actual code ends.
+_PROSE_TAIL_INDICATORS = [
+    re.compile(r'^\s*[-\u2022]\s+\.\w[\w-]*\s+', re.MULTILINE),   # CSS class descriptions: "- .class-name ..."
+    re.compile(r'^\s*###?\s+', re.MULTILINE),                       # Markdown headings
+    re.compile(r'^\s*\*\*[A-Z]', re.MULTILINE),                     # Bold prose: "**Note:"
+    re.compile(r'^\s*>\s+', re.MULTILINE),                          # Blockquotes
+    re.compile(r'^\s*\|\s+', re.MULTILINE),                         # Markdown table rows
+]
+
+
+def _strip_post_code_tail(content: str, file_path: str) -> str:
+    """Strip architecture prose that leaked after the actual code ends.
+
+    The architecture extractor sometimes includes descriptive sections
+    (CSS class descriptions, implementation notes, markdown prose) that
+    appear after the last valid code statement. These cause parse errors
+    when the implementer writes them to disk.
+
+    Strategy per file type:
+    - TSX/JSX/TS/JS: find last top-level closing brace or export default,
+      truncate everything after
+    - Python: find last def/class/return at indent 0, keep to end of that
+      block
+    - CSS: find last closing brace, truncate after
+    - Other: check for prose indicators in trailing lines
+    """
+    if not content or len(content) < 20:
+        return content
+
+    ext = Path(file_path).suffix.lower()
+    lines = content.split("\n")
+
+    if ext in (".tsx", ".jsx", ".ts", ".js"):
+        return _strip_tail_js(lines)
+    elif ext == ".py":
+        return _strip_tail_python(lines)
+    elif ext in (".css", ".scss"):
+        return _strip_tail_css(lines)
+    else:
+        return _strip_tail_generic(lines)
+
+
+def _strip_tail_js(lines: List[str]) -> str:
+    """For JS/TS/TSX/JSX: truncate after last top-level closing brace or export."""
+    last_code_line = len(lines) - 1
+
+    # Walk backwards to find last meaningful code line
+    for i in range(len(lines) - 1, -1, -1):
+        stripped = lines[i].strip()
+        if not stripped:
+            continue
+        # Valid code endings: }, };, );, export default, ]
+        if stripped in ("}", "};", ");", "];", "]") or \
+           stripped.startswith("export default") or \
+           stripped.startswith("export {"):
+            last_code_line = i
+            break
+        # If we hit prose indicators, this line is junk
+        if any(p.match(lines[i]) for p in _PROSE_TAIL_INDICATORS):
+            last_code_line = i - 1
+            break
+        # Otherwise it's probably code — keep it
+        last_code_line = i
+        break
+
+    result = "\n".join(lines[:last_code_line + 1])
+    trimmed = len(lines) - (last_code_line + 1)
+    if trimmed > 0:
+        logger.info(
+            "[arch_extractor] Stripped %d tail lines from JS/TS file", trimmed,
+        )
+    return result
+
+
+def _strip_tail_python(lines: List[str]) -> str:
+    """For Python: truncate after last non-prose line."""
+    last_code_line = len(lines) - 1
+
+    for i in range(len(lines) - 1, -1, -1):
+        stripped = lines[i].strip()
+        if not stripped:
+            continue
+        if any(p.match(lines[i]) for p in _PROSE_TAIL_INDICATORS):
+            last_code_line = i - 1
+            continue
+        # Found real code
+        last_code_line = i
+        break
+
+    result = "\n".join(lines[:last_code_line + 1])
+    trimmed = len(lines) - (last_code_line + 1)
+    if trimmed > 0:
+        logger.info(
+            "[arch_extractor] Stripped %d tail lines from Python file", trimmed,
+        )
+    return result
+
+
+def _strip_tail_css(lines: List[str]) -> str:
+    """For CSS/SCSS: truncate after last closing brace."""
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].strip() == "}":
+            result = "\n".join(lines[:i + 1])
+            trimmed = len(lines) - (i + 1)
+            if trimmed > 0:
+                logger.info(
+                    "[arch_extractor] Stripped %d tail lines from CSS file", trimmed,
+                )
+            return result
+    return "\n".join(lines)
+
+
+def _strip_tail_generic(lines: List[str]) -> str:
+    """For other file types: strip trailing prose indicators."""
+    last_code_line = len(lines) - 1
+
+    for i in range(len(lines) - 1, -1, -1):
+        stripped = lines[i].strip()
+        if not stripped:
+            continue
+        if any(p.match(lines[i]) for p in _PROSE_TAIL_INDICATORS):
+            last_code_line = i - 1
+            continue
+        last_code_line = i
+        break
+
+    return "\n".join(lines[:last_code_line + 1])
+
+
+# ---------------------------------------------------------------------------
 # Section-based extraction (primary strategy)
 # ---------------------------------------------------------------------------
 
@@ -239,6 +373,8 @@ def _extract_for_file_from_section(
         merged = "\n\n".join(parts)
         # Apply SSE preamble stripping
         merged = _strip_sse_preamble(merged, file_path)
+        # Strip post-code tail content (CSS descriptions, prose after closing brace)
+        merged = _strip_post_code_tail(merged, file_path)
         extraction.merged_content = merged
 
         # Confidence scoring
@@ -323,6 +459,86 @@ DIRECT_USE_THRESHOLD = 0.6
 PREFILL_THRESHOLD = 0.3
 
 
+def _fill_from_file_hint_scan(
+    architecture_content: str,
+    missing_paths: List[str],
+    result: ExtractionResult,
+) -> None:
+    """v1.1 Fallback: scan all code blocks for FILE: hints matching missing paths.
+
+    This catches code blocks that the section-based strategy missed because:
+    - The LLM put code under a different heading structure
+    - The fill was spliced into a template section the extractor didn't find
+    - The code block exists but outside a recognised markdown section
+    """
+    all_blocks = _parse_all_code_blocks(architecture_content)
+    if not all_blocks:
+        return
+
+    # Build a lookup: normalised hint -> block
+    hint_blocks: Dict[str, List[ExtractedCodeBlock]] = {}
+    for block in all_blocks:
+        hint = block.source_file_hint
+        if hint:
+            norm_hint = hint.replace("\\", "/")
+            # Strip common prefixes: D:/Orb/, app/, orb-desktop/
+            for prefix in ("D:/Orb/", "d:/orb/", "D:\\Orb\\"):
+                if norm_hint.startswith(prefix):
+                    norm_hint = norm_hint[len(prefix):]
+            hint_blocks.setdefault(norm_hint, []).append(block)
+
+    for target_path in missing_paths:
+        norm_target = target_path.replace("\\", "/")
+        # Try exact match, then suffix match
+        matched_blocks = hint_blocks.get(norm_target)
+        if not matched_blocks:
+            # Try stripping known prefixes from target too
+            short_target = norm_target
+            for prefix in ("app/", "src/", "orb-desktop/src/", "orb-desktop/"):
+                if short_target.startswith(prefix):
+                    short_target_alt = short_target[len(prefix):]
+                    matched_blocks = hint_blocks.get(short_target_alt)
+                    if matched_blocks:
+                        break
+        if not matched_blocks:
+            # Suffix match: find any hint that ends with the target's filename
+            target_filename = target_path.replace("\\", "/").rsplit("/", 1)[-1]
+            for hint_path, blocks in hint_blocks.items():
+                if hint_path.endswith("/" + target_filename) or hint_path == target_filename:
+                    matched_blocks = blocks
+                    break
+        if not matched_blocks:
+            continue
+
+        # Filter by language compatibility
+        compatible = [
+            b for b in matched_blocks
+            if _lang_matches_extension(b.language, target_path)
+        ]
+        if not compatible:
+            compatible = matched_blocks
+
+        extraction = FileExtraction(file_path=norm_target)
+        extraction.blocks = compatible
+
+        import_blocks = [b for b in compatible if b.is_import_block]
+        content_blocks = [b for b in compatible if not b.is_import_block]
+
+        parts = [b.content for b in import_blocks] + [b.content for b in content_blocks]
+        if parts:
+            merged = "\n\n".join(parts)
+            merged = _strip_sse_preamble(merged, target_path)
+            merged = _strip_post_code_tail(merged, target_path)
+            extraction.merged_content = merged
+            extraction.confidence = 0.7  # Hint-matched, slightly lower than section-based
+
+            result.extractions[norm_target] = extraction
+            logger.info(
+                "[arch_extractor] v1.1 FALLBACK extracted %d chars for %s (hint match, blocks=%d)",
+                len(merged), norm_target, len(compatible),
+            )
+
+
 def extract_code_for_files(
     architecture_content: str,
     file_paths: List[str],
@@ -344,6 +560,7 @@ def extract_code_for_files(
     """
     result = ExtractionResult()
 
+    # --- Primary strategy: section-based extraction ---
     for file_path in file_paths:
         norm_path = file_path.replace("\\", "/")
         try:
@@ -358,14 +575,18 @@ def extract_code_for_files(
                     extraction.total_chars, norm_path,
                     extraction.confidence, len(extraction.blocks),
                 )
-            else:
-                logger.debug(
-                    "[arch_extractor] No extractable code for %s", norm_path,
-                )
         except Exception as e:
             warning = f"Extraction failed for {norm_path}: {e}"
             result.warnings.append(warning)
             logger.warning("[arch_extractor] %s", warning)
+
+    # --- v1.1 Fallback: scan ALL code blocks for # FILE: / // FILE: hints ---
+    # If section-based extraction missed files, scan the entire document for
+    # code blocks that have a FILE: comment matching a target path.
+    missing = [fp.replace("\\", "/") for fp in file_paths if fp.replace("\\", "/") not in result.extractions]
+    if missing:
+        logger.info("[arch_extractor] v1.1 Fallback: scanning for %d missing file(s) via FILE: hints", len(missing))
+        _fill_from_file_hint_scan(architecture_content, missing, result)
 
     logger.info(
         "[arch_extractor] Extraction complete: %d/%d files have code",
