@@ -30,7 +30,7 @@ async def get_cost_summary() -> dict:
     and top cost contributors.
     """
     try:
-        from app.overwatcher.cost_budget import get_spend_summary
+        from app.cost.cost_budget import get_spend_summary
 
         summary = get_spend_summary()
 
@@ -74,7 +74,7 @@ async def get_cost_summary() -> dict:
 async def get_today_spend() -> dict:
     """Quick view of today's spend."""
     try:
-        from app.overwatcher.cost_budget import check_daily_budget
+        from app.cost.cost_budget import check_daily_budget
 
         daily = check_daily_budget()
         return {
@@ -95,7 +95,7 @@ async def get_today_spend() -> dict:
 async def get_budget_status() -> dict:
     """Budget status for both daily and monthly."""
     try:
-        from app.overwatcher.cost_budget import check_daily_budget, check_monthly_budget
+        from app.cost.cost_budget import check_daily_budget, check_monthly_budget
 
         daily = check_daily_budget()
         monthly = check_monthly_budget()

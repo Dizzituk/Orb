@@ -140,7 +140,7 @@ def _load_source_file_evidence(
 
     # Get sandbox client once for all reads
     try:
-        from app.overwatcher.sandbox_client import SandboxClient
+        from app.sandbox.client import SandboxClient
         client = SandboxClient()
     except Exception as e:
         logger.warning("[segment_loop] v3.1 Cannot create sandbox client: %s", e)
@@ -194,7 +194,7 @@ def _read_file_via_sandbox(abs_path: str) -> Optional[str]:
     The sandbox is the ONLY source of truth. No host fallback.
     """
     try:
-        from app.overwatcher.sandbox_client import SandboxClient
+        from app.sandbox.client import SandboxClient
         client = SandboxClient()
         read_cmd = f'Get-Content -Path "{abs_path}" -Raw -Encoding UTF8'
         result = client.shell_run(
@@ -238,7 +238,7 @@ def _build_sibling_interfaces(
     segments are visible. Falls back to host for pre-existing files.
     """
     try:
-        from app.overwatcher.deterministic_checker import (
+        from app.pipeline_v2.checks.deterministic_checker import (
             extract_segment_interface,
             format_segment_interfaces,
         )

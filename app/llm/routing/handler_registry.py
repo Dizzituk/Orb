@@ -120,15 +120,10 @@ except ImportError:
     generate_critical_pipeline_stream = None
 
 # =============================================================================
-# OVERWATCHER
+# OVERWATCHER (removed 2026-03-08 — command retired in v2.1)
 # =============================================================================
-
-try:
-    from app.llm.overwatcher_stream import generate_overwatcher_stream
-    _OVERWATCHER_AVAILABLE = True
-except ImportError:
-    _OVERWATCHER_AVAILABLE = False
-    generate_overwatcher_stream = None
+_OVERWATCHER_AVAILABLE = False
+generate_overwatcher_stream = None
 
 # =============================================================================
 # FLOW STATE

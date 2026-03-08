@@ -83,7 +83,7 @@ from .rename_policy import (
 
 # Sandbox client for multi-file discovery
 try:
-    from app.overwatcher.sandbox_client import get_sandbox_client
+    from app.sandbox.client import get_sandbox_client
     _SANDBOX_CLIENT_AVAILABLE = True
 except ImportError as e:
     logger.warning("[multi_file_detection] sandbox_client not available: %s", e)

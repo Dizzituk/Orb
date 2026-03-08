@@ -474,7 +474,7 @@ def scan_filesystem(
     file_count = 0
 
     try:
-        from app.overwatcher.sandbox_client import get_sandbox_client
+        from app.sandbox.client import get_sandbox_client
         sbx = get_sandbox_client()
         repo_files = sbx.repo_tree(include_hashes=False, max_files=max_files)
 

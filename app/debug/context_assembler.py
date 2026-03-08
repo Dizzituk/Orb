@@ -169,7 +169,7 @@ async def _collect_overwatcher_flags() -> ContextSource:
     """Get any active Overwatcher governance flags."""
     content = "No active governance flags."
     try:
-        from app.overwatcher.cost_budget import get_spend_summary
+        from app.cost.cost_budget import get_spend_summary
         summary = get_spend_summary()
         parts = []
         if summary.daily.exceeded:

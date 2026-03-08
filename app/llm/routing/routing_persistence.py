@@ -42,7 +42,7 @@ except ImportError:
 
 # Import cost guard
 try:
-    from app.overwatcher.cost_guard import (
+    from app.cost.cost_guard import (
         record_usage,
         ModelRole,
         get_cost_guard,

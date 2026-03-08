@@ -163,7 +163,7 @@ async def run_final_checkout(
     # Get sandbox client for fix operations
     sandbox_client = None
     try:
-        from app.overwatcher.sandbox_client import get_sandbox_client
+        from app.sandbox.client import get_sandbox_client
         sandbox_client = get_sandbox_client()
         if not sandbox_client.is_connected():
             sandbox_client = None

@@ -191,7 +191,7 @@ def _build_sibling_interfaces(
     from real code — zero hallucination risk.
     """
     try:
-        from app.overwatcher.deterministic_checker import (
+        from app.pipeline_v2.checks.deterministic_checker import (
             extract_segment_interface,
             format_segment_interfaces,
         )

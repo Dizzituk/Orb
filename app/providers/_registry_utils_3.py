@@ -116,7 +116,7 @@ async def llm_call(
 
     # v2.2: Pre-call budget check
     try:
-        from app.overwatcher.cost_recorder import pre_call_budget_check
+        from app.cost.cost_recorder import pre_call_budget_check
         allowed, reason = pre_call_budget_check(stage=stage)
         if not allowed:
             return LlmCallResult(
@@ -147,7 +147,7 @@ async def llm_call(
 
     # v2.2: Post-call cost recording
     try:
-        from app.overwatcher.cost_recorder import record_llm_cost
+        from app.cost.cost_recorder import record_llm_cost
         if hasattr(result, 'usage') and result.usage:
             job_id = None
             if job_envelope:

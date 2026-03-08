@@ -235,7 +235,7 @@ async def run_phase_checkout(
         _emit("[CHECK 4B] Frontend Vite build check...")
         try:
             from .frontend_boot_check import run_frontend_boot_check
-            from app.overwatcher.sandbox_client import get_sandbox_client
+            from app.sandbox.client import get_sandbox_client
             _fe_client = get_sandbox_client()
             _vite_result = run_frontend_boot_check(
                 client=_fe_client,
@@ -274,7 +274,7 @@ async def run_phase_checkout(
         _emit("[CHECK 5] Big-model verification (agentic pipeline)...")
         try:
             from app.agentic_pipeline.phase_checkout_model import run_phase_checkout as _run_model_checkout
-            from app.llm.overwatcher_stream import create_overwatcher_llm_fn
+            from app.llm.overwatcher_stream import create_overwatcher_llm_fn  # noqa: removed module — will ImportError gracefully
             _llm_fn = create_overwatcher_llm_fn()
             if _llm_fn:
                 # Read all written files from sandbox

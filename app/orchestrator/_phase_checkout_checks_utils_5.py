@@ -44,7 +44,7 @@ async def run_boot_test_with_fix_loop(
     start = time.time()
 
     try:
-        from app.overwatcher.sandbox_client import get_sandbox_client
+        from app.sandbox.client import get_sandbox_client
         client = get_sandbox_client()
     except Exception as exc:
         return BootTestResult(

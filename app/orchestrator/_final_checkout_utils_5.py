@@ -48,7 +48,7 @@ def check_output_file_sizes(
 
     # v2.0: Check files via sandbox, not host filesystem
     try:
-        from app.overwatcher.sandbox_client import get_sandbox_client
+        from app.sandbox.client import get_sandbox_client
         client = get_sandbox_client()
         use_sandbox = client.is_connected()
     except Exception:
@@ -137,7 +137,7 @@ def check_skeleton_contracts(
 
     # v2.0: Use sandbox for file existence checks
     try:
-        from app.overwatcher.sandbox_client import get_sandbox_client
+        from app.sandbox.client import get_sandbox_client
         client = get_sandbox_client()
         use_sandbox = client.is_connected()
     except Exception:

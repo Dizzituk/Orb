@@ -93,7 +93,7 @@ class SandboxManager:
     def client(self):
         """Lazy-load sandbox client."""
         if self._client is None:
-            from app.overwatcher.sandbox_client import get_sandbox_client
+            from app.sandbox.client import get_sandbox_client
             self._client = get_sandbox_client()
         return self._client
 

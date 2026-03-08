@@ -75,7 +75,7 @@ async def run_frontend_fix_loop(
 
     # Connect to sandbox
     try:
-        from app.overwatcher.sandbox_client import get_sandbox_client
+        from app.sandbox.client import get_sandbox_client
         client = get_sandbox_client()
     except Exception as exc:
         return FrontendFixResult(

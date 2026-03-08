@@ -343,7 +343,7 @@ def _read_files_via_sandbox_fs(
     Returns list of {path, content, size} dicts.
     """
     try:
-        from app.overwatcher.sandbox_client import get_sandbox_client
+        from app.sandbox.client import get_sandbox_client
     except ImportError:
         logger.debug("[chat_codebase] Sandbox client not available")
         return []
@@ -445,7 +445,7 @@ def _resolve_partial_filenames(
         return full_paths
 
     try:
-        from app.overwatcher.sandbox_client import get_sandbox_client
+        from app.sandbox.client import get_sandbox_client
         client = get_sandbox_client()
         if not client.is_connected():
             return full_paths + [n for n in bare_names]
