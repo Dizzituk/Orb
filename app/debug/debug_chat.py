@@ -327,3 +327,149 @@ async def debug_status(auth: AuthResult = Depends(require_auth)):
         "max_tool_iterations": MAX_TOOL_ITERATIONS,
         "tiers": tiers,
     }
+
+
+# =============================================================================
+# v2.1: DEBUG LOCK — Gemini + tools + RAG (sidebar context lock)
+# =============================================================================
+
+async def stream_debug_locked(
+    db,
+    project_id: int,
+    message: str,
+    panel_history: list,
+    provider: str = "google",
+    model: str = "gemini-3.1-pro-preview-customtools",
+    debug_project_id: Optional[str] = None,
+) -> AsyncGenerator[bytes, None]:
+    """Stream handler for debug-locked sidebar chat.
+
+    When the user locks the sidebar to Debug context, all messages route
+    here. Gemini gets:
+    - Full tool access (sandbox read/write/shell)
+    - RAG codebase search
+    - Panel conversation history
+    - Build project context (if available)
+    """
+    import asyncio
+    from app.debug.tool_definitions import get_tools_for_tier
+    from app.debug.context_assembler import assemble_context
+    from app.debug.system_prompt import build_debug_system_prompt
+
+    def _sse(data: dict) -> bytes:
+        return f"data: {json.dumps(data)}\n\n".encode("utf-8")
+
+    try:
+        # 1. Assemble context: RAG search + architecture
+        context_block = ""
+        try:
+            ctx = await assemble_context()
+            context_block = ctx.to_xml() if hasattr(ctx, 'to_xml') else str(ctx)
+        except Exception as ctx_err:
+            logger.warning("[debug_locked] Context assembly failed: %s", ctx_err)
+            context_block = "<context>Context assembly unavailable.</context>"
+
+        # Also do a RAG search for the user's query
+        rag_context = ""
+        try:
+            from app.rag.service import search_rag
+            rag_results = search_rag(db, message, limit=5)
+            if rag_results:
+                rag_context = "\n## RAG Search Results\n"
+                for r in rag_results:
+                    path = getattr(r, 'file_path', '') or r.get('file_path', '') if isinstance(r, dict) else ''
+                    content = getattr(r, 'content', '') or r.get('content', '') if isinstance(r, dict) else str(r)
+                    rag_context += f"### {path}\n{content[:500]}\n\n"
+        except Exception as rag_err:
+            logger.debug("[debug_locked] RAG search failed: %s", rag_err)
+
+        # 2. Load build context from debug project (if pipeline-created)
+        build_context = ""
+        if debug_project_id:
+            try:
+                from app.debug.project_service import get_project as get_debug_project
+                dp = get_debug_project(debug_project_id)
+                if dp and dp.get("description"):
+                    desc = dp["description"]
+                    build_context = (
+                        f"\n## Active Debug Project: {dp.get('title', '')}\n"
+                        f"Status: {dp.get('status', '')}\n"
+                    )
+                    # Check if it contains a build report
+                    if "--- BUILD REPORT ---" in desc:
+                        report_part = desc.split("--- BUILD REPORT ---", 1)[1][:4000]
+                        build_context += f"\n### Build Report (summary)\n{report_part}\n"
+                    else:
+                        build_context += f"\n### Description\n{desc[:2000]}\n"
+                    if dp.get("error_summary"):
+                        build_context += f"\n### Errors\n{dp['error_summary']}\n"
+                    logger.info("[debug_locked] Loaded build context from project %s (%d chars)", debug_project_id, len(build_context))
+            except Exception as bp_err:
+                logger.debug("[debug_locked] Build context load failed: %s", bp_err)
+
+        # 3. Build system prompt with tools
+        system_prompt = (
+            build_debug_system_prompt(context_block)
+            + "\n\n## Debug Lock Mode\n"
+            "You are in DEBUG LOCK mode. The user has locked their sidebar chat to Debug context.\n"
+            "You have FULL tool access: read_file, write_file, run_shell, search_files, list_dir.\n"
+            "Use tools to gather evidence when the user asks you to investigate or fix something.\n"
+            "Be direct, technical, and action-oriented when asked to diagnose issues.\n"
+            "Do NOT proactively scan logs or dump diagnostics — wait for the user to tell you what to look at.\n"
+            "For greetings or casual messages, just respond naturally and briefly.\n"
+            "Host files (D:/Orb, D:/orb-desktop) are READ ONLY. Sandbox writes go via write_file tool.\n"
+            f"\n## Codebase Context\n{context_block}\n"
+            f"{rag_context}\n"
+            f"{build_context}\n"
+        )
+
+        # 3. Build messages from panel history
+        messages = []
+        for msg in (panel_history or [])[-20:]:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role in ("user", "assistant") and content:
+                messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": message})
+
+        # 4. Emit metadata
+        yield _sse({"type": "metadata", "provider": provider, "model": model})
+
+        # 5. Track tool calls for streaming to frontend
+        tool_log = []
+        def _on_tool(name, args, result_preview):
+            tool_log.append({"tool": name, "args": args, "preview": result_preview})
+
+        # 6. Call Gemini with native function-calling tool loop
+        from app.debug.gemini_tool_loop import run_gemini_tool_loop
+
+        content = await run_gemini_tool_loop(
+            system_prompt=system_prompt,
+            messages=messages,
+            model_id=model,
+            temperature=0.2,
+            max_tokens=8192,
+            on_tool_call=_on_tool,
+        )
+
+        # Stream tool call log before the response (if any tools were used)
+        if tool_log:
+            tool_summary = "\n".join(
+                f"🔧 **{t['tool']}** → {t['preview'][:100]}" for t in tool_log
+            )
+            yield _sse({"type": "token", "content": tool_summary + "\n\n---\n\n"})
+
+        # Stream response in chunks for a natural feel
+        chunk_size = 40
+        for i in range(0, len(content), chunk_size):
+            yield _sse({"type": "token", "content": content[i:i + chunk_size]})
+
+        yield _sse({
+            "type": "done",
+            "provider": provider,
+            "model": model,
+        })
+
+    except Exception as e:
+        logger.exception("[debug_locked] Stream error: %s", e)
+        yield _sse({"type": "error", "error": str(e)})

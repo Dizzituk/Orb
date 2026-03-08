@@ -142,6 +142,7 @@ async def run_agentic_builder(
     job_dir: str,
     handover_context: Optional[str] = None,
     on_progress: Optional[Callable[[str], None]] = None,
+    existing_messages: Optional[List[Dict]] = None,
 ) -> BuildResult:
     """Run the Agentic Builder.
 
@@ -190,6 +191,17 @@ async def run_agentic_builder(
             session.tool_calls.append(ToolCall(tool=name, args=summary))
             if name == "write_file" and path:
                 files_written.add(path)
+                # Push a narrative for each file write
+                try:
+                    from app.pipeline_v2.orchestrator import _push_narrative
+                    _push_narrative(
+                        stage="critical_pipeline",
+                        title=f"Write: {path.rsplit('/', 1)[-1] if '/' in path else path}",
+                        output_summary=f"{len(args.get('content', ''))} chars written",
+                        files_touched=[path],
+                    )
+                except Exception:
+                    pass
 
         def on_text(text):
             if "BUILDER_COMPLETE" in text:
@@ -207,6 +219,7 @@ async def run_agentic_builder(
             max_tokens=BUILDER_MAX_OUTPUT,
             on_tool_call=on_tool,
             on_text=on_text,
+            existing_messages=existing_messages,
         )
 
         session.files_created = list(files_written)
@@ -232,6 +245,9 @@ async def run_agentic_builder(
     result.total_output_tokens = session.total_output_tokens
     result.total_duration_seconds = time.time() - t_start
     result.success = session.completed and len(result.all_files_written) > 0
+
+    # v2.1.2: Store conversation history so verify→fix can continue in same context
+    result.messages_history = messages if 'messages' in dir() else []
 
     emit(f"\n🤖 Builder complete: {len(result.all_files_written)} files, "
          f"{result.total_tool_calls} tool calls, "

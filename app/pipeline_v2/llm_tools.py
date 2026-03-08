@@ -99,6 +99,7 @@ async def run_tool_loop(
     max_tokens: int = 128000,
     on_tool_call: Optional[Callable[[str, Dict], None]] = None,
     on_text: Optional[Callable[[str], None]] = None,
+    existing_messages: Optional[List[Dict]] = None,
 ) -> Tuple[List[Dict], int, int]:
     """Run an agentic tool-calling loop.
 
@@ -107,21 +108,34 @@ async def run_tool_loop(
 
     Args:
         system_prompt: System message.
-        initial_user_message: First user message.
+        initial_user_message: First user message (ignored if existing_messages).
         provider: "openai" (primary).
         model: Model name (e.g. "gpt-5.4").
         max_iterations: Max tool-call rounds before stopping.
         max_tokens: Max output tokens per call.
         on_tool_call: Callback(tool_name, args) for progress tracking.
         on_text: Callback(text) for model's text responses.
+        existing_messages: If provided, continues from this conversation history
+            instead of starting fresh. The initial_user_message is appended as
+            a new user message to this history. This keeps the builder in the
+            same context window so it knows what it already built.
 
     Returns:
         (messages_history, total_input_tokens, total_output_tokens)
     """
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": initial_user_message},
-    ]
+    if existing_messages:
+        # Continue from previous conversation — append new instruction
+        messages = list(existing_messages)
+        messages.append({"role": "user", "content": initial_user_message})
+        logger.info(
+            "[llm_tools] CONTINUATION MODE: %d existing messages + new instruction",
+            len(existing_messages),
+        )
+    else:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": initial_user_message},
+        ]
 
     total_input_tokens = 0
     total_output_tokens = 0

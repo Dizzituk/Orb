@@ -111,10 +111,32 @@ def build_spec_result(
     # v2.2: Cache spec
     _cache_spec(goal, _job_kind, spec_id, grounding_data, spot_markdown, multi_file_op)
 
+    # v4.7: Empty-scope guard — if the manifest has zero files AND the spec
+    # contains [HUMAN_REQUIRED], the spec is incomplete and should NOT be
+    # marked as validated. This prevents the auto-advance chain from pushing
+    # an empty spec through the Critical Pipeline / Scaffold Engine.
+    _total_manifest_files = 0
+    if segmentation_manifest:
+        for _seg in segmentation_manifest.segments:
+            _total_manifest_files += len(_seg.file_scope)
+    _has_human_required = (
+        spot_markdown and "[HUMAN_REQUIRED]" in spot_markdown
+    )
+    if _total_manifest_files == 0 and _has_human_required:
+        logger.warning(
+            "[spec_runner] v4.7 EMPTY-SCOPE GUARD: 0 files in manifest + "
+            "[HUMAN_REQUIRED] present — blocking as needs_clarification"
+        )
+        print(
+            "[spec_runner] v4.7 EMPTY-SCOPE GUARD TRIGGERED: "
+            "spec has no file scope and requires human input"
+        )
+        final_status = "needs_clarification"
+
     logger.info("[spec_runner] v4.6 DONE: ready_for_pipeline=True, status=%s", final_status)
 
     return SpecGateResult(
-        ready_for_pipeline=True,
+        ready_for_pipeline=_total_manifest_files > 0 or not _has_human_required,
         open_questions=[],
         spot_markdown=spot_markdown,
         db_persisted=False,

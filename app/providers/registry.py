@@ -571,11 +571,27 @@ class ProviderRegistry:
         except Exception as exc:
             logger.warning("[registry] Gemini tool loop failed (best-effort): %s", exc)
 
+        # Safely extract text — Gemini throws ValueError when response
+        # contains FunctionCall parts instead of text.
+        try:
+            _text = getattr(resp, "text", "") or ""
+        except (ValueError, AttributeError):
+            # FunctionCall or empty response — try to extract from parts
+            _text = ""
+            try:
+                for part in resp.candidates[0].content.parts:
+                    if hasattr(part, "text") and part.text:
+                        _text += part.text
+            except Exception:
+                pass
+            if not _text:
+                _text = "(Model attempted a function call but tools are not available in this mode.)"
+
         return LlmCallResult(
             status=LlmCallStatus.SUCCESS,
             provider_id="google",
             model_id=model_id,
-            content=getattr(resp, "text", "") or "",
+            content=_text,
             raw_response=_safe_json(getattr(resp, "to_dict", lambda: {})()),
         )
 

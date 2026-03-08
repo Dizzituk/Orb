@@ -29,8 +29,10 @@ from app.memory import service as memory_service, schemas as memory_schemas
 
 logger = logging.getLogger(__name__)
 
-# Max tool rounds for video+code (lower than chat — video already costs tokens)
-MAX_VIDEO_TOOL_ROUNDS = 15
+# Max tool rounds for video+code
+# v9.1: Bumped from 15 → 25. Complex codebase analysis after video
+# was hitting 12/15 rounds on simple jobs — will exceed on larger ones.
+MAX_VIDEO_TOOL_ROUNDS = 25
 
 
 def route_video_code_tools(

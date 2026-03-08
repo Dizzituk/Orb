@@ -45,6 +45,14 @@ _STAGE_MAP = {
 # Stages that should trigger build project tracking
 _TRACKED_STAGES = set(_STAGE_MAP.keys())
 
+# v2.1 Auto-advance: when a stage passes, which intent to fire next.
+# This creates the one-button flow: Weaver → SpecGate → Builder (auto).
+_AUTO_ADVANCE_MAP = {
+    "weaver": "SEND_TO_SPEC_GATE",
+    "spec_gate": "RUN_CRITICAL_PIPELINE_FOR_JOB",
+    # critical_pipeline → final_checkout is handled inside the v2.1 orchestrator
+}
+
 
 def is_tracked_stage(stage_name: str) -> bool:
     """Check if a dispatch stage should trigger build project tracking."""
@@ -393,3 +401,19 @@ async def wrap_with_build_tracking(
         "stage": pipeline_stage,
         "status": final_status,
     })
+
+    # ----------------------------------------------------------------
+    # v2.1 Auto-advance: when a stage passes, trigger the next stage
+    # automatically so the pipeline flows end-to-end without manual clicks.
+    # ----------------------------------------------------------------
+    if final_status == "passed" and pipeline_stage in _AUTO_ADVANCE_MAP:
+        next_intent = _AUTO_ADVANCE_MAP[pipeline_stage]
+        logger.info("[stage_hooks] Auto-advance: %s passed → triggering %s", pipeline_stage, next_intent)
+        print(f"[STAGE_HOOKS] Auto-advance: {pipeline_stage} → {next_intent}")
+        yield _make_sse_event({
+            "type": "auto_advance",
+            "from_stage": pipeline_stage,
+            "next_intent": next_intent,
+            "build_project_id": build_project_id,
+            "chat_project_id": chat_project_id,
+        })

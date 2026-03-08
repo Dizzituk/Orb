@@ -254,14 +254,11 @@ def compile_build_report(
     # Page 3: SpecGate Research
     pages.append(_build_specgate_page(narratives))
 
-    # Page 4: Critical Pipeline — Architecture
-    pages.append(_build_architecture_page(narratives))
+    # Page 4: Agentic Builder — Scaffold + Build + Verification
+    pages.append(_build_agentic_builder_page(project, narratives))
 
-    # Page 5: Implementer — Execution
-    pages.append(_build_execution_page(project, narratives))
-
-    # Page 6: Final Checkout — Validation
-    pages.append(_build_checkout_page(project, narratives))
+    # Page 5: Verification — Visual check results
+    pages.append(_build_verification_page(project, narratives))
 
     report_obj = {
         "project_id": project.id,
@@ -327,50 +324,40 @@ def _build_specgate_page(narratives: dict) -> dict:
     }
 
 
-def _build_architecture_page(narratives: dict) -> dict:
-    """Page 4: Critical Pipeline — architecture and segmentation."""
+def _build_agentic_builder_page(project: BuildProject, narratives: dict) -> dict:
+    """Page 4: Agentic Builder — scaffold + build + tool calls."""
     cp_entries = narratives.get("critical_pipeline", [])
+    all_files = _collect_files_touched(cp_entries)
+
+    # Separate scaffold entries from builder entries
+    scaffold_entries = [e for e in cp_entries if "Scaffold" in e.get("title", "")]
+    write_entries = [e for e in cp_entries if "Write:" in e.get("title", "")]
+    builder_summary = [e for e in cp_entries if "Agentic Builder" in e.get("title", "")]
+
     return {
         "page": 4,
-        "title": "Architecture & Segmentation",
+        "title": "Agentic Builder",
         "content": {
-            "plan": _flatten_narrative_sections(cp_entries),
-            "files_planned": _collect_files_touched(cp_entries),
+            "scaffold": _flatten_narrative_sections(scaffold_entries),
+            "files_written": [e.get("title", "").replace("Write: ", "") for e in write_entries],
+            "builder_summary": _flatten_narrative_sections(builder_summary),
+            "all_files_touched": all_files,
+            "total_entries": len(cp_entries),
         },
     }
 
 
-def _build_execution_page(project: BuildProject, narratives: dict) -> dict:
-    """Page 5: Implementer — execution summary."""
-    impl_entries = narratives.get("implementer", [])
-    ow_entries = narratives.get("overwatcher", [])
-    return {
-        "page": 5,
-        "title": "Execution & Implementation",
-        "content": {
-            "implementer": _flatten_narrative_sections(impl_entries),
-            "overwatcher": _flatten_narrative_sections(ow_entries),
-            "files_written": _collect_files_touched(impl_entries),
-            "segments": {
-                "total": project.total_segments,
-                "completed": project.completed_segments,
-            },
-        },
-    }
-
-
-def _build_checkout_page(project: BuildProject, narratives: dict) -> dict:
-    """Page 6: Final Checkout — validation results."""
+def _build_verification_page(project: BuildProject, narratives: dict) -> dict:
+    """Page 5: Verification — visual check results."""
     fc_entries = narratives.get("final_checkout", [])
-    # Check stage log for checkout events
     log = project.stage_log or []
     checkout_events = [e for e in log if e.get("stage") == "final_checkout"]
 
     return {
-        "page": 6,
-        "title": "Final Checkout",
+        "page": 5,
+        "title": "Visual Verification",
         "content": {
-            "validation": _flatten_narrative_sections(fc_entries),
+            "verification": _flatten_narrative_sections(fc_entries),
             "stage_events": checkout_events,
             "files_fixed": _collect_files_touched(fc_entries),
         },

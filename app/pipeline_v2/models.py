@@ -82,6 +82,8 @@ class BuildResult:
     total_duration_seconds: float = 0.0
     used_fallback: bool = False
     errors: List[str] = field(default_factory=list)
+    # v2.1.2: Conversation history for verify→fix continuation
+    messages_history: List[Dict] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

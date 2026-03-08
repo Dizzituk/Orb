@@ -133,7 +133,26 @@ async def stream_chat(
     project = get_project(db, req.project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    
+
+    # =========================================================================
+    # v2.1 DEBUG LOCK: Force Gemini + tools + RAG when sidebar is debug-locked
+    # =========================================================================
+    if req.debug_locked:
+        logger.info("[stream_router] Debug lock active — routing to debug chat with Gemini + tools")
+        from app.debug.debug_chat import stream_debug_locked
+        return StreamingResponse(
+            stream_debug_locked(
+                db=db,
+                project_id=req.project_id,
+                message=req.message,
+                panel_history=req.panel_history or [],
+                provider=req.provider or "google",
+                model=req.model or "gemini-3.1-pro-preview-customtools",
+                debug_project_id=req.debug_project_id,
+            ),
+            media_type="text/event-stream",
+        )
+
     # Initialize trace
     audit_logger = get_audit_logger()
     trace = audit_logger.start_trace(

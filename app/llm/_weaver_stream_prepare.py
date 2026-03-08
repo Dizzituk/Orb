@@ -18,6 +18,7 @@ from app.llm._weaver_stream_utils_13 import _hash_messages
 from app.llm._weaver_stream_utils_14 import _hash_message, _normalize_typos
 from app.llm._weaver_stream_utils_15 import _extract_meta_mode, _extract_vision_context, _gather_ramble_messages
 from app.llm._weaver_stream_utils_16 import _is_vision_context
+from app.llm._weaver_substantive_filter import _is_substantive_assistant_content
 
 logger = logging.getLogger(__name__)
 
@@ -128,10 +129,20 @@ def prepare_weaver_messages(
     vision_context = _extract_vision_context(filtered_messages)
     result.vision_context = vision_context
 
+    # v4.3: Include assistant messages with substantive technical content,
+    # not just vision context.  This captures rich responses from video+tool
+    # pipelines (Gemini codebase analysis, extracted specs, CSS patterns)
+    # that the Weaver needs to synthesise into the job description.
     relevant_messages = [
         m for m in filtered_messages
         if m.get("role") == "user"
-        or (m.get("role") == "assistant" and _is_vision_context(m.get("content", "")))
+        or (
+            m.get("role") == "assistant"
+            and (
+                _is_vision_context(m.get("content", ""))
+                or _is_substantive_assistant_content(m.get("content", ""))
+            )
+        )
     ]
     result.relevant_messages = relevant_messages
 

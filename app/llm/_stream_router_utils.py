@@ -35,6 +35,9 @@ class StreamRequest(BaseModel):
     extracted_query: Optional[str] = None     # v2.2: carry extracted search query through confirmation roundtrip
     ui_context: Optional[UIContext] = None    # v6.0: Universal Chat Panel — which tab/view the user is in
     panel_history: Optional[list] = None         # v6.0: Chat panel's local conversation history [{role, content}]
+    debug_locked: bool = False                      # v2.1: Debug context lock — force Gemini + tools + RAG
+    debug_project_id: Optional[str] = None            # v2.1: Active debug project ID for context pre-load
+    enable_tools: bool = False                      # v2.1: Enable tool execution (sandbox read/write/shell)
 
 _EXPLICIT_COMMAND_INTENTS = {
     CanonicalIntent.RUN_PIPELINE,  # v5.4: unified pipeline
