@@ -1,4 +1,3 @@
-# FILE: main.py
 """
 Orb Backend - FastAPI Application
 Version: 0.17.0
@@ -61,6 +60,8 @@ import app.content.engagement.models  # noqa: F401 — register Engagement table
 from app.builds.router import router as builds_router
 import app.builds.models  # noqa: F401 — register Build Projects tables with Base
 import app.builds.messages  # noqa: F401 — register Build Project Messages table with Base
+from app.education.router import router as education_router
+import app.education.models  # noqa: F401 — register Education tables with Base
 from app.settings.router import router as settings_router
 from app.transparency.router import router as transparency_router
 import app.transparency.models  # noqa: F401 — register Transparency tables with Base
@@ -118,10 +119,6 @@ def on_startup():
     os.makedirs("data", exist_ok=True)
     os.makedirs("data/files", exist_ok=True)
 
-    # v8.0: Suppress harmless "Event loop is closed" errors from httpx/google-genai.
-    # The google-generativeai SDK's internal httpx.AsyncClient gets garbage-collected
-    # after streaming completes, and its __aexit__ fires on a closed event loop.
-    # This is cosmetic — no data loss or functional impact.
     import asyncio
     _loop = asyncio.get_event_loop()
     _original_handler = _loop.get_exception_handler()
@@ -129,54 +126,53 @@ def on_startup():
     def _suppress_loop_closed(loop, context):
         exc = context.get("exception")
         if isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc):
-            return  # Suppress silently
+            return
         if _original_handler:
             _original_handler(loop, context)
         else:
             loop.default_exception_handler(context)
 
     _loop.set_exception_handler(_suppress_loop_closed)
-    
-    # v0.18.0: File logging — all logger.* calls written to D:\Orb\logs\astra.log
+
     try:
         from app.logging_config import setup_file_logging
         _log_path = setup_file_logging()
         print(f"[startup] File logging: [OK] {_log_path}")
     except Exception as e:
         print(f"[startup] File logging: [WARN] failed to init: {e}")
-    
+
     print("[startup] Initializing encryption...")
     from app.crypto import require_master_key_or_exit, is_master_key_initialized
     require_master_key_or_exit()
-    
+
     if is_master_key_initialized():
         print("[startup] Database encryption: [OK] master key active")
-    
+
     init_db()
-    
+
     print("[startup] Checking authentication...")
     if is_auth_configured():
         print("[startup] Password authentication: [OK] configured")
     else:
         print("[startup] Password authentication: [X] NOT CONFIGURED")
         print("[startup] Call POST /auth/setup to set a password")
-    
+
     print("[startup] Checking environment variables...")
     if os.getenv("GOOGLE_API_KEY"):
         print("[startup] GOOGLE_API_KEY: [OK] set (enables vision + web search)")
     else:
         print("[startup] GOOGLE_API_KEY: [X] NOT SET - vision and web search will fail")
-    
+
     if os.getenv("OPENAI_API_KEY"):
         print("[startup] OPENAI_API_KEY: [OK] set (enables chat + embeddings)")
     else:
         print("[startup] OPENAI_API_KEY: [X] NOT SET - chat and semantic search will fail")
-    
+
     if os.getenv("ANTHROPIC_API_KEY"):
         print("[startup] ANTHROPIC_API_KEY: [OK] set")
     else:
         print("[startup] ANTHROPIC_API_KEY: [X] NOT SET")
-    
+
     print("[startup] Checking Phase 4 status...")
     phase4_enabled = os.getenv("ORB_ENABLE_PHASE4", "false").lower() == "true"
     if phase4_enabled:
@@ -184,7 +180,6 @@ def on_startup():
     else:
         print("[startup] Phase 4 Job System: [X] DISABLED")
 
-    # ASTRA Memory: Auto-index on startup
     try:
         from app.astra_memory.indexer import run_full_index
         from app.db import SessionLocal
@@ -195,7 +190,6 @@ def on_startup():
     except Exception as e:
         print(f"[startup] ASTRA memory indexing skipped: {e}")
 
-    # v5.1: Sync API keys from DB to environment
     try:
         from app.settings.service import sync_all_to_env
         from app.db import SessionLocal
@@ -209,7 +203,6 @@ def on_startup():
     except Exception as e:
         print(f"[startup] Settings sync skipped: {e}")
 
-    # v5.0: Seed content pipeline data (series, style profile)
     try:
         from app.content.seed import seed_content_data
         from app.db import SessionLocal
@@ -223,7 +216,6 @@ def on_startup():
     except Exception as e:
         print(f"[startup] Content pipeline seed skipped: {e}")
 
-    # v6.0: Start investments snapshot scheduler
     try:
         from app.investments.scheduler import start_scheduler as start_investments_scheduler
         start_investments_scheduler()
@@ -231,7 +223,6 @@ def on_startup():
     except Exception as e:
         print(f"[startup] Investments scheduler: [WARN] {e}")
 
-    # v7.0: Seed finance data (categories, tax year, default goals)
     try:
         from app.finance.seed import seed_finance_data
         from app.db import SessionLocal
@@ -245,7 +236,6 @@ def on_startup():
     except Exception as e:
         print(f"[startup] Finance seed skipped: {e}")
 
-    # v8.0: Seed lifestyle data (default goals, targets)
     try:
         from app.lifestyle.seed import seed_lifestyle_data
         from app.db import SessionLocal
@@ -259,7 +249,6 @@ def on_startup():
     except Exception as e:
         print(f"[startup] Lifestyle seed skipped: {e}")
 
-    # v2.2: Confidence graduation — promote high-confidence Tier 1 → Tier 0
     try:
         from app.translation.confidence_graduation import run_graduation
         _grad_count = run_graduation()
@@ -270,7 +259,6 @@ def on_startup():
     except Exception as e:
         print(f"[startup] Confidence graduation skipped: {e}")
 
-    # v3.2-fix: Recover build projects with stale 'running' stages
     try:
         from app.builds.service import recover_stale_running_stages
         from app.db import SessionLocal
@@ -282,7 +270,6 @@ def on_startup():
     except Exception as e:
         print(f"[startup] Builds recovery skipped: {e}")
 
-    # v1.0: Morning Briefing scheduler
     if _BRIEFING_AVAILABLE:
         try:
             from app.briefing.briefing_scheduler import start_scheduler_background
@@ -294,10 +281,6 @@ def on_startup():
             print(f"[startup] Briefing scheduler: [WARN] {e}")
 
 
-# ============================================================================
-# ROUTERS
-# ============================================================================
-
 app.include_router(auth_router)
 app.include_router(memory_router)
 app.include_router(stream_router)
@@ -308,165 +291,93 @@ if _BRIEFING_AVAILABLE:
 app.include_router(embeddings_router)
 app.include_router(astra_memory_router)
 app.include_router(shared_context_router, dependencies=[Depends(require_auth)])
-
-# Content Creation Pipeline
 app.include_router(content_router)
 app.include_router(content_scout_router)
 app.include_router(content_production_router)
 app.include_router(content_distribution_router)
-
-# Engagement (comment scanning, auto-response, flagging)
 app.include_router(engagement_router)
-
-# Content Hub (project management, style references, items, SSE)
 app.include_router(content_project_router)
 app.include_router(content_style_router)
 app.include_router(content_item_router)
 app.include_router(content_stream_router)
-
-# Project Builds (pipeline workspace — Weaver → SpecGate → Implementer)
 app.include_router(builds_router)
-
-# Settings (API key management)
+app.include_router(education_router)
 app.include_router(settings_router)
-
-# Pipeline Transparency & User Feedback
 app.include_router(transparency_router)
 
-# Investments dashboard (portfolio, crypto, snapshots)
 from app.investments.router import router as investments_router
 app.include_router(investments_router)
-
-# Investments chat (portfolio-aware LLM)
 from app.investments.chat_router import router as investments_chat_router
 app.include_router(investments_chat_router)
-
-# Finance / Accounting dashboard
 from app.finance.router import router as finance_router
 app.include_router(finance_router)
-
-# Finance - Google Drive integration
 from app.finance.drive_router import router as finance_drive_router
 app.include_router(finance_drive_router)
-
-# Finance - Van & Budget
 from app.finance.budget_router import router as finance_budget_router
 app.include_router(finance_budget_router)
-
-# Finance - Credit Cards
 from app.finance.credit_card_router import router as finance_cc_router
 app.include_router(finance_cc_router)
-
-# Lifestyle Engine (health, fitness, nutrition, surf)
 from app.lifestyle.router import router as lifestyle_router
 app.include_router(lifestyle_router)
-
-# Refactored endpoints (chat, chat_with_attachments, direct_llm)
 app.include_router(endpoints_router)
-
-# RAG system (architecture search)
 app.include_router(rag_router)
 
-# Cost dashboard (no auth required for monitoring)
 try:
     from app.endpoints.cost_dashboard import router as cost_dashboard_router
     app.include_router(cost_dashboard_router, tags=["Cost Dashboard"])
 except ImportError as e:
     print(f"[startup] Cost dashboard not available: {e}")
 
-# Debug Assistant (conversational debug agent)
 try:
     from app.debug.debug_chat import router as debug_chat_router
-    app.include_router(
-        debug_chat_router,
-        tags=["Debug Assistant"],
-        dependencies=[Depends(require_auth)]
-    )
+    app.include_router(debug_chat_router, tags=["Debug Assistant"], dependencies=[Depends(require_auth)])
     print("[startup] Debug Assistant: [OK] registered")
 except ImportError as e:
     print(f"[startup] Debug Assistant not available: {e}")
 
-# Debug Projects (project-based debug workspace)
 try:
     from app.debug.project_router import router as debug_project_router
-    app.include_router(
-        debug_project_router,
-        tags=["Debug Projects"],
-        dependencies=[Depends(require_auth)]
-    )
+    app.include_router(debug_project_router, tags=["Debug Projects"], dependencies=[Depends(require_auth)])
     print("[startup] Debug Projects: [OK] registered")
 except ImportError as e:
     print(f"[startup] Debug Projects not available: {e}")
 
-# Log introspection (read-only, requires auth)
-app.include_router(
-    introspection_router,
-    tags=["Introspection"],
-    dependencies=[Depends(require_auth)]
-)
+app.include_router(introspection_router, tags=["Introspection"], dependencies=[Depends(require_auth)])
 
-# Voice/transcription routers
 if _TRANSCRIBE_AVAILABLE:
     app.include_router(transcribe_router)
 if _AUDIO_STREAM_AVAILABLE:
     app.include_router(audio_stream_router)
 
-# Phase 4 conditional routers
 if os.getenv("ORB_ENABLE_PHASE4", "false").lower() == "true":
     try:
         from app.jobs.router import router as jobs_router
         from app.artefacts.router import router as artefacts_router
-        
-        app.include_router(
-            jobs_router,
-            prefix="/jobs",
-            tags=["Phase 4 Jobs"],
-            dependencies=[Depends(require_auth)]
-        )
-        app.include_router(
-            artefacts_router,
-            prefix="/artefacts",
-            tags=["Phase 4 Artefacts"],
-            dependencies=[Depends(require_auth)]
-        )
+
+        app.include_router(jobs_router, prefix="/jobs", tags=["Phase 4 Jobs"], dependencies=[Depends(require_auth)])
+        app.include_router(artefacts_router, prefix="/artefacts", tags=["Phase 4 Artefacts"], dependencies=[Depends(require_auth)])
         print("[startup] Phase 4 routers registered successfully")
     except ImportError as e:
         print(f"[startup] WARNING: Phase 4 import failed: {e}")
-
-
-# ============================================================================
-# STATIC FILES
-# ============================================================================
 
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
-# ============================================================================
-# PUBLIC ENDPOINTS
-# ============================================================================
-
 @app.get("/")
 def read_index():
-    """Serve index page or health check."""
     return {"status": "ok", "version": "0.17.0"}
 
 
 @app.get("/ping")
 def ping():
-    """Health check endpoint."""
     return {"status": "ok"}
 
 
 @app.post("/admin/reset-flow/{project_id}")
 def reset_flow(project_id: int, auth=Depends(require_auth)):
-    """Reset spec flow state back to awaiting_spec_gate_confirm.
-
-    Preserves the Weaver output and vision context so 'Send to Spec Gate'
-    can be re-triggered without re-running the Weaver.
-    """
-    from app.llm.spec_flow_state import get_active_flow, set_flow_state, SpecFlowStage, _FLOW_STATES
+    from app.llm.spec_flow_state import set_flow_state, SpecFlowStage, _FLOW_STATES
     state = _FLOW_STATES.get(project_id)
     if not state:
         return {"error": f"No flow state for project {project_id}"}
@@ -483,25 +394,13 @@ def reset_flow(project_id: int, auth=Depends(require_auth)):
     }
 
 
-# ============================================================================
-# PROTECTED ENDPOINTS
-# ============================================================================
-
 @app.get("/providers")
-def list_providers(auth = Depends(require_auth)):
-    """List available LLM providers."""
+def list_providers(auth=Depends(require_auth)):
     from app.llm.clients import check_provider_availability
     return check_provider_availability()
 
 
 @app.get("/job-types")
-def list_job_types(auth = Depends(require_auth)):
-    """List available job types."""
+def list_job_types(auth=Depends(require_auth)):
     from app.llm import JobType
-    return {
-        "job_types": [
-            {"value": jt.value, "name": jt.name}
-            for jt in JobType
-        ]
-    }
-
+    return {"job_types": [{"value": jt.value, "name": jt.name} for jt in JobType]}

@@ -1,0 +1,85 @@
+from __future__ import annotations
+
+from datetime import datetime
+from enum import Enum
+from typing import List, Optional
+
+from pydantic import BaseModel, Field
+
+
+class CourseStatusEnum(str, Enum):
+    active = "active"
+    completed = "completed"
+    archived = "archived"
+
+
+class ModuleStatusEnum(str, Enum):
+    not_started = "not_started"
+    in_progress = "in_progress"
+    completed = "completed"
+
+
+class CreateCourseRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+
+
+class SubmitCourseUrlRequest(BaseModel):
+    url: str = Field(..., min_length=1, max_length=1000)
+
+
+class UpdateCourseRequest(BaseModel):
+    status: Optional[CourseStatusEnum] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+
+
+class CourseModuleResponse(BaseModel):
+    id: str
+    course_id: str
+    title: str
+    description: Optional[str] = None
+    order_index: int
+    status: ModuleStatusEnum
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CourseSummary(BaseModel):
+    id: str
+    name: str
+    url: Optional[str] = None
+    status: CourseStatusEnum
+    module_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CourseResponse(BaseModel):
+    id: str
+    name: str
+    url: Optional[str] = None
+    status: CourseStatusEnum
+    modules: List[CourseModuleResponse] = []
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ScrapedModule(BaseModel):
+    title: str
+    description: Optional[str] = None
+    order_index: int
+
+
+class ScrapeResultResponse(BaseModel):
+    course: CourseResponse
+    modules: List[CourseModuleResponse]
+    scraped_count: int
+    source_url: str
+    provider: str = "coursera"
