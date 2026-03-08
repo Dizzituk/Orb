@@ -417,9 +417,15 @@ async def stream_debug_locked(
             "You have FULL tool access: read_file, write_file, run_shell, search_files, list_dir.\n"
             "Use tools to gather evidence when the user asks you to investigate or fix something.\n"
             "Be direct, technical, and action-oriented when asked to diagnose issues.\n"
-            "Do NOT proactively scan logs or dump diagnostics — wait for the user to tell you what to look at.\n"
-            "For greetings or casual messages, just respond naturally and briefly.\n"
-            "Host files (D:/Orb, D:/orb-desktop) are READ ONLY. Sandbox writes go via write_file tool.\n"
+            "Do NOT proactively scan logs or dump diagnostics -- wait for the user to tell you what to look at.\n"
+            "For greetings or casual messages, just respond naturally and briefly.\n\n"
+            "## How to Apply Changes\n"
+            "You CAN and SHOULD write code changes using the write_file tool. The sandbox is ONLINE.\n"
+            "read_file reads from the host codebase (read-only, for investigation).\n"
+            "write_file writes to the SANDBOX filesystem (this is how you apply fixes).\n"
+            "run_shell runs PowerShell commands in the SANDBOX (for testing, syntax checks, etc).\n"
+            "When the user asks you to make changes or says go ahead, USE write_file to write the code.\n"
+            "Do NOT just paste code in chat and tell the user to copy it. USE THE TOOLS.\n"
         )
 
         # Add video analysis instruction if a screen recording is attached

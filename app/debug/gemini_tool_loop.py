@@ -27,7 +27,7 @@ from typing import AsyncGenerator, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 SANDBOX_BASE = os.getenv("ASTRA_SANDBOX_URL", "http://192.168.250.2:8765")
-MAX_TOOL_ROUNDS = 10  # prevent infinite loops
+MAX_TOOL_ROUNDS = 30  # generous allowance for complex debug investigations
 
 
 # ---------------------------------------------------------------------------
@@ -77,9 +77,12 @@ TOOL_DECLARATIONS = [
     {
         "name": "run_shell",
         "description": (
-            "Run a PowerShell command in the SANDBOX. Use for syntax checks, "
-            "installing packages, running tests, reading file contents via "
-            "Get-Content, or any shell operation. Returns stdout, stderr, and exit code."
+            "Run a PowerShell command in the SANDBOX. The sandbox is WINDOWS with PowerShell 7. "
+            "NEVER use Linux commands (grep, ls, cat, sed, awk, bash). "
+            "Use PowerShell equivalents: Select-String (not grep), Get-ChildItem (not ls), "
+            "Get-Content (not cat), python (not python3). "
+            "Use for syntax checks, installing packages, running tests, or any shell operation. "
+            "Returns stdout, stderr, and exit code."
         ),
         "parameters": {
             "type": "object",
