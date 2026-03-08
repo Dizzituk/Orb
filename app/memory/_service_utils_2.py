@@ -5,7 +5,11 @@ from typing import List, Optional
 
 
 def create_project(db: Session, data: schemas.ProjectCreate) -> models.Project:
-    project = models.Project(name=data.name, description=data.description)
+    project = models.Project(
+        name=data.name,
+        description=data.description,
+        type=data.type or "development",
+    )
     db.add(project)
     db.commit()
     db.refresh(project)

@@ -3,6 +3,7 @@
 Memory module Pydantic schemas.
 
 v0.12.4: Added model and reasoning fields to MessageCreate and MessageHistoryItem.
+v0.18.0: Added type field to ProjectCreate/ProjectOut for panel chat persistence.
 """
 from datetime import datetime
 from typing import Optional, List, Literal
@@ -14,6 +15,7 @@ from pydantic import BaseModel, ConfigDict
 class ProjectCreate(BaseModel):
     name: str
     description: Optional[str] = None
+    type: Optional[str] = "development"
 
 
 class ProjectUpdate(BaseModel):
@@ -27,6 +29,7 @@ class ProjectOut(BaseModel):
     id: int
     name: str
     description: Optional[str]
+    type: Optional[str] = "development"
     created_at: datetime
     updated_at: datetime
 
@@ -135,17 +138,14 @@ class MessageCreate(BaseModel):
     
     v0.12.4: Added model and reasoning fields.
     v10.0: Added session_id for Conversational Memory Layer (CONV-MEMORY-001).
-    - model: Which specific model generated the response (e.g., "gpt-4.1-mini")
-    - reasoning: Chain-of-thought reasoning from <THINKING> tags (hidden from UI)
-    - session_id: Links message to a ConversationSession (optional, backward-compatible)
     """
     project_id: int
     role: str
     content: str
-    provider: Optional[str] = None  # v0.16.0: Track which LLM provider generated the message
-    model: Optional[str] = None  # v0.12.4: Track which model generated the response
-    reasoning: Optional[str] = None  # v0.12.4: Store reasoning separately from content
-    session_id: Optional[int] = None  # v10.0: ConversationSession link (CONV-MEMORY-001)
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    reasoning: Optional[str] = None
+    session_id: Optional[int] = None
 
 
 class MessageOut(BaseModel):
@@ -161,11 +161,6 @@ class MessageOut(BaseModel):
 # ============== MESSAGE HISTORY (v0.12.4 Updated) ==============
 
 class MessageHistoryItem(BaseModel):
-    """
-    Single message item for history response.
-    
-    v0.12.4: Added model and reasoning fields for frontend display.
-    """
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -173,13 +168,12 @@ class MessageHistoryItem(BaseModel):
     role: Literal["user", "assistant", "system"]
     content: str
     provider: Optional[str] = None
-    model: Optional[str] = None  # v0.12.4: Model that generated the response
-    reasoning: Optional[str] = None  # v0.12.4: Chain-of-thought reasoning (hidden from UI)
+    model: Optional[str] = None
+    reasoning: Optional[str] = None
     created_at: datetime
 
 
 class MessageHistoryResponse(BaseModel):
-    """Response schema for message history endpoint."""
     messages: List[MessageHistoryItem]
     has_older: bool
     oldest_id: Optional[int] = None

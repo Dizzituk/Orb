@@ -12,6 +12,8 @@ Supports OpenAI (GPT-5.4) natively. Anthropic/Google would need
 adapter logic (not implemented yet — GPT-5.4 is primary).
 
 v1.0 (2026-03-07): Initial implementation for ASTRA v2.1.
+v1.1 (2026-03-08): Added write integrity checking — pre-flight content
+                    validation + post-write read-back verification.
 """
 from __future__ import annotations
 
@@ -104,7 +106,7 @@ async def run_tool_loop(
     """Run an agentic tool-calling loop.
 
     Sends the initial prompt with tool definitions, then loops:
-    model returns tool_calls → we execute → send results → model continues.
+    model returns tool_calls -> we execute -> send results -> model continues.
 
     Args:
         system_prompt: System message.
@@ -124,7 +126,6 @@ async def run_tool_loop(
         (messages_history, total_input_tokens, total_output_tokens)
     """
     if existing_messages:
-        # Continue from previous conversation — append new instruction
         messages = list(existing_messages)
         messages.append({"role": "user", "content": initial_user_message})
         logger.info(
@@ -143,7 +144,6 @@ async def run_tool_loop(
     for iteration in range(max_iterations):
         logger.info("[llm_tools] Iteration %d — calling %s/%s", iteration + 1, provider, model)
 
-        # Call the API
         response, in_tok, out_tok = await _call_api(
             provider=provider,
             model=model,
@@ -158,11 +158,9 @@ async def run_tool_loop(
             logger.error("[llm_tools] API call returned None at iteration %d", iteration + 1)
             break
 
-        # Check if model returned tool calls
         tool_calls = _extract_tool_calls(response, provider)
 
         if not tool_calls:
-            # Model returned text only — it's done (or stuck)
             text = _extract_text(response, provider)
             if on_text and text:
                 on_text(text)
@@ -170,10 +168,8 @@ async def run_tool_loop(
             logger.info("[llm_tools] Text response at iteration %d (%d chars)", iteration + 1, len(text or ""))
             break
 
-        # Add assistant message with tool calls
         messages.append(_make_assistant_message(response, provider))
 
-        # Execute each tool call and add results
         for tc in tool_calls:
             tool_name = tc["name"]
             tool_args = tc["args"]
@@ -190,7 +186,7 @@ async def run_tool_loop(
                 "content": result,
             })
 
-            logger.info("[llm_tools] Tool %s → %d chars result", tool_name, len(result))
+            logger.info("[llm_tools] Tool %s -> %d chars result", tool_name, len(result))
 
     else:
         logger.warning("[llm_tools] Hit max iterations (%d)", max_iterations)
@@ -214,7 +210,6 @@ async def _call_api(
     if provider == "openai":
         return await _call_openai(model, messages, tools, max_tokens)
     else:
-        # Fallback: use the existing call_llm (no tool support)
         logger.warning("[llm_tools] Provider %s does not support tool calling — using text mode", provider)
         from app.pipeline_v2.llm_caller import call_llm
         system = next((m["content"] for m in messages if m["role"] == "system"), "")
@@ -254,7 +249,7 @@ async def _call_openai(
             model=model,
             messages=messages,
             tools=tools,
-            max_completion_tokens=min(max_tokens, 16384),  # Per-call output cap
+            max_completion_tokens=min(max_tokens, 16384),
             temperature=0,
         )
 
@@ -320,17 +315,25 @@ def _make_assistant_message(response: Any, provider: str) -> Dict:
                 for tc in msg.tool_calls
             ]
         return result
-    # Fallback
     text = _extract_text(response, provider) or ""
     return {"role": "assistant", "content": text}
 
 
 # ---------------------------------------------------------------------------
-# Tool execution
+# Tool execution (with write integrity checking)
 # ---------------------------------------------------------------------------
 
 async def _execute_tool(name: str, args: Dict) -> str:
-    """Execute a tool call and return the result as a string."""
+    """Execute a tool call and return the result as a string.
+
+    Write operations include integrity checking:
+      1. Pre-flight: scans content for patterns likely to be corrupted
+      2. Write: sends content to sandbox
+      3. Verify: reads file back and compares to original
+
+    If corruption is detected, the error message tells the LLM exactly
+    what went wrong so it can fix it (e.g. "backticks were stripped").
+    """
     from app.pipeline_v2 import sandbox_tools
 
     try:
@@ -338,19 +341,98 @@ async def _execute_tool(name: str, args: Dict) -> str:
             path = args.get("path", "")
             content = await sandbox_tools.read_file(path)
             if content is None:
-                return f"ERROR: File not found: {path}"
-            # Truncate very large files to save tokens
+                return "ERROR: File not found: " + path
             if len(content) > 30000:
-                return f"[{len(content)} chars total — showing first 15K + last 5K]\n{content[:15000]}\n...\n{content[-5000:]}"
+                return (
+                    "[" + str(len(content)) + " chars total — showing first 15K + last 5K]\n"
+                    + content[:15000] + "\n...\n" + content[-5000:]
+                )
             return content
 
         elif name == "write_file":
             path = args.get("path", "")
             content = args.get("content", "")
+
+            # --- Write integrity: pre-flight check ---
+            from app.pipeline_v2.write_integrity import (
+                check_content_integrity,
+                verify_write,
+            )
+
+            ext = ""
+            if "." in path:
+                ext = "." + path.rsplit(".", 1)[-1]
+
+            pre_issues = check_content_integrity(content, ext)
+            pre_errors = [w for w in pre_issues if w["severity"] == "error"]
+
+            if pre_errors:
+                logger.warning(
+                    "[llm_tools] Pre-flight found %d issues for %s: %s",
+                    len(pre_errors), path,
+                    "; ".join(w["message"] for w in pre_errors[:3]),
+                )
+
+            # --- Write ---
             ok = await sandbox_tools.write_file(path, content)
-            if ok:
-                return f"OK: Written {len(content)} chars to {path}"
-            return f"ERROR: Write failed for {path}"
+            if not ok:
+                return "ERROR: Write failed for " + path
+
+            # --- Write integrity: post-write verify ---
+            verify_ok, verify_issues = await verify_write(path, content)
+
+            if verify_ok:
+                # Clean write
+                result_msg = "OK: Written " + str(len(content)) + " chars to " + path
+                if pre_errors:
+                    result_msg += (
+                        "\nWARNING: Pre-flight detected potential issues (but write verified OK): "
+                        + "; ".join(w["message"] for w in pre_errors[:3])
+                    )
+                return result_msg
+            else:
+                # Corruption detected!
+                logger.error(
+                    "[llm_tools] WRITE INTEGRITY FAILURE for %s: %s",
+                    path,
+                    "; ".join(i.get("message", i.get("type", "unknown")) for i in verify_issues[:5]),
+                )
+                error_parts = [
+                    "WRITE INTEGRITY ERROR for " + path + ":",
+                    "The file was written but read-back verification FAILED.",
+                    "The content on disk does not match what you sent.",
+                ]
+                for issue in verify_issues[:5]:
+                    issue_type = issue.get("type", "unknown")
+                    if issue_type == "backtick_stripped":
+                        error_parts.append(
+                            "CORRUPTION: Backticks were stripped during write. "
+                            "This is a transport-layer bug. The content was correct "
+                            "but the write path corrupted it."
+                        )
+                        if issue.get("fix_hint"):
+                            error_parts.append("FIX: " + issue["fix_hint"])
+                    elif issue_type == "dollar_interpolated":
+                        error_parts.append(
+                            "CORRUPTION: Dollar signs ($) were consumed during write. "
+                            "Variable interpolation in the transport layer ate them."
+                        )
+                    elif issue_type == "line_diff":
+                        error_parts.append(
+                            "Line " + str(issue.get("line", "?")) + " differs:"
+                        )
+                        error_parts.append("  Expected: " + str(issue.get("expected", ""))[:80])
+                        error_parts.append("  Got:      " + str(issue.get("actual", ""))[:80])
+                    else:
+                        error_parts.append(
+                            issue_type + ": " + issue.get("message", str(issue))
+                        )
+
+                error_parts.append(
+                    "ACTION: Please re-write the file. The content you generated was correct — "
+                    "the transport layer corrupted it. Try writing again."
+                )
+                return "\n".join(error_parts)
 
         elif name == "run_shell":
             cmd = args.get("cmd", "")
@@ -358,15 +440,15 @@ async def _execute_tool(name: str, args: Dict) -> str:
             stdout = result.get("stdout", "")[:1000]
             stderr = result.get("stderr", "")[:500]
             rc = result.get("returncode", -1)
-            parts = [f"exit_code={rc}"]
+            parts = ["exit_code=" + str(rc)]
             if stdout:
-                parts.append(f"STDOUT:\n{stdout}")
+                parts.append("STDOUT:\n" + stdout)
             if stderr:
-                parts.append(f"STDERR:\n{stderr}")
+                parts.append("STDERR:\n" + stderr)
             return "\n".join(parts)
 
         else:
-            return f"ERROR: Unknown tool: {name}"
+            return "ERROR: Unknown tool: " + name
 
     except Exception as e:
-        return f"ERROR: {name} failed: {e}"
+        return "ERROR: " + name + " failed: " + str(e)

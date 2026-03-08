@@ -319,6 +319,13 @@ from app.finance.credit_card_router import router as finance_cc_router
 app.include_router(finance_cc_router)
 from app.lifestyle.router import router as lifestyle_router
 app.include_router(lifestyle_router)
+# ASTRA Drive — local file system management
+try:
+    from app.drive.router import router as astra_drive_router
+    app.include_router(astra_drive_router, dependencies=[Depends(require_auth)])
+    print("[startup] Drive: [OK] registered")
+except ImportError as e:
+    print(f"[startup] Drive not available: {e}")
 app.include_router(endpoints_router)
 app.include_router(rag_router)
 
@@ -412,3 +419,4 @@ def list_providers(auth=Depends(require_auth)):
 def list_job_types(auth=Depends(require_auth)):
     from app.llm import JobType
     return {"job_types": [{"value": jt.value, "name": jt.name} for jt in JobType]}
+
