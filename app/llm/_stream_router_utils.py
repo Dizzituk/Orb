@@ -38,6 +38,8 @@ class StreamRequest(BaseModel):
     debug_locked: bool = False                      # v2.1: Debug context lock — force Gemini + tools + RAG
     debug_project_id: Optional[str] = None            # v2.1: Active debug project ID for context pre-load
     enable_tools: bool = False                      # v2.1: Enable tool execution (sandbox read/write/shell)
+    video_file_uri: Optional[str] = None             # v2.2: Screen recording — Gemini Files API URI
+    video_mime_type: Optional[str] = None             # v2.2: Screen recording — MIME type
 
 _EXPLICIT_COMMAND_INTENTS = {
     CanonicalIntent.RUN_PIPELINE,  # v5.4: unified pipeline

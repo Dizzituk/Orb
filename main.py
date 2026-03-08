@@ -342,6 +342,14 @@ try:
 except ImportError as e:
     print(f"[startup] Debug Projects not available: {e}")
 
+
+# Screen Recordings (standalone — used by Debug and future modules)
+try:
+    from app.debug.recordings_router import router as recordings_router
+    app.include_router(recordings_router, dependencies=[Depends(require_auth)], tags=["Recordings"])
+    print("[startup] Recordings: [OK] registered")
+except Exception as e:
+    print(f"[startup] Recordings not available: {e}")
 app.include_router(introspection_router, tags=["Introspection"], dependencies=[Depends(require_auth)])
 
 if _TRANSCRIBE_AVAILABLE:

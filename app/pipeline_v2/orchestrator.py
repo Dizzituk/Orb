@@ -316,9 +316,12 @@ async def run_v2_pipeline(
     # Final result
     # ------------------------------------------------------------------
     final_verify = result.verify_results[-1] if result.verify_results else None
-    result.success = build_result.success and (
-        final_verify.passed if final_verify else False
-    )
+    # v2.1.3: The verifier is the final authority. If it passed, the job
+    # succeeded — even if the initial build needed fix iterations.
+    # The old logic (build_result.success AND verify.passed) would report
+    # failure when the builder needed fixes but the verifier confirmed the
+    # final output was correct.
+    result.success = final_verify.passed if final_verify else False
     result.total_duration_seconds = time.time() - t_start
 
     # Estimate cost

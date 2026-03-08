@@ -52,6 +52,9 @@ Rules:
 - Ignore minor styling differences (colours, fonts, spacing) unless the spec is explicit
 - If you see an error message or stack trace on screen, always report FAIL
 - If the app clearly hasn't loaded (blank/white screen), report FAIL
+- CRITICAL: If the spec says to BUILD a new feature but the screenshot shows a 
+  "Coming Soon" placeholder or default page, that is a FAIL — the feature was not wired in
+- A page that just shows the old placeholder means the integration was not completed
 """
 
 

@@ -65,8 +65,12 @@ def _extract_from_json_ld(html: str) -> List[ScrapedModule]:
                 continue
             title = item.get("name") or item.get("title")
             desc = item.get("description")
-            if title and _looks_like_module(title):
-                modules.append(ScrapedModule(title=title, description=desc, order_index=len(modules) + 1))
+            if isinstance(title, list):
+                title = title[0] if title else None
+            if isinstance(desc, list):
+                desc = desc[0] if desc else None
+            if title and isinstance(title, str) and _looks_like_module(title):
+                modules.append(ScrapedModule(title=title, description=str(desc) if desc else None, order_index=len(modules) + 1))
     return _dedupe_modules(modules)
 
 
@@ -118,8 +122,12 @@ def _walk_json(value):
             yield from _walk_json(child)
 
 
-def _looks_like_module(title: str) -> bool:
-    text = (title or "").strip()
+def _looks_like_module(title) -> bool:
+    if isinstance(title, list):
+        title = title[0] if title else ""
+    if not isinstance(title, str):
+        return False
+    text = title.strip()
     if len(text) < 4 or len(text) > 180:
         return False
     lowered = text.lower()

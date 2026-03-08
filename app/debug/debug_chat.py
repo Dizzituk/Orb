@@ -341,6 +341,8 @@ async def stream_debug_locked(
     provider: str = "google",
     model: str = "gemini-3.1-pro-preview-customtools",
     debug_project_id: Optional[str] = None,
+    video_file_uri: Optional[str] = None,
+    video_mime_type: Optional[str] = None,
 ) -> AsyncGenerator[bytes, None]:
     """Stream handler for debug-locked sidebar chat.
 
@@ -418,6 +420,19 @@ async def stream_debug_locked(
             "Do NOT proactively scan logs or dump diagnostics — wait for the user to tell you what to look at.\n"
             "For greetings or casual messages, just respond naturally and briefly.\n"
             "Host files (D:/Orb, D:/orb-desktop) are READ ONLY. Sandbox writes go via write_file tool.\n"
+        )
+
+        # Add video analysis instruction if a screen recording is attached
+        if video_file_uri:
+            system_prompt += (
+                "\n\n## Screen Recording Attached\n"
+                "The user has recorded their screen to show you a bug or demonstrate something.\n"
+                "Watch the video carefully, listen to their narration, and diagnose the issue.\n"
+                "Reference specific things you see in the recording when responding.\n"
+                "After viewing, use your tools (read_file, search_files, etc.) to investigate further.\n"
+            )
+
+        system_prompt += (
             f"\n## Codebase Context\n{context_block}\n"
             f"{rag_context}\n"
             f"{build_context}\n"
@@ -440,7 +455,18 @@ async def stream_debug_locked(
         def _on_tool(name, args, result_preview):
             tool_log.append({"tool": name, "args": args, "preview": result_preview})
 
-        # 6. Call Gemini with native function-calling tool loop
+        # 6. Build multimodal content parts if video is attached
+        extra_parts = None
+        if video_file_uri:
+            from app.debug.screen_capture import build_video_content_part
+            video_part = build_video_content_part(
+                file_uri=video_file_uri,
+                mime_type=video_mime_type or "video/webm",
+            )
+            extra_parts = [video_part]
+            logger.info("[debug_locked] Attached video part: %s", video_file_uri)
+
+        # 7. Call Gemini with native function-calling tool loop
         from app.debug.gemini_tool_loop import run_gemini_tool_loop
 
         content = await run_gemini_tool_loop(
@@ -450,6 +476,7 @@ async def stream_debug_locked(
             temperature=0.2,
             max_tokens=8192,
             on_tool_call=_on_tool,
+            content_parts=extra_parts,
         )
 
         # Stream tool call log before the response (if any tools were used)

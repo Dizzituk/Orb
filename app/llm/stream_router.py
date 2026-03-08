@@ -149,6 +149,8 @@ async def stream_chat(
                 provider=req.provider or "google",
                 model=req.model or "gemini-3.1-pro-preview-customtools",
                 debug_project_id=req.debug_project_id,
+                video_file_uri=req.video_file_uri,
+                video_mime_type=req.video_mime_type,
             ),
             media_type="text/event-stream",
         )

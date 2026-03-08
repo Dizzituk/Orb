@@ -240,11 +240,12 @@ async def run_gemini_tool_loop(
     temperature: float = 0.2,
     max_tokens: int = 8192,
     on_tool_call: Optional[callable] = None,
+    content_parts: Optional[List] = None,
 ) -> str:
     """Run a Gemini conversation with native function calling.
 
-    Handles the full tool loop: model responds → extracts function calls →
-    executes tools → sends results back → model continues.
+    Handles the full tool loop: model responds -> extracts function calls ->
+    executes tools -> sends results back -> model continues.
 
     Args:
         system_prompt: The system prompt to use
@@ -253,6 +254,8 @@ async def run_gemini_tool_loop(
         temperature: Sampling temperature
         max_tokens: Max output tokens
         on_tool_call: Optional callback(tool_name, args, result) for logging
+        content_parts: Optional list of additional genai.protos.Part objects
+                       (e.g. video file references) to include with the user message.
 
     Returns:
         The final text response from the model.
@@ -289,8 +292,14 @@ async def run_gemini_tool_loop(
 
     chat = model.start_chat(history=history)
 
-    # The user's latest message
-    user_message = messages[-1]["content"] if messages else ""
+    # The user's latest message — may include multimodal parts (video, images)
+    user_text = messages[-1]["content"] if messages else ""
+    if content_parts:
+        # Build multimodal message: text + video/image parts
+        user_message = [user_text] + list(content_parts)
+        logger.info("[gemini_tool_loop] Sending multimodal message with %d extra parts", len(content_parts))
+    else:
+        user_message = user_text
 
     # Tool loop
     response = chat.send_message(user_message)
@@ -325,6 +334,16 @@ async def run_gemini_tool_loop(
 
         # Send tool results back to the model
         response = chat.send_message(tool_responses)
+    else:
+        # Hit MAX_TOOL_ROUNDS — nudge the model to produce a text summary
+        logger.warning("[gemini_tool_loop] Hit max tool rounds (%d), forcing text response", MAX_TOOL_ROUNDS)
+        try:
+            response = chat.send_message(
+                "You have used all available tool calls. Stop using tools now and give "
+                "your final answer as text based on what you have gathered so far."
+            )
+        except Exception as nudge_err:
+            logger.warning("[gemini_tool_loop] Nudge failed: %s", nudge_err)
 
     # Extract final text
     try:
@@ -340,7 +359,7 @@ async def run_gemini_tool_loop(
                 return "\n".join(parts_text)
         except Exception:
             pass
-        return "(Model returned no text response after tool calls.)"
+        return "(Model exhausted tool calls without producing a response. Try asking a more specific question.)"
 
 
 def _extract_function_calls(response) -> List[tuple]:
@@ -363,6 +382,8 @@ def _extract_function_calls(response) -> List[tuple]:
 
 def _convert_schema(schema: dict) -> dict:
     """Convert a JSON schema dict to genai.protos.Schema kwargs."""
+    import google.generativeai as genai
+
     type_map = {
         "string": 1,   # Type.STRING
         "number": 2,   # Type.NUMBER
