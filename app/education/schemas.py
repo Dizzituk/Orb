@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -39,6 +39,7 @@ class CourseModuleResponse(BaseModel):
     description: Optional[str] = None
     order_index: int
     status: ModuleStatusEnum
+    sub_modules: List[Dict[str, Any]] = []
     created_at: datetime
 
     class Config:
@@ -51,6 +52,9 @@ class CourseSummary(BaseModel):
     url: Optional[str] = None
     status: CourseStatusEnum
     module_count: int = 0
+    skills_gained: List[str] = []
+    tools_learned: List[str] = []
+    course_details: Dict[str, Any] = {}
     created_at: datetime
     updated_at: datetime
 
@@ -63,6 +67,9 @@ class CourseResponse(BaseModel):
     name: str
     url: Optional[str] = None
     status: CourseStatusEnum
+    skills_gained: List[str] = []
+    tools_learned: List[str] = []
+    course_details: Dict[str, Any] = {}
     modules: List[CourseModuleResponse] = []
     created_at: datetime
     updated_at: datetime
@@ -75,6 +82,7 @@ class ScrapedModule(BaseModel):
     title: str
     description: Optional[str] = None
     order_index: int
+    sub_modules: List[Dict[str, Any]] = []
 
 
 class ScrapeResultResponse(BaseModel):
@@ -83,3 +91,6 @@ class ScrapeResultResponse(BaseModel):
     scraped_count: int
     source_url: str
     provider: str = "coursera"
+    skills_gained: List[str] = []
+    tools_learned: List[str] = []
+    course_details: Dict[str, Any] = {}

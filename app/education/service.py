@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import List, Optional
 
 from sqlalchemy.orm import Session, selectinload
 
+from app.education.llm_scraper import scrape_coursera_with_llm
 from app.education.models import Course, CourseModule, CourseStatus, ModuleStatus
 from app.education.schemas import CourseResponse, CourseSummary, CourseModuleResponse, ScrapeResultResponse
-from app.education.scraper import EducationScrapeError, scrape_coursera_course
+from app.education.scraper import EducationScrapeError
 
 logger = logging.getLogger(__name__)
 
@@ -38,23 +40,31 @@ def submit_url_and_scrape(db: Session, course_id: str, url: str) -> Optional[Scr
     if not course:
         return None
 
-    scraped_modules = scrape_coursera_course(url)
+    scraped = asyncio.run(scrape_coursera_with_llm(url))
     course.url = url.strip()
+    course.skills_gained = scraped.skills
+    course.tools_learned = scraped.tools
+    course.course_details = scraped.details
+    if scraped.title and (not course.name or course.name.lower().startswith("new course")):
+        course.name = scraped.title
 
     for existing in list(course.modules):
         db.delete(existing)
     db.flush()
 
-    for module in scraped_modules:
+    order_index = 1
+    for sub_course in scraped.sub_courses:
         db.add(
             CourseModule(
                 course_id=course.id,
-                title=module.title,
-                description=module.description,
-                order_index=module.order_index,
+                title=sub_course.title,
+                description=sub_course.description,
+                order_index=order_index,
                 status=ModuleStatus.not_started,
+                sub_modules=[m.model_dump() for m in sub_course.modules],
             )
         )
+        order_index += 1
 
     db.commit()
     db.refresh(course)
@@ -66,6 +76,9 @@ def submit_url_and_scrape(db: Session, course_id: str, url: str) -> Optional[Scr
         modules=[CourseModuleResponse.model_validate(module) for module in course.modules],
         scraped_count=len(course.modules),
         source_url=url.strip(),
+        skills_gained=course.skills_gained or [],
+        tools_learned=course.tools_learned or [],
+        course_details=course.course_details or {},
     )
 
 
@@ -80,6 +93,16 @@ def update_course_status(db: Session, course_id: str, *, status: Optional[str] =
     db.commit()
     db.refresh(course)
     return get_course_with_modules(db, course_id)
+
+
+def update_module_status(db: Session, module_id: str, status: str) -> Optional[CourseModule]:
+    module = db.query(CourseModule).filter(CourseModule.id == module_id).first()
+    if not module:
+        return None
+    module.status = ModuleStatus(status)
+    db.commit()
+    db.refresh(module)
+    return module
 
 
 def delete_course(db: Session, course_id: str) -> bool:
@@ -98,6 +121,9 @@ def to_summary(course: Course) -> CourseSummary:
         url=course.url,
         status=course.status,
         module_count=len(course.modules or []),
+        skills_gained=course.skills_gained or [],
+        tools_learned=course.tools_learned or [],
+        course_details=course.course_details or {},
         created_at=course.created_at,
         updated_at=course.updated_at,
     )
@@ -109,6 +135,9 @@ def to_response(course: Course) -> CourseResponse:
         name=course.name,
         url=course.url,
         status=course.status,
+        skills_gained=course.skills_gained or [],
+        tools_learned=course.tools_learned or [],
+        course_details=course.course_details or {},
         modules=[CourseModuleResponse.model_validate(module) for module in (course.modules or [])],
         created_at=course.created_at,
         updated_at=course.updated_at,
@@ -122,6 +151,7 @@ __all__ = [
     "get_course_with_modules",
     "submit_url_and_scrape",
     "update_course_status",
+    "update_module_status",
     "delete_course",
     "to_summary",
     "to_response",

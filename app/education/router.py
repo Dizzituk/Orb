@@ -9,6 +9,7 @@ from app.auth import require_auth
 from app.db import get_db
 from app.education import service
 from app.education.schemas import (
+    CourseModuleResponse,
     CourseResponse,
     CourseSummary,
     CreateCourseRequest,
@@ -64,6 +65,14 @@ def update_course(course_id: str, req: UpdateCourseRequest, db: Session = Depend
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
     return service.to_response(course)
+
+
+@router.post("/modules/{module_id}/enroll", response_model=CourseModuleResponse)
+def enroll_module(module_id: str, db: Session = Depends(get_db)):
+    module = service.update_module_status(db, module_id, "in_progress")
+    if not module:
+        raise HTTPException(status_code=404, detail="Module not found")
+    return CourseModuleResponse.model_validate(module)
 
 
 @router.delete("/{course_id}", status_code=204)

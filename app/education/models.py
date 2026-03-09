@@ -4,7 +4,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, Enum as SAEnum, ForeignKey, Integer, String, Text
+from sqlalchemy import Column, DateTime, Enum as SAEnum, ForeignKey, Integer, String, Text, JSON
 from sqlalchemy.orm import relationship
 
 from app.db import Base
@@ -37,6 +37,9 @@ class Course(Base):
     name = Column(String(200), nullable=False)
     url = Column(String(1000), nullable=True)
     status = Column(SAEnum(CourseStatus), default=CourseStatus.active, nullable=False)
+    skills_gained = Column(JSON, nullable=True, default=list)
+    tools_learned = Column(JSON, nullable=True, default=list)
+    course_details = Column(JSON, nullable=True, default=dict)
     created_at = Column(DateTime, nullable=False, default=_now)
     updated_at = Column(DateTime, nullable=False, default=_now, onupdate=_now)
 
@@ -57,6 +60,7 @@ class CourseModule(Base):
     description = Column(Text, nullable=True)
     order_index = Column(Integer, nullable=False, default=0)
     status = Column(SAEnum(ModuleStatus), default=ModuleStatus.not_started, nullable=False)
+    sub_modules = Column(JSON, nullable=True, default=list)
     created_at = Column(DateTime, nullable=False, default=_now)
 
     course = relationship("Course", back_populates="modules")
