@@ -44,6 +44,10 @@ VERIFIER_MAX_OUTPUT = int(os.getenv("ASTRA_V2_VERIFIER_MAX_OUTPUT", "4000"))
 # Max verify loops before accepting with issues
 MAX_VERIFY_LOOPS = int(os.getenv("ASTRA_V2_MAX_VERIFY_LOOPS", "3"))
 
+# Enhanced checkout — multi-step verification (boot, render, navigate, smoke test)
+# Set to "true" to use enhanced checkout instead of simple screenshot verify
+ENHANCED_CHECKOUT = os.getenv("ASTRA_V2_ENHANCED_CHECKOUT", "true").lower() == "true"
+
 # Max agentic builder tool calls per session before forcing handover
 # GPT-5.4 context: 272K default (1.05M opt-in), 128K max output
 # A 19-file Education job used 88 tool calls and hit the 50 cap.

@@ -44,16 +44,25 @@ _TRUSTED_MODELS_GOOGLE = {
     "gemini-3.1-pro-preview-customtools",
 }
 
+# v10.1: OpenAI models — listed for future tool support.
+# Currently file creation routing uses codebase pre-loading, not tool calls.
+_TRUSTED_MODELS_OPENAI = {
+    "gpt-5.4",
+    "gpt-5.4-turbo",
+}
+
 
 def is_tool_eligible(provider: str, model: str) -> bool:
     """Check if this provider/model combo supports the tool execution loop.
 
     v1.3: Gemini 3.1 Pro customtools now supported via stream_gemini tools param.
+    v10.1: OpenAI listed but not yet tool-eligible (no tool loop implementation).
     """
     if provider == "anthropic":
         return model in _TRUSTED_MODELS_ANTHROPIC
     if provider in ("google", "gemini"):
         return model in _TRUSTED_MODELS_GOOGLE
+    # OpenAI: not yet tool-eligible — uses codebase pre-loading instead
     return False
 
 

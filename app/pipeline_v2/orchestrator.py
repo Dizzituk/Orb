@@ -216,19 +216,77 @@ async def run_v2_pipeline(
         return result
 
     # ------------------------------------------------------------------
-    # VERIFICATION LOOP: screenshot → verify → fix → repeat
+    # VERIFICATION: enhanced checkout or legacy screenshot loop
+    # ------------------------------------------------------------------
+    from app.pipeline_v2.config import ENHANCED_CHECKOUT
+
+    # v2.1.3: Set verifier stage to running when verification loop starts
+    _update_stage_status("final_checkout", "running", "Verification loop started")
+
+    # v2.2: Enhanced multi-step checkout
+    if ENHANCED_CHECKOUT:
+        from app.pipeline_v2.checkout import run_enhanced_checkout
+        checkout_report = await run_enhanced_checkout(spec=spec, emit=emit)
+        result.total_llm_calls += 1  # visual verify call
+
+        if checkout_report.overall_passed:
+            _update_stage_status("final_checkout", "passed", "Enhanced checkout passed")
+            emit("   ✅ Verifier stage → PASSED")
+        else:
+            # Feed failures back to builder for one fix attempt
+            feedback = checkout_report.to_builder_feedback()
+            if feedback:
+                emit("   🔧 Sending checkout feedback to Builder for fix...")
+                fix_result = await run_agentic_builder(
+                    spec=spec,
+                    manifest=manifest,
+                    scaffold=scaffold,
+                    job_dir=job_dir,
+                    handover_context=feedback,
+                    on_progress=emit,
+                    existing_messages=_builder_messages,
+                )
+                result.total_llm_calls += fix_result.total_llm_calls
+                _builder_messages = fix_result.messages_history
+
+                # Re-run checkout after fix
+                emit("   🔄 Re-running checkout after fix...")
+                checkout_report_2 = await run_enhanced_checkout(spec=spec, emit=emit)
+                result.total_llm_calls += 1
+
+                if checkout_report_2.overall_passed:
+                    _update_stage_status("final_checkout", "passed", "Enhanced checkout passed after fix")
+                    emit("   ✅ Verifier stage → PASSED (after fix)")
+                else:
+                    _update_stage_status("final_checkout", "failed", "Enhanced checkout failed after fix attempt")
+                    emit("   ❌ Verifier stage → FAILED (after fix attempt)")
+            else:
+                _update_stage_status("final_checkout", "failed", "Enhanced checkout failed")
+
+        # Skip legacy loop
+        result.total_duration_seconds = time.time() - t_start
+        result.estimated_cost_usd = _estimate_cost(result)
+
+        final_verify_passed = checkout_report.overall_passed if 'checkout_report_2' not in dir() else checkout_report_2.overall_passed
+        result.success = final_verify_passed
+
+        emit(f"\n{'='*60}")
+        emit(f"{'✅ BUILD COMPLETE' if result.success else '❌ BUILD FINISHED WITH ISSUES'}")
+        cost_str = f"${result.estimated_cost_usd:.2f}"
+        emit(f"Duration: {result.total_duration_seconds:.1f}s | LLM calls: {result.total_llm_calls} | Est. cost: {cost_str}")
+        emit(f"{'='*60}")
+        return result
+
+    # ------------------------------------------------------------------
+    # LEGACY VERIFICATION LOOP: screenshot → verify → fix → repeat
     # ------------------------------------------------------------------
     emit(f"\n{'='*60}")
-    emit("📸 VERIFICATION LOOP")
+    emit("📸 VERIFICATION LOOP (legacy)")
     emit(f"{'='*60}")
 
     from app.pipeline_v2.verification import verify_visually
 
     spec_text = json.dumps(spec, indent=2) if isinstance(spec, dict) else str(spec)
-
-    # v2.1.3: Set verifier stage to running when verification loop starts
-    _update_stage_status("final_checkout", "running", "Verification loop started")
-
     for attempt in range(1, MAX_VERIFY_LOOPS + 1):
         emit(f"\n--- Verification attempt {attempt}/{MAX_VERIFY_LOOPS} ---")
 

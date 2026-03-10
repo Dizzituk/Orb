@@ -151,6 +151,7 @@ async def stream_chat(
                 debug_project_id=req.debug_project_id,
                 video_file_uri=req.video_file_uri,
                 video_mime_type=req.video_mime_type,
+                video_local_path=req.video_local_path,
             ),
             media_type="text/event-stream",
         )

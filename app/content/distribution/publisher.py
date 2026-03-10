@@ -94,13 +94,21 @@ async def _publish_to_youtube(output: ContentOutput) -> Dict[str, Any]:
     metadata = output.platform_metadata or {}
     caption = output.caption_text or ""
 
+    # Append hashtags to description for Shorts discovery
+    tags = metadata.get("tags", [])
+    if tags and "#Shorts" not in caption:
+        # Pick top 4 tags as hashtags + always include #Shorts
+        top_tags = [t.replace(" ", "") for t in tags[:4]]
+        hashtags = " ".join(f"#{t}" for t in top_tags) + " #Shorts"
+        caption = caption.rstrip() + "\n\n" + hashtags
+
     result = await upload_video(
         video_path=output.primary_asset_path,
         title=metadata.get("title", "Untitled"),
         description=caption,
         tags=metadata.get("tags", []),
         category_id=metadata.get("category_id", "28"),
-        privacy=metadata.get("privacy", "private"),
+        privacy=metadata.get("privacy", "public"),
         scheduled_at=output.scheduled_at,
         thumbnail_path=output.thumbnail_path,
     )
@@ -176,6 +184,14 @@ async def _publish_to_tiktok(output: ContentOutput) -> Dict[str, Any]:
 
     metadata = output.platform_metadata or {}
     caption = output.caption_text or ""
+
+    # Append hashtags to description for Shorts discovery
+    tags = metadata.get("tags", [])
+    if tags and "#Shorts" not in caption:
+        # Pick top 4 tags as hashtags + always include #Shorts
+        top_tags = [t.replace(" ", "") for t in tags[:4]]
+        hashtags = " ".join(f"#{t}" for t in top_tags) + " #Shorts"
+        caption = caption.rstrip() + "\n\n" + hashtags
 
     result = await upload_video(
         video_path=output.primary_asset_path,
@@ -290,3 +306,5 @@ async def publish_due(db: Session) -> Dict[str, Any]:
         "published": published,
         "failed": failed,
     }
+
+

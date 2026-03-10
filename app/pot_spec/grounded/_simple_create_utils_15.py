@@ -358,6 +358,22 @@ def build_create_spec(
             lines.append(f"- `{f}`")
         lines.append("")
     
+    # v5.2: Resolved Target Files — deterministic, survives LLM analysis collapse.
+    # These are the actual files mentioned in the Weaver output, resolved to
+    # real filesystem paths by _resolve_mentioned_files(). They MUST appear in
+    # the spec markdown so _extract_file_scope_from_spec() can find them for
+    # segmentation, regardless of what the LLM analysis contains.
+    _resolved = getattr(evidence, 'resolved_target_files', None)
+    if _resolved:
+        lines.append("## Target Files (Resolved)")
+        lines.append("")
+        for rtf in _resolved:
+            resolved_path = rtf.get('resolved_path', rtf.get('mentioned', ''))
+            mentioned = rtf.get('mentioned', '')
+            if resolved_path:
+                lines.append(f"- `{resolved_path}`")
+        lines.append("")
+    
     # v2.0: LLM Analysis or Requirements
     if evidence.llm_analysis:
         lines.append("## Architecture Analysis")

@@ -275,7 +275,26 @@ def chat_with_attachments(
     
     has_media = image_attachments or video_attachments
     
-    if has_media and not frontier_override_active:
+    # v10.1: File creation intent overrides vision-only routing.
+    # When the user wants an HTML file created AND attaches reference files,
+    # we still run vision to describe images, but inject the description into
+    # the text LLM path rather than returning the vision response directly.
+    _file_creation_override = False
+    try:
+        from app.llm.routing.chat_routing import _detect_file_creation_intent, _get_sticky_model
+        _is_file_intent = user_message and _detect_file_creation_intent(user_message)
+        _sticky = _get_sticky_model(project_id)
+        # Only override vision path if:
+        # 1. Current message explicitly asks for file creation, OR
+        # 2. Sticky model is GPT-5.4 (set by a previous file creation intent in this session)
+        _sticky_is_file_creation = _sticky and _sticky[1] and 'gpt-5' in _sticky[1]
+        if _is_file_intent or _sticky_is_file_creation:
+            _file_creation_override = True
+            print(f"[chat_attachments] File creation/sticky override — will use text LLM path, not vision-only")
+    except Exception:
+        pass
+    
+    if has_media and not frontier_override_active and not _file_creation_override:
         vision_prompt = user_message if user_message else "Describe this image/video in detail."
         
         # Use job_classifier for tier
@@ -350,9 +369,25 @@ def chat_with_attachments(
             )
 
     # =========================================================================
+    # v10.1: If file creation override, get image descriptions via vision first
+    # =========================================================================
+    if _file_creation_override and image_attachments:
+        try:
+            for img in image_attachments:
+                vision_result = ask_about_image(
+                    image_source=img["path"],
+                    user_question="Describe this image in detail — it's a logo or design reference the user wants incorporated into an HTML page.",
+                    tier="fast",
+                )
+                if vision_result:
+                    document_content_parts.append(f"=== IMAGE DESCRIPTION: {img.get('filename', 'image')} ===\n{vision_result}")
+                    print(f"[chat_attachments] Vision description for file creation: {len(vision_result)} chars")
+        except Exception as ve:
+            print(f"[chat_attachments] Vision for file creation failed (non-fatal): {ve}")
+
+    # =========================================================================
     # TEXT-ONLY PATH
     # =========================================================================
-
     full_message = user_message if user_message else ""
     
     if attachments_summary and not full_message:
@@ -422,17 +457,41 @@ def chat_with_attachments(
 
     # Job type — documents need a capable model, not chat.light
     # v0.17: Force OPENAI_DEFAULT_MODEL for document uploads (avoids gpt-4.1-mini)
+    # v10.0: Check session model stickiness FIRST — if the conversation already
+    # upgraded to a specific model (e.g. GPT-5.4 for file creation), hold it.
     doc_force_provider = None
     doc_force_model = None
-    if document_content_parts:
+
+    try:
+        from app.llm.routing.chat_routing import _get_sticky_model, _detect_file_creation_intent, _set_sticky_model
+        sticky = _get_sticky_model(project_id)
+        # Only use sticky model if it's a file-creation model (GPT-5.x)
+        # Other sticky models (Gemini deep, Opus) should NOT override attachment routing
+        if sticky and sticky[1] and 'gpt-5' in sticky[1]:
+            sticky_prov_str, sticky_mod = sticky
+            _prov_map = {"openai": Provider.OPENAI, "google": Provider.GOOGLE, "anthropic": Provider.ANTHROPIC}
+            doc_force_provider = _prov_map.get(sticky_prov_str, Provider.OPENAI)
+            doc_force_model = sticky_mod
+            jt = JobType.TEXT_HEAVY
+            print(f"[chat_attachments] File creation sticky override: {sticky_prov_str}/{sticky_mod}")
+        elif user_message and _detect_file_creation_intent(user_message):
+            doc_force_provider = Provider.OPENAI
+            doc_force_model = os.getenv("FILE_CREATION_MODEL", "gpt-5.4")
+            jt = JobType.TEXT_HEAVY
+            _set_sticky_model(project_id, "openai", doc_force_model)
+            print(f"[chat_attachments] File creation intent detected -> openai/{doc_force_model}")
+    except Exception as _sticky_err:
+        print(f"[chat_attachments] Sticky/intent check failed: {_sticky_err}")
+
+    if doc_force_provider is None and document_content_parts:
         jt = JobType.TEXT_HEAVY
         doc_force_provider = Provider.OPENAI
         doc_force_model = os.getenv("OPENAI_DEFAULT_MODEL", "gpt-5.2")
         print(f"[chat_attachments] {len(attachment_metadata)} attachment(s) with document content - forcing {doc_force_model}")
-    elif attachment_metadata:
+    elif doc_force_provider is None and attachment_metadata:
         jt = JobType.UNKNOWN
         print(f"[chat_attachments] {len(attachment_metadata)} attachment(s) - router will classify")
-    else:
+    elif doc_force_provider is None:
         jt = JobType.UNKNOWN
         print(f"[chat_attachments] No attachments - router will use default")
 
@@ -450,6 +509,42 @@ When the user asks about "this", "the file", "the document", or "what is this", 
 Do NOT discuss or reference any files from previous messages in the chat history. Focus ONLY on the newly uploaded file(s): {filenames}
 
 The content of the current upload appears first in the context under "=== CURRENT UPLOAD (JUST UPLOADED) ==="."""
+
+    # v10.1: File creation uses streaming to avoid timeout on large HTML generation
+    if _file_creation_override and doc_force_provider is not None:
+        from fastapi.responses import StreamingResponse
+        from app.llm.stream_handlers import generate_sse_stream
+        from app.llm.routing.prompt_builders import _CONVERSATIONAL_GUIDELINES
+
+        # Inject the file generation instructions into the system prompt
+        system_prompt += _CONVERSATIONAL_GUIDELINES
+
+        print(f"[chat_attachments] File creation: routing to streaming path -> {doc_force_provider}/{doc_force_model}")
+
+        # Convert Provider enum to string for the stream handler
+        prov_str = doc_force_provider.value if hasattr(doc_force_provider, 'value') else str(doc_force_provider)
+
+        # Save user message to memory before streaming
+        user_content = message if message else "[Attachment only]"
+        if attachments_summary:
+            user_content += f" [Uploaded: {', '.join(a.client_filename for a in attachments_summary)}]"
+        memory_service.create_message(db, memory_schemas.MessageCreate(
+            project_id=project_id, role="user", content=user_content, provider="local",
+        ))
+
+        return StreamingResponse(
+            generate_sse_stream(
+                project_id=project_id,
+                message=user_content,
+                provider=prov_str,
+                model=doc_force_model,
+                system_prompt=system_prompt,
+                messages=messages,
+                db=db,
+            ),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     task = LLMTask(
         job_type=jt,

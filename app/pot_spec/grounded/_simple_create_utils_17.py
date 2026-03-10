@@ -391,6 +391,7 @@ async def build_grounded_create_spec(
         keywords_found={c: [] for c in concepts},
         constraints=constraints,
         llm_analysis=llm_analysis,
+        resolved_target_files=resolved_target_files,  # v5.2: Survive into spec independently
     )
     
     # Build spec

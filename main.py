@@ -50,6 +50,7 @@ from app.content.router import router as content_router
 from app.content.scout_router import router as content_scout_router
 from app.content.production_router import router as content_production_router
 from app.content.distribution_router import router as content_distribution_router
+from app.content.distribution.youtube_router import router as youtube_router
 from app.content.project_router import router as content_project_router
 from app.content.style_router import router as content_style_router
 from app.content.item_router import router as content_item_router
@@ -294,7 +295,10 @@ app.include_router(shared_context_router, dependencies=[Depends(require_auth)])
 app.include_router(content_router)
 app.include_router(content_scout_router)
 app.include_router(content_production_router)
+from app.content.production.file_router import router as content_file_router
+app.include_router(content_file_router)
 app.include_router(content_distribution_router)
+app.include_router(youtube_router)
 app.include_router(engagement_router)
 app.include_router(content_project_router)
 app.include_router(content_style_router)
@@ -375,6 +379,14 @@ if os.getenv("ORB_ENABLE_PHASE4", "false").lower() == "true":
     except ImportError as e:
         print(f"[startup] WARNING: Phase 4 import failed: {e}")
 
+# Image generation (Nano Banana / GPT Image)
+try:
+    from app.llm.image_router import router as image_gen_router
+    app.include_router(image_gen_router, dependencies=[Depends(require_auth)])
+    print("[startup] Image generation: [OK] registered")
+except ImportError as e:
+    print(f"[startup] Image generation: [WARN] {e}")
+
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
@@ -419,4 +431,7 @@ def list_providers(auth=Depends(require_auth)):
 def list_job_types(auth=Depends(require_auth)):
     from app.llm import JobType
     return {"job_types": [{"value": jt.value, "name": jt.name} for jt in JobType]}
+
+
+
 

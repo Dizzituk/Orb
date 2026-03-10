@@ -82,13 +82,43 @@ async def fulfil_evidence_requests(
             break
 
         # v4.3: Diminishing returns — if we sent ERs but NONE succeeded,
-        # the LLM is fishing in the wrong pond. Stop and force final output.
+        # the LLM is fishing in the wrong pond. Stop fishing but give the
+        # LLM one final chance to produce a complete analysis with what it has.
+        # v5.2: Previously this just 'break'd, which meant the LLM's response
+        # (often ONLY ER blocks) got force-resolved to tiny stubs, destroying
+        # all architecture analysis. Now we re-prompt as final round.
         total_ers = len(requests)
         if total_ers > 0 and len(fulfilled_ids) == 0:
             logger.info(
-                "[SPEC_GATE_EVIDENCE] Loop %d: 0/%d ERs fulfilled — diminishing returns, forcing final",
+                "[SPEC_GATE_EVIDENCE] Loop %d: 0/%d ERs fulfilled — forcing FINAL round",
                 loop_idx + 1, total_ers,
             )
+            print(f"[SPEC_GATE_EVIDENCE] Loop {loop_idx + 1}: 0/{total_ers} ERs fulfilled — re-prompting as FINAL")
+            # Build a final-round prompt with whatever evidence we DO have
+            _unavail_block = _prioritise_evidence(evidence_parts, goal, what_to_do)
+            _final_prompt = _build_re_prompt(
+                current_analysis, _unavail_block, goal, what_to_do,
+                loop_idx, fulfilled_ids, requests, is_final=True,
+            )
+            try:
+                _final_result = await llm_call_func(
+                    provider_id=provider_id,
+                    model_id=model_id,
+                    messages=[{"role": "user", "content": _final_prompt}],
+                    system_prompt=system_prompt,
+                    temperature=0.2,
+                    max_tokens=8192,
+                    timeout_seconds=_CREATE_ANALYSIS_TIMEOUT,
+                )
+                if _final_result.is_success() and _final_result.content:
+                    current_analysis = _final_result.content.strip()
+                    logger.info(
+                        "[SPEC_GATE_EVIDENCE] Final round produced %d chars",
+                        len(current_analysis),
+                    )
+                    print(f"[SPEC_GATE_EVIDENCE] Final round: {len(current_analysis)} chars")
+            except Exception as exc:
+                logger.warning("[SPEC_GATE_EVIDENCE] Final round exception: %s", exc)
             break
 
         current_analysis = strip_fulfilled_requests(current_analysis, fulfilled_ids)

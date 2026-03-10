@@ -62,6 +62,9 @@ def get_category_paths() -> dict[str, Path]:
     # Screenshots is a subfolder of Pictures
     paths["screenshots"] = paths["pictures"] / "Screenshots"
 
+    # ASTRA generated output files
+    paths["astra_output"] = Path(r"D:\Orb\output")
+
     return paths
 
 

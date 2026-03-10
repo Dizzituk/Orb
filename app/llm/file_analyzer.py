@@ -218,7 +218,7 @@ def extract_text(
         elif ext == ".docx":
             return _extract_docx_text(file_path, file_bytes)
         
-        elif ext in {".txt", ".md", ".py", ".js", ".ts", ".json", ".yaml", ".yml"}:
+        elif ext in {".txt", ".md", ".py", ".js", ".ts", ".json", ".yaml", ".yml", ".html", ".htm", ".css", ".jsx", ".tsx", ".csv", ".xml", ".svg", ".sh", ".bat", ".toml", ".ini", ".cfg", ".env", ".sql"}:
             if file_bytes:
                 return file_bytes.decode("utf-8", errors="replace"), None
             else:

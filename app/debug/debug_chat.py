@@ -343,6 +343,7 @@ async def stream_debug_locked(
     debug_project_id: Optional[str] = None,
     video_file_uri: Optional[str] = None,
     video_mime_type: Optional[str] = None,
+    video_local_path: Optional[str] = None,
 ) -> AsyncGenerator[bytes, None]:
     """Stream handler for debug-locked sidebar chat.
 
@@ -502,6 +503,25 @@ async def stream_debug_locked(
             "provider": provider,
             "model": model,
         })
+
+        # 8. Cleanup: delete recording from Gemini Files API and local disk
+        if video_file_uri:
+            try:
+                # Extract file name from URI (e.g. "files/abc123" from the full URL)
+                gemini_file_name = "/".join(video_file_uri.rstrip("/").split("/")[-2:])
+                from app.debug.screen_capture import cleanup_gemini_file
+                await cleanup_gemini_file(gemini_file_name)
+            except Exception as cleanup_err:
+                logger.warning("[debug_locked] Gemini file cleanup failed: %s", cleanup_err)
+
+        if video_local_path:
+            try:
+                import os
+                if os.path.exists(video_local_path):
+                    os.remove(video_local_path)
+                    logger.info("[debug_locked] Deleted local recording: %s", video_local_path)
+            except Exception as cleanup_err:
+                logger.warning("[debug_locked] Local file cleanup failed: %s", cleanup_err)
 
     except Exception as e:
         logger.exception("[debug_locked] Stream error: %s", e)

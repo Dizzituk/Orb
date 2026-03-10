@@ -81,9 +81,11 @@ async def read_file(path: str) -> Optional[str]:
         else:
             norm = f"D:/Orb/{norm}"
 
-    data = await _sandbox_post("/fs/contents", {"path": norm})
-    if data and "content" in data:
-        return data["content"]
+    data = await _sandbox_post("/fs/contents", {"paths": [norm], "max_file_size": 500000})
+    if data:
+        files = data.get("files", [])
+        if files and not files[0].get("error") and files[0].get("content") is not None:
+            return files[0]["content"]
 
     return None
 
@@ -112,14 +114,31 @@ async def write_file(path: str, content: str) -> bool:
 
 async def file_exists(path: str) -> bool:
     """Check if a file exists in the sandbox."""
-    data = await _sandbox_post("/fs/contents", {"path": path})
-    return data is not None and "content" in data
+    norm = path.replace("\\", "/")
+    if not (len(norm) > 1 and norm[1] == ":"):
+        if norm.startswith("src/"):
+            norm = f"D:/orb-desktop/{norm}"
+        else:
+            norm = f"D:/Orb/{norm}"
+    data = await _sandbox_post("/fs/contents", {"paths": [norm], "max_file_size": 500000})
+    if data:
+        files = data.get("files", [])
+        return bool(files and not files[0].get("error"))
+    return False
 
 
 async def list_dir(path: str) -> Optional[list]:
     """List directory contents in the sandbox."""
-    data = await _sandbox_post("/fs/tree", {"path": path, "depth": 1})
-    return data
+    norm = path.replace("\\", "/")
+    if not (len(norm) > 1 and norm[1] == ":"):
+        if norm.startswith("src/"):
+            norm = f"D:/orb-desktop/{norm}"
+        else:
+            norm = f"D:/Orb/{norm}"
+    data = await _sandbox_post("/fs/tree", {"roots": [norm], "max_files": 500, "include_size": True})
+    if data:
+        return data.get("files", [])
+    return None
 
 
 # ---------------------------------------------------------------------------

@@ -109,19 +109,18 @@ async def _refresh_token(creds: Dict[str, str]) -> Optional[Dict[str, str]]:
 
 
 async def _get_auth_headers() -> Optional[Dict[str, str]]:
-    """Get authorization headers, refreshing token if needed."""
-    creds = _get_credentials()
+    """Get authorization headers via the youtube_auth module.
+
+    Single source of truth for YouTube OAuth credentials.
+    Handles refresh automatically via google-auth library.
+    """
+    from app.content.distribution.youtube_auth import get_youtube_credentials
+
+    creds = get_youtube_credentials()
     if not creds:
         return None
 
-    # Check if token expired
-    expires_at = creds.get("expires_at", 0)
-    if datetime.now(timezone.utc).timestamp() >= expires_at - 60:
-        creds = await _refresh_token(creds)
-        if not creds:
-            return None
-
-    return {"Authorization": f"Bearer {creds['access_token']}"}
+    return {"Authorization": f"Bearer {creds.token}"}
 
 
 # ═══════════════════════════════════════════════════
@@ -309,8 +308,15 @@ def generate_chapter_markers(
 
 
 def is_configured() -> bool:
-    """Check if YouTube API credentials are available."""
+    """Check if YouTube API credentials are available (any of the three)."""
     return bool(
-        os.getenv("YOUTUBE_CLIENT_ID")
-        and os.getenv("YOUTUBE_CLIENT_SECRET")
+        (os.getenv("YOUTUBE_CLIENT_ID") and os.getenv("YOUTUBE_CLIENT_SECRET"))
+        or os.getenv("YOUTUBE_API_KEY")
     )
+
+
+def is_authenticated() -> bool:
+    """Check if YouTube OAuth is fully authenticated (has valid token)."""
+    from app.content.distribution.youtube_auth import get_youtube_credentials
+    return get_youtube_credentials() is not None
+

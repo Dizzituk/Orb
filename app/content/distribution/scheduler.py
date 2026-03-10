@@ -27,9 +27,11 @@ logger = logging.getLogger(__name__)
 # ─── DEFAULT POSTING WINDOWS (UK timezone) ───
 # Format: list of (hour, minute) tuples representing optimal times
 
+# Posting windows informed by algorithm_strategy.py
+# YouTube times come from OPTIMAL_POSTING_TIMES in strategy module
 DEFAULT_WINDOWS = {
     "instagram": [(7, 0), (12, 0), (18, 30)],
-    "youtube": [(8, 0), (14, 0), (19, 0)],
+    "youtube": [(7, 0), (12, 0), (17, 0), (19, 0)],
     "tiktok": [(7, 0), (12, 30), (19, 0)],
     "facebook": [(9, 0), (13, 0), (18, 0)],
     "twitter": [(8, 0), (12, 0), (17, 0)],
@@ -61,6 +63,8 @@ def find_next_slot(
     """
     if after is None:
         after = datetime.now(timezone.utc)
+    elif after.tzinfo is None:
+        after = after.replace(tzinfo=timezone.utc)
 
     windows = DEFAULT_WINDOWS.get(platform, [(12, 0)])
     min_interval = timedelta(hours=MIN_INTERVAL_HOURS.get(platform, 6))
@@ -78,7 +82,10 @@ def find_next_slot(
 
     earliest = after
     if last_post and last_post.scheduled_at:
-        min_after = last_post.scheduled_at + min_interval
+        sched = last_post.scheduled_at
+        if sched.tzinfo is None:
+            sched = sched.replace(tzinfo=timezone.utc)
+        min_after = sched + min_interval
         if min_after > earliest:
             earliest = min_after
 
@@ -216,3 +223,5 @@ def get_due_for_publishing(
         .order_by(ContentOutput.scheduled_at.asc())
         .all()
     )
+
+

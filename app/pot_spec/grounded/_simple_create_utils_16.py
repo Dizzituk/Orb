@@ -32,6 +32,7 @@ class CreateEvidence:
     keywords_found: Dict[str, List[str]]  # keyword -> files containing it
     constraints: List[str]  # Extracted constraints (e.g., "no cloud APIs")
     llm_analysis: Optional[str] = None  # LLM-generated analysis
+    resolved_target_files: Optional[List[Dict[str, str]]] = None  # v5.2: Pre-resolved file paths from weaver
 
 def _detect_tech_stack(project_path: str, sandbox_client: Any = None) -> TechStack:
     """Detect the technology stack of a project."""

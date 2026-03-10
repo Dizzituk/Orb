@@ -199,7 +199,7 @@ async def stream_openai(
         }
 
         if _openai_needs_max_completion_tokens(use_model):
-            create_kwargs["max_completion_tokens"] = int(max_completion_tokens or 8192)
+            create_kwargs["max_completion_tokens"] = int(max_completion_tokens or 32768)
         elif legacy_max_tokens is not None:
             create_kwargs["max_tokens"] = int(legacy_max_tokens)
 

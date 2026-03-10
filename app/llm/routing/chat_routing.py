@@ -78,6 +78,83 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# v10.0: Session-level model stickiness.
+# Once a conversation upgrades to a more capable model (e.g. Gemini 3.1 Pro),
+# hold that model for subsequent messages in the same project session.
+# Prevents downgrade to Flash on follow-up messages classified as simpler.
+# Cleared when the app restarts or a new project is selected.
+_session_model_cache: dict[int, tuple[str, str]] = {}  # project_id -> (provider, model)
+
+def _get_sticky_model(project_id: int) -> tuple[str, str] | None:
+    return _session_model_cache.get(project_id)
+
+def _set_sticky_model(project_id: int, provider: str, model: str) -> None:
+    _session_model_cache[project_id] = (provider, model)
+
+import re as _re
+
+# v10.1: Detect file creation intent — routes to GPT-5.4 for HTML/code generation.
+_FILE_CREATION_PATTERNS = _re.compile(
+    r'(?:create|build|make|generate|write|design|return|produce|come\s+up\s+with|put\s+together)\s+'
+    r'(?:me\s+)?(?:a\s+|an\s+|the\s+)?'
+    r'(?:html|webpage|web\s*page|website|landing\s*page|page|file|document)',
+    _re.IGNORECASE,
+)
+
+def _detect_file_creation_intent(message: str) -> bool:
+    """Check if the user is asking for a file to be created."""
+    return bool(_FILE_CREATION_PATTERNS.search(message))
+
+# v10.3: Detect image generation intent — routes to Nano Banana.
+_IMAGE_GEN_PATTERNS = _re.compile(
+    r'(?:create|draw|make|generate|design|paint|sketch|render|produce|build|visuali[sz]e|need)\s+'
+    r'(?:me\s+|yourself\s+)?(?:a\s+|an\s+|the\s+|another\s+)?'
+    r'(?:new\s+)?(?:image|picture|photo|illustration|avatar|icon|graphic|artwork|portrait|visual|banner|thumbnail|logo|cover)',
+    _re.IGNORECASE,
+)
+
+def _detect_image_gen_intent(message: str) -> bool:
+    """Check if the user is asking for an image to be generated."""
+    return bool(_IMAGE_GEN_PATTERNS.search(message))
+
+# v10.4: Detect image refinement intent (user wants to modify a previous image)
+_IMAGE_REFINE_PATTERNS = _re.compile(
+    r'(?:change|modify|adjust|tweak|fix|redo|again\s+but|same\s+but|less\s+\w+|more\s+\w+|make\s+it|try\s+again|not\s+(?:quite|right)|too\s+\w+)',
+    _re.IGNORECASE,
+)
+
+def _detect_image_refinement(message: str) -> bool:
+    """Check if the user is asking to refine a previous image."""
+    return bool(_IMAGE_REFINE_PATTERNS.search(message))
+
+def _last_assistant_was_image(project_id: int, db) -> bool:
+    """Check if the most recent assistant message was a Nano Banana image generation."""
+    try:
+        msgs = memory_service.get_messages(db, project_id, limit=3)
+        for msg in reversed(msgs):
+            if msg.role == 'assistant' and msg.model == 'nano-banana-2':
+                return True
+            if msg.role == 'assistant':
+                return False  # Last assistant message wasn't an image
+    except Exception:
+        pass
+    return False
+
+# v10.2: Elevated models that should persist via history-based stickiness
+_ELEVATED_MODELS = {'gpt-5.4', 'gpt-5.4-turbo', 'claude-opus-4-6', 'claude-opus-4-5'}
+
+def _infer_sticky_from_history(project_id: int, db) -> tuple[str, str] | None:
+    """Check last assistant message in history for an elevated model.
+    Falls back when the in-memory cache is empty (e.g. after app restart)."""
+    try:
+        msgs = memory_service.get_messages(db, project_id, limit=5)
+        for msg in reversed(msgs):
+            if msg.role == 'assistant' and msg.model and msg.model in _ELEVATED_MODELS:
+                prov = msg.provider or 'openai'
+                return (prov, msg.model)
+    except Exception:
+        pass
+    return None
 
 # =============================================================================
 # CHAT MODE HANDLER
@@ -143,9 +220,124 @@ def handle_chat_mode(
         provider = req.provider
         model = req.model
         print(f"[CHAT_MODE] Using frontend override: provider={provider}, model={model}")
+        _set_sticky_model(req.project_id, provider, model)
+    elif _detect_file_creation_intent(req.message):
+        # v10.1: File creation requests → GPT-5.4 with tools (best for HTML/code generation)
+        import os as _os
+        provider = _os.getenv("FILE_CREATION_PROVIDER", "openai")
+        model = _os.getenv("FILE_CREATION_MODEL", "gpt-5.4")
+        print(f"[CHAT_MODE] File creation detected -> {provider}/{model}")
+        _set_sticky_model(req.project_id, provider, model)
+    elif _detect_image_gen_intent(req.message) or (
+        _detect_image_refinement(req.message)
+        and _last_assistant_was_image(req.project_id, db)
+    ):
+        # v10.5: Context-aware image generation — two-stage pipeline
+        # Stage 1: Gemini Flash Lite synthesises a rich prompt from conversation context
+        # Stage 2: Nano Banana generates the image from the synthesised prompt
+        print(f"[CHAT_MODE] Image generation detected -> context-aware Nano Banana pipeline")
+
+        from app.llm.nano_banana import generate_image as nano_generate
+        from app.llm.image_prompt_synth import synthesise_image_prompt
+        from app.llm.file_output import sse_file_outputs
+
+        async def _image_gen_stream():
+            import json
+            yield "data: " + json.dumps({"type": "metadata", "provider": "google", "model": "nano-banana-2"}) + "\n\n"
+
+            # --- Stage 1: Prompt Synthesis ---
+            yield "data: " + json.dumps({"type": "token", "content": "Reading conversation context...\n"}) + "\n\n"
+
+            # Fetch conversation history for context
+            conversation_history = []
+            previous_image_prompt = None
+            try:
+                msgs = memory_service.get_messages(db, req.project_id, limit=10)
+                for msg in msgs:
+                    conversation_history.append({
+                        "role": msg.role,
+                        "content": msg.content or "",
+                    })
+
+                # Check if this is a refinement of a previous image
+                if _detect_image_refinement(req.message):
+                    for msg in reversed(msgs):
+                        if msg.role == "assistant" and msg.model == "nano-banana-2":
+                            content = msg.content or ""
+                            # Extract synthesised prompt from stored format:
+                            # "Generated image: filename.png | Prompt: synthesised text"
+                            if "| Prompt:" in content:
+                                previous_image_prompt = content.split("| Prompt:", 1)[1].strip()
+                            elif content.startswith("Generated image:"):
+                                # Fallback: use the user message that triggered it
+                                for prev_msg in msgs:
+                                    if prev_msg.role == "user" and getattr(prev_msg, 'id', 0) < getattr(msg, 'id', 0):
+                                        previous_image_prompt = prev_msg.content
+                            if previous_image_prompt:
+                                print(f"[CHAT_MODE] Image refinement: reusing previous prompt ({len(previous_image_prompt)} chars)")
+                            break
+            except Exception as e:
+                print(f"[CHAT_MODE] History fetch for image gen failed: {e}")
+
+            yield "data: " + json.dumps({"type": "token", "content": "Crafting image prompt...\n"}) + "\n\n"
+
+            # Synthesise the prompt via Gemini Flash Lite
+            synthesised_prompt, aspect_ratio = await synthesise_image_prompt(
+                user_message=req.message,
+                conversation_history=conversation_history,
+                previous_image_prompt=previous_image_prompt,
+            )
+
+            yield "data: " + json.dumps({"type": "token", "content": f"Prompt: *{synthesised_prompt[:150]}{'...' if len(synthesised_prompt) > 150 else ''}*\n\n"}) + "\n\n"
+
+            # --- Stage 2: Image Generation ---
+            yield "data: " + json.dumps({"type": "token", "content": "Generating image...\n\n"}) + "\n\n"
+
+            result = await nano_generate(prompt=synthesised_prompt, aspect_ratio=aspect_ratio)
+            if result:
+                yield "data: " + json.dumps({"type": "token", "content": f"![Generated Image](data:{result['mime_type']};base64,{result['base64_data']})\n\n"}) + "\n\n"
+                yield "data: " + json.dumps({"type": "token", "content": f"Saved to {result['path']}\n"}) + "\n\n"
+                file_info = {
+                    "path": result["path"],
+                    "filename": result["filename"],
+                    "type": "image",
+                    "size": result["size_bytes"],
+                    "description": f"Generated: {synthesised_prompt[:60]}",
+                }
+                yield sse_file_outputs([file_info])
+
+                # Save to memory — include the synthesised prompt so refinement can reference it
+                from app.memory import schemas as _mem_schemas
+                memory_service.create_message(db, _mem_schemas.MessageCreate(
+                    project_id=req.project_id, role="user", content=req.message, provider="local",
+                ))
+                memory_service.create_message(db, _mem_schemas.MessageCreate(
+                    project_id=req.project_id, role="assistant",
+                    content=f"Generated image: {result['filename']} | Prompt: {synthesised_prompt[:200]}",
+                    provider="google", model="nano-banana-2",
+                ))
+            else:
+                yield "data: " + json.dumps({"type": "token", "content": "Image generation failed. The Nano Banana model may not be available or the prompt was rejected.\n"}) + "\n\n"
+
+            yield "data: " + json.dumps({"type": "done", "provider": "google", "model": "nano-banana-2", "total_length": 0}) + "\n\n"
+
+        return StreamingResponse(
+            _image_gen_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+    elif _get_sticky_model(req.project_id):
+        # v10.0: Session model stickiness — hold the upgraded model for follow-ups.
+        provider, model = _get_sticky_model(req.project_id)
+        print(f"[CHAT_MODE] Using sticky model from session: {provider}/{model}")
+    elif _infer_sticky_from_history(req.project_id, db):
+        # v10.2: History-based stickiness — if last assistant message used an elevated model
+        # (survives app restarts, unlike the in-memory cache)
+        provider, model = _infer_sticky_from_history(req.project_id, db)
+        _set_sticky_model(req.project_id, provider, model)
+        print(f"[CHAT_MODE] Restored sticky model from history: {provider}/{model}")
     else:
         # v5.7: Run complexity classifier to decide model tier.
-        # Even in chat mode, complex messages deserve a better model.
         complexity = classify_complexity(
             query=req.message,
             intent=None,
@@ -154,24 +346,18 @@ def handle_chat_mode(
         print(f"[CHAT_MODE] Complexity: tier={complexity.tier}, target={complexity.model_target}, "
               f"confidence={complexity.confidence}, signals={complexity.signals}")
         
-        # v3.2: Read chat provider/model from .env stage config.
-        # All tiers use the configured CHAT provider by default.
-        # "deep" escalates to Gemini 3.1 Pro customtools, "multimodal" to Gemini vision.
-        # Opus only via manual UI model switcher.
         import os as _os
         _chat_provider = _os.getenv("CHAT_PROVIDER", "google")
         _chat_model = _os.getenv("CHAT_MODEL", "gemini-2.5-flash")
 
-        # v6.0: Chat panel requests (with ui_context) skip the confirmation gate.
         _skip_confirm = getattr(req, 'ui_context', None) is not None
 
         if complexity.tier == "deep":
-            # Deep/architectural queries → Gemini 3.1 Pro customtools (or env override)
-            # v9.0: Default changed from Opus to Gemini customtools for cost savings.
-            # Opus available via manual UI model switcher when needed.
             provider = _os.getenv("CHAT_DEEP_PROVIDER", "google")
             model = _os.getenv("CHAT_DEEP_MODEL", "gemini-3.1-pro-preview-customtools")
             print(f"[CHAT_MODE] Complexity UPGRADE: deep -> {provider}/{model}")
+            # v10.0: Stick to this model for the rest of the conversation
+            _set_sticky_model(req.project_id, provider, model)
             if not _skip_confirm:
                 try:
                     from app.llm.routing.confirmation_gate import (
@@ -198,10 +384,10 @@ def handle_chat_mode(
             else:
                 print(f"[CHAT_MODE] Confirmation gate skipped (chat panel request)")
         elif complexity.tier == "reasoning":
-            # v3.2: Reasoning uses configured chat provider, not hardcoded OpenAI
             provider = _chat_provider
             model = _chat_model
             print(f"[CHAT_MODE] Reasoning tier -> {provider}/{model}")
+            _set_sticky_model(req.project_id, provider, model)
             if not _skip_confirm:
                 try:
                     from app.llm.routing.confirmation_gate import (
@@ -238,7 +424,6 @@ def handle_chat_mode(
                 model = "gemini-2.5-flash"
                 print(f"[CHAT_MODE] Multimodal (single) -> Gemini 2.5 Flash")
         else:
-            # lookup or ping_pong — use configured chat model
             provider = _chat_provider
             model = _chat_model
             print(f"[CHAT_MODE] {complexity.tier} -> {provider}/{model}")

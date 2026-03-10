@@ -131,6 +131,18 @@ async def generate_sse_stream(
         
         print(f"[SSE_STREAM] Completed: chunks={chunk_count}, response_len={len(full_response)}")
         
+        # v2.5: Extract and save any HTML files from the response
+        try:
+            from app.llm.html_extractor import extract_and_save_html
+            saved_files = extract_and_save_html(full_response)
+            if saved_files:
+                print(f"[SSE_STREAM] Extracted {len(saved_files)} file(s): {[f['filename'] for f in saved_files]}")
+                from app.llm.file_output import sse_file_outputs
+                yield sse_file_outputs(saved_files)
+        except Exception as extract_err:
+            print(f"[SSE_STREAM] File extraction failed (non-fatal): {extract_err}")
+            logger.warning("[stream] File extraction failed: %s", extract_err)
+
         # Save to memory
         memory_service.create_message(db, memory_schemas.MessageCreate(
             project_id=project_id, role="user", content=message, provider=provider
@@ -150,6 +162,7 @@ async def generate_sse_stream(
             "total_length": len(full_response),
         }) + "\n\n"
         
+
     except Exception as e:
         print(f"[SSE_STREAM] EXCEPTION: {e}")
         logger.exception("[stream] Failed: %s", e)
