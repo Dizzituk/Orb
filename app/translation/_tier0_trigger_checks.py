@@ -2,12 +2,27 @@
 """
 Tier 0 special-case trigger check functions.
 Each function checks a specific command domain and returns Tier0RuleResult.
+
+v2.3 (2026-03-10): Added "Astra" prefix stripping to all trigger checks.
+    Added natural pipeline trigger phrases to check_weaver_trigger.
 """
 from __future__ import annotations
 import re
 from typing import Optional
 from .schemas import CanonicalIntent
 from .tier0_rules import Tier0RuleResult
+
+
+# =============================================================================
+# v2.3: ASTRA ADDRESS STRIPPING
+# =============================================================================
+
+_ASTRA_PREFIX = re.compile(r"^(?:hey[,.]?\s+)?astr[aoe][,.]?\s+", re.IGNORECASE)
+
+
+def _strip_astra(text: str) -> str:
+    """Strip 'Astra,' / 'Hey Astra,' / 'Astro,' prefix from text for trigger matching."""
+    return _ASTRA_PREFIX.sub("", text.strip()).strip()
 
 
 # =============================================================================
@@ -20,7 +35,7 @@ def check_architecture_map_variant(text: str) -> Tier0RuleResult:
     - ALL CAPS "CREATE ARCHITECTURE MAP" -> with files
     - Normal case "Create architecture map" -> structure only
     """
-    text_stripped = text.strip()
+    text_stripped = _strip_astra(text)
 
     if text_stripped.startswith("CREATE ARCHITECTURE MAP"):
         return Tier0RuleResult(
@@ -46,7 +61,7 @@ def check_architecture_map_variant(text: str) -> Tier0RuleResult:
 
 def check_zombie_start(text: str) -> Tier0RuleResult:
     """Special handler for zombie/sandbox start commands."""
-    text_lower = text.strip().lower()
+    text_lower = _strip_astra(text).lower()
 
     patterns = [
         r"^start your zombie$",
@@ -70,7 +85,7 @@ def check_zombie_start(text: str) -> Tier0RuleResult:
 
 def check_update_architecture(text: str) -> Tier0RuleResult:
     """Special handler for architecture update commands."""
-    text_lower = text.strip().lower()
+    text_lower = _strip_astra(text).lower()
 
     patterns = [
         r"^update architecture$",
@@ -95,7 +110,7 @@ def check_update_architecture(text: str) -> Tier0RuleResult:
 
 def check_scan_sandbox_trigger(text: str) -> Tier0RuleResult:
     """Special handler for sandbox scanning commands."""
-    text_lower = text.strip().lower()
+    text_lower = _strip_astra(text).lower()
 
     patterns = [
         r"^scan sandbox$",
@@ -121,12 +136,19 @@ def check_scan_sandbox_trigger(text: str) -> Tier0RuleResult:
 
 
 # =============================================================================
-# SPEC GATE FLOW HANDLERS (v1.1)
+# SPEC GATE FLOW HANDLERS (v1.1, v2.3)
 # =============================================================================
 
 def check_weaver_trigger(text: str) -> Tier0RuleResult:
-    """Special handler for Weaver (spec building) triggers."""
-    text_lower = text.strip().lower()
+    """Special handler for Weaver (spec building) triggers.
+
+    v2.3: Strips 'Astra' prefix before matching.
+    v2.3: Added natural pipeline trigger phrases:
+        - "send that to the build pipeline"
+        - "start building" / "build this" / "build it" / "let's build"
+        - "can we start building now"
+    """
+    text_lower = _strip_astra(text).lower()
 
     exact_phrases = [
         "how does that look all together",
@@ -144,10 +166,45 @@ def check_weaver_trigger(text: str) -> Tier0RuleResult:
         "summarize my ramble into a spec",
         "turn this into a spec",
         "turn that into a spec",
+        # v2.3: Natural pipeline triggers
+        "send that to the build pipeline",
+        "send this to the build pipeline",
+        "send it to the build pipeline",
+        "send that to the pipeline",
+        "send this to the pipeline",
+        "send it to the pipeline",
+        "start building",
+        "start building that",
+        "start building this",
+        "build this",
+        "build that",
+        "build it",
+        "go build it",
+        "go build that",
+        "go ahead and build it",
+        "go ahead and build that",
+        "can we start building now",
+        "can you start building now",
+        "can we actually start building the app now",
+        "can we start building the app now",
+        "can you build that",
+        "can you build this",
+        "let's build it",
+        "let's build this",
+        "let's build that",
+        "okay build it",
+        "ok build it",
+        "okay build that",
+        "ok build that",
+        "right, build it",
+        "right build it",
+        "make it happen",
+        "kick off the build",
+        "start the build",
     ]
 
     for phrase in exact_phrases:
-        if text_lower == phrase or text_lower.rstrip("?") == phrase.rstrip("?"):
+        if text_lower == phrase or text_lower.rstrip("?!.") == phrase.rstrip("?!."):
             return Tier0RuleResult(
                 matched=True,
                 intent=CanonicalIntent.WEAVER_BUILD_SPEC,
@@ -167,6 +224,15 @@ def check_weaver_trigger(text: str) -> Tier0RuleResult:
         r"^turn (?:this|that|it) into a spec$",
         r"^okay,? (?:now )?(?:weave|build|compile|consolidate)",
         r"^ok,? (?:now )?(?:weave|build|compile|consolidate)",
+        # v2.3: Natural pipeline triggers (pattern-based)
+        r"^send (?:that|this|it) to (?:the )?(?:build )?pipeline",
+        r"^(?:can (?:we|you) )?(?:actually )?start building",
+        r"^(?:go (?:ahead (?:and )?)?)?build (?:it|that|this|the app)",
+        r"^(?:let's|lets) (?:go (?:ahead (?:and )?)?)?build",
+        r"^(?:right,? )?(?:go (?:ahead (?:and )?)?)?build (?:it|that|this)",
+        r"^kick off (?:the )?build",
+        r"^start (?:the )?build",
+        r"^make (?:it|that|this) happen",
     ]
 
     for pattern in weaver_patterns:
@@ -184,7 +250,7 @@ def check_weaver_trigger(text: str) -> Tier0RuleResult:
 
 def check_spec_gate_trigger(text: str) -> Tier0RuleResult:
     """Special handler for Spec Gate (validation) triggers."""
-    text_lower = text.strip().lower()
+    text_lower = _strip_astra(text).lower()
 
     simple_affirmatives = [
         "yes", "yes please", "yes, please", "yep", "yeah",
@@ -261,7 +327,7 @@ def check_spec_gate_trigger(text: str) -> Tier0RuleResult:
 
 def check_critical_pipeline_trigger(text: str) -> Tier0RuleResult:
     """Special handler for critical pipeline triggers."""
-    text_lower = text.strip().lower()
+    text_lower = _strip_astra(text).lower()
 
     patterns = [
         r"^run (?:the )?pipeline$",
@@ -288,7 +354,7 @@ def check_critical_pipeline_trigger(text: str) -> Tier0RuleResult:
 
 def check_overwatcher_trigger(text: str) -> Tier0RuleResult:
     """Special handler for Overwatcher execution triggers."""
-    text_lower = text.strip().lower()
+    text_lower = _strip_astra(text).lower()
 
     patterns = [
         r"^send to overwatcher$",
@@ -315,7 +381,7 @@ def check_overwatcher_trigger(text: str) -> Tier0RuleResult:
 
 def check_segment_loop_trigger(text: str) -> Tier0RuleResult:
     """Special handler for segment loop execution triggers."""
-    text_lower = text.strip().lower()
+    text_lower = _strip_astra(text).lower()
 
     patterns = [
         r"^run segments?$",
@@ -347,7 +413,7 @@ def check_segment_loop_trigger(text: str) -> Tier0RuleResult:
 
 def check_codebase_report_trigger(text: str) -> Tier0RuleResult:
     """Special handler for codebase report commands."""
-    text_lower = text.strip().lower()
+    text_lower = _strip_astra(text).lower()
 
     codebase_report_patterns = [
         r"^codebase\s+report\s+fast$",
@@ -371,7 +437,7 @@ def check_codebase_report_trigger(text: str) -> Tier0RuleResult:
 
 def check_latest_report_trigger(text: str) -> Tier0RuleResult:
     """Special handler for latest report resolver commands."""
-    text_lower = text.strip().lower()
+    text_lower = _strip_astra(text).lower()
 
     archmap_patterns = [
         r"^latest\s+architecture\s+map$",
@@ -404,9 +470,35 @@ def check_latest_report_trigger(text: str) -> Tier0RuleResult:
     return Tier0RuleResult(matched=False)
 
 
+def check_project_scope_trigger(text: str) -> Tier0RuleResult:
+    """Detect 'start a new project' style commands."""
+    text_lower = _strip_astra(text).lower().strip()
+
+    scope_patterns = [
+        r"^(?:i want to |let'?s |let me )?(?:start|begin|create)(?:\s+off)?\s+a new (?:project|app|build)",
+        r"^new (?:project|app|android app|build)$",
+        r"^i'?ve got (?:a |an )?new (?:idea|project|app)",
+        r"^i want to build (?:a |an )?new",
+        r"^let'?s build (?:a |an )?new",
+        r"^(?:i want to |let'?s )?(?:kick off|spin up|set up) a new (?:project|app|build)",
+    ]
+
+    for pattern in scope_patterns:
+        if re.match(pattern, text_lower):
+            return Tier0RuleResult(
+                matched=True,
+                intent=CanonicalIntent.PROJECT_SCOPE_START,
+                confidence=0.95,
+                rule_name="project_scope_start",
+                reason="Project scoping command detected",
+            )
+
+    return Tier0RuleResult(matched=False)
+
+
 def check_embedding_commands(text: str) -> Tier0RuleResult:
     """Special handler for embedding management commands."""
-    text_lower = text.strip().lower()
+    text_lower = _strip_astra(text).lower()
 
     status_patterns = [
         r"^embedding[s]?\s+status$",

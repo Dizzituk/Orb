@@ -283,6 +283,32 @@ def intent_to_routing_info(intent: "CanonicalIntent") -> Optional[dict]:
             "model": "deep_research_engine",
             "reason": "Translation layer: DEEP RESEARCH",
         },
+        # v11.0: Project Registry
+        CanonicalIntent.SCAN_PROJECT_ARCHITECTURE: {
+            "type": "local.project_scan",
+            "provider": "local",
+            "model": "project_scanner",
+            "reason": "Translation layer: SCAN PROJECT ARCHITECTURE",
+        },
+        CanonicalIntent.REGISTER_PROJECT: {
+            "type": "local.register_project",
+            "provider": "local",
+            "model": "project_registry",
+            "reason": "Translation layer: REGISTER PROJECT",
+        },
+        CanonicalIntent.LIST_REGISTERED_PROJECTS: {
+            "type": "local.list_projects",
+            "provider": "local",
+            "model": "project_registry",
+            "reason": "Translation layer: LIST REGISTERED PROJECTS",
+        },
+        # v2.2: Project Scoping
+        CanonicalIntent.PROJECT_SCOPE_START: {
+            "type": "local.project_scoping",
+            "provider": weaver.provider,
+            "model": weaver.model,
+            "reason": "Translation layer: PROJECT SCOPE START",
+        },
     }
     return mapping.get(intent, None)
 

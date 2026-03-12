@@ -96,7 +96,18 @@ class VerifyResult:
     passed: bool = False
     feedback: str = ""          # Plain language: what's wrong
     screenshot_path: str = ""   # Path to the captured screenshot
+    confidence: float = 0.0
+    issues: List["VisualIssue"] = field(default_factory=list)
+    feedback_for_builder: str = ""
     attempt: int = 1
+
+@dataclass
+class VisualIssue:
+    """A single visual issue found by the Verifier."""
+    description: str = ""
+    severity: str = "medium"    # "low", "medium", "high"
+    spec_reference: str = ""
+
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +122,7 @@ class PipelineResult:
     scaffold_result: Optional[ScaffoldResult] = None
     build_result: Optional[BuildResult] = None
     verify_results: List[VerifyResult] = field(default_factory=list)
+    bvl_report: Optional[Any] = None      # BVLReport from behavioral verification
     total_llm_calls: int = 0
     total_duration_seconds: float = 0.0
     estimated_cost_usd: float = 0.0

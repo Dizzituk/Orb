@@ -79,9 +79,9 @@ AST_CHUNKABLE_LANGUAGES: Set[str] = {
 # EMBEDDINGS
 # ============================================================================
 
-# OpenAI embedding model (from routing_policy.json)
-EMBEDDING_MODEL: str = os.getenv("RAG_EMBEDDING_MODEL", "text-embedding-3-small")
-EMBEDDING_DIMENSIONS: int = 1536  # For text-embedding-3-small
+# Gemini Embedding 2 (replaces OpenAI text-embedding-3-small)
+EMBEDDING_MODEL: str = "gemini-embedding-2-preview"
+EMBEDDING_DIMENSIONS: int = 1536  # Matryoshka truncation for DB compat
 EMBEDDING_BATCH_SIZE: int = 100
 
 # Cost control

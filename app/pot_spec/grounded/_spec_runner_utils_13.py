@@ -177,10 +177,12 @@ def _extract_file_scope_from_spec(
         return paths
     
     # Pattern 1: Relative paths (existing — app/, src/, etc.)
+    # v2.3: Added Kotlin/Android extensions: .kt, .kts, .xml, .properties, .gradle
+    _KNOWN_EXTENSIONS = r'py|tsx|ts|jsx|js|json|yaml|yml|md|css|kts|kt|xml|properties|gradle'
     rel_pattern = re.compile(
         r'(?:^|[\s`|])'
         r'((?:app|src|orb-desktop|tests|scripts|config)[/\\]'
-        r'[\w/\\.-]+\.(?:py|ts|tsx|js|jsx|json|yaml|yml|md|css))'
+        r'[\w/\\.-]+\.(?:' + _KNOWN_EXTENSIONS + r'))'
         r'(?:[\s`|,]|$)',
         re.MULTILINE,
     )
@@ -215,7 +217,7 @@ def _extract_file_scope_from_spec(
         subpkg_pattern = re.compile(
             r'(?:^|[\s`|])'
             r'((?:' + _subdir_pattern_str + r')[/\\]'
-            r'[\w/\\.-]+\.(?:py|ts|tsx|js|jsx|json|yaml|yml|md|css))'
+            r'[\w/\\.-]+\.(?:' + _KNOWN_EXTENSIONS + r'))'
             r'(?:[\s`|,]|$)',
             re.MULTILINE,
         )
@@ -229,7 +231,7 @@ def _extract_file_scope_from_spec(
     abs_pattern = re.compile(
         r'(?:^|[\s`|])'
         r'([A-Za-z]:[/\\]'
-        r'[\w/\\.-]+\.(?:py|ts|tsx|js|jsx|json|yaml|yml|md|css))'
+        r'[\w/\\.-]+\.(?:' + _KNOWN_EXTENSIONS + r'))'
         r'(?:[\s`|,]|$)',
         re.MULTILINE,
     )
@@ -308,11 +310,11 @@ def _extract_file_scope_from_spec(
     if len(paths) < 3 and spec_markdown:
         _broad_rel = re.compile(
             r'((?:app|src|orb-desktop)[/\\]'
-            r'[\w/\\.-]+\.(?:py|ts|tsx|js|jsx|css|json|yaml|yml|md))',
+            r'[\w/\\.-]+\.(?:' + _KNOWN_EXTENSIONS + r'))',
         )
         _broad_abs = re.compile(
             r'([A-Za-z]:[/\\]'
-            r'[\w/\\.-]+\.(?:py|ts|tsx|js|jsx|css|json|yaml|yml|md))',
+            r'[\w/\\.-]+\.(?:' + _KNOWN_EXTENSIONS + r'))',
         )
         _before_count = len(paths)
         for m in _broad_rel.finditer(spec_markdown):

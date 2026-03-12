@@ -225,7 +225,7 @@ def _semantic_rank(
         from app.embeddings.service import generate_embedding, cosine_similarity
 
         # Generate embedding for the context
-        context_embedding = generate_embedding(context)
+        context_embedding = generate_embedding(context, task_type="RETRIEVAL_QUERY")
         if not context_embedding:
             return candidates[:max_results]
 

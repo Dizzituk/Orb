@@ -1,6 +1,6 @@
 # FILE: app/pipeline_v2/scaffold_engine.py
 """
-ASTRA v2.1 Scaffold Engine — deterministic file generator.
+ASTRA v2.2 Scaffold Engine — deterministic file generator.
 
 Reads the SpecGate manifest and produces skeleton files:
 - Directory structure
@@ -14,15 +14,20 @@ No LLM calls. No tokens spent. Pure deterministic output.
 80-90% of each file is laid down here.
 
 v1.0 (2026-03-07): Initial implementation for ASTRA v2.1.
+v2.0 (2026-03-10): Multi-project targeting — Kotlin scaffold support,
+    profile-aware path resolution.
 """
 from __future__ import annotations
 
 import logging
 import os
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 from app.pipeline_v2.models import ScaffoldFile, ScaffoldResult
+
+if TYPE_CHECKING:
+    from app.pipeline_v2.build_targets import BuildTargetProfile
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +37,7 @@ async def run_scaffold_engine(
     spec: Dict[str, Any],
     job_dir: str,
     on_progress: Optional[Callable[[str], None]] = None,
+    profile: Optional["BuildTargetProfile"] = None,
 ) -> ScaffoldResult:
     """Run the Scaffold Engine to produce deterministic file skeletons.
 
@@ -40,6 +46,7 @@ async def run_scaffold_engine(
         spec: The verified spec content.
         job_dir: Job directory for saving artifacts.
         on_progress: Progress callback for UI updates.
+        profile: Build target profile (determines language, paths).
 
     Returns:
         ScaffoldResult with all skeleton files.
@@ -48,7 +55,8 @@ async def run_scaffold_engine(
     emit = on_progress or (lambda msg: None)
     result = ScaffoldResult()
 
-    emit("🏗️ Scaffold Engine: Generating deterministic file skeletons...")
+    lang = profile.language if profile else "python"
+    emit(f"🏗️ Scaffold Engine: Generating {lang} file skeletons...")
 
     segments = manifest.get("segments", [])
     skeleton_contract = _load_skeleton_contract(job_dir)
@@ -86,6 +94,7 @@ async def run_scaffold_engine(
                 file_info["requirements"],
                 skeleton_contract,
                 spec,
+                profile,
             )
             scaffold_file = ScaffoldFile(
                 path=fp,
@@ -96,7 +105,7 @@ async def run_scaffold_engine(
             result.files.append(scaffold_file)
 
             # Write to sandbox
-            ok = await sandbox_write(fp, skeleton)
+            ok = await sandbox_write(fp, skeleton, profile=profile)
             status = "✅" if ok else "❌"
             emit(f"   {status} [CREATE] {fp} ({len(skeleton):,} chars)")
         else:
@@ -121,29 +130,74 @@ async def run_scaffold_engine(
     return result
 
 
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════
 # Skeleton generation per file type
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════
 
 def _generate_skeleton(
     file_path: str,
     requirements: List[str],
     skeleton_contract: Dict[str, Any],
     spec: Dict[str, Any],
+    profile: Optional["BuildTargetProfile"] = None,
 ) -> str:
     """Generate a deterministic skeleton for a new file."""
     norm = file_path.replace("\\", "/")
     ext = os.path.splitext(norm)[1].lower()
 
-    if ext == ".py":
+    if ext == ".kt":
+        from app.pipeline_v2.scaffolds.kotlin_scaffolds import generate_kotlin_skeleton
+        return generate_kotlin_skeleton(norm, requirements, profile)
+    elif ext == ".py":
         return _skeleton_python(norm, requirements, skeleton_contract)
     elif ext in (".tsx", ".ts", ".jsx", ".js"):
         return _skeleton_typescript(norm, requirements, skeleton_contract)
     elif ext == ".css":
         return _skeleton_css(norm, requirements)
+    elif ext == ".xml" and "res/" in norm:
+        return _skeleton_android_xml(norm, requirements, profile)
     else:
         return f"# Scaffold stub for {norm}\n# TODO: Implement\n"
 
+
+# ═══════════════════════════════════════════════════════════════════
+# Android XML skeleton (for res/xml/ configs etc.)
+# ═══════════════════════════════════════════════════════════════════
+
+def _skeleton_android_xml(
+    path: str,
+    requirements: List[str],
+    profile: Optional["BuildTargetProfile"] = None,
+) -> str:
+    """Generate Android XML skeleton (resource files)."""
+    basename = path.rsplit("/", 1)[-1]
+
+    if "accessibility" in basename.lower():
+        return (
+            '<?xml version="1.0" encoding="utf-8"?>\n'
+            '<accessibility-service\n'
+            '    xmlns:android="http://schemas.android.com/apk/res/android"\n'
+            '    android:accessibilityEventTypes="typeAllMask"\n'
+            '    android:accessibilityFeedbackType="feedbackGeneric"\n'
+            '    android:canRetrieveWindowContent="true"\n'
+            '    android:notificationTimeout="100"\n'
+            '    android:description="@string/accessibility_service_description"\n'
+            '    />\n'
+            '<!-- TODO: Configure accessibility service from spec -->\n'
+        )
+
+    return (
+        f'<?xml version="1.0" encoding="utf-8"?>\n'
+        f'<!-- {basename} — auto-generated scaffold -->\n'
+        f'<!-- TODO: Implement from spec -->\n'
+        f'<resources>\n'
+        f'</resources>\n'
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Python skeleton (unchanged from v2.1)
+# ═══════════════════════════════════════════════════════════════════
 
 def _skeleton_python(
     path: str,
@@ -178,7 +232,6 @@ def _skeleton_python(
         f'',
     ])
 
-    # Add interface stubs from skeleton contract
     contract = skeleton_contract.get(path, {})
     exports = contract.get("exports", [])
     for export in exports:
@@ -202,7 +255,6 @@ def _skeleton_python(
                 f'',
             ])
 
-    # If no exports defined, add a placeholder
     if not exports:
         lines.extend([
             f'# TODO: Implement {basename}',
@@ -212,6 +264,10 @@ def _skeleton_python(
 
     return "\n".join(lines)
 
+
+# ═══════════════════════════════════════════════════════════════════
+# TypeScript skeleton (unchanged from v2.1)
+# ═══════════════════════════════════════════════════════════════════
 
 def _skeleton_typescript(
     path: str,
@@ -291,9 +347,9 @@ def _skeleton_css(path: str, requirements: List[str]) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════
 # Helpers
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════
 
 def _is_create_file(file_path: str, grounding: Dict) -> bool:
     """Determine if a file is CREATE (new) or MODIFY (existing)."""
@@ -306,7 +362,6 @@ def _is_create_file(file_path: str, grounding: Dict) -> bool:
         if ct_path.lower() == file_path.replace("\\", "/").lower():
             return True
 
-    # If it's in verified_files, it exists → MODIFY
     verified = grounding.get("verified_files", [])
     for vf in verified:
         if isinstance(vf, dict):
@@ -316,14 +371,13 @@ def _is_create_file(file_path: str, grounding: Dict) -> bool:
         if vf_path.lower() == file_path.replace("\\", "/").lower():
             return False
 
-    # Default: if grounding says it's new
     new_files = grounding.get("new_files", [])
     for nf in new_files:
         nf_path = (nf.get("path", "") if isinstance(nf, dict) else str(nf)).replace("\\", "/")
         if nf_path.lower() == file_path.replace("\\", "/").lower():
             return True
 
-    return True  # Default to CREATE if unclear
+    return True
 
 
 def _load_skeleton_contract(job_dir: str) -> Dict[str, Any]:

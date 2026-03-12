@@ -60,15 +60,127 @@ _EXPLICIT_COMMAND_INTENTS = {
     CanonicalIntent.CODEBASE_REPORT,
     CanonicalIntent.LATEST_ARCHITECTURE_MAP,
     CanonicalIntent.LATEST_CODEBASE_REPORT_FULL,
+    CanonicalIntent.PROJECT_SCOPE_START,
 }
 
 def _handle_flow_state_routing(req, db, trace, conversation_id, stage_trace, translation_result=None):
-    """Handle flow state routing (Spec Gate clarifications).
+    """Handle flow state routing (Spec Gate clarifications + project scoping).
+    
+    v2.2: Added project scoping session interception. If the user is in an
+    active scoping conversation, route messages to the scoping handler.
     
     v5.1: Now checks for explicit command intents and skips flow state interception
     for commands like RUN_CRITICAL_PIPELINE_FOR_JOB, OVERWATCHER_EXECUTE_CHANGES, etc.
     This prevents explicit commands from being incorrectly routed to spec_gate_clarification.
     """
+    # v2.2: Check for active project scoping session
+    # IMPORTANT: Always key by project_id (not conversation_id) because the
+    # scoping handler stores it that way, and conversation_id includes a
+    # session hash that changes between requests.
+    try:
+        from app.shared_context.project_session import get_project_session
+        _scope_key = str(req.project_id)
+        _scope_session = get_project_session(_scope_key)
+        if _scope_session.scoping_active:
+            # Check if user is confirming the project
+            msg_lower = req.message.strip().lower()
+            if msg_lower in ("yes", "y", "confirm", "confirmed", "go", "do it", "create it"):
+                from app.llm.project_scoping_stream import handle_scoping_confirmation
+                logger.info("[flow_state] Scoping CONFIRMED — creating project")
+                return StreamingResponse(
+                    handle_scoping_confirmation(
+                        project_id=req.project_id,
+                        message=req.message,
+                        db=db,
+                        conversation_id=_scope_key,
+                    ),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                )
+            # Check if user wants to exit scoping
+            elif any(w in msg_lower for w in ("cancel", "stop", "exit", "nevermind", "never mind")):
+                _scope_session.clear()
+                logger.info("[flow_state] Scoping CANCELLED")
+                # Fall through to normal chat
+            else:
+                # Continue scoping conversation
+                from app.llm.project_scoping_stream import generate_project_scoping_stream
+                logger.info("[flow_state] Scoping CONTINUE — routing to scoping handler")
+                # v2.2: Set sticky model to GPT-5.4 for the duration of scoping
+                try:
+                    from app.llm.routing.chat_routing import _set_sticky_model
+                    import os as _os
+                    _set_sticky_model(
+                        req.project_id,
+                        _os.getenv('CHAT_DEEP_PROVIDER', 'openai'),
+                        _os.getenv('CHAT_DEEP_MODEL', 'gpt-5.4'),
+                    )
+                except Exception:
+                    pass
+                return StreamingResponse(
+                    generate_project_scoping_stream(
+                        project_id=req.project_id,
+                        message=req.message,
+                        db=db,
+                        trace=trace,
+                        conversation_id=_scope_key,
+                    ),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                )
+    except Exception as e:
+        logger.debug("[flow_state] Scoping check failed: %s", e)
+
+    # v2.4: "Work on existing project" shortcut.
+    # If the user mentions a known project by name (e.g. "work on Driver CoPilot",
+    # "let's work on the bridge app"), set the ProjectSession directly.
+    # This skips the full scoping flow for projects already in the registry.
+    try:
+        import re as _re
+        # Strip Astra address prefix before checking
+        _raw_msg = req.message.strip()
+        _stripped_msg = _re.sub(
+            r'^(?:[Hh]ey[,.]?\s+)?[Aa][Ss][Tt][Rr][AaOoEe][,.]?\s+', '', _raw_msg
+        ).strip()
+        _msg_lower = _stripped_msg.lower()
+        _work_on_patterns = (
+            "work on ", "switch to ", "let's work on ", "lets work on ",
+            "open ", "load ", "pick up ", "continue with ",
+        )
+        _wants_project_switch = any(_msg_lower.startswith(p) for p in _work_on_patterns)
+
+        if _wants_project_switch:
+            from app.pipeline_v2.target_registry import resolve_project_from_message
+            from app.shared_context.project_session import get_project_session
+
+            _profile = resolve_project_from_message(_stripped_msg)
+            _scope_key = str(req.project_id)
+            _session = get_project_session(_scope_key)
+
+            # Only switch if we found a specific project (not the default fallback)
+            if _profile and _profile.project_id != "astra-backend":
+                _session.project_id = _profile.project_id
+                _session.project_name = _profile.project_name
+                _session.project_type = _profile.language
+                _session.project_root = _profile.project_root
+                _session.scoping_active = False
+                logger.info(
+                    "[flow_state] Project switched to: %s (%s) at %s",
+                    _profile.project_id, _profile.project_name, _profile.project_root,
+                )
+                # Return a simple confirmation as SSE stream
+                async def _confirm_switch():
+                    yield f'data: {{"type": "metadata", "provider": "system", "model": "system"}}\n\n'.encode()
+                    yield f'data: {{"type": "token", "content": "\U0001f3af Switched to **{_profile.project_name}** (`{_profile.project_id}`)\\n- Root: `{_profile.project_root}`\\n- Language: {_profile.language}\\n- Framework: {_profile.framework}\\n\\nPipeline will now target this project. What would you like to do?\\n"}}\n\n'.encode()
+                    yield f'data: {{"type": "done", "provider": "system", "model": "system"}}\n\n'.encode()
+                return StreamingResponse(
+                    _confirm_switch(),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                )
+    except Exception as e:
+        logger.debug("[flow_state] Project switch check failed: %s", e)
+
     if not _FLOW_STATE_AVAILABLE or not get_active_flow:
         return None
     

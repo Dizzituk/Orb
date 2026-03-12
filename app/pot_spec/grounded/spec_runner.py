@@ -129,7 +129,34 @@ async def run_spec_gate_grounded(
         # =============================================================
         # STEP 2: Detect if this needs a scan
         # =============================================================
-        project_paths = _extract_project_paths(combined_text)
+
+        # v2.3: Check for greenfield external project from build target profile
+        _build_profile = (constraints_hint or {}).get("build_target_profile")
+        _is_greenfield = False
+        if _build_profile:
+            _profile_root = _build_profile.get("project_root", "")
+            # Greenfield = project root exists but is NOT in the known ASTRA roots
+            # (i.e. not D:\Orb or D:\orb-desktop)
+            _known_self_roots = {"D:/Orb", "D:\\Orb", "D:/orb-desktop", "D:\\orb-desktop"}
+            _norm_root = _profile_root.replace("\\", "/").rstrip("/")
+            if _norm_root and _norm_root not in _known_self_roots:
+                _is_greenfield = True
+                logger.info(
+                    "[spec_runner] v2.3 GREENFIELD detected: %s (%s) at %s",
+                    _build_profile.get("project_id"),
+                    _build_profile.get("language"),
+                    _profile_root,
+                )
+                print(
+                    f"[spec_runner] v2.3 GREENFIELD MODE: {_build_profile.get('project_id')} "
+                    f"({_build_profile.get('language')}) at {_profile_root}"
+                )
+
+        if _is_greenfield:
+            # Greenfield: skip discovery, use profile root directly
+            project_paths = [_profile_root]
+        else:
+            project_paths = _extract_project_paths(combined_text)
         # v8.0: Multi-file refactor detection DISABLED.
         # It repeatedly misclassifies CREATE/architecture jobs as refactors
         # by inferring false search/replace terms from natural language
@@ -157,6 +184,8 @@ async def run_spec_gate_grounded(
             result = await _handle_create_path(
                 goal, weaver_job_text, user_intent, project_paths,
                 provider_id, model_id, round_n,
+                greenfield=_is_greenfield,
+                build_profile=_build_profile,
             )
             if isinstance(result, SpecGateResult):
                 return result  # Early return (no goal)
@@ -286,8 +315,13 @@ async def _handle_multi_file_scan(
 
 async def _handle_create_path(
     goal, weaver_job_text, user_intent, project_paths, provider_id, model_id, round_n,
+    greenfield: bool = False,
+    build_profile: Optional[Dict] = None,
 ):
-    """Handle CREATE/MODIFY path. Returns (spot_markdown, valid_paths) or SpecGateResult."""
+    """Handle CREATE/MODIFY path. Returns (spot_markdown, valid_paths) or SpecGateResult.
+
+    v2.3: greenfield mode — skip sandbox scanning, build spec directly.
+    """
     if not goal and not weaver_job_text and not user_intent:
         return SpecGateResult(
             ready_for_pipeline=False,
@@ -295,6 +329,28 @@ async def _handle_create_path(
             spec_version=round_n,
             validation_status="needs_clarification",
         )
+
+    if greenfield and build_profile:
+        # Greenfield external project — no existing codebase to scan.
+        # Use the dedicated greenfield spec builder to generate a full
+        # project architecture with file creation targets.
+        logger.info("[spec_runner] v2.3 GREENFIELD CREATE: skipping sandbox scan")
+        print(f"[spec_runner] v2.3 GREENFIELD CREATE: {build_profile.get('project_id')} at {build_profile.get('project_root')}")
+
+        try:
+            from app.pot_spec.grounded._greenfield_spec_builder import build_greenfield_spec
+            spot_markdown = build_greenfield_spec(
+                goal=goal,
+                what_to_do=weaver_job_text or user_intent,
+                build_profile=build_profile,
+            )
+        except Exception as e:
+            logger.warning("[spec_runner] Greenfield spec builder failed, using simple: %s", e)
+            spot_markdown = _build_simple_spec(
+                goal=goal,
+                what_to_do=weaver_job_text or user_intent,
+            )
+        return spot_markdown, project_paths
 
     valid_paths = [p for p in project_paths if _sbx_isdir(p)]
 

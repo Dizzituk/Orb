@@ -50,6 +50,7 @@ from app.translation._tier0_trigger_checks import (  # noqa: E402
     check_codebase_report_trigger,
     check_latest_report_trigger,
     check_embedding_commands,
+    check_project_scope_trigger,
 )
 
 # --- Filesystem, multi-file, refactor, chat patterns --------------------------
@@ -78,6 +79,17 @@ from app.translation._tier0_web_search import (  # noqa: E402
     check_web_search_trigger,
     check_deep_research_trigger,
 )
+
+# --- Project registry (v11.0) ------------------------------------------------
+try:
+    from app.project_registry.tier0_checks import (  # noqa: E402
+        check_project_scan_trigger,
+        check_register_project_trigger,
+        check_list_projects_trigger,
+    )
+    _PROJECT_REGISTRY_CHECKS = True
+except ImportError:
+    _PROJECT_REGISTRY_CHECKS = False
 
 # --- Memory ingest (v2.1) ----------------------------------------------------
 from app.translation._tier0_memory_ingest import (  # noqa: E402
@@ -134,6 +146,11 @@ def tier0_classify(text: str) -> Tier0RuleResult:
         if result.matched:
             return result
 
+    # 3b. Project scoping
+    result = check_project_scope_trigger(text_stripped)
+    if result.matched:
+        return result
+
     # 4. Data & query handlers
     result = check_rag_codebase_query(text_stripped)
     if result.matched:
@@ -181,6 +198,17 @@ def tier0_classify(text: str) -> Tier0RuleResult:
     result = check_memory_trigger(text_stripped)
     if result.matched:
         return result
+
+    # 4j. Project registry commands (v11.0)
+    if _PROJECT_REGISTRY_CHECKS:
+        for check_fn in (
+            check_project_scan_trigger,
+            check_register_project_trigger,
+            check_list_projects_trigger,
+        ):
+            result = check_fn(text_stripped)
+            if result.matched:
+                return result
 
     # 4i. Graduated confidence rules (v2.2)
     result = _check_graduated_rules(text_stripped)

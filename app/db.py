@@ -151,6 +151,10 @@ def init_db():
     # v10.0: Import Conversational Memory Layer models (sessions, summaries)
     from app.memory import conversation_models  # noqa: F401
 
+    # v11.0: Import Project Registry models (multi-project architecture awareness)
+    from app.project_registry import models as project_registry_models  # noqa: F401
+    from app.project_registry import confidence_tracker  # noqa: F401
+
     # v4.0: create_all with checkfirst=True (default) handles tables.
     # SQLite may raise OperationalError for pre-existing indexes.
     # We catch and log these rather than crashing startup.

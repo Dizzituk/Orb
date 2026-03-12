@@ -52,6 +52,13 @@ from .gates import (
     ConfirmationState,
 )
 from .tier0_rules import tier0_classify, is_user_chat_pattern
+
+# v11.0: Wake word detection for natural language command gating
+try:
+    from app.project_registry.wake_word import classify as wake_word_classify, UtteranceType
+    _WAKE_WORD_AVAILABLE = True
+except ImportError:
+    _WAKE_WORD_AVAILABLE = False
 from .tier1_classifier import Tier1Classifier, CONFIDENCE_THRESHOLD
 from .phrase_cache import get_phrase_cache, PhraseCache
 from .feedback import get_feedback_logger, FeedbackLogger, parse_feedback_message
@@ -223,6 +230,15 @@ class Translator:
             result.should_execute = True
             return result
         
+        # Step 3a(pre): Wake word classification (v11.0)
+        # Classify whether user is addressing ASTRA and what type of utterance
+        _wake_result = None
+        if _WAKE_WORD_AVAILABLE:
+            _wake_result = wake_word_classify(text)
+            if _wake_result and _wake_result.type != UtteranceType.NONE:
+                result.extracted_context['wake_word_type'] = _wake_result.type.value
+                result.extracted_context['wake_word_confidence'] = _wake_result.confidence
+
         # Step 3a: Tier 0 Rules (run FIRST to catch known commands)
         tier0_result = tier0_classify(text)
         if tier0_result.matched:
@@ -235,6 +251,16 @@ class Translator:
                 result.should_execute = False
                 return result
             
+            # v11.0: Adjust confidence based on wake word detection
+            # Commands without wake word addressing get lower confidence
+            if _wake_result and _WAKE_WORD_AVAILABLE:
+                if not _wake_result.addressed and tier0_result.intent not in (
+                    CanonicalIntent.CHAT_ONLY,
+                ):
+                    # User didn't address ASTRA — reduce confidence
+                    result.intent_confidence *= 0.6
+                    logger.debug('[wake_word] No wake word — confidence reduced to %.2f', result.intent_confidence)
+            
             # v2.1: Pass extracted data from Tier 0 into context
             if hasattr(tier0_result, 'extracted_query') and tier0_result.extracted_query:
                 result.extracted_context['extracted_query'] = tier0_result.extracted_query
@@ -246,7 +272,33 @@ class Translator:
         result.directive_gate = directive_result
         
         if not directive_result.passed:
-            # Not a directive - treat as chat
+            # v2.2: Contextual Intent — if user addressed Astra, check for
+            # implied actions before falling back to pure chat.
+            # "Astra, the surf was light today" → implied web search for surf report
+            # "Astra, I've been thinking about X" → park in memory
+            _was_addressed = result.wake_phrase_detected is not None
+            if _was_addressed:
+                try:
+                    from app.translation.contextual_intent import detect_contextual_intent
+                    ctx_result = detect_contextual_intent(text, was_astra_addressed=True)
+                    if ctx_result.canonical_intent is not None and ctx_result.confidence >= 0.7:
+                        logger.info(
+                            "[translator] Contextual intent override: %s (%.2f) — %s",
+                            ctx_result.implied_type.value,
+                            ctx_result.confidence,
+                            ctx_result.reasoning,
+                        )
+                        result.resolved_intent = ctx_result.canonical_intent
+                        result.intent_confidence = ctx_result.confidence
+                        result.latency_tier = LatencyTier.TIER_0_RULES
+                        if ctx_result.extracted_query:
+                            result.extracted_context["extracted_query"] = ctx_result.extracted_query
+                        result.extracted_context["contextual_intent_type"] = ctx_result.implied_type.value
+                        return await self._apply_gates(text, result, ui_context, conversation_id)
+                except Exception as e:
+                    logger.debug("[translator] Contextual intent failed: %s", e)
+            
+            # No contextual intent — treat as chat
             result.resolved_intent = CanonicalIntent.CHAT_ONLY
             result.latency_tier = LatencyTier.TIER_0_RULES
             result.should_execute = False
@@ -351,6 +403,8 @@ class Translator:
                     confirmation_id=self.user_id,
                     intent=intent,
                     context=extracted,
+                    original_message=text,
+                    confidence=result.intent_confidence,
                 )
             result.should_execute = False
             result.execution_blocked_reason = "Awaiting confirmation"

@@ -17,6 +17,7 @@ v1.0 (2026-02-24): Initial implementation.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 from typing import Optional
@@ -69,9 +70,38 @@ _voice_cache: list = []
 _voice_cache_time: float = 0
 VOICE_CACHE_TTL = 3600  # Refresh every hour
 
-# ── State ───────────────────────────────────────────────────────────────
+# ── State (file-persisted) ──────────────────────────────────────────────
 
-_selected_voice = DEFAULT_VOICE
+_VOICE_PREFS_FILE = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'tts_prefs.json')
+
+
+def _load_voice_pref() -> str:
+    """Load persisted voice selection from disk."""
+    try:
+        if os.path.exists(_VOICE_PREFS_FILE):
+            with open(_VOICE_PREFS_FILE, 'r') as f:
+                data = json.load(f)
+            voice = data.get("selected_voice", "")
+            if voice:
+                logger.info("[tts] Loaded persisted voice: %s", voice)
+                return voice
+    except Exception as e:
+        logger.warning("[tts] Could not load voice pref: %s", e)
+    return DEFAULT_VOICE
+
+
+def _save_voice_pref(voice: str) -> None:
+    """Persist voice selection to disk."""
+    try:
+        os.makedirs(os.path.dirname(_VOICE_PREFS_FILE), exist_ok=True)
+        with open(_VOICE_PREFS_FILE, 'w') as f:
+            json.dump({"selected_voice": voice}, f)
+        logger.info("[tts] Saved voice pref: %s", voice)
+    except Exception as e:
+        logger.warning("[tts] Could not save voice pref: %s", e)
+
+
+_selected_voice = _load_voice_pref()
 
 # ── Bootstrap: sync API keys from encrypted DB ─────────────────────────
 # The TTS server runs as a separate process from the main backend.
@@ -373,6 +403,7 @@ async def select_voice(req: SelectVoiceRequest):
 
     # Accept any voice ID — Google will validate it on speak
     _selected_voice = req.voice
+    _save_voice_pref(req.voice)
     logger.info("[tts] Voice selected: %s", _selected_voice)
     return {"selected": _selected_voice}
 

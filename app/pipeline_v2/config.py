@@ -1,9 +1,10 @@
 # FILE: app/pipeline_v2/config.py
 """
-ASTRA v2.1 Pipeline Configuration.
+ASTRA v2.2 Pipeline Configuration.
 
 v2.1: Simplified. Scaffold Engine (no LLM) + Agentic Builder (GPT-5.4)
       + Verification Model (cheap vision) + Opus fallback.
+v2.2: Multi-project targeting. Build target profiles replace hardcoded paths.
 """
 from __future__ import annotations
 
@@ -14,6 +15,14 @@ import os
 # ---------------------------------------------------------------------------
 
 V2_ENABLED = os.getenv("ASTRA_V2_PIPELINE", "false").lower() == "true"
+
+# ---------------------------------------------------------------------------
+# Build target — which project the pipeline builds into
+# ---------------------------------------------------------------------------
+
+# Override with env var or pass explicitly per job.
+# Values: "astra-backend", "astra-frontend", "driver-copilot"
+DEFAULT_BUILD_TARGET = os.getenv("ASTRA_V2_BUILD_TARGET", "astra-backend")
 
 # ---------------------------------------------------------------------------
 # Model assignments
@@ -65,3 +74,19 @@ MAX_FALLBACK_ATTEMPTS = int(os.getenv("ASTRA_V2_MAX_FALLBACK", "1"))
 # ---------------------------------------------------------------------------
 
 SANDBOX_URL = os.getenv("ASTRA_SANDBOX_URL", "http://192.168.250.2:8765")
+
+# ---------------------------------------------------------------------------
+# Behavioral Verification Layer (BVL)
+# ---------------------------------------------------------------------------
+
+# Enable BVL for Android/emulator builds (replaces compilation-only check)
+BVL_ENABLED = os.getenv("ASTRA_BVL_ENABLED", "true").lower() == "true"
+
+# Max retries per component per tier before marking BLOCKED
+BVL_MAX_RETRIES = int(os.getenv("ASTRA_BVL_MAX_RETRIES", "3"))
+
+# Tier 3 (Adversarial) Monkey runner event count
+BVL_MONKEY_EVENTS = int(os.getenv("ASTRA_BVL_MONKEY_EVENTS", "500"))
+
+# Emulator boot timeout (seconds)
+BVL_EMULATOR_BOOT_TIMEOUT = int(os.getenv("ASTRA_BVL_BOOT_TIMEOUT", "120"))

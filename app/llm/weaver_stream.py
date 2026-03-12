@@ -225,6 +225,41 @@ async def generate_weaver_stream(
         )
         yield _serialize_sse({"type": "token", "content": start_message})
         
+        # v2.2: Inject project session context into Weaver
+        try:
+            from app.shared_context.project_session import get_project_session
+            _proj_session = get_project_session(conversation_id)
+            if _proj_session.is_set:
+                _proj_ctx = (
+                    f"\n\n## ACTIVE PROJECT CONTEXT\n"
+                    f"Project: {_proj_session.project_name} ({_proj_session.project_id})\n"
+                    f"Type: {_proj_session.project_type}\n"
+                    f"Root: {_proj_session.project_root}\n"
+                    f"All files in the manifest MUST target this project root.\n"
+                )
+                # Include the scoping conversation as the project brief
+                # This is the substantive content the user described during scoping
+                if _proj_session.scoping_messages:
+                    _proj_ctx += "\n## PROJECT BRIEF (from scoping conversation)\n"
+                    for msg in _proj_session.scoping_messages:
+                        if msg["role"] == "user" and len(msg["content"]) > 20:
+                            _proj_ctx += f"- {msg['content']}\n"
+                    _proj_ctx += "\nUse the above brief as the primary source for what the user wants built.\n"
+                system_prompt += _proj_ctx
+                logger.info("[WEAVER] Project session injected: %s (with %d scoping messages)",
+                    _proj_session.project_id, len(_proj_session.scoping_messages))
+            elif _proj_session.scoping_active and _proj_session.scoping_messages:
+                _scoping_ctx = (
+                    f"\n\n## PROJECT SCOPING CONTEXT\n"
+                    f"The user is scoping a new project. Here is the conversation so far:\n"
+                )
+                for msg in _proj_session.scoping_messages:
+                    _scoping_ctx += f"  {msg['role']}: {msg['content']}\n"
+                system_prompt += _scoping_ctx
+                logger.info("[WEAVER] Scoping context injected: %d messages", len(_proj_session.scoping_messages))
+        except Exception as e:
+            logger.debug("[WEAVER] Project session injection failed: %s", e)
+
         # v3.0: Inject user memory into Weaver system prompt
         try:
             from app.experience.user_memory import get_user_context_for_conversation

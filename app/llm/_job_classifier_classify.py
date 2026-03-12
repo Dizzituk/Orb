@@ -89,7 +89,10 @@ def _detect_user_override(message_lower: str) -> Optional[RoutingDecision]:
 
 
 def _has_code_keywords(message_lower: str) -> bool:
-    """Check if message contains code-related keywords."""
+    """Check if message contains code-related keywords.
+
+    v2.3 (2026-03-10): Added HTML, CSS, web creation keywords.
+    """
     code_indicators = [
         "code", "function", "class", "method", "variable",
         "bug", "error", "exception", "debug", "fix",
@@ -98,6 +101,12 @@ def _has_code_keywords(message_lower: str) -> bool:
         "import", "module", "package", "library",
         "def ", "async ", "await ", "return ",
         "```", "python", "javascript", "typescript",
+        # v2.3: HTML/CSS/web creation
+        "html", "css", "web page", "webpage", "website",
+        "landing page", "web app", "webapp",
+        "create me a", "build me a", "make me a",
+        "kotlin", "swift", "react", "vue", "angular",
+        "component", "scaffold", "boilerplate",
     ]
     return any(kw in message_lower for kw in code_indicators)
 

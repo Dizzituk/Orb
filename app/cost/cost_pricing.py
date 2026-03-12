@@ -62,6 +62,7 @@ DEFAULT_PRICING: Dict[str, ModelPrice] = {
 
     # Embeddings
     "text-embedding-3-small": ModelPrice(input_per_million=0.02, output_per_million=0.0),
+    "gemini-embedding-2-preview": ModelPrice(input_per_million=0.20, output_per_million=0.0),
 }
 
 

@@ -48,13 +48,22 @@ FEEDBACK_WAKE_PHRASES = [
 
 # Compiled patterns for efficiency
 COMMAND_WAKE_PATTERN = re.compile(
-    r"^[Aa][Ss][Tt][Rr][Aa],?\s*command:\s*",
+    r"^(?:[Hh]ey[,.]?\s+)?[Aa][Ss][Tt][Rr][AaOoEe],?\s*command:\s*",
     re.IGNORECASE
 )
 
 FEEDBACK_WAKE_PATTERN = re.compile(
-    r"^[Aa][Ss][Tt][Rr][Aa],?\s*feedback:\s*",
+    r"^(?:[Hh]ey[,.]?\s+)?[Aa][Ss][Tt][Rr][AaOoEe],?\s*feedback:\s*",
     re.IGNORECASE
+)
+
+# v2.3: Natural "Astra" address pattern — no "command:" needed.
+# Matches "Astra," or "Astra " at the start of a message.
+# This is the primary way Taz addresses the platform.
+# Everything after "Astra," becomes the instruction to parse.
+# Messages WITHOUT "Astra" are treated as ramble/content/chat.
+ASTRA_ADDRESS_PATTERN = re.compile(
+    r"^(?:[Hh]ey[,.]?\s+)?[Aa][Ss][Tt][Rr][AaOoEe][,.]?\s+",
 )
 
 
@@ -406,6 +415,13 @@ def classify_mode(
         remaining = _strip_wake_phrase(text, COMMAND_WAKE_PATTERN)
         return TranslationMode.COMMAND_CAPABLE, wake_phrase, remaining
     
+    # v2.3: Check for natural "Astra" address (no "command:" needed)
+    # "Astra, how's the accounting looking?" → COMMAND_CAPABLE
+    # "Astra send that to the build pipeline" → COMMAND_CAPABLE
+    if _is_astra_address(text):
+        remaining = _strip_astra_address(text)
+        return TranslationMode.COMMAND_CAPABLE, "Astra", remaining
+
     # Check command mode via UI context
     if ui_command_context:
         return TranslationMode.COMMAND_CAPABLE, None, text
@@ -416,6 +432,22 @@ def classify_mode(
     
     # Default to chat mode
     return TranslationMode.CHAT, None, text
+
+
+def _is_astra_address(text: str) -> bool:
+    """Check if message starts with 'Astra' as a natural address.
+
+    Matches: 'Astra, how is X?', 'Hey Astra, how is X?', 'Hey, Astro, do Y'
+    Does NOT match: 'The astra system is...', 'I told astra to...'
+    The key is that 'Astra'/'Astro' appears at the START as a direct address,
+    optionally preceded by 'Hey'.
+    """
+    return bool(ASTRA_ADDRESS_PATTERN.match(text.strip()))
+
+
+def _strip_astra_address(text: str) -> str:
+    """Remove the 'Astra,' prefix, returning the instruction text."""
+    return ASTRA_ADDRESS_PATTERN.sub("", text.strip()).strip()
 
 
 def _is_feedback_mode(text: str) -> bool:

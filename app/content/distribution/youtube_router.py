@@ -215,13 +215,44 @@ async def youtube_manual_upload(
             "message": f"Video not found: {body.video_path}",
         }
 
-    # Step 1: Optimise metadata if requested
+    # Step 1: Analyse video with Gemini (watches the actual video)
     tags = body.tags or []
     title = body.title
     description = body.description
     category_id = body.category_id
 
     if body.auto_optimise:
+        from app.content.production.video_analyser import analyse_video
+
+        # Let Gemini watch the video and understand its content
+        analysis = await analyse_video(
+            video_path=body.video_path,
+            user_hint=f"Title hint: {title}. Description hint: {description}",
+        )
+
+        if "error" not in analysis:
+            # Use AI-generated metadata if user didn't provide detailed versions
+            if not description or len(description) < 50:
+                description = analysis.get("suggested_description", description)
+                # Append hashtags
+                hashtags = analysis.get("suggested_hashtags", [])
+                if hashtags:
+                    description = description.rstrip() + "\n\n" + " ".join(hashtags)
+
+            if not title or title == os.path.splitext(os.path.basename(body.video_path))[0]:
+                title = analysis.get("suggested_title", title)
+
+            if not tags:
+                tags = analysis.get("suggested_tags", [])
+
+            category_id = analysis.get("category_id", category_id)
+
+            logger.info(
+                "[youtube] Video analysed by Gemini: '%s' (%d tags)",
+                title, len(tags),
+            )
+
+        # Step 1b: Further optimise with algorithm strategy
         from app.content.distribution.youtube_optimiser import (
             optimise_metadata,
         )
@@ -478,6 +509,44 @@ async def youtube_optimise_existing(
 
 
 # ═══════════════════════════════════════════════════
+# VIDEO ANALYSIS
+# ═══════════════════════════════════════════════════
+
+class AnalyseRequest(BaseModel):
+    """Request to analyse a video without uploading."""
+    video_path: str
+    hint: str = ""
+
+
+@router.post("/analyse", response_model=dict)
+async def youtube_analyse_video(body: AnalyseRequest):
+    """Analyse a video with Gemini to generate metadata.
+
+    Gemini watches the entire video and returns:
+    suggested title, description, tags, hashtags,
+    content type, target audience, key moments, etc.
+
+    Use this to preview what ASTRA would generate
+    before committing to an upload.
+    """
+    import os
+
+    if not os.path.exists(body.video_path):
+        raise HTTPException(404, f"Video not found: {body.video_path}")
+
+    from app.content.production.video_analyser import analyse_video
+
+    result = await analyse_video(
+        video_path=body.video_path,
+        user_hint=body.hint,
+    )
+
+    if "error" in result:
+        raise HTTPException(500, result["error"])
+
+    return result
+
+# ═══════════════════════════════════════════════════
 # ALGORITHM STRATEGY
 # ═══════════════════════════════════════════════════
 
@@ -517,4 +586,6 @@ def youtube_next_posting_slot(
     result = get_optimal_posting_time(content_type)
     result["scheduled_time"] = result["scheduled_time"].isoformat()
     return result
+
+
 

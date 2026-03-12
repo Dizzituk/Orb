@@ -5,7 +5,7 @@ LLM Client Helpers (Phase 4, Unified Provider Path)
 IMPORTANT:
 - This module NO LONGER makes raw chat/completions API calls.
 - All LLM calls go through app.providers.registry.llm_call (single path).
-- Embeddings remain a separate concern and use OpenAI directly.
+- Embeddings use Gemini Embedding 2 via app.embeddings.gemini_provider.
 
 PHASE 4 FIXES:
 - Fixed JobBudget field names (max_tokens, max_cost_estimate, max_wall_time_seconds)
@@ -27,7 +27,7 @@ Sync wrappers (CLI/testing only — DO NOT use in FastAPI handlers):
 - call_anthropic()
 - call_google()
 
-Embeddings:
+Embeddings (Gemini Embedding 2):
 - get_embeddings()
 - generate_embedding()  (single-vector convenience wrapper)
 
@@ -501,58 +501,58 @@ def call_google(
 
 
 # =============================================================================
-# EMBEDDINGS (Separate from provider registry for now)
+# EMBEDDINGS — Gemini Embedding 2
 # =============================================================================
 
 
 def get_embeddings(
     texts: Union[str, List[str]],
     model: Optional[str] = None,
+    task_type: str = "RETRIEVAL_DOCUMENT",
 ) -> Union[List[float], List[List[float]]]:
     """
-    Generate embedding vectors for the given text(s) using OpenAI.
+    Generate embedding vectors using Gemini Embedding 2.
 
     Backward-compatible helper expected by some parts of the codebase.
+    The `model` parameter is accepted for API compatibility but ignored
+    (always uses gemini-embedding-2-preview).
 
     Args:
         texts: Single string or list of strings.
-        model: Optional model override.
+        model: Ignored (kept for backward compat).
+        task_type: Gemini task hint for vector optimisation.
 
     Returns:
         - If input is a single string: List[float]
         - If input is a list of strings: List[List[float]]
     """
-    from openai import OpenAI
-
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "OPENAI_API_KEY is not set; cannot generate embeddings."
-        )
-
-    client = OpenAI(api_key=api_key)
-    embedding_model = model or os.getenv(
-        "OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"
+    from app.embeddings.gemini_provider import (
+        generate_embedding as _single_embed,
+        generate_embeddings_batch as _batch_embed,
     )
 
-    # Normalize input
     is_single = isinstance(texts, str)
-    input_data: List[str] = [texts] if is_single else list(texts)
-
-    resp = client.embeddings.create(
-        model=embedding_model,
-        input=input_data,
-    )
-    vectors: List[List[float]] = [item.embedding for item in resp.data]
 
     if is_single:
-        return vectors[0]
-    return vectors
+        vec = _single_embed(texts, task_type=task_type)
+        if vec is None:
+            raise RuntimeError("Gemini embedding generation failed")
+        return vec
+
+    results = _batch_embed(list(texts), task_type=task_type)
+    # Replace None entries with error
+    for i, r in enumerate(results):
+        if r is None:
+            raise RuntimeError(
+                f"Gemini embedding failed for text index {i}"
+            )
+    return results  # type: ignore[return-value]
 
 
 def generate_embedding(
     text: str,
     model: Optional[str] = None,
+    task_type: str = "RETRIEVAL_DOCUMENT",
 ) -> List[float]:
     """
     Convenience wrapper around get_embeddings() for a single string.
@@ -560,8 +560,7 @@ def generate_embedding(
     Returns:
         List[float] embedding vector.
     """
-    vec = get_embeddings(texts=text, model=model)
-    # get_embeddings(str) guarantees a single vector (List[float])
+    vec = get_embeddings(texts=text, model=model, task_type=task_type)
     return vec  # type: ignore[return-value]
 
 

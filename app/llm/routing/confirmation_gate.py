@@ -221,8 +221,22 @@ def should_confirm_model_escalation(
     if from_tier not in CHEAP_TIERS:
         return None  # Already on an expensive tier
 
+    # v11.0: Apply confidence adjustment from feedback history
+    adjusted_confidence = confidence
+    if _CONFIDENCE_TRACKER_AVAILABLE:
+        try:
+            from app.db import get_db_session
+            _adj_db = get_db_session()
+            try:
+                adjustment = _get_conf_adj(_adj_db, intent, [])
+                adjusted_confidence = min(1.0, max(0.0, confidence + adjustment))
+            finally:
+                _adj_db.close()
+        except Exception:
+            pass  # Non-fatal
+
     # High-confidence Tier 0 matches skip confirmation
-    if confidence >= CONFIDENCE_AUTO_APPROVE:
+    if adjusted_confidence >= CONFIDENCE_AUTO_APPROVE:
         return None
 
     # Build the proposed action description
@@ -266,6 +280,14 @@ def should_confirm_model_escalation(
     )
 
 
+# v11.0: Confidence feedback adjustment
+try:
+    from app.project_registry.confidence_tracker import get_confidence_adjustment as _get_conf_adj
+    _CONFIDENCE_TRACKER_AVAILABLE = True
+except ImportError:
+    _CONFIDENCE_TRACKER_AVAILABLE = False
+
+
 def should_confirm_intent_routing(
     intent: str,
     confidence: float,
@@ -303,8 +325,22 @@ def should_confirm_intent_routing(
     if intent in read_only_intents:
         return None
 
+    # v11.0: Apply confidence adjustment from feedback history
+    adjusted_confidence = confidence
+    if _CONFIDENCE_TRACKER_AVAILABLE:
+        try:
+            from app.db import get_db_session
+            _adj_db = get_db_session()
+            try:
+                adjustment = _get_conf_adj(_adj_db, intent, [])
+                adjusted_confidence = min(1.0, max(0.0, confidence + adjustment))
+            finally:
+                _adj_db.close()
+        except Exception:
+            pass  # Non-fatal
+
     # High-confidence Tier 0 matches skip confirmation
-    if confidence >= CONFIDENCE_AUTO_APPROVE:
+    if adjusted_confidence >= CONFIDENCE_AUTO_APPROVE:
         return None
 
     # Build description based on intent

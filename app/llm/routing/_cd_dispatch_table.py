@@ -12,6 +12,15 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from app.llm.translation_routing import CanonicalIntent
 
 
+def _get_scoping_handler():
+    """Lazy import of project scoping handler."""
+    try:
+        from app.llm.project_scoping_stream import generate_project_scoping_stream
+        return generate_project_scoping_stream
+    except ImportError:
+        return None
+
+
 def build_dispatch_table(registry: Any) -> List[Dict[str, Any]]:
     """Build the dispatch table from the handler registry.
 
@@ -29,7 +38,7 @@ def build_dispatch_table(registry: Any) -> List[Dict[str, Any]]:
     from app.llm.translation_routing import _get_spec_gate_config, _get_critical_pipeline_config
     from app.llm.legacy_triggers import ARCHMAP_PROVIDER, ARCHMAP_MODEL
 
-    return [
+    table = [
         # --- Sandbox ---
         {
             "intent": CanonicalIntent.START_SANDBOX_ZOMBIE_SELF,
@@ -274,7 +283,29 @@ def build_dispatch_table(registry: Any) -> List[Dict[str, Any]]:
             "error_name": "Multi-File Refactor Handler",
             "error_module": "app/llm/weaver_stream.py",
         },
+        # --- Project Scoping (v2.2) ---
+        {
+            "intent": CanonicalIntent.PROJECT_SCOPE_START,
+            "available": True,  # Always available — uses chat deep model
+            "handler": _get_scoping_handler(),
+            "stage": "project_scoping",
+            "provider_override": lambda: (
+                os.getenv("CHAT_DEEP_PROVIDER", "openai"),
+                os.getenv("CHAT_DEEP_MODEL", "gpt-5.4"),
+            ),
+            "needs_conversation_id": True,
+        },
     ]
+
+    # v11.0: Extend with project registry entries
+    try:
+        from app.llm.routing._cd_project_registry import get_project_registry_entries
+        table.extend(get_project_registry_entries(registry))
+    except Exception as _pr_err:
+        import logging as _log
+        _log.getLogger(__name__).warning("[dispatch_table] Project registry entries unavailable: %s", _pr_err)
+
+    return table
 
 
 __all__ = ["build_dispatch_table"]

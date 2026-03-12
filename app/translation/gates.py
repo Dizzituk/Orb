@@ -587,6 +587,8 @@ class ConfirmationState:
         confirmation_id: str,
         intent: CanonicalIntent,
         context: Dict[str, Any],
+        original_message: str = "",
+        confidence: float = 0.0,
     ) -> str:
         """
         Request confirmation for a high-stakes operation.
@@ -604,6 +606,10 @@ class ConfirmationState:
             prompt = prompt.format(**context)
         except KeyError:
             pass  # Keep unformatted if context missing
+        
+        # Stash original message + confidence for confirmation logging
+        context["_original_message"] = original_message
+        context["_confidence"] = confidence
         
         self._pending[confirmation_id] = {
             "intent": intent,
@@ -629,16 +635,37 @@ class ConfirmationState:
             return False, None, None
         
         pending = self._pending[confirmation_id]
+        intent = pending["intent"]
+        context = pending["context"]
+        original_excerpt = context.get("_original_message", "")[:200]
+        confidence = context.get("_confidence", 0.0)
         
         # Check for explicit "Yes" confirmation
         response = user_response.strip().lower()
-        if response in ("yes", "y", "confirm", "confirmed"):
-            # Remove from pending and return confirmed
-            del self._pending[confirmation_id]
-            return True, pending["intent"], pending["context"]
+        confirmed = response in (
+            "yes", "y", "confirm", "confirmed", "go",
+            "do it", "proceed", "ok", "okay",
+        )
         
-        # Not confirmed - remove pending
+        # Log the confirmation event
+        try:
+            from app.translation.confirmation_log import log_confirmation_event
+            log_confirmation_event(
+                intent=intent,
+                user_message_excerpt=original_excerpt,
+                confirmed=confirmed,
+                confidence=confidence,
+                conversation_id=confirmation_id,
+            )
+        except Exception:
+            pass  # Don't break flow if logging fails
+        
+        # Remove from pending
         del self._pending[confirmation_id]
+        
+        if confirmed:
+            return True, intent, context
+        
         return False, None, None
     
     def clear_pending(self, confirmation_id: str) -> None:
@@ -659,6 +686,9 @@ def check_confirmation_gate(
     """
     Check if high-stakes confirmation is required/provided.
     
+    v2.2: Auto-execute intents that have reached 95%+ confirmation rate
+    over 20+ samples. This is the graduated confidence bypass.
+    
     Args:
         intent: The resolved intent
         context: Provided context
@@ -677,6 +707,24 @@ def check_confirmation_gate(
             reason="No confirmation required for this intent",
             requires_confirmation=False,
         )
+    
+    # v2.2: Check graduated confidence — auto-execute if 95%+ over 20+ samples
+    try:
+        from app.translation.confirmation_log import get_confirmation_rate
+        rate = get_confirmation_rate(intent, min_samples=20)
+        if rate is not None and rate >= 0.95:
+            logger.info(
+                "[confirmation_gate] Auto-execute: %s has %.1f%% confirmation rate",
+                intent.value, rate * 100,
+            )
+            return ConfirmationGateResult(
+                passed=True,
+                gate_name="confirmation",
+                reason=f"Auto-execute: {rate:.0%} confirmation rate (graduated)",
+                requires_confirmation=False,
+            )
+    except Exception:
+        pass  # Fall through to normal gating
     
     # Requires confirmation
     prompt = defn.confirmation_prompt or f"Confirm execution of {intent.value}?"

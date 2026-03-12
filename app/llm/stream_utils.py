@@ -1,4 +1,4 @@
-# FILE: app/llm/stream_utils.py
+﻿# FILE: app/llm/stream_utils.py
 """
 Stream utilities - helper functions for stream_router.py
 
@@ -23,10 +23,15 @@ from app.llm.schemas import JobType, RoutingConfig
 # =============================================================================
 
 # Hard-coded fallbacks ONLY used if env vars are completely unset
+# v2.3: Updated model tiers
+# Chat: GPT-5-mini (cheap, fast)
+# Code/text: GPT-5.4 (capable, good value)
+# Architecture: Claude Opus 4.6 (heavy thinking)
 _HARDCODED_FALLBACKS = {
-    "openai": "gpt-4o-mini",
-    "anthropic": "claude-sonnet-4-5-20250929",
-    "anthropic_opus": "claude-opus-4-5-20251101",
+    "openai": "gpt-5-mini",
+    "openai_code": "gpt-5.4",
+    "anthropic": "claude-sonnet-4-6",
+    "anthropic_opus": "claude-opus-4-6",
     "gemini": "gemini-2.0-flash",
 }
 
@@ -268,7 +273,7 @@ def classify_job_type(message: str, requested_type: str) -> JobType:
     #
     # Why: If translation-layer command execution fails for any reason and the
     # router falls through into normal routing, "architecture" keywords would
-    # previously escalate into ARCHITECTURE_DESIGN → high-stakes → SpecGate.
+    # previously escalate into ARCHITECTURE_DESIGN -> high-stakes -> SpecGate.
     # These specific commands must stay non-governed.
     # -------------------------------------------------------------------------
     if msg_lower.startswith("astra, command:"):
@@ -313,11 +318,15 @@ def classify_job_type(message: str, requested_type: str) -> JobType:
     code_keywords = [
         "write a function", "write code", "implement", "debug", "fix this code",
         "refactor", "def ", "function ", "```",
+        # v2.3: HTML/CSS/web creation + general creation
+        "html", "css", "web page", "webpage", "website", "landing page",
+        "create me a", "build me a", "make me a",
+        "web app", "webapp", "component", "scaffold",
     ]
 
     language_keywords = [
         "python", "javascript", "typescript", "java", "c++", "rust", "react", "vue",
-        "fastapi", "django",
+        "fastapi", "django", "kotlin", "swift", "angular",
     ]
 
     if any(kw in msg_lower for kw in security_keywords):
@@ -345,12 +354,36 @@ def classify_job_type(message: str, requested_type: str) -> JobType:
     return JobType.CASUAL_CHAT
 
 
+# v2.3: Code creation tasks routed to GPT-5.4 (not Claude)
+# v2.3: ALL code tasks route to GPT-5.4 (Claude reserved for architecture only)
+_CODE_CREATION_JOBS = {
+    JobType.CODE_MEDIUM,
+    JobType.SIMPLE_CODE_CHANGE,
+    JobType.SMALL_CODE,
+    JobType.SMALL_BUGFIX,
+    JobType.BUG_FIX,
+    JobType.COMPLEX_CODE_CHANGE,
+    JobType.CODEGEN_FULL_FILE,
+    JobType.CODE_REVIEW,
+    JobType.REFACTOR,
+    JobType.COMPLEX_CODE,
+    JobType.BUG_ANALYSIS,
+    JobType.REFACTORING,
+}
+
+
 def select_provider_for_job_type(job_type: JobType) -> Tuple[str, str]:
     if job_type in RoutingConfig.GPT_ONLY_JOBS:
         return ("openai", get_default_model("openai"))
 
+    # v2.3: Code creation tasks -> GPT-5.4
+    if job_type in _CODE_CREATION_JOBS:
+        gpt54 = os.getenv("OPENAI_MODEL_CODE", "gpt-5.4")
+        print(f"[stream_utils] Code task '{job_type.value}' -> openai/{gpt54}")
+        return ("openai", gpt54)
+
     if job_type in RoutingConfig.HIGH_STAKES_JOBS:
-        print(f"[stream_utils] High-stakes job '{job_type.value}' → Opus")
+        print(f"[stream_utils] High-stakes job '{job_type.value}' -> Opus")
         return ("anthropic", get_default_model("anthropic_opus"))
 
     if job_type in RoutingConfig.CLAUDE_PRIMARY_JOBS:

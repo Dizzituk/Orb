@@ -153,6 +153,32 @@ async def generate_spec_gate_stream(
         weaver_spec_json, weaver_prov = _load_latest_weaver_spec_json(db, project_id)
         constraints_hint: dict = {"project_id": project_id}
 
+        # v2.4: Inject build target profile from ProjectSession
+        try:
+            from app.shared_context.project_session import get_project_session
+            from app.pipeline_v2.target_registry import get_profile
+            _session = get_project_session(str(project_id))
+            if _session.is_set and _session.project_id:
+                _profile = get_profile(_session.project_id)
+                if _profile:
+                    constraints_hint["build_target_profile"] = {
+                        "project_id": _profile.project_id,
+                        "project_name": _profile.project_name,
+                        "project_root": _profile.project_root,
+                        "language": _profile.language,
+                        "framework": _profile.framework,
+                        "build_system": _profile.build_system,
+                        "source_root": _profile.source_root,
+                        "package_name": _profile.package_name,
+                        "architecture_pattern": _profile.architecture_pattern,
+                    }
+                    logger.info(
+                        "[spec_gate_stream] Injected build target profile: %s (%s)",
+                        _profile.project_id, _profile.project_root,
+                    )
+        except Exception as e:
+            logger.debug("[spec_gate_stream] Profile injection failed: %s", e)
+
         # v2.3: Vision context
         vision_context = _get_weaver_vision_context_from_flow(project_id)
         if vision_context:

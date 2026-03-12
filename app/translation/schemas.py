@@ -107,6 +107,19 @@ class CanonicalIntent(str, Enum):
     
     # Resolve and display latest codebase report (FULL only)
     LATEST_CODEBASE_REPORT_FULL = "LATEST_CODEBASE_REPORT_FULL"
+
+    # =========================================================================
+    # PROJECT REGISTRY (v1.7)
+    # =========================================================================
+
+    # Scan a registered project's architecture
+    SCAN_PROJECT_ARCHITECTURE = "SCAN_PROJECT_ARCHITECTURE"
+
+    # Register a new external project
+    REGISTER_PROJECT = "REGISTER_PROJECT"
+
+    # List registered projects
+    LIST_REGISTERED_PROJECTS = "LIST_REGISTERED_PROJECTS"
     
     # =========================================================================
     # MULTI-FILE OPERATIONS (v1.7 - Level 3)
@@ -133,6 +146,13 @@ class CanonicalIntent(str, Enum):
 
     # Remember a specific fact or preference from conversation
     MEMORY_STORE = "MEMORY_STORE"
+
+    # =========================================================================
+    # PROJECT SCOPING (v2.2 - Conversational project creation)
+    # =========================================================================
+
+    # Enter multi-turn project scoping conversation
+    PROJECT_SCOPE_START = "PROJECT_SCOPE_START"
 
     # =========================================================================
     # SEGMENT LOOP (v1.8 - Phase 2 Pipeline Segmentation)

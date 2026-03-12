@@ -3,7 +3,6 @@
 Core embedding service: generation, storage, and search.
 """
 
-import os
 import json
 import math
 from typing import List, Dict, Optional, Tuple
@@ -16,52 +15,42 @@ from .schemas import SearchResult
 
 # ============ CONFIGURATION ============
 
-EMBEDDING_MODEL = "text-embedding-3-small"
-EMBEDDING_DIMENSIONS = 1536
+# Gemini Embedding 2 (replaces OpenAI text-embedding-3-small)
+# Model & dimensions configured in app.embeddings.gemini_provider
+from app.embeddings.gemini_provider import (
+    EMBEDDING_DIMENSIONS,
+    GEMINI_EMBEDDING_MODEL as EMBEDDING_MODEL,
+    TaskType,
+)
+
 CHUNK_SIZE = 400  # tokens (approximate)
 CHUNK_OVERLAP = 50  # tokens overlap between chunks
 
 
 # ============ EMBEDDING GENERATION ============
 
-def generate_embedding(text: str) -> Optional[List[float]]:
+def generate_embedding(
+    text: str,
+    task_type: str = "RETRIEVAL_DOCUMENT",
+) -> Optional[List[float]]:
     """
-    Generate embedding vector for text using OpenAI.
-    Returns None if generation fails.
+    Generate embedding vector for text using Gemini Embedding 2.
+
+    Delegates to gemini_provider.generate_embedding which handles
+    the google-genai SDK calls, truncation, and error handling.
+
+    Args:
+        text: Content to embed.
+        task_type: Gemini task hint. Use "RETRIEVAL_DOCUMENT" when
+                   indexing, "RETRIEVAL_QUERY" when searching.
+
+    Returns:
+        List of 1536 floats, or None on failure.
     """
-    try:
-        from openai import OpenAI
-    except ImportError:
-        print("[embeddings] OpenAI package not installed")
-        return None
-    
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        print("[embeddings] OPENAI_API_KEY not set")
-        return None
-    
-    if not text or not text.strip():
-        return None
-    
-    try:
-        client = OpenAI(api_key=api_key)
-        
-        # Truncate very long text (model limit is ~8191 tokens)
-        # Rough estimate: 1 token ≈ 4 chars
-        max_chars = 30000
-        if len(text) > max_chars:
-            text = text[:max_chars]
-        
-        response = client.embeddings.create(
-            model=EMBEDDING_MODEL,
-            input=text,
-        )
-        
-        return response.data[0].embedding
-        
-    except Exception as e:
-        print(f"[embeddings] Generation error: {e}")
-        return None
+    from app.embeddings.gemini_provider import (
+        generate_embedding as _gemini_embed,
+    )
+    return _gemini_embed(text, task_type=task_type)
 
 
 def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> List[str]:
@@ -202,7 +191,7 @@ def search_embeddings(
     Returns (results, total_searched).
     """
     # Generate query embedding
-    query_embedding = generate_embedding(query)
+    query_embedding = generate_embedding(query, task_type="RETRIEVAL_QUERY")
     if not query_embedding:
         return [], 0
     

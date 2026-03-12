@@ -14,7 +14,7 @@ _current_status = None
 
 EMBEDDING_AUTO_ENABLED = os.getenv("ORB_EMBEDDING_AUTO", "true").lower() == "true"
 
-EMBEDDING_MODEL = os.getenv("ORB_EMBEDDING_MODEL", "text-embedding-3-small")
+EMBEDDING_MODEL = os.getenv("ORB_EMBEDDING_MODEL", "gemini-embedding-2-preview")
 
 STATUS_FILE = ARCHITECTURE_OUTPUT_DIR / "embedding_status.json"
 

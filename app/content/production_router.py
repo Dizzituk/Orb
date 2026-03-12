@@ -381,8 +381,6 @@ async def create_shorts(
     from app.content.production.thumbnail_gen import generate_thumbnail
 
     for i, result in enumerate(cut_results):
-        if i < len(output_records):
-            rec = output_records[i] if 'output_records' in dir() else None
         thumb_path = result["path"].replace(".mp4", "_thumb.png")
         thumb = generate_thumbnail(
             video_path=result["path"],
@@ -628,6 +626,7 @@ def delete_output(
         "output_id": output_id,
         "remaining_outputs": remaining,
     }
+
 
 
 

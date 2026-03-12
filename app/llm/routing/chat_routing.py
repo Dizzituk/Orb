@@ -347,8 +347,8 @@ def handle_chat_mode(
               f"confidence={complexity.confidence}, signals={complexity.signals}")
         
         import os as _os
-        _chat_provider = _os.getenv("CHAT_PROVIDER", "google")
-        _chat_model = _os.getenv("CHAT_MODEL", "gemini-2.5-flash")
+        _chat_provider = _os.getenv("CHAT_PROVIDER", "openai")  # v2.3: default to OpenAI
+        _chat_model = _os.getenv("CHAT_MODEL", "gpt-5-mini")  # v2.3: GPT-5-mini for chat
 
         _skip_confirm = getattr(req, 'ui_context', None) is not None
 
@@ -447,7 +447,7 @@ def handle_chat_mode(
             elif provider == "anthropic":
                 model = _os2.getenv("ANTHROPIC_DEFAULT_MODEL", "claude-sonnet-4-6")
             elif provider == "openai":
-                model = _os2.getenv("OPENAI_DEFAULT_MODEL", "gpt-4.1-mini")
+                model = _os2.getenv("OPENAI_DEFAULT_MODEL", "gpt-5-mini")  # v2.3
         else:
             print(f"[CHAT_MODE] WARNING: No providers available at all")
     

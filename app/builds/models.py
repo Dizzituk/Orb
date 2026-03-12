@@ -7,6 +7,8 @@ Weaver → SpecGate → Critical Pipeline → Overwatcher → Implementer.
 
 Each project stores its current pipeline stage and per-stage status
 so the UI can visualise progress.
+
+v2.2 (2026-03-10): Added build_target_id for multi-project targeting.
 """
 
 import uuid
@@ -74,7 +76,6 @@ class BuildProject(Base):
     final_checkout_status = Column(SAEnum(StageStatus), default=StageStatus.pending, nullable=False)
 
     # Weaver extraction — trimmed structured output from the Weaver
-    # Stores key requirements, design preferences, constraints (not the full Weaver dump)
     weaver_extraction = Column(JSON, nullable=True)
 
     # Links to pipeline artefacts (spec IDs, job IDs, etc.)
@@ -82,23 +83,22 @@ class BuildProject(Base):
     job_id = Column(String, nullable=True)
     target_path = Column(String, nullable=True)   # Where the output project lives (sandbox path)
 
+    # v2.2: Build target profile ID — which project this build targets.
+    # Values: "astra-backend", "astra-frontend", "driver-copilot", or None (legacy/auto-detect).
+    # Set during Weaver stage from conversation context analysis.
+    # The pipeline reads this to load the correct BuildTargetProfile.
+    build_target_id = Column(String, nullable=True)
+
     # The original ramble / brief that kicked this off
     original_brief = Column(Text, nullable=True)
 
     # Stage logs — JSON array of {stage, event, timestamp, detail}
     stage_log = Column(JSON, nullable=True, default=list)
 
-    # Rich stage narratives — JSON dict keyed by stage name.
-    # Each value is a list of StageNarrative entries with sections,
-    # inputs, outputs, decisions, and timing. This is the deep history
-    # that drives the Stage Log expandable dropdowns and the final
-    # build report compilation.
-    # Structure: {stage_name: [{title, timestamp, sections: [{heading, body}], ...}]}
+    # Rich stage narratives
     stage_narratives = Column(JSON, nullable=True, default=dict)
 
-    # Compiled build report — generated when pipeline completes.
-    # Single markdown/JSON document combining brief, stage narratives,
-    # and deliverables. This is the file that gets sent to Debug.
+    # Compiled build report
     build_report = Column(Text, nullable=True)
 
     # Link to the chat project ID used for conversation context

@@ -1,6 +1,6 @@
 # FILE: app/pipeline_v2/orchestrator.py
 """
-ASTRA v2.1 Orchestrator.
+ASTRA v2.2 Orchestrator.
 
 Simplified from v2.0. Four stages:
   Weaver → SpecGate → Scaffold Engine → Agentic Builder (with verify loop)
@@ -9,6 +9,9 @@ The orchestrator is not smart. It is reliable. It routes data between
 stages, tracks progress, and manages the verify loop.
 
 v2.1 (2026-03-07): Simplified from v2.0 (removed Architect, tiered Builder).
+v2.2 (2026-03-10): Multi-project targeting. Accepts BuildTargetProfile and
+    passes it through to every stage. Profile determines language, paths,
+    build commands, and verification strategy.
 """
 from __future__ import annotations
 
@@ -16,10 +19,13 @@ import json
 import logging
 import os
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
 
 from app.pipeline_v2.config import MAX_VERIFY_LOOPS, MAX_FALLBACK_ATTEMPTS
 from app.pipeline_v2.models import PipelineResult
+
+if TYPE_CHECKING:
+    from app.pipeline_v2.build_targets import BuildTargetProfile
 
 logger = logging.getLogger(__name__)
 
@@ -36,17 +42,12 @@ def _push_narrative(
     duration_ms: int = 0,
     tokens_used: int = 0,
 ) -> None:
-    """Push a narrative entry to the build project's stage log.
-
-    Uses the current build project from the most recent DB session.
-    Fails silently if no build project context is available.
-    """
+    """Push a narrative entry to the build project's stage log."""
     try:
         from app.db import SessionLocal
         from app.builds.pipeline_bridge import notify_narrative
         from app.builds.models import BuildProject
         db = SessionLocal()
-        # Find the most recently updated project with a running stage
         project = db.query(BuildProject).order_by(BuildProject.updated_at.desc()).first()
         if project:
             notify_narrative(
@@ -67,10 +68,7 @@ def _push_narrative(
 
 
 def _update_stage_status(stage: str, status: str, detail: str = "") -> None:
-    """Update a pipeline stage status on the current build project.
-
-    Creates its own DB session (same pattern as _push_narrative).
-    """
+    """Update a pipeline stage status on the current build project."""
     try:
         from app.db import SessionLocal
         from app.builds.pipeline_bridge import (
@@ -99,8 +97,9 @@ async def run_v2_pipeline(
     intent_text: str,
     job_dir: str,
     on_progress: Optional[Callable[[str], None]] = None,
+    profile: Optional["BuildTargetProfile"] = None,
 ) -> PipelineResult:
-    """Run the complete ASTRA v2.1 pipeline.
+    """Run the complete ASTRA v2.2 pipeline.
 
     Stages 1-2 (Weaver + SpecGate) have already run.
     This function runs stages 3-4: Scaffold Engine → Agentic Builder.
@@ -112,13 +111,32 @@ async def run_v2_pipeline(
         intent_text: The Weaver's intent document (for verification).
         job_dir: Job directory for saving artifacts.
         on_progress: Progress callback for UI updates.
+        profile: Build target profile. If None, uses default from config.
     """
+    # Resolve profile — check ProjectSession first, then env default
+    if profile is None:
+        try:
+            from app.shared_context.project_session import _sessions as _proj_sessions
+            from app.pipeline_v2.target_registry import get_profile, get_default_profile
+            _session_profile = None
+            for _session in _proj_sessions.values():
+                if _session.is_set and _session.project_id:
+                    _session_profile = get_profile(_session.project_id)
+                    if _session_profile:
+                        break
+            profile = _session_profile or get_default_profile()
+        except Exception:
+            from app.pipeline_v2.target_registry import get_default_profile
+            profile = get_default_profile()
+
     result = PipelineResult(job_id=job_id)
     t_start = time.time()
     emit = on_progress or (lambda msg: None)
 
     emit(f"\n{'='*60}")
-    emit(f"🚀 ASTRA v2.1 Pipeline — Job {job_id}")
+    emit(f"🚀 ASTRA v2.2 Pipeline — Job {job_id}")
+    emit(f"   Target: {profile.project_name} ({profile.language}/{profile.framework})")
+    emit(f"   Root: {profile.project_root}")
     emit(f"{'='*60}")
 
     # ------------------------------------------------------------------
@@ -128,7 +146,6 @@ async def run_v2_pipeline(
     emit("🏗️ STAGE 3: SCAFFOLD ENGINE")
     emit(f"{'='*60}")
 
-    # v2.1.1: Early abort if manifest has zero file scope
     _total_manifest_files = sum(
         len(seg.get("file_scope", []))
         for seg in manifest.get("segments", [])
@@ -140,8 +157,6 @@ async def run_v2_pipeline(
         )
         result.total_duration_seconds = time.time() - t_start
         emit("❌ Manifest has 0 files across all segments — nothing to scaffold")
-        emit("   This usually means SpecGate couldn't extract concrete requirements.")
-        emit("   Provide a text description of the feature and re-run the pipeline.")
         return result
 
     from app.pipeline_v2.scaffold_engine import run_scaffold_engine
@@ -151,10 +166,10 @@ async def run_v2_pipeline(
         spec=spec,
         job_dir=job_dir,
         on_progress=emit,
+        profile=profile,
     )
     result.scaffold_result = scaffold
 
-    # Push scaffold narrative
     create_files = [f.path for f in scaffold.files if f.is_new]
     modify_files = [f.path for f in scaffold.files if not f.is_new]
     _push_narrative(
@@ -190,11 +205,11 @@ async def run_v2_pipeline(
         scaffold=scaffold,
         job_dir=job_dir,
         on_progress=emit,
+        profile=profile,
     )
     result.build_result = build_result
     result.total_llm_calls += build_result.total_llm_calls
 
-    # Push builder narrative
     _push_narrative(
         stage="critical_pipeline",
         title=f"Agentic Builder {'Complete' if build_result.success else 'Finished with Issues'}",
@@ -206,7 +221,6 @@ async def run_v2_pipeline(
         warnings=build_result.errors[:5] if build_result.errors else [],
     )
 
-    # v2.1.2: Keep builder conversation history for verify→fix continuation
     _builder_messages = build_result.messages_history
 
     if not build_result.all_files_written:
@@ -216,24 +230,69 @@ async def run_v2_pipeline(
         return result
 
     # ------------------------------------------------------------------
-    # VERIFICATION: enhanced checkout or legacy screenshot loop
+    # VERIFICATION: profile-aware checkout
     # ------------------------------------------------------------------
-    from app.pipeline_v2.config import ENHANCED_CHECKOUT
+    from app.pipeline_v2.config import ENHANCED_CHECKOUT, BVL_ENABLED
 
-    # v2.1.3: Set verifier stage to running when verification loop starts
     _update_stage_status("final_checkout", "running", "Verification loop started")
 
-    # v2.2: Enhanced multi-step checkout
+    # For Android/Kotlin: BVL three-tier verification cascade
+    if BVL_ENABLED and (profile.verification_mode == "emulator" or profile.language == "kotlin"):
+        from app.pipeline_v2.bvl.bvl_orchestrator import run_bvl
+
+        _update_stage_status("final_checkout", "running", "BVL verification started")
+
+        bvl_report = await run_bvl(
+            job_id=job_id,
+            spec=spec,
+            manifest=manifest,
+            scaffold=scaffold,
+            profile=profile,
+            job_dir=job_dir,
+            existing_messages=_builder_messages,
+            emit=emit,
+        )
+
+        result.total_llm_calls += bvl_report.total_llm_calls
+        result.bvl_report = bvl_report
+
+        if bvl_report.all_signed_off:
+            _update_stage_status("final_checkout", "passed", "BVL: all tiers passed")
+            result.success = True
+        else:
+            blocked = bvl_report.blocked_components
+            detail = blocked[0].block_reason[:200] if blocked else "BVL verification incomplete"
+            _update_stage_status("final_checkout", "failed", detail)
+            result.success = False
+
+        result.total_duration_seconds = time.time() - t_start
+        result.estimated_cost_usd = _estimate_cost(result) + bvl_report.estimated_cost_usd
+
+        emit(f"\n{'='*60}")
+        emit(f"{'✅ BUILD COMPLETE' if result.success else '❌ BUILD FINISHED WITH ISSUES'}")
+        cost_str = f"${result.estimated_cost_usd:.2f}"
+        emit(f"Duration: {result.total_duration_seconds:.1f}s | LLM calls: {result.total_llm_calls} | Est. cost: {cost_str}")
+        emit(f"{'='*60}")
+
+        try:
+            _compile_and_send_to_debug(result, job_id, spec, emit)
+        except Exception as _e:
+            logger.warning("[orchestrator] Report compilation failed: %s", _e)
+
+        return result
+
+    # ------------------------------------------------------------------
+    # ENHANCED CHECKOUT (browser-based — ASTRA backend/frontend)
+    # ------------------------------------------------------------------
     if ENHANCED_CHECKOUT:
         from app.pipeline_v2.checkout import run_enhanced_checkout
         checkout_report = await run_enhanced_checkout(spec=spec, emit=emit)
-        result.total_llm_calls += 1  # visual verify call
+        result.total_llm_calls += 1
 
         if checkout_report.overall_passed:
             _update_stage_status("final_checkout", "passed", "Enhanced checkout passed")
             emit("   ✅ Verifier stage → PASSED")
         else:
-            # Feed failures back to builder for one fix attempt
             feedback = checkout_report.to_builder_feedback()
             if feedback:
                 emit("   🔧 Sending checkout feedback to Builder for fix...")
@@ -245,11 +304,11 @@ async def run_v2_pipeline(
                     handover_context=feedback,
                     on_progress=emit,
                     existing_messages=_builder_messages,
+                    profile=profile,
                 )
                 result.total_llm_calls += fix_result.total_llm_calls
                 _builder_messages = fix_result.messages_history
 
-                # Re-run checkout after fix
                 emit("   🔄 Re-running checkout after fix...")
                 checkout_report_2 = await run_enhanced_checkout(spec=spec, emit=emit)
                 result.total_llm_calls += 1
@@ -263,7 +322,6 @@ async def run_v2_pipeline(
             else:
                 _update_stage_status("final_checkout", "failed", "Enhanced checkout failed")
 
-        # Skip legacy loop
         result.total_duration_seconds = time.time() - t_start
         result.estimated_cost_usd = _estimate_cost(result)
 
@@ -290,23 +348,19 @@ async def run_v2_pipeline(
     for attempt in range(1, MAX_VERIFY_LOOPS + 1):
         emit(f"\n--- Verification attempt {attempt}/{MAX_VERIFY_LOOPS} ---")
 
-        # Boot the app first
         emit("   🔄 Booting application...")
         from app.pipeline_v2.sandbox_tools import boot_check
-        boot_ok, boot_output = await boot_check()
+        boot_ok, boot_output = await boot_check(profile=profile)
 
         if not boot_ok:
             emit(f"   ❌ Boot failed: {boot_output[:200]}")
 
-            # v2.1.2: Feed boot errors back to Builder for surgical fix
             if attempt < MAX_VERIFY_LOOPS:
                 emit("   🔧 Sending boot errors to Builder for fix...")
                 _fix_prompt = (
                     f"The application failed to boot. Here are the errors:\n\n"
                     f"```\n{boot_output[:4000]}\n```\n\n"
-                    f"Read the relevant files, diagnose the issue, and fix it. "
-                    f"Focus on import errors, missing modules, syntax errors, "
-                    f"and database model registration issues."
+                    f"Read the relevant files, diagnose the issue, and fix it."
                 )
                 fix_result = await run_agentic_builder(
                     spec=spec,
@@ -316,16 +370,16 @@ async def run_v2_pipeline(
                     handover_context=_fix_prompt,
                     on_progress=emit,
                     existing_messages=_builder_messages,
+                    profile=profile,
                 )
                 result.total_llm_calls += fix_result.total_llm_calls
-                _builder_messages = fix_result.messages_history  # Update for next iteration
+                _builder_messages = fix_result.messages_history
                 if fix_result.all_files_written:
                     emit(f"   🔧 Builder fixed {len(fix_result.all_files_written)} file(s)")
-                continue  # Re-attempt boot + verify
+                continue
         else:
             emit("   ✅ Boot OK")
 
-        # Visual verification
         verify_result = await verify_visually(
             spec_text=spec_text,
             attempt=attempt,
@@ -337,7 +391,6 @@ async def run_v2_pipeline(
         if verify_result.passed:
             emit("   ✅ VERIFICATION PASSED")
             _update_stage_status("final_checkout", "passed", "Visual verification passed")
-            emit("   ✅ Verifier stage → PASSED")
             break
 
         if attempt >= MAX_VERIFY_LOOPS:
@@ -345,14 +398,12 @@ async def run_v2_pipeline(
             _update_stage_status("final_checkout", "failed", f"Failed after {MAX_VERIFY_LOOPS} attempts")
             break
 
-        # v2.1.2: Feed verification feedback back to Builder for surgical fix
         emit(f"   🔧 Sending verification feedback to Builder for fix...")
         _fix_prompt = (
             f"Visual verification FAILED on attempt {attempt}. "
             f"The verifier reported these issues:\n\n"
             f"{verify_result.feedback[:4000]}\n\n"
             f"Read the relevant files, diagnose what's wrong, and fix it. "
-            f"Focus on the specific UI issues reported above. "
             f"Do NOT rewrite files from scratch — make surgical, targeted changes."
         )
         fix_result = await run_agentic_builder(
@@ -363,31 +414,20 @@ async def run_v2_pipeline(
             handover_context=_fix_prompt,
             on_progress=emit,
             existing_messages=_builder_messages,
+            profile=profile,
         )
         result.total_llm_calls += fix_result.total_llm_calls
-        _builder_messages = fix_result.messages_history  # Update for next iteration
+        _builder_messages = fix_result.messages_history
         if fix_result.all_files_written:
             emit(f"   🔧 Builder fixed {len(fix_result.all_files_written)} file(s)")
         emit(f"   Feedback: {verify_result.feedback[:200]}")
 
-    # ------------------------------------------------------------------
     # Final result
-    # ------------------------------------------------------------------
     final_verify = result.verify_results[-1] if result.verify_results else None
-    # v2.1.3: The verifier is the final authority. If it passed, the job
-    # succeeded — even if the initial build needed fix iterations.
-    # The old logic (build_result.success AND verify.passed) would report
-    # failure when the builder needed fixes but the verifier confirmed the
-    # final output was correct.
     result.success = final_verify.passed if final_verify else False
     result.total_duration_seconds = time.time() - t_start
-
-    # Estimate cost
     result.estimated_cost_usd = _estimate_cost(result)
 
-    # ------------------------------------------------------------------
-    # COMPILE REPORT & SEND TO DEBUG
-    # ------------------------------------------------------------------
     try:
         _compile_and_send_to_debug(result, job_id, spec, emit)
     except Exception as _report_err:
@@ -395,7 +435,7 @@ async def run_v2_pipeline(
 
     status = "COMPLETE ✅" if result.success else "FINISHED WITH ISSUES ⚠️"
     emit(f"\n{'='*60}")
-    emit(f"🚀 ASTRA v2.1 Pipeline {status}")
+    emit(f"🚀 ASTRA v2.2 Pipeline {status}")
     emit(f"   Files: {len(build_result.all_files_written)}")
     emit(f"   Tool calls: {build_result.total_tool_calls}")
     emit(f"   LLM calls: {result.total_llm_calls}")
@@ -414,15 +454,9 @@ def _compile_and_send_to_debug(
     spec: Dict,
     emit: Any,
 ) -> None:
-    """Compile the build report and create a debug project with it.
-
-    This runs after the pipeline finishes (pass or fail) and creates
-    a debug project pre-loaded with the full build context so the user
-    can immediately reference it from the Debug tab.
-    """
+    """Compile the build report and create a debug project with it."""
     emit("\n📝 Compiling build report...")
 
-    # 1. Compile the build report via the existing service
     try:
         from app.db import SessionLocal
         from app.builds.service import compile_build_report
@@ -440,17 +474,14 @@ def _compile_and_send_to_debug(
         emit(f"   ⚠️ Report compilation failed: {e}")
         report_json = None
 
-    # 2. Create a debug project with the build context
     try:
         from app.debug.project_service import create_project as create_debug_project
 
-        # Build a summary title
         spec_summary = ""
         if isinstance(spec, dict):
             spec_summary = spec.get("summary", spec.get("title", ""))[:100]
         title = f"Build: {spec_summary or job_id}"
 
-        # Build description with key stats
         build = result.build_result
         lines = [
             f"Job ID: {job_id}",
@@ -483,11 +514,8 @@ def _estimate_cost(result: PipelineResult) -> float:
     if not result.build_result:
         return 0.0
 
-    # GPT-5.4 rates: $2.50/MTok input, $15.00/MTok output
     input_cost = (result.build_result.total_input_tokens / 1_000_000) * 2.50
     output_cost = (result.build_result.total_output_tokens / 1_000_000) * 15.00
-
-    # Verification: ~$0.01 per call
     verify_cost = len(result.verify_results) * 0.01
 
     return input_cost + output_cost + verify_cost

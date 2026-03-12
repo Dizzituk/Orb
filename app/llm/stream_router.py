@@ -435,10 +435,75 @@ async def stream_chat(
             return response
     
     # =========================================================================
+    # PROJECT STALENESS CHECK (v11.0)
+    # =========================================================================
+    try:
+        from app.project_registry.chat_injection import get_staleness_sse_events
+        _staleness_events = get_staleness_sse_events(db, req.message)
+    except Exception:
+        _staleness_events = None
+
+    # =========================================================================
     # NORMAL ROUTING
     # =========================================================================
     
-    return handle_normal_routing(req, project, db, trace)
+    _normal_response = handle_normal_routing(req, project, db, trace)
+    
+    # v11.0: If staleness detected, wrap the response to prepend warning
+    if _staleness_events and _normal_response:
+        from app.project_registry.chat_injection import inject_staleness_into_stream
+        original_gen = _normal_response.body_iterator
+        wrapped_gen = inject_staleness_into_stream(original_gen, db, req.message)
+        return StreamingResponse(
+            wrapped_gen,
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+    
+    return _normal_response
+
+
+# =============================================================================
+# REJECT INTENT ENDPOINT (v2.2)
+# =============================================================================
+
+class RejectIntentRequest(BaseModel):
+    project_id: int
+    intent: str
+    original_message: str = ""
+
+
+@router.post("/reject-intent")
+async def reject_intent(
+    req: RejectIntentRequest,
+    auth: AuthResult = Depends(require_auth),
+):
+    """Log a rejected confirmation for confidence learning.
+
+    When the user clicks 'Not what I meant' on a confirmation gate,
+    the frontend calls this endpoint to record the negative signal.
+    This feeds into the graduated confidence system.
+    """
+    try:
+        from app.translation.schemas import CanonicalIntent as _CI
+        from app.translation.confirmation_log import log_confirmation_event
+
+        intent_enum = _CI(req.intent)
+        log_confirmation_event(
+            intent=intent_enum,
+            user_message_excerpt=req.original_message[:200],
+            confirmed=False,
+            confidence=0.0,
+            conversation_id=str(req.project_id),
+        )
+        logger.info(
+            "[reject_intent] Rejection logged: intent=%s, message='%s'",
+            req.intent, req.original_message[:50],
+        )
+        return {"status": "ok", "logged": True}
+    except Exception as e:
+        logger.warning("[reject_intent] Failed to log rejection: %s", e)
+        return {"status": "error", "detail": str(e)}
 
 
 # =============================================================================

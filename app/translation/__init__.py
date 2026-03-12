@@ -87,6 +87,7 @@ from .tier0_rules import (
     check_critical_pipeline_trigger,
     check_rag_codebase_query,
     check_embedding_commands,
+    check_project_scope_trigger,
 )
 
 # Tier 1 classifier
@@ -164,6 +165,7 @@ __all__ = [
     "check_critical_pipeline_trigger",
     "check_rag_codebase_query",
     "check_embedding_commands",
+    "check_project_scope_trigger",
     
     # Tier 1 classifier
     "Tier1Classifier",

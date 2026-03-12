@@ -211,12 +211,12 @@ class RoutingConfig:
     # === JOB TYPE → PROVIDER/MODEL MAPPING ===
     JOB_TYPE_ROUTING: Dict[JobType, tuple] = {
         # OpenAI routes
-        JobType.CHAT_LIGHT: (Provider.OPENAI, "OPENAI_MODEL_LIGHT_CHAT", "gpt-4.1-mini"),
-        JobType.TEXT_HEAVY: (Provider.OPENAI, "OPENAI_MODEL_HEAVY_TEXT", "gpt-4.1"),
+        JobType.CHAT_LIGHT: (Provider.OPENAI, "OPENAI_MODEL_LIGHT_CHAT", "gpt-5-mini"),  # v2.3: upgraded
+        JobType.TEXT_HEAVY: (Provider.OPENAI, "OPENAI_MODEL_HEAVY_TEXT", "gpt-5.4"),  # v2.3: upgraded
         
         # Anthropic routes
-        JobType.CODE_MEDIUM: (Provider.ANTHROPIC, "ANTHROPIC_SONNET_MODEL", "claude-sonnet-4-5-20250929"),
-        JobType.ORCHESTRATOR: (Provider.ANTHROPIC, "ANTHROPIC_OPUS_MODEL", "claude-opus-4-5-20250514"),
+        JobType.CODE_MEDIUM: (Provider.OPENAI, "OPENAI_MODEL_CODE", "gpt-5.4"),  # v2.3: GPT-5.4 for all code creation
+        JobType.ORCHESTRATOR: (Provider.ANTHROPIC, "ANTHROPIC_OPUS_MODEL", "claude-opus-4-6"),  # v2.3: upgraded
         
         # Google routes
         JobType.IMAGE_SIMPLE: (Provider.GOOGLE, "GEMINI_VISION_MODEL_FAST", "gemini-2.0-flash"),
@@ -225,7 +225,7 @@ class RoutingConfig:
         JobType.OPUS_CRITIC: (Provider.GOOGLE, "GEMINI_OPUS_CRITIC_MODEL", "gemini-3-pro-preview"),
         
         # Document routes
-        JobType.DOCUMENT_PDF_TEXT: (Provider.OPENAI, "OPENAI_MODEL_HEAVY_TEXT", "gpt-4.1"),
+        JobType.DOCUMENT_PDF_TEXT: (Provider.OPENAI, "OPENAI_MODEL_HEAVY_TEXT", "gpt-5.4"),  # v2.3: upgraded
         JobType.DOCUMENT_PDF_VISION: (Provider.GOOGLE, "GEMINI_VISION_MODEL_PRO", "gemini-2.5-pro"),
         
         # Video+Code debug route
@@ -378,11 +378,12 @@ class RoutingConfig:
         JobType.SMALL_CODE, JobType.CODE_MEDIUM,
     }
     
+    # v2.3: Claude reserved for architecture/deep thinking ONLY
+    # Code tasks (review, refactor, complex code) now go to GPT-5.4
     CLAUDE_PRIMARY_JOBS: Set[JobType] = {
-        JobType.COMPLEX_CODE_CHANGE, JobType.CODEGEN_FULL_FILE,
-        JobType.ARCHITECTURE_DESIGN, JobType.CODE_REVIEW, JobType.SPEC_REVIEW,
-        JobType.REFACTOR, JobType.IMPLEMENTATION_PLAN, JobType.COMPLEX_CODE,
-        JobType.BUG_ANALYSIS, JobType.BIG_ARCHITECTURE, JobType.ORCHESTRATOR,
+        JobType.ARCHITECTURE_DESIGN, JobType.SPEC_REVIEW,
+        JobType.IMPLEMENTATION_PLAN, JobType.BIG_ARCHITECTURE,
+        JobType.ORCHESTRATOR,
     }
     
     HIGH_STAKES_JOBS: Set[JobType] = {

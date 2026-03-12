@@ -106,7 +106,7 @@ def reindex_unembedded(
             )
             
             chunk.embedded = True
-            chunk.embedding_model = "text-embedding-3-small"
+            chunk.embedding_model = "gemini-embedding-2-preview"
             chunk.embedded_at = __import__("datetime").datetime.utcnow()
             chunk.embedded_content_hash = chunk.content_hash
             

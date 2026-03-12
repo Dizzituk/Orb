@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.builds.pipeline_bridge import (
     get_or_create_build_project,
+    resolve_build_target,
     notify_stage_start,
     notify_stage_passed,
     notify_stage_failed,
@@ -250,9 +251,13 @@ async def wrap_with_build_tracking(
             db, chat_project_id, brief=brief,
         )
         build_project_id = build_project.id
+
+        # v2.2: Resolve build target (which project are we building into?)
+        resolve_build_target(db, build_project, message=message, chat_project_id=chat_project_id)
+
         logger.info(
-            "[stage_hooks] Tracking stage '%s' on build project '%s' (%s)",
-            pipeline_stage, build_project.name, build_project_id,
+            "[stage_hooks] Tracking stage '%s' on build project '%s' (%s) target=%s",
+            pipeline_stage, build_project.name, build_project_id, build_project.build_target_id,
         )
     except Exception as e:
         logger.warning("[stage_hooks] Failed to get/create build project: %s", e)

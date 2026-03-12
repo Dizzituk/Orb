@@ -1,7 +1,7 @@
 # FILE: app/embeddings/__init__.py
 """
-Semantic search module for Orb.
-Provides embedding generation, storage, and vector similarity search.
+Semantic search module for Orb (Gemini Embedding 2).
+Provides text + multimodal embedding generation, storage, and vector similarity search.
 """
 
 import os
@@ -16,6 +16,13 @@ from .service import (
     index_note,
     index_message,
     index_document,
+)
+
+from .gemini_provider import (
+    generate_image_embedding,
+    generate_multimodal_embedding,
+    generate_embeddings_batch,
+    TaskType,
 )
 
 from .models import Embedding
@@ -49,6 +56,11 @@ __all__ = [
     "index_note",
     "index_message",
     "index_document",
+    # Gemini multimodal
+    "generate_image_embedding",
+    "generate_multimodal_embedding",
+    "generate_embeddings_batch",
+    "TaskType",
     # Feature flag
     "auto_index_enabled",
     # Model

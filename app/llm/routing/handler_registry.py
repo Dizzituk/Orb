@@ -203,6 +203,20 @@ except Exception as e:
     generate_codebase_report_stream = None
 
 # =============================================================================
+# PROJECT REGISTRY (v11.0)
+# =============================================================================
+
+try:
+    from app.project_registry.scanner import generate_project_scan_stream
+    _PROJECT_REGISTRY_AVAILABLE = True
+    print("[handler_registry] Project registry loaded successfully")
+except Exception as _pr_err:
+    _PROJECT_REGISTRY_AVAILABLE = False
+    generate_project_scan_stream = None
+    print(f"[handler_registry] Project registry not available: {_pr_err}")
+
+
+# =============================================================================
 # SANDBOX
 # =============================================================================
 
@@ -416,6 +430,8 @@ __all__ = [
     "generate_local_zobie_map_stream",
     "generate_update_architecture_stream",
     "generate_sandbox_structure_scan_stream",
+    "_PROJECT_REGISTRY_AVAILABLE",
+    "generate_project_scan_stream",
     "generate_latest_architecture_map_stream",
     "generate_latest_codebase_report_full_stream",
     "generate_filesystem_query_stream",

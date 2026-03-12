@@ -178,19 +178,46 @@ INFRASTRUCTURE_INTENTS: Dict[CanonicalIntent, IntentDefinition] = {
             "put that all together",
             "Consolidate that into a spec",
             "consolidate that into a spec",
+            "send that to weaver",
+            "Send that to weaver",
+            "send to weaver",
+            "Send to weaver",
+            "send that to the weaver",
+            "Send that to the weaver",
+            "send to the weaver",
+            "Send to the weaver",
+            "sent a weaver",
+            "Sent a weaver",
+            "sent to weaver",
+            "Sent to weaver",
+            "sent to the weaver",
+            "Sent to the weaver",
+            "send out to weaver",
+            "Send out to weaver",
+            "send out to the weaver",
+            "Send out to the weaver",
+            "weave that together",
+            "Weave that together",
         ],
         trigger_patterns=[
             r"^[Hh]ow does that look all together\??$",
-            r"^[Ww]eave (?:this|that) into a spec$",
+            r"^[Ww]eave (?:this|that) (?:into a spec|together)$",
             r"^[Bb]uild (?:a )?spec from (?:the )?ramble$",
             r"^[Cc]ompile (?:the )?spec$",
             r"^[Pp]ut (?:that|this|it) all together$",
             r"^[Cc]onsolidate (?:that|this) into a spec$",
             r"^[Ss]ummarize (?:the|my) ramble into a spec$",
             r"^[Tt]urn (?:this|that) into a spec$",
+            r"^(?:[Aa]stra[,:]?\s*)?[Ss]en[dt] (?:that|this|it|out|a) (?:to )?(?:the )?[Ww]eaver\.?$",
+            r"^(?:[Aa]stra[,:]?\s*)?[Ss]en[dt] (?:out )?to (?:the )?[Ww]eaver\.?$",
+            r"^(?:[Hh]ow does that (?:look|come) (?:all together|along)\??$)",
         ],
         requires_context=[],
-        requires_confirmation=False,
+        requires_confirmation=True,
+        confirmation_prompt=(
+            "I'll send our conversation to the Weaver to build a structured spec.\n"
+            "Confirm to proceed."
+        ),
         description="Trigger Weaver to build a candidate spec from ramble/conversation",
         behavior=(
             "Weaver (GPT-5.2 latest) is triggered to:\n"
@@ -217,6 +244,14 @@ INFRASTRUCTURE_INTENTS: Dict[CanonicalIntent, IntentDefinition] = {
             "okay, send that to Spec Gate",
             "Ok, send that to Spec Gate",
             "ok, send that to Spec Gate",
+            "sent a spec gate",
+            "Sent a spec gate",
+            "sent to spec gate",
+            "Sent to spec gate",
+            "sent that spec gate",
+            "Sent that spec gate",
+            "send a spec gate",
+            "Send a spec gate",
             "Validate the spec",
             "validate the spec",
             "Run Spec Gate",
@@ -225,15 +260,19 @@ INFRASTRUCTURE_INTENTS: Dict[CanonicalIntent, IntentDefinition] = {
             "submit spec for validation",
         ],
         trigger_patterns=[
-            r"^(?:[Oo]k(?:ay)?,?\s*)?[Ss]end (?:that|this|it) to [Ss]pec ?[Gg]ate$",
-            r"^[Ss]end to [Ss]pec ?[Gg]ate$",
+            r"^(?:[Oo]k(?:ay)?,?\s*)?[Ss]en[dt] (?:that|this|it|a) (?:to )?[Ss]pec ?[Gg]ate\.?$",
+            r"^[Ss]en[dt] (?:a |to )?(?:the )?[Ss]pec ?[Gg]ate\.?$",
             r"^[Vv]alidate (?:the )?spec$",
             r"^[Rr]un [Ss]pec ?[Gg]ate$",
             r"^[Ss]ubmit (?:the )?spec(?: for validation)?$",
             r"^[Ss]pec ?[Gg]ate[,:]?\s*validate$",
         ],
         requires_context=[],
-        requires_confirmation=False,
+        requires_confirmation=True,
+        confirmation_prompt=(
+            "I'll send the spec to Spec Gate for validation.\n"
+            "Confirm to proceed."
+        ),
         description="Send refined candidate spec to Spec Gate for validation",
         behavior=(
             "Spec Gate (GPT-5.2 Pro) receives the refined candidate spec.\n"
@@ -385,5 +424,136 @@ INFRASTRUCTURE_INTENTS: Dict[CanonicalIntent, IntentDefinition] = {
             "Behavior tuning occurs ONLY in sandbox.\n"
             "NEVER triggers any commands."
         ),
+    ),
+
+    # =========================================================================
+    # PROJECT REGISTRY (v1.7)
+    # =========================================================================
+
+    CanonicalIntent.SCAN_PROJECT_ARCHITECTURE: IntentDefinition(
+        intent=CanonicalIntent.SCAN_PROJECT_ARCHITECTURE,
+        trigger_phrases=[
+            "scan project architecture",
+            "Astra, scan the architecture",
+            "astra, scan the architecture",
+            "Astra, refresh the architecture",
+            "astra, refresh the architecture",
+            "Astra, rescan the project",
+            "astra, rescan the project",
+            "Astra, update the architecture",
+            "scan project",
+            "rescan project",
+        ],
+        trigger_patterns=[
+            r"(?:scan|refresh|rescan|update)\s+(?:the\s+)?(?:project\s+)?architecture",
+            r"(?:scan|rescan)\s+(?:the\s+)?project",
+        ],
+        requires_confirmation=True,
+        description="Scan a registered project's file structure and save to architecture DB",
+        behavior=(
+            "1. Identify which project from context or message\n"
+            "2. Scan the project's root paths via sandbox controller\n"
+            "3. Save file index to architecture DB (scoped by project)\n"
+            "4. Generate ARCHITECTURE_MAP.md in project folder\n"
+            "5. Update project registry scan metadata"
+        ),
+    ),
+
+    CanonicalIntent.REGISTER_PROJECT: IntentDefinition(
+        intent=CanonicalIntent.REGISTER_PROJECT,
+        trigger_phrases=[
+            "register project",
+            "Astra, register project",
+            "astra, register project",
+            "add project",
+            "Astra, add project",
+        ],
+        trigger_patterns=[
+            r"(?:register|add)\s+(?:a\s+)?(?:new\s+)?project",
+        ],
+        requires_confirmation=True,
+        description="Register a new external project for architecture tracking",
+        behavior=(
+            "Registers a new project with name, root paths, type, and language.\n"
+            "The project will then be scannable and queryable."
+        ),
+    ),
+
+    # -------------------------------------------------------------------------
+    # PROJECT SCOPING (v2.2 - Conversational project creation)
+    # -------------------------------------------------------------------------
+
+    CanonicalIntent.PROJECT_SCOPE_START: IntentDefinition(
+        intent=CanonicalIntent.PROJECT_SCOPE_START,
+        trigger_phrases=[
+            "start a new project",
+            "new project",
+            "I want to build something new",
+            "let's start a new app",
+            "new app",
+            "new android app",
+            "I've got a new idea",
+            "i want to start a new project",
+            "let's start a new project",
+            "i want to build a new app",
+            "Astra, new project",
+            "astra, new project",
+            "Astra, let's start a new project",
+            "astra, let's start a new project",
+            "I want to start off a new project",
+            "i want to start off a new project",
+            "Hey, Astra, I want to start a new project",
+            "Hey Astra, I want to start a new project",
+        ],
+        trigger_patterns=[
+            r"^(?:[Aa]stra[,:]?\s*)?(?:I want to |let's |let me )?(?:start|begin|create)(?:\s+off)?\s+a new (?:project|app|build)",
+            r"^(?:[Aa]stra[,:]?\s*)?[Nn]ew (?:project|app|android app|build)$",
+            r"^(?:[Aa]stra[,:]?\s*)?[Ii]'ve got (?:a |an )?new (?:idea|project|app)",
+            r"^(?:[Aa]stra[,:]?\s*)?[Ii] want to build (?:a |an )?new",
+            r"^(?:[Aa]stra[,:]?\s*)?[Ll]et's build (?:a |an )?new",
+        ],
+        requires_context=[],
+        requires_confirmation=True,
+        confirmation_prompt=(
+            "You want to start scoping a new project.\n"
+            "This will enter a conversational flow where I'll ask you about:\n"
+            "- Project type (Android app, web app, ASTRA feature)\n"
+            "- Project name\n"
+            "- What it does\n\n"
+            "Ready to begin?"
+        ),
+        description="Enter multi-turn project scoping conversation",
+        behavior=(
+            "Enter project scoping mode. Escalate to reasoning model (GPT-5.4).\n"
+            "Ask the user ONE question at a time:\n"
+            "1. What kind of project? (Android app, web app, ASTRA feature)\n"
+            "2. What should we call it?\n"
+            "3. Brief description of what it does\n"
+            "4. Any specific tech requirements?\n\n"
+            "Once enough info gathered, summarise and ask user to confirm.\n"
+            "On confirmation: create project folder, register BuildTargetProfile,\n"
+            "and store in ProjectSession for pipeline routing.\n\n"
+            "User triggers Weaver with phrases like:\n"
+            "'send that to weaver', 'how does that look all together',\n"
+            "'weave that together', etc."
+        ),
+    ),
+
+    CanonicalIntent.LIST_REGISTERED_PROJECTS: IntentDefinition(
+        intent=CanonicalIntent.LIST_REGISTERED_PROJECTS,
+        trigger_phrases=[
+            "list projects",
+            "show projects",
+            "Astra, list projects",
+            "astra, list projects",
+            "what projects are registered",
+            "Astra, what projects do you know about",
+        ],
+        trigger_patterns=[
+            r"(?:list|show|what)\s+(?:registered\s+)?projects",
+        ],
+        requires_confirmation=False,
+        description="List all registered external projects",
+        behavior="Display all active registered projects with scan status.",
     ),
 }

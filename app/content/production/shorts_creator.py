@@ -411,6 +411,7 @@ def cut_shorts(
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
             "-c:a", "aac", "-b:a", "128k",
+            "-shortest",
             "-r", "30",
             output_path,
         ])
@@ -443,6 +444,7 @@ def cut_shorts(
             )
 
     return outputs
+
 
 
 

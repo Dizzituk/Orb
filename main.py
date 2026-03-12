@@ -306,6 +306,13 @@ app.include_router(content_item_router)
 app.include_router(content_stream_router)
 app.include_router(builds_router)
 app.include_router(education_router)
+
+# v11.0: Project Registry
+try:
+    from app.project_registry.api_router import router as project_registry_router
+    app.include_router(project_registry_router, dependencies=[Depends(require_auth)])
+except Exception as _pr_err:
+    print(f'[main.py] Project registry router not available: {_pr_err}')
 app.include_router(settings_router)
 app.include_router(transparency_router)
 
@@ -386,6 +393,14 @@ try:
     print("[startup] Image generation: [OK] registered")
 except ImportError as e:
     print(f"[startup] Image generation: [WARN] {e}")
+
+# Optimize Tab — codebase analysis and improvement engine
+try:
+    from app.optimize.router import router as optimize_router
+    app.include_router(optimize_router, tags=["Optimize"], dependencies=[Depends(require_auth)])
+    print("[startup] Optimize: [OK] registered")
+except Exception as e:
+    print(f"[startup] Optimize: [WARN] {e}")
 
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(static_dir):

@@ -202,7 +202,7 @@ def _brute_force_search(
         from app.rag.models import ArchCodeChunk, SourceType
 
         # Generate query embedding
-        query_embedding = generate_embedding(query)
+        query_embedding = generate_embedding(query, task_type="RETRIEVAL_QUERY")
         if not query_embedding:
             return []
 

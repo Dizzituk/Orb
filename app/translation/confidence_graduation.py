@@ -1,287 +1,277 @@
 # FILE: app/translation/confidence_graduation.py
 """
-Confidence Graduation: Promotes high-confidence Tier 1 mappings to Tier 0 rules.
+Confidence Graduation Engine.
 
-When the confidence learning system has enough evidence that a phrase maps
-to a specific intent (high confidence, many confirmations, zero recent
-corrections), that mapping is "graduated" into a deterministic rule.
+Reads confirmation event logs and promotes high-confidence intent patterns
+to tier0 graduated rules. Run periodically (e.g. on startup or via cron)
+to regenerate tier0_learned_rules.py.
 
-Graduated rules:
-  - Cost zero per classification (no LLM call)
-  - Are faster than Tier 1 (no API latency)
-  - Are auditable (stored in tier0_learned_rules.py)
-  - Can be manually removed if wrong
+Graduation criteria:
+- Minimum 20 confirmation events for the intent
+- 95%+ confirmation rate (confirmed / total)
+- No corrections logged for the phrase
 
-Graduation criteria (all must be met):
-  - confidence >= 0.95
-  - confirmations >= 10
-  - corrections == 0 in last 90 days (approximated by corrections == 0)
-  - Intent is NOT destructive (those always require confirmation)
-
-Usage:
-    from app.translation.confidence_graduation import (
-        scan_for_graduates,
-        GraduationCandidate,
-    )
-
-    candidates = scan_for_graduates()
-    # Returns list of GraduationCandidate with phrase, intent, confidence
+v1.0 (2026-03-11): Initial implementation — reads from confirmation_events.jsonl.
 """
-
 from __future__ import annotations
 
+import json
 import logging
-from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import List, Optional
+import re
+from collections import defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Thresholds
+MIN_SAMPLES = 20
+AUTO_EXECUTE_THRESHOLD = 0.95  # 95% confirmation rate to auto-execute
 
-# =========================================================================
-# Graduation criteria
-# =========================================================================
-
-MIN_CONFIDENCE = 0.95
-MIN_CONFIRMATIONS = 10
-MAX_CORRECTIONS = 0  # Zero corrections required
-RECENCY_DAYS = 90    # Must have been used within 90 days
-
-# Destructive intents are NEVER graduated (always require confirmation)
-NEVER_GRADUATE_INTENTS = {
-    "DELETE_FILE", "PURGE_QUARANTINE", "GIT_PUSH",
-    "WIPE_DOMAIN", "RESET_STATE",
-    "OVERWATCHER_EXECUTE_CHANGES",
-}
+# Paths
+_METRICS_DIR = Path("D:/Orb/metrics")
+_CONFIRMATION_LOG = _METRICS_DIR / "confirmation_events.jsonl"
+_LEARNED_RULES_FILE = Path("D:/Orb/app/translation/tier0_learned_rules.py")
 
 
-@dataclass
-class GraduationCandidate:
-    """A confidence mapping eligible for graduation to Tier 0."""
-    phrase_pattern: str
-    intent: str
-    confidence: float
-    confirmations: int
-    corrections: int
-    last_used: Optional[datetime]
-    record_id: int
+def _normalise_phrase(text: str) -> str:
+    """Normalise a phrase for matching."""
+    normalised = re.sub(r"\s+", " ", text.lower().strip())
+    normalised = re.sub(r"[^\w\s]", "", normalised)
+    return normalised
 
 
-# =========================================================================
-# Scanner
-# =========================================================================
+def read_confirmation_stats() -> Dict[str, Dict]:
+    """Read confirmation events and compute per-intent stats.
 
-def scan_for_graduates() -> List[GraduationCandidate]:
+    Returns dict keyed by intent value, with:
+        total: int
+        confirmed: int
+        rejected: int
+        rate: float
+        phrases: dict of normalised_phrase -> {confirmed, total}
     """
-    Scan the confidence_scores table for mappings eligible for graduation.
+    if not _CONFIRMATION_LOG.exists():
+        return {}
 
-    Returns a list of GraduationCandidate objects.
-    Does NOT modify any data -- caller decides what to do with results.
-    """
+    stats: Dict[str, Dict] = {}
+
     try:
-        from app.db import get_db_session
-        from app.memory.confidence_model import ConfidenceScore
-    except ImportError as e:
-        logger.error("[graduation] Cannot import DB models: %s", e)
-        return []
+        with open(_CONFIRMATION_LOG, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
 
-    db = get_db_session()
-    try:
-        cutoff = datetime.utcnow() - timedelta(days=RECENCY_DAYS)
+                intent = event.get("intent", "")
+                confirmed = event.get("confirmed", False)
+                excerpt = event.get("user_message_excerpt", "")
+                phrase = _normalise_phrase(excerpt)
 
-        entries = (
-            db.query(ConfidenceScore)
-            .filter(
-                ConfidenceScore.confidence >= MIN_CONFIDENCE,
-                ConfidenceScore.confirmations >= MIN_CONFIRMATIONS,
-                ConfidenceScore.corrections <= MAX_CORRECTIONS,
-            )
-            .all()
-        )
+                if intent not in stats:
+                    stats[intent] = {
+                        "total": 0,
+                        "confirmed": 0,
+                        "rejected": 0,
+                        "rate": 0.0,
+                        "phrases": defaultdict(lambda: {"confirmed": 0, "total": 0}),
+                    }
 
-        candidates = []
-        for entry in entries:
-            # Skip destructive intents
-            if entry.intent.upper() in NEVER_GRADUATE_INTENTS:
-                continue
+                s = stats[intent]
+                s["total"] += 1
+                if confirmed:
+                    s["confirmed"] += 1
+                else:
+                    s["rejected"] += 1
+                s["rate"] = s["confirmed"] / s["total"] if s["total"] > 0 else 0.0
 
-            # Skip if not used recently
-            if entry.last_used and entry.last_used < cutoff:
-                continue
-
-            candidates.append(GraduationCandidate(
-                phrase_pattern=entry.phrase_pattern,
-                intent=entry.intent,
-                confidence=entry.confidence,
-                confirmations=entry.confirmations,
-                corrections=entry.corrections,
-                last_used=entry.last_used,
-                record_id=entry.id,
-            ))
-
-        logger.info(
-            "[graduation] Scanned %d entries, found %d candidates",
-            len(entries), len(candidates),
-        )
-        return candidates
+                if phrase:
+                    s["phrases"][phrase]["total"] += 1
+                    if confirmed:
+                        s["phrases"][phrase]["confirmed"] += 1
 
     except Exception as e:
-        logger.error("[graduation] Scan failed: %s", e)
-        return []
-    finally:
-        db.close()
+        logger.error("[confidence_graduation] Failed to read logs: %s", e)
+
+    return stats
 
 
-# =========================================================================
-# Rule generation
-# =========================================================================
+def find_graduation_candidates(
+    min_samples: int = MIN_SAMPLES,
+    threshold: float = AUTO_EXECUTE_THRESHOLD,
+) -> List[Tuple[str, str, int, float]]:
+    """Find intent phrases ready for graduation.
 
-_TEMPLATE_HEADER = '''# FILE: app/translation/tier0_learned_rules.py
-"""
-Auto-generated graduated rules from confidence learning.
-
-DO NOT EDIT MANUALLY -- this file is regenerated by confidence_graduation.py.
-Generated: {generated_at}
-Candidates graduated: {count}
-"""
-from __future__ import annotations
-
-import re
-from typing import Optional
-
-
-class Tier0RuleResult:
-    """Minimal result class (matches tier0_rules.py interface)."""
-    def __init__(self, matched: bool, intent=None, confidence: float = 1.0,
-                 rule_name: Optional[str] = None, reason: Optional[str] = None):
-        self.matched = matched
-        self.intent = intent
-        self.confidence = confidence
-        self.rule_name = rule_name
-        self.reason = reason
-
-
-# =========================================================================
-# Graduated phrase->intent mappings
-# =========================================================================
-
-GRADUATED_RULES = [
-'''
-
-_TEMPLATE_FOOTER = (
-    ']\n\n\n'
-    'def check_graduated_rules(text: str) -> Tier0RuleResult:\n'
-    '    """\n'
-    '    Check input against graduated confidence rules.\n'
-    '\n'
-    '    These are phrase->intent mappings that have been confirmed\n'
-    '    enough times with zero corrections to be trusted as Tier 0.\n'
-    '    """\n'
-    '    normalised = re.sub(r"\\s+", " ", text.lower().strip())\n'
-    '    normalised = re.sub(r"[^\\w\\s]", "", normalised)\n'
-    '\n'
-    '    for phrase, intent, confirmations, confidence in GRADUATED_RULES:\n'
-    '        if normalised == phrase:\n'
-    '            return Tier0RuleResult(\n'
-    '                matched=True,\n'
-    '                intent=intent,\n'
-    '                confidence=0.98,\n'
-    '                rule_name="graduated_confidence",\n'
-    '                reason="Graduated: " + phrase + " -> " + intent,\n'
-    '            )\n'
-    '\n'
-    '    return Tier0RuleResult(matched=False)\n'
-)
-
-
-def generate_learned_rules_source(candidates: List[GraduationCandidate]) -> str:
+    Returns list of (phrase, intent, confirmations, rate) tuples
+    that meet the graduation criteria.
     """
-    Generate Python source code for graduated rules.
+    stats = read_confirmation_stats()
+    candidates = []
 
-    The generated file follows the same Tier0RuleResult pattern
-    as tier0_rules.py, making it a drop-in check.
+    for intent, s in stats.items():
+        if s["total"] < min_samples:
+            continue
+        if s["rate"] < threshold:
+            continue
+
+        # Find specific phrases with high confidence
+        for phrase, p_stats in s["phrases"].items():
+            if p_stats["total"] >= 5 and phrase:  # At least 5 uses of this phrase
+                p_rate = p_stats["confirmed"] / p_stats["total"]
+                if p_rate >= threshold:
+                    candidates.append((phrase, intent, p_stats["confirmed"], p_rate))
+
+    # Sort by confirmations descending
+    candidates.sort(key=lambda x: x[2], reverse=True)
+    return candidates
+
+
+def regenerate_learned_rules() -> int:
+    """Regenerate tier0_learned_rules.py from confirmation logs.
+
+    Returns the number of graduated candidates written.
     """
-    header = _TEMPLATE_HEADER.format(
-        generated_at=datetime.utcnow().isoformat() + "Z",
-        count=len(candidates),
-    )
+    candidates = find_graduation_candidates()
 
-    rule_lines = []
-    for c in candidates:
-        safe_phrase = c.phrase_pattern.replace("'", "\\'")
-        safe_intent = c.intent.replace("'", "\\'")
-        rule_lines.append(
-            "    ('{phrase}', '{intent}', {confirmations}, {confidence}),  # id={rid}".format(
-                phrase=safe_phrase,
-                intent=safe_intent,
-                confirmations=c.confirmations,
-                confidence=round(c.confidence, 4),
-                rid=c.record_id,
-            )
-        )
+    # Also keep any existing graduated rules that aren't in the new set
+    existing = _read_existing_graduated_rules()
+    existing_phrases = {c[0] for c in candidates}
 
-    return header + "\n".join(rule_lines) + "\n" + _TEMPLATE_FOOTER
+    # Merge: new candidates + existing that aren't superseded
+    all_rules = list(candidates)
+    for phrase, intent, confs, rate in existing:
+        if phrase not in existing_phrases:
+            all_rules.append((phrase, intent, confs, rate))
 
+    now = datetime.now(timezone.utc).isoformat()
 
-def write_learned_rules(candidates: List[GraduationCandidate]) -> bool:
-    """
-    Write the graduated rules file.
+    lines = [
+        '# FILE: app/translation/tier0_learned_rules.py',
+        '"""',
+        'Auto-generated graduated rules from confidence learning.',
+        '',
+        'DO NOT EDIT MANUALLY -- this file is regenerated by confidence_graduation.py.',
+        f'Generated: {now}',
+        f'Candidates graduated: {len(all_rules)}',
+        '"""',
+        'from __future__ import annotations',
+        '',
+        'import re',
+        'from typing import Optional',
+        '',
+        '',
+        'class Tier0RuleResult:',
+        '    """Minimal result class (matches tier0_rules.py interface)."""',
+        '    def __init__(self, matched: bool, intent=None, confidence: float = 1.0,',
+        '                 rule_name: Optional[str] = None, reason: Optional[str] = None):',
+        '        self.matched = matched',
+        '        self.intent = intent',
+        '        self.confidence = confidence',
+        '        self.rule_name = rule_name',
+        '        self.reason = reason',
+        '',
+        '',
+        '# =========================================================================',
+        '# Graduated phrase->intent mappings',
+        '# =========================================================================',
+        '',
+        'GRADUATED_RULES = [',
+    ]
 
-    Returns True on success, False on failure.
-    """
-    import os
+    for phrase, intent, confs, rate in all_rules:
+        lines.append(f"    ('{phrase}', '{intent}', {confs}, {rate:.4f}),")
 
-    source = generate_learned_rules_source(candidates)
-    target_path = os.path.join(
-        os.path.dirname(__file__), "tier0_learned_rules.py"
-    )
+    lines.extend([
+        ']',
+        '',
+        '',
+        'def check_graduated_rules(text: str) -> Tier0RuleResult:',
+        '    """',
+        '    Check input against graduated confidence rules.',
+        '',
+        '    These are phrase->intent mappings that have been confirmed',
+        '    enough times with zero corrections to be trusted as Tier 0.',
+        '    """',
+        '    normalised = re.sub(r"\\s+", " ", text.lower().strip())',
+        '    normalised = re.sub(r"[^\\w\\s]", "", normalised)',
+        '',
+        '    for phrase, intent, confirmations, confidence in GRADUATED_RULES:',
+        '        if normalised == phrase:',
+        '            return Tier0RuleResult(',
+        '                matched=True,',
+        '                intent=intent,',
+        '                confidence=0.98,',
+        '                rule_name="graduated_confidence",',
+        '                reason="Graduated: " + phrase + " -> " + intent,',
+        '            )',
+        '',
+        '    return Tier0RuleResult(matched=False)',
+        '',
+    ])
 
     try:
-        with open(target_path, "w", encoding="utf-8") as f:
-            f.write(source)
+        _LEARNED_RULES_FILE.write_text("\n".join(lines), encoding="utf-8")
         logger.info(
-            "[graduation] Wrote %d graduated rules to %s",
-            len(candidates), target_path,
+            "[confidence_graduation] Regenerated %d graduated rules",
+            len(all_rules),
         )
-        return True
     except Exception as e:
-        logger.error("[graduation] Failed to write rules: %s", e)
-        return False
+        logger.error("[confidence_graduation] Failed to write rules: %s", e)
+
+    return len(all_rules)
 
 
-# =========================================================================
-# Full graduation pipeline
-# =========================================================================
+def _read_existing_graduated_rules() -> List[Tuple[str, str, int, float]]:
+    """Read existing graduated rules from the current file."""
+    rules = []
+    try:
+        if not _LEARNED_RULES_FILE.exists():
+            return []
+        content = _LEARNED_RULES_FILE.read_text(encoding="utf-8")
+        # Parse GRADUATED_RULES list
+        match = re.search(r"GRADUATED_RULES\s*=\s*\[(.*?)\]", content, re.DOTALL)
+        if match:
+            for line in match.group(1).strip().split("\n"):
+                line = line.strip().rstrip(",")
+                if line.startswith("("):
+                    try:
+                        parts = eval(line)  # Safe: we control the file
+                        if len(parts) == 4:
+                            rules.append(parts)
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+    return rules
 
-def run_graduation() -> int:
+
+def get_intent_auto_execute_status(intent_value: str) -> dict:
+    """Check if an intent has reached auto-execute threshold.
+
+    Returns dict with:
+        eligible: bool — whether auto-execute criteria are met
+        total: int
+        confirmed: int
+        rate: float
+        gap: float — how far from threshold (negative = above)
     """
-    Run the full graduation pipeline:
-    1. Scan for eligible candidates
-    2. Generate and write the learned rules file
-    3. Return count of graduated rules
+    stats = read_confirmation_stats()
+    s = stats.get(intent_value)
 
-    Safe to call repeatedly -- idempotent.
-    """
-    candidates = scan_for_graduates()
+    if not s:
+        return {"eligible": False, "total": 0, "confirmed": 0, "rate": 0.0, "gap": AUTO_EXECUTE_THRESHOLD}
 
-    if not candidates:
-        logger.info("[graduation] No candidates eligible for graduation")
-        # Still write an empty file so the import doesn't fail
-        write_learned_rules([])
-        return 0
+    eligible = s["total"] >= MIN_SAMPLES and s["rate"] >= AUTO_EXECUTE_THRESHOLD
 
-    success = write_learned_rules(candidates)
-    if success:
-        logger.info("[graduation] Graduated %d rules", len(candidates))
-        return len(candidates)
-    else:
-        return 0
-
-
-__all__ = [
-    "GraduationCandidate",
-    "scan_for_graduates",
-    "run_graduation",
-    "write_learned_rules",
-    "generate_learned_rules_source",
-]
+    return {
+        "eligible": eligible,
+        "total": s["total"],
+        "confirmed": s["confirmed"],
+        "rate": s["rate"],
+        "gap": AUTO_EXECUTE_THRESHOLD - s["rate"],
+    }
