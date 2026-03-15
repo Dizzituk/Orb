@@ -351,6 +351,7 @@ def should_confirm_intent_routing(
         "MEMORY_STORE": ("Save to memory?", "I'll remember this fact/preference."),
         "GENERATE_EMBEDDINGS": ("Generate embeddings?", "I'll run the embedding pipeline."),
         "MULTI_FILE_REFACTOR": ("Refactor across files?", "I'll modify multiple files."),
+        "BUILD_AND_DEPLOY": ("Build APK and upload to cloud?", "I'll compile the APK and upload it to cloud storage."),
     }
 
     desc, detail = intent_descriptions.get(intent, (f"Run {intent}?", f"Routing to {intent} handler."))

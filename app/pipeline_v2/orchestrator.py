@@ -502,6 +502,16 @@ def _compile_and_send_to_debug(
             title=title,
             description=description,
             error_summary="; ".join(result.errors[:3]) if result.errors else "",
+            metadata_json=json.dumps({
+                "job_id": job_id,
+                "build_target_id": profile.project_id if profile else None,
+                "build_target_name": profile.project_name if profile else None,
+                "project_root": profile.project_root if profile else None,
+                "language": profile.language if profile else None,
+                "framework": profile.framework if profile else None,
+                "success": result.success,
+                "files_written": len(build.all_files_written) if build else 0,
+            }),
         )
         emit(f"   🐛 Debug project created: {debug_project.get('id', '?')}")
     except Exception as e:

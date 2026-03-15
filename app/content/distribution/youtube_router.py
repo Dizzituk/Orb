@@ -17,7 +17,7 @@ Endpoints:
 import logging
 from typing import Optional, List
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -355,19 +355,30 @@ async def youtube_manual_upload(
         "auto_optimised": body.auto_optimise,
     }
 
+    # Always upload to YouTube — either immediately or with a scheduled publish time.
+    # YouTube handles the scheduling natively (private + publishAt).
+    from app.content.distribution.publisher import publish_output
+
+    pub_result = await publish_output(db, output.id)
+    result_data["publish_result"] = pub_result
+
     if scheduled_at:
         result_data["status"] = "scheduled"
         result_data["scheduled_at"] = scheduled_at.isoformat()
-        result_data["message"] = (
-            f"Video queued for {scheduled_at.strftime('%Y-%m-%d %H:%M UTC')}"
-        )
+        if pub_result.get("status") == "published":
+            result_data["message"] = (
+                f"Uploaded to YouTube (private). YouTube will publish at "
+                f"{scheduled_at.strftime('%Y-%m-%d %H:%M UTC')}"
+            )
+        else:
+            result_data["message"] = (
+                f"Schedule saved locally but YouTube upload failed: "
+                f"{pub_result.get('error', 'unknown error')}. "
+                f"Retry needed."
+            )
     else:
-        # Publish now
-        from app.content.distribution.publisher import publish_output
-
-        pub_result = await publish_output(db, output.id)
         result_data["status"] = pub_result.get("status", "unknown")
-        result_data["publish_result"] = pub_result
+        result_data["message"] = "Published immediately."
 
     return result_data
 

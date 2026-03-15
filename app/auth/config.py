@@ -133,10 +133,12 @@ def setup_password(password: str, enable_encryption: bool = True) -> dict:
     
     # Generate initial session
     session_token = _generate_session_token()
-    config["current_session"] = {
+    initial_session = {
         "token": session_token,
         "created_at": datetime.now().isoformat(),
     }
+    config["current_session"] = initial_session
+    config["active_sessions"] = [initial_session]
     
     _save_config(config)
     
@@ -157,6 +159,10 @@ def login(password: str) -> Optional[dict]:
     
     Security Level 4: Password is used ONLY for authentication.
     Encryption is already initialized via master key at backend startup.
+    
+    v2.0: Supports multiple concurrent sessions. Each login creates a new
+    session token without invalidating existing ones. This allows the desktop
+    and phone to be logged in simultaneously.
     """
     config = _load_config()
     stored_hash = config.get("password_hash")
@@ -169,6 +175,30 @@ def login(password: str) -> Optional[dict]:
     
     # Generate new session token
     session_token = _generate_session_token()
+    
+    # Multi-session support: store as a list of active sessions
+    # Migrate from single-session format if needed
+    sessions = config.get("active_sessions", [])
+    if not isinstance(sessions, list):
+        sessions = []
+    # Keep the existing current_session if present (backwards compat)
+    if config.get("current_session", {}).get("token"):
+        old_token = config["current_session"]["token"]
+        if not any(s.get("token") == old_token for s in sessions):
+            sessions.append(config["current_session"])
+    
+    # Add the new session
+    sessions.append({
+        "token": session_token,
+        "created_at": datetime.now().isoformat(),
+    })
+    
+    # Cap at 10 active sessions (prune oldest)
+    if len(sessions) > 10:
+        sessions = sessions[-10:]
+    
+    config["active_sessions"] = sessions
+    # Keep current_session pointing to the latest for backwards compat
     config["current_session"] = {
         "token": session_token,
         "created_at": datetime.now().isoformat(),
@@ -176,9 +206,6 @@ def login(password: str) -> Optional[dict]:
     config["last_login"] = datetime.now().isoformat()
     
     _save_config(config)
-    
-    # Note: Encryption is NOT initialized here anymore.
-    # Master key encryption is initialized at backend startup via ORB_MASTER_KEY.
     
     return {
         "session_token": session_token,
@@ -188,34 +215,59 @@ def login(password: str) -> Optional[dict]:
 
 
 def validate_session(token: str) -> bool:
-    """Validate a session token."""
+    """Validate a session token.
+    
+    v2.0: Checks against all active sessions, not just the latest one.
+    This allows desktop and phone to be logged in simultaneously.
+    """
     if not token:
         return False
     
     config = _load_config()
+    
+    # Check active_sessions list first (multi-session)
+    sessions = config.get("active_sessions", [])
+    if isinstance(sessions, list):
+        for session in sessions:
+            stored = session.get("token", "")
+            if stored and secrets.compare_digest(token, stored):
+                return True
+    
+    # Fallback: check current_session (backwards compat)
     session = config.get("current_session", {})
     stored_token = session.get("token")
+    if stored_token and secrets.compare_digest(token, stored_token):
+        return True
     
-    if not stored_token:
-        return False
-    
-    return secrets.compare_digest(token, stored_token)
+    return False
 
 
-def logout() -> bool:
+def logout(token: str = None) -> bool:
     """
-    Invalidate the current session.
+    Invalidate a session. If token is provided, only that session is removed.
+    If no token, all sessions are invalidated.
     
     Security Level 4: Encryption key is NOT cleared on logout.
     The master key remains active for the lifetime of the backend process.
     """
     config = _load_config()
-    config.pop("current_session", None)
+    
+    if token:
+        # Remove just the specified session
+        sessions = config.get("active_sessions", [])
+        config["active_sessions"] = [
+            s for s in sessions if not secrets.compare_digest(s.get("token", ""), token)
+        ]
+        # Clear current_session if it matches
+        current = config.get("current_session", {})
+        if current.get("token") and secrets.compare_digest(current["token"], token):
+            config.pop("current_session", None)
+    else:
+        # Clear all sessions
+        config.pop("current_session", None)
+        config["active_sessions"] = []
+    
     _save_config(config)
-    
-    # Note: We do NOT clear encryption key anymore.
-    # Master key encryption remains active until backend exits.
-    
     return True
 
 

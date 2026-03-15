@@ -131,6 +131,13 @@ def tier0_classify(text: str) -> Tier0RuleResult:
     if result.matched:
         return result
 
+    # 2b. Domain intent patterns (v3.0 — unified cross-domain routing)
+    # Run EARLY — before special-case handlers that might classify
+    # domain queries as CHAT_ONLY.
+    result = _check_domain_patterns(text_stripped)
+    if result.matched:
+        return result
+
     # 3. Special case handlers
     for check_fn in (
         check_update_architecture,
@@ -258,6 +265,112 @@ def _check_exact_trigger_phrases(text: str) -> Tier0RuleResult:
                         rule_name="exact_trigger_phrase",
                         reason=f"Exact match (case-insensitive): '{phrase}'",
                     )
+    return Tier0RuleResult(matched=False)
+
+
+# =============================================================================
+# DOMAIN PATTERN MATCHING (v3.0 — unified cross-domain routing)
+# =============================================================================
+
+# Domain intents that should be checked via regex search (not match)
+_DOMAIN_INTENT_IDS = {
+    CanonicalIntent.DOMAIN_FINANCE,
+    CanonicalIntent.DOMAIN_INVESTMENTS,
+    CanonicalIntent.DOMAIN_CONTENT,
+    CanonicalIntent.DOMAIN_SOCIAL,
+    CanonicalIntent.DOMAIN_LIFESTYLE,
+    CanonicalIntent.DOMAIN_DEBUG,
+    CanonicalIntent.DOMAIN_EDUCATION,
+    CanonicalIntent.DOMAIN_BUILDS,
+}
+
+
+def _check_domain_patterns(text: str) -> Tier0RuleResult:
+    """Check for domain intent patterns using regex search.
+
+    Domain patterns use word boundaries and need search() not match().
+    Scores by number of pattern matches to pick the best domain
+    when multiple could apply.
+    """
+    text_lower = text.lower()
+    best_intent = None
+    best_score = 0
+    best_pattern = ""
+
+    for intent_id in _DOMAIN_INTENT_IDS:
+        defn = INTENT_DEFINITIONS.get(intent_id)
+        if not defn:
+            continue
+
+        score = 0
+        matched_pattern = ""
+
+        # Check trigger phrases (substring match)
+        for phrase in defn.trigger_phrases:
+            if phrase.lower() in text_lower:
+                score += 2
+                matched_pattern = phrase
+
+        # Check trigger patterns (regex search)
+        for pattern_str in defn.trigger_patterns:
+            try:
+                if re.search(pattern_str, text, re.IGNORECASE):
+                    score += 1
+                    if not matched_pattern:
+                        matched_pattern = pattern_str
+            except re.error:
+                continue
+
+        if score > best_score:
+            best_score = score
+            best_intent = intent_id
+            best_pattern = matched_pattern
+
+    # Also check for generic navigation patterns: "go to X", "open X", "take me to X"
+    # These should match the domain that X corresponds to
+    nav_match = re.search(
+        r'\b(?:go\s+to|open|show|move\s+to|switch\s+to|take\s+me\s+to|navigate\s+to)\s+'
+        r'(investment|finance|account|content|social|health|fitness|debug|education|build|project\s+build)',
+        text_lower,
+    )
+    if nav_match:
+        nav_target = nav_match.group(1).strip()
+        nav_map = {
+            "investment": CanonicalIntent.DOMAIN_INVESTMENTS,
+            "finance": CanonicalIntent.DOMAIN_FINANCE,
+            "account": CanonicalIntent.DOMAIN_FINANCE,
+            "content": CanonicalIntent.DOMAIN_CONTENT,
+            "social": CanonicalIntent.DOMAIN_SOCIAL,
+            "health": CanonicalIntent.DOMAIN_LIFESTYLE,
+            "fitness": CanonicalIntent.DOMAIN_LIFESTYLE,
+            "debug": CanonicalIntent.DOMAIN_DEBUG,
+            "education": CanonicalIntent.DOMAIN_EDUCATION,
+            "build": CanonicalIntent.DOMAIN_BUILDS,
+            "project build": CanonicalIntent.DOMAIN_BUILDS,
+        }
+        matched_intent = nav_map.get(nav_target)
+        if matched_intent:
+            return Tier0RuleResult(
+                matched=True,
+                intent=matched_intent,
+                confidence=0.95,
+                rule_name="domain_navigation",
+                reason=f"Navigation command: '{nav_match.group(0)}' -> {matched_intent.value}",
+            )
+
+    # Require at least a score of 1 to trigger domain routing.
+    # A single regex pattern match on a domain keyword is enough —
+    # false positives are low risk since domain chat just enriches
+    # context, it doesn't execute dangerous commands.
+    if best_intent and best_score >= 1:
+        return Tier0RuleResult(
+            matched=True,
+            intent=best_intent,
+            confidence=min(0.95, 0.7 + best_score * 0.05),
+            rule_name="domain_pattern",
+            reason=f"Domain match: {best_intent.value} (score={best_score}, pattern='{best_pattern}')",
+        )
+
     return Tier0RuleResult(matched=False)
 
 

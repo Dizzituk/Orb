@@ -94,16 +94,16 @@ def get_project(project_id: str) -> Optional[Dict]:
         conn.close()
 
 
-def create_project(title: str, description: str = "", error_summary: str = "") -> Dict:
+def create_project(title: str, description: str = "", error_summary: str = "", metadata_json: str = "{}") -> Dict:
     """Create a new debug project."""
     conn = _connect()
     try:
         now = _now()
         project_id = uuid.uuid4().hex[:12]
         conn.execute(
-            f"INSERT INTO {TABLE} (id, title, description, status, error_summary, created_at, updated_at) "
-            f"VALUES (?, ?, ?, 'active', ?, ?, ?)",
-            (project_id, title, description, error_summary, now, now),
+            f"INSERT INTO {TABLE} (id, title, description, status, error_summary, metadata_json, created_at, updated_at) "
+            f"VALUES (?, ?, ?, 'active', ?, ?, ?, ?)",
+            (project_id, title, description, error_summary, metadata_json, now, now),
         )
         conn.commit()
         return get_project(project_id)

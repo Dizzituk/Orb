@@ -96,6 +96,29 @@ app = FastAPI(
 # CORS
 # ============================================================================
 
+# Suppress noisy access log entries (thumbnails, polling, OPTIONS)
+import logging as _logging
+
+class _QuietAccessFilter(_logging.Filter):
+    """Filter out high-frequency endpoints from uvicorn access logs."""
+    _QUIET_PATHS = (
+        '/drive/thumbnail',
+        '/bridge/pending-navigation',
+        '/ping',
+    )
+    def filter(self, record: _logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        # Suppress OPTIONS preflight requests
+        if 'OPTIONS' in msg:
+            return False
+        # Suppress noisy polling/thumbnail endpoints
+        for path in self._QUIET_PATHS:
+            if path in msg:
+                return False
+        return True
+
+_logging.getLogger('uvicorn.access').addFilter(_QuietAccessFilter())
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -223,6 +246,29 @@ def on_startup():
         print("[startup] Investments scheduler: [OK] 08:00 + 18:00 UK")
     except Exception as e:
         print(f"[startup] Investments scheduler: [WARN] {e}")
+
+    # v3.0: Take a fresh investments snapshot on startup if stale/missing
+    try:
+        from app.db import SessionLocal
+        from app.investments.models import PortfolioSnapshot
+        from datetime import datetime, timezone, timedelta
+        _inv_db = SessionLocal()
+        _latest = _inv_db.query(PortfolioSnapshot).order_by(PortfolioSnapshot.captured_at.desc()).first()
+        _stale = not _latest or (datetime.now(timezone.utc) - _latest.captured_at.replace(tzinfo=timezone.utc)) > timedelta(hours=12)
+        if _stale:
+            import asyncio
+            from app.investments.service import take_snapshot
+            try:
+                asyncio.get_event_loop().run_until_complete(take_snapshot(_inv_db))
+                print("[startup] Investments: [OK] fresh snapshot taken")
+            except Exception as _snap_err:
+                print(f"[startup] Investments snapshot: [WARN] {_snap_err}")
+        else:
+            _age = datetime.now(timezone.utc) - _latest.captured_at.replace(tzinfo=timezone.utc)
+            print(f"[startup] Investments: [OK] snapshot {_age.seconds // 3600}h old")
+        _inv_db.close()
+    except Exception as e:
+        print(f"[startup] Investments startup snapshot skipped: {e}")
 
     try:
         from app.finance.seed import seed_finance_data
@@ -368,6 +414,14 @@ try:
     print("[startup] Recordings: [OK] registered")
 except Exception as e:
     print(f"[startup] Recordings not available: {e}")
+
+# Debug File Upload (images + text for Gemini multimodal)
+try:
+    from app.debug.file_upload_router import router as debug_upload_router
+    app.include_router(debug_upload_router, dependencies=[Depends(require_auth)], tags=["Debug File Upload"])
+    print("[startup] Debug File Upload: [OK] registered")
+except Exception as e:
+    print(f"[startup] Debug File Upload not available: {e}")
 app.include_router(introspection_router, tags=["Introspection"], dependencies=[Depends(require_auth)])
 
 if _TRANSCRIBE_AVAILABLE:
@@ -415,6 +469,35 @@ def read_index():
 @app.get("/ping")
 def ping():
     return {"status": "ok"}
+
+
+@app.get("/health")
+def health():
+    """Health endpoint for Astra Bridge companion app."""
+    return {"status": "ok", "service": "astra-backend", "version": "2.2"}
+
+
+# Bridge API (Android companion app)
+try:
+    from app.bridge.router import router as bridge_router
+    app.include_router(bridge_router)
+    print("[startup] Bridge API: [OK] registered")
+except ImportError as _bridge_err:
+    print(f"[startup] Bridge API: [WARN] {_bridge_err}")
+
+try:
+    from app.cloud.router import router as cloud_router
+    app.include_router(cloud_router)
+    print("[startup] Cloud (Proton Drive): [OK] registered")
+except Exception as _cloud_err:
+    print(f"[startup] Cloud: [WARN] {_cloud_err}")
+
+try:
+    from app.email_service.router import router as email_router
+    app.include_router(email_router)
+    print("[startup] Email (Proton Mail): [OK] registered")
+except Exception as _email_err:
+    print(f"[startup] Email: [WARN] {_email_err}")
 
 
 @app.post("/admin/reset-flow/{project_id}")

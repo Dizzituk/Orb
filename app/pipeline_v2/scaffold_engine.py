@@ -122,6 +122,14 @@ async def run_scaffold_engine(
     result.total_files = len(all_files)
     result.duration_seconds = time.time() - t_start
 
+    # v2.1: Copy Gradle wrapper for Android greenfield projects
+    if profile and profile.language == "kotlin":
+        try:
+            from app.pipeline_v2.scaffolds.android_config_scaffolds import copy_gradle_wrapper
+            if copy_gradle_wrapper(profile.project_root.replace('/', os.sep)):
+                emit("   Copied Gradle wrapper (gradlew, jar, properties)")
+        except Exception as _gw_err:
+            emit(f"   Gradle wrapper copy failed: {_gw_err}")
     create_count = sum(1 for f in result.files if f.is_new)
     modify_count = sum(1 for f in result.files if not f.is_new)
     emit(f"\n🏗️ Scaffold complete: {create_count} skeletons written, "
@@ -145,6 +153,14 @@ def _generate_skeleton(
     norm = file_path.replace("\\", "/")
     ext = os.path.splitext(norm)[1].lower()
 
+    # v2.1: Check Android config files first (build.gradle.kts, AndroidManifest.xml, etc.)
+    # These need full, compilable content — not stubs.
+    if profile and profile.language == "kotlin":
+        from app.pipeline_v2.scaffolds.android_config_scaffolds import generate_android_config
+        config_content = generate_android_config(norm, requirements, profile)
+        if config_content is not None:
+            return config_content
+
     if ext == ".kt":
         from app.pipeline_v2.scaffolds.kotlin_scaffolds import generate_kotlin_skeleton
         return generate_kotlin_skeleton(norm, requirements, profile)
@@ -156,6 +172,14 @@ def _generate_skeleton(
         return _skeleton_css(norm, requirements)
     elif ext == ".xml" and "res/" in norm:
         return _skeleton_android_xml(norm, requirements, profile)
+    elif ext == ".xml":
+        # Non-res XML (like AndroidManifest) — try Android config scaffolds
+        if profile and profile.language == "kotlin":
+            from app.pipeline_v2.scaffolds.android_config_scaffolds import generate_android_config
+            config_content = generate_android_config(norm, requirements, profile)
+            if config_content is not None:
+                return config_content
+        return f'<?xml version="1.0" encoding="utf-8"?>\n<!-- {norm} — scaffold -->\n'
     else:
         return f"# Scaffold stub for {norm}\n# TODO: Implement\n"
 

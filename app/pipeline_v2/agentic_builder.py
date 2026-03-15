@@ -135,7 +135,8 @@ async def run_agentic_builder(
     session = BuildSession(session_number=1)
 
     try:
-        from app.pipeline_v2.llm_tools import run_tool_loop
+        from app.pipeline_v2.llm_tools import run_tool_loop, set_tool_profile
+        set_tool_profile(profile)  # v2.3: Route tools to host for Android builds
 
         files_written = set()
 
@@ -178,6 +179,43 @@ async def run_agentic_builder(
             on_text=on_text,
             existing_messages=existing_messages,
         )
+
+        # v2.1: Guard against premature BUILDER_COMPLETE.
+        # If the builder declared done but hasn't written at least 50% of
+        # the scaffold files, push it back with a continuation prompt.
+        _expected_files = scaffold.total_files if scaffold else 0
+        _written_count = len(files_written)
+        _write_ratio = _written_count / max(_expected_files, 1)
+        if session.completed and _write_ratio < 0.5 and _expected_files > 3:
+            session.completed = False
+            emit(f"   \u26a0\ufe0f Builder declared COMPLETE but only wrote {_written_count}/{_expected_files} files")
+            emit(f"   \U0001f504 Pushing back — requesting continuation...")
+            _pushback = (
+                f"You declared BUILDER_COMPLETE but you have only written {_written_count} "
+                f"out of {_expected_files} scaffold files. You need to implement the remaining "
+                f"files. Read the scaffold files you haven't written yet and fill them in. "
+                f"Do NOT say BUILDER_COMPLETE until you have written ALL files."
+            )
+            messages_2, in_tok_2, out_tok_2 = await run_tool_loop(
+                system_prompt=system_prompt,
+                initial_user_message=_pushback,
+                provider=BUILDER_PROVIDER,
+                model=BUILDER_MODEL,
+                max_iterations=MAX_TOOL_CALLS,
+                max_tokens=BUILDER_MAX_OUTPUT,
+                on_tool_call=on_tool,
+                on_text=on_text,
+                existing_messages=messages,
+            )
+            messages = messages_2
+            in_tok += in_tok_2
+            out_tok += out_tok_2
+            # Check again
+            for msg in reversed(messages):
+                if msg.get("role") == "assistant" and "BUILDER_COMPLETE" in (msg.get("content") or ""):
+                    session.completed = True
+                    break
+            emit(f"   After pushback: {len(files_written)} files written")
 
         session.files_created = list(files_written)
         session.total_input_tokens = in_tok

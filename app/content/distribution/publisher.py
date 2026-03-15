@@ -237,6 +237,7 @@ async def _publish_to_facebook(output: ContentOutput) -> Dict[str, Any]:
             description=caption,
             title=metadata.get("title"),
             as_reel=metadata.get("as_reel", True),
+            scheduled_at=output.scheduled_at,
         )
     elif fmt in ("facebook_photo", "instagram_carousel"):
         image_url = metadata.get("public_image_url")

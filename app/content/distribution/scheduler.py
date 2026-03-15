@@ -39,9 +39,12 @@ DEFAULT_WINDOWS = {
 }
 
 # Minimum hours between posts on the same platform
+# YouTube splits by format: shorts can be daily, longform weekly
 MIN_INTERVAL_HOURS = {
     "instagram": 6,
-    "youtube": 24,
+    "youtube": 24,       # Default (shorts) — 1 per day
+    "youtube_short": 24, # Shorts: 1 per day
+    "youtube_longform": 168,  # Longform: 7 days (1 per week)
     "tiktok": 4,
     "facebook": 8,
     "twitter": 2,
@@ -56,29 +59,58 @@ def find_next_slot(
     db: Session,
     platform: str,
     after: Optional[datetime] = None,
+    output_format: Optional[str] = None,
 ) -> datetime:
     """
     Find the next available posting slot for a platform.
     Considers: posting windows, minimum intervals, existing schedule.
+
+    Uses learned posting windows (from analytics) when available,
+    falling back to hardcoded defaults when not enough data exists.
+
+    For YouTube, the interval depends on format:
+    - youtube_short: 24h (1 per day)
+    - youtube_longform: 168h (1 per week)
     """
     if after is None:
         after = datetime.now(timezone.utc)
     elif after.tzinfo is None:
         after = after.replace(tzinfo=timezone.utc)
 
-    windows = DEFAULT_WINDOWS.get(platform, [(12, 0)])
-    min_interval = timedelta(hours=MIN_INTERVAL_HOURS.get(platform, 6))
+    # Try learned windows first (analytics-driven), fall back to defaults
+    windows = None
+    try:
+        from app.content.distribution.posting_time_learner import get_learned_windows
+        # Check format-specific first (e.g. youtube_short), then platform
+        if output_format:
+            windows = get_learned_windows(output_format)
+        if not windows:
+            windows = get_learned_windows(platform)
+    except Exception:
+        pass
 
-    # Find last scheduled/published post on this platform
-    last_post = (
+    if not windows:
+        windows = DEFAULT_WINDOWS.get(platform, [(12, 0)])
+
+    # Look up interval by format first (e.g. "youtube_longform"), fall back to platform
+    interval_key = output_format or platform
+    min_interval = timedelta(
+        hours=MIN_INTERVAL_HOURS.get(interval_key, MIN_INTERVAL_HOURS.get(platform, 6))
+    )
+
+    # Find last scheduled/published post on this platform with the same format
+    query = (
         db.query(ContentOutput)
         .filter(
             ContentOutput.platform == platform,
             ContentOutput.scheduled_at.isnot(None),
         )
-        .order_by(ContentOutput.scheduled_at.desc())
-        .first()
     )
+    # For YouTube, only check interval against the same format type
+    if output_format and platform == "youtube":
+        query = query.filter(ContentOutput.output_format == output_format)
+
+    last_post = query.order_by(ContentOutput.scheduled_at.desc()).first()
 
     earliest = after
     if last_post and last_post.scheduled_at:
@@ -90,23 +122,27 @@ def find_next_slot(
             earliest = min_after
 
     # Find next window after earliest
+    # All times are UTC — ensure timezone is always attached
     candidate = earliest
     for _ in range(14):  # Search up to 14 days ahead
         for hour, minute in windows:
             slot = candidate.replace(
-                hour=hour, minute=minute, second=0, microsecond=0
+                hour=hour, minute=minute, second=0, microsecond=0,
+                tzinfo=timezone.utc,
             )
             if slot > earliest:
                 return slot
 
         # Move to next day
         candidate = (candidate + timedelta(days=1)).replace(
-            hour=0, minute=0, second=0, microsecond=0
+            hour=0, minute=0, second=0, microsecond=0,
+            tzinfo=timezone.utc,
         )
 
     # Fallback: next day at noon
     return (earliest + timedelta(days=1)).replace(
-        hour=12, minute=0, second=0, microsecond=0
+        hour=12, minute=0, second=0, microsecond=0,
+        tzinfo=timezone.utc,
     )
 
 
@@ -124,7 +160,7 @@ def schedule_output(
         raise ValueError(f"Output {output_id} not found")
 
     if scheduled_time is None:
-        scheduled_time = find_next_slot(db, output.platform)
+        scheduled_time = find_next_slot(db, output.platform, output_format=output.output_format)
 
     output.scheduled_at = scheduled_time
     db.commit()

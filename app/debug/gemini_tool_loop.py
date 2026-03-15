@@ -29,6 +29,35 @@ logger = logging.getLogger(__name__)
 SANDBOX_BASE = os.getenv("ASTRA_SANDBOX_URL", "http://192.168.250.2:8765")
 MAX_TOOL_ROUNDS = 30  # generous allowance for complex debug investigations
 
+# ---------------------------------------------------------------------------
+# Filesystem safety — restrict write/edit/shell to known project directories
+# Read and search are unrestricted (read-only is safe).
+# ---------------------------------------------------------------------------
+
+ALLOWED_WRITE_ROOTS = [
+    Path("D:/Orb"),                              # ASTRA backend
+    Path("D:/orb-desktop"),                       # ASTRA frontend
+    Path("D:/Astra Android Folder"),              # All Android projects
+    Path("C:/Users/dizzi/Documents"),             # User documents
+    Path("C:/Users/dizzi/OneDrive/Documents"),    # OneDrive documents
+    Path("C:/Users/dizzi/OneDrive/Pictures"),     # Pictures
+]
+
+
+def _is_path_allowed(path_str: str) -> bool:
+    """Check if a path falls within allowed write roots."""
+    try:
+        target = Path(path_str).resolve()
+        for root in ALLOWED_WRITE_ROOTS:
+            try:
+                if target == root.resolve() or root.resolve() in target.resolve().parents:
+                    return True
+            except (OSError, ValueError):
+                continue
+        return False
+    except Exception:
+        return False
+
 
 # ---------------------------------------------------------------------------
 # Tool definitions (Google Generative AI function declaration format)
@@ -56,15 +85,17 @@ TOOL_DECLARATIONS = [
     {
         "name": "write_file",
         "description": (
-            "Write content to a file in the SANDBOX. Only use for sandbox paths. "
-            "The sandbox is at 192.168.250.2 and is a safe, isolated environment."
+            "Create or overwrite a file on the filesystem. Use absolute paths "
+            "(e.g. D:/Orb/..., D:/Astra Android Folder/..., C:/Users/dizzi/...). "
+            "Can write any file type: .py, .kt, .tsx, .txt, .html, .md, .json, etc. "
+            "Parent directories are created automatically if they don't exist."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "File path relative to the sandbox project root",
+                    "description": "Absolute file path, e.g. D:/Astra Android Folder/Astra-Bridge/ARCHITECTURE.txt",
                 },
                 "content": {
                     "type": "string",
@@ -75,13 +106,38 @@ TOOL_DECLARATIONS = [
         },
     },
     {
+        "name": "edit_file",
+        "description": (
+            "Apply targeted find-and-replace edits to a file. The old_text must "
+            "match exactly and appear only once in the file. Use absolute paths."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute file path to edit",
+                },
+                "old_text": {
+                    "type": "string",
+                    "description": "Exact text to find (must be unique in the file)",
+                },
+                "new_text": {
+                    "type": "string",
+                    "description": "Text to replace it with",
+                },
+            },
+            "required": ["path", "old_text", "new_text"],
+        },
+    },
+    {
         "name": "run_shell",
         "description": (
-            "Run a PowerShell command in the SANDBOX. The sandbox is WINDOWS with PowerShell 7. "
+            "Run a PowerShell command on the host machine. This is Windows with PowerShell. "
             "NEVER use Linux commands (grep, ls, cat, sed, awk, bash). "
             "Use PowerShell equivalents: Select-String (not grep), Get-ChildItem (not ls), "
             "Get-Content (not cat), python (not python3). "
-            "Use for syntax checks, installing packages, running tests, or any shell operation. "
+            "Use for syntax checks, running builds, testing, installing packages, or any shell operation. "
             "Returns stdout, stderr, and exit code."
         ),
         "parameters": {
@@ -159,32 +215,56 @@ async def _exec_read_file(args: dict) -> str:
 
 
 async def _exec_write_file(args: dict) -> str:
-    """Write a file to the sandbox."""
+    """Write a file to the host filesystem (scoped to allowed directories)."""
     path = args.get("path", "")
     content = args.get("content", "")
+    if not _is_path_allowed(path):
+        return f"ERROR: Write blocked — {path} is outside allowed directories. Allowed roots: {', '.join(str(r) for r in ALLOWED_WRITE_ROOTS)}"
     try:
-        from app.pipeline_v2.sandbox_tools import write_file
-        ok = await write_file(path, content)
-        if ok:
-            return f"OK: Written {len(content)} chars to {path}"
-        return f"ERROR: Failed to write {path} to sandbox"
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+        logger.info("[gemini_tool_loop] write_file: %s (%d chars)", path, len(content))
+        return f"OK: Written {len(content)} chars to {path}"
     except Exception as e:
         return f"ERROR: {e}"
 
 
 async def _exec_run_shell(args: dict) -> str:
-    """Run a command in the sandbox."""
+    """Run a PowerShell command on the host (scoped to allowed directories)."""
     cmd = args.get("command", "")
+    # Block dangerous commands that could affect system-wide state
+    cmd_lower = cmd.lower()
+    _BLOCKED_PATTERNS = [
+        "remove-item c:\\", "remove-item 'c:", 'remove-item "c:',
+        "del c:\\", "rd c:\\", "rmdir c:\\",
+        "format-volume", "clear-disk",
+        "stop-computer", "restart-computer",
+        "set-executionpolicy",
+        "new-service", "remove-service",
+        "reg delete", "reg add",
+        "net user", "net localgroup",
+    ]
+    for blocked in _BLOCKED_PATTERNS:
+        if blocked in cmd_lower:
+            return f"ERROR: Command blocked for safety — contains '{blocked}'"
     try:
-        from app.pipeline_v2.sandbox_tools import run_shell
-        result = await run_shell(cmd, timeout_sec=30)
+        import asyncio
+        proc = await asyncio.create_subprocess_shell(
+            f'powershell.exe -NoProfile -Command "{cmd}"',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
         parts = []
-        if result.get("stdout"):
-            parts.append(result["stdout"][:3000])
-        if result.get("stderr"):
-            parts.append(f"STDERR: {result['stderr'][:1000]}")
-        parts.append(f"exit_code={result.get('exit_code', '?')}")
+        if stdout:
+            parts.append(stdout.decode("utf-8", errors="replace")[:3000])
+        if stderr:
+            parts.append(f"STDERR: {stderr.decode('utf-8', errors='replace')[:1000]}")
+        parts.append(f"exit_code={proc.returncode}")
         return "\n".join(parts)
+    except asyncio.TimeoutError:
+        return "ERROR: Command timed out after 30 seconds"
     except Exception as e:
         return f"ERROR: {e}"
 
@@ -223,9 +303,34 @@ async def _exec_list_dir(args: dict) -> str:
         return f"ERROR: {e}"
 
 
+async def _exec_edit_file(args: dict) -> str:
+    """Apply targeted find-and-replace edits to a file (scoped to allowed directories)."""
+    path = args.get("path", "")
+    old_text = args.get("old_text", "")
+    new_text = args.get("new_text", "")
+    if not _is_path_allowed(path):
+        return f"ERROR: Edit blocked — {path} is outside allowed directories."
+    try:
+        p = Path(path)
+        if not p.exists():
+            return f"ERROR: File not found: {path}"
+        content = p.read_text(encoding="utf-8", errors="replace")
+        if old_text not in content:
+            return f"ERROR: old_text not found in {path}. Check exact match."
+        if content.count(old_text) > 1:
+            return f"ERROR: old_text appears {content.count(old_text)} times in {path}. Must be unique."
+        new_content = content.replace(old_text, new_text, 1)
+        p.write_text(new_content, encoding="utf-8")
+        logger.info("[gemini_tool_loop] edit_file: %s (replaced %d chars with %d chars)", path, len(old_text), len(new_text))
+        return f"OK: Edited {path} (replaced {len(old_text)} chars with {len(new_text)} chars)"
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
 _TOOL_EXECUTORS = {
     "read_file": _exec_read_file,
     "write_file": _exec_write_file,
+    "edit_file": _exec_edit_file,
     "run_shell": _exec_run_shell,
     "search_files": _exec_search_files,
     "list_dir": _exec_list_dir,

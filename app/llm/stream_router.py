@@ -152,8 +152,128 @@ async def stream_chat(
                 video_file_uri=req.video_file_uri,
                 video_mime_type=req.video_mime_type,
                 video_local_path=req.video_local_path,
+                file_upload_uri=req.file_upload_uri,
+                file_upload_mime=req.file_upload_mime,
+                file_upload_name=req.file_upload_name,
+                file_upload_local_path=req.file_upload_local_path,
+                file_upload_gemini_name=req.file_upload_gemini_name,
             ),
             media_type="text/event-stream",
+        )
+
+    # =========================================================================
+    # v11.2: BUILD-DEPLOY INTERCEPT — now goes through confirmation gate.
+    # The gate learns over time: after 5 approvals with 0 rejections,
+    # it auto-approves and stops asking. Rejections teach it to be cautious.
+    # =========================================================================
+    from app.llm.routing.chat_routing import _detect_build_deploy_intent
+    if _detect_build_deploy_intent(req.message):
+        logger.info("[stream_router] Build-deploy intent detected — checking confirmation gate")
+
+        # Check if user already confirmed this action
+        if req.confirmed_intent == "BUILD_AND_DEPLOY":
+            logger.info("[stream_router] Build-deploy confirmed — executing")
+            # Log the approval for learning
+            try:
+                from app.llm.routing.confirmation_gate import process_confirmation_response, _make_pattern_key
+                pattern_key = _make_pattern_key("intent_routing", "BUILD_AND_DEPLOY", req.message)
+                process_confirmation_response(
+                    pattern_key=pattern_key,
+                    gate_type="intent_routing",
+                    proposed_action="BUILD_AND_DEPLOY",
+                    approved=True,
+                    original_message=req.message,
+                    confidence=0.8,
+                )
+            except Exception as _log_err:
+                logger.warning("[stream_router] Failed to log build-deploy approval: %s", _log_err)
+
+            from app.cloud.build_and_deploy import build_and_deploy
+
+            async def _build_deploy_stream():
+                import json as _json
+                _sse = lambda obj: f"data: {_json.dumps(obj)}\n\n"
+                yield _sse({"type": "metadata", "provider": "local", "model": "build-deploy"})
+                yield _sse({"type": "token", "content": "Building APK...\n"})
+                result = await build_and_deploy(text=req.message)
+                if result.get("build", {}).get("success"):
+                    _size_kb = result["build"].get("apk_size", 0) // 1024
+                    yield _sse({"type": "token", "content": f"Build successful ({_size_kb}KB).\n"})
+                if result.get("cloud", {}).get("success"):
+                    _prov = result["cloud"].get("provider", "cloud")
+                    yield _sse({"type": "token", "content": f"Uploaded to {_prov}.\n\n"})
+                elif result.get("upload_failed"):
+                    yield _sse({"type": "token", "content": "Cloud upload failed. APK ready locally.\n\n"})
+                msg = result.get("message", result.get("error", "Unknown result"))
+                yield _sse({"type": "token", "content": msg + "\n"})
+                yield _sse({"type": "done", "provider": "local", "model": "build-deploy", "total_length": 0})
+
+            return StreamingResponse(
+                _build_deploy_stream(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+
+        # Not yet confirmed — run through the confirmation gate
+        try:
+            from app.llm.routing.confirmation_gate import (
+                should_confirm_intent_routing,
+                format_confirmation_sse,
+                ConfirmationRequest,
+                _make_pattern_key,
+                _load_pattern_history,
+                CONFIDENCE_AUTO_APPROVE,
+            )
+            pattern_key = _make_pattern_key("intent_routing", "BUILD_AND_DEPLOY", req.message)
+            history = _load_pattern_history(pattern_key)
+
+            # Auto-approve if learned (5+ approvals, 0 rejections)
+            if history.should_auto_approve:
+                logger.info("[stream_router] Build-deploy auto-approved (history: %d/%d)",
+                           history.approvals, history.total_asks)
+            else:
+                # Ask for confirmation
+                confirm_req = ConfirmationRequest(
+                    gate_type="intent_routing",
+                    description="Build APK and upload to cloud?",
+                    detail="I detected a build-and-deploy intent. This will compile the APK and upload it.",
+                    original_message=req.message,
+                    proposed_action="BUILD_AND_DEPLOY",
+                    proposed_intent="BUILD_AND_DEPLOY",
+                    confidence=0.8,
+                    pattern_key=pattern_key,
+                )
+
+                async def _confirm_stream():
+                    import json as _json
+                    yield format_confirmation_sse(confirm_req)
+                    yield f"data: {_json.dumps({'type': 'done', 'provider': 'local', 'model': 'confirmation_gate', 'total_length': 0})}\n\n"
+
+                return StreamingResponse(
+                    _confirm_stream(),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                )
+        except ImportError:
+            logger.warning("[stream_router] Confirmation gate not available, executing build-deploy directly")
+
+        # Fallback: if confirmation gate import failed, execute directly
+        from app.cloud.build_and_deploy import build_and_deploy
+
+        async def _build_deploy_stream_fallback():
+            import json as _json
+            _sse = lambda obj: f"data: {_json.dumps(obj)}\n\n"
+            yield _sse({"type": "metadata", "provider": "local", "model": "build-deploy"})
+            yield _sse({"type": "token", "content": "Building APK...\n"})
+            result = await build_and_deploy(text=req.message)
+            msg = result.get("message", result.get("error", "Unknown result"))
+            yield _sse({"type": "token", "content": msg + "\n"})
+            yield _sse({"type": "done", "provider": "local", "model": "build-deploy", "total_length": 0})
+
+        return StreamingResponse(
+            _build_deploy_stream_fallback(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
     # Initialize trace
@@ -174,6 +294,58 @@ async def stream_chat(
     # and dispatch directly to the command handler.
     # =========================================================================
     if req.confirmed_intent:
+        # v12.0: BUILD_AND_DEPLOY confirmed — redirect to the build-deploy intercept
+        if req.confirmed_intent == "BUILD_AND_DEPLOY":
+            # This will be caught by the build-deploy intercept section above
+            # which checks req.confirmed_intent == "BUILD_AND_DEPLOY"
+            # But since we're past that section, handle it here directly
+            logger.info("[stream_router] BUILD_AND_DEPLOY confirmed via intent bypass")
+            try:
+                from app.llm.routing.confirmation_gate import process_confirmation_response, _make_pattern_key
+                pattern_key = _make_pattern_key("intent_routing", "BUILD_AND_DEPLOY", req.message)
+                process_confirmation_response(
+                    pattern_key=pattern_key, gate_type="intent_routing",
+                    proposed_action="BUILD_AND_DEPLOY", approved=True,
+                    original_message=req.message, confidence=0.8,
+                )
+            except Exception:
+                pass
+            # v12.1: Recover the original message from panel history.
+            # req.message is "Confirmed: ..." which has no project keywords.
+            # The original build request is in the conversation history.
+            _bd_text = req.message
+            if hasattr(req, "panel_history") and req.panel_history:
+                for _hist_msg in reversed(req.panel_history):
+                    if _hist_msg.get("role") == "user" and "bridge" in _hist_msg.get("content", "").lower():
+                        _bd_text = _hist_msg["content"]
+                        break
+                    if _hist_msg.get("role") == "user" and "build" in _hist_msg.get("content", "").lower():
+                        _bd_text = _hist_msg["content"]
+                        break
+            logger.info("[stream_router] BUILD_AND_DEPLOY resolved text: %s", _bd_text[:80])
+            from app.cloud.build_and_deploy import build_and_deploy
+            async def _bd_confirmed():
+                import json as _json
+                _sse = lambda obj: f"data: {_json.dumps(obj)}\n\n"
+                yield _sse({"type": "metadata", "provider": "local", "model": "build-deploy"})
+                yield _sse({"type": "token", "content": "Building APK...\n"})
+                result = await build_and_deploy(text=_bd_text)
+                if result.get("build", {}).get("success"):
+                    _sz = result["build"].get("apk_size", 0) // 1024
+                    yield _sse({"type": "token", "content": f"Build successful ({_sz}KB).\n"})
+                if result.get("cloud", {}).get("success"):
+                    _pv = result["cloud"].get("provider", "cloud")
+                    yield _sse({"type": "token", "content": f"Uploaded to {_pv}.\n\n"})
+                elif result.get("upload_failed"):
+                    yield _sse({"type": "token", "content": "Cloud upload failed. APK ready locally.\n\n"})
+                msg = result.get("message", result.get("error", "Unknown result"))
+                yield _sse({"type": "token", "content": msg + "\n"})
+                yield _sse({"type": "done", "provider": "local", "model": "build-deploy", "total_length": 0})
+            return StreamingResponse(
+                _bd_confirmed(), media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+
         # v2.2: MODEL_ESCALATION confirmed — route original message with upgraded model
         if req.confirmed_intent.startswith("MODEL_ESCALATION:"):
             action = req.confirmed_intent.split(":", 1)[1]  # e.g. "lookup_to_reasoning"
@@ -301,6 +473,72 @@ async def stream_chat(
         if response:
             return response
         
+        # =================================================================
+        # v3.0 DOMAIN CHAT: Route to domain-aware LLM with real data
+        # Emits domain_navigate SSE so frontend auto-switches tabs.
+        # =================================================================
+        if (translation_result.resolved_intent
+                and translation_result.resolved_intent.value.startswith("DOMAIN_")):
+            from app.llm.translation_routing import intent_to_routing_info
+            _domain_info = intent_to_routing_info(translation_result.resolved_intent)
+            if _domain_info and _domain_info.get("type") == "domain_chat":
+                _domain_name = _domain_info["domain"]
+                logger.info("[stream_router] Domain chat: %s", _domain_name)
+                try:
+                    from app.llm.routing.domain_context import get_domain_context
+                    _domain_ctx = get_domain_context(_domain_name, db)
+                except Exception as _dc_err:
+                    logger.warning("[stream_router] Domain context failed: %s", _dc_err)
+                    _domain_ctx = f"[{_domain_name} data unavailable]"
+
+                # Inject domain context into the request as extra system context
+                if not req.panel_history:
+                    req.panel_history = []
+                req.panel_history = [
+                    {"role": "user", "content": f"[ASTRA domain context for {_domain_name}]\n{_domain_ctx}"},
+                    {"role": "assistant", "content": f"I have the latest {_domain_name} data. What would you like to know?"},
+                ] + req.panel_history
+
+                after_user_message(
+                    req.message,
+                    project_id=str(req.project_id),
+                    user_id=user_id,
+                    provider=getattr(req, 'provider', None),
+                    model=getattr(req, 'model', None),
+                    db_session=db,
+                )
+
+                # Map domain to frontend job_type for tab navigation
+                _DOMAIN_TO_JOB = {
+                    "finance": "accounts",
+                    "investments": "investments",
+                    "content": "content",
+                    "social": "social_media",
+                    "lifestyle": "health_fitness",
+                    "debug": "debug",
+                    "education": "education",
+                    "builds": "project_builds",
+                }
+                _job_type = _DOMAIN_TO_JOB.get(_domain_name, _domain_name)
+
+                # Get the chat response (StreamingResponse)
+                _chat_response = handle_chat_mode(req, project, db, trace)
+
+                # Wrap it: emit domain_navigate first, then stream the chat
+                async def _domain_stream(_chat_resp=_chat_response, _jt=_job_type, _dn=_domain_name):
+                    # Emit navigation event so frontend switches tab
+                    import json as _json
+                    yield f"data: {_json.dumps({'type': 'domain_navigate', 'domain': _dn, 'job_type': _jt})}\n\n"
+                    # Then stream the normal chat response
+                    async for chunk in _chat_resp.body_iterator:
+                        yield chunk
+
+                return StreamingResponse(
+                    _domain_stream(),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                )
+
         # =================================================================
         # CHAT MODE: Return early with lightweight model
         # =================================================================

@@ -82,14 +82,55 @@ class UINode:
 # Core ADB wrapper
 # ═══════════════════════════════════════════════════════════════════
 
-async def _adb(cmd: str, timeout_sec: int = 30) -> ADBResult:
-    """Run an ADB command through the sandbox shell.
+# Module-level profile reference. Set by the BVL orchestrator before
+# running any tier so ADB commands route to the correct shell (host vs sandbox).
+_active_profile: Optional["BuildTargetProfile"] = None
 
-    All ADB commands route through here. The sandbox executes
-    them on the host where the emulator is accessible.
+# Resolved ADB path — found once, cached for the session.
+_adb_path: Optional[str] = None
+
+
+def _resolve_adb() -> str:
+    """Find the ADB executable. Checks common SDK locations."""
+    global _adb_path
+    if _adb_path:
+        return _adb_path
+
+    import os
+    candidates = [
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Android", "Sdk", "platform-tools", "adb.exe"),
+        os.path.join(os.environ.get("ANDROID_HOME", ""), "platform-tools", "adb.exe"),
+        os.path.join(os.environ.get("ANDROID_SDK_ROOT", ""), "platform-tools", "adb.exe"),
+        r"C:\Android\Sdk\platform-tools\adb.exe",
+        r"D:\Android\Sdk\platform-tools\adb.exe",
+    ]
+    for path in candidates:
+        if path and os.path.isfile(path):
+            _adb_path = path
+            logger.info("[emulator] ADB found: %s", path)
+            return path
+
+    # Fallback — hope it's on PATH
+    _adb_path = "adb"
+    return "adb"
+
+
+def set_active_profile(profile: Optional["BuildTargetProfile"]) -> None:
+    """Set the profile for ADB command routing."""
+    global _active_profile
+    _active_profile = profile
+
+
+async def _adb(cmd: str, timeout_sec: int = 30) -> ADBResult:
+    """Run an ADB command through the appropriate shell.
+
+    v2.3: Routes through host shell when an Android profile is active,
+    or through the sandbox shell for ASTRA self-builds.
+    All ADB commands funnel through here.
     """
-    full_cmd = f"adb {cmd}"
-    result = await run_shell(full_cmd, timeout_sec=timeout_sec)
+    adb_exe = _resolve_adb()
+    full_cmd = f'& "{adb_exe}" {cmd}'
+    result = await run_shell(full_cmd, timeout_sec=timeout_sec, profile=_active_profile)
     return ADBResult(
         ok=result["returncode"] == 0,
         stdout=result.get("stdout", ""),
@@ -102,7 +143,7 @@ async def _adb(cmd: str, timeout_sec: int = 30) -> ADBResult:
 # Emulator lifecycle
 # ═══════════════════════════════════════════════════════════════════
 
-async def start_emulator(avd_name: str = "ASTRA_Test_Device") -> ADBResult:
+async def start_emulator(avd_name: str = "Pixel_9_Pro") -> ADBResult:
     """Start the Android emulator in the background.
 
     Uses -no-window for headless operation in the pipeline.
@@ -375,6 +416,46 @@ def parse_ui_nodes(xml_text: str) -> List[UINode]:
     return nodes
 
 
+# v12.0: Filler words stripped during fuzzy matching
+_FILLER_WORDS = {"the", "a", "an", "in", "on", "at", "of", "for", "to", "is", "it"}
+
+
+def _normalise_for_match(s: str) -> str:
+    """Lowercase, strip filler words, collapse whitespace."""
+    words = s.lower().split()
+    return " ".join(w for w in words if w not in _FILLER_WORDS)
+
+
+def _fuzzy_match(query: str, target: str) -> bool:
+    """Check if query matches target using normalised token overlap.
+
+    Returns True if:
+      - exact substring match (case-insensitive), OR
+      - normalised query is a substring of normalised target, OR
+      - normalised target is a substring of normalised query, OR
+      - >70% of query tokens appear in target tokens
+    """
+    if not query or not target:
+        return False
+    q_lower = query.lower()
+    t_lower = target.lower()
+    # Exact substring (case-insensitive)
+    if q_lower in t_lower or t_lower in q_lower:
+        return True
+    # Normalised substring
+    q_norm = _normalise_for_match(query)
+    t_norm = _normalise_for_match(target)
+    if q_norm in t_norm or t_norm in q_norm:
+        return True
+    # Token overlap
+    q_tokens = set(q_norm.split())
+    t_tokens = set(t_norm.split())
+    if not q_tokens:
+        return False
+    overlap = len(q_tokens & t_tokens) / len(q_tokens)
+    return overlap >= 0.7
+
+
 async def find_element(
     resource_id: str = "",
     text: str = "",
@@ -382,13 +463,17 @@ async def find_element(
 ) -> Optional[UINode]:
     """Find a UI element by resource ID, text, or content description.
 
-    Dumps the UI tree and searches for the first match.
+    v12.0: Uses fuzzy matching with filler-word stripping and token overlap
+    to handle minor wording differences between test expectations and
+    actual content descriptions (e.g. 'in the top app bar' vs 'in top app bar').
     """
     xml = await dump_ui_tree()
     if not xml:
         return None
 
     nodes = parse_ui_nodes(xml)
+
+    # Pass 1: exact/substring (fast)
     for node in nodes:
         if resource_id and resource_id in node.resource_id:
             return node
@@ -396,6 +481,18 @@ async def find_element(
             return node
         if content_desc and content_desc in node.content_desc:
             return node
+
+    # Pass 2: fuzzy match (handles filler words, case, minor wording diffs)
+    for node in nodes:
+        if text and _fuzzy_match(text, node.text):
+            return node
+        if content_desc and _fuzzy_match(content_desc, node.content_desc):
+            return node
+        if text and _fuzzy_match(text, node.content_desc):
+            return node
+        if content_desc and _fuzzy_match(content_desc, node.text):
+            return node
+
     return None
 
 

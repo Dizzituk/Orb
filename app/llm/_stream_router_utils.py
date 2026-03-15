@@ -41,6 +41,30 @@ class StreamRequest(BaseModel):
     video_file_uri: Optional[str] = None             # v2.2: Screen recording — Gemini Files API URI
     video_mime_type: Optional[str] = None             # v2.2: Screen recording — MIME type
     video_local_path: Optional[str] = None            # v2.2: Screen recording — local file for cleanup
+    file_upload_uri: Optional[str] = None             # v2.3: Debug file upload — Gemini Files API URI
+    file_upload_mime: Optional[str] = None             # v2.3: Debug file upload — MIME type
+    file_upload_name: Optional[str] = None             # v2.3: Debug file upload — original filename
+    file_upload_local_path: Optional[str] = None       # v2.3: Debug file upload — local file for cleanup
+    file_upload_gemini_name: Optional[str] = None      # v2.3: Debug file upload — Gemini file name for cleanup
+
+def _is_scoping_cancel(msg_lower: str) -> bool:
+    """Check if a message is an explicit cancel/exit request.
+
+    Uses word-boundary matching to prevent false positives like
+    'existing' matching 'exit' or 'nonstop' matching 'stop'.
+    Only triggers on short messages (≤10 words) that are clearly
+    cancel intents, not long descriptions that happen to contain
+    these words.
+    """
+    import re
+    # Long messages are descriptions, not cancel requests
+    if len(msg_lower.split()) > 10:
+        return False
+    _cancel_pattern = re.compile(
+        r'\b(?:cancel|stop|exit|nevermind|never\s*mind|quit|abort)\b'
+    )
+    return bool(_cancel_pattern.search(msg_lower))
+
 
 _EXPLICIT_COMMAND_INTENTS = {
     CanonicalIntent.RUN_PIPELINE,  # v5.4: unified pipeline
@@ -98,7 +122,9 @@ def _handle_flow_state_routing(req, db, trace, conversation_id, stage_trace, tra
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
                 )
             # Check if user wants to exit scoping
-            elif any(w in msg_lower for w in ("cancel", "stop", "exit", "nevermind", "never mind")):
+            # v2.3: Use word-boundary check to prevent false positives
+            # (e.g. "existing" matching "exit", "nonstop" matching "stop")
+            elif _is_scoping_cancel(msg_lower):
                 _scope_session.clear()
                 logger.info("[flow_state] Scoping CANCELLED")
                 # Fall through to normal chat

@@ -229,6 +229,35 @@ async def handle_scoping_confirmation(
     except Exception as e:
         yield _sse({"type": "token", "content": f"⚠️ Could not create folder: {e}\n"})
 
+    # Build commands based on project type
+    _JAVA_HOME = r'C:\Program Files\Android\Android Studio\jbr'
+    _SET_JAVA = f'$env:JAVA_HOME = "{_JAVA_HOME}" ; '
+
+    if build_system == "gradle":
+        _syntax_cmd = (
+            f'{_SET_JAVA}'
+            f'cd "{proj_root}" ; '
+            f'.\\gradlew.bat compileDebugKotlin 2>&1'
+        )
+        _build_cmd = (
+            f'{_SET_JAVA}'
+            f'cd "{proj_root}" ; '
+            f'.\\gradlew.bat assembleDebug 2>&1'
+        )
+        _clean_cmd = (
+            f'{_SET_JAVA}'
+            f'cd "{proj_root}" ; '
+            f'.\\gradlew.bat clean 2>&1'
+        )
+    elif build_system == "npm":
+        _syntax_cmd = f'cd "{proj_root}" ; npx tsc --noEmit 2>&1'
+        _build_cmd = f'cd "{proj_root}" ; npx tsc --noEmit 2>&1'
+        _clean_cmd = ""
+    else:
+        _syntax_cmd = ""
+        _build_cmd = ""
+        _clean_cmd = ""
+
     # Register the BuildTargetProfile
     profile = BuildTargetProfile(
         project_id=proj_id,
@@ -241,6 +270,9 @@ async def handle_scoping_confirmation(
         package_name=package_name,
         architecture_pattern=arch_pattern,
         file_extension=file_ext,
+        syntax_check_cmd=_syntax_cmd,
+        build_cmd=_build_cmd,
+        clean_cmd=_clean_cmd,
     )
     register_profile(profile)
     yield _sse({"type": "token", "content": f"✅ Registered build target: **{proj_name}** (`{proj_id}`)\n"})
@@ -283,34 +315,44 @@ def _build_scoping_system_prompt(scoping_messages: list) -> str:
         if msg["role"] == "user":
             if any(w in content for w in ("android", "web", "backend", "frontend", "astra feature")):
                 answered.add("type")
-            # Simple heuristic: if user gives a short name-like answer
             if len(content.split()) <= 5 and "type" in answered and "name" not in answered:
                 answered.add("name")
+            if len(content.split()) > 15:
+                answered.add("description")
 
     return (
         "You are ASTRA, an AI development platform. You are in PROJECT SCOPING mode.\n\n"
-        "Your job is to gather enough information to create a new project. "
-        "Ask ONE question at a time. Be concise and direct.\n\n"
-        "Information needed:\n"
+        "Your job is to gather a DETAILED project brief that will be used to generate "
+        "a full technical specification and build plan. The more detail you gather now, "
+        "the better the automated build will be.\n\n"
+        "Ask ONE question at a time.\n\n"
+        "Information needed (in this order):\n"
         "1. Project type (Android app, web app, ASTRA feature) — "
-        + ("✅ answered" if "type" in answered else "❓ not yet asked or answered") + "\n"
-        "2. Project name — "
+        + ("✅ answered" if "type" in answered else "❓ ask first") + "\n"
+        "2. Project name (2-4 words, NOT just 'Astra') — "
         + ("✅ answered" if "name" in answered else "❓ ask next") + "\n"
-        "3. Brief description of what it does\n"
-        "4. Any specific requirements (APIs, integrations, special features)\n\n"
-        "Once you have enough info (at minimum: type, name, and description), "
-        "summarise what you've gathered and ask: "
+        "3. DETAILED description — this is the MOST IMPORTANT part.\n"
+        "   Ask: 'Tell me everything about what this app does — features, user flows, "
+        "how it connects to other systems, voice features, file handling, UI layout. "
+        "The more detail the better, this goes straight into the build spec.'\n"
+        + ("   ✅ answered\n" if "description" in answered else "   ❓ ask after name\n")
+        + "4. Follow-up questions — dig into specifics based on what they said:\n"
+        "   - Connection/networking (how does it reach the backend?)\n"
+        "   - Platform constraints (offline support? background services?)\n"
+        "   - Key integrations (APIs, services, hardware)\n\n"
+        "Once you have rich detail (the user has given at least one long descriptive answer), "
+        "summarise EVERYTHING as a structured brief and ask: "
         "'Shall I create this project and set up the build target?'\n\n"
         "RULES:\n"
         "- Ask ONE question per response\n"
-        "- Keep responses under 3 sentences\n"
-        "- Don't explain what you're doing, just ask the question\n"
+        "- Keep YOUR questions short, but ENCOURAGE long detailed answers from the user\n"
+        "- NEVER ask for a 'one-line description' — ask for the FULL picture\n"
+        "- When the user gives detail, acknowledge key points then ask a targeted follow-up\n"
         "- Be conversational, not formal\n"
-        "- 'Astra' alone is NOT a valid project name (that's the platform name). "
-        "If the user says just 'Astra', ask for a more specific name like 'Astra Bridge' or 'Astra Connect'\n"
-        "- The project name should be 2-4 words that describe what it is\n"
+        "- 'Astra' alone is NOT a valid project name. Ask for something specific.\n"
+        "- Do NOT re-ask questions you already have answers to\n"
+        "- Once you have type + name + detailed description, move to confirmation\n"
     )
-
 
 def _try_extract_project_info(messages: list) -> Optional[dict]:
     """Try to extract project info from the scoping conversation.

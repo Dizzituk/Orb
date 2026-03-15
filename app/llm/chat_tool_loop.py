@@ -199,7 +199,6 @@ async def _stream_with_tools_anthropic(
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": tc["tool_use_id"],
-                "name": tc["name"],
                 "content": result_str,
             })
             yield {

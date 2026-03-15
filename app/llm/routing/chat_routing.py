@@ -101,9 +101,71 @@ _FILE_CREATION_PATTERNS = _re.compile(
     _re.IGNORECASE,
 )
 
+# v11.0: Detect builds context — user is on Builds tab or talking about app building
+_BUILDS_KEYWORDS = _re.compile(
+    r'\b(add|modify|update|extend|change|build|create|implement|work\s+on)\b'
+    r'.*\b(app|copilot|co-?pilot|android|driver|feature|element|screen|module|component)\b',
+    _re.IGNORECASE,
+)
+
+# v11.1: Detect APK build + deploy to cloud intent
+_BUILD_DEPLOY_PATTERN = _re.compile(
+    r'\b(build|create|make|compile|generate|assemble|drop|put|push|upload|deploy)\b'
+    r'.*\b(apk|app|bridge|copilot|co-?pilot)\b'
+    r'.*\b(cloud|proton|drive|download|phone|install)\b',
+    _re.IGNORECASE,
+)
+# Also catch reverse order: "put the app in the cloud"
+_BUILD_DEPLOY_PATTERN_ALT = _re.compile(
+    r'\b(apk|app|bridge|copilot)\b.*\b(cloud|proton|drive|phone)\b',
+    _re.IGNORECASE,
+)
+
+def _detect_build_deploy_intent(message: str) -> bool:
+    """Check if the user wants to build an APK and deploy to cloud."""
+    return bool(_BUILD_DEPLOY_PATTERN.search(message) or _BUILD_DEPLOY_PATTERN_ALT.search(message))
+
+def _is_builds_context(req: Any) -> bool:
+    """Check if the user is in a builds context (tab + project intent)."""
+    ui_ctx = getattr(req, 'ui_context', None)
+    on_builds_tab = (
+        ui_ctx is not None
+        and getattr(ui_ctx, 'job_type', '') == 'project_builds'
+    )
+    has_builds_intent = bool(_BUILDS_KEYWORDS.search(req.message))
+    return on_builds_tab and has_builds_intent
+
+
 def _detect_file_creation_intent(message: str) -> bool:
     """Check if the user is asking for a file to be created."""
     return bool(_FILE_CREATION_PATTERNS.search(message))
+
+# v12.0: Detect codebase exploration / planning intent — needs tool access
+_CODEBASE_EXPLORE_PATTERNS = _re.compile(
+    r'(?:'
+    r'(?:inspect|examine|explore|look\s+at|have\s+a\s+look|read|review|scan|map|check)\s+'
+    r'(?:\w+\s+){0,3}(?:codebase|code|source|app|project|architecture|files?|structure|tree)'
+    r'|'
+    r'(?:implementation|architecture|feature)\s*plan'
+    r'|'
+    r'(?:plan\s+(?:out|of\s+action)|spec\s+out|come\s+up\s+with\s+a\s+plan)'
+    r'|'
+    r'(?:what\s+(?:files?|code)\s+(?:exists?|is\s+there|do\s+we\s+have))'
+    r'|'
+    r'(?:current\s+(?:state|architecture|structure)\s+of)'
+    r'|'
+    r'(?:(?:every|each|all)\s+files?\b)'
+    r')',
+    _re.IGNORECASE,
+)
+
+def _detect_codebase_exploration(message: str) -> bool:
+    """Check if the user wants ASTRA to explore/inspect a codebase.
+
+    These requests need tool access to actually read files — without it
+    the model will say 'I will inspect...' but never actually do it.
+    """
+    return bool(_CODEBASE_EXPLORE_PATTERNS.search(message))
 
 # v10.3: Detect image generation intent — routes to Nano Banana.
 _IMAGE_GEN_PATTERNS = _re.compile(
@@ -220,6 +282,13 @@ def handle_chat_mode(
         provider = req.provider
         model = req.model
         print(f"[CHAT_MODE] Using frontend override: provider={provider}, model={model}")
+        _set_sticky_model(req.project_id, provider, model)
+    elif _is_builds_context(req):
+        # v11.0: Builds tab + project modification intent → GPT-5.4
+        import os as _os
+        provider = _os.getenv("BUILD_CHAT_PROVIDER", "openai")
+        model = _os.getenv("BUILD_CHAT_MODEL", "gpt-5.4")
+        print(f"[CHAT_MODE] Builds context detected -> {provider}/{model}")
         _set_sticky_model(req.project_id, provider, model)
     elif _detect_file_creation_intent(req.message):
         # v10.1: File creation requests → GPT-5.4 with tools (best for HTML/code generation)
@@ -536,6 +605,21 @@ def handle_chat_mode(
     _chat_tools = None
     try:
         from app.llm.chat_tool_loop import is_tool_eligible, get_chat_tools
+        # v12.0: If the model lacks tool access but the context needs it
+        # (builds tab, codebase exploration, architecture planning), swap
+        # to an Anthropic model that has full tool loop support.
+        if not is_tool_eligible(provider, model):
+            _needs_tools = _is_builds_context(req) or _detect_codebase_exploration(req.message)
+            if _needs_tools:
+                import os as _os
+                _tool_provider = _os.getenv("TOOL_CHAT_PROVIDER", "google")
+                _tool_model = _os.getenv("TOOL_CHAT_MODEL", "gemini-3.1-pro-preview-customtools")
+                if is_tool_eligible(_tool_provider, _tool_model):
+                    print(f"[CHAT_MODE] Context needs tools but {provider}/{model} has none — "
+                          f"swapping to {_tool_provider}/{_tool_model}")
+                    provider = _tool_provider
+                    model = _tool_model
+                    _set_sticky_model(req.project_id, provider, model)
         if is_tool_eligible(provider, model):
             _chat_tools = get_chat_tools()
             print(f"[CHAT_MODE] Tool access ENABLED for {provider}/{model} ({len(_chat_tools)} tools)")
@@ -543,19 +627,20 @@ def handle_chat_mode(
             _TOOL_ROLE_BLOCK = (
                 "\n\n## TOOL ACCESS -- RESEARCH MODE\n"
                 "You have READ-ONLY tool access (read_file, list_files, search_files, read_logs).\n"
-                "Use these tools to explore the codebase and gather information.\n\n"
-                "YOUR ROLE: You are a RESEARCHER, not a builder.\n"
-                "- Explore files, read code, understand patterns, discover design tokens\n"
-                "- Report your findings as text in the chat -- describe what you found\n"
-                "- Present component structures, CSS variables, layout patterns, file paths\n"
-                "- This research will be picked up by the Weaver to create accurate build specs\n\n"
+                "Use these tools to explore the codebase and gather information.\n"
+                "IMPORTANT: Actually USE the tools. Do not just say you will — call them.\n\n"
+                "YOUR ROLE: You are a RESEARCHER and PLANNER.\n"
+                "- Explore files, read code, understand patterns, discover architecture\n"
+                "- Report your findings as text in the chat — describe what you found\n"
+                "- When asked to plan or spec, USE tools first to inspect the codebase,\n"
+                "  then produce a detailed implementation plan based on real file contents\n"
+                "- Present file paths, structures, and what needs to change\n\n"
                 "DO NOT:\n"
-                "- Generate code blocks, full file contents, or implementation files\n"
                 "- Try to create, write, or modify any files\n"
-                "- Produce implementation plans or architecture documents\n"
-                "- Dump raw file contents -- summarise and highlight the relevant patterns\n\n"
-                "GOOD OUTPUT: Describe patterns, tokens, and structures you found.\n"
-                "BAD OUTPUT: Producing hundreds of lines of implementation code.\n"
+                "- Dump raw file contents — summarise and highlight relevant patterns\n"
+                "- Say you will do something without actually calling the tools to do it\n\n"
+                "GOOD OUTPUT: Call tools to explore, then present findings and plans.\n"
+                "BAD OUTPUT: Saying 'I will inspect...' without calling any tools.\n"
             )
             system_prompt += _TOOL_ROLE_BLOCK
         else:

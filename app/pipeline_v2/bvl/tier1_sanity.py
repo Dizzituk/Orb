@@ -129,6 +129,31 @@ async def _check_gradle_build(
     emit("   [1/6] Gradle build...")
     t = time.time()
 
+    # v2.3: Ensure Gradle wrapper exists before attempting build.
+    # The builder writes source files but may not create the wrapper.
+    import os
+    gradlew_path = os.path.join(
+        profile.project_root.replace('/', os.sep), 'gradlew.bat'
+    )
+    if not os.path.isfile(gradlew_path):
+        emit("   [1/6] Gradle wrapper missing — copying from known project...")
+        try:
+            from app.pipeline_v2.scaffolds.android_config_scaffolds import copy_gradle_wrapper
+            if copy_gradle_wrapper(profile.project_root.replace('/', os.sep)):
+                emit("   [1/6] Gradle wrapper installed")
+            else:
+                return SanityCheck(
+                    name="gradle_build", passed=False,
+                    message="Gradle wrapper missing and no source project found to copy from",
+                    duration_ms=int((time.time() - t) * 1000),
+                )
+        except Exception as e:
+            return SanityCheck(
+                name="gradle_build", passed=False,
+                message=f"Gradle wrapper setup failed: {e}",
+                duration_ms=int((time.time() - t) * 1000),
+            )
+
     from app.pipeline_v2.sandbox_tools import build_check
     ok, output = await build_check(profile=profile)
 

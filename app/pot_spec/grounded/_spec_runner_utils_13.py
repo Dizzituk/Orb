@@ -108,6 +108,26 @@ def _discover_project_roots() -> Dict[str, Any]:
             except Exception as e:
                 print(f"[spec_runner] v4.5 Failed to read codebase report: {e}")
 
+    # --- Source 2b: Merge in external project roots from target_registry ---
+    # Android projects and other external targets are registered in the pipeline
+    # but not in INDEX.json (which only scans ASTRA's own codebase).
+    try:
+        from app.pipeline_v2.target_registry import ALL_PROFILES
+        for _pid, _profile in ALL_PROFILES.items():
+            _proot = _profile.project_root.replace('/', os.sep)
+            if _sbx_isdir(_proot) and _proot not in result["roots"]:
+                result["roots"].append(_proot)
+                result["all_paths"].append(_proot)
+                # Android/Kotlin projects are neither frontend nor backend in the web sense
+                # but classify as "backend" so the spec runner doesn't skip them
+                if _proot not in result["backend_paths"]:
+                    result["backend_paths"].append(_proot)
+                print(f"[spec_runner] v4.7 Added external project root: {_proot} ({_profile.project_name})")
+    except ImportError:
+        pass
+    except Exception as _ext_err:
+        print(f"[spec_runner] v4.7 External root discovery failed: {_ext_err}")
+
     # --- Source 3: Hardcoded fallback (last resort) ---
     if not result["roots"]:
         print("[spec_runner] v4.5 WARNING: No architecture index found, using hardcoded fallback")

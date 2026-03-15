@@ -357,6 +357,33 @@ def save_weaver_extraction(
             "[pipeline_bridge] Saved Weaver extraction for %s (%d keys)",
             build_project_id, len(extraction),
         )
+
+        # v3.0: Re-resolve build target from Weaver output.
+        # The initial target was resolved from the trigger message (e.g. "send to weaver")
+        # which often lacks project keywords. The Weaver output explicitly names the project.
+        _weaver_text = " ".join(str(v) for v in extraction.values() if isinstance(v, (str, list)))
+        if isinstance(extraction.get('key_requirements'), list):
+            _weaver_text += " " + " ".join(str(r) for r in extraction['key_requirements'])
+        try:
+            from app.pipeline_v2.target_registry import resolve_project_from_message
+            _new_profile = resolve_project_from_message(_weaver_text)
+            if _new_profile and _new_profile.project_id != project.build_target_id:
+                old_target = project.build_target_id
+                project.build_target_id = _new_profile.project_id
+                project.target_path = _new_profile.project_root
+                db.commit()
+                db.refresh(project)
+                logger.info(
+                    "[pipeline_bridge] RE-RESOLVED build target from Weaver: %s → %s (%s)",
+                    old_target, _new_profile.project_id, _new_profile.project_name,
+                )
+                print(
+                    f"[PIPELINE_BRIDGE] Target RE-RESOLVED from Weaver output: "
+                    f"{old_target} → {_new_profile.project_id} ({_new_profile.project_name})"
+                )
+        except Exception as _re:
+            logger.debug("[pipeline_bridge] Weaver target re-resolve failed: %s", _re)
+
         return project
     except Exception as e:
         logger.warning("[pipeline_bridge] Failed to save Weaver extraction: %s", e)

@@ -323,6 +323,16 @@ def _make_assistant_message(response: Any, provider: str) -> Dict:
 # Tool execution (with write integrity checking)
 # ---------------------------------------------------------------------------
 
+# Module-level profile for tool execution routing (host vs sandbox).
+_tool_profile: Optional["BuildTargetProfile"] = None
+
+
+def set_tool_profile(profile: Optional["BuildTargetProfile"]) -> None:
+    """Set the profile for tool execution routing."""
+    global _tool_profile
+    _tool_profile = profile
+
+
 async def _execute_tool(name: str, args: Dict) -> str:
     """Execute a tool call and return the result as a string.
 
@@ -339,7 +349,7 @@ async def _execute_tool(name: str, args: Dict) -> str:
     try:
         if name == "read_file":
             path = args.get("path", "")
-            content = await sandbox_tools.read_file(path)
+            content = await sandbox_tools.read_file(path, profile=_tool_profile)
             if content is None:
                 return "ERROR: File not found: " + path
             if len(content) > 30000:
@@ -374,12 +384,27 @@ async def _execute_tool(name: str, args: Dict) -> str:
                 )
 
             # --- Write ---
-            ok = await sandbox_tools.write_file(path, content)
+            ok = await sandbox_tools.write_file(path, content, profile=_tool_profile)
             if not ok:
                 return "ERROR: Write failed for " + path
 
             # --- Write integrity: post-write verify ---
-            verify_ok, verify_issues = await verify_write(path, content)
+            # v2.3: Skip integrity verification for host-mode writes.
+            # Host writes use direct open() — no transport corruption possible.
+            # The integrity checker causes false positives from \r\n vs \n diffs.
+            _skip_verify = False
+            if _tool_profile is not None:
+                try:
+                    from app.pipeline_v2.android_sandbox import is_android_build
+                    _skip_verify = is_android_build(_tool_profile)
+                except Exception:
+                    pass
+
+            if _skip_verify:
+                verify_ok = True
+                verify_issues = []
+            else:
+                verify_ok, verify_issues = await verify_write(path, content)
 
             if verify_ok:
                 # Clean write
@@ -436,7 +461,9 @@ async def _execute_tool(name: str, args: Dict) -> str:
 
         elif name == "run_shell":
             cmd = args.get("cmd", "")
-            result = await sandbox_tools.run_shell(cmd, timeout_sec=30)
+            # v2.3: Longer timeout for Gradle builds (first run downloads deps)
+            _shell_timeout = 600 if (_tool_profile and _tool_profile.build_system == "gradle" and "gradlew" in cmd) else 30
+            result = await sandbox_tools.run_shell(cmd, timeout_sec=_shell_timeout, profile=_tool_profile)
             stdout = result.get("stdout", "")[:1000]
             stderr = result.get("stderr", "")[:500]
             rc = result.get("returncode", -1)

@@ -79,6 +79,12 @@ async def run_bvl(
     emit("🔬 BEHAVIORAL VERIFICATION LAYER (BVL)")
     emit(f"{'='*60}")
 
+
+    # v2.3: Set the active profile on the emulator bridge so ADB commands
+    # route to the correct shell (host for Android, sandbox for ASTRA).
+    from app.pipeline_v2.bvl.emulator_bridge import set_active_profile
+    set_active_profile(profile)
+    emit(f"   Target: {profile.project_name} ({profile.language})")
     # ── TIER 1: Sanity Gate ──
     emit(f"\n{'─'*40}")
     emit("🔍 TIER 1: SANITY GATE")

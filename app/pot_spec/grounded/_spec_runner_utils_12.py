@@ -71,12 +71,19 @@ def _extract_project_paths(text: str, search_term: str = None, replace_term: str
     # Users describe frontend work by talking about how things LOOK
     # (dashboard, cards, dark theme, progress bar) without literally
     # saying "frontend". These semantic signals are just as valid.
-    if not has_frontend_scope:
+    # v4.7: Don't apply visual intent signals when the spec is clearly about Android/Kotlin
+    _is_android_project = any(kw in text_lower for kw in [
+        'android', 'kotlin', 'jetpack compose', '.kt', 'room database',
+        'androidmanifest', 'gradle', 'copilot app', 'driver copilot',
+    ])
+    if not has_frontend_scope and not _is_android_project:
         from ._simple_create_utils_17 import _VISUAL_INTENT_SIGNALS
         visual_matches = [s for s in _VISUAL_INTENT_SIGNALS if s in text_lower]
         if visual_matches:
             has_frontend_scope = True
             print(f"[spec_runner] v4.6.1 VISUAL INTENT detected frontend scope: {visual_matches[:5]}")
+    elif _is_android_project:
+        print(f"[spec_runner] v4.7 ANDROID PROJECT detected — skipping visual intent frontend scope")
 
     if paths:
         fe_paths = discovery["frontend_paths"] or _FALLBACK_FRONTEND_PATHS

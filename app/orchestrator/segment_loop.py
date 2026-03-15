@@ -33,6 +33,85 @@ print(f"[SEGMENT_LOOP_LOADED] BUILD_ID={SEGMENT_LOOP_BUILD_ID}")
 ProgressCallback = Optional[Callable[[str], None]]
 
 
+async def _android_install_and_launch(
+    profile: "BuildTargetProfile",
+    emit: Callable,
+) -> None:
+    """Install and launch the debug APK on the connected emulator.
+
+    Called automatically after a successful Android build. Finds the
+    debug APK in the build output directory, installs it via ADB,
+    and launches the main activity.
+    """
+    import glob
+    import asyncio
+
+    project_root = profile.project_root.replace("/", os.sep)
+    apk_pattern = os.path.join(project_root, "app", "build", "outputs", "apk", "debug", "*.apk")
+    apk_files = glob.glob(apk_pattern)
+
+    if not apk_files:
+        emit("   \u26a0\ufe0f No debug APK found — skipping install")
+        return
+
+    apk_path = apk_files[0]
+    adb_path = r"C:\Users\dizzi\AppData\Local\Android\Sdk\platform-tools\adb.exe"
+
+    if not os.path.isfile(adb_path):
+        emit("   \u26a0\ufe0f ADB not found — skipping install")
+        return
+
+    emit(f"   \U0001f4f1 Installing APK ({os.path.getsize(apk_path) // 1024}KB)...")
+
+    # Install
+    proc = await asyncio.create_subprocess_exec(
+        adb_path, "install", "-r", apk_path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+    output = (stdout or b"").decode(errors="replace")
+
+    if "Success" not in output:
+        emit(f"   \u274c APK install failed: {output[:200]}")
+        return
+
+    emit("   \u2705 APK installed")
+
+    # Read package name from manifest
+    package_name = profile.package_name if hasattr(profile, "package_name") and profile.package_name else None
+    if not package_name:
+        # Try to extract from AndroidManifest.xml
+        manifest_path = os.path.join(project_root, "app", "src", "main", "AndroidManifest.xml")
+        if os.path.isfile(manifest_path):
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            import re
+            match = re.search(r'package="([^"]+)"', content)
+            if match:
+                package_name = match.group(1)
+
+    if not package_name:
+        emit("   \u26a0\ufe0f Could not determine package name — skipping launch")
+        return
+
+    # Launch
+    emit(f"   \U0001f680 Launching {package_name}...")
+    proc = await asyncio.create_subprocess_exec(
+        adb_path, "shell", "am", "start",
+        "-n", f"{package_name}/.MainActivity",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+    output = (stdout or b"").decode(errors="replace")
+
+    if "Error" in output:
+        emit(f"   \u26a0\ufe0f Launch warning: {output[:200]}")
+    else:
+        emit("   \u2705 App launched on emulator")
+
+
 def _load_build_target_profile(project_id: int, emit: Callable):
     """Load the BuildTargetProfile from the active build project.
 
@@ -149,6 +228,15 @@ async def run_segmented_job(
             on_progress=on_progress,
             profile=profile,
         )
+
+        # v2.3: Auto-install and launch APK for Android builds
+        if v2_result.success and profile and profile.language == "kotlin":
+            try:
+                await _android_install_and_launch(profile, emit)
+            except Exception as _apk_err:
+                logger.warning("[SEGMENT_LOOP] APK install/launch failed: %s", _apk_err)
+                emit(f"\u26a0\ufe0f APK install failed: {_apk_err}")
+
         return JobState(
             job_id=job_id,
             overall_status="complete" if v2_result.success else "failed",

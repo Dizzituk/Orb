@@ -277,11 +277,26 @@ async def list_dir(
 # Shell execution
 # ═══════════════════════════════════════════════════════════════════
 
-async def run_shell(cmd: str, timeout_sec: int = 30) -> dict:
-    """Run a shell command in the sandbox.
+async def run_shell(
+    cmd: str,
+    timeout_sec: int = 30,
+    profile: Optional["BuildTargetProfile"] = None,
+) -> dict:
+    """Run a shell command.
+
+    v2.3: For Android/external builds, executes directly on the host via
+    subprocess instead of routing through the sandbox HTTP API. This is
+    required because ADB, Gradle, and emulator commands must run where
+    the emulator and SDK are installed (the host PC).
 
     Returns dict with: stdout, stderr, returncode.
     """
+    # v2.3: Host-mode shell for Android builds
+    if profile is not None:
+        from app.pipeline_v2.android_sandbox import is_android_build
+        if is_android_build(profile):
+            return await _host_run_shell(cmd, timeout_sec)
+
     data = await _sandbox_post(
         "/shell/run",
         {"cmd": ["powershell", "-Command", cmd], "timeout_sec": timeout_sec},
@@ -294,6 +309,40 @@ async def run_shell(cmd: str, timeout_sec: int = 30) -> dict:
             "returncode": data.get("returncode", -1),
         }
     return {"stdout": "", "stderr": "sandbox unreachable", "returncode": -1}
+
+
+async def _host_run_shell(cmd: str, timeout_sec: int = 30) -> dict:
+    """Run a shell command directly on the host via subprocess.
+
+    Used for Android builds where ADB, Gradle, and emulator commands
+    must execute on the host PC, not in the Windows Sandbox.
+    """
+    import asyncio
+    import subprocess
+    try:
+        proc = await asyncio.wait_for(
+            asyncio.create_subprocess_exec(
+                "powershell", "-Command", cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            ),
+            timeout=timeout_sec + 5,
+        )
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(),
+            timeout=timeout_sec,
+        )
+        return {
+            "stdout": stdout.decode("utf-8", errors="replace") if stdout else "",
+            "stderr": stderr.decode("utf-8", errors="replace") if stderr else "",
+            "returncode": proc.returncode or 0,
+        }
+    except asyncio.TimeoutError:
+        logger.warning("[host_shell] Command timed out after %ds: %s", timeout_sec, cmd[:100])
+        return {"stdout": "", "stderr": f"Timed out after {timeout_sec}s", "returncode": -1}
+    except Exception as e:
+        logger.error("[host_shell] Command failed: %s", e)
+        return {"stdout": "", "stderr": str(e), "returncode": -1}
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -321,7 +370,7 @@ async def boot_check(
 ) -> tuple:
     """Run boot check appropriate for the target. Returns (ok, output)."""
     if profile and profile.boot_cmd:
-        result = await run_shell(profile.boot_cmd, timeout_sec=30)
+        result = await run_shell(profile.boot_cmd, timeout_sec=30, profile=profile)
         ok = "BOOT_CHECK_PASS" in result["stdout"] or "BOOT_OK" in result["stdout"]
         return ok, result["stdout"][:500]
 
@@ -347,8 +396,8 @@ async def build_check(
 ) -> tuple:
     """Run build/compilation check for the target. Returns (ok, output)."""
     if profile and profile.build_cmd:
-        timeout = 120 if profile.build_system == "gradle" else 55
-        result = await run_shell(profile.build_cmd, timeout_sec=timeout)
+        timeout = 1200 if profile.build_system == "gradle" else 55
+        result = await run_shell(profile.build_cmd, timeout_sec=timeout, profile=profile)
         ok = result["returncode"] == 0
         combined = result["stdout"][:500]
         if result["stderr"]:
@@ -377,7 +426,7 @@ async def syntax_check(
             return await check_python_syntax(file_path, profile)
         elif profile.language == "kotlin":
             # Gradle compiles the whole module — use compileDebugKotlin
-            result = await run_shell(profile.syntax_check_cmd, timeout_sec=120)
+            result = await run_shell(profile.syntax_check_cmd, timeout_sec=1200, profile=profile)
             ok = result["returncode"] == 0
             combined = result["stdout"][:500]
             if result["stderr"]:

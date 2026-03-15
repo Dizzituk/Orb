@@ -129,8 +129,9 @@ SEARCH_FILES_TOOL = {
 WRITE_FILE_TOOL = {
     "name": "write_file",
     "description": (
-        "Create or overwrite a file in the sandbox. SANDBOX ONLY — cannot write to host. "
-        "Use for implementing fixes, creating new files, or updating code."
+        "Create or overwrite a file on the filesystem. Use absolute paths. "
+        "Use for implementing fixes, creating new files, saving documents, "
+        "architecture maps, or any file the user requests."
     ),
     "parameters": {
         "type": "object",
@@ -151,8 +152,8 @@ WRITE_FILE_TOOL = {
 EDIT_FILE_TOOL = {
     "name": "edit_file",
     "description": (
-        "Apply targeted edits to a file in the sandbox. Uses exact string matching "
-        "to find and replace content. SANDBOX ONLY."
+        "Apply targeted edits to a file. Uses exact string matching "
+        "to find and replace content. Use absolute paths."
     ),
     "parameters": {
         "type": "object",

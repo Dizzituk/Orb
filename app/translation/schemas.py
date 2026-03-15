@@ -182,6 +182,37 @@ class CanonicalIntent(str, Enum):
     # Show quarantine status (counts across all tables)
     QUARANTINE_STATUS = "QUARANTINE_STATUS"
 
+    # =========================================================================
+    # DOMAIN INTENTS (v3.0 — Unified cross-domain routing)
+    # =========================================================================
+    # These route messages to ASTRA's domain services so the LLM
+    # can read real data and take actions across any part of the system,
+    # regardless of which interface (desktop, phone, debug) the user is on.
+
+    # Finance: budgets, expenses, tax, accounts
+    DOMAIN_FINANCE = "DOMAIN_FINANCE"
+
+    # Investments: portfolio, positions, performance, trading
+    DOMAIN_INVESTMENTS = "DOMAIN_INVESTMENTS"
+
+    # Content: creation pipeline, pieces, scheduling, publishing
+    DOMAIN_CONTENT = "DOMAIN_CONTENT"
+
+    # Social Media: comments, engagement, posting, analytics
+    DOMAIN_SOCIAL = "DOMAIN_SOCIAL"
+
+    # Lifestyle: fitness, diet, keto, bodyboarding, goals
+    DOMAIN_LIFESTYLE = "DOMAIN_LIFESTYLE"
+
+    # Debug: investigate bugs, read logs, codebase issues
+    DOMAIN_DEBUG = "DOMAIN_DEBUG"
+
+    # Education: study plans, learning progress
+    DOMAIN_EDUCATION = "DOMAIN_EDUCATION"
+
+    # Builds: pipeline build status, project builds, build history
+    DOMAIN_BUILDS = "DOMAIN_BUILDS"
+
 class LatencyTier(str, Enum):
     """Which cost tier resolved this intent?"""
     TIER_0_RULES = "tier_0"      # Pure regex/string, no LLM

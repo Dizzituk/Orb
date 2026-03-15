@@ -100,6 +100,7 @@ async def publish_video(
     description: str,
     title: Optional[str] = None,
     as_reel: bool = True,
+    scheduled_at: Optional[Any] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Publish a video to Facebook Page.
@@ -109,6 +110,8 @@ async def publish_video(
         description: Post description text.
         title: Optional video title.
         as_reel: If True, publish as a Reel. If False, regular video post.
+        scheduled_at: If set, schedule the post for this time (datetime).
+            Facebook handles the actual publishing.
     """
     import httpx
 
@@ -121,7 +124,7 @@ async def publish_video(
 
     try:
         async with httpx.AsyncClient(timeout=300) as client:
-            post_data = {
+            post_data: Dict[str, Any] = {
                 "file_url": video_url,
                 "description": description,
                 "access_token": page_token,
@@ -129,6 +132,14 @@ async def publish_video(
 
             if title:
                 post_data["title"] = title
+
+            # Facebook native scheduling: set published=false and
+            # scheduled_publish_time as a Unix timestamp
+            if scheduled_at:
+                from datetime import datetime, timezone
+                if hasattr(scheduled_at, 'timestamp'):
+                    post_data["scheduled_publish_time"] = int(scheduled_at.timestamp())
+                    post_data["published"] = "false"
 
             # Reels use a different endpoint
             if as_reel:
@@ -141,15 +152,17 @@ async def publish_video(
             result = resp.json()
 
             video_id = result.get("id")
+            status = "scheduled" if scheduled_at else "published"
             logger.info(
-                f"[facebook] Published {'reel' if as_reel else 'video'}: "
+                f"[facebook] {status.capitalize()} {'reel' if as_reel else 'video'}: "
                 f"{video_id}"
             )
 
             return {
                 "post_id": video_id,
-                "status": "published",
+                "status": "published",  # 'published' means uploaded to platform
                 "type": "reel" if as_reel else "video",
+                "platform_scheduled": bool(scheduled_at),
             }
 
     except Exception as e:

@@ -146,12 +146,12 @@ DRIVER_COPILOT = BuildTargetProfile(
 ASTRA_BRIDGE = BuildTargetProfile(
     project_id="astra-bridge",
     project_name="Astra Bridge",
-    project_root="D:/Astra Android Folder/AstraBridge",
+    project_root="D:/Astra Android Folder/Astra-Bridge",
     language="kotlin",
     build_system="gradle",
     framework="jetpack-compose",
-    source_root="app/src/main/java/com/astra/bridge",
-    package_name="com.astra.bridge",
+    source_root="app/src/main/java/com/astra/astrabridge",
+    package_name="com.astra.astrabridge",
     architecture_pattern="mvvm",
     key_directories={
         "data": "data/",
@@ -162,18 +162,18 @@ ASTRA_BRIDGE = BuildTargetProfile(
     },
     syntax_check_cmd=(
         _SET_JAVA +
-        'cd "D:\\Astra Android Folder\\AstraBridge" ; '
+        'cd "D:\\Astra Android Folder\\Astra-Bridge" ; '
         '.\\gradlew.bat compileDebugKotlin 2>&1'
     ),
     build_cmd=(
         _SET_JAVA +
-        'cd "D:\\Astra Android Folder\\AstraBridge" ; '
+        'cd "D:\\Astra Android Folder\\Astra-Bridge" ; '
         '.\\gradlew.bat assembleDebug 2>&1'
     ),
     boot_cmd=None,
     clean_cmd=(
         _SET_JAVA +
-        'cd "D:\\Astra Android Folder\\AstraBridge" ; '
+        'cd "D:\\Astra Android Folder\\Astra-Bridge" ; '
         '.\\gradlew.bat clean 2>&1'
     ),
     verification_mode="emulator",
@@ -242,8 +242,10 @@ def resolve_project_from_message(
 
     # ── Astra Bridge signals (most specific Android match) ──
     bridge_signals = [
-        "astra bridge", "android bridge", "phone bridge",
+        "astra bridge", "astrabridge", "astra-bridge",
+        "android bridge", "phone bridge",
         "bridge app", "mobile bridge", "the bridge",
+        "companion app",
     ]
     if any(sig in text for sig in bridge_signals):
         return ASTRA_BRIDGE

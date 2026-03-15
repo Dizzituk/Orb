@@ -309,6 +309,53 @@ def intent_to_routing_info(intent: "CanonicalIntent") -> Optional[dict]:
             "model": weaver.model,
             "reason": "Translation layer: PROJECT SCOPE START",
         },
+
+        # =====================================================================
+        # v3.0: Domain intents — unified cross-domain routing
+        # =====================================================================
+        # These route to domain_chat which pulls real data from each domain's
+        # service layer and injects it into the LLM context.
+
+        CanonicalIntent.DOMAIN_FINANCE: {
+            "type": "domain_chat",
+            "domain": "finance",
+            "reason": "Domain routing: FINANCE",
+        },
+        CanonicalIntent.DOMAIN_INVESTMENTS: {
+            "type": "domain_chat",
+            "domain": "investments",
+            "reason": "Domain routing: INVESTMENTS",
+        },
+        CanonicalIntent.DOMAIN_CONTENT: {
+            "type": "domain_chat",
+            "domain": "content",
+            "reason": "Domain routing: CONTENT",
+        },
+        CanonicalIntent.DOMAIN_SOCIAL: {
+            "type": "domain_chat",
+            "domain": "social",
+            "reason": "Domain routing: SOCIAL MEDIA",
+        },
+        CanonicalIntent.DOMAIN_LIFESTYLE: {
+            "type": "domain_chat",
+            "domain": "lifestyle",
+            "reason": "Domain routing: LIFESTYLE",
+        },
+        CanonicalIntent.DOMAIN_DEBUG: {
+            "type": "domain_chat",
+            "domain": "debug",
+            "reason": "Domain routing: DEBUG",
+        },
+        CanonicalIntent.DOMAIN_EDUCATION: {
+            "type": "domain_chat",
+            "domain": "education",
+            "reason": "Domain routing: EDUCATION",
+        },
+        CanonicalIntent.DOMAIN_BUILDS: {
+            "type": "domain_chat",
+            "domain": "builds",
+            "reason": "Domain routing: BUILDS",
+        },
     }
     return mapping.get(intent, None)
 

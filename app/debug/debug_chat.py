@@ -344,6 +344,11 @@ async def stream_debug_locked(
     video_file_uri: Optional[str] = None,
     video_mime_type: Optional[str] = None,
     video_local_path: Optional[str] = None,
+    file_upload_uri: Optional[str] = None,
+    file_upload_mime: Optional[str] = None,
+    file_upload_name: Optional[str] = None,
+    file_upload_local_path: Optional[str] = None,
+    file_upload_gemini_name: Optional[str] = None,
 ) -> AsyncGenerator[bytes, None]:
     """Stream handler for debug-locked sidebar chat.
 
@@ -398,6 +403,31 @@ async def stream_debug_locked(
                         f"\n## Active Debug Project: {dp.get('title', '')}\n"
                         f"Status: {dp.get('status', '')}\n"
                     )
+
+                    # Resolve build target profile from metadata
+                    try:
+                        meta = json.loads(dp.get("metadata_json", "{}") or "{}")
+                        target_id = meta.get("build_target_id")
+                        if target_id:
+                            from app.pipeline_v2.target_registry import get_profile
+                            target_profile = get_profile(target_id)
+                            if target_profile:
+                                build_context += (
+                                    f"\n### Build Target\n"
+                                    f"Project: {target_profile.project_name}\n"
+                                    f"Root: `{target_profile.project_root}`\n"
+                                    f"Language: {target_profile.language} | Framework: {target_profile.framework}\n"
+                                    f"Architecture: {target_profile.architecture_pattern}\n"
+                                    f"Source root: `{target_profile.absolute_source_root}`\n"
+                                    f"Package: `{target_profile.package_name}`\n"
+                                )
+                                if target_profile.key_directories:
+                                    dirs = ", ".join(f"{k} (`{v}`)" for k, v in target_profile.key_directories.items())
+                                    build_context += f"Key dirs: {dirs}\n"
+                                logger.info("[debug_locked] Resolved build target: %s (%s)", target_id, target_profile.project_name)
+                    except Exception as meta_err:
+                        logger.debug("[debug_locked] Build target resolution failed: %s", meta_err)
+
                     # Check if it contains a build report
                     if "--- BUILD REPORT ---" in desc:
                         report_part = desc.split("--- BUILD REPORT ---", 1)[1][:4000]
@@ -410,23 +440,49 @@ async def stream_debug_locked(
             except Exception as bp_err:
                 logger.debug("[debug_locked] Build context load failed: %s", bp_err)
 
+        # 2b. If no debug project, try resolving project from the message
+        if not build_context:
+            try:
+                from app.pipeline_v2.target_registry import resolve_project_from_message
+                resolved = resolve_project_from_message(message, panel_history)
+                if resolved:
+                    build_context = (
+                        f"\n## Detected Project Context\n"
+                        f"Based on the conversation, you are working with:\n"
+                        f"Project: {resolved.project_name}\n"
+                        f"Root: `{resolved.project_root}`\n"
+                        f"Language: {resolved.language} | Framework: {resolved.framework}\n"
+                        f"Architecture: {resolved.architecture_pattern}\n"
+                        f"Source root: `{resolved.absolute_source_root}`\n"
+                        f"Package: `{resolved.package_name}`\n"
+                    )
+                    if resolved.key_directories:
+                        dirs = ", ".join(f"{k} (`{v}`)" for k, v in resolved.key_directories.items())
+                        build_context += f"Key dirs: {dirs}\n"
+                    logger.info("[debug_locked] Resolved project from message: %s", resolved.project_name)
+            except Exception as resolve_err:
+                logger.debug("[debug_locked] Project resolution failed: %s", resolve_err)
+
         # 3. Build system prompt with tools
         system_prompt = (
             build_debug_system_prompt(context_block)
             + "\n\n## Debug Lock Mode\n"
             "You are in DEBUG LOCK mode. The user has locked their sidebar chat to Debug context.\n"
-            "You have FULL tool access: read_file, write_file, run_shell, search_files, list_dir.\n"
+            "You have FULL tool access: read_file, write_file, edit_file, run_command, search_files, list_files.\n"
             "Use tools to gather evidence when the user asks you to investigate or fix something.\n"
             "Be direct, technical, and action-oriented when asked to diagnose issues.\n"
             "Do NOT proactively scan logs or dump diagnostics -- wait for the user to tell you what to look at.\n"
             "For greetings or casual messages, just respond naturally and briefly.\n\n"
             "## How to Apply Changes\n"
-            "You CAN and SHOULD write code changes using the write_file tool. The sandbox is ONLINE.\n"
-            "read_file reads from the host codebase (read-only, for investigation).\n"
-            "write_file writes to the SANDBOX filesystem (this is how you apply fixes).\n"
-            "run_shell runs PowerShell commands in the SANDBOX (for testing, syntax checks, etc).\n"
-            "When the user asks you to make changes or says go ahead, USE write_file to write the code.\n"
+            "You CAN and SHOULD write code changes using write_file and edit_file tools.\n"
+            "read_file reads any file on the filesystem using absolute paths.\n"
+            "write_file creates or overwrites any file on the filesystem using absolute paths.\n"
+            "edit_file applies targeted find-and-replace edits to any file.\n"
+            "run_command runs PowerShell commands for testing, syntax checks, builds, etc.\n"
+            "You have full filesystem access — use absolute paths (e.g. D:/Orb/..., D:/Astra Android Folder/...).\n"
+            "When the user asks you to make changes, USE THE TOOLS to write the code directly.\n"
             "Do NOT just paste code in chat and tell the user to copy it. USE THE TOOLS.\n"
+            "You can write any file type: .py, .kt, .tsx, .txt, .html, .md, .json, etc.\n"
         )
 
         # Add video analysis instruction if a screen recording is attached
@@ -462,16 +518,28 @@ async def stream_debug_locked(
         def _on_tool(name, args, result_preview):
             tool_log.append({"tool": name, "args": args, "preview": result_preview})
 
-        # 6. Build multimodal content parts if video is attached
-        extra_parts = None
+        # 6. Build multimodal content parts (video + file uploads)
+        extra_parts = []
         if video_file_uri:
             from app.debug.screen_capture import build_video_content_part
             video_part = build_video_content_part(
                 file_uri=video_file_uri,
                 mime_type=video_mime_type or "video/webm",
             )
-            extra_parts = [video_part]
+            extra_parts.append(video_part)
             logger.info("[debug_locked] Attached video part: %s", video_file_uri)
+
+        if file_upload_uri:
+            from app.debug.screen_capture import build_video_content_part
+            # Gemini Files API works for images too — same file_data part format
+            file_part = build_video_content_part(
+                file_uri=file_upload_uri,
+                mime_type=file_upload_mime or "image/png",
+            )
+            extra_parts.append(file_part)
+            logger.info("[debug_locked] Attached file upload part: %s (%s)", file_upload_name, file_upload_mime)
+
+        extra_parts = extra_parts or None
 
         # 7. Call Gemini with native function-calling tool loop
         from app.debug.gemini_tool_loop import run_gemini_tool_loop
@@ -522,6 +590,23 @@ async def stream_debug_locked(
                     logger.info("[debug_locked] Deleted local recording: %s", video_local_path)
             except Exception as cleanup_err:
                 logger.warning("[debug_locked] Local file cleanup failed: %s", cleanup_err)
+
+        # Cleanup uploaded file from Gemini Files API and local disk
+        if file_upload_gemini_name:
+            try:
+                from app.debug.screen_capture import cleanup_gemini_file
+                await cleanup_gemini_file(file_upload_gemini_name)
+            except Exception as cleanup_err:
+                logger.warning("[debug_locked] Gemini file upload cleanup failed: %s", cleanup_err)
+
+        if file_upload_local_path:
+            try:
+                import os
+                if os.path.exists(file_upload_local_path):
+                    os.remove(file_upload_local_path)
+                    logger.info("[debug_locked] Deleted local upload: %s", file_upload_local_path)
+            except Exception as cleanup_err:
+                logger.warning("[debug_locked] Local upload cleanup failed: %s", cleanup_err)
 
     except Exception as e:
         logger.exception("[debug_locked] Stream error: %s", e)

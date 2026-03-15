@@ -255,6 +255,9 @@ def get_optimal_posting_time(
     """
     Calculate the next optimal posting time based on
     algorithm strategy and content type.
+
+    Uses learned posting windows from analytics when available,
+    falling back to hardcoded defaults when not enough data.
     """
     if current_utc is None:
         current_utc = datetime.now(timezone.utc)
@@ -269,8 +272,24 @@ def get_optimal_posting_time(
         "Friday", "Saturday", "Sunday",
     ]
 
+    # Try learned data first
     best_days = config["best_days"]
     best_hours = config["best_hours_utc"]
+    source = "default"
+
+    try:
+        from app.content.distribution.posting_time_learner import (
+            get_learned_windows, get_learned_best_days,
+        )
+        learned_windows = get_learned_windows(content_type)
+        learned_days = get_learned_best_days(content_type)
+        if learned_windows:
+            best_hours = [h for h, _ in learned_windows]
+            source = "learned"
+        if learned_days:
+            best_days = learned_days
+    except Exception:
+        pass
 
     # Find the next best day+hour combination
     for days_ahead in range(7):

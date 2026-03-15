@@ -25,6 +25,7 @@ from app.translation._intents_utils_2 import (
 from app.translation._intents_infrastructure import INFRASTRUCTURE_INTENTS
 from app.translation._intents_operations import OPERATIONS_INTENTS
 from app.translation._intents_conversational import CONVERSATIONAL_INTENTS
+from app.translation._intents_domains import DOMAIN_INTENTS
 
 
 # =============================================================================
@@ -35,6 +36,7 @@ INTENT_DEFINITIONS: Dict[CanonicalIntent, IntentDefinition] = {
     **INFRASTRUCTURE_INTENTS,
     **OPERATIONS_INTENTS,
     **CONVERSATIONAL_INTENTS,
+    **DOMAIN_INTENTS,
 }
 
 
