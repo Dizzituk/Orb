@@ -164,6 +164,74 @@ API_KEY_REGISTRY = {
         "prefix_hint": "",
     },
     # ═══════════════════════════════════════════
+    # VIDEO PRODUCTION
+    # ═══════════════════════════════════════════
+    "pexels": {
+        "display_name": "Pexels",
+        "description": "Free stock video and photo search API for content pipeline",
+        "env_var": "PEXELS_API_KEY",
+        "required": False,
+        "category": "video_production",
+        "url": "https://www.pexels.com/api/",
+        "prefix_hint": "",
+    },
+    "pixabay": {
+        "display_name": "Pixabay",
+        "description": "Free stock video and photo search API (second source, different library from Pexels)",
+        "env_var": "PIXABAY_API_KEY",
+        "required": False,
+        "category": "video_production",
+        "url": "https://pixabay.com/api/docs/",
+        "prefix_hint": "",
+    },
+
+
+    "fal_ai": {
+        "display_name": "fal.ai",
+        "description": "Unified AI video generation API (Veo 3, Kling 3, Wan 2.2)",
+        "env_var": "FAL_API_KEY",
+        "required": False,
+        "category": "video_production",
+        "url": "https://fal.ai/dashboard/keys",
+        "prefix_hint": "",
+    },
+    "heygen": {
+        "display_name": "HeyGen API Key",
+        "description": "API key for AI avatar video generation",
+        "env_var": "HEYGEN_API_KEY",
+        "required": False,
+        "category": "video_production",
+        "url": "https://app.heygen.com/settings/api",
+        "prefix_hint": "",
+    },
+    "heygen_avatar_id": {
+        "display_name": "HeyGen Avatar ID",
+        "description": "Your custom ASTRA avatar ID from HeyGen. Find it on the Avatars page or via the list avatars API.",
+        "env_var": "HEYGEN_AVATAR_ID",
+        "required": False,
+        "category": "video_production",
+        "url": "https://app.heygen.com/avatars",
+        "prefix_hint": "",
+    },
+    "heygen_voice_id": {
+        "display_name": "HeyGen Voice ID",
+        "description": "Voice to use for avatar narration. Leave blank to use the avatar's default voice.",
+        "env_var": "HEYGEN_VOICE_ID",
+        "required": False,
+        "category": "video_production",
+        "url": "https://app.heygen.com/voices",
+        "prefix_hint": "",
+    },
+    "heygen_avatar_bg_url": {
+        "display_name": "HeyGen Avatar Background URL",
+        "description": "URL of background image for avatar videos. Use a dark tech/circuit image for best results.",
+        "env_var": "HEYGEN_AVATAR_BG_URL",
+        "required": False,
+        "category": "video_production",
+        "url": "https://www.pexels.com/search/technology%20dark/",
+        "prefix_hint": "https://",
+    },
+    # ═══════════════════════════════════════════
     # FINANCE / BUSINESS
     # ═══════════════════════════════════════════
     "trading212_api_key": {

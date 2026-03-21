@@ -78,6 +78,10 @@ TIER_MODEL_MAP = {
     "reasoning": "sonnet",
     "deep": "opus",
     "multimodal": "specialist",
+    # Explicit user model requests
+    "explicit_gpt54": "gpt54",
+    "explicit_claude": "claude",
+    "explicit_gemini": "gemini",
 }
 
 
@@ -161,6 +165,62 @@ INTENT_TIER_OVERRIDES = {
 
 
 # =========================================================================
+# Explicit model request patterns
+# =========================================================================
+
+# When the user explicitly asks for a specific model, skip all other
+# classification and route directly. These are intentional requests,
+# not complexity-based upgrades.
+EXPLICIT_MODEL_PATTERNS = {
+    "gpt_54": {
+        "patterns": [
+            r"(?:use|switch (?:that |it |this )?to|escalate (?:that |it |this )?to|send (?:it |that )?to|route (?:it |that |this )?to|put (?:it |that )?through)\s*(?:gpt[\s\-]?5[\.\s]?4|gpt5\.4|gpt 5\.4|openai)",
+            r"(?:use|switch (?:that |it |this )?to|escalate (?:that |it |this )?to)\s*(?:the\s+)?(?:reasoning|creative|openai)\s+model",
+            r"can you (?:escalate|send|route|switch)\s+(?:it |that |this )?to\s+(?:gpt[\s\-]?5[\.\s]?4|openai)",
+        ],
+        "tier": "explicit_gpt54",
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "target": "gpt54",
+    },
+    "claude": {
+        "patterns": [
+            r"(?:use|switch (?:that |it |this )?to|escalate (?:that |it |this )?to|send (?:it |that )?to|route (?:it |that |this )?to|put (?:it |that )?through)\s*(?:claude|anthropic|opus)",
+            r"(?:use|switch (?:that |it |this )?to|escalate (?:that |it |this )?to)\s*(?:the\s+)?(?:deep|architecture)\s+model",
+            r"can you (?:escalate|send|route|switch)\s+(?:it |that |this )?to\s+(?:claude|anthropic|opus)",
+        ],
+        "tier": "explicit_claude",
+        "provider": "anthropic",
+        "model": "claude-opus-4-6",
+        "target": "claude",
+    },
+    "gemini": {
+        "patterns": [
+            r"(?:use|switch (?:that |it |this )?to|escalate (?:that |it |this )?to|send (?:it |that )?to|route (?:it |that |this )?to|put (?:it |that )?through)\s*(?:gemini|google)",
+            r"(?:use|switch (?:that |it |this )?to|escalate (?:that |it |this )?to)\s*(?:the\s+)?(?:vision|multimodal|google)\s+model",
+            r"can you (?:escalate|send|route|switch)\s+(?:it |that |this )?to\s+(?:gemini|google)",
+        ],
+        "tier": "explicit_gemini",
+        "provider": "google",
+        "model": "gemini-3.1-pro-preview",
+        "target": "gemini",
+    },
+}
+
+
+def _detect_explicit_model_request(query_lower: str) -> Optional[dict]:
+    """Detect if the user is explicitly requesting a specific model.
+
+    Returns the model config dict if detected, None otherwise.
+    """
+    for model_key, config in EXPLICIT_MODEL_PATTERNS.items():
+        for pattern in config["patterns"]:
+            if re.search(pattern, query_lower, re.IGNORECASE):
+                return config
+    return None
+
+
+# =========================================================================
 # Main classifier
 # =========================================================================
 
@@ -187,6 +247,32 @@ def classify_complexity(
     signals = {}
     query_lower = query.lower().strip()
     word_count = len(query.split())
+
+    # ── Signal 0: Explicit model request (HIGHEST priority) ──────
+    # When the user says "use GPT-5.4" or "send to Claude",
+    # skip all other classification and route directly.
+    # Check BOTH the full message AND just the first line —
+    # users often put "escalate to X" on the first line
+    # followed by a big block of content.
+    first_line = query_lower.split("\n")[0].strip()
+    explicit = (
+        _detect_explicit_model_request(first_line)
+        or _detect_explicit_model_request(query_lower)
+    )
+    if explicit:
+        signals["explicit_model"] = explicit["model"]
+        _prov = explicit["provider"]
+        _mod = explicit["model"]
+        logger.info(
+            f"[complexity] Explicit model request: {_prov}/{_mod}"
+        )
+        return ComplexityResult(
+            tier=explicit["tier"],
+            confidence=1.0,
+            model_target=explicit["target"],
+            escalation_hint=f"User requested {_mod}",
+            signals=signals,
+        )
 
     # ── Signal 1: Multimodal check (highest priority) ────────────
     if attachments:

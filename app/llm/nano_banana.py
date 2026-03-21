@@ -1,10 +1,12 @@
 # FILE: app/llm/nano_banana.py
 """
-Nano Banana (Gemini Image) integration for generating images.
+Google Gemini image generation backend (Nano Banana).
 
-Uses gemini-3.1-flash-image-preview (Nano Banana 2) via google-genai SDK.
-500 free images/day - no additional cost beyond the existing Google API key.
+Called by image_service.py when IMAGE_GEN_PROVIDER=google,
+or as fallback when OpenAI primary fails.
+All config read from .env at runtime — no hardcoded models.
 
+v2.0 (2026-03-20): Env-driven config via IMAGE_GEN_FALLBACK_MODEL.
 v1.1 (2026-03-09): Fixed to use google-genai SDK with response_modalities.
 v1.0 (2026-03-09): Initial implementation.
 """
@@ -20,20 +22,31 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 OUTPUT_DIR = os.getenv("ASTRA_OUTPUT_DIR", r"D:\Orb\output")
-DEFAULT_MODEL = "gemini-2.5-flash-image"
+
+
+def _get_model() -> str:
+    """Read model from env. Checks fallback vars then primary."""
+    return (
+        os.getenv("IMAGE_GEN_FALLBACK_MODEL")
+        or os.getenv("IMAGE_GEN_MODEL")
+        or "gemini-2.5-flash-image"
+    )
 
 
 async def generate_image(
     prompt: str,
-    model: str = DEFAULT_MODEL,
+    model: Optional[str] = None,
     output_filename: Optional[str] = None,
     aspect_ratio: Optional[str] = None,
 ) -> Optional[dict]:
-    """Generate an image using Nano Banana (Gemini Image).
+    """Generate an image using Google Gemini (Nano Banana).
+
+    Model read from .env (IMAGE_GEN_FALLBACK_MODEL) at runtime.
 
     Returns:
         Dict with path, filename, size_bytes, base64_data, mime_type or None
     """
+    model = model or _get_model()
     try:
         from google import genai
         from google.genai import types
@@ -120,4 +133,4 @@ def image_to_data_uri(b64_data: str, mime_type: str = "image/png") -> str:
     return f"data:{mime_type};base64,{b64_data}"
 
 
-__all__ = ["generate_image", "image_to_data_uri", "DEFAULT_MODEL"]
+__all__ = ["generate_image", "image_to_data_uri"]

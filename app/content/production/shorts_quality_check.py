@@ -20,7 +20,7 @@ from dataclasses import dataclass, asdict
 logger = logging.getLogger(__name__)
 
 # Use Gemini 3.1 Pro Preview for quality — best video understanding
-QUALITY_MODEL = "gemini-3.1-pro-preview"
+QUALITY_MODEL = "gemini-2.0-flash"
 PASS_THRESHOLD = 7
 FLAG_THRESHOLD = 4
 
@@ -94,7 +94,7 @@ async def check_short_quality(
                     ],
                     "generationConfig": {
                         "temperature": 0.2,
-                        "maxOutputTokens": 1024,
+                        "maxOutputTokens": 2048,
                     },
                 },
             )

@@ -578,3 +578,53 @@ async def bridge_tts_preview(
 async def bridge_health():
     """Health check for the bridge app (no auth required)."""
     return {"status": "ok", "service": "astra-bridge-api"}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Crash Report Receiver
+# ═══════════════════════════════════════════════════════════════════
+
+@router.post("/crash-report")
+async def receive_crash_report(request: Request):
+    """Receive crash reports from AstraBridge Android app and email them."""
+    import json
+    try:
+        body = await request.json()
+        report = body.get("report", "No report content")
+        app_name = body.get("app", "Unknown")
+        timestamp = body.get("timestamp", 0)
+
+        logger.info("[bridge] Received crash report from %s (%d chars)", app_name, len(report))
+
+        # Try to send via Proton Mail
+        email_sent = False
+        try:
+            from app.cloud.proton_mail import send_email
+            subject = f"[CRASH] {app_name} — {report.split(chr(10))[1] if chr(10) in report else 'Unknown crash'}"
+            await send_email(
+                to_address=None,  # Uses default recipient (your email)
+                subject=subject[:120],
+                body=report,
+            )
+            email_sent = True
+            logger.info("[bridge] Crash report emailed successfully")
+        except Exception as mail_err:
+            logger.warning("[bridge] Could not email crash report: %s", mail_err)
+
+        # Also save locally as backup
+        import os
+        crash_dir = os.path.join("D:\\Orb", "logs", "crash_reports")
+        os.makedirs(crash_dir, exist_ok=True)
+        crash_file = os.path.join(crash_dir, f"crash_{int(timestamp) or 'unknown'}.txt")
+        with open(crash_file, "w") as f:
+            f.write(report)
+        logger.info("[bridge] Crash report saved to %s", crash_file)
+
+        return {
+            "received": True,
+            "emailed": email_sent,
+            "saved": crash_file,
+        }
+    except Exception as e:
+        logger.error("[bridge] Crash report processing failed: %s", e)
+        return {"received": False, "error": str(e)}

@@ -283,6 +283,19 @@ def build_dispatch_table(registry: Any) -> List[Dict[str, Any]]:
             "error_name": "Multi-File Refactor Handler",
             "error_module": "app/llm/weaver_stream.py",
         },
+        # --- Image Generation (v3.1) ---
+        {
+            "intent": CanonicalIntent.GENERATE_IMAGE,
+            "available": registry._IMAGE_GEN_STREAM_AVAILABLE,
+            "handler": registry.generate_image_stream,
+            "stage": "image_generation",
+            "provider_override": lambda: (
+                os.getenv("IMAGE_GEN_PROVIDER", "openai"),
+                os.getenv("IMAGE_GEN_MODEL", "gpt-image-1.5"),
+            ),
+            "error_name": "Image Generation Handler",
+            "error_module": "app/llm/image_router.py",
+        },
         # --- Project Scoping (v2.2) ---
         {
             "intent": CanonicalIntent.PROJECT_SCOPE_START,

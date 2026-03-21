@@ -213,6 +213,13 @@ class CanonicalIntent(str, Enum):
     # Builds: pipeline build status, project builds, build history
     DOMAIN_BUILDS = "DOMAIN_BUILDS"
 
+    # =========================================================================
+    # IMAGE GENERATION (v3.1 — GPT Image 1.5 primary, Nano Banana fallback)
+    # =========================================================================
+
+    # Generate an image from a text description
+    GENERATE_IMAGE = "GENERATE_IMAGE"
+
 class LatencyTier(str, Enum):
     """Which cost tier resolved this intent?"""
     TIER_0_RULES = "tier_0"      # Pure regex/string, no LLM

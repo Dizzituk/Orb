@@ -1,17 +1,20 @@
 # FILE: app/llm/image_gen.py
 """
-GPT Image 1.5 integration for generating images via OpenAI API.
+OpenAI image generation backend (GPT Image 1.5).
 
-Used by the content/blog pipeline to generate concept images,
-hero graphics, and visual elements for HTML pages.
+Called by image_service.py when IMAGE_GEN_PROVIDER=openai.
+All config read from .env at runtime — no hardcoded models.
 
+v2.0 (2026-03-20): Env-driven config, consistent return schema with nano_banana.
 v1.0 (2026-03-09): Initial implementation.
 """
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -20,25 +23,39 @@ logger = logging.getLogger(__name__)
 OUTPUT_DIR = os.getenv("ASTRA_OUTPUT_DIR", r"D:\Orb\output")
 
 
+def _get_model() -> str:
+    return os.getenv("IMAGE_GEN_MODEL", "gpt-image-1.5")
+
+
+def _get_quality() -> str:
+    return os.getenv("IMAGE_GEN_QUALITY", "standard")
+
+
+def _get_size() -> str:
+    return os.getenv("IMAGE_GEN_SIZE", "1024x1024")
+
+
 async def generate_image(
     prompt: str,
-    size: str = "1024x1024",
-    quality: str = "standard",
-    model: str = "gpt-image-1.5",
+    model: Optional[str] = None,
+    quality: Optional[str] = None,
+    size: Optional[str] = None,
     output_filename: Optional[str] = None,
+    aspect_ratio: Optional[str] = None,
 ) -> Optional[dict]:
-    """Generate an image using OpenAI GPT Image 1.5.
+    """Generate an image using OpenAI GPT Image API.
 
-    Args:
-        prompt: Description of the image to generate
-        size: Image dimensions (1024x1024, 1536x1024, 1024x1536)
-        quality: 'standard' or 'hd'
-        model: Model to use (gpt-image-1.5)
-        output_filename: Filename to save as (auto-generated if None)
+    All defaults read from .env (IMAGE_GEN_MODEL, IMAGE_GEN_QUALITY, IMAGE_GEN_SIZE).
+    aspect_ratio is mapped to size if provided and size is not explicit.
 
     Returns:
-        Dict with path, filename, size_bytes, base64_data or None on failure
+        Dict with path, filename, size_bytes, base64_data, mime_type, prompt, text
+        (consistent with nano_banana return schema) or None on failure.
     """
+    model = model or _get_model()
+    quality = quality or _get_quality()
+    size = size or _map_aspect_to_size(aspect_ratio) or _get_size()
+
     try:
         from openai import AsyncOpenAI
 
@@ -49,16 +66,30 @@ async def generate_image(
 
         client = AsyncOpenAI(api_key=api_key)
 
-        logger.info("[image_gen] Generating: %s (size=%s, quality=%s)", prompt[:80], size, quality)
-
-        response = await client.images.generate(
-            model=model,
-            prompt=prompt,
-            n=1,
-            size=size,
-            quality=quality,
-            response_format="b64_json",
+        logger.info(
+            "[image_gen] Generating with %s (size=%s, quality=%s): %s",
+            model, size, quality, prompt[:100],
         )
+
+        # GPT Image models (gpt-image-1, gpt-image-1.5) return b64_json by default.
+        # They use output_format (png/jpeg/webp) not response_format.
+        # Quality values: 'low', 'medium', 'high' (not 'standard'/'hd').
+        gen_kwargs = {
+            "model": model,
+            "prompt": prompt,
+            "n": 1,
+            "size": size,
+        }
+
+        # Map legacy quality values to GPT Image format
+        quality_map = {"standard": "medium", "hd": "high"}
+        gen_kwargs["quality"] = quality_map.get(quality, quality)
+
+        # Only add response_format for DALL-E models (not GPT Image)
+        if "dall-e" in model:
+            gen_kwargs["response_format"] = "b64_json"
+
+        response = await client.images.generate(**gen_kwargs)
 
         if not response.data:
             logger.warning("[image_gen] No image data returned")
@@ -72,9 +103,9 @@ async def generate_image(
         output_dir.mkdir(parents=True, exist_ok=True)
 
         if not output_filename:
-            import hashlib
             h = hashlib.md5(prompt.encode()).hexdigest()[:8]
-            output_filename = f"gen-{h}.png"
+            ts = datetime.now(timezone.utc).strftime("%H%M%S")
+            output_filename = f"gpt-{h}-{ts}.png"
 
         filepath = output_dir / output_filename
         filepath.write_bytes(image_bytes)
@@ -86,12 +117,28 @@ async def generate_image(
             "filename": output_filename,
             "size_bytes": len(image_bytes),
             "base64_data": b64_data,
+            "mime_type": "image/png",
             "prompt": prompt,
+            "text": None,
         }
 
     except Exception as e:
         logger.error("[image_gen] Failed: %s", e)
         return None
+
+
+def _map_aspect_to_size(aspect_ratio: Optional[str]) -> Optional[str]:
+    """Map aspect ratio string to OpenAI size parameter."""
+    if not aspect_ratio:
+        return None
+    mapping = {
+        "16:9": "1536x1024",
+        "9:16": "1024x1536",
+        "4:3": "1536x1024",
+        "21:9": "1536x1024",
+        "1:1": "1024x1024",
+    }
+    return mapping.get(aspect_ratio)
 
 
 def image_to_data_uri(b64_data: str, mime_type: str = "image/png") -> str:

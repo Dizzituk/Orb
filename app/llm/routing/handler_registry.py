@@ -310,6 +310,19 @@ except ImportError as e:
     generate_refactor_stream = None
 
 # =============================================================================
+# IMAGE GENERATION STREAM (v3.1)
+# =============================================================================
+
+try:
+    from app.llm.image_router import generate_image_stream
+    _IMAGE_GEN_STREAM_AVAILABLE = True
+    print("[handler_registry] Image generation stream handler loaded successfully")
+except ImportError as e:
+    _IMAGE_GEN_STREAM_AVAILABLE = False
+    print(f"[handler_registry] WARNING: Image generation stream import failed: {e}")
+    generate_image_stream = None
+
+# =============================================================================
 # INTROSPECTION
 # =============================================================================
 
@@ -345,6 +358,7 @@ def log_handler_availability() -> None:
     print(f"[HANDLER_STATUS] RefactorLoop: {_REFACTOR_AVAILABLE}")
     print(f"[HANDLER_STATUS] WebSearchStream: {_WEB_SEARCH_STREAM_AVAILABLE}")
     print(f"[HANDLER_STATUS] DeepResearchStream: {_DEEP_RESEARCH_STREAM_AVAILABLE}")
+    print(f"[HANDLER_STATUS] ImageGenStream: {_IMAGE_GEN_STREAM_AVAILABLE}")
     print(f"[HANDLER_STATUS] Introspection: {_INTROSPECTION_AVAILABLE}")
 
 
@@ -369,6 +383,7 @@ def get_handler_status() -> dict:
         "refactor_loop": _REFACTOR_AVAILABLE,
         "web_search_stream": _WEB_SEARCH_STREAM_AVAILABLE,
         "deep_research_stream": _DEEP_RESEARCH_STREAM_AVAILABLE,
+        "image_gen_stream": _IMAGE_GEN_STREAM_AVAILABLE,
         "introspection": _INTROSPECTION_AVAILABLE,
     }
 
@@ -455,6 +470,9 @@ __all__ = [
     # Refactor Loop
     "_REFACTOR_AVAILABLE",
     "generate_refactor_stream",
+    # Image Generation Stream
+    "_IMAGE_GEN_STREAM_AVAILABLE",
+    "generate_image_stream",
     # Introspection
     "detect_log_intent",
     # Status functions

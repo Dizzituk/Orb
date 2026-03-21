@@ -287,6 +287,15 @@ async def verify_api_key(
             status, detail = await _verify_coinmarketcap(value)
         elif key_name == "meta_access_token":
             status, detail = await _verify_meta(value)
+        elif key_name == "pexels":
+            status, detail = await _verify_pexels(value)
+        elif key_name == "pixabay":
+            status, detail = await _verify_pixabay(value)
+
+        elif key_name == "fal_ai":
+            status, detail = await _verify_fal_ai(value)
+        elif key_name == "heygen":
+            status, detail = await _verify_heygen(value)
         elif key_name in (
             "youtube_client_id", "youtube_client_secret", "youtube_api_key",
             "meta_app_id", "meta_app_secret",
@@ -294,6 +303,7 @@ async def verify_api_key(
             "trading212_api_secret",
             "quickbooks_client_id", "quickbooks_client_secret",
             "quickbooks_refresh_token", "quickbooks_realm_id",
+            "heygen_avatar_id", "heygen_voice_id",
         ):
             # These are credential components verified via their primary key
             status = "stored"
@@ -461,6 +471,75 @@ async def _verify_meta(token: str) -> tuple:
         else:
             error = resp.json().get("error", {}).get("message", "")
             return "error", error or f"HTTP {resp.status_code}"
+
+
+async def _verify_pexels(key: str) -> tuple:
+    """Verify Pexels API key with a curated photos request."""
+    import httpx
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            "https://api.pexels.com/v1/curated?per_page=1",
+            headers={"Authorization": key},
+        )
+        if resp.status_code == 200:
+            return "valid", "Key accepted"
+        elif resp.status_code == 401:
+            return "invalid", "Authentication failed"
+        else:
+            return "error", f"HTTP {resp.status_code}"
+
+
+async def _verify_pixabay(key: str) -> tuple:
+    """Verify Pixabay API key with a simple video search."""
+    import httpx
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            "https://pixabay.com/api/videos/",
+            params={"key": key, "q": "test", "per_page": 3},
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            hits = len(data.get("hits", []))
+            return "valid", f"Key accepted ({hits} test results)"
+        elif resp.status_code == 401:
+            return "invalid", "Authentication failed"
+        elif resp.status_code == 429:
+            return "error", "Rate limited — key is valid but try again later"
+        else:
+            return "error", f"HTTP {resp.status_code}"
+
+
+
+async def _verify_fal_ai(key: str) -> tuple:
+    """Verify fal.ai API key with the pricing endpoint."""
+    import httpx
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            "https://api.fal.ai/v1/models/pricing",
+            headers={"Authorization": f"Key {key}"},
+        )
+        if resp.status_code == 200:
+            return "valid", "Key accepted"
+        elif resp.status_code == 401:
+            return "invalid", "Authentication failed"
+        else:
+            return "error", f"HTTP {resp.status_code}"
+
+
+async def _verify_heygen(key: str) -> tuple:
+    """Verify HeyGen API key with an avatars list request."""
+    import httpx
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            "https://api.heygen.com/v2/avatars",
+            headers={"X-Api-Key": key},
+        )
+        if resp.status_code == 200:
+            return "valid", "Key accepted"
+        elif resp.status_code in (401, 403):
+            return "invalid", f"Key rejected ({resp.status_code})"
+        else:
+            return "error", f"HTTP {resp.status_code}"
 
 
 def _get_companion_key(db: Session, key_name: str) -> Optional[str]:

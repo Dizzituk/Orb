@@ -371,6 +371,22 @@ def cut_shorts(
 
     outputs = []
     for i, seg in enumerate(segments):
+        # Snap cut points to silence gaps to avoid mid-word cuts
+        try:
+            from app.content.production.silence_snap import snap_both_ends
+            snapped_start, snapped_end = snap_both_ends(
+                source_path, seg.start_seconds, seg.end_seconds,
+                search_window=2.0,
+            )
+            logger.info(
+                f"[shorts] Snap: {seg.start_seconds:.1f}-{seg.end_seconds:.1f}"
+                f" → {snapped_start:.1f}-{snapped_end:.1f}"
+            )
+        except Exception as e:
+            logger.warning(f"[shorts] Silence snap failed: {e}, using originals")
+            snapped_start = seg.start_seconds
+            snapped_end = seg.end_seconds
+
         safe_title = "".join(
             c if c.isalnum() or c in " -_" else ""
             for c in seg.title
@@ -380,7 +396,7 @@ def cut_shorts(
             output_dir / f"short_{i+1}_{safe_title[:40]}.mp4"
         )
 
-        duration = seg.end_seconds - seg.start_seconds
+        duration = snapped_end - snapped_start
 
         # Build video filter chain — hard cut, no fades
         vf_parts = []
@@ -397,7 +413,7 @@ def cut_shorts(
         vf = ",".join(vf_parts) if vf_parts else None
 
         ffmpeg_args = [
-            "-ss", str(seg.start_seconds),
+            "-ss", str(snapped_start),
             "-i", source_path,
             "-t", str(duration),
         ]
@@ -423,8 +439,10 @@ def cut_shorts(
                 "index": i + 1,
                 "title": seg.title,
                 "path": output_path,
-                "start": seg.start_seconds,
-                "end": seg.end_seconds,
+                "start": snapped_start,
+                "end": snapped_end,
+                "original_start": seg.start_seconds,
+                "original_end": seg.end_seconds,
                 "duration": duration,
                 "description": seg.description,
                 "hook": seg.hook,
@@ -432,8 +450,9 @@ def cut_shorts(
                 "resolution": f"{out_w}x{out_h}" if portrait else "original",
             })
             logger.info(
-                "[shorts] Cut short %d: %s (%.1fs-%.1fs) %s",
+                "[shorts] Cut short %d: %s (%.1fs-%.1fs, snapped from %.1fs-%.1fs) %s",
                 i + 1, seg.title,
+                snapped_start, snapped_end,
                 seg.start_seconds, seg.end_seconds,
                 f"{out_w}x{out_h}" if portrait else "",
             )

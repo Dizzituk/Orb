@@ -56,6 +56,15 @@ from app.content.style_router import router as content_style_router
 from app.content.item_router import router as content_item_router
 from app.content.stream_router import router as content_stream_router
 import app.content.project_models  # noqa: F401 — register Content Hub tables with Base
+
+# Video Pipeline (script-to-video production)
+try:
+    from app.content.video_pipeline.router import router as video_pipeline_router
+    from app.content.video_pipeline.style_resolver import StyleProfileRecord  # noqa: F401 — register table
+    _VIDEO_PIPELINE_AVAILABLE = True
+except ImportError as e:
+    _VIDEO_PIPELINE_AVAILABLE = False
+    print(f"[main] Video pipeline not available: {e}")
 from app.content.engagement.router import router as engagement_router
 import app.content.engagement.models  # noqa: F401 — register Engagement tables with Base
 from app.builds.router import router as builds_router
@@ -350,6 +359,9 @@ app.include_router(content_project_router)
 app.include_router(content_style_router)
 app.include_router(content_item_router)
 app.include_router(content_stream_router)
+if _VIDEO_PIPELINE_AVAILABLE:
+    app.include_router(video_pipeline_router)
+    print("[startup] Video Pipeline: [OK] registered")
 app.include_router(builds_router)
 app.include_router(education_router)
 
@@ -459,6 +471,15 @@ except Exception as e:
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+# Serve generated images (image generation pipeline output)
+_output_images_dir = os.path.join(
+    os.getenv("ASTRA_OUTPUT_DIR", os.path.join(os.path.dirname(__file__), "output")),
+    "images",
+)
+os.makedirs(_output_images_dir, exist_ok=True)
+app.mount("/output/images", StaticFiles(directory=_output_images_dir), name="output_images")
+print(f"[startup] Output images: [OK] serving {_output_images_dir} at /output/images")
 
 
 @app.get("/")

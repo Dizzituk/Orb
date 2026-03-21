@@ -167,11 +167,12 @@ def _detect_codebase_exploration(message: str) -> bool:
     """
     return bool(_CODEBASE_EXPLORE_PATTERNS.search(message))
 
-# v10.3: Detect image generation intent — routes to Nano Banana.
+# v10.3: Detect image generation intent — routes to image generation pipeline.
+# v3.1: Added chart/graph/infographic/plot for data-driven image requests.
 _IMAGE_GEN_PATTERNS = _re.compile(
-    r'(?:create|draw|make|generate|design|paint|sketch|render|produce|build|visuali[sz]e|need)\s+'
+    r'(?:create|draw|make|generate|design|paint|sketch|render|produce|build|compile|visuali[sz]e|need|plot|put\s+together)\s+'
     r'(?:me\s+|yourself\s+)?(?:a\s+|an\s+|the\s+|another\s+)?'
-    r'(?:new\s+)?(?:image|picture|photo|illustration|avatar|icon|graphic|artwork|portrait|visual|banner|thumbnail|logo|cover)',
+    r'(?:new\s+)?(?:image|picture|photo|illustration|avatar|icon|graphic|artwork|portrait|visual|banner|thumbnail|logo|cover|chart|graph|infographic|plot|diagram)',
     _re.IGNORECASE,
 )
 
@@ -301,110 +302,58 @@ def handle_chat_mode(
         _detect_image_refinement(req.message)
         and _last_assistant_was_image(req.project_id, db)
     ):
-        # v10.5: Context-aware image generation — two-stage pipeline
-        # Stage 1: Gemini Flash Lite synthesises a rich prompt from conversation context
-        # Stage 2: Nano Banana generates the image from the synthesised prompt
-        print(f"[CHAT_MODE] Image generation detected -> context-aware Nano Banana pipeline")
+        # v3.1: Image generation now routed through translation layer dispatch table.
+        # The GENERATE_IMAGE intent handles GPT Image 1.5 (primary) + Nano Banana (fallback),
+        # with optional web search + Plotly chart rendering for data-driven requests.
+        # We return None here so stream_router falls through to the translation layer.
+        print(f"[CHAT_MODE] Image generation detected -> routing to translation layer (GENERATE_IMAGE intent)")
 
-        from app.llm.nano_banana import generate_image as nano_generate
-        from app.llm.image_prompt_synth import synthesise_image_prompt
-        from app.llm.file_output import sse_file_outputs
-
-        async def _image_gen_stream():
-            import json
-            yield "data: " + json.dumps({"type": "metadata", "provider": "google", "model": "nano-banana-2"}) + "\n\n"
-
-            # --- Stage 1: Prompt Synthesis ---
-            yield "data: " + json.dumps({"type": "token", "content": "Reading conversation context...\n"}) + "\n\n"
-
-            # Fetch conversation history for context
-            conversation_history = []
-            previous_image_prompt = None
-            try:
-                msgs = memory_service.get_messages(db, req.project_id, limit=10)
-                for msg in msgs:
-                    conversation_history.append({
-                        "role": msg.role,
-                        "content": msg.content or "",
-                    })
-
-                # Check if this is a refinement of a previous image
-                if _detect_image_refinement(req.message):
-                    for msg in reversed(msgs):
-                        if msg.role == "assistant" and msg.model == "nano-banana-2":
-                            content = msg.content or ""
-                            # Extract synthesised prompt from stored format:
-                            # "Generated image: filename.png | Prompt: synthesised text"
-                            if "| Prompt:" in content:
-                                previous_image_prompt = content.split("| Prompt:", 1)[1].strip()
-                            elif content.startswith("Generated image:"):
-                                # Fallback: use the user message that triggered it
-                                for prev_msg in msgs:
-                                    if prev_msg.role == "user" and getattr(prev_msg, 'id', 0) < getattr(msg, 'id', 0):
-                                        previous_image_prompt = prev_msg.content
-                            if previous_image_prompt:
-                                print(f"[CHAT_MODE] Image refinement: reusing previous prompt ({len(previous_image_prompt)} chars)")
-                            break
-            except Exception as e:
-                print(f"[CHAT_MODE] History fetch for image gen failed: {e}")
-
-            yield "data: " + json.dumps({"type": "token", "content": "Crafting image prompt...\n"}) + "\n\n"
-
-            # Synthesise the prompt via Gemini Flash Lite
-            synthesised_prompt, aspect_ratio = await synthesise_image_prompt(
-                user_message=req.message,
-                conversation_history=conversation_history,
-                previous_image_prompt=previous_image_prompt,
-            )
-
-            yield "data: " + json.dumps({"type": "token", "content": f"Prompt: *{synthesised_prompt[:150]}{'...' if len(synthesised_prompt) > 150 else ''}*\n\n"}) + "\n\n"
-
-            # --- Stage 2: Image Generation ---
-            yield "data: " + json.dumps({"type": "token", "content": "Generating image...\n\n"}) + "\n\n"
-
-            result = await nano_generate(prompt=synthesised_prompt, aspect_ratio=aspect_ratio)
-            if result:
-                yield "data: " + json.dumps({"type": "token", "content": f"![Generated Image](data:{result['mime_type']};base64,{result['base64_data']})\n\n"}) + "\n\n"
-                yield "data: " + json.dumps({"type": "token", "content": f"Saved to {result['path']}\n"}) + "\n\n"
-                file_info = {
-                    "path": result["path"],
-                    "filename": result["filename"],
-                    "type": "image",
-                    "size": result["size_bytes"],
-                    "description": f"Generated: {synthesised_prompt[:60]}",
-                }
-                yield sse_file_outputs([file_info])
-
-                # Save to memory — include the synthesised prompt so refinement can reference it
-                from app.memory import schemas as _mem_schemas
-                memory_service.create_message(db, _mem_schemas.MessageCreate(
-                    project_id=req.project_id, role="user", content=req.message, provider="local",
-                ))
-                memory_service.create_message(db, _mem_schemas.MessageCreate(
-                    project_id=req.project_id, role="assistant",
-                    content=f"Generated image: {result['filename']} | Prompt: {synthesised_prompt[:200]}",
-                    provider="google", model="nano-banana-2",
-                ))
-            else:
-                yield "data: " + json.dumps({"type": "token", "content": "Image generation failed. The Nano Banana model may not be available or the prompt was rejected.\n"}) + "\n\n"
-
-            yield "data: " + json.dumps({"type": "done", "provider": "google", "model": "nano-banana-2", "total_length": 0}) + "\n\n"
+        from app.llm.image_router import generate_image_stream
 
         return StreamingResponse(
-            _image_gen_stream(),
+            generate_image_stream(
+                project_id=req.project_id,
+                message=req.message,
+                db=db,
+            ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
     elif _get_sticky_model(req.project_id):
-        # v10.0: Session model stickiness — hold the upgraded model for follow-ups.
-        provider, model = _get_sticky_model(req.project_id)
-        print(f"[CHAT_MODE] Using sticky model from session: {provider}/{model}")
+        # v10.0: Session model stickiness — but explicit model
+        # requests OVERRIDE the sticky model.
+        from app.memory.complexity import _detect_explicit_model_request
+        _first_line = req.message.lower().strip().split("\n")[0]
+        _explicit = (
+            _detect_explicit_model_request(_first_line)
+            or _detect_explicit_model_request(req.message.lower())
+        )
+        if _explicit:
+            # User explicitly asked for a different model — override sticky
+            provider = _explicit["provider"]
+            model = _explicit["model"]
+            _set_sticky_model(req.project_id, provider, model)
+            print(f"[CHAT_MODE] EXPLICIT override of sticky: {provider}/{model}")
+        else:
+            provider, model = _get_sticky_model(req.project_id)
+            print(f"[CHAT_MODE] Using sticky model from session: {provider}/{model}")
     elif _infer_sticky_from_history(req.project_id, db):
-        # v10.2: History-based stickiness — if last assistant message used an elevated model
-        # (survives app restarts, unlike the in-memory cache)
-        provider, model = _infer_sticky_from_history(req.project_id, db)
-        _set_sticky_model(req.project_id, provider, model)
-        print(f"[CHAT_MODE] Restored sticky model from history: {provider}/{model}")
+        # v10.2: History-based stickiness
+        from app.memory.complexity import _detect_explicit_model_request
+        _first_line = req.message.lower().strip().split("\n")[0]
+        _explicit = (
+            _detect_explicit_model_request(_first_line)
+            or _detect_explicit_model_request(req.message.lower())
+        )
+        if _explicit:
+            provider = _explicit["provider"]
+            model = _explicit["model"]
+            _set_sticky_model(req.project_id, provider, model)
+            print(f"[CHAT_MODE] EXPLICIT override of history sticky: {provider}/{model}")
+        else:
+            provider, model = _infer_sticky_from_history(req.project_id, db)
+            _set_sticky_model(req.project_id, provider, model)
+            print(f"[CHAT_MODE] Restored sticky model from history: {provider}/{model}")
     else:
         # v5.7: Run complexity classifier to decide model tier.
         complexity = classify_complexity(
@@ -482,6 +431,20 @@ def handle_chat_mode(
                     pass
             else:
                 print(f"[CHAT_MODE] Confirmation gate skipped (chat panel request)")
+        # ── Explicit model requests — no confirmation needed ──
+        elif complexity.tier.startswith("explicit_"):
+            from app.memory.complexity import EXPLICIT_MODEL_PATTERNS
+            # Find which model was requested
+            for _mk, _mc in EXPLICIT_MODEL_PATTERNS.items():
+                if _mc["tier"] == complexity.tier:
+                    provider = _mc["provider"]
+                    model = _mc["model"]
+                    break
+            else:
+                provider = _chat_provider
+                model = _chat_model
+            print(f"[CHAT_MODE] EXPLICIT model request: {provider}/{model}")
+            _set_sticky_model(req.project_id, provider, model)
         elif complexity.tier == "multimodal":
             attachments = getattr(req, 'attachments', None) or []
             if len(attachments) >= 2:

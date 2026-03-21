@@ -1,12 +1,15 @@
 # FILE: app/llm/image_prompt_synth.py
 """
-Context-aware image prompt synthesis for Nano Banana.
+Context-aware image prompt synthesis.
 
 Stage 1 of the two-stage image generation pipeline:
-  1. Gemini Flash Lite reads conversation context + user request
+  1. Synthesis model reads conversation context + user request
   2. Outputs a rich, detailed image generation prompt
-  3. That prompt is sent to Nano Banana (Stage 2)
+  3. That prompt is sent to the image backend (Stage 2)
 
+Model read from .env (IMAGE_PROMPT_SYNTH_MODEL) at runtime.
+
+v2.0 (2026-03-20): Env-driven model config.
 v1.0 (2026-03-09): Initial implementation.
 """
 from __future__ import annotations
@@ -17,7 +20,9 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-_SYNTHESIS_MODEL = "gemini-2.5-flash-lite"
+
+def _get_synth_model() -> str:
+    return os.getenv("IMAGE_PROMPT_SYNTH_MODEL", "gemini-2.5-flash")
 
 _SYSTEM_PROMPT = """You are an image prompt engineer for an AI image generator.
 
@@ -32,7 +37,15 @@ Rules:
 - If the user wants to modify a previous image, incorporate their changes into a fresh complete prompt.
 - If format/aspect ratio is mentioned (banner, square, portrait, thumbnail), note it in the prompt.
 - Default style: modern, clean, professional. Unless the user specifies otherwise.
-- Keep the prompt under 200 words."""
+- Keep the prompt under 200 words.
+
+DATA-DRIVEN IMAGES:
+- If [RESEARCH DATA] is provided, the user wants an image that incorporates real data.
+- For data/benchmarks/comparisons: describe a clean infographic or chart-style visual.
+- Include the SPECIFIC numbers, labels, and data points from the research in the prompt.
+- Specify chart type (bar chart, line graph, comparison table, etc.) that best fits the data.
+- Use clear readable text labels — the image generator handles text well.
+- Style: modern data visualisation aesthetic, clean layout, professional colour palette."""
 
 _REFINEMENT_PROMPT_ADDITION = """
 The user is asking to MODIFY a previously generated image.
@@ -94,8 +107,11 @@ async def synthesise_image_prompt(
         logger.info("[image_prompt_synth] Synthesising prompt from %d context messages",
                      len(conversation_history) if conversation_history else 0)
 
+        synth_model = _get_synth_model()
+        logger.info("[image_prompt_synth] Using model: %s", synth_model)
+
         response = client.models.generate_content(
-            model=_SYNTHESIS_MODEL,
+            model=synth_model,
             contents=full_prompt,
             config=types.GenerateContentConfig(
                 system_instruction=system,

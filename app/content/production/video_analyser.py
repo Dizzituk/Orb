@@ -34,6 +34,7 @@ async def analyse_video(
     - content_type: 'educational', 'entertainment', 'tutorial', etc.
     - key_moments: list of notable timestamps
     - target_audience: who this video is for
+    - suggested_shorts: list of 2-3 sections for YouTube Shorts
     - category_id: YouTube category ID
     """
     api_key = os.environ.get("GOOGLE_API_KEY")
@@ -86,7 +87,16 @@ Respond in this exact JSON format (no markdown, no backticks, just JSON):
         {{"time": "1:30", "description": "Key point"}}
     ],
     "mood": "informative, inspiring, serious, casual, etc.",
-    "suggested_thumbnail_timestamp": 0.0
+    "suggested_thumbnail_timestamp": 0.0,
+    "suggested_shorts": [
+        {{
+            "start_seconds": 45.0,
+            "end_seconds": 95.0,
+            "title": "Catchy short title under 60 chars",
+            "caption": "Brief hook caption for the short",
+            "reason": "Why this section works as a standalone short"
+        }}
+    ]
 }}
 
 RULES:
@@ -96,6 +106,16 @@ RULES:
 - Tags: most important first, mix of broad and specific, 15-25 total
 - Hashtags: 5 relevant ones for the description
 - Category ID must match the content
+- SHORTS: Identify 2-3 sections that work as standalone YouTube Shorts.
+  CRITICAL RULES FOR SHORTS:
+  * Each short MUST be between 15 and 60 seconds. Never under 15 seconds.
+  * The end timestamp MUST fall at the END of a complete sentence.
+    NEVER cut mid-word or mid-sentence. Listen to the audio carefully.
+  * The start timestamp must begin at the START of a sentence.
+  * Each short must make complete sense on its own without any other context.
+  * Prefer sections with surprising facts, bold claims, or relatable analogies.
+  * A short that is 30-45 seconds with a complete thought is better than
+    a 10 second clip that cuts off mid-sentence.
 - Return ONLY valid JSON"""
 
     try:
