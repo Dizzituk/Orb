@@ -139,3 +139,43 @@ async def get_cache_stats() -> dict:
         result["architecture_cache"] = {"error": str(e)}
 
     return result
+
+
+@router.get("/tally")
+async def get_cost_tally() -> dict:
+    """Compact cost tally for the header UI — daily, weekly, monthly in GBP."""
+    try:
+        from app.cost.cost_ledger import read_records_since
+        from datetime import datetime, timezone, timedelta
+        import os
+
+        usd_to_gbp = float(os.getenv("ORB_USD_TO_GBP_RATE", "0.79"))
+        now = datetime.now(timezone.utc)
+
+        # Daily: today
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        daily_records = read_records_since(today_start)
+        daily_usd = sum(r.get("cost_usd", 0) for r in daily_records)
+
+        # Weekly: last 7 days
+        week_start = now - timedelta(days=7)
+        weekly_records = read_records_since(week_start)
+        weekly_usd = sum(r.get("cost_usd", 0) for r in weekly_records)
+
+        # Monthly: this calendar month
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        monthly_records = read_records_since(month_start)
+        monthly_usd = sum(r.get("cost_usd", 0) for r in monthly_records)
+
+        return {
+            "daily_gbp": round(daily_usd * usd_to_gbp, 2),
+            "weekly_gbp": round(weekly_usd * usd_to_gbp, 2),
+            "monthly_gbp": round(monthly_usd * usd_to_gbp, 2),
+            "daily_calls": len(daily_records),
+            "weekly_calls": len(weekly_records),
+            "monthly_calls": len(monthly_records),
+        }
+
+    except Exception as e:
+        logger.error("[cost_dashboard] Tally failed: %s", e)
+        return {"daily_gbp": 0, "weekly_gbp": 0, "monthly_gbp": 0, "error": str(e)}

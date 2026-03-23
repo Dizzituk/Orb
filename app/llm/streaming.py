@@ -142,6 +142,9 @@ async def stream_openai(
     model: Optional[str] = None,
     enable_reasoning: bool = False,
     route: Optional[str] = None,
+    tools: Optional[List[Dict]] = None,
+    max_tokens: Optional[int] = None,
+    timeout_seconds: Optional[int] = None,
 ) -> AsyncGenerator[Dict, None]:
     """
     Stream from OpenAI using async client.
@@ -198,7 +201,28 @@ async def stream_openai(
             "stream": True,
         }
 
-        if _openai_needs_max_completion_tokens(use_model):
+
+        # Convert Anthropic-format tools to OpenAI format if provided
+        if tools:
+            openai_tools = []
+            for t in tools:
+                openai_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": t.get("name", ""),
+                        "description": t.get("description", ""),
+                        "parameters": t.get("input_schema", t.get("parameters", {})),
+                    },
+                })
+            create_kwargs["tools"] = openai_tools
+
+        # Override max_tokens if explicitly provided
+        if max_tokens:
+            if _openai_needs_max_completion_tokens(use_model):
+                create_kwargs["max_completion_tokens"] = int(max_tokens)
+            else:
+                create_kwargs["max_tokens"] = int(max_tokens)
+        elif _openai_needs_max_completion_tokens(use_model):
             create_kwargs["max_completion_tokens"] = int(max_completion_tokens or 32768)
         elif legacy_max_tokens is not None:
             create_kwargs["max_tokens"] = int(legacy_max_tokens)
@@ -225,6 +249,30 @@ async def stream_openai(
             delta = getattr(choices[0], "delta", None)
             if not delta:
                 continue
+
+            # Handle tool calls from streaming deltas
+            tool_calls_delta = getattr(delta, "tool_calls", None)
+            if tool_calls_delta:
+                for tc in tool_calls_delta:
+                    func = getattr(tc, "function", None)
+                    if func:
+                        tc_id = getattr(tc, "id", None)
+                        tc_name = getattr(func, "name", None)
+                        tc_args = getattr(func, "arguments", None) or ""
+                        if tc_id and tc_name:
+                            yield {
+                                "type": "tool_use",
+                                "id": tc_id,
+                                "name": tc_name,
+                                "input_json": tc_args,
+                                "index": getattr(tc, "index", 0),
+                            }
+                        elif tc_args:
+                            yield {
+                                "type": "tool_use_delta",
+                                "arguments": tc_args,
+                                "index": getattr(tc, "index", 0),
+                            }
 
             content = getattr(delta, "content", None)
             if content:

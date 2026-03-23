@@ -338,8 +338,8 @@ async def stream_debug_locked(
     project_id: int,
     message: str,
     panel_history: list,
-    provider: str = "google",
-    model: str = "gemini-3.1-pro-preview-customtools",
+    provider: str = "openai",
+    model: str = "gpt-5.4",
     debug_project_id: Optional[str] = None,
     video_file_uri: Optional[str] = None,
     video_mime_type: Optional[str] = None,
@@ -349,25 +349,64 @@ async def stream_debug_locked(
     file_upload_name: Optional[str] = None,
     file_upload_local_path: Optional[str] = None,
     file_upload_gemini_name: Optional[str] = None,
+    documents: Optional[list] = None,
 ) -> AsyncGenerator[bytes, None]:
     """Stream handler for debug-locked sidebar chat.
 
-    When the user locks the sidebar to Debug context, all messages route
-    here. Gemini gets:
-    - Full tool access (sandbox read/write/shell)
-    - RAG codebase search
-    - Panel conversation history
-    - Build project context (if available)
+    v3.0 (2026-03-21): Hybrid architecture — Gemini vision + Claude Opus tools.
+
+    Two-phase approach:
+      Phase 1 (Gemini 3.1): If video/image is attached, send to Gemini for
+        visual-only analysis. No tools, just observation. Returns structured
+        text describing what was seen on screen.
+      Phase 2 (Claude Opus 4.6): Full investigation with tool access. Gets
+        Gemini's visual analysis as context, plus RAG, build context, and
+        codebase access. Claude does the actual reasoning, diagnosis, and
+        code changes with interleaved streaming.
+
+    When no video/image is attached, skips Phase 1 and goes straight to
+    Claude Opus with tools.
     """
-    import asyncio
-    from app.debug.tool_definitions import get_tools_for_tier
     from app.debug.context_assembler import assemble_context
     from app.debug.system_prompt import build_debug_system_prompt
+    from app.debug.gemini_vision import analyse_visual_content, cleanup_uploads
+    from app.llm.chat_tool_loop import get_chat_tools, TOOL_TIER_WRITE
 
     def _sse(data: dict) -> bytes:
         return f"data: {json.dumps(data)}\n\n".encode("utf-8")
 
     try:
+        # ═══════════════════════════════════════════════════════════════
+        # Phase 1: Gemini Vision Analysis (only if video/image attached)
+        # ═══════════════════════════════════════════════════════════════
+
+        vision_analysis = None
+        has_visual = bool(video_file_uri) or bool(file_upload_uri)
+
+        if has_visual:
+            yield _sse({"type": "token", "content": "🔍 Analysing visual content with Gemini...\n"})
+
+            vision_analysis = await analyse_visual_content(
+                user_message=message,
+                video_file_uri=video_file_uri,
+                video_mime_type=video_mime_type,
+                file_upload_uri=file_upload_uri,
+                file_upload_mime=file_upload_mime,
+                file_upload_name=file_upload_name,
+            )
+
+            if vision_analysis:
+                # Stream a brief summary so the user knows vision analysis completed
+                preview = vision_analysis[:150].replace('\n', ' ')
+                yield _sse({"type": "token", "content": f"  → Visual analysis complete ({len(vision_analysis)} chars)\n\n"})
+                logger.info("[debug_locked] Vision analysis: %d chars", len(vision_analysis))
+            else:
+                yield _sse({"type": "token", "content": "  → Visual analysis unavailable, proceeding with text context\n\n"})
+
+        # ═══════════════════════════════════════════════════════════════
+        # Context Assembly (shared by both phases)
+        # ═══════════════════════════════════════════════════════════════
+
         # 1. Assemble context: RAG search + architecture
         context_block = ""
         try:
@@ -377,7 +416,7 @@ async def stream_debug_locked(
             logger.warning("[debug_locked] Context assembly failed: %s", ctx_err)
             context_block = "<context>Context assembly unavailable.</context>"
 
-        # Also do a RAG search for the user's query
+        # RAG search for the user's query
         rag_context = ""
         try:
             from app.rag.service import search_rag
@@ -403,8 +442,6 @@ async def stream_debug_locked(
                         f"\n## Active Debug Project: {dp.get('title', '')}\n"
                         f"Status: {dp.get('status', '')}\n"
                     )
-
-                    # Resolve build target profile from metadata
                     try:
                         meta = json.loads(dp.get("metadata_json", "{}") or "{}")
                         target_id = meta.get("build_target_id")
@@ -424,11 +461,8 @@ async def stream_debug_locked(
                                 if target_profile.key_directories:
                                     dirs = ", ".join(f"{k} (`{v}`)" for k, v in target_profile.key_directories.items())
                                     build_context += f"Key dirs: {dirs}\n"
-                                logger.info("[debug_locked] Resolved build target: %s (%s)", target_id, target_profile.project_name)
                     except Exception as meta_err:
                         logger.debug("[debug_locked] Build target resolution failed: %s", meta_err)
-
-                    # Check if it contains a build report
                     if "--- BUILD REPORT ---" in desc:
                         report_part = desc.split("--- BUILD REPORT ---", 1)[1][:4000]
                         build_context += f"\n### Build Report (summary)\n{report_part}\n"
@@ -436,7 +470,6 @@ async def stream_debug_locked(
                         build_context += f"\n### Description\n{desc[:2000]}\n"
                     if dp.get("error_summary"):
                         build_context += f"\n### Errors\n{dp['error_summary']}\n"
-                    logger.info("[debug_locked] Loaded build context from project %s (%d chars)", debug_project_id, len(build_context))
             except Exception as bp_err:
                 logger.debug("[debug_locked] Build context load failed: %s", bp_err)
 
@@ -448,7 +481,6 @@ async def stream_debug_locked(
                 if resolved:
                     build_context = (
                         f"\n## Detected Project Context\n"
-                        f"Based on the conversation, you are working with:\n"
                         f"Project: {resolved.project_name}\n"
                         f"Root: `{resolved.project_root}`\n"
                         f"Language: {resolved.language} | Framework: {resolved.framework}\n"
@@ -463,36 +495,74 @@ async def stream_debug_locked(
             except Exception as resolve_err:
                 logger.debug("[debug_locked] Project resolution failed: %s", resolve_err)
 
-        # 3. Build system prompt with tools
-        system_prompt = (
-            build_debug_system_prompt(context_block)
-            + "\n\n## Debug Lock Mode\n"
-            "You are in DEBUG LOCK mode. The user has locked their sidebar chat to Debug context.\n"
-            "You have FULL tool access: read_file, write_file, edit_file, run_command, search_files, list_files.\n"
-            "Use tools to gather evidence when the user asks you to investigate or fix something.\n"
-            "Be direct, technical, and action-oriented when asked to diagnose issues.\n"
-            "Do NOT proactively scan logs or dump diagnostics -- wait for the user to tell you what to look at.\n"
+        # ═══════════════════════════════════════════════════════════════
+        # Phase 2: Claude Opus Investigation (with tools)
+        # ═══════════════════════════════════════════════════════════════
+
+        # 3. Build system prompt
+        system_prompt = build_debug_system_prompt(context_block)
+        system_prompt += (
+            "\n\n## Debug Lock Mode — Claude Opus\n"
+            "You are in DEBUG LOCK mode with FULL tool access.\n"
+            "You have tools to read files, write files, edit files, run commands, "
+            "search files, and list directories across the ASTRA codebase.\n"
+            "Use tools to gather evidence when investigating issues.\n"
+            "Be direct, technical, and action-oriented.\n"
             "For greetings or casual messages, just respond naturally and briefly.\n\n"
             "## How to Apply Changes\n"
-            "You CAN and SHOULD write code changes using write_file and edit_file tools.\n"
-            "read_file reads any file on the filesystem using absolute paths.\n"
-            "write_file creates or overwrites any file on the filesystem using absolute paths.\n"
-            "edit_file applies targeted find-and-replace edits to any file.\n"
-            "run_command runs PowerShell commands for testing, syntax checks, builds, etc.\n"
-            "You have full filesystem access — use absolute paths (e.g. D:/Orb/..., D:/Astra Android Folder/...).\n"
-            "When the user asks you to make changes, USE THE TOOLS to write the code directly.\n"
-            "Do NOT just paste code in chat and tell the user to copy it. USE THE TOOLS.\n"
-            "You can write any file type: .py, .kt, .tsx, .txt, .html, .md, .json, etc.\n"
+            "Use your tools directly — do NOT paste code in chat and tell the user to copy it.\n"
+            "read_file reads any file. write_file creates or overwrites. edit_file does find-and-replace.\n"
+            "run_command runs PowerShell commands for testing and builds.\n"
+            "search_files finds files by pattern. list_files lists directory contents.\n\n"
+            "## Android Emulator Testing (CRITICAL)\n"
+            "You have ADB tools to interact with the Android emulator directly.\n"
+            "ALWAYS verify your changes by building, deploying, and testing:\n\n"
+            "### Test-Iterate Loop:\n"
+            "1. Make code changes with write_file/edit_file\n"
+            "2. Run gradle_build to check compilation\n"
+            "3. If build fails → read errors, fix, rebuild\n"
+            "4. If build succeeds → run gradle_install to deploy to emulator\n"
+            "5. Run app_restart to launch the new build\n"
+            "6. Use emulator_screenshot to capture the screen\n"
+            "7. Use emulator_ui_dump to inspect the UI hierarchy\n"
+            "8. Use emulator_tap, emulator_type, emulator_key to interact\n"
+            "9. If something is wrong → fix code → go to step 2\n"
+            "10. If all looks correct → report success to user\n\n"
+            "### BEFORE writing code that calls any function:\n"
+            "ALWAYS read the target file first to verify the actual function signatures.\n"
+            "Do NOT assume function names or parameter names. Read first, write second.\n\n"
+            "### After ANY code change:\n"
+            "ALWAYS run gradle_build to verify compilation before telling the user it is done.\n"
+            "If the build fails, fix the errors and rebuild. Do not report success until BUILD SUCCESSFUL.\n\n"
+            "You have full filesystem access via absolute paths (D:/Orb/..., D:/Astra Android Folder/...).\n"
+            "\n## Testing by Environment\n"
+            "Match your testing tools to the project you are working on:\n\n"
+            "### Android projects (Astra Bridge, Driver CoPilot):\n"
+            "- Use gradle_build / gradle_install to compile and deploy\n"
+            "- Use app_restart to launch on the emulator\n"
+            "- Use emulator_screenshot / emulator_ui_dump to verify\n"
+            "- Use emulator_tap / emulator_type / emulator_key to interact\n"
+            "- Use get_crash_log to diagnose crashes\n\n"
+            "### Desktop projects (ASTRA Backend, ASTRA Desktop):\n"
+            "- Use run_command to start/restart services\n"
+            "- Use run_command to run Python/TypeScript syntax checks\n"
+            "- Use run_command with curl to test API endpoints\n"
+            "- For frontend: the user will verify visually or send screenshots\n\n"
+            "### For ALL projects:\n"
+            "- ALWAYS compile/build check after code changes\n"
+            "- ALWAYS read function signatures before writing calls\n"
+            "- NEVER report success without verifying the build passes\n"
+            "- If you have emulator access and you changed Android code, USE IT to test\n"
         )
 
-        # Add video analysis instruction if a screen recording is attached
-        if video_file_uri:
+        # Inject Gemini's visual analysis as context
+        if vision_analysis:
             system_prompt += (
-                "\n\n## Screen Recording Attached\n"
-                "The user has recorded their screen to show you a bug or demonstrate something.\n"
-                "Watch the video carefully, listen to their narration, and diagnose the issue.\n"
-                "Reference specific things you see in the recording when responding.\n"
-                "After viewing, use your tools (read_file, search_files, etc.) to investigate further.\n"
+                "\n\n## Visual Analysis (from screen recording / screenshot)\n"
+                "Gemini analysed the user's video/screenshot and produced this report. "
+                "Use this as observational evidence — it describes what happened on screen, "
+                "but the investigation and fix are YOUR responsibility.\n\n"
+                f"{vision_analysis}\n"
             )
 
         system_prompt += (
@@ -501,7 +571,7 @@ async def stream_debug_locked(
             f"{build_context}\n"
         )
 
-        # 3. Build messages from panel history
+        # 4. Build messages from panel history
         messages = []
         for msg in (panel_history or [])[-20:]:
             role = msg.get("role", "user")
@@ -510,103 +580,153 @@ async def stream_debug_locked(
                 messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": message})
 
-        # 4. Emit metadata
-        yield _sse({"type": "metadata", "provider": provider, "model": model})
-
-        # 5. Track tool calls for streaming to frontend
-        tool_log = []
-        def _on_tool(name, args, result_preview):
-            tool_log.append({"tool": name, "args": args, "preview": result_preview})
-
-        # 6. Build multimodal content parts (video + file uploads)
-        extra_parts = []
-        if video_file_uri:
-            from app.debug.screen_capture import build_video_content_part
-            video_part = build_video_content_part(
-                file_uri=video_file_uri,
-                mime_type=video_mime_type or "video/webm",
+        # 4b. Format structured documents (from large text pastes)
+        if documents:
+            doc_blocks = []
+            for doc in documents:
+                idx = doc.get("index", 0)
+                label = doc.get("label", f"Document {idx}")
+                content = doc.get("content", "")
+                doc_blocks.append(
+                    f'<document index="{idx}" label="{label}">\n{content}\n</document>'
+                )
+            doc_xml = "\n\n".join(doc_blocks)
+            # Prepend documents to the user message so the model sees them as structured context
+            messages[-1]["content"] = (
+                f"<documents>\n{doc_xml}\n</documents>\n\n"
+                + messages[-1]["content"]
             )
-            extra_parts.append(video_part)
-            logger.info("[debug_locked] Attached video part: %s", video_file_uri)
+            logger.info("[debug_locked] Injected %d document(s) into user message", len(documents))
 
-        if file_upload_uri:
-            from app.debug.screen_capture import build_video_content_part
-            # Gemini Files API works for images too — same file_data part format
-            file_part = build_video_content_part(
-                file_uri=file_upload_uri,
-                mime_type=file_upload_mime or "image/png",
-            )
-            extra_parts.append(file_part)
-            logger.info("[debug_locked] Attached file upload part: %s (%s)", file_upload_name, file_upload_mime)
+        # 4c. Load past user corrections for debug context
+        try:
+            from app.debug.feedback import get_relevant_corrections
+            corrections_block = get_relevant_corrections(project_id=project_id)
+            if corrections_block:
+                system_prompt += "\n\n" + corrections_block
+                logger.info("[debug_locked] Injected %d chars of past corrections", len(corrections_block))
+        except Exception as corr_err:
+            logger.debug("[debug_locked] Corrections load failed: %s", corr_err)
 
-        extra_parts = extra_parts or None
+        # 5. Emit metadata — now Claude Opus, not Gemini
+        actual_provider = "openai"
+        actual_model = "gpt-5.4"
+        yield _sse({"type": "metadata", "provider": actual_provider, "model": actual_model})
 
-        # 7. Call Gemini with native function-calling tool loop
-        from app.debug.gemini_tool_loop import run_gemini_tool_loop
+        # 6. Get write-tier tools in Anthropic format
+        tools = get_chat_tools(TOOL_TIER_WRITE)
 
-        content = await run_gemini_tool_loop(
-            system_prompt=system_prompt,
+        # 7. Stream Claude Opus with tool loop — interleaved reasoning + tool calls
+        from app.llm.chat_tool_loop import stream_with_tools
+
+        full_response = ""
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+
+        async for chunk in stream_with_tools(
             messages=messages,
-            model_id=model,
-            temperature=0.2,
+            system_prompt=system_prompt,
+            provider=actual_provider,
+            model=actual_model,
+            tools=tools,
+            enable_reasoning=False,
             max_tokens=8192,
-            on_tool_call=_on_tool,
-            content_parts=extra_parts,
-        )
+        ):
+            chunk_type = chunk.get("type", "")
 
-        # Stream tool call log before the response (if any tools were used)
-        if tool_log:
-            tool_summary = "\n".join(
-                f"🔧 **{t['tool']}** → {t['preview'][:100]}" for t in tool_log
+            if chunk_type == "token":
+                text = chunk.get("text", "")
+                full_response += text
+                yield _sse({"type": "token", "content": text})
+
+            elif chunk_type == "tool_call":
+                yield _sse({
+                    "type": "tool_call",
+                    "name": chunk.get("name", ""),
+                    "tool_use_id": chunk.get("tool_use_id", ""),
+                    "input": chunk.get("input", {}),
+                })
+
+            elif chunk_type == "tool_result":
+                yield _sse({
+                    "type": "tool_result",
+                    "name": chunk.get("name", ""),
+                    "result_preview": chunk.get("result_preview", ""),
+                })
+
+            elif chunk_type == "reasoning":
+                yield _sse({"type": "reasoning", "content": chunk.get("text", "")})
+
+            elif chunk_type == "done":
+                # Extract usage if present
+                usage = chunk.get("usage", {})
+                if usage:
+                    total_prompt_tokens += usage.get("prompt_tokens", 0)
+                    total_completion_tokens += usage.get("completion_tokens", 0)
+                yield _sse({
+                    "type": "done",
+                    "provider": actual_provider,
+                    "model": actual_model,
+                })
+
+            elif chunk_type == "error":
+                yield _sse({"type": "error", "error": chunk.get("error", "Unknown error")})
+
+        # ═══════════════════════════════════════════════════════════════
+        # Record API cost
+        # ═══════════════════════════════════════════════════════════════
+
+        try:
+            from app.cost.cost_recorder import record_llm_cost
+            cost = record_llm_cost(
+                provider=actual_provider,
+                model=actual_model,
+                prompt_tokens=total_prompt_tokens,
+                completion_tokens=total_completion_tokens,
+                stage="debug_locked",
             )
-            yield _sse({"type": "token", "content": tool_summary + "\n\n---\n\n"})
+            if cost > 0.01:
+                yield _sse({"type": "token", "content": f"\n\n---\n*Cost: ${cost:.4f} ({total_prompt_tokens}+{total_completion_tokens} tokens)*\n"})
+        except Exception as cost_err:
+            logger.debug("[debug_locked] Cost recording failed: %s", cost_err)
 
-        # Stream response in chunks for a natural feel
-        chunk_size = 40
-        for i in range(0, len(content), chunk_size):
-            yield _sse({"type": "token", "content": content[i:i + chunk_size]})
+        # ═══════════════════════════════════════════════════════════════
+        # Persist messages to database (survives restart)
+        # ═══════════════════════════════════════════════════════════════
 
-        yield _sse({
-            "type": "done",
-            "provider": provider,
-            "model": model,
-        })
+        try:
+            from app.memory import service as mem_svc, schemas as mem_schemas
+            # Save user message
+            mem_svc.create_message(db, mem_schemas.MessageCreate(
+                project_id=project_id,
+                role="user",
+                content=message,
+                provider="user",
+                model="debug-input",
+            ))
+            # Save assistant response
+            if full_response.strip():
+                mem_svc.create_message(db, mem_schemas.MessageCreate(
+                    project_id=project_id,
+                    role="assistant",
+                    content=full_response,
+                    provider=actual_provider,
+                    model=actual_model,
+                ))
+            logger.info("[debug_locked] Persisted messages to project %d", project_id)
+        except Exception as persist_err:
+            logger.warning("[debug_locked] Message persistence failed: %s", persist_err)
 
-        # 8. Cleanup: delete recording from Gemini Files API and local disk
-        if video_file_uri:
-            try:
-                # Extract file name from URI (e.g. "files/abc123" from the full URL)
-                gemini_file_name = "/".join(video_file_uri.rstrip("/").split("/")[-2:])
-                from app.debug.screen_capture import cleanup_gemini_file
-                await cleanup_gemini_file(gemini_file_name)
-            except Exception as cleanup_err:
-                logger.warning("[debug_locked] Gemini file cleanup failed: %s", cleanup_err)
+        # ═══════════════════════════════════════════════════════════════
+        # Cleanup: delete recordings/uploads from Gemini Files API + disk
+        # ═══════════════════════════════════════════════════════════════
 
-        if video_local_path:
-            try:
-                import os
-                if os.path.exists(video_local_path):
-                    os.remove(video_local_path)
-                    logger.info("[debug_locked] Deleted local recording: %s", video_local_path)
-            except Exception as cleanup_err:
-                logger.warning("[debug_locked] Local file cleanup failed: %s", cleanup_err)
-
-        # Cleanup uploaded file from Gemini Files API and local disk
-        if file_upload_gemini_name:
-            try:
-                from app.debug.screen_capture import cleanup_gemini_file
-                await cleanup_gemini_file(file_upload_gemini_name)
-            except Exception as cleanup_err:
-                logger.warning("[debug_locked] Gemini file upload cleanup failed: %s", cleanup_err)
-
-        if file_upload_local_path:
-            try:
-                import os
-                if os.path.exists(file_upload_local_path):
-                    os.remove(file_upload_local_path)
-                    logger.info("[debug_locked] Deleted local upload: %s", file_upload_local_path)
-            except Exception as cleanup_err:
-                logger.warning("[debug_locked] Local upload cleanup failed: %s", cleanup_err)
+        await cleanup_uploads(
+            video_file_uri=video_file_uri,
+            video_local_path=video_local_path,
+            file_upload_gemini_name=file_upload_gemini_name,
+            file_upload_local_path=file_upload_local_path,
+        )
 
     except Exception as e:
         logger.exception("[debug_locked] Stream error: %s", e)

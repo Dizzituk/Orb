@@ -47,7 +47,7 @@ DOMAIN_INTENTS: Dict[CanonicalIntent, IntentDefinition] = {
             "open finance",
         ],
         trigger_patterns=[
-            r"\b(budget|spend|spent|expense|earning|income|tax|outgoing|bank|financ)\b",
+            r"\b(budget|spend|spent|expense|earning|income|tax|outgoing|bank|financ|accounting|deliver|mileage|van cost|petrol|fuel)\b",
             r"\b(credit card|debit|salary|invoice|receipt)\b",
             r"\bhow much (did|have|do) (I|we) (spend|earn|owe|save)\b",
             r"\b(monthly|weekly|annual) (spend|cost|budget|income)\b",
@@ -271,8 +271,10 @@ DOMAIN_INTENTS: Dict[CanonicalIntent, IntentDefinition] = {
             "education tab",
         ],
         trigger_patterns=[
-            r"\b(study|learn|course|education|curriculum|lesson|philosophy)\s*(plan|progress|goal|status)\b",
+            r"\b(study|learn|course|education|curriculum|lesson)\s*(plan|progress|goal|status)\b",
+            r"\b(philosophy|psychology|economics|sociology|stoic|plato|aristotle|nietzsche|kant|marx)\b",
             r"\bwhat\s+(should|do)\s+I\s+(study|learn|read)\b",
+            r"\b(AI and society|automation|UBI|universal basic income)\b",
         ],
     ),
 

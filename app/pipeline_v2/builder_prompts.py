@@ -22,7 +22,12 @@ if TYPE_CHECKING:
 # System prompts
 # ═══════════════════════════════════════════════════════════════════
 
+# Import core principles for injection into all builder prompts
+from app.core_principles import get_principles_block as _get_principles
+
 _BASE_SYSTEM = """You are ASTRA's Agentic Builder. You build features by reading, writing, and testing code.
+
+""" + _get_principles() + """
 
 You have tools to interact with the codebase:
 - read_file(path): Read a file's contents
@@ -226,7 +231,7 @@ def _priority_instructions(profile: "BuildTargetProfile") -> str:
 7. Write Compose UI screens (HomeScreen, ChatScreen)
 8. Write navigation (Routes, AppNavGraph) and theme (Theme, Color)
 9. Write DI module (AppModule) and Application class
-10. Run: run_shell("cd ""{project_root}"" ; .\gradlew.bat compileDebugKotlin 2>&1")
+10. Run: run_shell("cd ""{project_root}"" ; .\\gradlew.bat compileDebugKotlin 2>&1")
 11. Fix compilation errors from Gradle output
 12. Say BUILDER_COMPLETE when compilation passes
 
@@ -249,7 +254,7 @@ CRITICAL:
    - Add new screens to the navigation graph
    - Add navigation entries in the main scaffold
    - Add menu items if applicable
-7. Run: run_shell("cd ""{project_root}"" ; .\gradlew.bat compileDebugKotlin 2>&1")
+7. Run: run_shell("cd ""{project_root}"" ; .\\gradlew.bat compileDebugKotlin 2>&1")
 8. Fix any errors from the Gradle output
 9. Say BUILDER_COMPLETE when compilation passes
 

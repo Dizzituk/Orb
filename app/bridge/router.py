@@ -192,10 +192,21 @@ def _build_bridge_system_prompt(domain_context: str) -> str:
     Keeps it concise (phone context) but includes domain data when available.
     """
     prompt = (
-        "You are Astra, a helpful AI assistant. "
-        "The user is speaking from their phone via the Astra Bridge app. "
-        "Keep responses concise — they may be driving. "
-        "Be warm, direct, and useful."
+        "You are Astra, a personal AI assistant connected to a full backend system. "
+        "The user is speaking from their phone via the Astra Bridge app — they may be driving. "
+        "Keep responses concise but informative.\n\n"
+        "You have access to these domains via ASTRA's backend:\n"
+        "- Finance/Accounts: earnings, expenses, tax, deliveries, mileage\n"
+        "- Investments: Trading 212 portfolio, crypto via CoinMarketCap\n"
+        "- Content Creation: YouTube channel, video pipeline, scripts, publishing\n"
+        "- Social Media: Facebook, Instagram, TikTok engagement\n"
+        "- Health & Fitness: workout plans, nutrition, surfing, bodyboarding\n"
+        "- Education: philosophy, psychology, economics, AI & society curriculum\n"
+        "- Debug/Builds: ASTRA codebase, project builds, pipeline status\n\n"
+        "When you have domain data below, use it to give real answers with actual numbers. "
+        "If your training data might be stale for the question asked, tell the user you can "
+        "search the web. Suggest they say 'search for X' or 'get the latest on X' "
+        "and you will fetch current information."
     )
     if domain_context:
         prompt += (
@@ -363,12 +374,20 @@ async def bridge_chat(
         name_preview = req.message[:50].strip()
         if len(req.message) > 50:
             name_preview += "..."
-        project = create_project(db, ProjectCreate(
-            name=name_preview,
-            description="Chat from Astra Bridge (phone)",
-            type="bridge",
-        ))
-        logger.info("[bridge] Created project %d: %s", project.id, project.name)
+        # Check if a project with this name already exists (prevents IntegrityError
+        # on unique constraint when the same message is sent twice, e.g. after timeout)
+        from app.memory._service_utils_2 import get_project_by_name
+        existing = get_project_by_name(db, name_preview)
+        if existing:
+            project = existing
+            logger.info("[bridge] Reusing existing project %d: %s", project.id, project.name)
+        else:
+            project = create_project(db, ProjectCreate(
+                name=name_preview,
+                description="Chat from Astra Bridge (phone)",
+                type="bridge",
+            ))
+            logger.info("[bridge] Created project %d: %s", project.id, project.name)
 
     # Save user message
     create_message(db, MessageCreate(
@@ -392,8 +411,10 @@ async def bridge_chat(
     domain_context = ""
     translation_result = None
     try:
-        from app.llm.translation_routing import route_via_translation_layer
-        translation_result = route_via_translation_layer(req.message)
+        from app.translation import translate_message_sync
+        from app.translation.modes import UIContext
+        bridge_ctx = UIContext(in_job_config=True)  # Bridge = always command-capable
+        translation_result = translate_message_sync(req.message, ui_context=bridge_ctx)
         if (translation_result
                 and translation_result.resolved_intent
                 and translation_result.resolved_intent.value.startswith("DOMAIN_")):
@@ -405,7 +426,31 @@ async def bridge_chat(
                 logger.info("[bridge] Domain detected: %s (%d chars context)",
                            domain_info["domain"], len(domain_context))
     except Exception as e:
-        logger.debug("[bridge] Translation layer unavailable: %s", e)
+        logger.info("[bridge] Translation layer error: %s", e)
+
+    # v6.0: Web search — if the translation layer detected a search intent, run it
+    web_search_context = ""
+    if (translation_result
+            and translation_result.resolved_intent
+            and translation_result.resolved_intent.value in ("WEB_SEARCH", "DEEP_RESEARCH")):
+        try:
+            from app.llm.web_search import search_and_answer, WebSearchRequest
+            search_query = (translation_result.extracted_context or {}).get("extracted_query", "") or req.message
+            logger.info("[bridge] Web search triggered: %s", search_query[:80])
+            search_result = await search_and_answer(WebSearchRequest(query=search_query, max_results=5))
+            if search_result and search_result.ok:
+                sources_text = "\n".join(
+                    f"- [{s.title}]({s.url}): {s.snippet}" for s in search_result.sources[:5]
+                )
+                web_search_context = (
+                    f"## Web Search Results for: {search_result.query}\n\n"
+                    f"{search_result.answer}\n\n"
+                    f"Sources:\n{sources_text}\n"
+                )
+                logger.info("[bridge] Web search: %d sources, %d chars",
+                           len(search_result.sources), len(web_search_context))
+        except Exception as ws_err:
+            logger.info("[bridge] Web search failed: %s", ws_err)
 
     # v5.0: Model selection — domain-aware + complexity-based escalation
     provider, model = _select_bridge_model(req.message, translation_result, domain_context)
@@ -413,6 +458,8 @@ async def bridge_chat(
 
     try:
         system_prompt = _build_bridge_system_prompt(domain_context)
+        if web_search_context:
+            system_prompt += "\n\n" + web_search_context
 
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(history_messages[-20:])

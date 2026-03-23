@@ -3,18 +3,20 @@
 Gemini Tool Loop — native function-calling loop for debug lock mode.
 
 Bypasses the generic provider registry and calls the Google Generative AI
-SDK directly with proper function declarations. Gemini 3.1 Pro Custom Tools
-is designed specifically for this use case — it prioritises registered
-custom tools over bash commands.
-
-Tools available:
-  - read_file:     Read a file from the host codebase (D: drive, read-only)
-  - write_file:    Write a file to the sandbox
-  - run_shell:     Run a PowerShell command in the sandbox
-  - search_files:  Search the host codebase with glob patterns
-  - list_dir:      List directory contents on the host
+SDK directly with proper function declarations.
 
 v1.0 (2026-03-07): Initial implementation.
+v2.0 (2026-03-21): Streaming refactor — yields structured events in
+    real-time instead of returning a final string. Enables the frontend
+    to show tool calls, thinking text, and the final response as they
+    happen rather than after the entire loop completes.
+
+Event types yielded:
+  - tool_start:  ASTRA is about to call a tool (name + args summary)
+  - tool_result: Tool execution completed (name + result preview)
+  - thinking:    Intermediate model text between tool calls
+  - final_text:  The model's final response (streamed in chunks)
+  - error:       Something went wrong
 """
 from __future__ import annotations
 
@@ -22,25 +24,24 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 SANDBOX_BASE = os.getenv("ASTRA_SANDBOX_URL", "http://192.168.250.2:8765")
-MAX_TOOL_ROUNDS = 30  # generous allowance for complex debug investigations
+MAX_TOOL_ROUNDS = 30
 
 # ---------------------------------------------------------------------------
-# Filesystem safety — restrict write/edit/shell to known project directories
-# Read and search are unrestricted (read-only is safe).
+# Filesystem safety
 # ---------------------------------------------------------------------------
 
 ALLOWED_WRITE_ROOTS = [
-    Path("D:/Orb"),                              # ASTRA backend
-    Path("D:/orb-desktop"),                       # ASTRA frontend
-    Path("D:/Astra Android Folder"),              # All Android projects
-    Path("C:/Users/dizzi/Documents"),             # User documents
-    Path("C:/Users/dizzi/OneDrive/Documents"),    # OneDrive documents
-    Path("C:/Users/dizzi/OneDrive/Pictures"),     # Pictures
+    Path("D:/Orb"),
+    Path("D:/orb-desktop"),
+    Path("D:/Astra Android Folder"),
+    Path("C:/Users/dizzi/Documents"),
+    Path("C:/Users/dizzi/OneDrive/Documents"),
+    Path("C:/Users/dizzi/OneDrive/Pictures"),
 ]
 
 
@@ -60,7 +61,7 @@ def _is_path_allowed(path_str: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Tool definitions (Google Generative AI function declaration format)
+# Tool declarations (Google Generative AI function declaration format)
 # ---------------------------------------------------------------------------
 
 TOOL_DECLARATIONS = [
@@ -95,7 +96,7 @@ TOOL_DECLARATIONS = [
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute file path, e.g. D:/Astra Android Folder/Astra-Bridge/ARCHITECTURE.txt",
+                    "description": "Absolute file path",
                 },
                 "content": {
                     "type": "string",
@@ -137,7 +138,6 @@ TOOL_DECLARATIONS = [
             "NEVER use Linux commands (grep, ls, cat, sed, awk, bash). "
             "Use PowerShell equivalents: Select-String (not grep), Get-ChildItem (not ls), "
             "Get-Content (not cat), python (not python3). "
-            "Use for syntax checks, running builds, testing, installing packages, or any shell operation. "
             "Returns stdout, stderr, and exit code."
         ),
         "parameters": {
@@ -198,7 +198,6 @@ TOOL_DECLARATIONS = [
 # ---------------------------------------------------------------------------
 
 async def _exec_read_file(args: dict) -> str:
-    """Read a file from the host codebase (read-only)."""
     path = args.get("path", "")
     try:
         p = Path(path)
@@ -215,7 +214,6 @@ async def _exec_read_file(args: dict) -> str:
 
 
 async def _exec_write_file(args: dict) -> str:
-    """Write a file to the host filesystem (scoped to allowed directories)."""
     path = args.get("path", "")
     content = args.get("content", "")
     if not _is_path_allowed(path):
@@ -230,10 +228,31 @@ async def _exec_write_file(args: dict) -> str:
         return f"ERROR: {e}"
 
 
+async def _exec_edit_file(args: dict) -> str:
+    path = args.get("path", "")
+    old_text = args.get("old_text", "")
+    new_text = args.get("new_text", "")
+    if not _is_path_allowed(path):
+        return f"ERROR: Edit blocked — {path} is outside allowed directories."
+    try:
+        p = Path(path)
+        if not p.exists():
+            return f"ERROR: File not found: {path}"
+        content = p.read_text(encoding="utf-8", errors="replace")
+        if old_text not in content:
+            return f"ERROR: old_text not found in {path}. Check exact match."
+        if content.count(old_text) > 1:
+            return f"ERROR: old_text appears {content.count(old_text)} times in {path}. Must be unique."
+        new_content = content.replace(old_text, new_text, 1)
+        p.write_text(new_content, encoding="utf-8")
+        logger.info("[gemini_tool_loop] edit_file: %s (replaced %d chars with %d chars)", path, len(old_text), len(new_text))
+        return f"OK: Edited {path} (replaced {len(old_text)} chars with {len(new_text)} chars)"
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
 async def _exec_run_shell(args: dict) -> str:
-    """Run a PowerShell command on the host (scoped to allowed directories)."""
     cmd = args.get("command", "")
-    # Block dangerous commands that could affect system-wide state
     cmd_lower = cmd.lower()
     _BLOCKED_PATTERNS = [
         "remove-item c:\\", "remove-item 'c:", 'remove-item "c:',
@@ -270,7 +289,6 @@ async def _exec_run_shell(args: dict) -> str:
 
 
 async def _exec_search_files(args: dict) -> str:
-    """Search for files matching a pattern."""
     directory = args.get("directory", "D:/Orb")
     pattern = args.get("pattern", "*.py")
     try:
@@ -286,7 +304,6 @@ async def _exec_search_files(args: dict) -> str:
 
 
 async def _exec_list_dir(args: dict) -> str:
-    """List directory contents."""
     path = args.get("path", "")
     try:
         p = Path(path)
@@ -303,30 +320,6 @@ async def _exec_list_dir(args: dict) -> str:
         return f"ERROR: {e}"
 
 
-async def _exec_edit_file(args: dict) -> str:
-    """Apply targeted find-and-replace edits to a file (scoped to allowed directories)."""
-    path = args.get("path", "")
-    old_text = args.get("old_text", "")
-    new_text = args.get("new_text", "")
-    if not _is_path_allowed(path):
-        return f"ERROR: Edit blocked — {path} is outside allowed directories."
-    try:
-        p = Path(path)
-        if not p.exists():
-            return f"ERROR: File not found: {path}"
-        content = p.read_text(encoding="utf-8", errors="replace")
-        if old_text not in content:
-            return f"ERROR: old_text not found in {path}. Check exact match."
-        if content.count(old_text) > 1:
-            return f"ERROR: old_text appears {content.count(old_text)} times in {path}. Must be unique."
-        new_content = content.replace(old_text, new_text, 1)
-        p.write_text(new_content, encoding="utf-8")
-        logger.info("[gemini_tool_loop] edit_file: %s (replaced %d chars with %d chars)", path, len(old_text), len(new_text))
-        return f"OK: Edited {path} (replaced {len(old_text)} chars with {len(new_text)} chars)"
-    except Exception as e:
-        return f"ERROR: {e}"
-
-
 _TOOL_EXECUTORS = {
     "read_file": _exec_read_file,
     "write_file": _exec_write_file,
@@ -338,22 +331,86 @@ _TOOL_EXECUTORS = {
 
 
 # ---------------------------------------------------------------------------
-# Main tool loop
+# Human-readable tool call summaries
 # ---------------------------------------------------------------------------
 
-async def run_gemini_tool_loop(
+def _summarise_tool_call(name: str, args: dict) -> str:
+    """Create a concise, human-readable summary of what a tool call is doing."""
+    if name == "read_file":
+        path = args.get("path", "")
+        filename = Path(path).name if path else "unknown"
+        return f"Reading {filename}"
+    elif name == "write_file":
+        path = args.get("path", "")
+        filename = Path(path).name if path else "unknown"
+        content = args.get("content", "")
+        return f"Writing {filename} ({len(content)} chars)"
+    elif name == "edit_file":
+        path = args.get("path", "")
+        filename = Path(path).name if path else "unknown"
+        return f"Editing {filename}"
+    elif name == "run_shell":
+        cmd = args.get("command", "")
+        return f"Running: {cmd[:80]}{'...' if len(cmd) > 80 else ''}"
+    elif name == "search_files":
+        pattern = args.get("pattern", "")
+        directory = args.get("directory", "")
+        dirname = Path(directory).name if directory else ""
+        return f"Searching {dirname} for {pattern}"
+    elif name == "list_dir":
+        path = args.get("path", "")
+        dirname = Path(path).name if path else ""
+        return f"Listing {dirname}/"
+    else:
+        return f"Calling {name}"
+
+
+def _summarise_tool_result(name: str, result: str) -> str:
+    """Create a concise summary of a tool result for the UI."""
+    if result.startswith("ERROR:"):
+        return result[:120]
+    elif name == "read_file":
+        lines = result.count('\n') + 1
+        return f"{lines} lines read"
+    elif name in ("write_file", "edit_file"):
+        return result[:100]
+    elif name == "run_shell":
+        # Show first meaningful line of output
+        first_line = result.strip().split('\n')[0][:100] if result.strip() else "OK"
+        return first_line
+    elif name == "search_files":
+        count = len(result.strip().split('\n')) if result.strip() else 0
+        return f"{count} files found"
+    elif name == "list_dir":
+        count = len(result.strip().split('\n')) if result.strip() else 0
+        return f"{count} entries"
+    else:
+        return result[:100]
+
+
+# ---------------------------------------------------------------------------
+# Streaming tool loop (v2.0)
+# ---------------------------------------------------------------------------
+
+async def stream_gemini_tool_loop(
     system_prompt: str,
     messages: List[dict],
     model_id: str = "gemini-3.1-pro-preview-customtools",
     temperature: float = 0.2,
     max_tokens: int = 8192,
-    on_tool_call: Optional[callable] = None,
     content_parts: Optional[List] = None,
-) -> str:
-    """Run a Gemini conversation with native function calling.
+) -> AsyncGenerator[Dict[str, Any], None]:
+    """Stream a Gemini conversation with native function calling.
 
-    Handles the full tool loop: model responds -> extracts function calls ->
-    executes tools -> sends results back -> model continues.
+    Yields structured events as the tool loop progresses so the frontend
+    can render them in real-time.
+
+    Event types:
+        {"type": "tool_start", "tool": str, "summary": str}
+        {"type": "tool_result", "tool": str, "summary": str}
+        {"type": "thinking", "content": str}
+        {"type": "final_text", "content": str}
+        {"type": "error", "error": str}
 
     Args:
         system_prompt: The system prompt to use
@@ -361,18 +418,14 @@ async def run_gemini_tool_loop(
         model_id: Google model string
         temperature: Sampling temperature
         max_tokens: Max output tokens
-        on_tool_call: Optional callback(tool_name, args, result) for logging
-        content_parts: Optional list of additional genai.protos.Part objects
-                       (e.g. video file references) to include with the user message.
-
-    Returns:
-        The final text response from the model.
+        content_parts: Optional multimodal parts (video, images)
     """
     import google.generativeai as genai
 
     api_key = os.getenv("GOOGLE_API_KEY", "")
     if not api_key:
-        return "ERROR: GOOGLE_API_KEY not set."
+        yield {"type": "error", "error": "GOOGLE_API_KEY not set."}
+        return
 
     genai.configure(api_key=api_key)
 
@@ -392,46 +445,66 @@ async def run_gemini_tool_loop(
         system_instruction=system_prompt,
     )
 
-    # Build conversation history for the SDK
+    # Build conversation history
     history = []
-    for msg in messages[:-1]:  # All but the last (which we send as new input)
+    for msg in messages[:-1]:
         role = "user" if msg["role"] == "user" else "model"
         history.append({"role": role, "parts": [msg["content"]]})
 
     chat = model.start_chat(history=history)
 
-    # The user's latest message — may include multimodal parts (video, images)
+    # Build user message (may include multimodal parts)
     user_text = messages[-1]["content"] if messages else ""
     if content_parts:
-        # Build multimodal message: text + video/image parts
         user_message = [user_text] + list(content_parts)
         logger.info("[gemini_tool_loop] Sending multimodal message with %d extra parts", len(content_parts))
     else:
         user_message = user_text
 
-    # Tool loop
-    response = chat.send_message(user_message)
+    # Send initial message
+    try:
+        response = chat.send_message(user_message)
+    except Exception as e:
+        yield {"type": "error", "error": f"Gemini API call failed: {e}"}
+        return
 
+    # Tool loop — yield events as we go
     for _round in range(MAX_TOOL_ROUNDS):
-        # Check for function calls
         function_calls = _extract_function_calls(response)
-        if not function_calls:
-            break  # Model returned text, we're done
 
-        # Execute each function call
+        if not function_calls:
+            # No tool calls — this is the final text response
+            # Check for any intermediate text in this response too
+            break
+
+        # Check if there's thinking text alongside the tool calls
+        thinking_text = _extract_text_parts(response)
+        if thinking_text:
+            yield {"type": "thinking", "content": thinking_text}
+
+        # Execute each function call, yielding events as we go
         tool_responses = []
         for fc_name, fc_args in function_calls:
+            # Yield tool_start so the UI shows what we're about to do
+            yield {
+                "type": "tool_start",
+                "tool": fc_name,
+                "summary": _summarise_tool_call(fc_name, fc_args),
+            }
+
+            # Execute the tool
             executor = _TOOL_EXECUTORS.get(fc_name)
             if executor:
                 result = await executor(fc_args)
             else:
                 result = f"ERROR: Unknown tool '{fc_name}'"
 
-            if on_tool_call:
-                try:
-                    on_tool_call(fc_name, fc_args, result[:200])
-                except Exception:
-                    pass
+            # Yield tool_result so the UI shows what happened
+            yield {
+                "type": "tool_result",
+                "tool": fc_name,
+                "summary": _summarise_tool_result(fc_name, result),
+            }
 
             tool_responses.append(
                 genai.protos.Part(function_response=genai.protos.FunctionResponse(
@@ -441,34 +514,85 @@ async def run_gemini_tool_loop(
             )
 
         # Send tool results back to the model
-        response = chat.send_message(tool_responses)
+        try:
+            response = chat.send_message(tool_responses)
+        except Exception as e:
+            yield {"type": "error", "error": f"Gemini API call failed after tool round {_round + 1}: {e}"}
+            return
     else:
-        # Hit MAX_TOOL_ROUNDS — nudge the model to produce a text summary
-        logger.warning("[gemini_tool_loop] Hit max tool rounds (%d), forcing text response", MAX_TOOL_ROUNDS)
+        # Hit MAX_TOOL_ROUNDS — nudge for a text summary
+        logger.warning("[gemini_tool_loop] Hit max tool rounds (%d)", MAX_TOOL_ROUNDS)
         try:
             response = chat.send_message(
                 "You have used all available tool calls. Stop using tools now and give "
                 "your final answer as text based on what you have gathered so far."
             )
         except Exception as nudge_err:
-            logger.warning("[gemini_tool_loop] Nudge failed: %s", nudge_err)
+            yield {"type": "error", "error": f"Failed to get final response: {nudge_err}"}
+            return
 
-    # Extract final text
-    try:
-        return response.text
-    except (ValueError, AttributeError):
-        # Fallback: try to extract text from parts
-        try:
-            parts_text = []
-            for part in response.candidates[0].content.parts:
-                if hasattr(part, "text") and part.text:
-                    parts_text.append(part.text)
-            if parts_text:
-                return "\n".join(parts_text)
-        except Exception:
-            pass
-        return "(Model exhausted tool calls without producing a response. Try asking a more specific question.)"
+    # Extract and stream the final text response
+    final_text = _extract_full_text(response)
+    if final_text:
+        # Stream in chunks for a natural feel
+        chunk_size = 60
+        for i in range(0, len(final_text), chunk_size):
+            yield {"type": "final_text", "content": final_text[i:i + chunk_size]}
+    else:
+        yield {
+            "type": "final_text",
+            "content": "(Model completed tool calls without producing a text response. Try a more specific question.)",
+        }
 
+
+# ---------------------------------------------------------------------------
+# Legacy synchronous wrapper (for callers that haven't migrated yet)
+# ---------------------------------------------------------------------------
+
+async def run_gemini_tool_loop(
+    system_prompt: str,
+    messages: List[dict],
+    model_id: str = "gemini-3.1-pro-preview-customtools",
+    temperature: float = 0.2,
+    max_tokens: int = 8192,
+    on_tool_call: Optional[callable] = None,
+    content_parts: Optional[List] = None,
+) -> str:
+    """Legacy wrapper — collects all events and returns the final text.
+
+    Preserved for backward compatibility with callers that expect a string.
+    New code should use stream_gemini_tool_loop() instead.
+    """
+    final_parts = []
+    async for event in stream_gemini_tool_loop(
+        system_prompt=system_prompt,
+        messages=messages,
+        model_id=model_id,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        content_parts=content_parts,
+    ):
+        if event["type"] == "final_text":
+            final_parts.append(event["content"])
+        elif event["type"] == "thinking":
+            final_parts.append(event["content"])
+        elif event["type"] in ("tool_start", "tool_result") and on_tool_call:
+            try:
+                on_tool_call(
+                    event.get("tool", ""),
+                    {},
+                    event.get("summary", ""),
+                )
+            except Exception:
+                pass
+        elif event["type"] == "error":
+            return f"ERROR: {event['error']}"
+    return "".join(final_parts)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _extract_function_calls(response) -> List[tuple]:
     """Extract (name, args) tuples from a Gemini response."""
@@ -488,17 +612,48 @@ def _extract_function_calls(response) -> List[tuple]:
     return calls
 
 
+def _extract_text_parts(response) -> str:
+    """Extract any text parts from a response (may appear alongside tool calls)."""
+    texts = []
+    try:
+        if not getattr(response, "candidates", None):
+            return ""
+        for part in response.candidates[0].content.parts:
+            if hasattr(part, "text") and part.text and not hasattr(part, "function_call"):
+                texts.append(part.text)
+    except Exception:
+        pass
+    return "\n".join(texts)
+
+
+def _extract_full_text(response) -> str:
+    """Extract the full text from the final response."""
+    try:
+        return response.text
+    except (ValueError, AttributeError):
+        try:
+            parts_text = []
+            for part in response.candidates[0].content.parts:
+                if hasattr(part, "text") and part.text:
+                    parts_text.append(part.text)
+            if parts_text:
+                return "\n".join(parts_text)
+        except Exception:
+            pass
+    return ""
+
+
 def _convert_schema(schema: dict) -> dict:
     """Convert a JSON schema dict to genai.protos.Schema kwargs."""
     import google.generativeai as genai
 
     type_map = {
-        "string": 1,   # Type.STRING
-        "number": 2,   # Type.NUMBER
-        "integer": 3,  # Type.INTEGER
-        "boolean": 4,  # Type.BOOLEAN
-        "array": 5,    # Type.ARRAY
-        "object": 6,   # Type.OBJECT
+        "string": 1,
+        "number": 2,
+        "integer": 3,
+        "boolean": 4,
+        "array": 5,
+        "object": 6,
     }
 
     result = {}

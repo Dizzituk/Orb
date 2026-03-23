@@ -2,11 +2,12 @@
 faster-whisper implementation of TranscriptionService.
 
 No top-level torch import — GPU detection uses ctranslate2 or lazy torch import.
-Reads model config from ModelManager which sources from D:\\LocalAI\\config.ini.
+Reads model config from ModelManager which sources from D:\LocalAI\config.ini.
 """
 import io
 import logging
 import time
+import wave
 from typing import Optional, List
 
 import numpy as np
@@ -129,59 +130,127 @@ class FasterWhisperService(TranscriptionService):
         )
 
     @staticmethod
-    def _decode_audio(audio_bytes: bytes) -> np.ndarray:
+    def _resample_to_16khz(audio: np.ndarray, source_rate: int) -> np.ndarray:
+        if source_rate == 16000 or len(audio) == 0:
+            return audio.astype(np.float32, copy=False)
+
+        target_len = max(1, int(round(len(audio) * 16000 / source_rate)))
+        return np.interp(
+            np.linspace(0, len(audio) - 1, target_len),
+            np.arange(len(audio)),
+            audio,
+        ).astype(np.float32)
+
+    @classmethod
+    def _decode_wav(cls, audio_bytes: bytes) -> np.ndarray:
+        with wave.open(io.BytesIO(audio_bytes), "rb") as wf:
+            n_channels = wf.getnchannels()
+            sampwidth = wf.getsampwidth()
+            framerate = wf.getframerate()
+            frames = wf.readframes(wf.getnframes())
+
+        if sampwidth == 1:
+            audio = (np.frombuffer(frames, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+        elif sampwidth == 2:
+            audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        elif sampwidth == 4:
+            audio = np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 2147483648.0
+        else:
+            raise ValueError(f"Unsupported WAV sample width: {sampwidth}")
+
+        if n_channels > 1:
+            audio = audio.reshape(-1, n_channels).mean(axis=1)
+
+        return cls._resample_to_16khz(audio, framerate)
+
+    @staticmethod
+    def _is_likely_raw_float32(audio_bytes: bytes) -> bool:
+        return len(audio_bytes) >= 4 and len(audio_bytes) % 4 == 0
+
+    @staticmethod
+    def _is_likely_raw_pcm16(audio_bytes: bytes) -> bool:
+        return len(audio_bytes) >= 2 and len(audio_bytes) % 2 == 0
+
+    @classmethod
+    def _decode_audio(cls, audio_bytes: bytes) -> np.ndarray:
         """Decode audio bytes to float32 numpy array at 16kHz mono.
 
-        Handles:
-        - WAV files (any sample rate / channels — resampled to 16kHz mono)
-        - Raw PCM16 bytes
-        - Raw float32 bytes
+        Uses ffmpeg as universal decoder — handles WAV, m4a, AAC, MP3,
+        OGG, 3GP, MPEG-4, and any other format ffmpeg supports.
+        Falls back to raw PCM if ffmpeg fails.
         """
-        import io
-        import wave
+        # Try ffmpeg first — handles ALL container formats
+        try:
+            return cls._decode_with_ffmpeg(audio_bytes)
+        except Exception as ffmpeg_err:
+            logger.warning("[faster_whisper] ffmpeg decode failed: %s — trying fallbacks", ffmpeg_err)
 
-        # Try WAV first
-        if audio_bytes[:4] == b'RIFF':
+        # Fallback: WAV container
+        if audio_bytes[:4] == b"RIFF" and audio_bytes[8:12] == b"WAVE":
+            return cls._decode_wav(audio_bytes)
+
+        # Fallback: raw float32 PCM
+        if len(audio_bytes) % 4 == 0 and len(audio_bytes) > 1000:
             try:
-                with wave.open(io.BytesIO(audio_bytes), 'rb') as wf:
-                    n_channels = wf.getnchannels()
-                    sampwidth = wf.getsampwidth()
-                    framerate = wf.getframerate()
-                    frames = wf.readframes(wf.getnframes())
+                return np.frombuffer(audio_bytes, dtype=np.float32)
+            except ValueError:
+                pass
 
-                    if sampwidth == 2:
-                        audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-                    elif sampwidth == 4:
-                        audio = np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 2147483648.0
-                    else:
-                        audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-
-                    # Mono mixdown
-                    if n_channels > 1:
-                        audio = audio.reshape(-1, n_channels).mean(axis=1)
-
-                    # Resample to 16kHz if needed
-                    if framerate != 16000:
-                        target_len = int(len(audio) * 16000 / framerate)
-                        audio = np.interp(
-                            np.linspace(0, len(audio) - 1, target_len),
-                            np.arange(len(audio)),
-                            audio,
-                        ).astype(np.float32)
-
-                    return audio
-            except Exception as e:
-                logger.warning("[faster_whisper] WAV decode failed, trying raw: %s", e)
-
-        # Try raw PCM16
-        if len(audio_bytes) % 2 == 0:
+        # Fallback: raw PCM16
+        if len(audio_bytes) % 2 == 0 and len(audio_bytes) > 1000:
             try:
                 return np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
             except ValueError:
                 pass
 
-        # Try raw float32
-        return np.frombuffer(audio_bytes, dtype=np.float32)
+        raise ValueError(
+            f"Unsupported audio format: {len(audio_bytes)} bytes, "
+            f"header={audio_bytes[:12].hex() if len(audio_bytes) >= 12 else 'too short'}"
+        )
+
+    @classmethod
+    def _decode_with_ffmpeg(cls, audio_bytes: bytes) -> np.ndarray:
+        """Use ffmpeg to convert any audio format to mono 16kHz float32 PCM."""
+        import subprocess
+        import tempfile
+        import os
+
+        with tempfile.NamedTemporaryFile(suffix=".audio", delete=False) as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
+
+        try:
+            result = subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-i", tmp_path,
+                    "-f", "f32le",
+                    "-ac", "1",
+                    "-ar", "16000",
+                    "pipe:1",
+                ],
+                capture_output=True,
+                timeout=15,
+            )
+            if result.returncode != 0:
+                stderr = result.stderr.decode("utf-8", errors="replace")[:300]
+                raise RuntimeError(f"ffmpeg exit {result.returncode}: {stderr}")
+
+            pcm_bytes = result.stdout
+            if len(pcm_bytes) < 100:
+                raise RuntimeError(f"ffmpeg produced only {len(pcm_bytes)} bytes")
+
+            audio = np.frombuffer(pcm_bytes, dtype=np.float32)
+            logger.info(
+                "[faster_whisper] ffmpeg decoded %d bytes → %d samples (%.1fs at 16kHz)",
+                len(audio_bytes), len(audio), len(audio) / 16000,
+            )
+            return audio
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
     def get_status(self):
         mm = get_model_manager()

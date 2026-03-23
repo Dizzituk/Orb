@@ -207,6 +207,143 @@ RUN_COMMAND_TOOL = {
 # TOOL SETS
 # =============================================================================
 
+
+# ═══════════════════════════════════════════════════════════════
+# ADB EMULATOR TOOLS (for Android app testing)
+# ═══════════════════════════════════════════════════════════════
+
+SCREENSHOT_TOOL = {
+    "name": "emulator_screenshot",
+    "description": (
+        "Take a screenshot of the Android emulator. Returns the file path "
+        "and size. Use this to visually verify UI layout, check if buttons "
+        "are visible, verify text fields are present, etc. The screenshot "
+        "is saved locally for inspection."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
+UI_DUMP_TOOL = {
+    "name": "emulator_ui_dump",
+    "description": (
+        "Dump the UI view hierarchy from the Android emulator as XML. "
+        "Returns all visible UI elements with their class names, text, "
+        "content descriptions, resource IDs, and screen bounds (coordinates). "
+        "Use this to find clickable buttons, text fields, and verify layout structure."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
+EMULATOR_TAP_TOOL = {
+    "name": "emulator_tap",
+    "description": (
+        "Tap at screen coordinates on the Android emulator. "
+        "Get coordinates from emulator_ui_dump (bounds attribute). "
+        "Use to click buttons, focus text fields, toggle switches, etc."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "x": {"type": "integer", "description": "X coordinate"},
+            "y": {"type": "integer", "description": "Y coordinate"},
+        },
+        "required": ["x", "y"],
+    },
+}
+
+EMULATOR_TYPE_TOOL = {
+    "name": "emulator_type",
+    "description": (
+        "Type text into the currently focused field on the Android emulator. "
+        "First tap a text field using emulator_tap, then use this to enter text."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "text": {"type": "string", "description": "Text to type"},
+        },
+        "required": ["text"],
+    },
+}
+
+EMULATOR_KEY_TOOL = {
+    "name": "emulator_key",
+    "description": (
+        "Press a key on the Android emulator. Common keycodes: "
+        "KEYCODE_ENTER (send/confirm), KEYCODE_BACK (navigate back), "
+        "KEYCODE_HOME (home screen), KEYCODE_DEL (backspace)."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "keycode": {"type": "string", "description": "Android keycode name"},
+        },
+        "required": ["keycode"],
+    },
+}
+
+GRADLE_BUILD_TOOL = {
+    "name": "gradle_build",
+    "description": (
+        "Run Gradle assembleDebug for AstraBridge. Compiles the app and "
+        "reports success or failure with error details. Use after making "
+        "code changes to verify they compile."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
+GRADLE_INSTALL_TOOL = {
+    "name": "gradle_install",
+    "description": (
+        "Build and install AstraBridge debug APK on the emulator. "
+        "Compiles, packages, and deploys in one step. Use after fixing "
+        "code to get the new version running on the emulator for testing."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
+APP_RESTART_TOOL = {
+    "name": "app_restart",
+    "description": (
+        "Force stop and relaunch AstraBridge on the emulator. "
+        "Use after installing a new build or when the app is in a bad state."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
+CRASH_LOG_TOOL = {
+    "name": "get_crash_log",
+    "description": (
+        "Get the most recent crash log for AstraBridge from logcat. "
+        "Shows FATAL EXCEPTION stack traces. Use when the app crashes "
+        "after a change to diagnose the error."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
 def get_phase1_tools() -> List[dict]:
     """Read-only tools for Phase 1."""
     return [
@@ -224,6 +361,15 @@ def get_phase2_tools() -> List[dict]:
         WRITE_FILE_TOOL,
         EDIT_FILE_TOOL,
         RUN_COMMAND_TOOL,
+        SCREENSHOT_TOOL,
+        UI_DUMP_TOOL,
+        EMULATOR_TAP_TOOL,
+        EMULATOR_TYPE_TOOL,
+        EMULATOR_KEY_TOOL,
+        GRADLE_BUILD_TOOL,
+        GRADLE_INSTALL_TOOL,
+        APP_RESTART_TOOL,
+        CRASH_LOG_TOOL,
     ]
 
 

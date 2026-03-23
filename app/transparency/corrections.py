@@ -196,6 +196,67 @@ class CorrectionStore:
             logger.warning("[corrections] Failed to get corrections by stage: %s", e)
             return []
 
+
+    @staticmethod
+    def get_corrections_by_stage_and_project(
+        stage_name: str,
+        build_project_id: str = "",
+        limit: int = 50,
+    ) -> List[UserCorrection]:
+        """Get corrections filtered by stage AND project.
+        
+        Returns project-specific corrections first, then universal ones
+        (where build_project_id is empty), up to the limit.
+        """
+        try:
+            from app.db import get_db_session
+            from app.transparency.models import UserCorrectionModel
+
+            db = get_db_session()
+            try:
+                # Project-specific corrections
+                project_rows = []
+                if build_project_id:
+                    project_rows = (
+                        db.query(UserCorrectionModel)
+                        .filter_by(stage_name=stage_name, build_project_id=build_project_id)
+                        .order_by(UserCorrectionModel.created_at.desc())
+                        .limit(limit)
+                        .all()
+                    )
+
+                # Universal corrections (no project specified, or severity=broke_things)
+                remaining = limit - len(project_rows)
+                universal_rows = []
+                if remaining > 0:
+                    universal_query = (
+                        db.query(UserCorrectionModel)
+                        .filter_by(stage_name=stage_name)
+                        .filter(
+                            (UserCorrectionModel.build_project_id == "")
+                            | (UserCorrectionModel.severity == "broke_things")
+                        )
+                    )
+                    # Exclude ones we already got from project query
+                    if project_rows:
+                        project_ids = [r.correction_id for r in project_rows]
+                        universal_query = universal_query.filter(
+                            ~UserCorrectionModel.correction_id.in_(project_ids)
+                        )
+                    universal_rows = (
+                        universal_query
+                        .order_by(UserCorrectionModel.created_at.desc())
+                        .limit(remaining)
+                        .all()
+                    )
+
+                all_rows = project_rows + universal_rows
+                return [_row_to_correction(r) for r in all_rows]
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning("[corrections] Failed to get corrections by stage+project: %s", e)
+            return []
     @staticmethod
     def delete_correction(correction_id: str) -> bool:
         """Delete a correction by ID."""

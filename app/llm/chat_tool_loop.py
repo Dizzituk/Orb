@@ -410,6 +410,138 @@ async def _stream_with_tools_gemini(
     yield {"type": "done", "provider": "gemini", "model": model}
 
 
+
+
+async def _stream_with_tools_openai(
+    messages: List[Dict],
+    system_prompt: str,
+    provider: str,
+    model: str,
+    tools: List[Dict],
+    enable_reasoning: bool = False,
+    max_tokens: Optional[int] = None,
+) -> AsyncGenerator[Dict, None]:
+    """OpenAI tool loop: accumulates streamed function args, executes, feeds back.
+
+    OpenAI tool call format differs from Anthropic:
+    - Tool calls come as streaming deltas with partial JSON arguments
+    - Tool results are sent as {role: "tool", tool_call_id: ..., content: ...}
+    - The assistant message must include the full tool_calls array
+    """
+    from app.llm._streaming_utils_3 import stream_llm
+
+    current_messages = [{"role": "system", "content": system_prompt}] + list(messages)
+    rounds = 0
+
+    while rounds < MAX_TOOL_ROUNDS:
+        rounds += 1
+        # Accumulators for streamed tool calls
+        tool_call_accum: Dict[int, Dict] = {}  # index -> {id, name, arguments_json}
+        text_chunks: List[str] = []
+        done_chunk = None
+
+        async for chunk in stream_llm(
+            provider=provider,
+            model=model,
+            messages=current_messages[1:],  # strip system (stream_openai adds it)
+            system_prompt=system_prompt,
+            tools=tools,
+            enable_reasoning=enable_reasoning,
+            max_tokens=max_tokens,
+        ):
+            chunk_type = chunk.get("type", "")
+
+            if chunk_type == "tool_use":
+                # New tool call starting — OpenAI sends id + name on first delta
+                idx = chunk.get("index", len(tool_call_accum))
+                tool_call_accum[idx] = {
+                    "id": chunk.get("id", ""),
+                    "name": chunk.get("name", ""),
+                    "arguments_json": chunk.get("input_json", ""),
+                }
+            elif chunk_type == "tool_use_delta":
+                # Continuation — append argument JSON fragment
+                # Find the last tool call being accumulated
+                if tool_call_accum:
+                    last_idx = max(tool_call_accum.keys())
+                    tool_call_accum[last_idx]["arguments_json"] += chunk.get("arguments", "")
+            elif chunk_type == "done":
+                done_chunk = chunk
+            elif chunk_type == "token":
+                text_chunks.append(chunk.get("text", ""))
+                yield chunk
+            else:
+                yield chunk
+
+        # No tool calls — we're done
+        if not tool_call_accum:
+            if done_chunk:
+                yield done_chunk
+            return
+
+        # Parse accumulated tool calls
+        parsed_calls = []
+        for idx in sorted(tool_call_accum.keys()):
+            tc = tool_call_accum[idx]
+            try:
+                input_dict = json.loads(tc["arguments_json"]) if tc["arguments_json"] else {}
+            except json.JSONDecodeError:
+                input_dict = {"raw": tc["arguments_json"]}
+            parsed_calls.append({
+                "id": tc["id"],
+                "name": tc["name"],
+                "input": input_dict,
+            })
+            yield {
+                "type": "tool_call",
+                "name": tc["name"],
+                "tool_use_id": tc["id"],
+                "input": input_dict,
+            }
+
+        logger.info(
+            "[chat_tool_loop] Round %d: executing %d OpenAI tool call(s)",
+            rounds, len(parsed_calls),
+        )
+
+        # Build assistant message with tool_calls (OpenAI format)
+        assistant_msg: Dict[str, Any] = {"role": "assistant"}
+        if text_chunks:
+            assistant_msg["content"] = "".join(text_chunks)
+        else:
+            assistant_msg["content"] = None
+        assistant_msg["tool_calls"] = [
+            {
+                "id": tc["id"],
+                "type": "function",
+                "function": {
+                    "name": tc["name"],
+                    "arguments": json.dumps(tc["input"]),
+                },
+            }
+            for tc in parsed_calls
+        ]
+        current_messages.append(assistant_msg)
+
+        # Execute tools and append results as tool role messages
+        for tc in parsed_calls:
+            result_str = await execute_chat_tool(tc["name"], tc["input"])
+            current_messages.append({
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "content": result_str[:5000],
+            })
+            yield {
+                "type": "tool_result",
+                "name": tc["name"],
+                "result_preview": result_str[:200],
+            }
+
+        logger.info("[chat_tool_loop] Round %d complete, continuing...", rounds)
+
+    logger.warning("[chat_tool_loop_openai] Hit MAX_TOOL_ROUNDS (%d)", MAX_TOOL_ROUNDS)
+    yield {"type": "token", "text": "\n\n[Tool loop reached maximum rounds]"}
+    yield {"type": "done", "provider": provider, "model": model}
 async def stream_with_tools(
     messages: List[Dict],
     system_prompt: str,
@@ -430,6 +562,12 @@ async def stream_with_tools(
     """
     if provider in ("google", "gemini"):
         async for chunk in _stream_with_tools_gemini(
+            messages, system_prompt, provider, model, tools,
+            enable_reasoning, max_tokens,
+        ):
+            yield chunk
+    elif provider == "openai":
+        async for chunk in _stream_with_tools_openai(
             messages, system_prompt, provider, model, tools,
             enable_reasoning, max_tokens,
         ):

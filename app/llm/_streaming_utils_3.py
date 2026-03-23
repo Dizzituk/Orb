@@ -476,7 +476,10 @@ async def stream_llm(
     print(f"[STREAM_LLM] Routing to provider: {provider}, model: {model}")
 
     if provider == "openai":
-        async for event in stream_openai(messages, system_prompt, model, enable_reasoning, route):
+        async for event in stream_openai(
+            messages, system_prompt, model, enable_reasoning, route,
+            tools=tools, max_tokens=max_tokens, timeout_seconds=timeout_seconds,
+        ):
             yield event
     elif provider == "anthropic":
         async for event in stream_anthropic(

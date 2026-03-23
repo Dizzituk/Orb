@@ -146,8 +146,8 @@ async def stream_chat(
                 project_id=req.project_id,
                 message=req.message,
                 panel_history=req.panel_history or [],
-                provider=req.provider or "google",
-                model=req.model or "gemini-3.1-pro-preview-customtools",
+                provider=req.provider or "openai",
+                model=req.model or "gpt-5.4",
                 debug_project_id=req.debug_project_id,
                 video_file_uri=req.video_file_uri,
                 video_mime_type=req.video_mime_type,
@@ -157,6 +157,7 @@ async def stream_chat(
                 file_upload_name=req.file_upload_name,
                 file_upload_local_path=req.file_upload_local_path,
                 file_upload_gemini_name=req.file_upload_gemini_name,
+                documents=req.documents,
             ),
             media_type="text/event-stream",
         )

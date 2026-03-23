@@ -41,12 +41,14 @@ class ModelPrice:
 
 DEFAULT_PRICING: Dict[str, ModelPrice] = {
     # Anthropic (from .env reference: opus $5/$25, sonnet $3/$15)
-    "claude-opus-4-6": ModelPrice(input_per_million=5.0, output_per_million=25.0),
+    "claude-opus-4-6": ModelPrice(input_per_million=15.0, output_per_million=75.0),
     "claude-opus-4-5-20251101": ModelPrice(input_per_million=5.0, output_per_million=25.0),
     "claude-sonnet-4-6": ModelPrice(input_per_million=3.0, output_per_million=15.0),
     "claude-sonnet-4-5-20250929": ModelPrice(input_per_million=3.0, output_per_million=15.0),
 
     # OpenAI (from .env reference: gpt-5.2 $1.75/$14, gpt-5-mini ~$0.15/$0.60)
+    "gpt-5.4": ModelPrice(input_per_million=2.50, output_per_million=15.0),
+    "gpt-5.4-pro": ModelPrice(input_per_million=5.0, output_per_million=30.0),
     "gpt-5.2": ModelPrice(input_per_million=1.75, output_per_million=14.0),
     "gpt-5.2-pro": ModelPrice(input_per_million=21.0, output_per_million=168.0),
     "gpt-5-mini": ModelPrice(input_per_million=0.15, output_per_million=0.60),

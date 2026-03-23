@@ -76,6 +76,21 @@ _HOST_ONLY_PREFIXES = [
     "D:\\Orb\\.architecture",
     "D:/Orb/logs",
     "D:\\Orb\\logs",
+    # Android projects live on host, not in sandbox
+    "D:/Astra Android Folder",
+    "D:\\Astra Android Folder",
+    # Desktop frontend lives on host
+    "D:/orb-desktop",
+    "D:\\orb-desktop",
+    # ASTRA backend source — for debug reads/writes
+    "D:/Orb/app",
+    "D:\\Orb\\app",
+    "D:/Orb/config",
+    "D:\\Orb\\config",
+    "D:/Orb/main.py",
+    "D:\\Orb\\main.py",
+    "D:/Orb/docs",
+    "D:\\Orb\\docs",
 ]
 
 
@@ -337,7 +352,7 @@ async def execute_read_logs(params: Dict[str, Any]) -> str:
 # =============================================================================
 
 async def execute_write_file(params: Dict[str, Any]) -> str:
-    """Write a file via the sandbox controller."""
+    """Write a file — host-direct for known paths, sandbox for everything else."""
     path = params.get("path", "")
     content = params.get("content", "")
     if not path:
@@ -345,6 +360,18 @@ async def execute_write_file(params: Dict[str, Any]) -> str:
 
     path = _resolve_sandbox_path(path)
 
+    # Host-direct write for known project paths
+    if _is_host_only(path):
+        try:
+            p = Path(path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content, encoding="utf-8")
+            logger.info("[action_executor] Host write: %s (%d chars)", path, len(content))
+            return f"Successfully wrote {len(content)} chars to {path}"
+        except Exception as e:
+            return f"Host write error: {e}"
+
+    # Sandbox write for everything else
     try:
         import httpx
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -384,7 +411,14 @@ async def execute_edit_file(params: Dict[str, Any]) -> str:
 
 
 async def execute_run_command(params: Dict[str, Any]) -> str:
-    """Run a command via the sandbox controller shell endpoint."""
+    """Run a command — host-direct via asyncio subprocess.
+
+    Debug lock mode needs to run commands on the host (e.g. Gradle builds
+    for Android projects, Python syntax checks). The sandbox may not have
+    the required SDKs or project files.
+    """
+    import asyncio
+
     command = params.get("command", "")
     cwd = params.get("cwd", "D:\\Orb")
     timeout_sec = params.get("timeout_sec", 30)
@@ -392,29 +426,35 @@ async def execute_run_command(params: Dict[str, Any]) -> str:
     if not command:
         return "Error: command is required."
 
+    # Block dangerous commands
+    cmd_lower = command.lower()
+    _BLOCKED = [
+        "remove-item c:\\", "del c:\\", "rd c:\\", "rmdir c:\\",
+        "format-volume", "clear-disk", "stop-computer", "restart-computer",
+        "set-executionpolicy", "new-service", "remove-service",
+        "reg delete", "reg add", "net user", "net localgroup",
+    ]
+    for blocked in _BLOCKED:
+        if blocked in cmd_lower:
+            return f"ERROR: Command blocked for safety — contains '{blocked}'"
+
     try:
-        import httpx
-        async with httpx.AsyncClient(timeout=float(timeout_sec + 5)) as client:
-            resp = await client.post(
-                f"{SANDBOX_CONTROLLER_URL}/shell/run",
-                json={
-                    "cmd": ["powershell", "-Command", command],
-                    "cwd": cwd,
-                    "timeout_sec": timeout_sec,
-                },
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                stdout = data.get("stdout", "")
-                stderr = data.get("stderr", "")
-                rc = data.get("returncode", -1)
-                result = f"Exit code: {rc}\n"
-                if stdout:
-                    result += f"\nSTDOUT:\n{stdout}"
-                if stderr:
-                    result += f"\nSTDERR:\n{stderr}"
-                return result
-            return f"Command failed ({resp.status_code}): {resp.text}"
+        proc = await asyncio.create_subprocess_shell(
+            f'powershell.exe -NoProfile -Command "{command}"',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd if Path(cwd).exists() else None,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec)
+
+        result = f"Exit code: {proc.returncode}\n"
+        if stdout:
+            result += f"\nSTDOUT:\n{stdout.decode('utf-8', errors='replace')[:5000]}"
+        if stderr:
+            result += f"\nSTDERR:\n{stderr.decode('utf-8', errors='replace')[:2000]}"
+        return result
+    except asyncio.TimeoutError:
+        return f"ERROR: Command timed out after {timeout_sec} seconds"
     except Exception as e:
         return f"Command execution error: {e}"
 
@@ -423,6 +463,49 @@ async def execute_run_command(params: Dict[str, Any]) -> str:
 # DISPATCHER
 # =============================================================================
 
+
+# ═══════════════════════════════════════════════════════════════
+# ADB EMULATOR TOOL HANDLERS
+# ═══════════════════════════════════════════════════════════════
+
+async def execute_emulator_screenshot(params: Dict[str, Any]) -> str:
+    from app.debug.adb_tools import take_screenshot
+    result = await take_screenshot()
+    if "error" in result:
+        return result["error"]
+    return f"Screenshot saved: {result['path']} ({result['size_bytes']} bytes)"
+
+async def execute_emulator_ui_dump(params: Dict[str, Any]) -> str:
+    from app.debug.adb_tools import dump_ui_hierarchy
+    return await dump_ui_hierarchy()
+
+async def execute_emulator_tap(params: Dict[str, Any]) -> str:
+    from app.debug.adb_tools import tap
+    return await tap(int(params.get("x", 0)), int(params.get("y", 0)))
+
+async def execute_emulator_type(params: Dict[str, Any]) -> str:
+    from app.debug.adb_tools import type_text
+    return await type_text(params.get("text", ""))
+
+async def execute_emulator_key(params: Dict[str, Any]) -> str:
+    from app.debug.adb_tools import press_key
+    return await press_key(params.get("keycode", "KEYCODE_ENTER"))
+
+async def execute_gradle_build(params: Dict[str, Any]) -> str:
+    from app.debug.adb_tools import gradle_build
+    return await gradle_build()
+
+async def execute_gradle_install(params: Dict[str, Any]) -> str:
+    from app.debug.adb_tools import gradle_install
+    return await gradle_install()
+
+async def execute_app_restart(params: Dict[str, Any]) -> str:
+    from app.debug.adb_tools import restart_app
+    return await restart_app()
+
+async def execute_get_crash_log(params: Dict[str, Any]) -> str:
+    from app.debug.adb_tools import get_crash_log
+    return await get_crash_log()
 TOOL_HANDLERS = {
     # Read (sandbox, except architecture/logs on host)
     "read_file":           execute_read_file,
@@ -434,6 +517,16 @@ TOOL_HANDLERS = {
     "write_file":          execute_write_file,
     "edit_file":           execute_edit_file,
     "run_command":         execute_run_command,
+    # ADB emulator tools
+    "emulator_screenshot":  execute_emulator_screenshot,
+    "emulator_ui_dump":     execute_emulator_ui_dump,
+    "emulator_tap":         execute_emulator_tap,
+    "emulator_type":        execute_emulator_type,
+    "emulator_key":         execute_emulator_key,
+    "gradle_build":         execute_gradle_build,
+    "gradle_install":       execute_gradle_install,
+    "app_restart":          execute_app_restart,
+    "get_crash_log":        execute_get_crash_log,
 }
 
 

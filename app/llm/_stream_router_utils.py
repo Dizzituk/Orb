@@ -46,6 +46,7 @@ class StreamRequest(BaseModel):
     file_upload_name: Optional[str] = None             # v2.3: Debug file upload — original filename
     file_upload_local_path: Optional[str] = None       # v2.3: Debug file upload — local file for cleanup
     file_upload_gemini_name: Optional[str] = None      # v2.3: Debug file upload — Gemini file name for cleanup
+    documents: Optional[list] = None                    # v3.0: Structured document blocks from large text pastes
 
 def _is_scoping_cancel(msg_lower: str) -> bool:
     """Check if a message is an explicit cancel/exit request.
