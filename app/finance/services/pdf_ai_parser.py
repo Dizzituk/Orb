@@ -1,10 +1,10 @@
 # FILE: app/finance/services/pdf_ai_parser.py
 """
-AI-powered PDF statement parser using GPT-4o vision.
+AI-powered PDF statement parser using OpenAI vision (model from OPENAI_VISION_MODEL env).
 
 Used as a fallback when pdfplumber table/text extraction fails,
 typically for scanned PDFs or complex layouts.
-Converts each page to an image and sends to GPT-4o for extraction.
+Converts each page to an image and sends to OpenAI vision for extraction.
 """
 from __future__ import annotations
 
@@ -35,9 +35,9 @@ class AIParseResult:
 
 
 def parse_pdf_with_vision(pdf_path: str | Path) -> AIParseResult:
-    """Parse a credit card statement PDF using GPT-4o vision.
+    """Parse a credit card statement PDF using OpenAI vision.
     
-    Converts pages to images, sends to GPT-4o with structured
+    Converts pages to images, sends to OpenAI vision with structured
     extraction prompt, returns parsed transactions.
     """
     try:
@@ -66,7 +66,7 @@ def parse_pdf_with_vision(pdf_path: str | Path) -> AIParseResult:
         image.save(buffer, format="PNG")
         b64 = base64.b64encode(buffer.getvalue()).decode()
 
-        # Call GPT-4o
+        # Call OpenAI vision
         txs = _call_vision_api(b64, page_num)
         if txs:
             all_transactions.extend(txs)
@@ -77,7 +77,7 @@ def parse_pdf_with_vision(pdf_path: str | Path) -> AIParseResult:
 
 
 def _call_vision_api(image_b64: str, page_num: int) -> list[dict]:
-    """Send a page image to GPT-4o for transaction extraction."""
+    """Send a page image to OpenAI vision for transaction extraction."""
     import openai
 
     api_key = os.getenv("OPENAI_API_KEY")
@@ -112,7 +112,7 @@ Rules:
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=os.getenv("OPENAI_VISION_MODEL", "gpt-5.4-mini"),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {

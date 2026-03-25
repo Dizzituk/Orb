@@ -1,0 +1,517 @@
+# FILE: app/content/video_pipeline/asset_resolver.py
+"""
+Tiered Asset Resolver — cascading footage sourcing for each segment.
+
+For each segment in the scene plan, cascades through tiers:
+  Tier 0: Local stock (indexed by scanner)
+  Tier 1: Free stock (Pexels API)
+  Tier 2: Paid stock (Shutterstock API)
+  Tier 3: AI generated (fal.ai)
+  Tier A: Avatar (HeyGen) for requires_avatar segments
+"""
+import os
+import logging
+from typing import Optional, Callable, Awaitable
+
+from app.content.video_pipeline.models import (
+    ScenePlan, SceneSegment, ResolvedAsset, ResolvedPlan,
+    AssetSource, AssetTier,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class BudgetTracker:
+    """Tracks cumulative spend against a per-job budget ceiling."""
+
+    def __init__(self, max_budget_usd: float = 10.0):
+        self.max_budget = max_budget_usd
+        self.spent = 0.0
+        self.line_items = []
+
+    @property
+    def remaining(self) -> float:
+        return max(0, self.max_budget - self.spent)
+
+    def can_spend(self, amount: float) -> bool:
+        return self.spent + amount <= self.max_budget
+
+    def record(self, source: str, segment_id: str, amount: float):
+        self.spent += amount
+        self.line_items.append({
+            "source": source,
+            "segment_id": segment_id,
+            "amount": amount,
+        })
+        logger.info(
+            f"[budget] +${amount:.3f} ({source}/{segment_id}) "
+            f"— total: ${self.spent:.2f} / ${self.max_budget:.2f}"
+        )
+
+
+async def resolve_assets(
+    scene_plan: ScenePlan,
+    max_budget_usd: float = 10.0,
+    progress_callback: Optional[Callable] = None,
+    force_ai_segments: Optional[set] = None,
+) -> ResolvedPlan:
+    """
+    Resolve assets for every segment in the scene plan.
+
+    Cascades through tiers for each segment until footage is found.
+    Respects budget ceiling for paid tiers.
+
+    force_ai_segments: set of segment IDs that should skip library/Pexels
+    and go straight to fal.ai generation. Used when QA has repeatedly
+    flagged a segment and stock footage can't satisfy the requirement.
+    """
+    budget = BudgetTracker(max_budget_usd)
+    assets = []
+    unresolved = []
+    # Track used clip paths to prevent reuse within one video.
+    # HARD RULE: never use the same b-roll clip twice.
+    used_clips: set = set()
+    force_ai = force_ai_segments or set()
+
+    total = len(scene_plan.segments)
+    for idx, segment in enumerate(scene_plan.segments):
+        if progress_callback:
+            await progress_callback(
+                f"Resolving segment {idx + 1}/{total}: {segment.segment_id}",
+                (idx / total) * 100,
+            )
+
+        # If this segment is marked for forced AI generation,
+        # skip library and Pexels entirely.
+        if segment.segment_id in force_ai and not segment.requires_avatar:
+            logger.info(
+                f"[asset_resolver] FORCE AI for {segment.segment_id}: "
+                f"QA flagged, stock footage inadequate"
+            )
+            asset = await _try_fal_ai(segment, budget)
+            if asset:
+                if asset.file_path:
+                    used_clips.add(os.path.abspath(asset.file_path))
+                assets.append(asset)
+                continue
+            # If fal.ai fails (budget etc), fall through to normal cascade
+            logger.warning(
+                f"[asset_resolver] fal.ai failed for {segment.segment_id}, "
+                f"falling back to normal cascade"
+            )
+
+        asset = await _resolve_segment(segment, budget, used_clips)
+        if asset and asset.file_path:
+            used_clips.add(os.path.abspath(asset.file_path))
+
+        if asset:
+            assets.append(asset)
+        else:
+            unresolved.append(segment.segment_id)
+            logger.warning(
+                f"[asset_resolver] UNRESOLVED: {segment.segment_id} "
+                f"({segment.segment_type})"
+            )
+
+    plan = ResolvedPlan(
+        assets=assets,
+        total_cost_usd=budget.spent,
+        unresolved_segments=unresolved,
+    )
+
+    logger.info(
+        f"[asset_resolver] Resolved {len(assets)}/{total} segments. "
+        f"Total cost: ${budget.spent:.2f}. "
+        f"Unresolved: {len(unresolved)}"
+    )
+    return plan
+
+
+async def _resolve_segment(
+    segment: SceneSegment,
+    budget: BudgetTracker,
+    used_clips: Optional[set] = None,
+) -> Optional[ResolvedAsset]:
+    """Resolve a single segment through the tier cascade."""
+
+    # Avatar segments: generate the avatar clip via HeyGen.
+    # For PiP mode, we also need b-roll underneath — the orchestrator
+    # handles resolving the b-roll separately for PiP segments.
+    if segment.requires_avatar:
+        return await _try_heygen(segment, budget)
+
+    # Tier 0: Local stock (skip clips already used in this video)
+    result = await _try_local(segment, used_clips)
+    if result:
+        return result
+
+    # Tier 1: Free stock (Pexels)
+    result = await _try_pexels(segment, used_clips)
+    if result:
+        return result
+
+    # Tier 2: AI generated (fal.ai) — budget gated
+    if budget.remaining > 0:
+        result = await _try_fal_ai(segment, budget)
+        if result:
+            return result
+
+    return None
+
+
+async def _try_local(
+    segment: SceneSegment,
+    used_clips: Optional[set] = None,
+) -> Optional[ResolvedAsset]:
+    """Search the video asset library (RAG-backed semantic search)."""
+    try:
+        from app.content.video_pipeline.asset_library import search_library
+
+        query = (
+            f"{' '.join(segment.search_keywords)}. "
+            f"{segment.visual_description}"
+        )
+        # Request extra results so we can skip already-used clips.
+        # Similarity threshold 0.80 — only return genuinely relevant
+        # clips. Below 0.80, fall through to Pexels for a fresh search.
+        results = search_library(query, max_results=5, min_similarity=0.80)
+
+        # Filter out clips already used in this video
+        for candidate in (results or []):
+            fpath = candidate.get("file_path", "")
+            if not fpath or not os.path.exists(fpath):
+                continue
+            if used_clips and os.path.abspath(fpath) in used_clips:
+                logger.info(
+                    f"[asset_resolver] Skipping reused clip: "
+                    f"{os.path.basename(fpath)} for {segment.segment_id}"
+                )
+                continue
+            # Found a valid, non-reused clip
+            best = candidate
+            break
+        else:
+            # All candidates were used or missing
+            best = None
+
+        if best:
+            fpath = best.get("file_path", "")
+
+            if fpath and os.path.exists(fpath):
+                logger.info(
+                    f"[asset_resolver] LIBRARY HIT for "
+                    f"{segment.segment_id}: "
+                    f"{os.path.basename(fpath)} "
+                    f"(similarity={best.get('similarity', 0):.2f})"
+                )
+                return ResolvedAsset(
+                    segment_id=segment.segment_id,
+                    source=AssetSource.LOCAL_INDEX,
+                    tier=AssetTier.LOCAL,
+                    file_path=fpath,
+                    duration_s=best.get("duration_s", 0),
+                    cost_usd=0.0,
+                    confidence_score=best.get("similarity", 0.7),
+                    metadata={
+                        "library_match": True,
+                        "original_source": best.get("source", ""),
+                        "similarity": best.get("similarity", 0),
+                    },
+                )
+            else:
+                logger.debug(
+                    f"[asset_resolver] Library match file missing: {fpath}"
+                )
+    except Exception as e:
+        logger.debug(f"[asset_resolver] Library search failed: {e}")
+
+    return None
+
+
+async def _try_pexels(
+    segment: SceneSegment,
+    used_clips: Optional[set] = None,
+) -> Optional[ResolvedAsset]:
+    """Search Pexels for free stock footage."""
+    try:
+        from app.content.video_pipeline.pexels_client import (
+            search_and_download,
+        )
+
+        # Use clips[0].search_query as the primary search if available.
+        # This is the director's chosen shot description, much more
+        # targeted than generic keywords. Fall back to search_keywords.
+        search_queries = []
+        if segment.clips:
+            for clip in segment.clips:
+                if clip.search_query:
+                    search_queries.append(clip.search_query)
+        if not search_queries:
+            # Fallback to old-style keywords
+            search_queries = segment.search_keywords[:3]
+
+        results = None
+        for query in search_queries:
+            short_q = " ".join(query.split()[:5])
+            results = await search_and_download(short_q, max_results=1)
+            if results and results[0].get("file_path"):
+                break
+        if not results:
+            results = []
+
+        if results and results[0].get("file_path"):
+            best = results[0]
+            # Skip if this clip is already used in this video
+            _fp = os.path.abspath(best["file_path"])
+            if used_clips and _fp in used_clips:
+                logger.info(
+                    f"[asset_resolver] Pexels clip already used, "
+                    f"skipping {os.path.basename(_fp)} for "
+                    f"{segment.segment_id}"
+                )
+                return None
+            logger.info(
+                f"[asset_resolver] Pexels match for {segment.segment_id}: "
+                f"id={best['id']}"
+            )
+            # Store clip B search query if available
+            meta = {"pexels_id": best["id"]}
+            if len(segment.clips) >= 2 and segment.clips[1].search_query:
+                meta["clip_b_search_query"] = segment.clips[1].search_query
+            asset = ResolvedAsset(
+                segment_id=segment.segment_id,
+                source=AssetSource.PEXELS,
+                tier=AssetTier.FREE_STOCK,
+                file_path=best["file_path"],
+                url=best.get("url", ""),
+                duration_s=best.get("duration", 0),
+                cost_usd=0.0,
+                confidence_score=0.6,
+                metadata=meta,
+            )
+
+            # Index into asset library for future reuse
+            try:
+                from app.content.video_pipeline.asset_library import (
+                    index_asset,
+                )
+                # Build rich keywords from clips + fallback
+                all_kw = list(segment.search_keywords)
+                for clip in segment.clips:
+                    if clip.search_query:
+                        all_kw.append(clip.search_query)
+                # Use clip A's shot description if available
+                vis_desc = segment.visual_description
+                if segment.clips and segment.clips[0].shot_description:
+                    vis_desc = segment.clips[0].shot_description
+                index_asset(
+                    file_path=best["file_path"],
+                    source="pexels",
+                    segment_id=segment.segment_id,
+                    search_keywords=all_kw,
+                    visual_description=vis_desc,
+                    duration_s=best.get("duration", 0),
+                )
+            except Exception:
+                pass  # Non-critical
+
+            # Download clip B if the director specified two clips
+            if len(segment.clips) >= 2 and segment.clips[1].search_query:
+                try:
+                    clip_b_q = " ".join(
+                        segment.clips[1].search_query.split()[:5]
+                    )
+                    b_results = await search_and_download(
+                        clip_b_q, max_results=3,
+                    )
+                    # Pick first result not already used
+                    for b_res in (b_results or []):
+                        b_fp = b_res.get("file_path", "")
+                        if not b_fp:
+                            continue
+                        b_abs = os.path.abspath(b_fp)
+                        if used_clips and b_abs in used_clips:
+                            continue
+                        asset.metadata["clip_b_path"] = b_fp
+                        if used_clips is not None:
+                            used_clips.add(b_abs)
+                        logger.info(
+                            f"[asset_resolver] Clip B for "
+                            f"{segment.segment_id}: "
+                            f"'{clip_b_q}'"
+                        )
+                        break
+                except Exception:
+                    pass  # Non-critical, filler will be used
+
+            return asset
+    except Exception as e:
+        logger.warning(f"[asset_resolver] Pexels search failed: {e}")
+
+    return None
+
+
+
+async def _try_fal_ai(
+    segment: SceneSegment,
+    budget: BudgetTracker,
+) -> Optional[ResolvedAsset]:
+    """Generate footage via fal.ai."""
+    try:
+        from app.content.video_pipeline.fal_client import (
+            generate_video, download_generated_video,
+        )
+
+        # Build generation prompt from the director's shot description.
+        # Use the first clip's shot_description if available (most specific),
+        # otherwise fall back to the segment's visual_description.
+        if segment.clips and segment.clips[0].shot_description:
+            prompt = segment.clips[0].shot_description
+        else:
+            prompt = segment.visual_description
+        if segment.mood_tags:
+            prompt += f". Mood: {', '.join(segment.mood_tags)}"
+
+        duration_s = min(int(segment.estimated_duration_s), 8)
+        duration_str = f"{duration_s}s"
+
+        # Check budget
+        from app.content.video_pipeline.fal_client import _get_model_config
+        config = _get_model_config()
+        estimated_cost = duration_s * config["cost_per_second"]
+
+        if not budget.can_spend(estimated_cost):
+            logger.info(
+                f"[asset_resolver] fal.ai skipped for "
+                f"{segment.segment_id}: budget insufficient"
+            )
+            return None
+
+        result = await generate_video(
+            prompt=prompt,
+            duration=duration_str,
+        )
+
+        video_url = result.get("video_url", "")
+        if not video_url:
+            return None
+
+        file_path = await download_generated_video(
+            video_url, segment.segment_id,
+        )
+
+        actual_cost = result.get("cost_usd", estimated_cost)
+        budget.record("fal_ai", segment.segment_id, actual_cost)
+
+        asset = ResolvedAsset(
+            segment_id=segment.segment_id,
+            source=AssetSource.FAL_AI,
+            tier=AssetTier.AI_GENERATED,
+            file_path=file_path or "",
+            url=video_url,
+            duration_s=result.get("duration_s", duration_s),
+            cost_usd=actual_cost,
+            confidence_score=0.7,
+            metadata={
+                "model": result.get("model", ""),
+                "prompt": prompt[:200],
+            },
+        )
+
+        # Index AI-generated content for future reuse
+        if file_path:
+            try:
+                from app.content.video_pipeline.asset_library import (
+                    index_asset,
+                )
+                index_asset(
+                    file_path=file_path,
+                    source="fal_ai",
+                    segment_id=segment.segment_id,
+                    search_keywords=segment.search_keywords,
+                    visual_description=prompt[:300],
+                    duration_s=result.get("duration_s", duration_s),
+                    cost_usd=actual_cost,
+                )
+            except Exception:
+                pass
+
+        return asset
+    except Exception as e:
+        logger.warning(f"[asset_resolver] fal.ai generation failed: {e}")
+
+    return None
+
+
+async def _try_heygen(
+    segment: SceneSegment,
+    budget: BudgetTracker,
+) -> Optional[ResolvedAsset]:
+    """Generate avatar clip via HeyGen, with disk caching.
+
+    On fix cycles the same segment text produces the same clip,
+    so we check for an existing downloaded file first. This avoids
+    burning HeyGen credits re-generating identical avatar clips.
+    """
+    import hashlib
+    from pathlib import Path
+
+    # Cache key: hash of the actual script text, not just segment ID.
+    # Different runs may split the script differently, so seg_004 in
+    # one run might have completely different text from seg_004 in another.
+    text_hash = hashlib.md5(
+        segment.script_text.strip().encode()
+    ).hexdigest()[:10]
+
+    cache_dir = Path("data/content/video_pipeline/downloads/heygen")
+    # New naming: heygen_{segment_id}_{text_hash}_{timestamp}.mp4
+    pattern = f"heygen_{segment.segment_id}_{text_hash}_*.mp4"
+    cached = sorted(cache_dir.glob(pattern)) if cache_dir.exists() else []
+
+    if cached:
+        cached_path = str(cached[-1])
+        logger.info(
+            f"[asset_resolver] HeyGen CACHED for {segment.segment_id}: "
+            f"{cached_path} (text hash match, skipping API call)"
+        )
+        return ResolvedAsset(
+            segment_id=segment.segment_id,
+            source=AssetSource.HEYGEN,
+            tier=AssetTier.AVATAR,
+            file_path=cached_path,
+            url="",
+            duration_s=0,
+            cost_usd=0.0,
+            confidence_score=0.95,
+            metadata={"cached": True, "text_hash": text_hash},
+        )
+
+    # No cache hit — generate fresh
+    try:
+        from app.content.video_pipeline.heygen_client import (
+            generate_and_download,
+        )
+
+        result = await generate_and_download(
+            text=segment.script_text,
+            segment_id=segment.segment_id,
+        )
+
+        cost = result.get("cost_usd", 0)
+        budget.record("heygen", segment.segment_id, cost)
+
+        return ResolvedAsset(
+            segment_id=segment.segment_id,
+            source=AssetSource.HEYGEN,
+            tier=AssetTier.AVATAR,
+            file_path=result.get("file_path", ""),
+            url=result.get("video_url", ""),
+            duration_s=result.get("duration_s", 0),
+            cost_usd=cost,
+            confidence_score=0.95,
+            metadata={"heygen_video_id": result.get("video_id", "")},
+        )
+    except Exception as e:
+        logger.warning(f"[asset_resolver] HeyGen generation failed: {e}")
+
+    return None

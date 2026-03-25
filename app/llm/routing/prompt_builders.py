@@ -583,6 +583,37 @@ def build_full_context(
     if doc_context:
         full_context += "=== UPLOADED DOCUMENTS ===" + doc_context
     
+    # v0.14.0: Always inject biographical preferences into context.
+    # These are permanent facts about the user (name, location, job, etc.)
+    # that should be available to every model in every session.
+    try:
+        from app.db import get_db_session as _get_bio_db
+        from app.astra_memory.preference_models import PreferenceRecord, RecordStatus
+        _bio_db = _get_bio_db()
+        try:
+            _bio_prefs = (
+                _bio_db.query(PreferenceRecord)
+                .filter(
+                    PreferenceRecord.preference_key.like("doc_extract:biographical:%"),
+                    PreferenceRecord.status == RecordStatus.ACTIVE,
+                )
+                .all()
+            )
+            if _bio_prefs:
+                _bio_lines = ["[USER PROFILE]"]
+                for _bp in _bio_prefs:
+                    _key_short = _bp.preference_key.replace("doc_extract:biographical:", "")
+                    _bio_lines.append(f"  {_key_short}: {_bp.preference_value}")
+                _bio_lines.append("[/USER PROFILE]")
+                full_context += "\n\n" + "\n".join(_bio_lines)
+                print(f"[CONTEXT] User profile injected: {len(_bio_prefs)} biographical facts")
+            else:
+                print("[CONTEXT] No biographical prefs found in DB")
+        finally:
+            _bio_db.close()
+    except Exception as _bio_err:
+        print(f"[CONTEXT] Biographical injection failed: {_bio_err}")
+
     # v5.4: RAG memory injection from unified memory router
     try:
         from app.memory.integration import inject_memory_context

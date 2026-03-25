@@ -116,9 +116,9 @@ class TestSessionLifecycle:
         from app.memory.conversation_schemas import SessionCreate
 
         session = create_session(db, SessionCreate(project_id=project_id))
-        bump_session_activity(db, session, provider="openai", model="gpt-4o-mini")
+        bump_session_activity(db, session, provider="openai", model="gpt-5.4-mini")
         assert session.message_count == 1
-        assert "openai:gpt-4o-mini" in session.models_used
+        assert "openai:gpt-5.4-mini" in session.models_used
 
         bump_session_activity(db, session, provider="anthropic", model="claude-sonnet-4-20250514")
         assert session.message_count == 2
@@ -235,12 +235,12 @@ class TestSummaryTrigger:
         # Two messages from same model — no trigger
         create_message(db, MessageCreate(
             project_id=project_id, role="assistant",
-            content="Response 1", provider="openai", model="gpt-4o-mini",
+            content="Response 1", provider="openai", model="gpt-5.4-mini",
             session_id=session.id,
         ))
         create_message(db, MessageCreate(
             project_id=project_id, role="assistant",
-            content="Response 2", provider="openai", model="gpt-4o-mini",
+            content="Response 2", provider="openai", model="gpt-5.4-mini",
             session_id=session.id,
         ))
         assert not should_generate_summary(db, session)

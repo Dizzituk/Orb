@@ -11,6 +11,7 @@ Handles:
 """
 from __future__ import annotations
 
+import os
 import json
 import logging
 from dataclasses import dataclass, field
@@ -135,7 +136,7 @@ Respond in JSON only (no markdown, no backticks):
 
         try:
             response = await self._client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=os.getenv("OPENAI_DEFAULT_MODEL", "gpt-5.4-mini"),
                 messages=[
                     {"role": "system", "content": HMRC_RULES_CONTEXT},
                     {"role": "user", "content": prompt},

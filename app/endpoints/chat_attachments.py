@@ -243,6 +243,32 @@ def chat_with_attachments(
             print(f"[chat_attachments] Index failed for file_id={file_id}: {e}")
 
     # =========================================================================
+    # v0.14.0: KNOWLEDGE PROMOTION — extract durable facts to ASTRA memory
+    # =========================================================================
+    for file_id in indexed_file_ids:
+        try:
+            from app.memory.models import DocumentContent
+            from app.memory.document_knowledge_promoter import promote_document_knowledge_sync
+            doc = db.query(DocumentContent).filter(DocumentContent.file_id == file_id).first()
+            if doc and doc.raw_text:
+                promo_result = promote_document_knowledge_sync(
+                    db=db,
+                    filename=doc.filename,
+                    raw_text=doc.raw_text,
+                    structured_data=doc.structured_data,
+                )
+                _cls = promo_result.get("classification", "?")
+                _ext = promo_result.get("extractions", 0)
+                _wrt = promo_result.get("written", 0)
+                _skip = promo_result.get("skipped_reason")
+                if _wrt > 0:
+                    print(f"[chat_attachments] Knowledge promoted: {doc.filename} ({_cls}) — {_wrt} facts written")
+                elif _skip:
+                    print(f"[chat_attachments] Knowledge skipped: {doc.filename} ({_cls}) — {_skip}")
+        except Exception as e:
+            print(f"[chat_attachments] Knowledge promotion failed for file_id={file_id}: {e}")
+
+    # =========================================================================
     # CHECK FOR OVERRIDE COMMAND
     # =========================================================================
     

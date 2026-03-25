@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 async def parse_van_finance_pdf(file_bytes: bytes, filename: str = "agreement.pdf") -> dict:
-    """Parse a van finance agreement PDF using GPT-4o vision OCR.
+    """Parse a van finance agreement PDF using OpenAI vision OCR.
     
     Returns dict with extracted fields:
     - vehicle_description, registration, purchase_price, deposit_paid,
@@ -35,7 +35,7 @@ async def parse_van_finance_pdf(file_bytes: bytes, filename: str = "agreement.pd
     if not images_b64:
         raise ValueError("Could not extract images from PDF")
 
-    logger.info("[van_pdf] Sending %d page(s) to GPT-4o vision", len(images_b64))
+    logger.info("[van_pdf] Sending %d page(s) to OpenAI vision", len(images_b64))
 
     # Build the vision prompt
     content = [
@@ -77,7 +77,7 @@ async def parse_van_finance_pdf(file_bytes: bytes, filename: str = "agreement.pd
             "https://api.openai.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}"},
             json={
-                "model": "gpt-4o-mini",
+                "model": os.getenv("OPENAI_VISION_MODEL", "gpt-5.4-mini"),
                 "messages": [{"role": "user", "content": content}],
                 "max_tokens": 1000,
                 "temperature": 0,

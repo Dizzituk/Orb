@@ -264,7 +264,7 @@ class TestReplayPack:
             arch_path="arch/arch_v1.md",
             ledger_path="ledger/events.ndjson",
             model_versions={
-                "spec_gate": "gpt-4o",
+                "spec_gate": "gpt-5.4-mini",
                 "architecture": "claude-opus-4-20250514",
                 "critique": "gemini-2.0-flash",
             },
@@ -274,4 +274,4 @@ class TestReplayPack:
         assert d["model_versions"]["critique"] == "gemini-2.0-flash"
         
         json_str = pack.to_json()
-        assert "gpt-4o" in json_str
+        assert "gpt-5.4-mini" in json_str

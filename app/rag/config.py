@@ -111,9 +111,9 @@ MAX_CHUNKS_PER_FILE: int = 3  # Limit chunks from same file for diversity
 # ============================================================================
 
 # Tier selection for grounded Q&A
-LLM_TIER_SMALL: str = "gpt-4o"  # GPT-5 Mini placeholder (use GPT-4o for now)
-LLM_TIER_MEDIUM: str = "gpt-4o"  # GPT-5.2 placeholder  
-LLM_TIER_LARGE: str = "claude-sonnet-4-20250514"  # Claude Opus 4.5 placeholder
+LLM_TIER_SMALL: str = os.getenv("OPENAI_DEFAULT_MODEL", "gpt-5.4-mini")
+LLM_TIER_MEDIUM: str = os.getenv("CHAT_MODEL", "gpt-5.4-mini")
+LLM_TIER_LARGE: str = os.getenv("ANTHROPIC_DEFAULT_MODEL", "claude-sonnet-4-6")
 
 # Provider mapping
 TIER_TO_PROVIDER = {

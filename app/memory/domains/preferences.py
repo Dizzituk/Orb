@@ -246,12 +246,18 @@ class PreferenceStore:
             keywords = keywords[:20]
 
         # Build keyword match conditions
+        # v0.14.0: Now also searches preference_value — critical for finding
+        # biographical facts by content (e.g. "Redruth" matches location value).
+        # Cap at 15 keywords since we now have 4 LIKE conditions per keyword.
+        if len(keywords) > 15:
+            keywords = keywords[:15]
         conditions = []
         for kw in keywords:
             pattern = f"%{kw}%"
             conditions.append(
                 or_(
                     PreferenceRecord.preference_key.ilike(pattern),
+                    PreferenceRecord.preference_value.ilike(pattern),
                     PreferenceRecord.namespace.ilike(pattern),
                     PreferenceRecord.applies_to.ilike(pattern),
                 )

@@ -467,7 +467,7 @@ class TestRoutingDecision:
             resolved_job_type="chat_simple",
             architect=ModelSelection(
                 provider="openai",
-                model_id="gpt-4o",
+                model_id="gpt-5.4-mini",
                 tier="A",
                 role="architect",
             ),
@@ -489,7 +489,7 @@ class TestRoutingDecision:
             resolved_job_type="chat_simple",
             architect=ModelSelection(
                 provider="openai",
-                model_id="gpt-4o",
+                model_id="gpt-5.4-mini",
                 tier="A",
                 role="architect",
             ),
@@ -512,7 +512,7 @@ class TestUsageMetrics:
         from app.jobs.schemas import UsageMetrics
         
         metrics = UsageMetrics(
-            model_id="gpt-4o",
+            model_id="gpt-5.4-mini",
             provider="openai",
             prompt_tokens=100,
             completion_tokens=50,
@@ -586,7 +586,7 @@ class TestJobResult:
                 resolved_job_type="chat_simple",
                 architect=ModelSelection(
                     provider="openai",
-                    model_id="gpt-4o",
+                    model_id="gpt-5.4-mini",
                     tier="A",
                     role="architect",
                 ),
@@ -628,7 +628,7 @@ class TestJobResult:
                 resolved_job_type="chat_simple",
                 architect=ModelSelection(
                     provider="openai",
-                    model_id="gpt-4o",
+                    model_id="gpt-5.4-mini",
                     tier="A",
                     role="architect",
                 ),

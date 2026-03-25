@@ -275,7 +275,7 @@ _DEEP_RESEARCH_PATTERNS = [
 _WEB_NOISE_WORDS = {
     "go", "online", "and", "the", "web", "internet", "for", "me",
     "find", "search", "look", "up", "check", "get", "fetch",
-    "show", "pull", "grab", "browse", "discover",
+    "show", "pull", "grab", "browse", "discover", "research",
     "please", "can", "you", "could", "would", "need", "want",
     "to", "i", "a", "some", "about", "on", "in", "at", "of",
     "what", "is", "are", "there", "whats", "what's",
@@ -308,9 +308,12 @@ def _extract_query_by_keywords(text: str) -> Optional[str]:
     has_context = bool(word_set & _KEYWORD_WEB_CONTEXT)
     has_action = bool(word_set & _KEYWORD_ACTION_VERBS)
     
-    if not (has_context and has_action):
-        return None
+    # v2.3: "research" alone implies external lookup — no context keyword needed
+    _STRONG_ACTION_VERBS = {"research"}
+    has_strong_action = bool(word_set & _STRONG_ACTION_VERBS) and len(word_set) >= 4
     
+    if not ((has_context and has_action) or has_strong_action):
+        return None
     # Strip noise words, keep meaningful content
     # Also keep words that are in context keywords if they're topical
     # (e.g. "news" is both a context keyword and a valid query term)
@@ -376,8 +379,12 @@ def check_web_search_trigger(text: str) -> Tier0RuleResult:
 
     # v2.3: Length guard — web search queries are short.
     # A 50+ word message is a build description or conversation, not a search.
+    # v2.3.1: Raised to 100 for messages with explicit "research" keyword,
+    # since voice-to-text input is verbose but "research X" is unambiguous.
     word_count = len(text_stripped.split())
-    if word_count > 50:
+    _has_research = "research" in text_stripped.lower().split()
+    _word_limit = 100 if _has_research else 50
+    if word_count > _word_limit:
         return Tier0RuleResult(matched=False)
 
     # Strip conversational prefixes:
@@ -396,6 +403,10 @@ def check_web_search_trigger(text: str) -> Tier0RuleResult:
             if m:
                 query = m.group(group_idx).strip()
                 if query:
+                    # v2.3.1: The "research" pattern is ambiguous — it could
+                    # target codebase or the web. Guard with codebase keywords.
+                    if name == "research" and _has_codebase_keywords(query):
+                        continue
                     return Tier0RuleResult(
                         matched=True,
                         intent=CanonicalIntent.WEB_SEARCH,

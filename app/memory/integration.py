@@ -146,7 +146,18 @@ def after_user_message(
     except Exception as e:
         logger.debug("[integration] Preference capture skipped: %s", e)
 
-    # b) Context extraction (facts and decisions)
+    # b) Real-time biographical fact capture (v0.14.0)
+    # Detects explicit personal statements ("I live in X", "I work at Y")
+    # and writes them to permanent memory immediately — no LLM needed.
+    try:
+        from app.memory.realtime_fact_capture import capture_biographical_facts
+        _bio_count = capture_biographical_facts(message, db=db_session)
+        if _bio_count > 0:
+            logger.info("[integration] Captured %d biographical fact(s) from chat", _bio_count)
+    except Exception as e:
+        logger.debug("[integration] Biographical capture skipped: %s", e)
+
+    # c) Context extraction (facts and decisions)
     try:
         from app.memory.domains.context import ContextStore
         _extract_context_facts(message, project_id)

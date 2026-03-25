@@ -71,26 +71,38 @@ def _resolve_sandbox_path(path: str) -> str:
 
 
 # Host-only data: architecture maps and logs live on the host, not sandbox
-_HOST_ONLY_PREFIXES = [
+# v0.14.0: HOST-ONLY PATHS — strictly limited.
+#
+# CRITICAL RULE: ASTRA backend code (D:\Orb\app, D:\Orb\main.py, etc.)
+# is NOT in this list. All reads/writes to ASTRA's own code MUST go
+# through the sandbox controller. The host filesystem is never the
+# source of truth for code operations.
+#
+# Host-only paths are limited to:
+#   - .architecture/ and logs/ — read-only reference data
+#   - Android project — not in sandbox, lives on host only
+#   - orb-desktop — frontend, not in sandbox
+_HOST_ONLY_READ_PREFIXES = [
     "D:/Orb/.architecture",
     "D:\\Orb\\.architecture",
     "D:/Orb/logs",
     "D:\\Orb\\logs",
-    # Android projects live on host, not in sandbox
+]
+
+_HOST_ONLY_PREFIXES = [
+    # Read-only reference data on host
+    "D:/Orb/.architecture",
+    "D:\\Orb\\.architecture",
+    "D:/Orb/logs",
+    "D:\\Orb\\logs",
+    # Android project — host only (not in sandbox)
     "D:/Astra Android Folder",
     "D:\\Astra Android Folder",
-    # Desktop frontend lives on host
+    # Desktop frontend — host only (not in sandbox)
     "D:/orb-desktop",
     "D:\\orb-desktop",
-    # ASTRA backend source — for debug reads/writes
-    "D:/Orb/app",
-    "D:\\Orb\\app",
-    "D:/Orb/config",
-    "D:\\Orb\\config",
-    "D:/Orb/main.py",
-    "D:\\Orb\\main.py",
-    "D:/Orb/docs",
-    "D:\\Orb\\docs",
+    # NOTE: D:\Orb\app, D:\Orb\main.py, D:\Orb\config, D:\Orb\docs
+    # are INTENTIONALLY NOT HERE. These go through the sandbox.
 ]
 
 
@@ -352,7 +364,7 @@ async def execute_read_logs(params: Dict[str, Any]) -> str:
 # =============================================================================
 
 async def execute_write_file(params: Dict[str, Any]) -> str:
-    """Write a file — host-direct for known paths, sandbox for everything else."""
+    """Write a file — SANDBOX for ASTRA code, host-direct only for Android/desktop."""
     path = params.get("path", "")
     content = params.get("content", "")
     if not path:
@@ -360,16 +372,24 @@ async def execute_write_file(params: Dict[str, Any]) -> str:
 
     path = _resolve_sandbox_path(path)
 
-    # Host-direct write for known project paths
-    if _is_host_only(path):
-        try:
-            p = Path(path)
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(content, encoding="utf-8")
-            logger.info("[action_executor] Host write: %s (%d chars)", path, len(content))
-            return f"Successfully wrote {len(content)} chars to {path}"
-        except Exception as e:
-            return f"Host write error: {e}"
+    # v0.14.0: BLOCK host writes to ASTRA backend code
+    _astra_code_prefixes = ["D:/Orb/app", "D:\\Orb\\app", "D:/Orb/main.py", "D:\\Orb\\main.py",
+                             "D:/Orb/config", "D:\\Orb\\config", "D:/Orb/docs", "D:\\Orb\\docs"]
+    for _acp in _astra_code_prefixes:
+        if path.startswith(_acp):
+            logger.info("[action_executor] ASTRA code write routed to SANDBOX: %s", path)
+            break  # Fall through to sandbox write below
+    else:
+        # Host-direct write for known non-ASTRA paths (Android, desktop)
+        if _is_host_only(path):
+            try:
+                p = Path(path)
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(content, encoding="utf-8")
+                logger.info("[action_executor] Host write: %s (%d chars)", path, len(content))
+                return f"Successfully wrote {len(content)} chars to {path}"
+            except Exception as e:
+                return f"Host write error: {e}"
 
     # Sandbox write for everything else
     try:
@@ -506,7 +526,229 @@ async def execute_app_restart(params: Dict[str, Any]) -> str:
 async def execute_get_crash_log(params: Dict[str, Any]) -> str:
     from app.debug.adb_tools import get_crash_log
     return await get_crash_log()
+# =========================================================================
+# USER FILE TOOLS (v0.14.0)
+# =========================================================================
+
+async def execute_search_my_files(params: Dict[str, Any]) -> str:
+    """Search the drive_file_manifest for user files by name/category/extension."""
+    query = params.get("query", "").strip()
+    category = params.get("category", "").strip().lower()
+    extension = params.get("extension", "").strip().lower().lstrip(".")
+
+    if not query and not category and not extension:
+        return "Please provide a search query, category, or extension."
+
+    # Replace spaces with wildcards for flexible filename matching
+    # Users say "learning roadmap" but files may be "Learning_Roadmap" or "learning-roadmap"
+    if query:
+        query = query.replace(" ", "%")
+
+    try:
+        from app.db import SessionLocal
+        from app.drive.manifest_models import DriveFileManifest
+
+        db = SessionLocal()
+        try:
+            q = db.query(DriveFileManifest)
+
+            if query:
+                # Search both filename and full path for broader matching
+                from sqlalchemy import or_
+                q = q.filter(or_(
+                    DriveFileManifest.filename.ilike(f"%{query}%"),
+                    DriveFileManifest.path.ilike(f"%{query}%"),
+                ))
+            if category:
+                q = q.filter(DriveFileManifest.category == category)
+            if extension:
+                q = q.filter(DriveFileManifest.extension == extension)
+
+            results = q.order_by(DriveFileManifest.filename).limit(30).all()
+
+            if not results:
+                return f"No files found matching: query={query!r}, category={category!r}, extension={extension!r}"
+
+            lines = [f"Found {len(results)} file(s):"]
+            for r in results:
+                size_kb = r.size_bytes / 1024
+                size_str = f"{size_kb:.0f}KB" if size_kb < 1024 else f"{size_kb/1024:.1f}MB"
+                indexed = "indexed" if r.content_indexed else "not indexed"
+                lines.append(
+                    f"  [{r.category}] {r.filename} ({size_str}, {r.file_class}, {indexed})"
+                )
+                lines.append(f"    Path: {r.path}")
+            return "\n".join(lines)
+        finally:
+            db.close()
+    except Exception as e:
+        return f"Search failed: {e}"
+
+
+async def execute_read_user_file(params: Dict[str, Any]) -> str:
+    """Read a user file by extracting its text content."""
+    path = params.get("path", "").strip()
+    if not path:
+        return "Please provide a file path."
+
+    import os
+    if not os.path.isfile(path):
+        return f"File not found: {path}"
+
+    # Security: only allow reading from known category paths
+    try:
+        from app.drive.file_utils import get_category_paths
+        allowed_roots = [str(p) for p in get_category_paths().values()]
+        # Also allow ASTRA output and debug uploads
+        allowed_roots.append(os.path.join("D:", os.sep, "Orb", "output"))
+        allowed_roots.append(os.path.join("D:", os.sep, "Orb", "data", "debug_uploads"))
+
+        path_norm = os.path.normpath(path)
+        if not any(path_norm.startswith(os.path.normpath(r)) for r in allowed_roots):
+            return f"Access denied: {path} is outside allowed user file areas."
+    except Exception:
+        pass  # If we can't check, proceed cautiously
+
+    try:
+        from app.llm.file_analyzer import extract_text
+        text, err = extract_text(file_path=path, filename=os.path.basename(path))
+        if text:
+            # Cap at 50KB for context
+            if len(text) > 50000:
+                return text[:50000] + f"\n\n... [TRUNCATED — {len(text)} chars total]"
+            return text
+        elif err:
+            return f"Could not extract text from {os.path.basename(path)}: {err}"
+        else:
+            return f"No readable content in {os.path.basename(path)}"
+    except Exception as e:
+        return f"Read failed: {e}"
+
+
+# =============================================================================
+# WEB SEARCH TOOL (universal — available to all models)
+# =============================================================================
+
+async def execute_web_search(params: Dict[str, Any]) -> str:
+    """Search the web via ASTRA's existing Brave/DDG infrastructure.
+
+    Delegates to app.tools.registry.web_search_handler which uses
+    Brave Search (primary) with DuckDuckGo fallback.
+    """
+    query = str(params.get("query", "")).strip()
+    if not query:
+        return "Error: query is required."
+
+    max_results = int(params.get("max_results", 5))
+    max_results = max(1, min(10, max_results))
+
+    try:
+        from app.tools.registry import web_search_handler
+        result = await web_search_handler(
+            {"query": query, "max_results": max_results},
+            context=None,
+        )
+        # Format results for the LLM
+        results = result.get("results", [])
+        provider = result.get("provider", "unknown")
+        if not results:
+            return f"No results found for: {query} (provider: {provider})"
+
+        lines = [f"Web search results for: {query} (via {provider})", ""]
+        for i, r in enumerate(results, 1):
+            lines.append(f"{i}. {r.get('title', 'Untitled')}")
+            lines.append(f"   URL: {r.get('url', '')}")
+            lines.append(f"   {r.get('snippet', '')}")
+            lines.append("")
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error("[action_executor] web_search failed: %s", e)
+        return f"Web search error: {e}"
+
+
+
+
+# =============================================================================
+# USER FILE WRITE TOOLS (v0.15.0) — write to personal folders
+# =============================================================================
+
+async def execute_write_user_file(params: Dict[str, Any]) -> str:
+    """Write a file to the user's personal folders (Documents, Pictures, etc.).
+
+    v0.15.0: Host-direct write, scoped to user category paths only.
+    Security: validates path is within allowed user folder roots.
+    """
+    path = params.get("path", "").strip()
+    content = params.get("content", "")
+
+    if not path:
+        return "Error: path is required."
+    if not content:
+        return "Error: content is required (file would be empty)."
+
+    import os
+
+    try:
+        from app.drive.file_utils import get_category_paths, is_safe_path
+
+        allowed_roots = list(get_category_paths().values())
+        target = Path(path)
+
+        if not is_safe_path(target, allowed_roots):
+            return (
+                f"Access denied: {path} is outside allowed user folders. "
+                f"Use get_user_folders to see valid base paths."
+            )
+
+        # Create parent directories if needed
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write the file
+        target.write_text(content, encoding="utf-8")
+        size_kb = len(content.encode("utf-8")) / 1024
+
+        logger.info(
+            "[action_executor] User file write: %s (%.1f KB)", path, size_kb
+        )
+
+        # Update drive manifest so the file appears in search immediately
+        try:
+            from app.drive.manifest_scanner import index_single_file
+            index_single_file(str(target))
+        except Exception:
+            pass  # Non-fatal — manifest will catch it on next scan
+
+        return (
+            f"Successfully wrote {len(content)} chars ({size_kb:.1f} KB) to {path}"
+        )
+    except PermissionError:
+        return f"Permission denied writing to {path}"
+    except Exception as e:
+        return f"Write failed: {e}"
+
+
+async def execute_get_user_folders(params: Dict[str, Any]) -> str:
+    """Return resolved paths for all user personal folders."""
+    try:
+        from app.drive.file_utils import get_category_paths
+
+        paths = get_category_paths()
+        lines = ["User folders (use these as base paths for write_user_file):"]
+        for category, folder_path in sorted(paths.items()):
+            exists = folder_path.exists()
+            lines.append(
+                f"  {category}: {folder_path}  ({'OK' if exists else 'NOT FOUND'})"
+            )
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error resolving user folders: {e}"
+
 TOOL_HANDLERS = {
+    # User file tools (v0.15.0)
+    "search_my_files":     execute_search_my_files,
+    "read_user_file":      execute_read_user_file,
+    "write_user_file":     execute_write_user_file,
+    "get_user_folders":    execute_get_user_folders,
     # Read (sandbox, except architecture/logs on host)
     "read_file":           execute_read_file,
     "list_files":          execute_list_files,
@@ -527,6 +769,8 @@ TOOL_HANDLERS = {
     "gradle_install":       execute_gradle_install,
     "app_restart":          execute_app_restart,
     "get_crash_log":        execute_get_crash_log,
+    # Universal tools (all models)
+    "web_search":           execute_web_search,
 }
 
 

@@ -40,20 +40,29 @@ def _env_model(var_name: str) -> Optional[str]:
 def get_available_streaming_providers() -> Dict[str, bool]:
     """Get dict of available streaming providers.
     
+    v3.3: Added ollama/local provider — always available if OLLAMA_BASE_URL is set.
     v3.2: Uses 'google' as key (matching provider name used in routing)
     instead of legacy 'gemini' key.
     """
+    # Check if Ollama is configured (no API key needed, just a URL)
+    ollama_url = os.getenv("OLLAMA_BASE_URL", "")
+    ollama_available = bool(ollama_url)
+
     result = {
         "openai": HAS_OPENAI and bool(os.getenv("OPENAI_API_KEY")),
         "anthropic": HAS_ANTHROPIC and bool(os.getenv("ANTHROPIC_API_KEY")),
         "google": HAS_GEMINI and bool(os.getenv("GOOGLE_API_KEY")),
+        "ollama": ollama_available,
+        "local": ollama_available,  # Alias for ollama
     }
     # v3.2 debug: log key lengths so we can diagnose sync issues
     _oai = os.getenv("OPENAI_API_KEY", "")
     _ant = os.getenv("ANTHROPIC_API_KEY", "")
     _goo = os.getenv("GOOGLE_API_KEY", "")
-    if not all(result.values()):
+    if not all([result["openai"], result["anthropic"], result["google"]]):
         print(f"[PROVIDER_AVAIL] Key lengths: OAI={len(_oai)}, ANT={len(_ant)}, GOO={len(_goo)}")
+    if ollama_available:
+        print(f"[PROVIDER_AVAIL] Ollama: configured at {ollama_url}")
     return result
 
 def get_available_streaming_provider() -> Optional[str]:

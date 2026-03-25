@@ -8,6 +8,7 @@ to answer investment-related questions with real data.
 Streams SSE tokens back to the frontend using the same event format
 as the main chat endpoint.
 """
+import os
 import json
 import logging
 from typing import Optional
@@ -50,7 +51,7 @@ async def _stream_investment_chat(
     from app.providers._registry_utils_4 import LlmCallStatus
 
     used_provider = provider or None
-    used_model = model or "gpt-4o-mini"
+    used_model = model or os.getenv("OPENAI_DEFAULT_MODEL", "gpt-5.4-mini")
 
     # Metadata event
     display_provider = used_provider or "auto"

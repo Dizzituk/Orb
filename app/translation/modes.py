@@ -305,15 +305,19 @@ _WEB_SEARCH_GUARD_WORDS = {
     "codebase", "code base", "pipeline",
     "specgate", "spec gate", "overwatcher", "weaver",
     "sandbox", "endpoint", "router",
-    "handler", "fixture",
+    "handler", "fixture", "module", "function",
+    "refactor", "component", "frontend", "backend",
 }
 
 
 def _is_web_search_by_keywords(text: str) -> bool:
     """Detect web search intent via keyword co-occurrence.
     
-    Returns True if the message contains both a web-context keyword
-    AND an action verb, with no codebase guard words present.
+    Returns True if the message contains:
+      (a) a web-context keyword AND an action verb, OR
+      (b) a strong context keyword alone (news, latest, ...), OR
+      (c) a strong action verb alone (research) — v2.3
+    ...with no codebase guard words present.
     This enables COMMAND_CAPABLE mode so tier0 web search rules can run.
     
     Guard uses whole-word matching to avoid substring false positives
@@ -329,15 +333,24 @@ def _is_web_search_by_keywords(text: str) -> bool:
     has_context = bool(words & _WEB_CONTEXT_KEYWORDS)
     has_action = bool(words & _WEB_ACTION_VERBS)
     
+    # v2.3: Strong action verbs that imply external web lookup on their own.
+    # "research X" in everyday speech means "go look this up externally",
+    # not "read the local codebase". Guard words still block false positives.
+    _STRONG_ACTION_VERBS = {"research"}
+    has_strong_action = bool(words & _STRONG_ACTION_VERBS)
+
     # Strong web-context words that imply search even without an action verb
     # e.g. "whats happening with AI today" or "latest AI news"
     _STRONG_WEB_CONTEXT = {"news", "latest", "trending", "headlines", "happening", "updates"}
     has_strong_context = bool(words & _STRONG_WEB_CONTEXT)
     
-    # Match if: (context + action) OR (strong context alone with enough words)
+    # Match if: (context + action) OR (strong context alone) OR (strong action alone)
     if has_context and has_action:
         return True
     if has_strong_context and len(words) >= 4:
+        return True
+    # v2.3: "research X" alone triggers web search (guard words still block codebase)
+    if has_strong_action and len(words) >= 4:
         return True
     
     return False

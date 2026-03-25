@@ -46,7 +46,8 @@ def _get_controller_url() -> str:
 # Known repo roots for resolving relative paths.
 # The sandbox controller rejects relative paths like "app/debug/models.py"
 # and requires absolute paths like "D:/Orb/app/debug/models.py".
-_REPO_ROOTS = ["D:/Orb", "D:/orb-desktop"]
+# v3.3: Added Android project root for Astra-Bridge development.
+_REPO_ROOTS = ["D:/Orb", "D:/orb-desktop", "D:/Astra Android Folder/Astra-Bridge"]
 
 
 def _normalise_sandbox_path(path: str) -> str:

@@ -45,7 +45,12 @@ SKIP_DIRS = {
     ".mypy_cache", ".pytest_cache", "dist", "build", ".eggs",
 }
 
-# Roots to scan
+# Roots to scan.
+# IMPORTANT: These paths are passed to sandbox_fs functions which route
+# through the sandbox controller (192.168.250.2:8765). The sandbox has
+# an identical D:\Orb structure. File READS come from the sandbox,
+# not the host. This ensures ASTRA's code awareness matches the
+# sandbox state, not the host.
 SCAN_ROOTS = [
     r"D:\Orb\app",
     r"D:\Orb\main.py",

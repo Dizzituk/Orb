@@ -104,8 +104,8 @@ async def _llm_call(prompt: str, system: str, max_tokens: int = 500) -> str:
 
         # Pick cheapest available provider
         for pid, model_env, default_model in [
-            ("openai", "OPENAI_DEFAULT_MODEL", "gpt-4o-mini"),
-            ("anthropic", "ANTHROPIC_DEFAULT_MODEL", "claude-3-5-sonnet-latest"),
+            ("openai", "OPENAI_DEFAULT_MODEL", "gpt-5.4-mini"),
+            ("anthropic", "ANTHROPIC_DEFAULT_MODEL", "claude-sonnet-4-6"),
             ("google", "GEMINI_FRONTIER_MODEL_ID", "gemini-3.0-pro-preview"),
         ]:
             try:

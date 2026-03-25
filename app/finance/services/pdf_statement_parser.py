@@ -5,7 +5,7 @@ PDF credit card statement parser.
 Multi-strategy extraction for UK credit card statements:
 1. Table extraction (pdfplumber) — works for structured PDFs
 2. Text-line parsing with regex — works for text-based PDFs
-3. AI vision fallback — for scanned/image PDFs (uses GPT-4o)
+3. AI vision fallback — for scanned/image PDFs (uses OPENAI_VISION_MODEL from env)
 
 Supports common UK card formats: Barclaycard, MBNA, Zable,
 Capital One, Tesco Bank, Sainsbury's Bank, HSBC, NatWest, etc.

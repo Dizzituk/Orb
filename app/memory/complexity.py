@@ -90,27 +90,44 @@ TIER_MODEL_MAP = {
 # =========================================================================
 
 # Deep complexity indicators
-DEEP_KEYWORDS = {
-    "architecture", "redesign", "refactor",
+# v9.2: Deep keywords split into architecture (needs big model) and exploration (needs tools only)
+DEEP_ARCHITECTURE_KEYWORDS = {
+    "architecture", "architectural", "redesign", "refactor",
     "system design", "multi-file", "multi-project",
     "migration", "security review", "threat model",
     "dependency graph", "blast radius", "breaking change",
     "trade-off", "tradeoff", "design decision",
     "scalability", "performance audit", "infrastructure",
-    # Strategic/planning complexity (v2: catch multi-domain planning)
-    "pipeline", "roadmap", "domain", "integrate",
-    "integration", "capability", "capabilities",
-    "end-to-end", "production", "deploy",
-    # v9.0: Codebase exploration intent → needs tool access (deep tier)
-    # These count as deep because they require iterative tool exploration.
-    # A single hit is enough when combined with ANY other signal.
+    "pipeline", "roadmap", "integrate",
+    "integration", "end-to-end", "production", "deploy",
+    "come up with a plan", "full plan", "full spec", "architectural plan", "design plan",
+}
+
+DEEP_EXPLORATION_KEYWORDS = {
+    # Codebase exploration — needs tool access but not a big model
     "code base", "codebase", "go through the code",
     "look at the code", "look through the code",
     "check the code", "explore the code",
     "go through the project", "look at the project",
     "check the backend", "check the frontend",
-    "come up with a plan",
+    # Filesystem/app exploration
+    "find the app", "find the android", "find the bridge",
+    "look at the app", "look at the folder", "look at the android",
+    "check the app", "check the folder", "check the android",
+    "tell me about the app", "tell me about the project",
+    "overview of the app", "overview of the project",
+    "explore the app", "explore the folder",
+    "inspect the", "browse the", "scan the",
+    "what's in the", "what is in the",
+    "astra android", "astra-bridge", "astra bridge", "bridge app",
+    "android folder", "android project", "android app",
+    "driver copilot", "fitness app", "bar stock",  # ASTRA flagship apps
+    # Domain awareness — broad terms that indicate the user wants ASTRA to act
+    "domain", "capability", "capabilities",
 }
+
+# Combined set for backward compat — anything that needs deep processing or tools
+DEEP_KEYWORDS = DEEP_ARCHITECTURE_KEYWORDS | DEEP_EXPLORATION_KEYWORDS
 
 # Reasoning indicators
 REASONING_KEYWORDS = {
@@ -312,10 +329,14 @@ def classify_complexity(
 
     # ── Signal 4: Keyword scoring ────────────────────────────────
     deep_hits = _count_keyword_hits(query_lower, DEEP_KEYWORDS)
+    arch_hits = _count_keyword_hits(query_lower, DEEP_ARCHITECTURE_KEYWORDS)
+    explore_hits = _count_keyword_hits(query_lower, DEEP_EXPLORATION_KEYWORDS)
     reasoning_hits = _count_keyword_hits(query_lower, REASONING_KEYWORDS)
     lookup_hits = _count_keyword_hits(query_lower, LOOKUP_KEYWORDS)
 
     signals["deep_hits"] = deep_hits
+    signals["arch_hits"] = arch_hits
+    signals["explore_hits"] = explore_hits
     signals["reasoning_hits"] = reasoning_hits
     signals["lookup_hits"] = lookup_hits
     signals["word_count"] = word_count
@@ -447,5 +468,12 @@ def _resolve_tier(
     if length_tier == "deep":
         return ("deep", 0.6)
 
-    # Default to reasoning for ambiguous medium-length queries
+    # v2.3: No keyword signals at all → default to lookup, not reasoning.
+    # A 30-word message with zero reasoning/deep/lookup hits is just a
+    # conversational request (e.g. "write me a poem and save it as a txt").
+    # Only escalate to reasoning when there is actual keyword evidence.
+    if deep_hits == 0 and reasoning_hits == 0 and lookup_hits == 0:
+        return ("lookup", 0.5)
+
+    # Default to reasoning for ambiguous medium-length queries with some signal
     return ("reasoning", 0.5)

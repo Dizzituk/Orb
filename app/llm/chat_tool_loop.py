@@ -44,10 +44,10 @@ _TRUSTED_MODELS_GOOGLE = {
     "gemini-3.1-pro-preview-customtools",
 }
 
-# v10.1: OpenAI models — listed for future tool support.
-# Currently file creation routing uses codebase pre-loading, not tool calls.
+# v11.0: OpenAI models — now tool-eligible via _stream_with_tools_openai.
 _TRUSTED_MODELS_OPENAI = {
     "gpt-5.4",
+    "gpt-5.4-mini",
     "gpt-5.4-turbo",
 }
 
@@ -56,13 +56,14 @@ def is_tool_eligible(provider: str, model: str) -> bool:
     """Check if this provider/model combo supports the tool execution loop.
 
     v1.3: Gemini 3.1 Pro customtools now supported via stream_gemini tools param.
-    v10.1: OpenAI listed but not yet tool-eligible (no tool loop implementation).
+    v11.0: OpenAI models now tool-eligible (tool loop + streaming delta accumulation).
     """
     if provider == "anthropic":
         return model in _TRUSTED_MODELS_ANTHROPIC
     if provider in ("google", "gemini"):
         return model in _TRUSTED_MODELS_GOOGLE
-    # OpenAI: not yet tool-eligible — uses codebase pre-loading instead
+    if provider == "openai":
+        return model in _TRUSTED_MODELS_OPENAI
     return False
 
 
@@ -529,7 +530,7 @@ async def _stream_with_tools_openai(
             current_messages.append({
                 "role": "tool",
                 "tool_call_id": tc["id"],
-                "content": result_str[:5000],
+                "content": result_str[:30000],
             })
             yield {
                 "type": "tool_result",

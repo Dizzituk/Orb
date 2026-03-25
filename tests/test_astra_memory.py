@@ -154,12 +154,12 @@ class TestOverwatchPatternModel:
 
     def test_model_error_pattern(self, db_session):
         pattern = OverwatchPattern(
-            pattern_type="model_error", target_model="gpt-4o", error_signature="sig-timeout-001",
+            pattern_type="model_error", target_model="gpt-5.4-mini", error_signature="sig-timeout-001",
             occurrence_count=5, severity="error", action="require_review"
         )
         db_session.add(pattern)
         db_session.commit()
-        loaded = db_session.query(OverwatchPattern).filter(OverwatchPattern.target_model == "gpt-4o").first()
+        loaded = db_session.query(OverwatchPattern).filter(OverwatchPattern.target_model == "gpt-5.4-mini").first()
         assert loaded.action == "require_review"
 
 

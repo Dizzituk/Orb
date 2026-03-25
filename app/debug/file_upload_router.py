@@ -2,6 +2,9 @@
 """
 File Upload Router — accept files for debug assistant analysis.
 
+v0.14.0: Now triggers universal knowledge hook (text extraction,
+         embeddings indexing, knowledge promotion) for ALL uploads.
+
 Handles images (screenshots, photos) and text files (logs, configs).
 Images are uploaded to the Gemini Files API for multimodal analysis.
 Text files have their content returned for inline embedding.
@@ -18,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from app.auth import require_auth
@@ -43,8 +46,14 @@ GEMINI_UPLOAD_MIMES = {
     # Audio
     "audio/mpeg", "audio/wav", "audio/ogg", "audio/webm",
     "audio/mp4", "audio/flac",
-    # Documents
+    # Documents (binary but extractable)
     "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.ms-powerpoint",
 }
 
 # Max text file size to inline (500KB)
@@ -65,15 +74,60 @@ class FileUploadResponse(BaseModel):
     text_content: Optional[str] = None
     # Local path for cleanup
     local_path: str = ""
+    # v0.14.0: Knowledge hook status
+    knowledge_hook: str = "pending"
+
+
+def _run_knowledge_hook(file_path: str, original_name: str, mime_type: str):
+    """
+    Background task: run universal knowledge hook on uploaded file.
+
+    Extracts text, stores document content, indexes embeddings,
+    and promotes durable facts to ASTRA memory. Non-blocking.
+    """
+    try:
+        from app.db import SessionLocal
+        from app.memory.upload_knowledge_hook import process_uploaded_file_sync
+
+        db = SessionLocal()
+        try:
+            result = process_uploaded_file_sync(
+                db=db,
+                file_path=file_path,
+                original_name=original_name,
+                mime_type=mime_type,
+            )
+            extracted = result.get("extracted", False)
+            indexed = result.get("indexed", False)
+            promoted = result.get("promoted", False)
+            errors = result.get("errors", [])
+
+            logger.info(
+                "[debug_upload] Knowledge hook complete for %s: "
+                "extracted=%s, indexed=%s, promoted=%s, errors=%d",
+                original_name, extracted, indexed, promoted, len(errors),
+            )
+            if errors:
+                for err in errors:
+                    logger.warning("[debug_upload] Hook error: %s", err)
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error("[debug_upload] Knowledge hook crashed for %s: %s", original_name, e)
 
 
 @router.post("/upload", response_model=FileUploadResponse)
 async def upload_debug_file(
     file: UploadFile = File(...),
     metadata: str = Form("{}"),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
     auth: AuthResult = Depends(require_auth),
 ):
     """Upload a file for use in the debug assistant chat.
+
+    v0.14.0: ALL uploads now also trigger the universal knowledge hook
+    in a background task — text extraction, embeddings, and knowledge
+    promotion happen without blocking the upload response.
 
     Images → uploaded to Gemini Files API, returns file_uri for
              multimodal content parts.
@@ -114,6 +168,9 @@ async def upload_debug_file(
         logger.error("[debug_upload] Save failed: %s", e)
         raise HTTPException(status_code=500, detail="Failed to save file")
 
+    # v0.14.0: Schedule knowledge hook as background task for ALL files
+    background_tasks.add_task(_run_knowledge_hook, str(save_path), original_name, mime)
+
     # Route by type:
     # 1. Known Gemini-uploadable binary types → upload to Gemini Files API
     # 2. Text-like files → read content and return inline
@@ -141,14 +198,10 @@ async def _handle_gemini_upload(
     size_bytes: int,
     save_path: Path,
 ) -> FileUploadResponse:
-    """Upload any binary file to Gemini Files API for multimodal analysis.
-
-    Works for images, video, audio, PDFs, and anything else Gemini accepts.
-    """
+    """Upload any binary file to Gemini Files API for multimodal analysis."""
     try:
         from app.debug.screen_capture import upload_video_to_gemini
 
-        # The upload function works for any file type, not just video
         info = await upload_video_to_gemini(
             file_path=str(save_path),
             mime_type=mime,
@@ -160,10 +213,11 @@ async def _handle_gemini_upload(
             file_name=original_name,
             mime_type=mime,
             size_bytes=size_bytes,
-            upload_type="image",  # "image" = Gemini multimodal (covers all binary)
+            upload_type="image",
             file_uri=info.uri,
             gemini_file_name=info.name,
             local_path=str(save_path),
+            knowledge_hook="scheduled",
         )
     except Exception as e:
         logger.error("[debug_upload] Gemini upload failed for %s: %s", mime, e)
@@ -198,6 +252,7 @@ def _handle_text(
         upload_type="text",
         text_content=text,
         local_path=str(save_path),
+        knowledge_hook="scheduled",
     )
 
 

@@ -108,22 +108,78 @@ _BUILDS_KEYWORDS = _re.compile(
     _re.IGNORECASE,
 )
 
-# v11.1: Detect APK build + deploy to cloud intent
-_BUILD_DEPLOY_PATTERN = _re.compile(
-    r'\b(build|create|make|compile|generate|assemble|drop|put|push|upload|deploy)\b'
-    r'.*\b(apk|app|bridge|copilot|co-?pilot)\b'
-    r'.*\b(cloud|proton|drive|download|phone|install)\b',
+# v11.3: Detect APK build + deploy to cloud intent (TIGHTENED)
+#
+# v11.1 patterns were too broad — "app" + "phone" anywhere in a sentence
+# would trigger a build. Now requires:
+#   1. Imperative/request language ("build me", "make an", "create the", etc.)
+#      OR the "Astra, command:" prefix
+#   2. The word "apk" specifically (not generic "app")
+#   3. Excludes questions ("how do", "can we", "what if", "why does", etc.)
+#
+# Examples that SHOULD trigger:
+#   "Build me an APK and upload to cloud"
+#   "Make an APK and put it on the drive"
+#   "Astra, command: create APK"
+#   "Deploy the APK to the phone"
+#
+# Examples that should NOT trigger:
+#   "How do we compile an APK?"
+#   "I want to make the app feel more responsive on the phone"
+#   "Can you explain how APK builds work?"
+#   "The bridge app connects to the phone via cloud"
+
+# Question patterns — if the message looks like a question, it's not a request
+_QUESTION_PATTERN = _re.compile(
+    r'^\s*(?:how|what|why|when|where|which|can\s+(?:you|we)|could\s+(?:you|we)|'
+    r'would\s+it|is\s+(?:it|there|this)|are\s+(?:there|these)|do\s+(?:we|you)|'
+    r'does\s+(?:it|this|the)|should\s+(?:we|I)|explain|tell\s+me\s+about|'
+    r'what\s+(?:is|are|does|if)|describe)\b',
     _re.IGNORECASE,
 )
-# Also catch reverse order: "put the app in the cloud"
+
+# Imperative request: verb + "apk" (with optional words between)
+# Requires "apk" specifically — not "app", "bridge", etc.
+_BUILD_DEPLOY_PATTERN = _re.compile(
+    r'\b(build|create|make|compile|generate|assemble|deploy|upload|push|put|drop|send)\b'
+    r'.{0,40}'  # Max 40 chars between verb and "apk" — prevents cross-sentence matches
+    r'\bapk\b',
+    _re.IGNORECASE,
+)
+
+# Reverse: "apk" then action — "the APK, upload it to cloud"
 _BUILD_DEPLOY_PATTERN_ALT = _re.compile(
-    r'\b(apk|app|bridge|copilot)\b.*\b(cloud|proton|drive|phone)\b',
+    r'\bapk\b'
+    r'.{0,40}'
+    r'\b(to\s+(?:the\s+)?(?:cloud|proton|drive|phone)|upload|deploy|install|push)\b',
+    _re.IGNORECASE,
+)
+
+# Explicit "Astra, command:" prefix — always trust this as a genuine request
+_ASTRA_CMD_BUILD = _re.compile(
+    r'(?:astra|orb),?\s*(?:command:?)?\s*(?:build|create|make|compile|deploy|upload)\b.*\bapk\b',
     _re.IGNORECASE,
 )
 
 def _detect_build_deploy_intent(message: str) -> bool:
-    """Check if the user wants to build an APK and deploy to cloud."""
-    return bool(_BUILD_DEPLOY_PATTERN.search(message) or _BUILD_DEPLOY_PATTERN_ALT.search(message))
+    """Check if the user is REQUESTING an APK build (not just discussing it).
+
+    Returns True only for imperative requests containing 'apk'.
+    Returns False for questions, general discussion, or sentences that
+    just happen to mention build-related words near 'app' or 'phone'.
+    """
+    msg = message.strip()
+
+    # Explicit Astra command — always trust
+    if _ASTRA_CMD_BUILD.search(msg):
+        return True
+
+    # Questions are never build requests
+    if _QUESTION_PATTERN.search(msg):
+        return False
+
+    # Check for imperative request patterns with "apk"
+    return bool(_BUILD_DEPLOY_PATTERN.search(msg) or _BUILD_DEPLOY_PATTERN_ALT.search(msg))
 
 def _is_builds_context(req: Any) -> bool:
     """Check if the user is in a builds context (tab + project intent)."""
@@ -264,7 +320,31 @@ def handle_chat_mode(
     
     # Build context
     full_context = build_full_context(db, req.project_id, req.message, req.use_semantic_search)
-    
+    # v0.14.0: Inject uploaded file content into context.
+    # When a file is uploaded via the debug panel, the extracted text must be
+    # available to the chat model. The background knowledge hook runs async and
+    # may not be done yet, so we extract synchronously here.
+    _file_local_path = getattr(req, "file_upload_local_path", None)
+    _file_name = getattr(req, "file_upload_name", None)
+    if _file_local_path and _file_name:
+        try:
+            from app.llm.file_analyzer import extract_text as _extract_text
+            _file_text, _file_err = _extract_text(file_path=_file_local_path, filename=_file_name)
+            if _file_text:
+                _preview = _file_text[:50000]  # Cap at 50KB for context
+                _upload_block = (
+                    f"=== UPLOADED FILE: {_file_name} ===\n"
+                    f"{_preview}\n"
+                    f"=== END FILE ===\n\n"
+                )
+                full_context = _upload_block + (full_context or "")
+                print(f"[CHAT_MODE] Injected uploaded file content: {_file_name} ({len(_file_text)} chars)")
+            elif _file_err:
+                print(f"[CHAT_MODE] File extraction failed for {_file_name}: {_file_err}")
+        except Exception as _fex:
+            print(f"[CHAT_MODE] File injection error: {_fex}")
+
+
     # v7.0: Pre-gather codebase context for trusted models.
     # Reads files from the sandbox (read-only) via RAG-guided discovery.
     # This gives Opus/Gemini 3.1 actual codebase knowledge in standard chat.
@@ -370,11 +450,33 @@ def handle_chat_mode(
 
         _skip_confirm = getattr(req, 'ui_context', None) is not None
 
-        if complexity.tier == "deep":
-            provider = _os.getenv("CHAT_DEEP_PROVIDER", "google")
-            model = _os.getenv("CHAT_DEEP_MODEL", "gemini-3.1-pro-preview-customtools")
-            print(f"[CHAT_MODE] Complexity UPGRADE: deep -> {provider}/{model}")
-            # v10.0: Stick to this model for the rest of the conversation
+        # v13.0: Four-tier model selection based on task complexity
+        # Tier 1: GPT-5.4-mini + tools — read and report (exploration only)
+        # Tier 2: GPT-5.4 + tools    — think and create (reasoning + exploration)
+        # Tier 3: Gemini 3.1 Pro      — see and understand (multimodal/media)
+        # Tier 4: Claude Opus 4.6     — architect and plan (large-scale design)
+        #
+        # Tools are always available for any tool-eligible model.
+        # The tier picks the brain, not the tools.
+
+        _signals = complexity.signals
+        _arch_hits = _signals.get("arch_hits", 0)
+        _explore_hits = _signals.get("explore_hits", 0)
+        _reasoning_hits = _signals.get("reasoning_hits", 0)
+
+        if complexity.tier == "multimodal":
+            # ── TIER 3: Multimodal — media attached, needs vision ──
+            attachments = getattr(req, 'attachments', None) or []
+            provider = "google"
+            model = _os.getenv("MULTIMODAL_MODEL", "gemini-3.1-pro-preview-customtools")
+            print(f"[CHAT_MODE] TIER 3 (multimodal): {len(attachments)} attachments -> {provider}/{model}")
+            _set_sticky_model(req.project_id, provider, model)
+
+        elif _arch_hits >= 2 or (_arch_hits >= 1 and _reasoning_hits >= 2):
+            # ── TIER 4: Architecture — large-scale design, needs deepest reasoning ──
+            provider = _os.getenv("ARCHITECT_PROVIDER", "anthropic")
+            model = _os.getenv("ARCHITECT_MODEL", "claude-opus-4-6")
+            print(f"[CHAT_MODE] TIER 4 (architecture): arch={_arch_hits}, reasoning={_reasoning_hits} -> {provider}/{model}")
             _set_sticky_model(req.project_id, provider, model)
             if not _skip_confirm:
                 try:
@@ -383,7 +485,7 @@ def handle_chat_mode(
                         format_confirmation_sse,
                     )
                     confirm_req = should_confirm_model_escalation(
-                        from_tier="lookup", to_tier="deep",
+                        from_tier="lookup", to_tier="architect",
                         confidence=complexity.confidence,
                         message=req.message,
                     )
@@ -401,40 +503,30 @@ def handle_chat_mode(
                     pass
             else:
                 print(f"[CHAT_MODE] Confirmation gate skipped (chat panel request)")
+
+        elif complexity.tier == "deep" and _reasoning_hits >= 1:
+            # ── TIER 2: Reasoning + exploration — needs thinking power ──
+            provider = _os.getenv("REASONING_PROVIDER", "openai")
+            model = _os.getenv("REASONING_MODEL", "gpt-5.4")
+            print(f"[CHAT_MODE] TIER 2 (reasoning+tools): explore={_explore_hits}, reasoning={_reasoning_hits} -> {provider}/{model}")
+            _set_sticky_model(req.project_id, provider, model)
+
+        elif complexity.tier == "deep" and _explore_hits >= 1:
+            # ── TIER 1: Exploration only — read and report, mini is enough ──
+            provider = _os.getenv("CHAT_PROVIDER", "openai")
+            model = _os.getenv("CHAT_MODEL", "gpt-5.4-mini")
+            print(f"[CHAT_MODE] TIER 1 (exploration): explore={_explore_hits}, arch={_arch_hits} -> {provider}/{model}")
+
         elif complexity.tier == "reasoning":
-            provider = _chat_provider
-            model = _chat_model
-            print(f"[CHAT_MODE] Reasoning tier -> {provider}/{model}")
+            # ── TIER 2: Pure reasoning (no exploration keywords) ──
+            provider = _os.getenv("REASONING_PROVIDER", "openai")
+            model = _os.getenv("REASONING_MODEL", "gpt-5.4")
+            print(f"[CHAT_MODE] TIER 2 (reasoning): reasoning={_reasoning_hits} -> {provider}/{model}")
             _set_sticky_model(req.project_id, provider, model)
-            if not _skip_confirm:
-                try:
-                    from app.llm.routing.confirmation_gate import (
-                        should_confirm_model_escalation,
-                        format_confirmation_sse,
-                    )
-                    confirm_req = should_confirm_model_escalation(
-                        from_tier="lookup", to_tier="reasoning",
-                        confidence=complexity.confidence,
-                        message=req.message,
-                    )
-                    if confirm_req:
-                        async def _confirm_stream():
-                            import json as _json
-                            yield format_confirmation_sse(confirm_req)
-                            yield f"data: {_json.dumps({'type': 'done', 'provider': 'local', 'model': 'confirmation_gate', 'total_length': 0})}\n\n"
-                        return StreamingResponse(
-                            _confirm_stream(),
-                            media_type="text/event-stream",
-                            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-                        )
-                except ImportError:
-                    pass
-            else:
-                print(f"[CHAT_MODE] Confirmation gate skipped (chat panel request)")
+
         # ── Explicit model requests — no confirmation needed ──
         elif complexity.tier.startswith("explicit_"):
             from app.memory.complexity import EXPLICIT_MODEL_PATTERNS
-            # Find which model was requested
             for _mk, _mc in EXPLICIT_MODEL_PATTERNS.items():
                 if _mc["tier"] == complexity.tier:
                     provider = _mc["provider"]
@@ -445,20 +537,12 @@ def handle_chat_mode(
                 model = _chat_model
             print(f"[CHAT_MODE] EXPLICIT model request: {provider}/{model}")
             _set_sticky_model(req.project_id, provider, model)
-        elif complexity.tier == "multimodal":
-            attachments = getattr(req, 'attachments', None) or []
-            if len(attachments) >= 2:
-                provider = "google"
-                model = "gemini-3.1-pro-preview"
-                print(f"[CHAT_MODE] Multimodal ({len(attachments)} files) -> Gemini 3.1 Pro")
-            else:
-                provider = "google"
-                model = "gemini-2.5-flash"
-                print(f"[CHAT_MODE] Multimodal (single) -> Gemini 2.5 Flash")
+
         else:
+            # ── TIER 1: Default — lightweight chat, mini handles it ──
             provider = _chat_provider
             model = _chat_model
-            print(f"[CHAT_MODE] {complexity.tier} -> {provider}/{model}")
+            print(f"[CHAT_MODE] TIER 1 (default {complexity.tier}): {provider}/{model}")
     
     # v3.2: Check provider availability — but DON'T silently swap provider
     # while keeping the original model (that causes openai+gemini mismatches).
@@ -572,7 +656,15 @@ def handle_chat_mode(
         # (builds tab, codebase exploration, architecture planning), swap
         # to an Anthropic model that has full tool loop support.
         if not is_tool_eligible(provider, model):
-            _needs_tools = _is_builds_context(req) or _detect_codebase_exploration(req.message)
+            # v12.1: Check if context needs tools — builds tab, codebase exploration,
+            # or any request that hit deep keywords (filesystem/app exploration)
+            from app.memory.complexity import DEEP_KEYWORDS, _count_keyword_hits
+            _deep_hits = _count_keyword_hits(req.message.lower(), DEEP_KEYWORDS)
+            _needs_tools = (
+                _is_builds_context(req)
+                or _detect_codebase_exploration(req.message)
+                or _deep_hits >= 2
+            )
             if _needs_tools:
                 import os as _os
                 _tool_provider = _os.getenv("TOOL_CHAT_PROVIDER", "google")
@@ -586,20 +678,24 @@ def handle_chat_mode(
         if is_tool_eligible(provider, model):
             _chat_tools = get_chat_tools()
             print(f"[CHAT_MODE] Tool access ENABLED for {provider}/{model} ({len(_chat_tools)} tools)")
-            # v8.1: Inject research-only role into system prompt for tool-enabled chat
+            # v8.2: Inject tool role into system prompt for tool-enabled chat
             _TOOL_ROLE_BLOCK = (
-                "\n\n## TOOL ACCESS -- RESEARCH MODE\n"
-                "You have READ-ONLY tool access (read_file, list_files, search_files, read_logs).\n"
-                "Use these tools to explore the codebase and gather information.\n"
+                "\n\n## TOOL ACCESS\n"
+                "You have tool access for exploring the codebase AND writing to user folders.\n\n"
+                "CODEBASE TOOLS (read-only): read_file, list_files, search_files, read_logs, search_my_files, read_user_file\n"
+                "USER FILE TOOLS (read+write): get_user_folders, write_user_file\n"
+                "Use get_user_folders to discover real folder paths, then write_user_file to save files there.\n\n"
                 "IMPORTANT: Actually USE the tools. Do not just say you will — call them.\n\n"
-                "YOUR ROLE: You are a RESEARCHER and PLANNER.\n"
+                "YOUR ROLE: You are a RESEARCHER, PLANNER, and ASSISTANT.\n"
                 "- Explore files, read code, understand patterns, discover architecture\n"
                 "- Report your findings as text in the chat — describe what you found\n"
+                "- When the user asks you to create a file in their personal folders\n"
+                "  (Documents, Pictures, Desktop, etc.), call get_user_folders then write_user_file.\n"
                 "- When asked to plan or spec, USE tools first to inspect the codebase,\n"
                 "  then produce a detailed implementation plan based on real file contents\n"
                 "- Present file paths, structures, and what needs to change\n\n"
                 "DO NOT:\n"
-                "- Try to create, write, or modify any files\n"
+                "- Try to create, write, or modify ASTRA codebase files — those go through the sandbox\n"
                 "- Dump raw file contents — summarise and highlight relevant patterns\n"
                 "- Say you will do something without actually calling the tools to do it\n\n"
                 "GOOD OUTPUT: Call tools to explore, then present findings and plans.\n"
@@ -607,14 +703,14 @@ def handle_chat_mode(
             )
             system_prompt += _TOOL_ROLE_BLOCK
         else:
-            # Non-trusted models: strip tool claims to prevent hallucination
+            # Non-trusted models: strip codebase tool claims to prevent hallucination
             if _codebase_gather_pending and codebase_ctx:
                 _CHAT_TOOLS_OVERRIDE = (
                     "   - You CAN: read files, write files, execute code, explore directories\n"
                 )
                 _CHAT_TOOLS_REPLACEMENT = (
                     "   - Codebase files have been PRE-LOADED into your context below.\n"
-                    "   - You do NOT have tool access in chat mode. Do NOT generate tool_call blocks.\n"
+                    "   - You do NOT have codebase tool access. Do NOT generate tool_call blocks for file operations.\n"
                     "   - Do NOT call execute_command or shell commands.\n"
                     "   - Reference the [CODEBASE CONTEXT] files directly in your response.\n"
                 )
@@ -624,7 +720,37 @@ def handle_chat_mode(
                     )
                     print("[CHAT_MODE] Capability layer overridden for non-trusted model")
     except ImportError:
-        print("[CHAT_MODE] chat_tool_loop not available, no tool access")
+        print("[CHAT_MODE] chat_tool_loop not available")
+    
+    # v2.3: Universal web search — ALL models get web_search as a tool.
+    # This is a safety net so the model can actually search the web even
+    # when the translation layer misses a research intent.
+    try:
+        from app.debug.tool_definitions import get_universal_tools
+        from app.llm.chat_tool_loop import _to_anthropic_tool_format
+        _universal = [_to_anthropic_tool_format(t) for t in get_universal_tools()]
+        if _chat_tools is not None:
+            # Trusted model: add web_search to existing codebase tools
+            _existing_names = {t.get("name") for t in _chat_tools}
+            for ut in _universal:
+                if ut["name"] not in _existing_names:
+                    _chat_tools.append(ut)
+            print(f"[CHAT_MODE] Universal tools merged: {len(_chat_tools)} total")
+        else:
+            # Non-trusted model: give web_search only
+            _chat_tools = _universal
+            _WEB_SEARCH_PROMPT = (
+                "\n\n## WEB SEARCH TOOL\n"
+                "You have access to a web_search tool. Use it when the user asks you to\n"
+                "research, look up, find pricing, get current information, or anything\n"
+                "that requires knowledge you do not have.\n"
+                "IMPORTANT: Actually CALL the web_search tool. Do not just say you will.\n"
+                "Call it with a specific search query and use the results in your response.\n"
+            )
+            system_prompt += _WEB_SEARCH_PROMPT
+            print(f"[CHAT_MODE] Universal web_search tool injected for {provider}/{model}")
+    except ImportError as _uie:
+        print(f"[CHAT_MODE] Universal tools not available: {_uie}")
     
     if ui_ctx:
         print(f"[CHAT_MODE] UI context injected: view={ui_ctx.view_type}, job={ui_ctx.job_type}, label={ui_ctx.label}")
@@ -788,20 +914,22 @@ def handle_normal_routing(
         if is_tool_eligible(provider, model):
             _nr_tools = get_chat_tools()
             print(f"[NORMAL_ROUTING] Tool access ENABLED for {provider}/{model} ({len(_nr_tools)} tools)")
-            # v8.1: Same research role for normal routing
+            # v8.2: Same tool role for normal routing (includes user file writes)
             _TOOL_ROLE_BLOCK = (
-                "\n\n## TOOL ACCESS -- RESEARCH MODE\n"
-                "You have READ-ONLY tool access (read_file, list_files, search_files, read_logs).\n"
-                "Use these tools to explore the codebase and gather information.\n\n"
-                "YOUR ROLE: You are a RESEARCHER, not a builder.\n"
+                "\n\n## TOOL ACCESS\n"
+                "You have tool access for exploring the codebase AND writing to user folders.\n\n"
+                "CODEBASE TOOLS (read-only): read_file, list_files, search_files, read_logs, search_my_files, read_user_file\n"
+                "USER FILE TOOLS (read+write): get_user_folders, write_user_file\n"
+                "Use get_user_folders to discover real folder paths, then write_user_file to save files there.\n\n"
+                "YOUR ROLE: You are a RESEARCHER and ASSISTANT.\n"
                 "- Explore files, read code, understand patterns, discover design tokens\n"
                 "- Report your findings as text in the chat -- describe what you found\n"
                 "- Present component structures, CSS variables, layout patterns, file paths\n"
-                "- This research will be picked up by the Weaver to create accurate build specs\n\n"
+                "- When the user asks to save/create a file, use get_user_folders + write_user_file\n"
+                "- Codebase research will be picked up by the Weaver to create accurate build specs\n\n"
                 "DO NOT:\n"
-                "- Generate code blocks, full file contents, or implementation files\n"
-                "- Try to create, write, or modify any files\n"
-                "- Produce implementation plans or architecture documents\n"
+                "- Generate code blocks, full file contents, or implementation files for the codebase\n"
+                "- Try to create, write, or modify ASTRA codebase files -- those go through the sandbox\n"
                 "- Dump raw file contents -- summarise and highlight the relevant patterns\n"
             )
             system_prompt += _TOOL_ROLE_BLOCK
@@ -809,7 +937,7 @@ def handle_normal_routing(
             _TOOLS_LINE = "   - You CAN: read files, write files, execute code, explore directories\n"
             _TOOLS_REPLACE = (
                 "   - Codebase files have been PRE-LOADED into your context below.\n"
-                "   - You do NOT have tool access in chat mode. Do NOT generate tool_call blocks.\n"
+                "   - You do NOT have codebase tool access. Do NOT generate tool_call blocks for file operations.\n"
                 "   - Do NOT call execute_command or shell commands.\n"
                 "   - Reference the [CODEBASE CONTEXT] files directly in your response.\n"
             )
@@ -818,6 +946,32 @@ def handle_normal_routing(
                 print("[NORMAL_ROUTING] Capability layer overridden for non-trusted model")
     except ImportError:
         print("[NORMAL_ROUTING] chat_tool_loop not available")
+    
+    # v2.3: Universal web search — ALL models get web_search as a tool.
+    try:
+        from app.debug.tool_definitions import get_universal_tools
+        from app.llm.chat_tool_loop import _to_anthropic_tool_format
+        _universal = [_to_anthropic_tool_format(t) for t in get_universal_tools()]
+        if _nr_tools is not None:
+            _existing_names = {t.get("name") for t in _nr_tools}
+            for ut in _universal:
+                if ut["name"] not in _existing_names:
+                    _nr_tools.append(ut)
+            print(f"[NORMAL_ROUTING] Universal tools merged: {len(_nr_tools)} total")
+        else:
+            _nr_tools = _universal
+            _WEB_SEARCH_PROMPT = (
+                "\n\n## WEB SEARCH TOOL\n"
+                "You have access to a web_search tool. Use it when the user asks you to\n"
+                "research, look up, find pricing, get current information, or anything\n"
+                "that requires knowledge you do not have.\n"
+                "IMPORTANT: Actually CALL the web_search tool. Do not just say you will.\n"
+                "Call it with a specific search query and use the results in your response.\n"
+            )
+            system_prompt += _WEB_SEARCH_PROMPT
+            print(f"[NORMAL_ROUTING] Universal web_search tool injected for {provider}/{model}")
+    except ImportError as _uie:
+        print(f"[NORMAL_ROUTING] Universal tools not available: {_uie}")
     
     # High-stakes routing
     if provider == "anthropic" and is_opus_model(model) and is_high_stakes_job(job_type_value):

@@ -3,6 +3,11 @@
 Streaming endpoints for real-time LLM responses.
 Uses Server-Sent Events (SSE).
 
+v5.5 (2026-03-23): ASTRA commands bypass debug lock
+    - Explicit "Astra, command:" messages now punch through debug_locked routing
+    - Fixes architecture scan, pipeline, sandbox commands being swallowed by debug chat
+    - Uses COMMAND_WAKE_PATTERN from translation/modes.py for detection
+
 v5.1 (2026-01-31): CRITICAL FIX - Explicit commands bypass flow state interception
     - _handle_flow_state_routing now checks for explicit command intents
     - RUN_CRITICAL_PIPELINE_FOR_JOB, OVERWATCHER_EXECUTE_CHANGES, etc. no longer
@@ -62,6 +67,9 @@ from app.llm.translation_routing import (
     _get_critical_pipeline_config,
     _get_weaver_config,
 )
+
+# v5.5: ASTRA command wake pattern — used to bypass debug lock for explicit commands
+from app.translation.modes import COMMAND_WAKE_PATTERN as _ASTRA_COMMAND_PATTERN
 
 # Handler registry - centralized imports and availability flags
 from app.llm.routing.handler_registry import (
@@ -135,9 +143,29 @@ async def stream_chat(
         raise HTTPException(status_code=404, detail="Project not found")
 
     # =========================================================================
+    # v5.5: ASTRA COMMAND BYPASS — explicit commands punch through debug lock
+    # "Astra, command: CREATE ARCHITECTURE MAP" must reach the translation
+    # layer even when the sidebar is debug-locked, otherwise all local tool
+    # routing (architecture scan, pipeline, sandbox, etc.) is unreachable
+    # from the Debug tab.
+    # =========================================================================
+    _is_explicit_astra_command = bool(_ASTRA_COMMAND_PATTERN.match(req.message))
+    # Also catch implicit command patterns (e.g. bare "CREATE ARCHITECTURE MAP",
+    # "Astra, CREATE ARCHITECTURE MAP") — these also need translation layer routing
+    if not _is_explicit_astra_command:
+        from app.translation.modes import IMPLICIT_COMMAND_PATTERNS
+        import re as _re
+        _msg_stripped = req.message.strip()
+        _is_explicit_astra_command = any(
+            _re.match(p, _msg_stripped) for p in IMPLICIT_COMMAND_PATTERNS
+        )
+    if _is_explicit_astra_command:
+        logger.info("[stream_router] Explicit ASTRA command detected — bypassing debug lock")
+
+    # =========================================================================
     # v2.1 DEBUG LOCK: Force Gemini + tools + RAG when sidebar is debug-locked
     # =========================================================================
-    if req.debug_locked:
+    if req.debug_locked and not _is_explicit_astra_command:
         logger.info("[stream_router] Debug lock active — routing to debug chat with Gemini + tools")
         from app.debug.debug_chat import stream_debug_locked
         return StreamingResponse(

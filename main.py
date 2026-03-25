@@ -222,7 +222,6 @@ def on_startup():
         _db.close()
     except Exception as e:
         print(f"[startup] ASTRA memory indexing skipped: {e}")
-
     try:
         from app.settings.service import sync_all_to_env
         from app.db import SessionLocal
@@ -236,6 +235,26 @@ def on_startup():
     except Exception as e:
         print(f"[startup] Settings sync skipped: {e}")
 
+    # v0.14.0: Boot-time filesystem scan — awareness of all personal files
+    # Positioned AFTER settings sync so GOOGLE_API_KEY is available for
+    # the background content indexer (Tier 2) which needs Gemini embeddings.
+    try:
+        from app.drive.boot_scan import run_boot_scan
+        from app.db import SessionLocal
+        _scan_db = SessionLocal()
+        _scan_result = run_boot_scan(_scan_db)
+        _manifest = _scan_result.get("manifest", {})
+        if isinstance(_manifest, dict) and "total" in _manifest:
+            _new = _manifest.get("new", 0)
+            _mod = _manifest.get("modified", 0)
+            _del = _manifest.get("deleted", 0)
+            _ms = _manifest.get("duration_ms", 0)
+            print(f"[startup] Drive scan: {_manifest['total']} files ({_new} new, {_mod} modified, {_del} deleted) in {_ms}ms")
+        elif isinstance(_manifest, dict) and "error" in _manifest:
+            print(f"[startup] Drive scan: [WARN] {_manifest['error']}")
+        _scan_db.close()
+    except Exception as e:
+        print(f"[startup] Drive scan skipped: {e}")
     try:
         from app.content.seed import seed_content_data
         from app.db import SessionLocal
@@ -434,6 +453,12 @@ try:
     print("[startup] Debug File Upload: [OK] registered")
 except Exception as e:
     print(f"[startup] Debug File Upload not available: {e}")
+try:
+    from app.debug.feedback import router as debug_feedback_router
+    app.include_router(debug_feedback_router, dependencies=[Depends(require_auth)], tags=["Debug Feedback"])
+    print("[startup] Debug Feedback: [OK] registered")
+except Exception as e:
+    print(f"[startup] Debug Feedback not available: {e}")
 app.include_router(introspection_router, tags=["Introspection"], dependencies=[Depends(require_auth)])
 
 if _TRANSCRIBE_AVAILABLE:

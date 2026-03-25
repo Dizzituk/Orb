@@ -65,6 +65,9 @@ def get_category_paths() -> dict[str, Path]:
     # ASTRA generated output files
     paths["astra_output"] = Path(r"D:\Orb\output")
 
+    # Android project (Astra-Bridge)
+    paths["android_project"] = Path(r"D:\Astra Android Folder\Astra-Bridge")
+
     return paths
 
 

@@ -212,7 +212,7 @@ Return as JSON: {"summary": "...", "tags": [...], "type": "..."}"""
             image_bytes=image_bytes,
             mime_type=mime_type,
             prompt=analysis_prompt,
-            model="gpt-4o-mini",
+            model=os.getenv("OPENAI_VISION_MODEL", "gpt-5.4-mini"),
         )
         
         if "error" in openai_result:
@@ -231,7 +231,7 @@ Return as JSON: {"summary": "...", "tags": [...], "type": "..."}"""
                 "tags": result.get("tags", ["image"]),
                 "type": result.get("type", "image"),
                 "provider": "openai",
-                "model": "gpt-4o-mini",
+                "model": os.getenv("OPENAI_VISION_MODEL", "gpt-5.4-mini"),
             }
         except json.JSONDecodeError:
             return {
@@ -239,7 +239,7 @@ Return as JSON: {"summary": "...", "tags": [...], "type": "..."}"""
                 "tags": ["image"],
                 "type": "image",
                 "provider": "openai",
-                "model": "gpt-4o-mini",
+                "model": os.getenv("OPENAI_VISION_MODEL", "gpt-5.4-mini"),
             }
             
     except Exception as e:
@@ -316,7 +316,7 @@ def ask_about_image(
             image_bytes=image_bytes,
             mime_type=mime_type,
             prompt=full_prompt,
-            model="gpt-4o",
+            model=os.getenv("OPENAI_VISION_MODEL", "gpt-5.4-mini"),
         )
         return result
         

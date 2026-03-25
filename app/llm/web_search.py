@@ -82,8 +82,8 @@ def _pick_answer_provider() -> tuple[Optional[str], Optional[str]]:
         return forced_provider, forced_model
 
     for pid, default_model_env, default_model in [
-        ("openai", "OPENAI_DEFAULT_MODEL", "gpt-4o-mini"),
-        ("anthropic", "ANTHROPIC_DEFAULT_MODEL", "claude-3-5-sonnet-latest"),
+        ("openai", "OPENAI_DEFAULT_MODEL", "gpt-5.4-mini"),
+        ("anthropic", "ANTHROPIC_DEFAULT_MODEL", "claude-sonnet-4-6"),
         ("google", "GEMINI_FRONTIER_MODEL_ID", "gemini-3.0-pro-preview"),
     ]:
         try:

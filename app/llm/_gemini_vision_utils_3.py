@@ -18,9 +18,10 @@ def _openai_vision_analyze(
     image_bytes: bytes,
     mime_type: str,
     prompt: str,
-    model: str = "gpt-4o-mini",
+    model: str = None,
 ) -> dict:
     """Analyze image using OpenAI Vision."""
+    model = model or os.getenv("OPENAI_VISION_MODEL", "gpt-5.4-mini")
     try:
         client = _get_openai_client()
         
@@ -353,7 +354,7 @@ def check_vision_available() -> dict:
         return {
             "available": True,
             "provider": "openai",
-            "model": "gpt-4o-mini",
+            "model": os.getenv("OPENAI_VISION_MODEL", "gpt-5.4-mini"),
             "fallback": False,
             "video_support": False,
         }

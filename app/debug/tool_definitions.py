@@ -5,8 +5,8 @@ Tool schemas for the Debug Assistant LLM.
 These are the tool definitions sent to the LLM so it can request
 file reads, writes, command execution, etc.
 
-Phase 1: Read-only tools only.
-Phase 2: Write tools added.
+Phase 1: Read + user-file-write tools.
+Phase 2: Full write tools (sandbox, emulator, commands).
 """
 
 from __future__ import annotations
@@ -15,7 +15,112 @@ from typing import List
 
 
 # =============================================================================
-# PHASE 1: READ-ONLY TOOLS
+# USER FILE TOOLS (v0.15.0) — search, read, and write personal files
+# =============================================================================
+
+SEARCH_MY_FILES_TOOL = {
+    "name": "search_my_files",
+    "description": (
+        "Search the user's personal files (Documents, Pictures, Music, Videos, "
+        "Desktop, Screenshots, ASTRA Output, Android Project) by filename, "
+        "extension, or category. Returns matching file paths, sizes, and types. "
+        "Use this when the user asks about their own files, documents, music, "
+        "photos, etc. Example: query='learning roadmap' finds files with that "
+        "name. You can also filter by category (documents, pictures, music, "
+        "videos, desktop, screenshots) or extension (pdf, docx, mp3, etc)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Search term to match against filenames (case-insensitive partial match).",
+            },
+            "category": {
+                "type": "string",
+                "description": "Optional: filter by category (documents, pictures, music, videos, desktop, screenshots, astra_output, android_project).",
+            },
+            "extension": {
+                "type": "string",
+                "description": "Optional: filter by file extension without dot (e.g. pdf, docx, mp3, jpg).",
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+READ_USER_FILE_TOOL = {
+    "name": "read_user_file",
+    "description": (
+        "Read the text content of one of the user's personal files. "
+        "Use the path returned by search_my_files. Works with text files, "
+        "documents (docx, pdf, xlsx, pptx), code files, and other text-readable "
+        "formats. Returns extracted text content. For images/audio/video, "
+        "returns metadata only."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Full file path (from search_my_files results).",
+            },
+        },
+        "required": ["path"],
+    },
+}
+
+WRITE_USER_FILE_TOOL = {
+    "name": "write_user_file",
+    "description": (
+        "Create or overwrite a file in the user's personal folders "
+        "(Documents, Pictures, Music, Videos, Desktop, Screenshots, ASTRA Output). "
+        "Use this when the user asks you to save, create, or write a file in their "
+        "personal areas. Call get_user_folders first to get the correct base path, "
+        "then provide the full absolute path. "
+        "Example: get_user_folders -> documents is 'C:/Users/.../Documents' -> "
+        "write to 'C:/Users/.../Documents/my_poem.txt'. "
+        "IMPORTANT: Only works within allowed user folders. Cannot write to "
+        "ASTRA codebase or system directories."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": (
+                    "Absolute file path within a user folder. "
+                    "Use paths from get_user_folders as the base."
+                ),
+            },
+            "content": {
+                "type": "string",
+                "description": "Full file content to write.",
+            },
+        },
+        "required": ["path", "content"],
+    },
+}
+
+GET_USER_FOLDERS_TOOL = {
+    "name": "get_user_folders",
+    "description": (
+        "Get the resolved absolute paths for all user personal folders "
+        "(Documents, Pictures, Music, Videos, Desktop, Screenshots, ASTRA Output). "
+        "Call this BEFORE writing files to know the correct paths. "
+        "These paths are the real filesystem locations (may include OneDrive paths). "
+        "Use the returned paths as the base when constructing paths for "
+        "write_user_file or when telling the user where their files are."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
+# =============================================================================
+# CODEBASE / SANDBOX TOOLS (read-only in Phase 1)
 # =============================================================================
 
 READ_FILE_TOOL = {
@@ -123,7 +228,7 @@ SEARCH_FILES_TOOL = {
 
 
 # =============================================================================
-# PHASE 2: WRITE TOOLS (not yet active)
+# PHASE 2: WRITE TOOLS (sandbox/codebase writes, commands, emulator)
 # =============================================================================
 
 WRITE_FILE_TOOL = {
@@ -344,9 +449,57 @@ CRASH_LOG_TOOL = {
         "required": [],
     },
 }
+
+# =============================================================================
+# UNIVERSAL TOOLS (available to ALL models, regardless of tool eligibility)
+# =============================================================================
+
+WEB_SEARCH_TOOL = {
+    "name": "web_search",
+    "description": (
+        "Search the public web for current information. Use this when the user "
+        "asks you to research, look up, find out about, or get current data on "
+        "any topic. Returns search results with titles, URLs, and snippets. "
+        "IMPORTANT: Actually CALL this tool when the user asks for research or "
+        "current information. Do not just say you will search — call the tool."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Search query (1-512 characters). Be specific.",
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Number of results to return (1-10, default 5).",
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+
+def get_universal_tools() -> List[dict]:
+    """Tools available to ALL models - web search, etc.
+
+    These are injected regardless of model trust level.
+    """
+    return [WEB_SEARCH_TOOL]
+
+
 def get_phase1_tools() -> List[dict]:
-    """Read-only tools for Phase 1."""
+    """Core tools: read + user file write access.
+
+    v0.15.0: Added write_user_file and get_user_folders so ALL models
+    can create/save files in the user's personal folders (Documents,
+    Pictures, Desktop, etc.) while keeping codebase writes sandbox-only.
+    """
     return [
+        SEARCH_MY_FILES_TOOL,
+        READ_USER_FILE_TOOL,
+        WRITE_USER_FILE_TOOL,
+        GET_USER_FOLDERS_TOOL,
         READ_FILE_TOOL,
         LIST_FILES_TOOL,
         READ_PIPELINE_STATE_TOOL,
@@ -356,7 +509,7 @@ def get_phase1_tools() -> List[dict]:
 
 
 def get_phase2_tools() -> List[dict]:
-    """Full tool set including write access for Phase 2."""
+    """Full tool set including sandbox write access for Phase 2."""
     return get_phase1_tools() + [
         WRITE_FILE_TOOL,
         EDIT_FILE_TOOL,

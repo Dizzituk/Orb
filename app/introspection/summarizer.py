@@ -144,7 +144,7 @@ async def summarize_logs(bundles: list[JobLogBundle]) -> str:
         from app.providers.registry import llm_call
         
         # Use cheap OpenAI model for summarization
-        model_id = os.getenv("OPENAI_DEFAULT_MODEL", "gpt-4o-mini")
+        model_id = os.getenv("OPENAI_DEFAULT_MODEL", "gpt-5.4-mini")
         
         logger.info(f"[summarizer] Calling LLM for log summary: provider=openai model={model_id} log_chars={len(formatted_logs)}")
         

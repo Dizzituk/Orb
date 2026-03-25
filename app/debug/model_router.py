@@ -2,7 +2,7 @@
 """
 Model Router: Routes debug queries to the appropriate LLM based on complexity.
 
-Tier 1 (Triage):  GPT-4o Mini — log reading, status, simple diagnostics.
+Tier 1 (Triage):  OPENAI_DEFAULT_MODEL (env) — log reading, status, simple diagnostics.
 Tier 2 (Analysis): Claude Sonnet — root cause analysis, multi-file reasoning.
 Tier 3 (Agentic):  Claude Sonnet — implementing fixes, running commands, iterating.
 
@@ -12,6 +12,7 @@ Escalation is automatic based on query classification and conversation context.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -44,7 +45,7 @@ class RoutingDecision:
 TIER_MODELS = {
     DebugTier.TRIAGE: {
         "provider": "openai",
-        "model": "gpt-4o-mini",
+        "model": os.getenv("OPENAI_DEFAULT_MODEL", "gpt-5.4-mini"),
     },
     DebugTier.ANALYSIS: {
         "provider": "anthropic",

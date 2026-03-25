@@ -2,6 +2,9 @@
 """
 ASTRA Drive — FastAPI router for local file system operations.
 
+v0.14.0: read-content now extracts text from DOCX/XLSX/PPTX/PDF
+         via the universal extractor, instead of returning raw base64.
+
 Endpoints:
   GET  /drive/categories        — list available categories with file counts
   GET  /drive/files              — list files in a category (with optional search)
@@ -46,11 +49,21 @@ MAX_CONTENT_SIZE = 10 * 1024 * 1024
 # Max text content length (500KB of text)
 MAX_TEXT_SIZE = 500 * 1024
 
-# Text-based extensions that can be read as UTF-8
+# Text-based extensions that can be read directly as UTF-8
 TEXT_EXTENSIONS = {
-    "txt", "md", "csv", "json", "xml", "html", "htm", "css", "sql",
+    "txt", "md", "rst", "csv", "json", "xml", "html", "htm", "css", "sql",
     "py", "js", "ts", "tsx", "jsx", "log", "yml", "yaml", "toml",
     "ini", "cfg", "env", "sh", "bat", "ps1", "conf",
+    "r", "rb", "go", "rs", "java", "kt", "swift",
+    "c", "cpp", "h", "hpp", "cs", "lua", "pl", "php",
+    "tex", "bib", "srt", "vtt", "ics",
+    "gitignore", "dockerignore", "editorconfig",
+    "makefile", "cmake", "tf", "hcl", "proto", "graphql",
+}
+
+# Structured document extensions that need a parser to extract text
+EXTRACTABLE_EXTENSIONS = {
+    "docx", "doc", "xlsx", "xls", "pptx", "pdf",
 }
 
 
@@ -239,8 +252,12 @@ def read_content(path: str = Query(..., description="Full path to the file")):
     """
     Read file content for ASTRA analysis.
 
+    v0.14.0: Now uses the universal text extractor for structured documents
+    (DOCX, XLSX, PPTX, PDF) so models receive extracted text, not raw binary.
+
     Returns:
       - For text files: { mode: "text", content: "...", mime_type: "..." }
+      - For extractable docs: { mode: "text", content: "...", extracted_from: "xlsx" }
       - For binary files: { mode: "base64", content: "base64...", mime_type: "..." }
       - Includes routing info: { route: { provider, model, content_mode } }
 
@@ -260,7 +277,7 @@ def read_content(path: str = Query(..., description="Full path to the file")):
     mime = get_mime_type(ext)
     route = get_file_route(ext)
 
-    # Text files: read as UTF-8
+    # ── Plain text files: read as UTF-8 ─────────────────────────
     if ext in TEXT_EXTENSIONS:
         if file_size > MAX_TEXT_SIZE:
             raise HTTPException(413, f"Text file too large: {file_size} bytes (max {MAX_TEXT_SIZE})")
@@ -282,7 +299,33 @@ def read_content(path: str = Query(..., description="Full path to the file")):
             },
         }
 
-    # Binary files: read as base64
+    # ── Structured documents: extract text via universal extractor ─
+    if ext in EXTRACTABLE_EXTENSIONS:
+        try:
+            from app.llm.file_analyzer import extract_text
+            text, error = extract_text(file_path=str(target))
+
+            if text:
+                return {
+                    "mode": "text",
+                    "content": text,
+                    "mime_type": mime,
+                    "file_name": target.name,
+                    "file_size": file_size,
+                    "extracted_from": ext,
+                    "route": {
+                        "provider": route.provider,
+                        "model": route.model,
+                        "content_mode": "text",  # Override: we extracted text
+                    },
+                }
+            else:
+                # Extraction failed — log it and fall through to base64
+                print(f"[drive/read-content] Text extraction failed for {target.name}: {error}")
+        except Exception as e:
+            print(f"[drive/read-content] Extractor error for {target.name}: {e}")
+
+    # ── Binary files: read as base64 ────────────────────────────
     try:
         raw = target.read_bytes()
         b64 = base64.b64encode(raw).decode("ascii")

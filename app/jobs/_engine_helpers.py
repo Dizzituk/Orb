@@ -60,10 +60,10 @@ def _determine_routing(envelope: JobEnvelope) -> tuple[str, str, float]:
 
     # Simple chat → GPT
     if job_type == JobType.CHAT_SIMPLE:
-        return "openai", "gpt-4o", 0.7
+        return "openai", os.getenv("CHAT_MODEL", "gpt-5.4-mini"), 0.7
 
-    # Default to GPT
-    return "openai", "gpt-4o", 0.7
+    # Default to chat model from env
+    return "openai", os.getenv("CHAT_MODEL", "gpt-5.4-mini"), 0.7
 
 
 def _extract_user_intent(messages: list[dict]) -> str:
@@ -84,7 +84,8 @@ def _build_routing_decision(
 ) -> RoutingDecision:
     tier_map = {
         "claude-sonnet-4-20250514": "S",
-        "gpt-4o": "A",
+        "gpt-5.4-mini": "A",
+        "gpt-5.4": "A",
         "gemini-2.0-flash": "B",
     }
     tier = tier_map.get(model_id, "B")

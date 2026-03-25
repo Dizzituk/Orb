@@ -5,11 +5,13 @@ Tier 3 — Dependency Graph.
 Scans Python files in app/ for import statements and builds a
 machine-readable graph of {module → [depends_on_modules]}.
 
-Filters out internal _*_utils_*.py edges to keep the graph clean —
-dependencies point to public interfaces only.
+CRITICAL RULE: All code scanning reads from the SANDBOX environment,
+not the host filesystem. ASTRA's understanding of its own code must
+come from the sandbox clone. The host D:\\Orb is only used for:
+  - Writing the IMPORT_GRAPH.json output file (read-only reference)
+  - The .architecture directory (static reference data)
 
-Output stored in rag_entries and also written to disk at
-.architecture/IMPORT_GRAPH.json for inspection.
+v0.14.0: Migrated from os.walk (host) to sandbox_walk (sandbox).
 """
 
 import ast
@@ -33,39 +35,36 @@ TIER = "T3"
 
 
 # =========================================================================
-# Import scanning
+# Import scanning (via sandbox)
 # =========================================================================
 
 def scan_imports(root_dir: str) -> dict[str, list[str]]:
     """
-    Scan Python files under root_dir and extract import relationships.
+    Scan Python files under root_dir via the sandbox and extract
+    import relationships.
 
     Returns a dict of {relative_path → [imported_relative_paths]}.
     Only includes imports that resolve to files within root_dir.
-
-    Filters:
-    - Skips _*_utils_*.py targets (internal implementation files).
-      Dependencies point to the public interface module instead.
-    - Skips __pycache__, .git, node_modules, data, jobs, .venv
     """
-    root = Path(root_dir).resolve()
-    skip_dirs = {"__pycache__", ".git", "node_modules", "data", "jobs", ".venv", ".architecture"}
+    skip_dirs = {
+        "__pycache__", ".git", "node_modules", "data", "jobs",
+        ".venv", ".architecture",
+    }
 
     # Build map of module paths → relative file paths
-    module_map = _build_module_map(root, skip_dirs)
+    module_map = _build_module_map(root_dir, skip_dirs)
 
     # Scan each Python file for imports
     graph: dict[str, list[str]] = {}
 
-    for py_file in _iter_python_files(root, skip_dirs):
-        rel_path = str(py_file.relative_to(root)).replace("\\", "/")
-        imports = _extract_imports(py_file)
+    for filepath, content in _iter_python_files_with_content(root_dir, skip_dirs):
+        rel_path = _make_relative(filepath, root_dir)
+        imports = _extract_imports_from_source(content, filepath)
 
         resolved = []
         for imp in imports:
             target = module_map.get(imp)
             if target and target != rel_path:
-                # Filter out internal utils targets
                 if not _is_internal_utils(target):
                     resolved.append(target)
 
@@ -75,53 +74,78 @@ def scan_imports(root_dir: str) -> dict[str, list[str]]:
     return graph
 
 
-def _build_module_map(root: Path, skip_dirs: set) -> dict[str, str]:
+def _build_module_map(root_dir: str, skip_dirs: set) -> dict[str, str]:
     """
     Map Python module dotted paths to relative file paths.
 
     e.g. "app.memory.router" → "app/memory/router.py"
-         "app.rag" → "app/rag/__init__.py"
     """
+    from app.sandbox_walk import sandbox_walk
+
     module_map = {}
 
-    for py_file in _iter_python_files(root, skip_dirs):
-        rel = py_file.relative_to(root)
-        parts = list(rel.parts)
+    for dirpath, dirnames, filenames in sandbox_walk(root_dir, skip_dirs):
+        for fname in filenames:
+            if not fname.endswith(".py"):
+                continue
 
-        # Convert path to module dotted name
-        if parts[-1] == "__init__.py":
-            # Package: app/memory/__init__.py → app.memory
-            mod_parts = parts[:-1]
-        else:
-            # Module: app/memory/router.py → app.memory.router
-            mod_parts = parts[:-1] + [py_file.stem]
+            filepath = dirpath.rstrip("\\") + "\\" + fname
+            rel = _make_relative(filepath, root_dir)
+            parts = rel.replace("\\", "/").split("/")
 
-        dotted = ".".join(mod_parts)
-        rel_str = str(rel).replace("\\", "/")
-        module_map[dotted] = rel_str
+            if parts[-1] == "__init__.py":
+                mod_parts = parts[:-1]
+            else:
+                mod_parts = parts[:-1] + [parts[-1].replace(".py", "")]
+
+            dotted = ".".join(mod_parts)
+            module_map[dotted] = rel.replace("\\", "/")
 
     return module_map
 
 
-def _iter_python_files(root: Path, skip_dirs: set):
-    """Yield all .py files under root, skipping excluded dirs."""
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
-        for f in filenames:
-            if f.endswith(".py"):
-                yield Path(dirpath) / f
-
-
-def _extract_imports(filepath: Path) -> list[str]:
+def _iter_python_files_with_content(
+    root_dir: str,
+    skip_dirs: set,
+):
     """
-    Parse a Python file and extract all import module paths.
+    Yield (filepath, content) for all Python files via sandbox.
+
+    Reads each file's content from the sandbox controller.
+    """
+    from app.sandbox_walk import sandbox_walk, sandbox_read_python
+
+    for dirpath, dirnames, filenames in sandbox_walk(root_dir, skip_dirs):
+        for fname in filenames:
+            if not fname.endswith(".py"):
+                continue
+
+            filepath = dirpath.rstrip("\\") + "\\" + fname
+            content = sandbox_read_python(filepath)
+            if content is not None:
+                yield filepath, content
+
+
+def _make_relative(filepath: str, root_dir: str) -> str:
+    """Make a filepath relative to root_dir."""
+    # Normalise both paths
+    fp = filepath.replace("/", "\\").rstrip("\\")
+    rd = root_dir.replace("/", "\\").rstrip("\\")
+
+    if fp.startswith(rd + "\\"):
+        return fp[len(rd) + 1:]
+    return fp
+
+
+def _extract_imports_from_source(source: str, filepath: str = "") -> list[str]:
+    """
+    Parse Python source and extract all import module paths.
 
     Returns dotted module names like ["app.memory.router", "app.rag.models"].
     Ignores stdlib and third-party imports (only keeps app.* imports).
     """
     try:
-        source = filepath.read_text(encoding="utf-8", errors="ignore")
-        tree = ast.parse(source, filename=str(filepath))
+        tree = ast.parse(source, filename=filepath)
     except (SyntaxError, UnicodeDecodeError):
         return []
 
@@ -139,15 +163,8 @@ def _extract_imports(filepath: Path) -> list[str]:
 
 
 def _is_internal_utils(rel_path: str) -> bool:
-    """
-    Check if a file is an internal utils implementation file.
-
-    Matches patterns like _foo_utils_1.py, _service_utils.py etc.
-    These are internal implementation details — dependencies should
-    point to the public interface module instead.
-    """
+    """Check if a file is an internal utils implementation file."""
     filename = rel_path.rsplit("/", 1)[-1] if "/" in rel_path else rel_path
-    # Pattern: starts with _ and contains _utils
     return filename.startswith("_") and "_utils" in filename
 
 
@@ -161,15 +178,12 @@ def summarise_graph(graph: dict[str, list[str]]) -> dict:
     for targets in graph.values():
         all_targets.update(targets)
 
-    # Find most-depended-on modules
     dep_counts: dict[str, int] = {}
     for targets in graph.values():
         for t in targets:
             dep_counts[t] = dep_counts.get(t, 0) + 1
 
     top_deps = sorted(dep_counts.items(), key=lambda x: x[1], reverse=True)[:20]
-
-    # Find modules with most dependencies
     most_imports = sorted(graph.items(), key=lambda x: len(x[1]), reverse=True)[:20]
 
     return {
@@ -190,11 +204,15 @@ def store_dependency_graph(
     save_to_disk: bool = True,
 ) -> int:
     """
-    Scan imports, store graph in rag_entries, optionally save to disk.
+    Scan imports via SANDBOX, store graph in rag_entries.
 
-    Returns the rag_entries row ID.
+    The root_dir is used as the path prefix — the actual file reads
+    go through the sandbox controller, not the host filesystem.
+
+    Optionally saves IMPORT_GRAPH.json to the host .architecture dir
+    (this is a read-only reference file, not used for code operations).
     """
-    logger.info("[dependency_scanner] Scanning imports...")
+    logger.info("[dependency_scanner] Scanning imports (via sandbox)...")
     graph = scan_imports(root_dir)
     stats = summarise_graph(graph)
 
@@ -203,11 +221,12 @@ def store_dependency_graph(
         f"{stats['total_edges']} edges"
     )
 
-    # Save to disk
+    # Save to disk (host .architecture dir — read-only reference)
     if save_to_disk:
         disk_path = os.path.join(root_dir, ".architecture", "IMPORT_GRAPH.json")
         output = {
             "generated_at": datetime.utcnow().isoformat(),
+            "source": "sandbox",
             "stats": stats,
             "graph": graph,
         }
@@ -221,7 +240,6 @@ def store_dependency_graph(
 
     db = get_db_session()
     try:
-        # Remove any existing T3 entry (replace, not append)
         existing = db.query(RAGEntry).filter(
             RAGEntry.domain == DOMAIN,
             RAGEntry.project_id == PROJECT,
@@ -250,7 +268,7 @@ def store_dependency_graph(
 def _format_graph_text(graph: dict, stats: dict) -> str:
     """Format graph as searchable text for RAG retrieval."""
     parts = [
-        f"[{TIER}:dependency_graph] IMPORT DEPENDENCY GRAPH",
+        f"[{TIER}:dependency_graph] IMPORT DEPENDENCY GRAPH (source: sandbox)",
         f"Modules: {stats['total_modules']}, Edges: {stats['total_edges']}",
         "",
         "MOST DEPENDED ON:",

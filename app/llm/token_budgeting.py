@@ -596,6 +596,14 @@ def get_model_max_context(model_id: str) -> int:
     model_lower = model_id.lower()
     
     # OpenAI models
+    if "gpt-5.4" in model_lower:
+        if "mini" in model_lower:
+            return 400000
+        if "nano" in model_lower:
+            return 200000
+        return 1000000  # gpt-5.4 full: 1M context
+    if "gpt-5" in model_lower:
+        return 400000  # gpt-5, gpt-5.2, gpt-5-mini etc
     if "gpt-4.1" in model_lower or "gpt-4o" in model_lower:
         return 128000
     if "gpt-4" in model_lower:

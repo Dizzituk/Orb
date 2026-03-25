@@ -6,6 +6,8 @@ Routes "Ask ASTRA to read/summarise" requests to the optimal LLM
 based on file type. Each file class maps to a specific provider/model
 and content preparation strategy.
 
+v0.14.0: Added MIME entries for xlsx, xls, pptx, docx, doc.
+
 Routing rules (defined by Taz):
   - Images        -> Gemini 2.5 Flash (multimodal vision, fast)
   - Videos        -> Gemini 3 Pro Preview (video understanding)
@@ -155,6 +157,7 @@ EXTENSION_ROUTES: dict[str, FileRoute] = {
     "md": DOCUMENT_ROUTE,
     "docx": DOCUMENT_ROUTE,
     "doc": DOCUMENT_ROUTE,
+    "rst": DOCUMENT_ROUTE,
 
     # PDFs
     "pdf": PDF_ROUTE,
@@ -162,7 +165,10 @@ EXTENSION_ROUTES: dict[str, FileRoute] = {
     # Spreadsheets
     "xlsx": SPREADSHEET_ROUTE,
     "xls": SPREADSHEET_ROUTE,
+
+    # Presentations (text extraction, same as documents)
     "pptx": DOCUMENT_ROUTE,
+    "ppt": DOCUMENT_ROUTE,
 }
 
 
@@ -173,6 +179,7 @@ def get_file_route(extension: str) -> FileRoute:
 
 # MIME type helpers
 MIME_MAP: dict[str, str] = {
+    # Images
     "png": "image/png",
     "jpg": "image/jpeg",
     "jpeg": "image/jpeg",
@@ -181,17 +188,33 @@ MIME_MAP: dict[str, str] = {
     "svg": "image/svg+xml",
     "bmp": "image/bmp",
     "tiff": "image/tiff",
+    # Video
     "mp4": "video/mp4",
     "mkv": "video/x-matroska",
     "avi": "video/x-msvideo",
     "mov": "video/quicktime",
     "webm": "video/webm",
+    # Audio
     "mp3": "audio/mpeg",
     "wav": "audio/wav",
     "flac": "audio/flac",
     "ogg": "audio/ogg",
     "m4a": "audio/mp4",
+    # Documents
     "pdf": "application/pdf",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "doc": "application/msword",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "xls": "application/vnd.ms-excel",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "ppt": "application/vnd.ms-powerpoint",
+    "txt": "text/plain",
+    "md": "text/markdown",
+    "csv": "text/csv",
+    "json": "application/json",
+    "xml": "application/xml",
+    "yaml": "application/x-yaml",
+    "yml": "application/x-yaml",
 }
 
 

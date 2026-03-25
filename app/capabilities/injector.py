@@ -166,7 +166,8 @@ def should_block_action(action: str, target: str) -> tuple[bool, str]:
     """
     Quick check if an action should be blocked.
     
-    Used by enforcement layers to quickly validate requests.
+    v2.0 (2026-03-24): Read access expanded to Android project + user directories.
+    Write access remains sandboxed. Read-broad, write-sandboxed principle.
     
     Args:
         action: The action being attempted
@@ -175,44 +176,63 @@ def should_block_action(action: str, target: str) -> tuple[bool, str]:
     Returns:
         Tuple of (should_block: bool, reason: str)
     """
-    # Hard blocks for host PC access
-    host_indicators = [
-        "C:\\Windows",
-        "C:\\Program Files",
-        "C:\\Users\\",  # Note: sandbox user is WDAGUtilityAccount
-        "D:\\Orb",  # This is the HOST repo path
-    ]
+    is_read = action.lower() in ["read", "list", "tree", "contents", "exists", "stat", "info", "search"]
+    is_write = action.lower() in ["write", "create", "modify", "overwrite", "append"]
+    is_delete = action.lower() in ["delete", "remove", "unlink", "rmdir"]
     
-    # Check for sandbox user path (allowed, but delete needs confirmation)
+    # Sandbox user path — always allowed (delete needs confirmation)
     if "WDAGUtilityAccount" in target:
-        # Delete actions require confirmation even in sandbox
-        if action.lower() in ["delete", "remove", "unlink", "rmdir"]:
+        if is_delete:
             return (False, "Sandbox delete action - allowed but requires confirmation")
         return (False, "Sandbox user path - allowed")
     
-    # Check for host paths
-    for indicator in host_indicators:
-        if indicator.lower() in target.lower():
-            # Special case: D:\Orb inside sandbox is OK
-            if "sandbox" in str(target).lower() or "192.168.250" in str(target):
-                return (False, "Sandbox path - allowed")
-            return (True, f"Host PC path detected ({indicator}) - forbidden by HSR-001")
+    # Sandbox controller paths — always allowed
+    if "sandbox" in str(target).lower() or "192.168.250" in str(target):
+        return (False, "Sandbox path - allowed")
     
-    # Check for system paths in sandbox
-    system_paths = [
-        "\\Windows\\",
-        "\\System32\\",
-        "\\SysWOW64\\",
-        "\\Program Files\\",
-        "\\ProgramData\\",
+    # ── Read-accessible directories (host PC, read-only) ──
+    read_allowed_roots = [
+        "D:\\Orb",
+        "D:\\orb-desktop",
+        "D:\\Astra Android Folder",
     ]
+    # User profile directories (Documents, Pictures, Music, Videos, Desktop)
+    import os
+    user_home = os.path.expanduser("~")
+    read_allowed_roots.extend([
+        os.path.join(user_home, "Documents"),
+        os.path.join(user_home, "Pictures"),
+        os.path.join(user_home, "Music"),
+        os.path.join(user_home, "Videos"),
+        os.path.join(user_home, "Desktop"),
+        os.path.join(user_home, "Downloads"),
+    ])
     
-    for sys_path in system_paths:
-        if sys_path.lower() in target.lower():
-            return (True, f"System path detected ({sys_path}) - forbidden by HSR-002")
+    target_lower = target.lower().replace("/", "\\\\")
+    
+    # Check if target is in a read-allowed directory
+    for root in read_allowed_roots:
+        if target_lower.startswith(root.lower().replace("/", "\\\\")):
+            if is_read:
+                return (False, f"Read access allowed: {root}")
+            if is_write or is_delete:
+                # Writes only allowed inside sandbox, not on host
+                return (True, f"Write/delete to host path forbidden: {root} — use sandbox")
+    
+    # ── Hard blocks: system paths ──
+    system_blocks = [
+        "C:\\\\Windows",
+        "C:\\\\Program Files",
+        "\\\\System32\\\\",
+        "\\\\SysWOW64\\\\",
+        "\\\\ProgramData\\\\",
+    ]
+    for sys_path in system_blocks:
+        if sys_path.lower() in target_lower:
+            return (True, f"System path detected ({sys_path}) - forbidden")
     
     # Delete actions require confirmation
-    if action.lower() in ["delete", "remove", "unlink", "rmdir"]:
+    if is_delete:
         return (False, "Delete action - allowed but requires confirmation")
     
     return (False, "Action appears to be within allowed boundaries")

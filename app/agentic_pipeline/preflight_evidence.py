@@ -90,7 +90,7 @@ class PreflightResult:
 # Path resolution
 # ---------------------------------------------------------------------------
 
-_PROJECT_ROOTS = [r"D:\Orb", r"D:\orb-desktop"]
+_PROJECT_ROOTS = [r"D:\Orb", r"D:\orb-desktop", r"D:\Astra Android Folder\Astra-Bridge"]
 
 
 def _resolve_to_absolute(

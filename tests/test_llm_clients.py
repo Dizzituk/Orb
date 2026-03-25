@@ -113,7 +113,7 @@ class TestBuildBasicEnvelope:
         
         envelope = _build_basic_envelope(
             provider_id="openai",
-            model_id="gpt-4o",
+            model_id="gpt-5.4-mini",
             messages=[{"role": "user", "content": "Hello"}],
         )
         
@@ -126,7 +126,7 @@ class TestBuildBasicEnvelope:
         
         envelope = _build_basic_envelope(
             provider_id="openai",
-            model_id="gpt-4o",
+            model_id="gpt-5.4-mini",
             messages=[{"role": "user", "content": "Hi"}],
             system_prompt="You are helpful.",
         )
@@ -141,7 +141,7 @@ class TestBuildBasicEnvelope:
         
         envelope = _build_basic_envelope(
             provider_id="openai",
-            model_id="gpt-4o",
+            model_id="gpt-5.4-mini",
             messages=[{"role": "user", "content": "Hi"}],
             max_tokens=4096,
             timeout_seconds=120,
@@ -247,7 +247,7 @@ class TestErrorHandling:
         with pytest.raises(ValidationError):
             _build_basic_envelope(
                 provider_id="openai",
-                model_id="gpt-4o",
+                model_id="gpt-5.4-mini",
                 messages=[{"role": "user", "content": "Hi"}],
                 max_tokens=100,  # Below minimum of 1000
             )

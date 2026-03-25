@@ -192,13 +192,13 @@ class TestBuildRoutingDecision:
         decision = _build_routing_decision(
             envelope=envelope,
             provider_id="openai",
-            model_id="gpt-4o",
+            model_id="gpt-5.4-mini",
             temperature=0.7,
         )
         
         assert isinstance(decision, RoutingDecision)
         assert decision.architect.provider == "openai"
-        assert decision.architect.model_id == "gpt-4o"
+        assert decision.architect.model_id == "gpt-5.4-mini"
     
     def test_tier_mapping_claude(self):
         """Test Claude models get tier S."""
@@ -240,7 +240,7 @@ class TestBuildRoutingDecision:
         decision = _build_routing_decision(
             envelope=envelope,
             provider_id="openai",
-            model_id="gpt-4o",
+            model_id="gpt-5.4-mini",
             temperature=0.7,
         )
         

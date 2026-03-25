@@ -1,7 +1,7 @@
 """
 Screenshot OCR service for Yodel 'Finish Tour' screenshots.
 
-Uses OpenAI GPT-4o vision directly for structured data extraction.
+Uses OpenAI vision (OPENAI_VISION_MODEL env) for structured data extraction.
 Falls back gracefully if API key unavailable.
 
 Yodel Finish Tour screenshot typically contains:
@@ -67,7 +67,7 @@ def save_screenshot(file_bytes: bytes, filename: str) -> Path:
 
 async def extract_via_llm(image_bytes: bytes, mime_type: str = "image/png") -> OCRExtraction:
     """
-    Send screenshot to GPT-4o vision to extract structured data.
+    Send screenshot to OpenAI vision to extract structured data.
     Uses OpenAI client directly (vision calls bypass Phase 4 envelope).
     """
     api_key = os.getenv("OPENAI_API_KEY")
@@ -113,7 +113,7 @@ IMPORTANT: "To Do" count means parcels NOT delivered (failed/remaining).
 If you cannot read a field clearly, use null or 0."""
 
         response = await client.chat.completions.create(
-            model="gpt-4o",
+            model=os.getenv("OPENAI_VISION_MODEL", "gpt-5.4-mini"),
             messages=[
                 {
                     "role": "user",
@@ -134,7 +134,7 @@ If you cannot read a field clearly, use null or 0."""
         )
 
         raw_text = response.choices[0].message.content or ""
-        logger.info("[ocr] GPT-4o response: %s", raw_text[:200])
+        logger.info("[ocr] Vision response: %s", raw_text[:200])
         return _parse_llm_response(raw_text)
 
     except Exception as e:

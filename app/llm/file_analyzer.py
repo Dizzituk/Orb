@@ -2,12 +2,18 @@
 """
 File analysis utilities for LLM routing.
 
-Version: 0.13.0 - Phase 4 Routing Fix
+Version: 0.14.0 - Universal Document Ingestion
 
 Key functions:
 - analyze_pdf_content(): Count images and extract text for routing decisions
 - extract_text(): Extract text from various file types
 - is_binary_file(): Detect binary vs text files
+
+v0.14.0 Changes:
+- Added XLSX extraction (openpyxl)
+- Added PPTX extraction (python-pptx)
+- Added universal UTF-8 fallback for unrecognised text extensions
+- Expanded known text extensions set
 
 PDF ROUTING RULE:
 - image_count == 0 → GPT text.heavy
@@ -24,6 +30,21 @@ from pathlib import Path
 from app.llm._file_analyzer_utils_2 import _analyze_with_pymupdf, _extract_docx_text, _guess_mime_type, extract_text_content, generate_document_summary, is_pdf_mime_type, parse_cv_with_llm, prepare_attachment_info
 
 logger = logging.getLogger(__name__)
+
+
+# ─── Known text extensions (read as UTF-8) ──────────────────────
+# Comprehensive set — anything here gets read directly as text.
+KNOWN_TEXT_EXTENSIONS = {
+    ".txt", ".md", ".rst", ".py", ".js", ".ts", ".json", ".yaml", ".yml",
+    ".html", ".htm", ".css", ".jsx", ".tsx", ".csv", ".xml", ".svg",
+    ".sh", ".bat", ".toml", ".ini", ".cfg", ".env", ".sql", ".log",
+    ".conf", ".gitignore", ".dockerignore", ".editorconfig",
+    ".r", ".rb", ".go", ".rs", ".java", ".kt", ".kts", ".swift",
+    ".c", ".cpp", ".h", ".hpp", ".cs", ".lua", ".pl", ".php",
+    ".ps1", ".psm1", ".vbs", ".asm", ".makefile", ".cmake",
+    ".tf", ".hcl", ".proto", ".graphql", ".gql",
+    ".tex", ".bib", ".srt", ".vtt", ".ics",
+}
 
 
 def analyze_pdf_content(
@@ -191,45 +212,95 @@ def extract_text(
 ) -> Tuple[str, Optional[str]]:
     """
     Extract text from a file.
-    
+
+    v0.14.0: Universal extraction — handles PDF, DOCX, XLSX, PPTX,
+    all known text formats, and falls back to UTF-8 for unknown extensions
+    (only if the file passes a binary check).
+
     Args:
         file_path: Path to file
         file_bytes: Raw file bytes
         filename: Original filename (for extension detection)
-    
+
     Returns:
         (text, error) - extracted text and optional error message
     """
     if not file_path and not file_bytes:
         return "", "No file provided"
-    
+
     # Determine extension
     if file_path:
         ext = Path(file_path).suffix.lower()
     elif filename:
         ext = Path(filename).suffix.lower()
     else:
-        return "", "Cannot determine file type"
-    
+        ext = ""
+
     try:
+        # ── Structured document formats (need dedicated parsers) ─────
+
         if ext == ".pdf":
             return _extract_pdf_text(file_path, file_bytes)
-        
-        elif ext == ".docx":
+
+        if ext in {".docx", ".doc"}:
             return _extract_docx_text(file_path, file_bytes)
-        
-        elif ext in {".txt", ".md", ".py", ".js", ".ts", ".json", ".yaml", ".yml", ".html", ".htm", ".css", ".jsx", ".tsx", ".csv", ".xml", ".svg", ".sh", ".bat", ".toml", ".ini", ".cfg", ".env", ".sql"}:
-            if file_bytes:
-                return file_bytes.decode("utf-8", errors="replace"), None
-            else:
-                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                    return f.read(), None
-        
-        else:
-            return "", f"Unsupported file type: {ext}"
-            
+
+        if ext in {".xlsx", ".xls"}:
+            from app.llm._xlsx_extractor import extract_xlsx_text
+            return extract_xlsx_text(file_path, file_bytes)
+
+        if ext == ".pptx":
+            from app.llm._pptx_extractor import extract_pptx_text
+            return extract_pptx_text(file_path, file_bytes)
+
+        # ── Known text extensions (direct UTF-8 read) ───────────────
+
+        if ext in KNOWN_TEXT_EXTENSIONS:
+            return _read_as_text(file_path, file_bytes)
+
+        # ── Universal fallback: try UTF-8 if not binary ─────────────
+        #
+        # If the extension is unrecognised, check whether the file
+        # looks like text (no null bytes in the first 8KB). If it
+        # does, read it as UTF-8. This catches things like .cfg2,
+        # .bak, .old, extensionless READMEs, etc.
+
+        if not is_binary_file(file_path=file_path, file_bytes=file_bytes):
+            text, err = _read_as_text(file_path, file_bytes)
+            if text:
+                logger.info(
+                    f"[extract_text] Universal fallback succeeded for "
+                    f"ext='{ext}' ({len(text)} chars)"
+                )
+                return text, None
+            # If _read_as_text returned empty, fall through to error
+            return "", err or f"File appears to be text but could not be read: {ext}"
+
+        return "", f"Binary file, no extractor available: {ext}"
+
     except Exception as e:
         return "", f"Text extraction failed: {str(e)}"
+
+
+def _read_as_text(
+    file_path: Optional[str] = None,
+    file_bytes: Optional[bytes] = None,
+) -> Tuple[str, Optional[str]]:
+    """
+    Read a file as UTF-8 text.
+
+    Shared helper for known text extensions and the universal fallback.
+    Uses errors='replace' to handle encoding quirks gracefully.
+    """
+    try:
+        if file_bytes:
+            return file_bytes.decode("utf-8", errors="replace"), None
+        elif file_path:
+            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                return f.read(), None
+        return "", "No file source provided"
+    except Exception as e:
+        return "", f"UTF-8 read failed: {e}"
 
 
 def _extract_pdf_text(
@@ -379,14 +450,9 @@ def detect_document_type(
         mime_type: Optional MIME type hint
     
     Returns one of:
-    - "pdf"
-    - "docx"
-    - "image"
-    - "video"
-    - "audio"
-    - "code"
-    - "text"
-    - "unknown"
+    - "pdf", "docx", "spreadsheet", "presentation"
+    - "image", "video", "audio"
+    - "code", "text", "unknown"
     """
     # Determine extension from filename
     ext = None
@@ -407,6 +473,16 @@ def detect_document_type(
             "application/msword",
         }:
             return "docx"
+        if mime_type in {
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-excel",
+        }:
+            return "spreadsheet"
+        if mime_type in {
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/vnd.ms-powerpoint",
+        }:
+            return "presentation"
         if is_image_mime_type(mime_type):
             return "image"
         if is_video_mime_type(mime_type):
@@ -420,6 +496,10 @@ def detect_document_type(
             return "pdf"
         if ext in {".docx", ".doc"}:
             return "docx"
+        if ext in {".xlsx", ".xls"}:
+            return "spreadsheet"
+        if ext in {".pptx", ".ppt"}:
+            return "presentation"
         if ext in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"}:
             return "image"
         if ext in {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}:

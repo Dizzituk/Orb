@@ -6,6 +6,7 @@ Receives a natural language query, runs it through the web search
 orchestrator (Brave primary, DuckDuckGo fallback), and streams
 the answer back as SSE events.
 
+v2.6 (2026-03): Replaced search status token with structured web_search_status/web_search_sources events.
 v2.5 (2026-02): Saves user + assistant messages to history (persistence fix).
 v2.4 (2026-02): Sends sources as structured 'sources' event for rich rendering.
 v2.3 (2026-02): Shows actual synthesis model in metadata badge.
@@ -87,35 +88,24 @@ async def generate_web_search_stream(
         yield _sse("done", provider=synth_provider, model=synth_model, total_length=0)
         return
 
-    # Initial metadata (shows while searching)
+    # v2.6: Send structured search status (no text token — frontend shows animated dots)
     yield _sse("metadata", provider="brave", model="web_search")
-    yield _sse("token", content=f"\U0001f50d Searching the web for: {query}...\n\n")
+    yield _sse("web_search_status", status="searching")
 
     try:
         req = WebSearchRequest(query=query, max_results=5)
         result = await search_and_answer(req)
 
         if not result.ok:
+            yield _sse("web_search_status", status="error")
             yield _sse("error", error=f"Search failed: {result.error or 'Unknown error'}")
             yield _sse("done", provider=synth_provider, model=synth_model, total_length=0)
             return
 
-        # Update to show the actual synthesis model in the badge
-        synth_provider = result.answer_provider or "openai"
-        synth_model = result.answer_model or "web_search"
-        yield _sse("metadata", provider=synth_provider, model=synth_model)
-
-        # Stream the LLM-synthesised answer
-        if result.answer:
-            full_response = result.answer
-            chunk_size = 80
-            for i in range(0, len(result.answer), chunk_size):
-                yield _sse("token", content=result.answer[i:i + chunk_size])
-
-        # Send sources as structured data for rich frontend rendering
+        # v2.6: Send sources as structured data so frontend can show collapsible dropdown
+        sources_data = []
+        source_lines = []
         if result.sources:
-            sources_data = []
-            source_lines = []
             for src in result.sources:
                 sources_data.append({
                     "title": src.title,
@@ -125,9 +115,28 @@ async def generate_web_search_stream(
                     "source_type": src.source_type,
                 })
                 source_lines.append(f"[{src.title}]({src.url})")
+            yield _sse("web_search_sources", sources=sources_data)
+
+        # Update badge to synthesis model and signal synthesising
+        synth_provider = result.answer_provider or "openai"
+        synth_model = result.answer_model or "web_search"
+        yield _sse("metadata", provider=synth_provider, model=synth_model)
+        yield _sse("web_search_status", status="synthesising")
+
+        # Stream the LLM-synthesised answer
+        if result.answer:
+            full_response = result.answer
+            chunk_size = 80
+            for i in range(0, len(result.answer), chunk_size):
+                yield _sse("token", content=result.answer[i:i + chunk_size])
+
+        # Signal search complete
+        yield _sse("web_search_status", status="complete")
+
+        # Also send sources event for any existing frontend handling
+        if sources_data:
             yield _sse("sources", sources=sources_data,
                         missing_perspectives=result.missing_perspectives or [])
-            # Append sources to saved content so history has them
             if source_lines:
                 full_response += "\n\nSources: " + " | ".join(source_lines)
 

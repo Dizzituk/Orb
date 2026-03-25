@@ -494,6 +494,13 @@ async def stream_llm(
             tools=tools, max_tokens=max_tokens, timeout_seconds=timeout_seconds,
         ):
             yield event
+    elif provider in ("ollama", "local"):
+        from app.llm.streaming_ollama import stream_ollama
+        async for event in stream_ollama(
+            messages, system_prompt, model, enable_reasoning, route,
+            tools=tools, max_tokens=max_tokens, timeout_seconds=timeout_seconds,
+        ):
+            yield event
     else:
         print(f"[STREAM_LLM] ERROR: Unknown provider '{provider}'")
         yield {"type": "error", "message": f"Unknown provider '{provider}'"}
