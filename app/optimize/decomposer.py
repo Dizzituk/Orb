@@ -233,6 +233,7 @@ def _detect_dead_code(
     chunks: List[CodeChunk],
     edges: List[DependencyEdge],
     import_graph: Dict[str, Any],
+    protected_paths: Optional[Set[str]] = None,
 ) -> List[DeadCodeCandidate]:
     """Detect genuinely dead files within the optimisation scope.
 
@@ -241,13 +242,17 @@ def _detect_dead_code(
     - It has a boundary role tag (router, startup, service)
     - It has in-scope dependents
     - It has dependents OUTSIDE the scope (checked via import graph)
+    - It was created or modified during a previous pass in this run
     """
     del edges
     scoped_paths = {chunk.path for chunk in chunks}
     externally_referenced = _find_externally_referenced_paths(scoped_paths, import_graph)
+    _protected = protected_paths or set()
 
     dead_code: List[DeadCodeCandidate] = []
     for chunk in chunks:
+        if chunk.path in _protected:
+            continue
         if _should_skip_dead_code_candidate(chunk, externally_referenced):
             continue
         if _is_dead_code_candidate(chunk):
