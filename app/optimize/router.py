@@ -18,14 +18,17 @@ v1.0 (2026-03-10): Initial implementation per ASTRA-SPEC-OPT-001.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import List
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from app.optimize.loop_router import router as loop_router
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/optimize", tags=["optimize"])
+router.include_router(loop_router)
 
 # In-memory state for the current session
 _current_report = None
@@ -45,13 +48,9 @@ class ExecuteRequest(BaseModel):
     target_id: str = "astra-backend"
 
 
-# ── Endpoints ────────────────────────────────────────────────────
-
 @router.post("/run")
 async def run_optimize(request: RunRequest):
-    """Run phases A-C: Decompose → Profile → Propose."""
     global _current_report, _current_proposals
-
     from app.optimize.orchestrator import run_optimize_pass
 
     def emit(msg):
@@ -62,10 +61,8 @@ async def run_optimize(request: RunRequest):
         auto_approve_low_risk=request.auto_approve_low_risk,
         emit=emit,
     )
-
     _current_report = report
     _current_proposals = report.proposals
-
     return {
         "status": "complete",
         "target": report.target,
@@ -80,10 +77,8 @@ async def run_optimize(request: RunRequest):
 
 @router.get("/proposals")
 async def get_proposals():
-    """Get current proposals from the last run."""
     if not _current_proposals:
         return {"proposals": []}
-
     return {
         "proposals": [
             {
@@ -106,24 +101,19 @@ async def get_proposals():
 
 @router.post("/approve")
 async def approve_proposals(request: ApproveRequest):
-    """Approve specific proposals for execution."""
     from app.optimize.models import ProposalStatus
-
     approved = 0
     for p in _current_proposals:
         if p.proposal_id in request.proposal_ids:
             p.status = ProposalStatus.APPROVED
             approved += 1
-
     return {"approved": approved, "total": len(request.proposal_ids)}
 
 
 @router.post("/execute")
 async def execute_approved(request: ExecuteRequest):
-    """Execute all approved proposals."""
-    from app.optimize.orchestrator import execute_approved as exec_fn
     from app.optimize.models import ProposalStatus
-
+    from app.optimize.orchestrator import execute_approved as exec_fn
     approved = [p for p in _current_proposals if p.status == ProposalStatus.APPROVED]
     if not approved:
         raise HTTPException(400, "No approved proposals to execute")
@@ -131,12 +121,7 @@ async def execute_approved(request: ExecuteRequest):
     def emit(msg):
         logger.info("[optimize] %s", msg)
 
-    results = await exec_fn(
-        proposals=_current_proposals,
-        target_id=request.target_id,
-        emit=emit,
-    )
-
+    results = await exec_fn(proposals=_current_proposals, target_id=request.target_id, emit=emit)
     return {
         "executed": len(results),
         "passed": sum(1 for r in results if r.success),
@@ -147,17 +132,14 @@ async def execute_approved(request: ExecuteRequest):
 
 @router.get("/report")
 async def get_report():
-    """Get the latest optimisation report."""
     if not _current_report:
         return {"status": "no_report"}
-
     r = _current_report
     return {
         "target": r.target,
         "manifest_summary": r.manifest.summary() if r.manifest else "",
         "bottlenecks": [
-            {"path": b.path, "metric": b.metric, "value": b.value,
-             "impact": b.impact_score, "description": b.description}
+            {"path": b.path, "metric": b.metric, "value": b.value, "impact": b.impact_score, "description": b.description}
             for b in (r.profile.bottlenecks if r.profile else [])
         ],
         "proposals_count": len(r.proposals),
@@ -170,28 +152,18 @@ async def get_report():
 
 @router.get("/patterns")
 async def get_patterns():
-    """Get learned optimisation patterns."""
     from app.optimize.pattern_learner import get_pattern_learner
     learner = get_pattern_learner()
     patterns = learner.get_patterns()
-    return {
-        "patterns": [p.to_dict() for p in patterns],
-        "stats": learner.get_stats(),
-    }
+    return {"patterns": [p.to_dict() for p in patterns], "stats": learner.get_stats()}
 
 
 @router.get("/stats")
 async def get_stats():
-    """Get optimize system statistics."""
-    stats = {
-        "has_report": _current_report is not None,
-        "proposals_count": len(_current_proposals),
-    }
-
+    stats = {"has_report": _current_report is not None, "proposals_count": len(_current_proposals)}
     try:
         from app.optimize.pattern_learner import get_pattern_learner
         stats["patterns"] = get_pattern_learner().get_stats()
     except Exception:
         stats["patterns"] = {}
-
     return stats
