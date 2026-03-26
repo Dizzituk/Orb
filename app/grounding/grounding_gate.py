@@ -214,6 +214,20 @@ async def evaluate_grounding(
         classification.domain_hint,
         classification.matched_signals[:3],
     )
+
+    # Notify Self-Model of classification decision
+    try:
+        from app.self_model.hooks import on_routing_decision
+        on_routing_decision(
+            user_message=message[:100],
+            tier="grounding",
+            provider="",
+            model="",
+            category=classification.category.value,
+            confidence=classification.confidence,
+        )
+    except Exception:
+        pass
     
     # If personal/conversational, no grounding needed
     if classification.category == TopicCategory.PERSONAL:

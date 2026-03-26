@@ -240,6 +240,13 @@ def _write_to_astra_memory(
 
             written += 1
 
+            # Notify Self-Model of the new/reinforced fact
+            try:
+                from app.self_model.hooks import on_knowledge_extracted
+                on_knowledge_extracted(category=category, key=key, value=value, source=context_ptr)
+            except Exception:
+                pass
+
         except Exception as e:
             logger.warning(
                 "[knowledge_ext] Failed to write %s: %s", pref_key, e,

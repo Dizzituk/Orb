@@ -312,4 +312,32 @@ def format_preflight_for_prompt(result: PreflightResult) -> str:
         f"{result.create_count} CREATE, {result.total_files} total"
     )
     lines.append("")
+
+    # v1.1: Flag oversized files — warn the LLM before it starts working
+    oversized = [
+        f for f in modify_files
+        if f.size_bytes > 30 * 1024  # Over 30KB hard limit
+    ]
+    if oversized:
+        lines.append("### ⚠️ OVERSIZED FILES DETECTED")
+        lines.append("")
+        lines.append(
+            "The following existing files EXCEED the 30 KB hard limit. "
+            "Before modifying these files, you MUST assess whether they "
+            "can be decomposed into smaller modules. If decomposition is "
+            "feasible, propose a refactor plan BEFORE adding new code. "
+            "Do NOT make an oversized file worse."
+        )
+        lines.append("")
+        for f in oversized:
+            size_kb = round(f.size_bytes / 1024, 1)
+            exports_str = ", ".join(f.export_names) if f.exports else "(unknown structure)"
+            lines.append(f"- **`{f.rel_path}`** — {size_kb}KB ({f.line_count} lines)")
+            lines.append(f"  Public symbols: {exports_str}")
+            if size_kb > 40:
+                lines.append(f"  🔴 CRITICAL: {size_kb}KB is far over the 30KB limit — decomposition strongly recommended")
+            else:
+                lines.append(f"  🟡 WARNING: {size_kb}KB is over the 30KB limit — check if it can be split")
+        lines.append("")
+
     return "\n".join(lines)

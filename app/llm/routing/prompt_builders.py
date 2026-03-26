@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.memory import service as memory_service
 
+from app.core_principles import get_principles_block as _get_principles
 from .handler_registry import (
     _CAPABILITIES_AVAILABLE,
     get_capability_context,
@@ -384,6 +385,9 @@ def build_system_prompt(project: Any, full_context: str, ui_context: Any = None)
     if full_context:
         system_prompt += f"\n\nYou have access to the following context:\n\n{full_context}"
     
+    # v1.1: Inject core engineering principles (file size, modularity, etc.)
+    system_prompt += '\n\n' + _get_principles()
+
     # v5.0: Add conversational guidelines
     system_prompt += _CONVERSATIONAL_GUIDELINES
     

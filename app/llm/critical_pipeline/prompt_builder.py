@@ -9,6 +9,7 @@ through the Block 4-6 high-stakes pipeline.
 import logging
 from typing import Dict, Any, List
 
+from app.core_principles import get_principles_block as _get_principles
 from app.llm.critical_pipeline.artifact_binding import build_artifact_binding_prompt
 
 logger = logging.getLogger(__name__)
@@ -154,6 +155,9 @@ You are working from a validated PoT Spec. Your architecture MUST:
 
 ## CONTENT PRESERVATION (CRITICAL)
 """)
+
+    # v1.1: Inject core engineering principles
+    parts.append(_get_principles())
 
     if content_verbatim:
         parts.append(f"""

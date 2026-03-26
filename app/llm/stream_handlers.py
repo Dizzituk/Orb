@@ -86,6 +86,11 @@ async def generate_sse_stream(
                 if chunk.get("type") == "error":
                     error_msg = chunk.get("message", "Unknown error")
                     print(f"[SSE_STREAM] ERROR from stream_llm: {error_msg}")
+                    try:
+                        from app.self_model.hooks import on_subsystem_error
+                        on_subsystem_error(subsystem="llm_stream", error_summary=error_msg[:200])
+                    except Exception:
+                        pass
                     yield "data: " + json.dumps({"type": "error", "error": error_msg}) + "\n\n"
                     if trace:
                         trace.finalize(success=False, error_message=error_msg)

@@ -40,6 +40,8 @@ from app.pipeline_v2.models import (
 if TYPE_CHECKING:
     from app.pipeline_v2.build_targets import BuildTargetProfile
 
+from app.core_principles import get_principles_block as _get_principles
+
 logger = logging.getLogger(__name__)
 
 
@@ -121,7 +123,7 @@ async def run_agentic_builder(
         system_prompt = build_system_prompt(profile)
         initial_prompt = build_initial_prompt(spec, manifest, scaffold, profile, handover_context)
     else:
-        system_prompt = BUILDER_SYSTEM
+        system_prompt = BUILDER_SYSTEM + '\n\n' + _get_principles()
         initial_prompt = _build_initial_prompt_legacy(spec, manifest, scaffold, handover_context)
 
     lang = profile.language if profile else "python"

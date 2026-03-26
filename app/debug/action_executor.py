@@ -19,6 +19,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from app.debug.size_warning import add_size_warning as _size_warn
+
 logger = logging.getLogger(__name__)
 
 
@@ -150,7 +152,7 @@ async def execute_read_file(params: Dict[str, Any]) -> str:
     if _is_host_only(path):
         result = _read_host_file(path, head, tail)
         if result is not None:
-            return result
+            return _size_warn(result, path) if not head and not tail else result
         return f"File not found on host: {path}"
 
     # Everything else: sandbox controller
@@ -172,7 +174,7 @@ async def execute_read_file(params: Dict[str, Any]) -> str:
                         content = "\n".join(content.splitlines()[:head])
                     elif tail:
                         content = "\n".join(content.splitlines()[-tail:])
-                    return content
+                    return _size_warn(content, path) if not head and not tail else content
                 return f"File not found in sandbox: {path}"
             return f"Sandbox error ({resp.status_code}): {resp.text}"
     except Exception as e:
@@ -616,7 +618,7 @@ async def execute_read_user_file(params: Dict[str, Any]) -> str:
             # Cap at 50KB for context
             if len(text) > 50000:
                 return text[:50000] + f"\n\n... [TRUNCATED — {len(text)} chars total]"
-            return text
+            return _size_warn(text, path)
         elif err:
             return f"Could not extract text from {os.path.basename(path)}: {err}"
         else:

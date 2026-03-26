@@ -8,6 +8,9 @@ include these principles. They are non-negotiable constraints, not
 suggestions.
 
 v1.0 (2026-03-21): Initial — Root-Cause Rule, crafted with Taz.
+v1.1 (2026-03-25): Added Principles 8-9 — File Size Discipline and
+    Single Responsibility per File. Hardcoded engineering constraints
+    that apply to ALL code generation pathways.
 """
 
 # ═══════════════════════════════════════════════════════════════════
@@ -65,6 +68,39 @@ When working on ASTRA's own codebase, apply these principles with
 EXTRA rigour. Workarounds in self-modifying code compound — each one
 makes the next iteration harder to reason about. ASTRA's own code
 must be the cleanest code in the system.
+
+### 8. File Size Discipline — Hard Limits
+Every code file you create or modify MUST respect these size limits:
+- **Target: 20 KB per file.** Aim for this as the default ceiling.
+- **Hard maximum: 30 KB per file.** Never exceed this for logic files.
+- **Exception:** Data-heavy files (constants, lookup tables, prompt
+  templates, configuration dictionaries, schema definitions) may exceed
+  30 KB ONLY if their logic portion is small. The cap applies to logic
+  and control flow, not static data.
+- **Line count guide:** Target ~500 lines, hard cap ~600 lines of logic.
+- If a file would exceed these limits, you MUST split it into smaller
+  cooperating modules. Do not ask permission — default to splitting.
+- If you are modifying an existing file and it is ALREADY over the
+  limit, flag it but do not refactor it unless that is the task. Your
+  new code must not make it worse.
+
+### 9. Single Responsibility per File
+Every code file should contain ONE logical responsibility:
+- **One public function or class per module** (preferred). Private
+  helpers that serve that single function are fine in the same file.
+- **Never mix unrelated functions** in one file for convenience. If
+  two functions serve different callers or different domains, they
+  belong in separate files.
+- **Thin orchestrators, fat workers.** Entry-point files should be
+  thin wiring layers that import and call focused worker modules.
+  Business logic belongs in dedicated, single-purpose files.
+- **Name files after what they do.** A file called `utils.py` with
+  15 unrelated helpers is a code smell. Split by domain:
+  `path_utils.py`, `format_helpers.py`, `validation.py`, etc.
+- **When in doubt, split.** Two small files are always better than
+  one large file. Smaller files are easier to debug, easier to test,
+  easier for AI to reason about, and have lower blast radius when
+  modified.
 """
 
 

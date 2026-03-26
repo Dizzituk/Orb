@@ -54,8 +54,8 @@ def gather_preflight_facts(
         "",
     ]
 
-    exists_count = 0
     create_count = 0
+    oversized_files = []  # v1.1: Track files over 30KB
 
     for rel_path in file_scope:
         # Resolve to absolute path
@@ -77,6 +77,10 @@ def gather_preflight_facts(
                     f"**`{rel_path}`** — EXISTS ({size_kb}KB, {line_count} lines) → **MODIFY only**"
                 )
                 lines.append(f"  Exports: {exports_str}")
+
+                # v1.1: Flag oversized files
+                if size_kb > 30:
+                    oversized_files.append((rel_path, size_kb, line_count, exports[:20]))
             else:
                 lines.append(
                     f"**`{rel_path}`** — EXISTS (content unreadable) → **MODIFY only**"
@@ -91,9 +95,31 @@ def gather_preflight_facts(
     )
     lines.append("")
 
+    # v1.1: Oversized file warnings
+    if oversized_files:
+        lines.append("### ⚠️ OVERSIZED FILES DETECTED")
+        lines.append("")
+        lines.append(
+            "The following files EXCEED the 30 KB hard limit. "
+            "Before modifying these files, assess whether they can be "
+            "decomposed into smaller modules. If decomposition is feasible, "
+            "include the decomposition in your architecture. "
+            "Do NOT make an oversized file worse."
+        )
+        lines.append("")
+        for path, kb, lc, exports in oversized_files:
+            exports_str = ", ".join(exports) if exports else "(unknown)"
+            lines.append(f"- **`{path}`** — {kb}KB ({lc} lines)")
+            lines.append(f"  Public symbols: {exports_str}")
+            if kb > 40:
+                lines.append(f"  🔴 CRITICAL: {kb}KB — decomposition strongly recommended")
+            else:
+                lines.append(f"  🟡 WARNING: {kb}KB — check if it can be split")
+        lines.append("")
+
     logger.info(
-        "[preflight] File existence check: %d MODIFY, %d CREATE out of %d files",
-        exists_count, create_count, len(file_scope),
+        "[preflight] File existence check: %d MODIFY, %d CREATE out of %d files (%d oversized)",
+        exists_count, create_count, len(file_scope), len(oversized_files),
     )
 
     return "\n".join(lines)

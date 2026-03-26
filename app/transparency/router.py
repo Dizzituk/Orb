@@ -153,6 +153,14 @@ def add_correction(req: AddCorrectionRequest):
     )
 
     stored = CorrectionStore.add_correction(correction)
+
+    # Notify Self-Model observer of the correction
+    try:
+        from app.self_model.hooks import on_user_correction
+        on_user_correction(domain=req.stage_name or "general", user_comment=req.user_comment, stage_name=req.stage_name or "")
+    except Exception:
+        pass
+
     return stored.to_dict()
 
 
