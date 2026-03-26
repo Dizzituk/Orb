@@ -100,7 +100,7 @@ async def profile(
 # ═══════════════════════════════════════════════════════════════════
 
 def _profile_chunk(chunk: CodeChunk, target_root: str) -> ChunkMetrics:
-    """Profile a single code chunk."""
+    """Profile a single code chunk. Reads source from sandbox."""
     fpath = Path(target_root) / chunk.path
 
     metrics = ChunkMetrics(
@@ -111,11 +111,13 @@ def _profile_chunk(chunk: CodeChunk, target_root: str) -> ChunkMetrics:
         coupling_out=chunk.dependencies,
     )
 
-    # Cyclomatic complexity (Python only via AST)
-    if fpath.suffix == ".py" and fpath.exists():
-        metrics.cyclomatic_complexity = _estimate_cyclomatic(fpath)
+    # Cyclomatic complexity (Python only — read from sandbox)
+    if chunk.path.endswith('.py'):
+        source = _read_source_from_sandbox(chunk.path)
+        if source:
+            metrics.cyclomatic_complexity = _estimate_cyclomatic_from_source(source)
 
-    # Last modified
+    # Last modified (host stat is fine — sandbox doesn't expose mtime)
     try:
         mtime = fpath.stat().st_mtime
         modified = datetime.fromtimestamp(mtime, tz=timezone.utc)
@@ -130,14 +132,23 @@ def _profile_chunk(chunk: CodeChunk, target_root: str) -> ChunkMetrics:
     return metrics
 
 
-def _estimate_cyclomatic(fpath: Path) -> int:
-    """Estimate cyclomatic complexity from Python AST.
+def _read_source_from_sandbox(chunk_path: str) -> Optional[str]:
+    """Read Python source from the sandbox filesystem."""
+    try:
+        from app.sandbox_walk import sandbox_read_python
+        return sandbox_read_python(chunk_path)
+    except Exception as e:
+        logger.debug("[profiler] Sandbox read failed for %s: %s", chunk_path, e)
+        return None
+
+
+def _estimate_cyclomatic_from_source(source: str) -> int:
+    """Estimate cyclomatic complexity from Python source text.
 
     Counts decision points: if, elif, for, while, except, with,
     and, or, assert, comprehensions.
     """
     try:
-        source = fpath.read_text(encoding="utf-8", errors="ignore")
         tree = ast.parse(source)
     except (SyntaxError, ValueError):
         return 0

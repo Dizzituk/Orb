@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -95,42 +94,50 @@ def _load_index(target: OptimizeTargetDefinition) -> Dict[str, Any]:
 
 
 def _scan_files(target: OptimizeTargetDefinition, index_data: Dict[str, Any]) -> List[CodeChunk]:
+    """Scan files in scope via the sandbox filesystem."""
+    from app.sandbox_walk import sandbox_walk, sandbox_read_python
+
     chunks: List[CodeChunk] = []
-    root_path = Path(target.root_path)
+    root_path = target.root_path.replace("\\", "/").rstrip("/")
     skip_dirs = {"__pycache__", ".git", "node_modules", ".venv", "venv", ".pytest_cache", "build", ".gradle", "dist"}
 
-    for dirpath, dirnames, filenames in os.walk(root_path):
-        dirnames[:] = [name for name in dirnames if name not in skip_dirs]
+    for dirpath, dirnames, filenames in sandbox_walk(root_path, skip_dirs):
         for filename in filenames:
-            fpath = Path(dirpath) / filename
-            rel = str(fpath.relative_to(root_path)).replace('\\', '/')
+            # Build relative path
+            full_path = dirpath.rstrip("\\").rstrip("/") + "/" + filename
+            norm_full = full_path.replace("\\", "/")
+            if norm_full.startswith(root_path + "/"):
+                rel = norm_full[len(root_path) + 1:]
+            else:
+                rel = norm_full
+
             if not should_scan_file(rel):
                 continue
             if rel not in filter_paths_for_target([rel], target):
                 continue
-            try:
-                stat = fpath.stat()
-                size = stat.st_size
-                try:
-                    text = fpath.read_text(encoding="utf-8", errors="ignore")
-                    lines = text.count("\n") + 1
-                except Exception:
-                    lines = 0
-                chunk = CodeChunk(
-                    path=rel,
-                    name=fpath.stem,
-                    lines=lines,
-                    size_bytes=size,
-                    complexity_estimate=_estimate_complexity(lines),
-                    is_oversized=size > FILE_SIZE_OVERSIZED_BYTES,
-                    tags=_infer_tags(rel),
-                    responsibility=_infer_responsibility(rel, target),
-                )
-                if rel in index_data and isinstance(index_data[rel], dict):
-                    chunk.responsibility = index_data[rel].get("summary", chunk.responsibility)
-                chunks.append(chunk)
-            except OSError:
+
+            # Read content from sandbox
+            content_text = sandbox_read_python(full_path)
+            if content_text is None:
                 continue
+
+            lines = content_text.count("\n") + 1
+            size = len(content_text.encode("utf-8", errors="ignore"))
+
+            chunk = CodeChunk(
+                path=rel,
+                name=Path(filename).stem,
+                lines=lines,
+                size_bytes=size,
+                complexity_estimate=_estimate_complexity(lines),
+                is_oversized=size > FILE_SIZE_OVERSIZED_BYTES,
+                tags=_infer_tags(rel),
+                responsibility=_infer_responsibility(rel, target),
+            )
+            if rel in index_data and isinstance(index_data[rel], dict):
+                chunk.responsibility = index_data[rel].get("summary", chunk.responsibility)
+            chunks.append(chunk)
+
     return chunks
 
 

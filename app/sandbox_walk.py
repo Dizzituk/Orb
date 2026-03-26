@@ -157,9 +157,23 @@ def sandbox_read_python(filepath: str) -> str | None:
     Read a Python file from the sandbox.
 
     Returns the file content as a string, or None on failure.
+    Strips line-number prefixes if the sandbox controller returns formatted output.
     """
+    import re
+
     try:
         content = sandbox_read_text(filepath)
+        if content is None:
+            return None
+        # The sandbox controller may return content with line-number prefixes
+        # like "  1: from __future__..." — strip them if detected.
+        lines = content.split("\n")
+        if lines and re.match(r"^\s*\d+:\s", lines[0]):
+            stripped = []
+            for line in lines:
+                m = re.match(r"^\s*\d+:\s?(.*)", line)
+                stripped.append(m.group(1) if m else line)
+            content = "\n".join(stripped)
         return content
     except Exception as e:
         logger.debug("[sandbox_walk] Failed to read %s: %s", filepath, e)

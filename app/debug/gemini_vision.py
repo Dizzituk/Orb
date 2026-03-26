@@ -19,6 +19,8 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+_VISION_MODELS = ["gemini-2.5-pro", "gemini-2.5-flash"]
+
 
 async def analyse_visual_content(
     user_message: str,
@@ -51,8 +53,6 @@ async def analyse_visual_content(
         return None
 
     genai.configure(api_key=api_key)
-
-    model = genai.GenerativeModel("gemini-2.5-pro")
 
     # Build the analysis prompt — instruct Gemini to be a detailed observer
     analysis_prompt = (
@@ -96,17 +96,24 @@ async def analyse_visual_content(
         content_parts.append(image_part)
         logger.info("[gemini_vision] Attached image: %s (%s)", file_upload_name, file_upload_mime)
 
-    try:
-        response = model.generate_content(content_parts)
-        analysis_text = response.text
-        logger.info(
-            "[gemini_vision] Analysis complete: %d chars",
-            len(analysis_text) if analysis_text else 0,
-        )
-        return analysis_text
-    except Exception as e:
-        logger.error("[gemini_vision] Analysis failed: %s", e)
-        return f"(Visual analysis failed: {e})"
+    last_error = None
+    for model_name in _VISION_MODELS:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(content_parts)
+            analysis_text = response.text
+            if analysis_text and len(analysis_text) > 50:
+                logger.info("[gemini_vision] Analysis complete via %s: %d chars", model_name, len(analysis_text))
+                return analysis_text
+        except Exception as e:
+            last_error = e
+            error_str = str(e)
+            logger.warning("[gemini_vision] %s failed: %s", model_name, error_str[:200])
+            if "API_KEY" in error_str or "expired" in error_str.lower():
+                break
+            continue
+    logger.error("[gemini_vision] All vision models failed. Last error: %s", last_error)
+    return None
 
 
 async def cleanup_uploads(

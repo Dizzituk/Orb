@@ -461,8 +461,10 @@ async def execute_run_command(params: Dict[str, Any]) -> str:
             return f"ERROR: Command blocked for safety — contains '{blocked}'"
 
     try:
-        proc = await asyncio.create_subprocess_shell(
-            f'powershell.exe -NoProfile -Command "{command}"',
+        import base64
+        encoded = base64.b64encode(command.encode("utf-16-le")).decode("ascii")
+        proc = await asyncio.create_subprocess_exec(
+            "powershell.exe", "-NoProfile", "-EncodedCommand", encoded,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd if Path(cwd).exists() else None,
@@ -512,6 +514,13 @@ async def execute_emulator_type(params: Dict[str, Any]) -> str:
 async def execute_emulator_key(params: Dict[str, Any]) -> str:
     from app.debug.adb_tools import press_key
     return await press_key(params.get("keycode", "KEYCODE_ENTER"))
+
+# Desktop computer use (split to _desktop_executors.py)
+from app.debug._desktop_executors import (
+    execute_desktop_screenshot, execute_desktop_click, execute_desktop_type,
+    execute_desktop_key, execute_desktop_scroll, execute_desktop_find_window,
+    execute_desktop_read_screen,
+)
 
 async def execute_gradle_build(params: Dict[str, Any]) -> str:
     from app.debug.adb_tools import gradle_build
@@ -771,6 +780,14 @@ TOOL_HANDLERS = {
     "gradle_install":       execute_gradle_install,
     "app_restart":          execute_app_restart,
     "get_crash_log":        execute_get_crash_log,
+    # Desktop computer use tools
+    "desktop_screenshot":   execute_desktop_screenshot,
+    "desktop_click":        execute_desktop_click,
+    "desktop_type":         execute_desktop_type,
+    "desktop_key":          execute_desktop_key,
+    "desktop_scroll":       execute_desktop_scroll,
+    "desktop_find_window":  execute_desktop_find_window,
+    "desktop_read_screen":  execute_desktop_read_screen,
     # Universal tools (all models)
     "web_search":           execute_web_search,
 }

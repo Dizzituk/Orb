@@ -567,10 +567,17 @@ async def stream_debug_locked(
         if vision_analysis:
             system_prompt += (
                 "\n\n## Visual Analysis (from screen recording / screenshot)\n"
-                "Gemini analysed the user's video/screenshot and produced this report. "
-                "Use this as observational evidence — it describes what happened on screen, "
-                "but the investigation and fix are YOUR responsibility.\n\n"
+                "Google Gemini has watched the user's screen recording or analysed their "
+                "screenshot and produced the following detailed report. This is your primary "
+                "evidence of what the user experienced. You HAVE this information — do not "
+                "ask the user to show you anything or claim you cannot see the video.\n\n"
+                "When you respond, begin by briefly confirming what Gemini observed, e.g.:\n"
+                "\"Gemini has analysed your recording. Here is what I understand...\"\n"
+                "Then proceed with your diagnosis based on the evidence below.\n\n"
+                "--- START OF VISUAL ANALYSIS ---\n"
+
                 f"{vision_analysis}\n"
+                "--- END OF VISUAL ANALYSIS ---\n"
             )
 
         system_prompt += (

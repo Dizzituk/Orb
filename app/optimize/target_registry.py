@@ -25,8 +25,24 @@ class OptimizeTargetDefinition:
 
     def matches_relative_path(self, relative_path: str) -> bool:
         normalised = relative_path.replace('\\', '/')
-        if self.include_globs and not any(fnmatch(normalised, pattern) for pattern in self.include_globs):
-            return False
+        # Strip root path prefix so globs work on relative paths
+        root_prefix = self.root_path.replace('\\', '/').rstrip('/') + '/'
+        if normalised.startswith(root_prefix):
+            normalised = normalised[len(root_prefix):]
+        if self.include_globs:
+            matched = False
+            for pattern in self.include_globs:
+                if fnmatch(normalised, pattern):
+                    matched = True
+                    break
+                # fnmatch ** matches 1+ path segments, not 0
+                if "**/" in pattern:
+                    collapsed = pattern.replace("**/", "", 1)
+                    if fnmatch(normalised, collapsed):
+                        matched = True
+                        break
+            if not matched:
+                return False
         if self.exclude_globs and any(fnmatch(normalised, pattern) for pattern in self.exclude_globs):
             return False
         return True

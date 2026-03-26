@@ -167,3 +167,27 @@ async def get_stats():
     except Exception:
         stats["patterns"] = {}
     return stats
+
+
+@router.get("/lessons")
+async def get_lessons(category: str = ""):
+    """Get code lessons learned from successful optimisations."""
+    from app.optimize.code_learner import get_lesson_store
+    store = get_lesson_store()
+    if category:
+        lessons = store.get_lessons_for_category(category)
+    else:
+        lessons = store.get_all_lessons()
+    return {
+        "lessons": [lesson.to_dict() for lesson in lessons],
+        "stats": store.get_stats(),
+    }
+
+
+@router.get("/lessons/rules")
+async def get_reusable_rules():
+    """Get distilled reusable rules from all lessons."""
+    from app.optimize.code_learner import get_lesson_store
+    store = get_lesson_store()
+    rules = store.get_reusable_rules()
+    return {"rules": rules, "count": len(rules)}

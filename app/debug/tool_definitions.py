@@ -480,6 +480,16 @@ WEB_SEARCH_TOOL = {
 }
 
 
+
+# Desktop Computer Use Tools
+DESKTOP_SCREENSHOT_TOOL = {"name": "desktop_screenshot", "description": "Take a screenshot of the ASTRA desktop application or full screen. Optionally specify a window title to capture just that window.", "parameters": {"type": "object", "properties": {"window_title": {"type": "string", "description": "Optional window title to capture (e.g., 'Astra')."}}, "required": []}}
+DESKTOP_CLICK_TOOL = {"name": "desktop_click", "description": "Click at screen coordinates. Use desktop_screenshot first to see current state. Only works within approved windows (ASTRA, Windows Sandbox, Android Studio).", "parameters": {"type": "object", "properties": {"x": {"type": "integer", "description": "X coordinate"}, "y": {"type": "integer", "description": "Y coordinate"}, "button": {"type": "string", "description": "'left', 'right', or 'middle'. Default: 'left'"}, "clicks": {"type": "integer", "description": "1=single, 2=double. Default: 1"}}, "required": ["x", "y"]}}
+DESKTOP_TYPE_TOOL = {"name": "desktop_type", "description": "Type text at current cursor position. Click a text field first. Only works when an approved window is focused.", "parameters": {"type": "object", "properties": {"text": {"type": "string", "description": "Text to type"}}, "required": ["text"]}}
+DESKTOP_KEY_TOOL = {"name": "desktop_key", "description": "Press a key or combo (e.g., 'enter', 'tab', 'ctrl+a', 'alt+f4'). Only works when an approved window is focused.", "parameters": {"type": "object", "properties": {"key": {"type": "string", "description": "Key or combo"}}, "required": ["key"]}}
+DESKTOP_SCROLL_TOOL = {"name": "desktop_scroll", "description": "Scroll at a position. Positive=up, negative=down. Only works within approved windows.", "parameters": {"type": "object", "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}, "clicks": {"type": "integer", "description": "Scroll amount. Positive=up, negative=down."}}, "required": ["x", "y"]}}
+DESKTOP_FIND_WINDOW_TOOL = {"name": "desktop_find_window", "description": "Find a window by title and get its position and size.", "parameters": {"type": "object", "properties": {"title": {"type": "string", "description": "Window title to search for (partial match)"}}, "required": ["title"]}}
+DESKTOP_READ_SCREEN_TOOL = {"name": "desktop_read_screen", "description": "OCR the screen to extract visible text. Optionally specify a region.", "parameters": {"type": "object", "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}, "width": {"type": "integer"}, "height": {"type": "integer"}}, "required": []}}
+
 def get_universal_tools() -> List[dict]:
     """Tools available to ALL models - web search, etc.
 
@@ -523,6 +533,8 @@ def get_phase2_tools() -> List[dict]:
         GRADLE_INSTALL_TOOL,
         APP_RESTART_TOOL,
         CRASH_LOG_TOOL,
+        DESKTOP_SCREENSHOT_TOOL, DESKTOP_CLICK_TOOL, DESKTOP_TYPE_TOOL,
+        DESKTOP_KEY_TOOL, DESKTOP_SCROLL_TOOL, DESKTOP_FIND_WINDOW_TOOL, DESKTOP_READ_SCREEN_TOOL,
     ]
 
 

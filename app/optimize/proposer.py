@@ -63,9 +63,15 @@ async def propose(
     proposals: List[Proposal] = []
 
     # Category 1: Dead code removal
-    dead_proposals = _propose_dead_code(manifest.dead_code)
-    proposals.extend(dead_proposals)
-    emit(f"   Dead code: {len(dead_proposals)} proposals")
+    # Trust gate: only propose dead code removal when we have real dependency data.
+    # An empty import graph means we cannot tell what is used vs unused.
+    has_dependency_data = len(manifest.dependency_edges) > 0
+    if has_dependency_data:
+        dead_proposals = _propose_dead_code(manifest.dead_code)
+        proposals.extend(dead_proposals)
+        emit(f"   Dead code: {len(dead_proposals)} proposals")
+    else:
+        emit(f"   Dead code: skipped (no dependency graph — cannot reliably detect unused files)")
 
     # Category 7: File split (oversized files)
     split_proposals = _propose_file_splits(manifest, profile_result)
@@ -86,6 +92,9 @@ async def propose(
     model_proposals = _propose_model_call_reduction(manifest)
     proposals.extend(model_proposals)
     emit(f"   Model call reduction: {len(model_proposals)} proposals")
+
+    # Boost confidence on proposals that match known successful patterns
+    proposals = _apply_learned_lessons(proposals, emit)
 
     # Rank by impact-to-risk ratio
     proposals.sort(key=lambda p: p.impact_risk_ratio, reverse=True)
@@ -288,3 +297,59 @@ def Path_stem(path: str) -> str:
     parts = path.replace("\\", "/").split("/")
     name = parts[-1] if parts else path
     return name.rsplit(".", 1)[0] if "." in name else name
+
+
+def _apply_learned_lessons(
+    proposals: List[Proposal],
+    emit: Optional[Callable[[str], None]] = None,
+) -> List[Proposal]:
+    """Adjust proposals based on lessons from previous optimisation runs.
+
+    - Boost confidence on proposals matching known successful patterns
+    - Add context from previous lessons to proposal descriptions
+    - Skip proposals for categories that have consistently failed
+    """
+    emit = emit or (lambda msg: None)
+    try:
+        from app.optimize.code_learner import get_lesson_store
+        store = get_lesson_store()
+        all_lessons = store.get_all_lessons()
+
+        if not all_lessons:
+            return proposals
+
+        # Build a map of category -> list of reusable rules
+        category_rules: Dict[str, List[str]] = {}
+        category_success_count: Dict[str, int] = {}
+        for lesson in all_lessons:
+            cat = lesson.category
+            if cat not in category_rules:
+                category_rules[cat] = []
+                category_success_count[cat] = 0
+            if lesson.reusable_rule:
+                category_rules[cat].append(lesson.reusable_rule)
+            category_success_count[cat] += 1
+
+        boosted = 0
+        for proposal in proposals:
+            cat = proposal.category.value
+            if cat in category_success_count:
+                successes = category_success_count[cat]
+                # Boost confidence by up to 15% based on past success count
+                boost = min(0.15, successes * 0.05)
+                proposal.confidence = min(0.95, proposal.confidence + boost)
+                boosted += 1
+
+                # Enrich description with learned context
+                rules = category_rules.get(cat, [])
+                if rules:
+                    top_rule = rules[0]
+                    proposal.description += f" [Learned: {top_rule[:100]}]"
+
+        if boosted > 0:
+            emit(f"   \U0001f4da Applied lessons to {boosted} proposal(s) from {len(all_lessons)} past lesson(s)")
+
+    except Exception as e:
+        logger.debug("[proposer] Lesson application failed: %s", e)
+
+    return proposals
