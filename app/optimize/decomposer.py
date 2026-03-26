@@ -208,18 +208,55 @@ def _detect_dead_code(
     edges: List[DependencyEdge],
     import_graph: Dict[str, Any],
 ) -> List[DeadCodeCandidate]:
-    del edges, import_graph
+    """Detect genuinely dead files within the optimisation scope.
+
+    A file is NOT dead code if:
+    - It matches an ignore pattern (config, test, init, etc.)
+    - It has a boundary role tag (router, startup, service)
+    - It has in-scope dependents
+    - It has dependents OUTSIDE the scope (checked via import graph)
+    """
+    # Tags that indicate a file is a boundary/entry point
+    # These files connect subsystems to the rest of the app
+    BOUNDARY_TAGS = {"router", "page", "test", "startup", "service"}
+
+    # Build set of files that have external dependents (imported from outside scope)
+    scoped_paths = {chunk.path for chunk in chunks}
+    externally_referenced = set()
+    if import_graph:
+        graph_modules = import_graph.get("modules", {})
+        for mod_path, mod_info in graph_modules.items():
+            if mod_path in scoped_paths:
+                continue  # skip in-scope importers
+            imports = mod_info.get("imports", [])
+            for imp in imports:
+                imp_path = imp if isinstance(imp, str) else imp.get("module", "")
+                # Normalise to relative path format
+                imp_norm = imp_path.replace(".", "/") + ".py"
+                for sp in scoped_paths:
+                    if sp.endswith(imp_norm) or imp_norm.endswith(sp.rsplit('/', 1)[-1]):
+                        externally_referenced.add(sp)
+
     dead_code: List[DeadCodeCandidate] = []
     for chunk in chunks:
         if any(pattern in chunk.path for pattern in DEAD_CODE_IGNORE_PATTERNS):
             continue
-        if chunk.dependents == 0 and "test" not in chunk.tags and "page" not in chunk.tags:
+
+        # Skip boundary files — they connect this subsystem to the rest of the app
+        if chunk.tags and BOUNDARY_TAGS.intersection(chunk.tags):
+            continue
+
+        # Skip files that are imported from outside this scope
+        if chunk.path in externally_referenced:
+            continue
+
+        if chunk.dependents == 0:
             dead_code.append(
                 DeadCodeCandidate(
                     path=chunk.path,
                     item_type="file",
                     name=chunk.name,
-                    reason="No in-scope dependents found for this scoped optimisation target",
+                    reason="No in-scope or external dependents found for this file",
                     confidence=0.55,
                 )
             )
