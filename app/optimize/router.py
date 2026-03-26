@@ -1,20 +1,3 @@
-# FILE: app/optimize/router.py
-"""
-Optimize Tab API Router.
-
-FastAPI endpoints for the Electron/React frontend.
-
-Endpoints:
-  POST /optimize/run          — Run full A-C pass (decompose→profile→propose)
-  GET  /optimize/proposals     — Get current proposals
-  POST /optimize/approve       — Approve proposals for execution
-  POST /optimize/execute       — Execute approved proposals
-  GET  /optimize/report        — Get latest report
-  GET  /optimize/patterns      — Get learned patterns
-  GET  /optimize/stats         — Get optimize system stats
-
-v1.0 (2026-03-10): Initial implementation per ASTRA-SPEC-OPT-001.
-"""
 from __future__ import annotations
 
 import logging
@@ -24,19 +7,19 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.optimize.loop_router import router as loop_router
+from app.optimize.target_registry import get_target_definition, list_target_definitions
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/optimize", tags=["optimize"])
 router.include_router(loop_router)
 
-# In-memory state for the current session
 _current_report = None
 _current_proposals = []
 
 
 class RunRequest(BaseModel):
-    target_id: str = "astra-backend"
+    target_id: str = "astra-backend:optimize"
     auto_approve_low_risk: bool = False
 
 
@@ -45,7 +28,12 @@ class ApproveRequest(BaseModel):
 
 
 class ExecuteRequest(BaseModel):
-    target_id: str = "astra-backend"
+    target_id: str = "astra-backend:optimize"
+
+
+@router.get("/targets")
+async def get_targets():
+    return {"targets": [target.to_api_dict() for target in list_target_definitions()]}
 
 
 @router.post("/run")
@@ -53,11 +41,13 @@ async def run_optimize(request: RunRequest):
     global _current_report, _current_proposals
     from app.optimize.orchestrator import run_optimize_pass
 
+    target = get_target_definition(request.target_id)
+
     def emit(msg):
         logger.info("[optimize] %s", msg)
 
     report = await run_optimize_pass(
-        target_id=request.target_id,
+        target_id=target.target_id,
         auto_approve_low_risk=request.auto_approve_low_risk,
         emit=emit,
     )
@@ -66,6 +56,9 @@ async def run_optimize(request: RunRequest):
     return {
         "status": "complete",
         "target": report.target,
+        "target_label": target.display_label,
+        "user_outcome": target.user_outcome,
+        "verification": target.verification,
         "chunks": report.manifest.total_files if report.manifest else 0,
         "bottlenecks": len(report.profile.bottlenecks) if report.profile else 0,
         "proposals": len(report.proposals),
@@ -103,9 +96,9 @@ async def get_proposals():
 async def approve_proposals(request: ApproveRequest):
     from app.optimize.models import ProposalStatus
     approved = 0
-    for p in _current_proposals:
-        if p.proposal_id in request.proposal_ids:
-            p.status = ProposalStatus.APPROVED
+    for proposal in _current_proposals:
+        if proposal.proposal_id in request.proposal_ids:
+            proposal.status = ProposalStatus.APPROVED
             approved += 1
     return {"approved": approved, "total": len(request.proposal_ids)}
 
@@ -114,7 +107,8 @@ async def approve_proposals(request: ApproveRequest):
 async def execute_approved(request: ExecuteRequest):
     from app.optimize.models import ProposalStatus
     from app.optimize.orchestrator import execute_approved as exec_fn
-    approved = [p for p in _current_proposals if p.status == ProposalStatus.APPROVED]
+
+    approved = [proposal for proposal in _current_proposals if proposal.status == ProposalStatus.APPROVED]
     if not approved:
         raise HTTPException(400, "No approved proposals to execute")
 
@@ -124,9 +118,9 @@ async def execute_approved(request: ExecuteRequest):
     results = await exec_fn(proposals=_current_proposals, target_id=request.target_id, emit=emit)
     return {
         "executed": len(results),
-        "passed": sum(1 for r in results if r.success),
-        "failed": sum(1 for r in results if not r.success),
-        "ready_for_promotion": sum(1 for r in results if r.ready_for_promotion),
+        "passed": sum(1 for result in results if result.success),
+        "failed": sum(1 for result in results if not result.success),
+        "ready_for_promotion": sum(1 for result in results if result.ready_for_promotion),
     }
 
 
@@ -134,19 +128,25 @@ async def execute_approved(request: ExecuteRequest):
 async def get_report():
     if not _current_report:
         return {"status": "no_report"}
-    r = _current_report
+    report = _current_report
     return {
-        "target": r.target,
-        "manifest_summary": r.manifest.summary() if r.manifest else "",
+        "target": report.target,
+        "manifest_summary": report.manifest.summary() if report.manifest else "",
         "bottlenecks": [
-            {"path": b.path, "metric": b.metric, "value": b.value, "impact": b.impact_score, "description": b.description}
-            for b in (r.profile.bottlenecks if r.profile else [])
+            {
+                "path": bottleneck.path,
+                "metric": bottleneck.metric,
+                "value": bottleneck.value,
+                "impact": bottleneck.impact_score,
+                "description": bottleneck.description,
+            }
+            for bottleneck in (report.profile.bottlenecks if report.profile else [])
         ],
-        "proposals_count": len(r.proposals),
-        "executed_count": r.executed_count,
-        "success_count": r.success_count,
-        "duration_seconds": r.total_duration_seconds,
-        "token_cost": r.total_token_cost,
+        "proposals_count": len(report.proposals),
+        "executed_count": report.executed_count,
+        "success_count": report.success_count,
+        "duration_seconds": report.total_duration_seconds,
+        "token_cost": report.total_token_cost,
     }
 
 
@@ -155,7 +155,7 @@ async def get_patterns():
     from app.optimize.pattern_learner import get_pattern_learner
     learner = get_pattern_learner()
     patterns = learner.get_patterns()
-    return {"patterns": [p.to_dict() for p in patterns], "stats": learner.get_stats()}
+    return {"patterns": [pattern.to_dict() for pattern in patterns], "stats": learner.get_stats()}
 
 
 @router.get("/stats")

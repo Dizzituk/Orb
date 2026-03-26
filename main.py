@@ -493,6 +493,14 @@ try:
 except Exception as e:
     print(f"[startup] Optimize: [WARN] {e}")
 
+# Self-Model & Evolution Layer — capability awareness, user understanding, suggestions
+try:
+    from app.self_model.router import router as self_model_router
+    app.include_router(self_model_router, tags=["Self-Model"], dependencies=[Depends(require_auth)])
+    print("[startup] Self-Model: [OK] registered")
+except Exception as e:
+    print(f"[startup] Self-Model: [WARN] {e}")
+
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")

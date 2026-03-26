@@ -1,199 +1,140 @@
-# FILE: app/optimize/decomposer.py
-"""
-Phase A: Decomposer.
-
-Ingests a target system and breaks it into discrete functional chunks.
-Each chunk is mapped to a single responsibility with defined inputs,
-outputs, and dependencies.
-
-Leverages existing architecture data:
-  - IMPORT_GRAPH.json for dependency map
-  - INDEX.json for file metadata
-  - TECH_DEBT.md for known large files
-
-Outputs: ChunkManifest with chunks, dependency edges, dead code
-candidates, and size audit.
-
-v1.0 (2026-03-10): Initial implementation per ASTRA-SPEC-OPT-001.
-"""
 from __future__ import annotations
 
 import json
 import logging
 import os
-import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
+from app.optimize.architecture_paths import get_architecture_paths
 from app.optimize.config import (
     DEAD_CODE_IGNORE_PATTERNS,
     FILE_SIZE_OVERSIZED_BYTES,
-    FILE_SIZE_TARGET_KB,
     HIGH_COMPLEXITY_LINES,
-    IMPORT_GRAPH_PATH,
-    INDEX_PATH,
 )
-from app.optimize.models import (
-    ChunkManifest,
-    CodeChunk,
-    DeadCodeCandidate,
-    DependencyEdge,
+from app.optimize.models import ChunkManifest, CodeChunk, DeadCodeCandidate, DependencyEdge
+from app.optimize.target_registry import OptimizeTargetDefinition
+from app.optimize.targeting import (
+    filter_import_graph_for_target,
+    filter_index_for_target,
+    filter_paths_for_target,
+    should_scan_file,
 )
 
 logger = logging.getLogger(__name__)
 
 
 async def decompose(
-    target_root: str,
-    target_id: str = "astra-backend",
+    target: OptimizeTargetDefinition,
     emit: Optional[callable] = None,
 ) -> ChunkManifest:
-    """Run Phase A: Decompose a target into functional chunks.
-
-    Args:
-        target_root: Root directory of the target (e.g. D:/Orb).
-        target_id: Target identifier for reporting.
-        emit: Progress callback.
-
-    Returns:
-        ChunkManifest with full decomposition.
-    """
     emit = emit or (lambda msg: None)
     t_start = time.time()
 
-    emit(f"🔍 Decompose: Analysing {target_id}...")
+    emit(f"🔍 Decompose: Analysing {target.display_label}...")
+    emit(f"   User outcome: {target.user_outcome}")
 
-    # Load existing architecture data
-    import_graph = _load_import_graph()
-    index_data = _load_index()
+    import_graph = _load_import_graph(target)
+    index_data = _load_index(target)
 
-    # Build chunks from filesystem + index
-    emit("   Scanning files...")
-    chunks = _scan_files(target_root, index_data)
-    emit(f"   Found {len(chunks)} source files")
+    emit("   Scanning scoped files...")
+    chunks = _scan_files(target, index_data)
+    emit(f"   Found {len(chunks)} scoped source files")
 
-    # Apply dependency data from import graph
     edges = _build_dependency_edges(import_graph)
     _apply_dependency_counts(chunks, edges)
-    emit(f"   Mapped {len(edges)} dependency edges")
+    emit(f"   Mapped {len(edges)} in-scope dependency edges")
 
-    # Detect dead code candidates
     emit("   Detecting dead code...")
     dead_code = _detect_dead_code(chunks, edges, import_graph)
     emit(f"   Found {len(dead_code)} dead code candidates")
 
-    # Flag oversized files
-    oversized = sum(1 for c in chunks if c.is_oversized)
-
-    # Build manifest
+    oversized = sum(1 for chunk in chunks if chunk.is_oversized)
     manifest = ChunkManifest(
-        target=target_id,
+        target=target.target_id,
         chunks=chunks,
         dependency_edges=edges,
         dead_code=dead_code,
         total_files=len(chunks),
-        total_lines=sum(c.lines for c in chunks),
-        total_size_bytes=sum(c.size_bytes for c in chunks),
+        total_lines=sum(chunk.lines for chunk in chunks),
+        total_size_bytes=sum(chunk.size_bytes for chunk in chunks),
         oversized_files=oversized,
         generated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
 
     duration = time.time() - t_start
     emit(f"✅ Decompose complete ({duration:.1f}s): {manifest.summary()}")
-
     return manifest
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Data loaders
-# ═══════════════════════════════════════════════════════════════════
-
-def _load_import_graph() -> Dict[str, Any]:
-    """Load the pre-built import graph from .architecture/."""
+def _load_import_graph(target: OptimizeTargetDefinition) -> Dict[str, Any]:
     try:
-        path = Path(IMPORT_GRAPH_PATH)
+        path = get_architecture_paths(target)["import_graph"]
         if path.exists():
             data = json.loads(path.read_text(encoding="utf-8"))
-            graph = data.get("graph", {})
-            logger.info("[decompose] Loaded import graph: %d modules", len(graph))
-            return data
-    except Exception as e:
-        logger.warning("[decompose] Failed to load import graph: %s", e)
+            filtered = filter_import_graph_for_target(data, target)
+            logger.info("[decompose] Loaded scoped import graph for %s: %d modules", target.target_id, len(filtered.get("graph", {})))
+            return filtered
+    except Exception as exc:
+        logger.warning("[decompose] Failed to load import graph for %s: %s", target.target_id, exc)
     return {"graph": {}, "stats": {}}
 
 
-def _load_index() -> Dict[str, Any]:
-    """Load the architecture INDEX.json."""
+def _load_index(target: OptimizeTargetDefinition) -> Dict[str, Any]:
     try:
-        path = Path(INDEX_PATH)
+        path = get_architecture_paths(target)["index"]
         if path.exists():
             data = json.loads(path.read_text(encoding="utf-8"))
-            logger.info("[decompose] Loaded index: %d entries", len(data))
-            return data
-    except Exception as e:
-        logger.warning("[decompose] Failed to load index: %s", e)
+            filtered = filter_index_for_target(data, target)
+            logger.info("[decompose] Loaded scoped index for %s: %d entries", target.target_id, len(filtered))
+            return filtered
+    except Exception as exc:
+        logger.warning("[decompose] Failed to load index for %s: %s", target.target_id, exc)
     return {}
 
 
-# ═══════════════════════════════════════════════════════════════════
-# File scanning
-# ═══════════════════════════════════════════════════════════════════
-
-def _scan_files(
-    root: str,
-    index_data: Dict[str, Any],
-) -> List[CodeChunk]:
-    """Scan the target directory for source files."""
-    chunks = []
-    root_path = Path(root)
-
-    extensions = {".py", ".ts", ".tsx", ".kt", ".js", ".jsx"}
-    skip_dirs = {"__pycache__", ".git", "node_modules", ".venv", "venv", ".pytest_cache"}
+def _scan_files(target: OptimizeTargetDefinition, index_data: Dict[str, Any]) -> List[CodeChunk]:
+    chunks: List[CodeChunk] = []
+    root_path = Path(target.root_path)
+    skip_dirs = {"__pycache__", ".git", "node_modules", ".venv", "venv", ".pytest_cache", "build", ".gradle", "dist"}
 
     for dirpath, dirnames, filenames in os.walk(root_path):
-        # Skip excluded directories
-        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
-
-        for fname in filenames:
-            fpath = Path(dirpath) / fname
-            if fpath.suffix not in extensions:
+        dirnames[:] = [name for name in dirnames if name not in skip_dirs]
+        for filename in filenames:
+            fpath = Path(dirpath) / filename
+            rel = str(fpath.relative_to(root_path)).replace('\\', '/')
+            if not should_scan_file(rel):
                 continue
-
-            rel = str(fpath.relative_to(root_path)).replace("\\", "/")
+            if rel not in filter_paths_for_target([rel], target):
+                continue
             try:
                 stat = fpath.stat()
                 size = stat.st_size
-
-                # Count lines
                 try:
                     text = fpath.read_text(encoding="utf-8", errors="ignore")
                     lines = text.count("\n") + 1
                 except Exception:
                     lines = 0
-
-                # Estimate complexity from line count and nesting
-                complexity = _estimate_complexity(lines, size)
-
                 chunk = CodeChunk(
                     path=rel,
                     name=fpath.stem,
                     lines=lines,
                     size_bytes=size,
-                    complexity_estimate=complexity,
+                    complexity_estimate=_estimate_complexity(lines),
                     is_oversized=size > FILE_SIZE_OVERSIZED_BYTES,
                     tags=_infer_tags(rel),
+                    responsibility=_infer_responsibility(rel, target),
                 )
+                if rel in index_data and isinstance(index_data[rel], dict):
+                    chunk.responsibility = index_data[rel].get("summary", chunk.responsibility)
                 chunks.append(chunk)
-
             except OSError:
                 continue
-
     return chunks
 
 
-def _estimate_complexity(lines: int, size: int) -> float:
-    """Rough complexity estimate from file metrics. Returns 0-1."""
+def _estimate_complexity(lines: int) -> float:
     if lines < 50:
         return 0.1
     if lines < 200:
@@ -206,8 +147,7 @@ def _estimate_complexity(lines: int, size: int) -> float:
 
 
 def _infer_tags(path: str) -> List[str]:
-    """Infer tags from file path."""
-    tags = []
+    tags: List[str] = []
     path_lower = path.lower()
     if "router" in path_lower:
         tags.append("router")
@@ -219,100 +159,61 @@ def _infer_tags(path: str) -> List[str]:
         tags.append("test")
     if "schema" in path_lower:
         tags.append("schema")
-    if "__init__" in path_lower:
-        tags.append("init")
-    if "util" in path_lower or "helper" in path_lower:
-        tags.append("utility")
+    if "navigation" in path_lower:
+        tags.append("navigation")
+    if "viewmodel" in path_lower:
+        tags.append("viewmodel")
+    if "component" in path_lower:
+        tags.append("component")
+    if "page" in path_lower:
+        tags.append("page")
     return tags
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Dependency mapping
-# ═══════════════════════════════════════════════════════════════════
+def _infer_responsibility(path: str, target: OptimizeTargetDefinition) -> str:
+    return f"{target.subsystem_label} file: {path}"
 
-def _build_dependency_edges(
-    import_data: Dict[str, Any],
-) -> List[DependencyEdge]:
-    """Convert the import graph into DependencyEdge objects."""
-    edges = []
+
+def _build_dependency_edges(import_data: Dict[str, Any]) -> List[DependencyEdge]:
+    edges: List[DependencyEdge] = []
     graph = import_data.get("graph", {})
-
     for source, targets in graph.items():
         if not isinstance(targets, list):
             continue
         for target in targets:
-            edges.append(DependencyEdge(
-                source=source,
-                target=target,
-                edge_type="import",
-            ))
-
+            edges.append(DependencyEdge(source=source, target=target, edge_type="import"))
     return edges
 
 
-def _apply_dependency_counts(
-    chunks: List[CodeChunk],
-    edges: List[DependencyEdge],
-) -> None:
-    """Apply dependency counts from edges to chunks."""
-    # Build lookups
+def _apply_dependency_counts(chunks: List[CodeChunk], edges: List[DependencyEdge]) -> None:
     dependents_count: Dict[str, int] = {}
     dependencies_count: Dict[str, int] = {}
-    imports_map: Dict[str, List[str]] = {}
-
     for edge in edges:
-        dependents_count[edge.target] = dependents_count.get(edge.target, 0) + 1
         dependencies_count[edge.source] = dependencies_count.get(edge.source, 0) + 1
-        if edge.source not in imports_map:
-            imports_map[edge.source] = []
-        imports_map[edge.source].append(edge.target)
-
+        dependents_count[edge.target] = dependents_count.get(edge.target, 0) + 1
     for chunk in chunks:
-        chunk.dependents = dependents_count.get(chunk.path, 0)
         chunk.dependencies = dependencies_count.get(chunk.path, 0)
-        chunk.imports = imports_map.get(chunk.path, [])
+        chunk.dependents = dependents_count.get(chunk.path, 0)
 
-
-# ═══════════════════════════════════════════════════════════════════
-# Dead code detection
-# ═══════════════════════════════════════════════════════════════════
 
 def _detect_dead_code(
     chunks: List[CodeChunk],
     edges: List[DependencyEdge],
-    import_data: Dict[str, Any],
+    import_graph: Dict[str, Any],
 ) -> List[DeadCodeCandidate]:
-    """Detect files that appear to have no dependents."""
-    candidates = []
-
-    # All files that are imported by something
-    imported_files: Set[str] = set()
-    for edge in edges:
-        imported_files.add(edge.target)
-
-    # Entry points that are legitimate even without dependents
-    entry_patterns = [
-        "main.py", "router.py", "api_router.py", "seed.py",
-        "startup.py", "scheduler.py", "conftest.py",
-    ]
-
+    del edges, import_graph
+    dead_code: List[DeadCodeCandidate] = []
     for chunk in chunks:
-        # Skip ignored patterns
-        if any(p in chunk.path for p in DEAD_CODE_IGNORE_PATTERNS):
+        if any(pattern in chunk.path for pattern in DEAD_CODE_IGNORE_PATTERNS):
             continue
-
-        # Skip entry points
-        if any(chunk.path.endswith(ep) for ep in entry_patterns):
-            continue
-
-        # If nobody imports this file, it's a dead code candidate
-        if chunk.path not in imported_files and chunk.dependents == 0:
-            candidates.append(DeadCodeCandidate(
-                path=chunk.path,
-                item_type="file",
-                name=chunk.name,
-                reason="No other module imports this file",
-                confidence=0.7,
-            ))
-
-    return candidates
+        if chunk.dependents == 0 and "test" not in chunk.tags and "page" not in chunk.tags:
+            dead_code.append(
+                DeadCodeCandidate(
+                    path=chunk.path,
+                    item_type="file",
+                    name=chunk.name,
+                    reason="No in-scope dependents found for this scoped optimisation target",
+                    confidence=0.55,
+                )
+            )
+    return dead_code
