@@ -195,6 +195,8 @@ async def run_recursive_optimize(
     emit(f"{'=' * 60}")
 
     prev_proposal_count = None
+    # Track all files created or modified across passes to protect from dead code detection
+    protected_paths: set = set()
 
     for pass_num in range(1, max_passes + 1):
         emit(f"\n🔄 PASS {pass_num}/{max_passes}")
@@ -219,6 +221,17 @@ async def run_recursive_optimize(
         _update_recursive_totals(result, execution_data["results"])
         _append_pass_summary(result, execution_data["summary"])
         _emit_pass_completion(emit, execution_data["summary"])
+
+        # Track files touched in this pass so future passes don't flag them as dead
+        _track_modified_files(pass_context.proposals, execution_data["results"], protected_paths)
+
+        # Boot check: verify sandbox still boots after this pass
+        boot_ok = await _run_sandbox_boot_check(target.root_path, emit)
+        if not boot_ok:
+            emit("\n❌ Sandbox boot check failed after this pass. Stopping to protect stability.")
+            result.stop_reason = f"Boot check failed after pass {pass_num}"
+            result.total_passes = pass_num
+            break
 
         post_execution_decision = _get_post_execution_stop_decision(execution_data["summary"])
         if post_execution_decision is not None:
