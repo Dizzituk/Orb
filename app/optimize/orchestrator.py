@@ -199,7 +199,7 @@ async def run_recursive_optimize(
     for pass_num in range(1, max_passes + 1):
         emit(f"\n🔄 PASS {pass_num}/{max_passes}")
         emit(f"{'─' * 40}")
-        pass_context = await _run_recursive_pass(target, pass_num, emit)
+        pass_context = await _run_recursive_pass(target, pass_num, emit, protected_paths=protected_paths)
         result.total_proposals_found += len(pass_context.proposals)
 
         pre_execution_decision = _get_pre_execution_stop_decision(pass_context, prev_proposal_count)
@@ -215,7 +215,7 @@ async def run_recursive_optimize(
             result.total_passes = pass_num
             break
 
-        execution_data = await _execute_recursive_pass(target, pass_context, emit)
+        execution_data = await _execute_recursive_pass(target, pass_context, emit, protected_paths=protected_paths)
         _update_recursive_totals(result, execution_data["results"])
         _append_pass_summary(result, execution_data["summary"])
         _emit_pass_completion(emit, execution_data["summary"])
@@ -272,9 +272,9 @@ def _create_recursive_result(target_id: str, target_label: str) -> RecursiveLoop
     )
 
 
-async def _run_recursive_pass(target: Any, pass_number: int, emit: Callable[[str], None]) -> _PassContext:
+async def _run_recursive_pass(target: Any, pass_number: int, emit: Callable[[str], None], protected_paths: Optional[set] = None) -> _PassContext:
     pass_start = time.time()
-    manifest = await _decompose_target(target, emit)
+    manifest = await _decompose_target(target, emit, protected_paths=protected_paths)
     complexity_before = _sum_manifest_complexity(manifest)
     profile_result = await _profile_manifest(manifest, target.root_path, emit)
     proposals = await _propose_changes(manifest, profile_result, emit)
@@ -287,9 +287,9 @@ async def _run_recursive_pass(target: Any, pass_number: int, emit: Callable[[str
     )
 
 
-async def _decompose_target(target: Any, emit: Callable[[str], None]):
+async def _decompose_target(target: Any, emit: Callable[[str], None], protected_paths: Optional[set] = None):
     from app.optimize.decomposer import decompose
-    return await decompose(target, emit)
+    return await decompose(target, emit, protected_paths=protected_paths)
 
 
 async def _profile_manifest(manifest: Any, root_path: str, emit: Callable[[str], None]):
@@ -387,7 +387,7 @@ async def _execute_recursive_pass(target: Any, pass_context: _PassContext, emit:
         emit,
     )
 
-    manifest_after = await _decompose_target(target, emit)
+    manifest_after = await _decompose_target(target, emit, protected_paths=protected_paths)
     complexity_after = _sum_manifest_complexity(manifest_after)
     summary = _build_execution_summary(pass_context, exec_results, complexity_after)
     return {"results": exec_results, "summary": summary}

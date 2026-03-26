@@ -42,10 +42,10 @@ _COMPLEXITY_BANDS = (
 )
 _SKIP_DIRS = {"__pycache__", ".git", "node_modules", ".venv", "venv", ".pytest_cache", "build", ".gradle", "dist"}
 
-
 async def decompose(
     target: OptimizeTargetDefinition,
     emit: Optional[callable] = None,
+    protected_paths: Optional[Set[str]] = None,
 ) -> ChunkManifest:
     emit = emit or (lambda msg: None)
     t_start = time.time()
