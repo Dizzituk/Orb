@@ -23,7 +23,7 @@ from app.optimize.self_test import run_self_test
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/optimize/loop", tags=["optimize-loop"])
+router = APIRouter(prefix="/loop", tags=["optimize-loop"])
 
 
 # ══════════════════════════════════════════════════════════
