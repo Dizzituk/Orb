@@ -370,7 +370,7 @@ def _build_no_execution_summary(pass_context: _PassContext) -> LoopPassSummary:
     )
 
 
-async def _execute_recursive_pass(target: Any, pass_context: _PassContext, emit: Callable[[str], None]) -> Dict[str, Any]:
+async def _execute_recursive_pass(target: Any, pass_context: _PassContext, emit: Callable[[str], None], protected_paths: Optional[set] = None) -> Dict[str, Any]:
     before_code = _capture_before_code(pass_context.proposals, target.root_path)
     emit(f"\n🔧 Executing {len(pass_context.proposals)} proposals...")
     _approve_all_proposals(pass_context.proposals)
@@ -457,6 +457,39 @@ def _emit_pass_completion(emit: Callable[[str], None], summary: LoopPassSummary)
     )
 
 
+
+async def _run_sandbox_boot_check(target_root: str, emit: Callable[[str], None]) -> bool:
+    """Run 'from main import app' in the sandbox to verify the codebase still boots.
+
+    Uses the sandbox shell/run API directly. Returns True if boot succeeds.
+    """
+    import httpx
+
+    controller_url = "http://192.168.250.2:8765"
+    venv_python = f"{target_root}\\.venv\\Scripts\\python.exe"
+    payload = {
+        "cmd": [venv_python, "-c", "from main import app; print('BOOT_OK')"],
+        "cwd": target_root,
+        "timeout_ms": 25000,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(f"{controller_url}/shell/run", json=payload)
+            data = resp.json()
+        stdout = data.get("stdout", "")
+        returncode = data.get("returncode", -1)
+        if returncode == 0 and "BOOT_OK" in stdout:
+            emit("   ✅ Boot check passed")
+            return True
+        stderr = data.get("stderr", "")
+        err_lines = [l for l in stderr.strip().split("\n") if l.strip()]
+        last_err = err_lines[-1] if err_lines else "Unknown error"
+        emit(f"   ❌ Boot check FAILED: {last_err}")
+        return False
+    except Exception as exc:
+        emit(f"   ❌ Boot check error: {exc}")
+        return False
+
 def _get_post_execution_stop_decision(summary: LoopPassSummary) -> Optional[_StopDecision]:
     for decision in (
         _get_failure_stop_decision(summary),
@@ -497,6 +530,23 @@ def _get_complexity_stop_decision(summary: LoopPassSummary) -> Optional[_StopDec
     )
 
 
+
+def _track_modified_files(
+    proposals: List[Proposal],
+    results: List[ExecutionResult],
+    protected_paths: set,
+) -> None:
+    """Record all files touched by successful proposals so future passes don't flag them as dead."""
+    for proposal, result in zip(proposals, results):
+        if not result.success:
+            continue
+        for chunk_path in proposal.target_chunks:
+            protected_paths.add(chunk_path)
+        # Also protect any new files created by file splits
+        for path in getattr(result, "files_changed", []):
+            protected_paths.add(path)
+    if protected_paths:
+        logger.info("[orchestrator] Protected paths (%d): %s", len(protected_paths), sorted(protected_paths)[:10])
 def _emit_recursive_completion(result: RecursiveLoopResult, emit: Callable[[str], None]) -> None:
     emit(f"\n{'=' * 60}")
     emit("🔁 RECURSIVE OPTIMIZE COMPLETE")

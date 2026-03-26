@@ -65,7 +65,7 @@ async def decompose(
     emit(f"   Mapped {len(edges)} in-scope dependency edges")
 
     emit("   Detecting dead code...")
-    dead_code = _detect_dead_code(chunks, edges, import_graph)
+    dead_code = _detect_dead_code(chunks, edges, import_graph, protected_paths=protected_paths)
     emit(f"   Found {len(dead_code)} dead code candidates")
 
     oversized = sum(1 for chunk in chunks if chunk.is_oversized)
