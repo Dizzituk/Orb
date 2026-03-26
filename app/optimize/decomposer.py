@@ -4,7 +4,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 from app.optimize.architecture_paths import get_architecture_paths
 from app.optimize.config import (
@@ -22,6 +22,25 @@ from app.optimize.targeting import (
 )
 
 logger = logging.getLogger(__name__)
+_BOUNDARY_TAGS = {"router", "page", "test", "startup", "service"}
+_TAG_KEYWORDS = (
+    ("router", "router"),
+    ("model", "model"),
+    ("service", "service"),
+    ("test", "test"),
+    ("schema", "schema"),
+    ("navigation", "navigation"),
+    ("viewmodel", "viewmodel"),
+    ("component", "component"),
+    ("page", "page"),
+)
+_COMPLEXITY_BANDS = (
+    (50, 0.1),
+    (200, 0.3),
+    (HIGH_COMPLEXITY_LINES, 0.5),
+    (1000, 0.7),
+)
+_SKIP_DIRS = {"__pycache__", ".git", "node_modules", ".venv", "venv", ".pytest_cache", "build", ".gradle", "dist"}
 
 
 async def decompose(
@@ -99,82 +118,89 @@ def _scan_files(target: OptimizeTargetDefinition, index_data: Dict[str, Any]) ->
 
     chunks: List[CodeChunk] = []
     root_path = target.root_path.replace("\\", "/").rstrip("/")
-    skip_dirs = {"__pycache__", ".git", "node_modules", ".venv", "venv", ".pytest_cache", "build", ".gradle", "dist"}
 
-    for dirpath, dirnames, filenames in sandbox_walk(root_path, skip_dirs):
+    for dirpath, _, filenames in sandbox_walk(root_path, _SKIP_DIRS):
         for filename in filenames:
-            # Build relative path
-            full_path = dirpath.rstrip("\\").rstrip("/") + "/" + filename
-            norm_full = full_path.replace("\\", "/")
-            if norm_full.startswith(root_path + "/"):
-                rel = norm_full[len(root_path) + 1:]
-            else:
-                rel = norm_full
-
-            if not should_scan_file(rel):
-                continue
-            if rel not in filter_paths_for_target([rel], target):
+            rel = _build_relative_path(root_path, dirpath, filename)
+            if not _is_scoped_file(rel, target):
                 continue
 
-            # Read content from sandbox
-            content_text = sandbox_read_python(full_path)
+            content_text = _read_scoped_file(dirpath, filename, sandbox_read_python)
             if content_text is None:
                 continue
 
-            lines = content_text.count("\n") + 1
-            size = len(content_text.encode("utf-8", errors="ignore"))
-
-            chunk = CodeChunk(
-                path=rel,
-                name=Path(filename).stem,
-                lines=lines,
-                size_bytes=size,
-                complexity_estimate=_estimate_complexity(lines),
-                is_oversized=size > FILE_SIZE_OVERSIZED_BYTES,
-                tags=_infer_tags(rel),
-                responsibility=_infer_responsibility(rel, target),
-            )
-            if rel in index_data and isinstance(index_data[rel], dict):
-                chunk.responsibility = index_data[rel].get("summary", chunk.responsibility)
-            chunks.append(chunk)
+            chunks.append(_build_chunk(rel, filename, content_text, target, index_data))
 
     return chunks
 
 
+def _read_scoped_file(dirpath: str, filename: str, sandbox_read_python: callable) -> Optional[str]:
+    full_path = _join_path(dirpath, filename)
+    return sandbox_read_python(full_path)
+
+
+def _join_path(dirpath: str, filename: str) -> str:
+    return dirpath.rstrip("\\").rstrip("/") + "/" + filename
+
+
+def _build_relative_path(root_path: str, dirpath: str, filename: str) -> str:
+    norm_full = _join_path(dirpath, filename).replace("\\", "/")
+    if norm_full.startswith(root_path + "/"):
+        return norm_full[len(root_path) + 1:]
+    return norm_full
+
+
+def _is_scoped_file(rel_path: str, target: OptimizeTargetDefinition) -> bool:
+    if not should_scan_file(rel_path):
+        return False
+    return rel_path in filter_paths_for_target([rel_path], target)
+
+
+def _build_chunk(
+    rel_path: str,
+    filename: str,
+    content_text: str,
+    target: OptimizeTargetDefinition,
+    index_data: Dict[str, Any],
+) -> CodeChunk:
+    lines = content_text.count("\n") + 1
+    size = len(content_text.encode("utf-8", errors="ignore"))
+    responsibility = _resolve_responsibility(rel_path, target, index_data)
+
+    return CodeChunk(
+        path=rel_path,
+        name=Path(filename).stem,
+        lines=lines,
+        size_bytes=size,
+        complexity_estimate=_estimate_complexity(lines),
+        is_oversized=size > FILE_SIZE_OVERSIZED_BYTES,
+        tags=_infer_tags(rel_path),
+        responsibility=responsibility,
+    )
+
+
+def _resolve_responsibility(
+    rel_path: str,
+    target: OptimizeTargetDefinition,
+    index_data: Dict[str, Any],
+) -> str:
+    responsibility = _infer_responsibility(rel_path, target)
+    index_entry = index_data.get(rel_path)
+    if isinstance(index_entry, dict):
+        return index_entry.get("summary", responsibility)
+    return responsibility
+
+
 def _estimate_complexity(lines: int) -> float:
-    if lines < 50:
-        return 0.1
-    if lines < 200:
-        return 0.3
-    if lines < HIGH_COMPLEXITY_LINES:
-        return 0.5
-    if lines < 1000:
-        return 0.7
+    for threshold, score in _COMPLEXITY_BANDS:
+        if lines < threshold:
+            return score
     return 0.9
 
 
 def _infer_tags(path: str) -> List[str]:
-    tags: List[str] = []
     path_lower = path.lower()
-    if "router" in path_lower:
-        tags.append("router")
-    if "model" in path_lower:
-        tags.append("model")
-    if "service" in path_lower:
-        tags.append("service")
-    if "test" in path_lower:
-        tags.append("test")
-    if "schema" in path_lower:
-        tags.append("schema")
-    if "navigation" in path_lower:
-        tags.append("navigation")
-    if "viewmodel" in path_lower:
-        tags.append("viewmodel")
-    if "component" in path_lower:
-        tags.append("component")
-    if "page" in path_lower:
-        tags.append("page")
-    return tags
+    return [tag for keyword, tag in _TAG_KEYWORDS if keyword in path_lower]
 
 
 def _infer_responsibility(path: str, target: OptimizeTargetDefinition) -> str:
@@ -216,48 +242,127 @@ def _detect_dead_code(
     - It has in-scope dependents
     - It has dependents OUTSIDE the scope (checked via import graph)
     """
-    # Tags that indicate a file is a boundary/entry point
-    # These files connect subsystems to the rest of the app
-    BOUNDARY_TAGS = {"router", "page", "test", "startup", "service"}
-
-    # Build set of files that have external dependents (imported from outside scope)
+    del edges
     scoped_paths = {chunk.path for chunk in chunks}
-    externally_referenced = set()
-    if import_graph:
-        graph_modules = import_graph.get("modules", {})
-        for mod_path, mod_info in graph_modules.items():
-            if mod_path in scoped_paths:
-                continue  # skip in-scope importers
-            imports = mod_info.get("imports", [])
-            for imp in imports:
-                imp_path = imp if isinstance(imp, str) else imp.get("module", "")
-                # Normalise to relative path format
-                imp_norm = imp_path.replace(".", "/") + ".py"
-                for sp in scoped_paths:
-                    if sp.endswith(imp_norm) or imp_norm.endswith(sp.rsplit('/', 1)[-1]):
-                        externally_referenced.add(sp)
+    externally_referenced = _find_externally_referenced_paths(scoped_paths, import_graph)
 
     dead_code: List[DeadCodeCandidate] = []
     for chunk in chunks:
-        if any(pattern in chunk.path for pattern in DEAD_CODE_IGNORE_PATTERNS):
+        if _should_skip_dead_code_candidate(chunk, externally_referenced):
             continue
-
-        # Skip boundary files — they connect this subsystem to the rest of the app
-        if chunk.tags and BOUNDARY_TAGS.intersection(chunk.tags):
-            continue
-
-        # Skip files that are imported from outside this scope
-        if chunk.path in externally_referenced:
-            continue
-
-        if chunk.dependents == 0:
-            dead_code.append(
-                DeadCodeCandidate(
-                    path=chunk.path,
-                    item_type="file",
-                    name=chunk.name,
-                    reason="No in-scope or external dependents found for this file",
-                    confidence=0.55,
-                )
-            )
+        if _is_dead_code_candidate(chunk):
+            dead_code.append(_build_dead_code_candidate(chunk))
     return dead_code
+
+
+def _is_dead_code_candidate(chunk: CodeChunk) -> bool:
+    return chunk.dependents == 0
+
+
+def _find_externally_referenced_paths(scoped_paths: Set[str], import_graph: Dict[str, Any]) -> Set[str]:
+    externally_referenced: Set[str] = set()
+    for mod_info in _iter_external_module_infos(import_graph, scoped_paths):
+        for imported_path in _iter_imported_module_paths(mod_info):
+            matched_path = _match_scoped_import(imported_path, scoped_paths)
+            if matched_path:
+                externally_referenced.add(matched_path)
+    return externally_referenced
+
+
+def _iter_external_module_infos(
+    import_graph: Dict[str, Any],
+    scoped_paths: Set[str],
+) -> Iterable[Any]:
+    if not import_graph:
+        return ()
+
+    graph_modules = import_graph.get("modules", {})
+    if not isinstance(graph_modules, dict):
+        return ()
+
+    return (
+        mod_info
+        for mod_path, mod_info in graph_modules.items()
+        if mod_path not in scoped_paths
+    )
+
+
+def _iter_imported_module_paths(mod_info: Any) -> List[str]:
+    if not isinstance(mod_info, dict):
+        return []
+
+    imported_paths: List[str] = []
+    for imp in mod_info.get("imports", []):
+        module_path = _extract_import_module_path(imp)
+        if module_path:
+            imported_paths.append(module_path)
+    return imported_paths
+
+
+def _extract_import_module_path(import_entry: Any) -> str:
+    if isinstance(import_entry, str):
+        return import_entry
+    if isinstance(import_entry, dict):
+        return import_entry.get("module", "")
+    return ""
+
+
+def _match_scoped_import(imported_path: str, scoped_paths: Set[str]) -> Optional[str]:
+    import_path, import_name = _normalise_import_path(imported_path)
+    for scoped_path in scoped_paths:
+        if _paths_match_import(scoped_path, import_path, import_name):
+            return scoped_path
+    return None
+
+
+def _normalise_import_path(imported_path: str) -> tuple[str, str]:
+    import_path = imported_path.replace(".", "/") + ".py"
+    import_name = import_path.rsplit('/', 1)[-1]
+    return import_path, import_name
+
+
+def _paths_match_import(scoped_path: str, import_path: str, import_name: str) -> bool:
+    scoped_name = scoped_path.rsplit('/', 1)[-1]
+    return (
+        scoped_path.endswith(import_path)
+        or import_path.endswith(scoped_name)
+        or scoped_name == import_name
+    )
+
+
+def _should_skip_dead_code_candidate(chunk: CodeChunk, externally_referenced: Set[str]) -> bool:
+    return any(
+        predicate(chunk, externally_referenced)
+        for predicate in _DEAD_CODE_SKIP_RULES
+    )
+
+
+def _skip_ignored_pattern(chunk: CodeChunk, externally_referenced: Set[str]) -> bool:
+    del externally_referenced
+    return any(pattern in chunk.path for pattern in DEAD_CODE_IGNORE_PATTERNS)
+
+
+def _skip_boundary_tag(chunk: CodeChunk, externally_referenced: Set[str]) -> bool:
+    del externally_referenced
+    return bool(chunk.tags and _BOUNDARY_TAGS.intersection(chunk.tags))
+
+
+def _skip_external_reference(chunk: CodeChunk, externally_referenced: Set[str]) -> bool:
+    return chunk.path in externally_referenced
+
+
+_DEAD_CODE_SKIP_RULES = (
+    _skip_ignored_pattern,
+    _skip_boundary_tag,
+    _skip_external_reference,
+)
+
+
+def _build_dead_code_candidate(chunk: CodeChunk) -> DeadCodeCandidate:
+    return DeadCodeCandidate(
+        path=chunk.path,
+        item_type="file",
+        name=chunk.name,
+        reason="No in-scope or external dependents found for this file",
+        confidence=0.55,
+    )

@@ -1,4 +1,3 @@
-# FILE: app/optimize/orchestrator.py
 """
 Optimizer Orchestrator — Single-pass and recursive loop modes.
 
@@ -14,98 +13,22 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from app.optimize.models import (
-    ExecutionResult, OptimizeReport, Proposal, ProposalStatus,
+    CodeChunk,
+    ExecutionResult,
+    OptimizeReport,
+    Proposal,
+    ProposalStatus,
 )
 from app.optimize.target_registry import get_target_definition
 
 logger = logging.getLogger(__name__)
 
-
-# ══════════════════════════════════════════════════════════
-# SINGLE PASS (existing behaviour — used by /optimize/run)
-# ══════════════════════════════════════════════════════════
-
-async def run_optimize_pass(
-    target_id: str = "astra-backend:optimize",
-    auto_approve_low_risk: bool = False,
-    emit: Optional[Callable[[str], None]] = None,
-) -> OptimizeReport:
-    """Run a single optimisation pass (phases A-C, optionally D)."""
-    emit = emit or (lambda msg: None)
-    t_start = time.time()
-    target = get_target_definition(target_id)
-
-    emit(f"\n{'=' * 60}")
-    emit(f"\u26a1 OPTIMIZE PASS: {target.display_label}")
-    emit(f"   Scope: {target.user_outcome}")
-    emit(f"   Root: {target.root_path}")
-    emit(f"{'=' * 60}")
-
-    report = OptimizeReport(target=target.target_id)
-
-    # Phase A: Decompose
-    emit(f"\n{'\u2500' * 40}")
-    emit("\U0001f50d PHASE A: DECOMPOSE")
-    emit(f"{'\u2500' * 40}")
-    from app.optimize.decomposer import decompose
-    manifest = await decompose(target, emit)
-    report.manifest = manifest
-
-    # Phase B: Profile
-    emit(f"\n{'\u2500' * 40}")
-    emit("\U0001f4ca PHASE B: PROFILE")
-    emit(f"{'\u2500' * 40}")
-    from app.optimize.profiler import profile
-    profile_result = await profile(manifest, target.root_path, emit)
-    report.profile = profile_result
-
-    # Phase C: Propose
-    emit(f"\n{'\u2500' * 40}")
-    emit("\U0001f4a1 PHASE C: PROPOSE")
-    emit(f"{'\u2500' * 40}")
-    from app.optimize.proposer import propose
-    proposals = await propose(manifest, profile_result, emit)
-    report.proposals = proposals
-
-    # Phase D: Auto-execute low risk (if requested)
-    if auto_approve_low_risk and proposals:
-        emit(f"\n{'\u2500' * 40}")
-        emit("\U0001f527 PHASE D: EXECUTE (auto-approved LOW risk)")
-        emit(f"{'\u2500' * 40}")
-        for p in proposals:
-            if p.risk.value == "low":
-                p.status = ProposalStatus.APPROVED
-        approved_count = sum(1 for p in proposals if p.status == ProposalStatus.APPROVED)
-        if approved_count > 0:
-            emit(f"   Auto-approved {approved_count} LOW-risk proposals")
-            snapshot = _snapshot_profile(profile_result)
-            from app.optimize.executor import execute_batch
-            results = await execute_batch(proposals, target.root_path, snapshot, emit)
-            report.execution_results = results
-            _learn_from_results(proposals, results)
-
-    report.total_duration_seconds = time.time() - t_start
-    report.total_token_cost = sum(r.token_cost for r in report.execution_results)
-
-    emit(f"\n{'=' * 60}")
-    emit(f"\u26a1 OPTIMIZE PASS COMPLETE ({report.total_duration_seconds:.1f}s)")
-    emit(f"   Chunks: {manifest.total_files}")
-    emit(f"   Bottlenecks: {len(profile_result.bottlenecks)}")
-    emit(f"   Proposals: {len(proposals)}")
-    emit(f"   Executed: {report.executed_count}")
-    emit(f"   Passed: {report.success_count}")
-    emit(f"{'=' * 60}")
-    return report
-
-
-# ══════════════════════════════════════════════════════════
-# RECURSIVE LOOP
-# ══════════════════════════════════════════════════════════
-
 MAX_PASSES = 5  # Hard ceiling to prevent runaway
+
 
 @dataclass
 class LoopPassSummary:
@@ -161,38 +84,112 @@ class RecursiveLoopResult:
         }
 
 
+@dataclass
+class _PassContext:
+    pass_number: int
+    pass_start: float
+    profile_result: Any
+    proposals: List[Proposal]
+    complexity_before: float
+
+
+@dataclass(frozen=True)
+class _StopDecision:
+    reason: str
+    message: str
+
+
+@dataclass(frozen=True)
+class _ExecutionStats:
+    executed: int
+    passed: int
+    failed: int
+
+
+# ══════════════════════════════════════════════════════════
+# SINGLE PASS (existing behaviour — used by /optimize/run)
+# ══════════════════════════════════════════════════════════
+
+async def run_optimize_pass(
+    target_id: str = "astra-backend:optimize",
+    auto_approve_low_risk: bool = False,
+    emit: Optional[Callable[[str], None]] = None,
+) -> OptimizeReport:
+    """Run a single optimisation pass (phases A-C, optionally D)."""
+    emit = emit or (lambda msg: None)
+    t_start = time.time()
+    target = get_target_definition(target_id)
+
+    emit(f"\n{'=' * 60}")
+    emit(f"⚡ OPTIMIZE PASS: {target.display_label}")
+    emit(f"   Scope: {target.user_outcome}")
+    emit(f"   Root: {target.root_path}")
+    emit(f"{'=' * 60}")
+
+    report = OptimizeReport(target=target.target_id)
+
+    emit(f"\n{'─' * 40}")
+    emit("🔍 PHASE A: DECOMPOSE")
+    emit(f"{'─' * 40}")
+    manifest = await _decompose_target(target, emit)
+    report.manifest = manifest
+
+    emit(f"\n{'─' * 40}")
+    emit("📊 PHASE B: PROFILE")
+    emit(f"{'─' * 40}")
+    profile_result = await _profile_manifest(manifest, target.root_path, emit)
+    report.profile = profile_result
+
+    emit(f"\n{'─' * 40}")
+    emit("💡 PHASE C: PROPOSE")
+    emit(f"{'─' * 40}")
+    proposals = await _propose_changes(manifest, profile_result, emit)
+    report.proposals = proposals
+
+    if auto_approve_low_risk and proposals:
+        emit(f"\n{'─' * 40}")
+        emit("🔧 PHASE D: EXECUTE (auto-approved LOW risk)")
+        emit(f"{'─' * 40}")
+        approved_count = _approve_low_risk_proposals(proposals)
+        if approved_count > 0:
+            emit(f"   Auto-approved {approved_count} LOW-risk proposals")
+            snapshot = _snapshot_profile(profile_result)
+            results = await _execute_proposals(proposals, target.root_path, snapshot, emit)
+            report.execution_results = results
+            _learn_from_results(proposals, results)
+
+    report.total_duration_seconds = time.time() - t_start
+    report.total_token_cost = sum(r.token_cost for r in report.execution_results)
+
+    emit(f"\n{'=' * 60}")
+    emit(f"⚡ OPTIMIZE PASS COMPLETE ({report.total_duration_seconds:.1f}s)")
+    emit(f"   Chunks: {manifest.total_files}")
+    emit(f"   Bottlenecks: {len(profile_result.bottlenecks)}")
+    emit(f"   Proposals: {len(proposals)}")
+    emit(f"   Executed: {report.executed_count}")
+    emit(f"   Passed: {report.success_count}")
+    emit(f"{'=' * 60}")
+    return report
+
+
+# ══════════════════════════════════════════════════════════
+# RECURSIVE LOOP
+# ══════════════════════════════════════════════════════════
+
 async def run_recursive_optimize(
     target_id: str,
     max_passes: int = MAX_PASSES,
     emit: Optional[Callable[[str], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> RecursiveLoopResult:
-    """Run the full recursive optimisation loop.
-
-    Scans, proposes, executes ALL proposals, re-scans, and repeats
-    until one of these stop conditions:
-    - No proposals found (system is clean)
-    - No improvement between passes (at optimum)
-    - A pass had more failures than successes (risk of degradation)
-    - Max passes reached (safety ceiling)
-    """
+    """Run the full recursive optimisation loop."""
     emit = emit or (lambda msg: None)
     target = get_target_definition(target_id)
     t_start = time.time()
-
-    result = RecursiveLoopResult(
-        target_id=target_id,
-        target_label=target.display_label,
-        total_passes=0,
-        total_proposals_found=0,
-        total_executed=0,
-        total_passed=0,
-        total_failed=0,
-        stop_reason="",
-    )
+    result = _create_recursive_result(target_id, target.display_label)
 
     emit(f"\n{'=' * 60}")
-    emit(f"\U0001f501 RECURSIVE OPTIMIZE: {target.display_label}")
+    emit(f"🔁 RECURSIVE OPTIMIZE: {target.display_label}")
     emit(f"   Max passes: {max_passes}")
     emit(f"   Scope: {target.user_outcome}")
     emit(f"{'=' * 60}")
@@ -200,140 +197,39 @@ async def run_recursive_optimize(
     prev_proposal_count = None
 
     for pass_num in range(1, max_passes + 1):
-        pass_start = time.time()
-        emit(f"\n\U0001f504 PASS {pass_num}/{max_passes}")
-        emit(f"{'\u2500' * 40}")
+        emit(f"\n🔄 PASS {pass_num}/{max_passes}")
+        emit(f"{'─' * 40}")
+        pass_context = await _run_recursive_pass(target, pass_num, emit)
+        result.total_proposals_found += len(pass_context.proposals)
 
-        # Phase A: Decompose
-        from app.optimize.decomposer import decompose
-        manifest = await decompose(target, emit)
-
-        complexity_before = sum(c.complexity_estimate for c in manifest.chunks)
-
-        # Phase B: Profile
-        from app.optimize.profiler import profile
-        profile_result = await profile(manifest, target.root_path, emit)
-
-        # Phase C: Propose
-        from app.optimize.proposer import propose
-        proposals = await propose(manifest, profile_result, emit)
-
-        result.total_proposals_found += len(proposals)
-
-        # Stop condition: no proposals
-        if not proposals:
-            emit(f"\n\u2705 No proposals found — system is clean for this scope.")
-            result.stop_reason = "No proposals — system is at optimum for this scope"
-            result.passes.append(LoopPassSummary(
-                pass_number=pass_num, proposals_found=0,
-                proposals_executed=0, proposals_passed=0, proposals_failed=0,
-                complexity_before=complexity_before, complexity_after=complexity_before,
-                duration_seconds=time.time() - pass_start,
-            ))
-            result.total_passes = pass_num
+        pre_execution_decision = _get_pre_execution_stop_decision(pass_context, prev_proposal_count)
+        if pre_execution_decision is not None:
+            _stop_with_summary(result, pass_context, pre_execution_decision, emit)
             break
 
-        # Stop condition: no improvement (same or more proposals as last pass)
-        if prev_proposal_count is not None and len(proposals) >= prev_proposal_count:
-            emit(f"\n\u26a0\ufe0f No improvement — {len(proposals)} proposals (was {prev_proposal_count}). Stopping.")
-            result.stop_reason = f"No improvement — proposals unchanged at {len(proposals)}"
-            result.passes.append(LoopPassSummary(
-                pass_number=pass_num, proposals_found=len(proposals),
-                proposals_executed=0, proposals_passed=0, proposals_failed=0,
-                complexity_before=complexity_before, complexity_after=complexity_before,
-                duration_seconds=time.time() - pass_start,
-            ))
-            result.total_passes = pass_num
-            break
+        prev_proposal_count = len(pass_context.proposals)
 
-        prev_proposal_count = len(proposals)
-
-        # Check for external stop request
         if should_stop and should_stop():
-            emit("\n\u23f9\ufe0f Stop requested before execution.")
+            emit("\n⏹️ Stop requested before execution.")
             result.stop_reason = "Stop requested by user"
             result.total_passes = pass_num
             break
 
-        # Capture code snapshots BEFORE execution (for learning)
-        all_target_chunks = []
-        for p in proposals:
-            all_target_chunks.extend(p.target_chunks)
-        from app.optimize.code_learner import capture_before_snapshot
-        before_code = capture_before_snapshot(all_target_chunks, target.root_path)
+        execution_data = await _execute_recursive_pass(target, pass_context, emit)
+        _update_recursive_totals(result, execution_data["results"])
+        _append_pass_summary(result, execution_data["summary"])
+        _emit_pass_completion(emit, execution_data["summary"])
 
-        # Phase D: Execute ALL proposals
-        emit(f"\n\U0001f527 Executing {len(proposals)} proposals...")
-        for p in proposals:
-            p.status = ProposalStatus.APPROVED
-
-        snapshot = _snapshot_profile(profile_result)
-        from app.optimize.executor import execute_batch
-        exec_results = await execute_batch(proposals, target.root_path, snapshot, emit)
-
-        passed = sum(1 for r in exec_results if r.success)
-        failed = sum(1 for r in exec_results if not r.success)
-        result.total_executed += len(exec_results)
-        result.total_passed += passed
-        result.total_failed += failed
-
-        _learn_from_results(proposals, exec_results)
-
-        # Learn structural lessons from successful executions
-        await _learn_code_lessons(
-            proposals, exec_results, before_code, snapshot,
-            target.root_path, emit,
-        )
-
-        # Re-scan to get updated complexity
-        manifest_after = await decompose(target, emit)
-        complexity_after = sum(c.complexity_estimate for c in manifest_after.chunks)
-
-        pass_summary = LoopPassSummary(
-            pass_number=pass_num,
-            proposals_found=len(proposals),
-            proposals_executed=len(exec_results),
-            proposals_passed=passed,
-            proposals_failed=failed,
-            complexity_before=complexity_before,
-            complexity_after=complexity_after,
-            duration_seconds=time.time() - pass_start,
-        )
-        result.passes.append(pass_summary)
-        result.total_passes = pass_num
-
-        emit(f"   Pass {pass_num} complete: {passed}/{len(exec_results)} passed, "
-             f"complexity {complexity_before:.0f} \u2192 {complexity_after:.0f}")
-
-        # Stop condition: more failures than successes
-        if failed > passed:
-            emit(f"\n\u274c More failures ({failed}) than successes ({passed}). Stopping to avoid degradation.")
-            result.stop_reason = f"Pass {pass_num} had more failures than successes — stopping to protect stability"
+        post_execution_decision = _get_post_execution_stop_decision(execution_data["summary"])
+        if post_execution_decision is not None:
+            emit(f"\n{post_execution_decision.message}")
+            result.stop_reason = post_execution_decision.reason
             break
-
-        # Stop condition: complexity didn't improve
-        if complexity_after >= complexity_before:
-            emit(f"\n\u26a0\ufe0f Complexity did not decrease ({complexity_before:.0f} \u2192 {complexity_after:.0f}). Stopping.")
-            result.stop_reason = f"Complexity unchanged at {complexity_after:.0f} — further passes unlikely to help"
-            break
-
     else:
-        # Exhausted max passes
         result.stop_reason = f"Reached maximum {max_passes} passes"
 
     result.total_duration_seconds = time.time() - t_start
-
-    emit(f"\n{'=' * 60}")
-    emit(f"\U0001f501 RECURSIVE OPTIMIZE COMPLETE")
-    emit(f"   Passes: {result.total_passes}")
-    emit(f"   Total proposals found: {result.total_proposals_found}")
-    emit(f"   Executed: {result.total_executed}")
-    emit(f"   Passed: {result.total_passed}")
-    emit(f"   Failed: {result.total_failed}")
-    emit(f"   Stop reason: {result.stop_reason}")
-    emit(f"   Duration: {result.total_duration_seconds:.1f}s")
-    emit(f"{'=' * 60}")
-
+    _emit_recursive_completion(result, emit)
     return result
 
 
@@ -349,8 +245,12 @@ async def execute_approved(
 ) -> List[ExecutionResult]:
     """Execute previously approved proposals."""
     emit = emit or (lambda msg: None)
-    from app.optimize.executor import execute_batch
-    results = await execute_batch(proposals, get_target_definition(target_id).root_path, profile_snapshot, emit)
+    results = await _execute_proposals(
+        proposals,
+        get_target_definition(target_id).root_path,
+        profile_snapshot,
+        emit,
+    )
     _learn_from_results(proposals, results)
     return results
 
@@ -358,6 +258,257 @@ async def execute_approved(
 # ══════════════════════════════════════════════════════════
 # HELPERS
 # ══════════════════════════════════════════════════════════
+
+def _create_recursive_result(target_id: str, target_label: str) -> RecursiveLoopResult:
+    return RecursiveLoopResult(
+        target_id=target_id,
+        target_label=target_label,
+        total_passes=0,
+        total_proposals_found=0,
+        total_executed=0,
+        total_passed=0,
+        total_failed=0,
+        stop_reason="",
+    )
+
+
+async def _run_recursive_pass(target: Any, pass_number: int, emit: Callable[[str], None]) -> _PassContext:
+    pass_start = time.time()
+    manifest = await _decompose_target(target, emit)
+    complexity_before = _sum_manifest_complexity(manifest)
+    profile_result = await _profile_manifest(manifest, target.root_path, emit)
+    proposals = await _propose_changes(manifest, profile_result, emit)
+    return _PassContext(
+        pass_number=pass_number,
+        pass_start=pass_start,
+        profile_result=profile_result,
+        proposals=proposals,
+        complexity_before=complexity_before,
+    )
+
+
+async def _decompose_target(target: Any, emit: Callable[[str], None]):
+    from app.optimize.decomposer import decompose
+    return await decompose(target, emit)
+
+
+async def _profile_manifest(manifest: Any, root_path: str, emit: Callable[[str], None]):
+    from app.optimize.profiler import profile
+    return await profile(manifest, root_path, emit)
+
+
+async def _propose_changes(manifest: Any, profile_result: Any, emit: Callable[[str], None]) -> List[Proposal]:
+    from app.optimize.proposer import propose
+    return await propose(manifest, profile_result, emit)
+
+
+async def _execute_proposals(
+    proposals: List[Proposal],
+    root_path: str,
+    profile_snapshot: Optional[Dict[str, Any]],
+    emit: Callable[[str], None],
+) -> List[ExecutionResult]:
+    from app.optimize.executor import execute_batch
+    return await execute_batch(proposals, root_path, profile_snapshot, emit)
+
+
+def _sum_manifest_complexity(manifest: Any) -> float:
+    return sum(chunk.complexity_estimate for chunk in manifest.chunks)
+
+
+def _approve_low_risk_proposals(proposals: List[Proposal]) -> int:
+    approved_count = 0
+    for proposal in proposals:
+        if proposal.risk.value == "low":
+            proposal.status = ProposalStatus.APPROVED
+            approved_count += 1
+    return approved_count
+
+
+def _get_pre_execution_stop_decision(
+    pass_context: _PassContext,
+    prev_proposal_count: Optional[int],
+) -> Optional[_StopDecision]:
+    proposals_found = len(pass_context.proposals)
+    if proposals_found == 0:
+        return _StopDecision(
+            reason="No proposals — system is at optimum for this scope",
+            message="\n✅ No proposals found — system is clean for this scope.",
+        )
+    if prev_proposal_count is not None and proposals_found >= prev_proposal_count:
+        return _StopDecision(
+            reason=f"No improvement — proposals unchanged at {proposals_found}",
+            message=(
+                f"\n⚠️ No improvement — {proposals_found} proposals "
+                f"(was {prev_proposal_count}). Stopping."
+            ),
+        )
+    return None
+
+
+def _stop_with_summary(
+    result: RecursiveLoopResult,
+    pass_context: _PassContext,
+    decision: _StopDecision,
+    emit: Callable[[str], None],
+) -> None:
+    emit(decision.message)
+    _append_pass_summary(result, _build_no_execution_summary(pass_context))
+    result.stop_reason = decision.reason
+
+
+def _build_no_execution_summary(pass_context: _PassContext) -> LoopPassSummary:
+    return LoopPassSummary(
+        pass_number=pass_context.pass_number,
+        proposals_found=len(pass_context.proposals),
+        proposals_executed=0,
+        proposals_passed=0,
+        proposals_failed=0,
+        complexity_before=pass_context.complexity_before,
+        complexity_after=pass_context.complexity_before,
+        duration_seconds=time.time() - pass_context.pass_start,
+    )
+
+
+async def _execute_recursive_pass(target: Any, pass_context: _PassContext, emit: Callable[[str], None]) -> Dict[str, Any]:
+    before_code = _capture_before_code(pass_context.proposals, target.root_path)
+    emit(f"\n🔧 Executing {len(pass_context.proposals)} proposals...")
+    _approve_all_proposals(pass_context.proposals)
+
+    snapshot = _snapshot_profile(pass_context.profile_result)
+    exec_results = await _execute_proposals(pass_context.proposals, target.root_path, snapshot, emit)
+    _learn_from_results(pass_context.proposals, exec_results)
+    await _learn_code_lessons(
+        pass_context.proposals,
+        exec_results,
+        before_code,
+        snapshot,
+        target.root_path,
+        emit,
+    )
+
+    manifest_after = await _decompose_target(target, emit)
+    complexity_after = _sum_manifest_complexity(manifest_after)
+    summary = _build_execution_summary(pass_context, exec_results, complexity_after)
+    return {"results": exec_results, "summary": summary}
+
+
+def _capture_before_code(proposals: List[Proposal], root_path: str) -> Dict[str, str]:
+    from app.optimize.code_learner import capture_before_snapshot
+    return capture_before_snapshot(_collect_target_chunks(proposals), root_path)
+
+
+def _collect_target_chunks(proposals: List[Proposal]) -> List[str]:
+    target_chunks: List[str] = []
+    for proposal in proposals:
+        target_chunks.extend(proposal.target_chunks)
+    return target_chunks
+
+
+def _approve_all_proposals(proposals: List[Proposal]) -> None:
+    for proposal in proposals:
+        proposal.status = ProposalStatus.APPROVED
+
+
+def _build_execution_summary(
+    pass_context: _PassContext,
+    exec_results: List[ExecutionResult],
+    complexity_after: float,
+) -> LoopPassSummary:
+    stats = _summarize_execution_results(exec_results)
+    return LoopPassSummary(
+        pass_number=pass_context.pass_number,
+        proposals_found=len(pass_context.proposals),
+        proposals_executed=stats.executed,
+        proposals_passed=stats.passed,
+        proposals_failed=stats.failed,
+        complexity_before=pass_context.complexity_before,
+        complexity_after=complexity_after,
+        duration_seconds=time.time() - pass_context.pass_start,
+    )
+
+
+def _summarize_execution_results(exec_results: List[ExecutionResult]) -> _ExecutionStats:
+    passed = sum(1 for result in exec_results if result.success)
+    return _ExecutionStats(
+        executed=len(exec_results),
+        passed=passed,
+        failed=len(exec_results) - passed,
+    )
+
+
+def _update_recursive_totals(result: RecursiveLoopResult, exec_results: List[ExecutionResult]) -> None:
+    stats = _summarize_execution_results(exec_results)
+    result.total_executed += stats.executed
+    result.total_passed += stats.passed
+    result.total_failed += stats.failed
+
+
+def _append_pass_summary(result: RecursiveLoopResult, summary: LoopPassSummary) -> None:
+    result.passes.append(summary)
+    result.total_passes = summary.pass_number
+
+
+def _emit_pass_completion(emit: Callable[[str], None], summary: LoopPassSummary) -> None:
+    emit(
+        f"   Pass {summary.pass_number} complete: {summary.proposals_passed}/"
+        f"{summary.proposals_executed} passed, complexity "
+        f"{summary.complexity_before:.0f} → {summary.complexity_after:.0f}"
+    )
+
+
+def _get_post_execution_stop_decision(summary: LoopPassSummary) -> Optional[_StopDecision]:
+    for decision in (
+        _get_failure_stop_decision(summary),
+        _get_complexity_stop_decision(summary),
+    ):
+        if decision is not None:
+            return decision
+    return None
+
+
+def _get_failure_stop_decision(summary: LoopPassSummary) -> Optional[_StopDecision]:
+    if summary.proposals_failed <= summary.proposals_passed:
+        return None
+    return _StopDecision(
+        reason=(
+            f"Pass {summary.pass_number} had more failures than successes — "
+            "stopping to protect stability"
+        ),
+        message=(
+            f"❌ More failures ({summary.proposals_failed}) than successes "
+            f"({summary.proposals_passed}). Stopping to avoid degradation."
+        ),
+    )
+
+
+def _get_complexity_stop_decision(summary: LoopPassSummary) -> Optional[_StopDecision]:
+    if summary.complexity_after < summary.complexity_before:
+        return None
+    return _StopDecision(
+        reason=(
+            f"Complexity unchanged at {summary.complexity_after:.0f} — "
+            "further passes unlikely to help"
+        ),
+        message=(
+            f"⚠️ Complexity did not decrease ({summary.complexity_before:.0f} → "
+            f"{summary.complexity_after:.0f}). Stopping."
+        ),
+    )
+
+
+def _emit_recursive_completion(result: RecursiveLoopResult, emit: Callable[[str], None]) -> None:
+    emit(f"\n{'=' * 60}")
+    emit("🔁 RECURSIVE OPTIMIZE COMPLETE")
+    emit(f"   Passes: {result.total_passes}")
+    emit(f"   Total proposals found: {result.total_proposals_found}")
+    emit(f"   Executed: {result.total_executed}")
+    emit(f"   Passed: {result.total_passed}")
+    emit(f"   Failed: {result.total_failed}")
+    emit(f"   Stop reason: {result.stop_reason}")
+    emit(f"   Duration: {result.total_duration_seconds:.1f}s")
+    emit(f"{'=' * 60}")
+
 
 def _snapshot_profile(profile_result) -> Dict[str, Any]:
     snapshot = {}
@@ -385,7 +536,6 @@ def _learn_from_results(proposals: List[Proposal], results: List[ExecutionResult
         logger.debug("[orchestrator] Pattern learning failed: %s", e)
 
 
-
 async def _learn_code_lessons(
     proposals: List[Proposal],
     results: List[ExecutionResult],
@@ -399,47 +549,16 @@ async def _learn_code_lessons(
     try:
         from app.optimize.code_learner import capture_after_snapshot, get_lesson_store
 
-        # Collect all target chunks from successful proposals
-        successful_chunks = []
-        approved = [p for p in proposals if p.status != ProposalStatus.PENDING]
-        for proposal, result in zip(approved, results):
-            if result.success:
-                successful_chunks.extend(proposal.target_chunks)
-
+        successful_chunks = _collect_successful_chunks(proposals, results)
         if not successful_chunks:
             return
 
-        # Capture code AFTER execution
         after_code = capture_after_snapshot(successful_chunks, root_path)
+        after_metrics = _profile_successful_chunks(successful_chunks, root_path)
 
-        # Re-profile changed files for after-metrics
-        from app.optimize.profiler import _profile_chunk
-        from app.optimize.models import CodeChunk
-        from pathlib import Path
-
-        after_metrics = {}
-        for chunk_path in successful_chunks:
-            fpath = Path(root_path) / chunk_path
-            if fpath.exists():
-                try:
-                    stat = fpath.stat()
-                    text = fpath.read_text(encoding='utf-8', errors='ignore')
-                    chunk = CodeChunk(
-                        path=chunk_path,
-                        lines=text.count(chr(10)) + 1,
-                        size_bytes=stat.st_size,
-                    )
-                    m = _profile_chunk(chunk, root_path)
-                    after_metrics[chunk_path] = {
-                        "size_bytes": m.size_bytes,
-                        "cyclomatic_complexity": m.cyclomatic_complexity,
-                    }
-                except Exception:
-                    pass
-
-        # Record a lesson for each successful proposal
         store = get_lesson_store()
         lessons_recorded = 0
+        approved = [p for p in proposals if p.status != ProposalStatus.PENDING]
         for proposal, result in zip(approved, results):
             if not result.success:
                 continue
@@ -457,8 +576,42 @@ async def _learn_code_lessons(
                 logger.debug("[orchestrator] Lesson recording failed for %s: %s", proposal.proposal_id, e)
 
         if lessons_recorded > 0:
-            emit(f"   \U0001f4da Recorded {lessons_recorded} code lesson(s)")
+            emit(f"   📚 Recorded {lessons_recorded} code lesson(s)")
 
     except Exception as e:
         logger.debug("[orchestrator] Code lesson capture failed: %s", e)
 
+
+def _collect_successful_chunks(proposals: List[Proposal], results: List[ExecutionResult]) -> List[str]:
+    successful_chunks: List[str] = []
+    approved = [p for p in proposals if p.status != ProposalStatus.PENDING]
+    for proposal, result in zip(approved, results):
+        if result.success:
+            successful_chunks.extend(proposal.target_chunks)
+    return successful_chunks
+
+
+def _profile_successful_chunks(successful_chunks: List[str], root_path: str) -> Dict[str, Dict[str, Any]]:
+    from app.optimize.profiler import _profile_chunk
+
+    after_metrics: Dict[str, Dict[str, Any]] = {}
+    for chunk_path in successful_chunks:
+        file_path = Path(root_path) / chunk_path
+        if not file_path.exists():
+            continue
+        try:
+            stat = file_path.stat()
+            text = file_path.read_text(encoding="utf-8", errors="ignore")
+            chunk = CodeChunk(
+                path=chunk_path,
+                lines=text.count(chr(10)) + 1,
+                size_bytes=stat.st_size,
+            )
+            metric = _profile_chunk(chunk, root_path)
+            after_metrics[chunk_path] = {
+                "size_bytes": metric.size_bytes,
+                "cyclomatic_complexity": metric.cyclomatic_complexity,
+            }
+        except Exception:
+            continue
+    return after_metrics
