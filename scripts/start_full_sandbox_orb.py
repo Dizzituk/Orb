@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.overwatcher.sandbox_client import get_sandbox_client
+from app.sandbox.client import get_sandbox_client
 
 
 def main():

@@ -69,22 +69,20 @@ class FileContent:
 
 @dataclass
 class WriteResult:
-    """Response from /fs/write endpoint."""
     ok: bool
     path: str
     bytes: int
-    sha256: str
+    sha256: str = ""
 
 
 @dataclass
 class ShellResult:
-    """Response from /shell/run endpoint."""
     ok: bool
     exit_code: int
     duration_ms: int
     stdout: str
     stderr: str
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "ok": self.ok,
@@ -318,110 +316,78 @@ class SandboxClient:
         subdir: Optional[str] = None,
         overwrite: bool = False,
     ) -> WriteResult:
-        """Write file to sandbox filesystem.
-        
-        Args:
-            target: Target location (DESKTOP, DOCUMENTS, SCRATCH, ARTIFACT, REPO)
-            filename: File name (must be safe: alphanumeric, underscores, dots)
-            content: File content
-            subdir: Optional subdirectory within target
-            overwrite: Allow overwriting existing file
-        
-        Returns:
-            WriteResult with path and hash
-        
-        Raises:
-            SandboxError: If write fails
-        """
-        body = {
-            "target": target,
-            "filename": filename,
-            "content": content,
-            "overwrite": overwrite,
+        target_map = {
+            "REPO": r"D:\Orb",
+            "SCRATCH": None,
+            "ARTIFACT": None,
+            "DESKTOP": r"C:\Users\dizzi\Desktop",
+            "DOCUMENTS": r"C:\Users\dizzi\Documents",
         }
-        
+        base = target_map.get(target.upper())
+        if target.upper() == "SCRATCH":
+            base = self.health().scratch_root
+        elif target.upper() == "ARTIFACT":
+            base = self.health().artifact_root
+        if not base:
+            raise SandboxError(f"Unsupported write target: {target}")
+
+        parts = [base]
         if subdir:
-            body["subdir"] = subdir
-        
-        data = self._request("POST", "/fs/write", json_body=body)
-        
-        result = WriteResult(
-            ok=data.get("ok", False),
+            parts.append(subdir)
+        parts.append(filename)
+        abs_path = str(Path(*parts))
+
+        data = self._request(
+            "POST",
+            "/fs/write",
+            json_body={
+                "path": abs_path,
+                "content": content,
+                "overwrite": overwrite,
+            },
+        )
+
+        return WriteResult(
+            ok=data.get("status") == "ok" or data.get("ok", False),
             path=data.get("path", ""),
             bytes=data.get("bytes", 0),
             sha256=data.get("sha256", ""),
         )
 
-        # IO Tracking: record sandbox writes when IOTracker is active
-        if result.ok:
-            try:
-                from app.transparency.io_tracker import get_active_tracker
-                tracker = get_active_tracker()
-                if tracker:
-                    write_path = result.path or f"{target}/{subdir or ''}/{filename}"
-                    tracker.record_write(
-                        path=write_path,
-                        target="sandbox",
-                        bytes_count=result.bytes,
-                    )
-            except ImportError:
-                pass
-
-        return result
-    
     def shell_run(
         self,
         command: str,
         cwd_target: str = "REPO",
         timeout_seconds: int = 60,
     ) -> ShellResult:
-        """Run PowerShell command in sandbox.
-        
-        Args:
-            command: PowerShell command text
-            cwd_target: Working directory (REPO, SCRATCH, ARTIFACT)
-            timeout_seconds: Command timeout (max 300)
-        
-        Returns:
-            ShellResult with exit code and output
-        
-        Raises:
-            SandboxError: If command blocked or execution fails
-        """
+        cwd_map = {
+            "REPO": r"D:\Orb",
+            "SCRATCH": self.health().scratch_root,
+            "ARTIFACT": self.health().artifact_root,
+        }
+        cwd = cwd_map.get(cwd_target.upper())
         body = {
             "cmd": ["powershell", "-NoProfile", "-Command", command],
-            "cwd_target": cwd_target,
-            "timeout_seconds": min(timeout_seconds, 300),
+            "cwd": cwd,
+            "timeout_sec": min(timeout_seconds, 300),
         }
-        
-        logger.info(f"[sandbox] shell_run request: cmd={body['cmd']}, cwd_target={cwd_target}")
-        print(f"[SANDBOX_DEBUG] shell_run request: cmd={body['cmd']}, cwd_target={cwd_target}")  # Force print
-        
+
+        logger.info(f"[sandbox] shell_run request: cmd={body['cmd']}, cwd={cwd}")
+        print(f"[SANDBOX_DEBUG] shell_run request: cmd={body['cmd']}, cwd={cwd}")
+
         try:
-            # Use longer timeout for shell commands
             data = self._request(
                 "POST",
                 "/shell/run",
                 json_body=body,
                 timeout=timeout_seconds + 10,
             )
-            
-            logger.info(
-                f"[sandbox] shell_run response: ok={data.get('ok')}, "
-                f"exit_code={data.get('exit_code')}, "
-                f"stdout={repr(data.get('stdout', '')[:100])}, "
-                f"stderr={repr(data.get('stderr', '')[:100])}"
-            )
-            print(
-                f"[SANDBOX_DEBUG] shell_run response: ok={data.get('ok')}, "
-                f"exit_code={data.get('exit_code')}, "
-                f"stdout={repr(data.get('stdout', '')[:100])}, "
-                f"stderr={repr(data.get('stderr', '')[:100])}"
-            )  # Force print
-            
+            exit_code = data.get("exit_code")
+            if exit_code is None:
+                exit_code = data.get("returncode", -1)
             return ShellResult(
-                ok=data.get("ok", False),
-                exit_code=data.get("exit_code", -1),
+                ok=exit_code == 0,
+                exit_code=exit_code,
                 duration_ms=data.get("duration_ms", 0),
                 stdout=data.get("stdout", ""),
                 stderr=data.get("stderr", ""),
@@ -436,9 +402,9 @@ class SandboxClient:
                 f"[SANDBOX_DEBUG] shell_run FAILED: {e}, "
                 f"status={e.status_code}, "
                 f"body={e.response_body[:200] if e.response_body else None}"
-            )  # Force print
+            )
             raise
-    
+
     # -------------------------------------------------------------------------
     # Convenience Methods
     # -------------------------------------------------------------------------
