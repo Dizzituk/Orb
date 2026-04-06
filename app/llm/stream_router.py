@@ -711,6 +711,28 @@ async def stream_chat(
         _staleness_events = None
 
     # =========================================================================
+    # v3.2: IMAGE GENERATION INTERCEPT — catch image requests before normal routing
+    # This runs regardless of whether the message came through chat_mode or
+    # fell through from the translation layer as CHAT_ONLY.
+    # =========================================================================
+    try:
+        from app.llm.routing.chat_routing import _detect_image_gen_intent
+        if _detect_image_gen_intent(req.message):
+            print(f"[NORMAL_ROUTING] Image generation detected -> routing to image pipeline")
+            from app.llm.image_router import generate_image_stream
+            return StreamingResponse(
+                generate_image_stream(
+                    project_id=req.project_id,
+                    message=req.message,
+                    db=db,
+                ),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+    except ImportError as _img_err:
+        print(f"[NORMAL_ROUTING] Image gen import failed: {_img_err}")
+
+    # =========================================================================
     # NORMAL ROUTING
     # =========================================================================
     

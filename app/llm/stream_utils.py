@@ -28,7 +28,7 @@ from app.llm.schemas import JobType, RoutingConfig
 # Code/text: GPT-5.4 (capable, good value)
 # Architecture: Claude Opus 4.6 (heavy thinking)
 _HARDCODED_FALLBACKS = {
-    "openai": "gpt-5-mini",
+    "openai": "gpt-5.4-mini",  # v14.1: upgraded from gpt-5-mini
     "openai_code": "gpt-5.4",
     "anthropic": "claude-sonnet-4-6",
     "anthropic_opus": "claude-opus-4-6",

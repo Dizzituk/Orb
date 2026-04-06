@@ -196,15 +196,12 @@ async def generate_image_stream(
 
     Called by the dispatch table when GENERATE_IMAGE intent is matched.
 
-    Pipeline:
-      Stage 0: Research (conditional) — web search if data keywords detected
-      Stage 1A: Data extraction (conditional) — LLM extracts structured chart data
-      Stage 1B: Chart render (conditional) — Plotly renders deterministic chart
-      Stage 2: AI image gen (fallback or creative) — GPT Image 1.5 / Nano Banana
+    v4.0 (2026-04-02): Image type classification + inline data extraction.
 
-    Data-driven requests get Plotly charts (accurate, free).
-    Creative requests get AI image generation (stylistic, paid).
-    If Plotly extraction fails, falls back to AI with research context.
+    Pipeline branches:
+      DATA_CHART    → inline extract → Plotly render (no AI, exact data)
+      DATA_RESEARCH → web search → LLM extract → Plotly render
+      CREATIVE      → prompt synthesis → GPT Image 1.5 / Nano Banana
     """
     primary = _get_provider()
     fallback = _get_fallback_provider()
@@ -212,42 +209,42 @@ async def generate_image_stream(
     model_name = os.getenv("IMAGE_GEN_MODEL", "gpt-image-1.5")
     result = None
 
-    # =========================================================================
-    # Stage 0 (conditional): Research — gather data before image creation
-    # =========================================================================
-    research_context = None
-    do_research = _needs_research(message)
-
     # Emit metadata so frontend shows the correct provider badge
     yield _sse("metadata", provider=primary, model=model_name)
 
-    if do_research:
-        yield _sse_status("Planning research queries...")
-        research_context = await _run_research(message)
-        if research_context:
-            logger.info("[image_stream] Research gathered: %d chars",
-                         len(research_context))
-            yield _sse_status("Data gathered. Extracting chart data...")
-        else:
-            yield _sse_status("Research returned no results. Proceeding creatively...")
+    # =========================================================================
+    # Stage 0: CLASSIFY — what kind of image is this?
+    # =========================================================================
+    try:
+        from app.llm.image_type_classifier import classify_image_request, ImageType
+        classification = classify_image_request(message)
+        image_type = classification.image_type
+        logger.info(
+            "[image_stream] Classification: %s (confidence=%.2f, reason=%s)",
+            image_type.value, classification.confidence, classification.reason,
+        )
+        yield _sse_status(f"Detected: {image_type.value} request...")
+    except ImportError:
+        logger.warning("[image_stream] Classifier not available, defaulting to creative")
+        image_type = "creative"
+    except Exception as e:
+        logger.warning("[image_stream] Classification failed: %s, defaulting to creative", e)
+        image_type = "creative"
 
     # =========================================================================
-    # Stage 1A + 1B (conditional): Extract data → Plotly chart
-    # Only if we have research data to work with
+    # Branch A: DATA_CHART — user provided inline data → Plotly (no AI)
     # =========================================================================
-    if research_context:
+    if image_type == ImageType.DATA_CHART:
+        yield _sse_status("Extracting your data for chart rendering...")
         try:
-            from app.llm.chart_data_extractor import extract_chart_data
+            from app.llm.chart_inline_extractor import extract_inline_chart_data
             from app.llm.chart_renderer import render_chart
 
-            yield _sse_status("Extracting structured data...")
-            chart_data = await extract_chart_data(
-                user_message=message,
-                research_text=research_context,
-            )
+            chart_data = await extract_inline_chart_data(message)
 
             if chart_data:
-                yield _sse_status(f"Rendering {chart_data.get('chart_type', 'bar')} chart with Plotly...")
+                chart_type = chart_data.get("chart_type", "bar")
+                yield _sse_status(f"Rendering {chart_type} chart with Plotly...")
                 result = render_chart(chart_data)
 
                 if result:
@@ -255,47 +252,92 @@ async def generate_image_stream(
                     model_name = "plotly/kaleido"
                     logger.info("[image_stream] Plotly chart rendered: %s", result["filename"])
                 else:
-                    logger.warning("[image_stream] Plotly render failed, falling back to AI")
-                    yield _sse_status("Chart render failed. Falling back to AI image generation...")
+                    logger.warning("[image_stream] Plotly render failed")
+                    yield _sse_status("Chart render failed. Please check data format.")
             else:
-                logger.info("[image_stream] Data extraction returned no chart data, falling back to AI")
-                yield _sse_status("Couldn't extract chart data. Generating creative image instead...")
+                logger.warning("[image_stream] Inline data extraction returned nothing")
+                yield _sse_status("Couldn't extract chart data from your message.")
 
-        except ImportError:
-            logger.warning("[image_stream] plotly/kaleido not installed, falling back to AI")
-            yield _sse_status("Plotly not available. Using AI image generation...")
+        except ImportError as e:
+            logger.error("[image_stream] Chart modules not available: %s", e)
+            yield _sse_status("Chart rendering not available (missing plotly/kaleido).")
         except Exception as e:
-            logger.warning("[image_stream] Chart pipeline failed: %s, falling back to AI", e)
-            yield _sse_status("Chart pipeline error. Falling back to AI...")
+            logger.error("[image_stream] Inline chart pipeline failed: %s", e)
+            yield _sse_status(f"Chart pipeline error: {e}")
 
     # =========================================================================
-    # Stage 2: AI image generation (creative path OR fallback from chart fail)
+    # Branch B: DATA_RESEARCH — needs web search first → then Plotly
+    # =========================================================================
+    elif image_type == ImageType.DATA_RESEARCH:
+        yield _sse_status("Researching data for your chart...")
+        research_context = await _run_research(message)
+
+        if research_context:
+            logger.info("[image_stream] Research gathered: %d chars", len(research_context))
+            yield _sse_status("Data gathered. Extracting chart data...")
+
+            try:
+                from app.llm.chart_data_extractor import extract_chart_data
+                from app.llm.chart_renderer import render_chart
+
+                chart_data = await extract_chart_data(
+                    user_message=message,
+                    research_text=research_context,
+                )
+
+                if chart_data:
+                    chart_type = chart_data.get("chart_type", "bar")
+                    yield _sse_status(f"Rendering {chart_type} chart with Plotly...")
+                    result = render_chart(chart_data)
+
+                    if result:
+                        used_provider = "plotly"
+                        model_name = "plotly/kaleido"
+                        logger.info("[image_stream] Plotly chart rendered: %s", result["filename"])
+                    else:
+                        yield _sse_status("Chart render failed. Falling back to AI...")
+                else:
+                    yield _sse_status("Couldn't extract chart data. Falling back to AI...")
+
+            except ImportError:
+                yield _sse_status("Plotly not available. Falling back to AI...")
+            except Exception as e:
+                logger.warning("[image_stream] Chart pipeline failed: %s", e)
+                yield _sse_status("Chart pipeline error. Falling back to AI...")
+        else:
+            yield _sse_status("Research returned no data. Falling back to AI...")
+
+    # =========================================================================
+    # Branch C: CREATIVE — or fallback from failed chart paths
     # =========================================================================
     if not result:
-        if not do_research:
-            yield _sse_status("Enriching image prompt...")
+        # Only do creative AI if the type was CREATIVE or chart paths failed
+        if image_type == ImageType.DATA_CHART:
+            # DATA_CHART failed — do NOT fall back to AI (it will hallucinate)
+            yield _sse("error", error="Chart rendering failed. AI image models cannot "
+                       "render accurate data charts. Please check your data format "
+                       "or try simplifying the request.")
+            yield _sse("done", provider="none", model="none", total_length=0)
+            return
 
-        # Prompt synthesis
+        yield _sse_status("Enriching image prompt...")
+
+        # Prompt synthesis for creative images
         try:
             from app.llm.image_prompt_synth import synthesise_image_prompt
 
             try:
                 from app.memory import service as mem_svc
-                recent = mem_svc.get_recent_messages(db, project_id, limit=8)
+                all_msgs = mem_svc.list_messages(db, project_id, limit=100)
+                recent = all_msgs[-8:] if len(all_msgs) > 8 else all_msgs
                 history = [{"role": m.role, "content": m.content} for m in recent]
-            except Exception:
+                logger.info("[image_stream] Loaded %d history messages for prompt synth", len(history))
+            except Exception as hist_err:
+                logger.warning("[image_stream] Failed to load history: %s", hist_err)
                 history = None
 
-            synth_message = message
-            if research_context:
-                synth_message = (
-                    f"{message}\n\n"
-                    f"[RESEARCH DATA — use this real data in the image]:\n"
-                    f"{research_context}"
-                )
-
             synth_prompt, aspect_ratio = await synthesise_image_prompt(
-                user_message=synth_message,
+                user_message=message,
                 conversation_history=history,
             )
             logger.info("[image_stream] Synthesised prompt: %s (ar=%s)",

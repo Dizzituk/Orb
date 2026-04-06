@@ -172,7 +172,7 @@ def _get_weaver_config() -> Tuple[str, str]:
         # Fallback if stage_models not available
         import os
         provider = os.getenv("WEAVER_PROVIDER", "openai")
-        model = os.getenv("WEAVER_MODEL", "gpt-4.1-mini")
+        model = os.getenv("WEAVER_MODEL", "gpt-5.4")
         logger.warning("[weaver_simple] stage_models not available, using env directly: provider=%s, model=%s", provider, model)
         return provider, model
 

@@ -211,7 +211,7 @@ class RoutingConfig:
     # === JOB TYPE → PROVIDER/MODEL MAPPING ===
     JOB_TYPE_ROUTING: Dict[JobType, tuple] = {
         # OpenAI routes
-        JobType.CHAT_LIGHT: (Provider.OPENAI, "OPENAI_MODEL_LIGHT_CHAT", "gpt-5-mini"),  # v2.3: upgraded
+        JobType.CHAT_LIGHT: (Provider.OPENAI, "OPENAI_MODEL_LIGHT_CHAT", "gpt-5.4-mini"),  # v14.1: upgraded
         JobType.TEXT_HEAVY: (Provider.OPENAI, "OPENAI_MODEL_HEAVY_TEXT", "gpt-5.4"),  # v2.3: upgraded
         
         # Anthropic routes

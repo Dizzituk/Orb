@@ -414,7 +414,16 @@ def _length_heuristic(word_count: int) -> str:
 def _check_multimodal(attachments: list) -> bool:
     """Check if any attachments are multimodal (image/video/audio)."""
     for att in attachments:
-        path = att if isinstance(att, str) else att.get("path", "")
+        # Support both string paths and dict attachments
+        if isinstance(att, str):
+            path = att
+        else:
+            # v14.0: Also check mime type directly (synthetic attachments
+            # from file_upload_* fields may have a mime key)
+            mime = att.get("mime", "")
+            if mime.startswith(("image/", "video/", "audio/")):
+                return True
+            path = att.get("path", "")
         ext = "." + path.rsplit(".", 1)[-1].lower() if "." in path else ""
         if ext in MULTIMODAL_EXTENSIONS:
             return True

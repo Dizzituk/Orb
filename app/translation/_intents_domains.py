@@ -83,9 +83,15 @@ DOMAIN_INTENTS: Dict[CanonicalIntent, IntentDefinition] = {
             "investment tab",
         ],
         trigger_patterns=[
-            r"\b(portfolio|stock|share|crypto|bitcoin|ethereum|invest|trading|position|dividend)\b",
-            r"\b(bull|bear|market|nasdaq|s&p|ftse)\b",
-            r"\bhow.*(portfolio|investment|stock|share|position).*(doing|performing|going)\b",
+            # v3.1: Removed bare "share" and "market" — too many false positives
+            # ("population share", "share this", "job market", "market stall").
+            # "share" now requires finance context (share price/shares/shareholding).
+            # "market" now requires finance context (stock market/market cap).
+            r"\b(portfolio|stock|crypto|bitcoin|ethereum|invest(?:ment|ing|or)?|trading|dividend)\b",
+            r"\b(share\s*(?:price|holder|holding|portfolio)|my\s+shares|shares?\s+(?:isa|portfolio|value))\b",
+            r"\b(stock\s*market|market\s*(?:cap|crash|correction|rally|open|close|update))\b",
+            r"\b(bull|bear|nasdaq|s&p|ftse)\b",
+            r"\bhow.*(portfolio|investment|stock|position).*(doing|performing|going)\b",
             r"\b(buy|sell|hold)\s+(stock|share|crypto|position)\b",
         ],
     ),
@@ -120,8 +126,12 @@ DOMAIN_INTENTS: Dict[CanonicalIntent, IntentDefinition] = {
         trigger_patterns=[
             r"\b(content|video|short|youtube|publish|schedule|upload|thumbnail|caption)\b",
             r"\b(content\s*(pipeline|queue|status|output|review))\b",
-            r"\b(create|make|produce|edit|cut)\s+(a\s+)?(short|video|reel|carousel|post)\b",
+            # v3.1: Added slide/image/graphic/infographic to catch visual content creation
+            r"\b(create|make|produce|edit|cut|design|build)\s+(a\s+)?(short|video|reel|carousel|post|slide|image|graphic|infographic|visual)\b",
+            r"\b(slide|image|graphic|infographic)\s*(design|creation|prompt|series)\b",
             r"\b(queue|schedule)\s+(for|to|on)\s+(youtube|tiktok|instagram|facebook)\b",
+            # v3.1: Social media slides / social content creation
+            r"\bsocial\s*media\s*(slide|image|graphic|post|content|visual)\b",
         ],
     ),
 

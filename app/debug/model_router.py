@@ -49,11 +49,11 @@ TIER_MODELS = {
     },
     DebugTier.ANALYSIS: {
         "provider": "anthropic",
-        "model": "claude-sonnet-4-5-20250929",
+        "model": "claude-sonnet-4-6",
     },
     DebugTier.AGENTIC: {
         "provider": "anthropic",
-        "model": "claude-sonnet-4-5-20250929",
+        "model": "claude-sonnet-4-6",
     },
 }
 

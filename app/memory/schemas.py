@@ -21,6 +21,7 @@ class ProjectCreate(BaseModel):
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    pinned: Optional[bool] = None
 
 
 class ProjectOut(BaseModel):
@@ -30,6 +31,7 @@ class ProjectOut(BaseModel):
     name: str
     description: Optional[str]
     type: Optional[str] = "development"
+    pinned: bool = False
     created_at: datetime
     updated_at: datetime
 

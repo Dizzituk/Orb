@@ -97,10 +97,29 @@ def render_chart(
     y_label = chart_data.get("y_label", "")
     subtitle = chart_data.get("subtitle", "")
     source_note = chart_data.get("source_note", "")
+    annotation_text = chart_data.get("annotation", "") or chart_data.get("annotation_text", "")
+
+    # v1.1: Custom colours from user (overrides default palette)
+    custom_colours = chart_data.get("colours") or chart_data.get("colors")
+    if custom_colours and isinstance(custom_colours, list):
+        colours = custom_colours
+    else:
+        colours = _COLOURS
+
+    # v1.1: Social media size override (e.g. "1080x1080", "1080x1920")
+    size_str = chart_data.get("size", "")
+    if size_str and "x" in str(size_str):
+        try:
+            parts = str(size_str).lower().split("x")
+            width = int(parts[0].strip())
+            height = int(parts[1].strip())
+            logger.info("[chart_renderer] Using custom size: %dx%d", width, height)
+        except (ValueError, IndexError):
+            pass  # Keep defaults
 
     try:
-        fig = _build_figure(go, chart_type, labels, values, series)
-        _apply_theme(fig, title, subtitle, source_note, x_label, y_label)
+        fig = _build_figure(go, chart_type, labels, values, series, colours)
+        _apply_theme(fig, title, subtitle, source_note, x_label, y_label, annotation_text)
 
         # Export to PNG bytes
         img_bytes = fig.to_image(format="png", width=width, height=height, scale=2)
@@ -136,9 +155,11 @@ def render_chart(
         return None
 
 
-def _build_figure(go, chart_type, labels, values, series):
-    """Build the Plotly figure based on chart type."""
+def _build_figure(go, chart_type, labels, values, series, colours=None):
+    """Build the Plotly figure based on chart type. v1.1: custom colours."""
     fig = go.Figure()
+    if not colours:
+        colours = _COLOURS
 
     if chart_type == GROUPED_BAR and series:
         for i, s in enumerate(series):
@@ -146,20 +167,39 @@ def _build_figure(go, chart_type, labels, values, series):
                 name=s.get("name", f"Series {i+1}"),
                 x=labels,
                 y=s.get("values", []),
-                marker_color=_COLOURS[i % len(_COLOURS)],
+                marker_color=colours[i % len(colours)],
             ))
         fig.update_layout(barmode="group")
 
     elif chart_type == HORIZONTAL_BAR:
-        fig.add_trace(go.Bar(
-            x=values,
-            y=labels,
-            orientation="h",
-            marker_color=_COLOURS[:len(labels)],
-            text=[str(v) for v in values],
-            textposition="outside",
-            textfont_size=14,
-        ))
+        # v1.1: Handle both single values and multi-series horizontal bars
+        if series:
+            for i, s in enumerate(series):
+                # Use series-specific colour if provided, else fall back to palette
+                s_colour = s.get("colour", s.get("color", ""))
+                bar_colour = s_colour if s_colour.startswith("#") else colours[i % len(colours)]
+                s_values = s.get("values", [])
+                fig.add_trace(go.Bar(
+                    name=s.get("name", f"Series {i+1}"),
+                    x=s_values,
+                    y=labels,
+                    orientation="h",
+                    marker_color=bar_colour,
+                    text=[f"{v}%" for v in s_values],
+                    textposition="outside",
+                    textfont_size=14,
+                ))
+            fig.update_layout(barmode="group")
+        else:
+            fig.add_trace(go.Bar(
+                x=values,
+                y=labels,
+                orientation="h",
+                marker_color=colours[:len(labels)],
+                text=[str(v) for v in values],
+                textposition="outside",
+                textfont_size=14,
+            ))
 
     elif chart_type == LINE:
         if series:
@@ -169,7 +209,7 @@ def _build_figure(go, chart_type, labels, values, series):
                     y=s.get("values", []),
                     mode="lines+markers",
                     name=s.get("name", f"Series {i+1}"),
-                    line=dict(color=_COLOURS[i % len(_COLOURS)], width=3),
+                    line=dict(color=colours[i % len(colours)], width=3),
                     marker=dict(size=8),
                 ))
         else:
@@ -177,7 +217,7 @@ def _build_figure(go, chart_type, labels, values, series):
                 x=labels,
                 y=values,
                 mode="lines+markers",
-                line=dict(color=_COLOURS[0], width=3),
+                line=dict(color=colours[0], width=3),
                 marker=dict(size=8),
             ))
 
@@ -185,7 +225,7 @@ def _build_figure(go, chart_type, labels, values, series):
         fig.add_trace(go.Pie(
             labels=labels,
             values=values,
-            marker_colors=_COLOURS[:len(labels)],
+            marker_colors=colours[:len(labels)],
             textinfo="label+percent",
             textfont_size=14,
         ))
@@ -197,14 +237,14 @@ def _build_figure(go, chart_type, labels, values, series):
             mode="markers+text",
             text=labels,
             textposition="top center",
-            marker=dict(size=12, color=_COLOURS[:len(values)]),
+            marker=dict(size=12, color=colours[:len(values)]),
         ))
 
     else:  # Default: vertical bar
         fig.add_trace(go.Bar(
             x=labels,
             y=values,
-            marker_color=_COLOURS[:len(labels)],
+            marker_color=colours[:len(labels)],
             text=[str(v) for v in values],
             textposition="outside",
             textfont_size=14,
@@ -213,7 +253,7 @@ def _build_figure(go, chart_type, labels, values, series):
     return fig
 
 
-def _apply_theme(fig, title, subtitle, source_note, x_label, y_label):
+def _apply_theme(fig, title, subtitle, source_note, x_label, y_label, annotation_text=""):
     """Apply a clean dark theme consistent with ASTRA branding."""
     full_title = title
     if subtitle:
@@ -227,6 +267,23 @@ def _apply_theme(fig, title, subtitle, source_note, x_label, y_label):
             x=0, y=-0.12,
             showarrow=False,
             font=dict(size=10, color="#808080"),
+        ))
+
+    # v1.2: Right-side annotation for explanatory text
+    if annotation_text:
+        annotations.append(dict(
+            text=annotation_text,
+            xref="paper", yref="paper",
+            x=1.02, y=0.5,    # Right of chart, vertically centred
+            xanchor="left",
+            yanchor="middle",
+            showarrow=False,
+            font=dict(size=13, color="#d0d0d0"),
+            align="left",
+            bordercolor="#3a3a5a",
+            borderwidth=1,
+            borderpad=10,
+            bgcolor="rgba(26, 26, 46, 0.8)",
         ))
 
     fig.update_layout(
@@ -255,7 +312,12 @@ def _apply_theme(fig, title, subtitle, source_note, x_label, y_label):
             borderwidth=1,
             font=dict(size=12),
         ),
-        margin=dict(l=60, r=40, t=80, b=60 if not source_note else 80),
+        margin=dict(
+            l=60,
+            r=280 if annotation_text else 40,  # v1.2: widen right margin for annotation
+            t=80,
+            b=60 if not source_note else 80,
+        ),
         annotations=annotations,
     )
 

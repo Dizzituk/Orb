@@ -77,11 +77,13 @@ class FasterWhisperService(TranscriptionService):
         if len(audio) == 0:
             return TranscriptionResult(text="", language=language or "en")
 
-        # Default VAD params
+        # Default VAD params — threshold lowered from 0.5 to 0.3
+        # to avoid filtering out speech in noisy environments
+        # (e.g. phone mic while driving, wind noise, road noise).
         if vad_parameters is None:
             vad_parameters = {
-                "threshold": 0.5,
-                "min_speech_duration_ms": 250,
+                "threshold": 0.3,
+                "min_speech_duration_ms": 200,
                 "min_silence_duration_ms": 500,
             }
 

@@ -78,6 +78,9 @@ def migrate_project_columns() -> list[str]:
     if _add_column_if_missing("projects", "status", "TEXT", "'active'"):
         added.append("status")
 
+    if _add_column_if_missing("projects", "pinned", "BOOLEAN", "0"):
+        added.append("pinned")
+
     if added:
         print(f"[migrations] projects table updated: added {added}")
     return added

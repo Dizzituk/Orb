@@ -73,10 +73,10 @@ async def analyse_video_for_shorts(
     )
 
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=300) as client:
             resp = await client.post(
                 "https://generativelanguage.googleapis.com/v1beta/"
-                "models/gemini-2.0-flash:generateContent",
+                "models/gemini-3.1-pro-preview:generateContent",
                 params={"key": api_key},
                 json={
                     "contents": [
@@ -94,18 +94,30 @@ async def analyse_video_for_shorts(
                     ],
                     "generationConfig": {
                         "temperature": 0.3,
-                        "maxOutputTokens": 2048,
+                        "maxOutputTokens": 8192,
                     },
                 },
             )
             resp.raise_for_status()
             data = resp.json()
 
-            text = (
-                data.get("candidates", [{}])[0]
-                .get("content", {})
-                .get("parts", [{}])[0]
-                .get("text", "")
+            # Extract text from all parts — Gemini 2.5+
+            # thinking models return multiple parts:
+            # thoughts first, then the actual text response.
+            candidate = data.get("candidates", [{}])[0]
+            parts = candidate.get("content", {}).get("parts", [])
+            text_parts = []
+            for part in parts:
+                if "text" in part:
+                    text_parts.append(part["text"])
+            # Use the LAST text part — that's the actual
+            # response, not the thinking/reasoning
+            text = text_parts[-1] if text_parts else ""
+
+            logger.info(
+                "[shorts] Gemini returned %d parts, "
+                "using last text part (%d chars)",
+                len(parts), len(text),
             )
 
             return _parse_segments(text, duration)
@@ -253,28 +265,56 @@ def _build_analysis_prompt(
     max_duration: int,
 ) -> str:
     """Build the Gemini prompt for video analysis."""
-    return f"""You are a professional video editor. Watch this video carefully and identify the best moments for YouTube Shorts.
-
-CRITICAL EDITING RULES:
-- NEVER cut mid-sentence. Every short MUST start at the beginning of a sentence and end at the end of a sentence.
-- Listen to the audio carefully. Find natural speech pauses and sentence boundaries for your cut points.
-- The start_seconds should be the moment the speaker begins a complete thought.
-- The end_seconds should be AFTER the speaker finishes their sentence — include the full final word.
-- It is far better to include an extra second of silence than to cut off a word.
-- Timestamps can be precise decimals (e.g. 14.5, 27.8) — do NOT round to whole numbers.
+    return f"""You are a professional video editor and content strategist.
+Watch this entire video from start to finish. Listen carefully to the
+audio. Your job is to identify the {max_shorts} best moments for
+YouTube Shorts.
 
 User request: {user_prompt}
 
 Video duration: {duration:.0f} seconds
-Maximum shorts to create: {max_shorts}
-Target duration: 15 to {max_duration} seconds per short (flexible — a few seconds over is fine if it avoids cutting mid-sentence)
+Target duration per short: 15 to {max_duration} seconds
+(a few seconds over is fine if it avoids cutting mid-sentence)
 
-For each short, identify:
-- A segment that works as a standalone, punchy piece of content
-- Precise start and end timestamps aligned to sentence boundaries
-- A catchy title
-- Why this moment is compelling
-- A hook — what grabs attention in the first 2 seconds
+TIMESTAMP RULES — THESE ARE NON-NEGOTIABLE:
+1. start_seconds MUST be LESS than end_seconds. Always.
+2. start_seconds must be the exact moment a sentence BEGINS.
+   Do NOT start mid-sentence or mid-word.
+3. end_seconds must be the exact moment a sentence ENDS —
+   AFTER the speaker finishes their final word, including
+   any trailing breath. Include an extra 0.5s of silence
+   rather than risk cutting a word.
+4. All timestamps must be between 0 and {duration:.0f}.
+5. Listen to the audio at the proposed start point. If the
+   speaker is mid-sentence there, move the start EARLIER to
+   the beginning of that sentence, or LATER to the start of
+   the next sentence.
+6. Timestamps should be precise decimals (e.g. 14.5, 27.8).
+   Do NOT round to whole numbers.
+
+CONTENT SELECTION RULES:
+- Each short must make COMPLETE SENSE on its own without any
+  other context. A viewer should understand the point without
+  having seen the rest of the video.
+- Prefer segments that open with a bold statement, surprising
+  fact, direct question, or strong opinion — something that
+  hooks in the first 2 seconds.
+- Avoid segments that begin with connectives like "and",
+  "so", "but", "also" — these signal continuation from a
+  previous thought and feel jarring as an opening.
+- Shorts must not overlap in timestamps.
+- Spread selections across the video — do not cluster them
+  all in the first few minutes.
+
+For each short, provide:
+- title: a catchy, curiosity-driving title (under 60 chars)
+- start_seconds: precise start timestamp (sentence boundary)
+- end_seconds: precise end timestamp (sentence boundary)
+- description: ONE sentence — why this moment is compelling
+- hook: what grabs attention in the first 2 seconds
+
+KEEP IT CONCISE. Each description and hook should be a single
+sentence. Do NOT write paragraphs — just a punchy one-liner.
 
 Respond in this exact JSON format (no markdown, no backticks):
 [
@@ -287,19 +327,28 @@ Respond in this exact JSON format (no markdown, no backticks):
     }}
 ]
 
-Rules:
-- Timestamps within 0 to {duration:.0f}
-- NEVER cut mid-word or mid-sentence — this is the most important rule
-- Prefer segments that open with a strong statement or question
-- Each short should make sense without any other context
-- Shorts must not overlap
-- Return ONLY valid JSON array"""
+FINAL CHECKLIST before you respond:
+- Is start_seconds < end_seconds for EVERY entry? (mandatory)
+- Does every segment start at a sentence boundary?
+- Does every segment end at a sentence boundary?
+- Would each segment make sense to someone who hasn't seen
+  the full video?
+- Are the segments spread across the video?
+
+Return ONLY the JSON array. No other text."""
 
 
 def _parse_segments(
     text: str, max_duration: float,
 ) -> List[ShortSegment]:
-    """Parse Gemini's response into ShortSegments."""
+    """Parse Gemini's response into ShortSegments.
+
+    Validates every segment before accepting it:
+    - start < end (rejects inverted timestamps)
+    - minimum 10s duration (rejects micro-clips)
+    - timestamps within video bounds
+    - logs every rejection so we can see what Gemini got wrong
+    """
     cleaned = text.strip()
     if cleaned.startswith("```"):
         lines = cleaned.split("\n")
@@ -311,32 +360,76 @@ def _parse_segments(
     try:
         data = json.loads(cleaned)
         segments = []
-        for item in data:
+        for i, item in enumerate(data):
+            title = item.get("title", "Untitled")
             start = float(item.get("start_seconds", 0))
             end = float(item.get("end_seconds", 0))
 
-            # Validate timestamps
-            if end <= start:
-                continue
+            # Fix inverted timestamps if Gemini got confused
+            if end < start:
+                logger.warning(
+                    "[shorts] Segment %d '%s' has inverted "
+                    "timestamps (%.1f > %.1f) — swapping",
+                    i + 1, title, start, end,
+                )
+                start, end = end, start
+
+            # Clamp to video bounds
             if start < 0:
                 start = 0
             if end > max_duration:
                 # Allow up to 10% over to avoid cutting mid-sentence
                 if end > max_duration * 1.1:
+                    logger.info(
+                        "[shorts] Segment %d '%s' end %.1f exceeds "
+                        "duration %.1f — clamping",
+                        i + 1, title, end, max_duration,
+                    )
                     end = max_duration
 
+            # Reject if still invalid after fixes
+            seg_duration = end - start
+            if seg_duration < 5.0:
+                logger.warning(
+                    "[shorts] Rejecting segment %d '%s': "
+                    "too short (%.1fs) after validation",
+                    i + 1, title, seg_duration,
+                )
+                continue
+
+            # Reject if both timestamps are essentially the same
+            if end <= start:
+                logger.warning(
+                    "[shorts] Rejecting segment %d '%s': "
+                    "end (%.1f) <= start (%.1f)",
+                    i + 1, title, end, start,
+                )
+                continue
+
+            logger.info(
+                "[shorts] Accepted segment %d: '%s' "
+                "(%.1fs–%.1fs, %.1fs)",
+                i + 1, title, start, end, seg_duration,
+            )
+
             segments.append(ShortSegment(
-                title=item.get("title", "Untitled"),
+                title=title,
                 start_seconds=start,
                 end_seconds=end,
                 description=item.get("description", ""),
                 hook=item.get("hook", ""),
             ))
 
+        logger.info(
+            "[shorts] Parsed %d segments from Gemini "
+            "(%d accepted, %d rejected)",
+            len(data), len(segments), len(data) - len(segments),
+        )
         return segments
 
     except (json.JSONDecodeError, KeyError, TypeError) as e:
         logger.error("[shorts] Failed to parse segments: %s", e)
+        logger.error("[shorts] Raw response: %s", repr(text[:500]))
         return []
 
 
@@ -371,6 +464,16 @@ def cut_shorts(
 
     outputs = []
     for i, seg in enumerate(segments):
+        # Final safety: skip if timestamps are invalid
+        if seg.end_seconds <= seg.start_seconds:
+            logger.error(
+                "[shorts] Skipping short %d '%s': "
+                "end (%.1f) <= start (%.1f)",
+                i + 1, seg.title,
+                seg.end_seconds, seg.start_seconds,
+            )
+            continue
+
         # Snap cut points to silence gaps to avoid mid-word cuts
         try:
             from app.content.production.silence_snap import snap_both_ends
@@ -386,6 +489,15 @@ def cut_shorts(
             logger.warning(f"[shorts] Silence snap failed: {e}, using originals")
             snapped_start = seg.start_seconds
             snapped_end = seg.end_seconds
+
+        # Post-snap safety: ensure duration is still positive
+        if snapped_end <= snapped_start:
+            logger.error(
+                "[shorts] Skipping short %d '%s': "
+                "snapped range invalid (%.1f-%.1f)",
+                i + 1, seg.title, snapped_start, snapped_end,
+            )
+            continue
 
         safe_title = "".join(
             c if c.isalnum() or c in " -_" else ""

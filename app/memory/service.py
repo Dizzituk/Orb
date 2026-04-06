@@ -28,6 +28,8 @@ def update_project(db: Session, project_id: int, data: schemas.ProjectUpdate) ->
         project.name = data.name
     if data.description is not None:
         project.description = data.description
+    if data.pinned is not None:
+        project.pinned = data.pinned
     try:
         db.commit()
     except IntegrityError:

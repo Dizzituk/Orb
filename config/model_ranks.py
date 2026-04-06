@@ -5,9 +5,9 @@ Spec v2.3 §3.1.1: Capability ranks MUST be derived from a configuration
 mapping, not string matching.
 
 Rank levels:
-  - frontier (3): GPT-5.2 Pro, Claude Opus, Gemini 3 Pro
-  - pro (2): GPT-5.2, Claude Sonnet, Gemini 2.5 Pro
-  - fast (1): GPT-5 mini, Claude Haiku, Gemini 2 Flash
+  - frontier (3): GPT-5.4, Claude Opus 4.6, Gemini 3.1 Pro
+  - pro (2): GPT-5.4-mini, Claude Sonnet 4.6, Gemini 2.5 Flash
+  - fast (1): GPT-5.4-nano, Claude Haiku 4.5, Gemini 3.1 Flash-Lite
 
 Rule: Any new model must be added to this mapping before use in high-stakes
 stages. Unknown models (rank 0) cannot be used as primaries or fallbacks
@@ -27,46 +27,41 @@ MODEL_CAPABILITY_RANKS: Dict[str, int] = {
     # Frontier (rank 3) - Highest capability
     # -------------------------------------------------------------------------
     # OpenAI
-    "gpt-5.2-pro": 3,
-    "gpt-5.2-pro-2025-12-11": 3,
+    "gpt-5.4": 3,
+    "gpt-5.4-pro": 3,
+    "gpt-5.3": 3,
     # Anthropic
+    "claude-opus-4-6": 3,
     "claude-opus-4-5-20251101": 3,
-    "claude-opus-4-20250514": 3,
     # Google
-    "gemini-3-pro-preview": 3,
-    "gemini-3-pro": 3,
+    "gemini-3.1-pro-preview": 3,
+    "gemini-3-flash": 3,
     
     # -------------------------------------------------------------------------
     # Pro (rank 2) - High capability
     # -------------------------------------------------------------------------
     # OpenAI
+    "gpt-5.4-mini": 2,
     "gpt-5.2": 2,
     "gpt-5.2-chat-latest": 2,
-    "gpt-5.2-thinking": 2,
-    "gpt-5.1": 2,
-    "gpt-5.1-chat-latest": 2,
-    "gpt-5": 2,
-    "gpt-5-chat-latest": 2,
     # Anthropic
-    "claude-sonnet-4-5-20250514": 2,
-    "claude-sonnet-4-20250514": 2,
+    "claude-sonnet-4-6": 2,
+    "claude-sonnet-4-5-20250929": 2,
     # Google
     "gemini-2.5-pro": 2,
-    "gemini-2.5-pro-preview-05-06": 2,
+    "gemini-2.5-flash": 2,
     
     # -------------------------------------------------------------------------
     # Fast (rank 1) - Lower capability, higher speed
     # -------------------------------------------------------------------------
     # OpenAI
+    "gpt-5.4-nano": 1,
     "gpt-5-mini": 1,
-    "gpt-5-nano": 1,
-    "gpt-4.1-mini": 1,
-    "gpt-4.1-nano": 1,
     # Anthropic
-    "claude-haiku-3-5-20241022": 1,
+    "claude-haiku-4-5-20251001": 1,
     # Google
-    "gemini-2.0-flash": 1,
-    "gemini-2-flash": 1,
+    "gemini-3.1-flash-lite-preview": 1,
+    "gemini-2.5-flash-lite": 1,
 }
 
 
@@ -151,61 +146,61 @@ def validate_model_for_stage(
 STAGE_MODEL_CONFIG = {
     # Block 2: Spec Gate
     "spec_gate": {
-        "primary": ("openai", "gpt-5.2-pro"),
-        "fallback": ("anthropic", "claude-opus-4-5-20251101"),
+        "primary": ("anthropic", "claude-opus-4-6"),
+        "fallback": ("openai", "gpt-5.4"),
         "min_rank": 3,  # frontier-only
     },
     # Block 4: Architecture
     "architecture": {
-        "primary": ("anthropic", "claude-opus-4-5-20251101"),
-        "fallback": ("openai", "gpt-5.2-pro"),
+        "primary": ("anthropic", "claude-opus-4-6"),
+        "fallback": ("openai", "gpt-5.4"),
         "min_rank": 3,  # frontier-only
     },
     # Block 5: Critique (frontier-only per spec)
     "critique": {
-        "primary": ("google", "gemini-3-pro-preview"),
-        "fallback": ("openai", "gpt-5.2-pro"),
+        "primary": ("anthropic", "claude-opus-4-6"),
+        "fallback": ("openai", "gpt-5.4"),
         "min_rank": 3,  # frontier-only, HARD FAIL if both unavailable
     },
     # Block 6: Revision
     "revision": {
-        "primary": ("anthropic", "claude-opus-4-5-20251101"),
-        "fallback": ("openai", "gpt-5.2-pro"),
+        "primary": ("anthropic", "claude-opus-4-6"),
+        "fallback": ("openai", "gpt-5.4"),
         "min_rank": 3,  # frontier-only
     },
     # Block 7: Chunk Planning
     "chunk_planning": {
-        "primary": ("openai", "gpt-5.2-chat-latest"),
-        "fallback": ("anthropic", "claude-sonnet-4-5-20250514"),
+        "primary": ("openai", "gpt-5.4"),
+        "fallback": ("anthropic", "claude-sonnet-4-6"),
         "min_rank": 2,  # pro tier
     },
     # Block 8: Implementation
     "implementation": {
-        "primary": ("anthropic", "claude-sonnet-4-5-20250514"),
-        "fallback": ("openai", "gpt-5.2-thinking"),
+        "primary": ("openai", "gpt-5.4"),
+        "fallback": ("anthropic", "claude-sonnet-4-6"),
         "min_rank": 2,  # pro tier
     },
     # Block 9: Verification/Overwatcher
     "verification": {
-        "primary": ("openai", "gpt-5.2-pro"),
-        "fallback": ("google", "gemini-3-pro-preview"),
+        "primary": ("anthropic", "claude-opus-4-6"),
+        "fallback": ("openai", "gpt-5.4"),
         "min_rank": 3,  # frontier-only
     },
     # Block 10: Deep Research
     "deep_research": {
-        "primary": ("openai", "gpt-5.2-pro"),
-        "fallback": ("google", "gemini-3-pro-preview"),
+        "primary": ("openai", "gpt-5.4"),
+        "fallback": ("anthropic", "claude-opus-4-6"),
         "min_rank": 3,  # frontier-only, tool-assisted
     },
     # Block 11: Promotion Gate
     "promotion_gate": {
-        "primary": ("openai", "gpt-5.2-pro"),
-        "fallback": ("google", "gemini-3-pro-preview"),
+        "primary": ("anthropic", "claude-opus-4-6"),
+        "fallback": ("openai", "gpt-5.4"),
         "min_rank": 3,  # frontier-only
     },
     # Block 12: Quarantine Report
     "quarantine_report": {
-        "primary": ("openai", "gpt-5-mini"),
+        "primary": ("openai", "gpt-5.4-mini"),
         "fallback": None,  # No fallback, fast model only
         "min_rank": 1,  # fast tier
     },

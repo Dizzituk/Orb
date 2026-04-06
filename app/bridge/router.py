@@ -498,6 +498,121 @@ async def bridge_chat(
     )
 
 
+# ---------------------------------------------------------------------------
+# Pipelined chat-and-speak (v15.0)
+# Single endpoint: LLM streams -> sentence split -> TTS -> MP3 stream
+# ---------------------------------------------------------------------------
+
+@router.post("/chat-and-speak")
+async def bridge_chat_and_speak(
+    req: BridgeChatRequest,
+    db: Session = Depends(get_db),
+    _auth: bool = Depends(_require_bridge_auth),
+):
+    """Pipelined chat + TTS in a single request.
+
+    Streams LLM tokens, splits into sentences, synthesises each sentence
+    via Chatterbox immediately, and returns a growing MP3 stream.
+
+    The phone receives audio ~10s after sending the message (vs 20-60s
+    with the sequential chat-then-speak flow).
+
+    Headers:
+      X-Project-Id: project ID (for conversation continuity)
+      X-Project-Name: project name
+      Content-Type: audio/mpeg
+      Transfer-Encoding: chunked
+
+    The full reply text is returned in X-Full-Text header (URL-encoded)
+    after the first audio chunk, so the phone can display it.
+    """
+    from app.memory.service import get_project, create_message
+    from app.memory.schemas import ProjectCreate, MessageCreate
+    from app.memory._service_utils_2 import create_project, get_project_by_name, list_messages
+    from app.bridge.chat_and_speak import _pipeline_generate, _stream_llm_tokens
+    from urllib.parse import quote as url_quote
+
+    # ── Resolve or create project (same as bridge_chat) ──
+    project = None
+    if req.project_id:
+        project = get_project(db, req.project_id)
+        if not project:
+            raise HTTPException(404, f"Project {req.project_id} not found")
+
+    if not project:
+        name_preview = req.message[:50].strip()
+        if len(req.message) > 50:
+            name_preview += "..."
+        existing = get_project_by_name(db, name_preview)
+        if existing:
+            project = existing
+        else:
+            project = create_project(db, ProjectCreate(
+                name=name_preview,
+                description="Chat from Astra Bridge (phone)",
+                type="bridge",
+            ))
+
+    # Save user message
+    create_message(db, MessageCreate(
+        project_id=project.id,
+        role="user",
+        content=req.message,
+        provider="bridge",
+        model="phone-input",
+    ))
+
+    # Get conversation history
+    history = list_messages(db, project.id, limit=20)
+    history_messages = [
+        {"role": m.role, "content": m.content}
+        for m in history if m.role in ("user", "assistant")
+    ]
+
+    # Model selection
+    provider, model = _select_bridge_model(req.message, None, "")
+    system_prompt = _build_bridge_system_prompt("")
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(history_messages[-20:])
+
+    project_id = project.id
+    project_name = project.name
+
+    async def generate_audio():
+        full_text = ""
+        async for item in _pipeline_generate(provider, model, messages):
+            if isinstance(item, dict):
+                # Final metadata — save the reply
+                full_text = item.get("full_text", "")
+            else:
+                # MP3 bytes
+                yield item
+
+        # Save assistant reply to DB
+        if full_text:
+            try:
+                create_message(db, MessageCreate(
+                    project_id=project_id,
+                    role="assistant",
+                    content=full_text,
+                    provider=provider,
+                    model=model,
+                ))
+            except Exception as e:
+                logger.error("[bridge] Failed to save assistant reply: %s", e)
+
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(
+        generate_audio(),
+        media_type="audio/mpeg",
+        headers={
+            "X-Project-Id": str(project_id),
+            "X-Project-Name": url_quote(project_name),
+            "Transfer-Encoding": "chunked",
+        },
+    )
+
+
 @router.get("/pending-navigation")
 async def bridge_pending_navigation():
     """Poll for pending navigation events from the bridge app.
@@ -515,11 +630,11 @@ async def bridge_pending_navigation():
 
 # ---------------------------------------------------------------------------
 # TTS proxy endpoints (v5.0)
-# Proxy to the TTS microservice on port 8001 so AstraBridge only needs
+# Proxy to the Chatterbox TTS microservice on port 8002 so AstraBridge only needs
 # one backend URL. All TTS traffic goes through the bridge auth layer.
 # ---------------------------------------------------------------------------
 
-TTS_BASE = "http://127.0.0.1:8001"
+TTS_BASE = "http://127.0.0.1:8002"
 
 
 class BridgeTTSRequest(BaseModel):
@@ -556,12 +671,14 @@ async def bridge_tts_speak(
     import httpx
     payload = {"text": req.text}
     if req.voice_name:
-        payload["voice_name"] = req.voice_name
+        payload["voice"] = req.voice_name  # Chatterbox expects "voice", not "voice_name"
     if req.speed is not None:
         payload["speed"] = req.speed
 
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        # Timeout 120s: Standard model with server-side chunking on long text
+        # can take 60-90s for multi-paragraph responses.
+        async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
                 f"{TTS_BASE}/tts/speak",
                 json=payload,
@@ -578,6 +695,54 @@ async def bridge_tts_speak(
         raise HTTPException(502, f"TTS service unavailable: {e}")
 
 
+@router.post("/tts/stream")
+async def bridge_tts_stream(
+    req: BridgeTTSRequest,
+    _auth: bool = Depends(_require_bridge_auth),
+):
+    """Progressive TTS proxy - streams a growing MP3 from Chatterbox.
+
+    Uses the /tts/progressive endpoint which generates chunks and yields
+    MP3 frame deltas. The phone receives a single continuous MP3 stream
+    that ExoPlayer can start playing immediately while more audio is
+    still being generated on the backend.
+    """
+    import httpx
+    from fastapi.responses import StreamingResponse
+
+    payload = {"text": req.text}
+    if req.voice_name:
+        payload["voice"] = req.voice_name
+    if req.speed is not None:
+        payload["speed"] = req.speed
+
+    try:
+        client = httpx.AsyncClient(timeout=httpx.Timeout(
+            connect=10.0,
+            read=120.0,   # each chunk can take up to 30s to generate
+            write=10.0,
+            pool=10.0,
+        ))
+
+        async def stream_from_chatterbox():
+            try:
+                async with client.stream("POST", f"{TTS_BASE}/tts/progressive", json=payload) as resp:
+                    resp.raise_for_status()
+                    async for chunk in resp.aiter_bytes(chunk_size=8192):
+                        yield chunk
+            except Exception as e:
+                logger.error("[bridge] TTS progressive proxy error: %s", e)
+            finally:
+                await client.aclose()
+
+        return StreamingResponse(
+            stream_from_chatterbox(),
+            media_type="audio/mpeg",
+        )
+    except Exception as e:
+        logger.error("[bridge] TTS progressive proxy failed: %s", e)
+        raise HTTPException(502, f"TTS stream unavailable: {e}")
+
 @router.post("/tts/voices/select")
 async def bridge_tts_select_voice(
     voice_name: str,
@@ -589,7 +754,7 @@ async def bridge_tts_select_voice(
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(
                 f"{TTS_BASE}/tts/voices/select",
-                json={"voice_name": voice_name},
+                json={"voice": voice_name},  # Chatterbox expects "voice"
             )
             resp.raise_for_status()
             return resp.json()
@@ -609,7 +774,7 @@ async def bridge_tts_preview(
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(
                 f"{TTS_BASE}/tts/preview",
-                json={"voice_name": voice_name},
+                json={"voice": voice_name},  # Chatterbox expects "voice"
             )
             resp.raise_for_status()
             from fastapi.responses import Response

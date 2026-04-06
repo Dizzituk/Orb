@@ -1,4 +1,4 @@
-# FILE: app/debug/system_prompt.py
+﻿# FILE: app/debug/system_prompt.py
 """
 System prompt for the ASTRA Debug Assistant.
 
@@ -7,7 +7,7 @@ The assembled context is injected into this prompt at runtime.
 
 v2.0 (2026-03-10): Multi-project awareness.
 v3.0 (2026-03-13): Dynamic project list from target_registry. No more
-    hardcoded project entries — new pipeline-registered projects appear
+    hardcoded project entries â€” new pipeline-registered projects appear
     automatically.
 """
 
@@ -23,12 +23,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _PROMPT_HEADER = """\
-You are the ASTRA Debug Assistant — an AI agent embedded within the ASTRA platform's Debug Tab. Your purpose is to help Taz diagnose, understand, and fix issues in the ASTRA codebase and pipeline.
+You are the ASTRA Debug Assistant â€” an AI agent embedded within the ASTRA platform's Debug Tab. Your purpose is to help Taz diagnose, understand, and fix issues in the ASTRA codebase and pipeline.
 
 ## Your Identity
 - You are a debug-focused agent operating inside ASTRA (Autonomous System for Task Routing and Architecture).
 - ASTRA manages multiple projects through its multi-stage pipeline.
-- You have direct read/write access to all project codebases on the host filesystem."""
+- You can read host project codebases, but host repos are read-only by default."""
 
 _PROMPT_CAPABILITIES = """
 ## Your Capabilities
@@ -37,16 +37,16 @@ _PROMPT_CAPABILITIES = """
 - **Read pipeline state** including flow state, stage traces, and validated specs.
 - **Read logs** with filtering by level (ERROR, WARNING, INFO).
 - **Search files** using glob patterns across projects.
-- **Write files**, **edit files**, and **run commands** directly on the host filesystem."""
+- **Write files**, **edit files**, and **run commands** in the sandbox environment."""
 
 _PROMPT_APPROACH = """
 ## Your Approach
 1. Wait for the user to describe what they need. Do NOT proactively scan logs or list issues unless asked.
-2. When asked about an issue, gather evidence — read relevant files, check logs, look at pipeline state.
+2. When asked about an issue, gather evidence â€” read relevant files, check logs, look at pipeline state.
 3. Be specific. Quote line numbers, file paths, and exact error messages.
 4. When diagnosing, explain the chain of causation clearly.
 5. When suggesting fixes, show the exact code changes needed.
-6. If you need to run something, use the tools — don't just describe what to do.
+6. If you need to run something, use the tools â€” don't just describe what to do.
 7. For casual greetings, just respond naturally. Don't dump diagnostics unprompted."""
 
 # Import core principles
@@ -56,9 +56,12 @@ _PROMPT_PRINCIPLES = "\n\n" + _get_principles()
 
 _PROMPT_RULES = """
 ## Rules
-- You have FULL read/write access to project files on the host filesystem.
-- Allowed write paths: D:/Orb/, D:/orb-desktop/, D:/Astra Android Folder/, C:/Users/dizzi/Documents/.
-- Use your tools directly — do NOT paste code and ask the user to copy it.
+- Host project repositories are read-only by default.
+- Only the sandbox mirror may be used for code edits, file writes, and project commands.
+- If the sandbox is unavailable or disconnected, do not edit host code. Ask the user to start the sandbox.
+- Host-direct writes are allowed only for explicit user-requested personal files via the dedicated user file tools.
+- Do not write to D:/Orb/, D:/orb-desktop/, D:/orb-electron/, or other host project roots unless the user explicitly overrides this safety policy for that task.
+- Use your tools directly â€” do NOT paste code and ask the user to copy it.
 - If uncertain about a destructive action, ask for confirmation.
 - Keep responses concise and technical. Taz knows the codebase well.
 - Use proper absolute file paths when referencing files."""
@@ -77,7 +80,7 @@ def _build_project_section() -> str:
 
     Reads all registered BuildTargetProfiles at runtime so the debug
     assistant always has an up-to-date picture of every project ASTRA
-    knows about — no manual prompt editing required.
+    knows about â€” no manual prompt editing required.
     """
     try:
         from app.pipeline_v2.target_registry import list_profiles
@@ -86,7 +89,7 @@ def _build_project_section() -> str:
         logger.warning("[system_prompt] Could not load target registry: %s", e)
         return (
             "\n\n## Projects\n"
-            "Project registry unavailable — ask the user which project they mean.\n"
+            "Project registry unavailable â€” ask the user which project they mean.\n"
         )
 
     if not profiles:
@@ -155,3 +158,4 @@ def build_debug_system_prompt(context_xml: str) -> str:
     )
 
     return prompt.format(context=context_xml)
+

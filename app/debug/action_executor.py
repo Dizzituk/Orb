@@ -2,15 +2,47 @@
 """
 Action Executor: Translates LLM tool calls into real operations.
 
+v9.5 (2026-03-30): Host write access — sandbox gate bypass for host-only paths.
+  - execute_edit_file now bypasses sandbox health gate for host-only paths,
+    reading and writing directly to host filesystem (fixes "sandbox controller
+    unreachable" blocking Android project edits).
+  - Added path aliases for Astra-Bridge, AndroidDriverCopilot, and
+    Astra Android Folder so relative paths resolve correctly.
+
+v9.4 (2026-03-30): Host write access overhaul.
+  - Write protection narrowed to ONLY: D:/Orb/, D:/Orb.architecture,
+    D:/orb-desktop, D:/orb-electron-data, and Windows system folders.
+  - Everything else on D: is now fully writable (Android projects, tools, etc.).
+  - Host-only paths (Android folder, etc.) now write directly to host filesystem
+    instead of routing through sandbox controller.
+  - execute_run_command regex patterns updated to match only protected dirs.
+
+v9.3 (2026-03-28): Sandbox health gate fix.
+  - Controller-only gate: sandbox writes only require the controller bridge,
+    NOT the Orb backend running inside the sandbox. The controller handles
+    all filesystem ops independently. The sandbox is ASTRA's playpen —
+    full unrestricted access once the controller is reachable.
+
+v9.2 (2026-03-28): Write-safety cleanup and hardening.
+  - Removed dead code: _PROTECTED_HOST_WRITE_PREFIXES (undefined),
+    _HOST_ONLY_READ_PREFIXES (unused), duplicate _is_protected_host_write.
+  - Consolidated host write blocking into single _is_host_write_blocked().
+  - Added write-blocking to execute_edit_file (was only in execute_write_file).
+  - Hardened execute_run_command: block redirect/pipe writes to project dirs.
+  - All write paths now log at WARNING level when blocked.
+
 v9.1 (2026-03-04): Sandbox-first for ALL file operations.
 The sandbox is a persistent Hyper-V clone of the host desktop with the
 full codebase. All read/write/search/list operations go through the
 sandbox controller API at 192.168.250.2:8765.
 
-Host filesystem access is limited to:
-- Architecture maps (.architecture/) — these are build artefacts on the host
-- Logs (D:/Orb/logs/) — the ASTRA backend runs on the host
-- Pipeline state — in-memory on the host
+Host filesystem access:
+- READ: everywhere, no restrictions.
+- WRITE: everywhere EXCEPT four protected dirs (D:/Orb/, D:/Orb.architecture,
+  D:/orb-desktop, D:/orb-electron-data) and Windows system folders.
+- Host-only paths (Android projects, Orb architecture ref, logs) are served
+  directly from the host filesystem, bypassing the sandbox controller.
+- Pipeline state — in-memory on the host.
 """
 
 from __future__ import annotations
@@ -24,11 +56,56 @@ from app.debug.size_warning import add_size_warning as _size_warn
 logger = logging.getLogger(__name__)
 
 
+# =============================================================================
+# CONSTANTS
+# =============================================================================
+
 # Sandbox controller base URL
 SANDBOX_CONTROLLER_URL = "http://192.168.250.2:8765"
 
+# Paths that ASTRA must NEVER write to directly on the host.
+# All code changes go through the sandbox controller and are promoted
+# to host only after human review + git commit.
+_HOST_WRITE_BLOCKED_PREFIXES = [
+    # Orb core — ASTRA's own codebase, read-only on host.
+    # Changes go through sandbox -> review -> git commit.
+    "D:/Orb/",
+    "D:\\Orb\\",
+    "D:/Orb.architecture",
+    "D:\\Orb.architecture",
+    "D:/orb-desktop",
+    "D:\\orb-desktop",
+    "D:/orb-electron-data",
+    "D:\\orb-electron-data",
+    # System paths — never touch
+    "C:/Windows",
+    "C:\\Windows",
+    "C:/Program Files",
+    "C:\\Program Files",
+    "C:/ProgramData",
+    "C:\\ProgramData",
+]
+
+# Paths served from the host filesystem for reads (not in sandbox).
+# Everything else goes through the sandbox controller.
+# Paths served from the host filesystem (not in sandbox).
+# These bypass the sandbox controller for reads. Write access is
+# governed separately by _HOST_WRITE_BLOCKED_PREFIXES.
+_HOST_ONLY_PREFIXES = [
+    # Read-only reference data on host
+    "D:/Orb/.architecture",
+    "D:\\Orb\\.architecture",
+    "D:/Orb/logs",
+    "D:\\Orb\\logs",
+    # Android projects — host only (not in sandbox), full read/write
+    "D:/Astra Android Folder",
+    "D:\\Astra Android Folder",
+    # Architecture reference — host only, read-only (write-blocked above)
+    "D:/Orb.architecture",
+    "D:\\Orb.architecture",
+]
+
 # Known path aliases: models often send relative paths.
-# Map them to absolute sandbox paths.
 _PATH_ALIASES = [
     ("orb-desktop/", "D:/orb-desktop/"),
     ("orb-desktop\\", "D:\\orb-desktop\\"),
@@ -38,7 +115,72 @@ _PATH_ALIASES = [
     ("app\\", "D:\\Orb\\app\\"),
     ("Orb/", "D:/Orb/"),
     ("Orb\\", "D:\\Orb\\"),
+    # Android project aliases
+    ("Astra-Bridge/", "D:/Astra Android Folder/Astra-Bridge/"),
+    ("Astra-Bridge\\", "D:\\Astra Android Folder\\Astra-Bridge\\"),
+    ("AstraBridge/", "D:/Astra Android Folder/Astra-Bridge/"),
+    ("AstraBridge\\", "D:\\Astra Android Folder\\Astra-Bridge\\"),
+    ("AndroidDriverCopilot/", "D:/Astra Android Folder/AndroidDriverCopilot/"),
+    ("AndroidDriverCopilot\\", "D:\\Astra Android Folder\\AndroidDriverCopilot\\"),
+    ("DriverCopilot/", "D:/Astra Android Folder/AndroidDriverCopilot/"),
+    ("DriverCopilot\\", "D:\\Astra Android Folder\\AndroidDriverCopilot\\"),
+    ("Astra Android Folder/", "D:/Astra Android Folder/"),
+    ("Astra Android Folder\\", "D:\\Astra Android Folder\\"),
 ]
+
+
+# =============================================================================
+# PATH HELPERS
+# =============================================================================
+
+def _is_host_write_blocked(path: str) -> bool:
+    """Return True if the path must NEVER be written to on the host.
+
+    This is the single source of truth for host write protection.
+    Covers the four Orb directories and Windows system paths.
+    Everything else on D: (Android projects, tools, etc.) is writable.
+    """
+    norm = path.replace("\\", "/").rstrip("/")
+    for prefix in _HOST_WRITE_BLOCKED_PREFIXES:
+        prefix_norm = prefix.replace("\\", "/").rstrip("/")
+        # Exact match (e.g. "D:/Orb" == "D:/Orb") or
+        # child path (e.g. "D:/Orb/app/foo.py".startswith("D:/Orb/"))
+        if norm == prefix_norm or norm.startswith(prefix_norm + "/"):
+            return True
+    return False
+
+
+def _sandbox_health_status() -> tuple[bool, str]:
+    """Check sandbox controller is reachable for filesystem operations.
+    
+    Only requires the controller to be up — the controller handles all
+    filesystem ops (read/write/tree) independently of the Orb backend.
+    The sandbox is ASTRA's playpen: full unrestricted access once the
+    controller bridge is reachable.
+    """
+    try:
+        from app.sandbox.manager import get_sandbox_manager
+        health = get_sandbox_manager().check_health()
+        if not health.controller_ok:
+            return False, (
+                "BLOCKED: Sandbox controller is unreachable. "
+                "Cannot write files — start the sandbox first."
+            )
+        # Controller is up — sandbox is available for all operations.
+        # The Orb backend inside the sandbox is NOT required for file ops.
+        if not health.backend_ok:
+            logger.info("[action_executor] Sandbox controller OK, backend not running (not required for file ops)")
+        return True, "ok"
+    except Exception as e:
+        return False, f"BLOCKED: Sandbox status check failed: {e}"
+
+
+def _is_host_only(path: str) -> bool:
+    """Check if path is host-only data (architecture maps, logs, frontend)."""
+    for prefix in _HOST_ONLY_PREFIXES:
+        if path.startswith(prefix):
+            return True
+    return False
 
 
 def _resolve_sandbox_path(path: str) -> str:
@@ -55,7 +197,7 @@ def _resolve_sandbox_path(path: str) -> str:
     # Strip leading slashes — models sometimes send Unix-style /app/...
     path = path.lstrip("/\\ ")
 
-    # Bare empty or root → default to D:/Orb
+    # Bare empty or root -> default to D:/Orb
     if not path or path == ".":
         return "D:/Orb"
 
@@ -70,50 +212,6 @@ def _resolve_sandbox_path(path: str) -> str:
     resolved = f"D:/Orb/{path}"
     logger.debug("[action_executor] Path default: '%s' -> '%s'", path, resolved)
     return resolved
-
-
-# Host-only data: architecture maps and logs live on the host, not sandbox
-# v0.14.0: HOST-ONLY PATHS — strictly limited.
-#
-# CRITICAL RULE: ASTRA backend code (D:\Orb\app, D:\Orb\main.py, etc.)
-# is NOT in this list. All reads/writes to ASTRA's own code MUST go
-# through the sandbox controller. The host filesystem is never the
-# source of truth for code operations.
-#
-# Host-only paths are limited to:
-#   - .architecture/ and logs/ — read-only reference data
-#   - Android project — not in sandbox, lives on host only
-#   - orb-desktop — frontend, not in sandbox
-_HOST_ONLY_READ_PREFIXES = [
-    "D:/Orb/.architecture",
-    "D:\\Orb\\.architecture",
-    "D:/Orb/logs",
-    "D:\\Orb\\logs",
-]
-
-_HOST_ONLY_PREFIXES = [
-    # Read-only reference data on host
-    "D:/Orb/.architecture",
-    "D:\\Orb\\.architecture",
-    "D:/Orb/logs",
-    "D:\\Orb\\logs",
-    # Android project — host only (not in sandbox)
-    "D:/Astra Android Folder",
-    "D:\\Astra Android Folder",
-    # Desktop frontend — host only (not in sandbox)
-    "D:/orb-desktop",
-    "D:\\orb-desktop",
-    # NOTE: D:\Orb\app, D:\Orb\main.py, D:\Orb\config, D:\Orb\docs
-    # are INTENTIONALLY NOT HERE. These go through the sandbox.
-]
-
-
-def _is_host_only(path: str) -> bool:
-    """Check if path is host-only data (architecture maps, logs)."""
-    for prefix in _HOST_ONLY_PREFIXES:
-        if path.startswith(prefix):
-            return True
-    return False
 
 
 def _read_host_file(path: str, head: int = None, tail: int = None) -> Optional[str]:
@@ -134,7 +232,7 @@ def _read_host_file(path: str, head: int = None, tail: int = None) -> Optional[s
 
 
 # =============================================================================
-# TOOL EXECUTORS
+# READ TOOLS
 # =============================================================================
 
 async def execute_read_file(params: Dict[str, Any]) -> str:
@@ -203,7 +301,7 @@ async def execute_list_files(params: Dict[str, Any]) -> str:
                 return f"Error listing directory: {e}"
         return f"Directory not found: {path}"
 
-    # Sandbox controller: /fs/tree with roots + max_depth=1
+    # Sandbox controller
     try:
         import httpx
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -219,7 +317,6 @@ async def execute_list_files(params: Dict[str, Any]) -> str:
                     for f in files:
                         name = f.get("name", "?")
                         ext = f.get("ext", "")
-                        # Directories have no extension and typically no size
                         is_dir = not ext and f.get("size_bytes") is None
                         prefix = "[DIR]" if is_dir else "[FILE]"
                         lines.append(f"{prefix} {name}")
@@ -256,12 +353,9 @@ async def execute_search_files(params: Dict[str, Any]) -> str:
         except Exception as e:
             return f"Search error: {e}"
 
-    # Sandbox controller: use /fs/tree with deep scan, then filter client-side
-    # Convert glob pattern to something we can match against filenames/paths
-    # e.g. "**/*.tsx" -> match any .tsx file; "Debug*" -> match files starting with Debug
+    # Sandbox controller: deep scan, then filter client-side
     try:
         import httpx
-        # Use deeper max_depth for recursive searches
         max_depth = 10 if "**/" in pattern or pattern.startswith("*") else 3
         async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.post(
@@ -274,19 +368,15 @@ async def execute_search_files(params: Dict[str, Any]) -> str:
                 if not files:
                     return f"No files found in {root}"
 
-                # Filter by pattern
                 skip_dirs = {".git", "node_modules", ".venv", "__pycache__", "dist", "build"}
-                # Normalise the glob: strip leading **/ for fnmatch
                 match_pattern = pattern.lstrip("*/") if pattern.startswith("**/") else pattern
 
                 matched = []
                 for f in files:
                     fpath = f.get("path", "")
                     fname = f.get("name", "")
-                    # Skip noise directories
                     if any(sd in fpath for sd in skip_dirs):
                         continue
-                    # Match against filename or relative path
                     if fnmatch.fnmatch(fname, match_pattern) or fnmatch.fnmatch(fpath, pattern):
                         matched.append(fpath)
 
@@ -362,11 +452,11 @@ async def execute_read_logs(params: Dict[str, Any]) -> str:
 
 
 # =============================================================================
-# WRITE TOOLS (sandbox-only)
+# WRITE TOOLS (sandbox-only, host writes blocked)
 # =============================================================================
 
 async def execute_write_file(params: Dict[str, Any]) -> str:
-    """Write a file — SANDBOX for ASTRA code, host-direct only for Android/desktop."""
+    """Write a file. Host-only paths write directly; everything else via sandbox."""
     path = params.get("path", "")
     content = params.get("content", "")
     if not path:
@@ -374,26 +464,32 @@ async def execute_write_file(params: Dict[str, Any]) -> str:
 
     path = _resolve_sandbox_path(path)
 
-    # v0.14.0: BLOCK host writes to ASTRA backend code
-    _astra_code_prefixes = ["D:/Orb/app", "D:\\Orb\\app", "D:/Orb/main.py", "D:\\Orb\\main.py",
-                             "D:/Orb/config", "D:\\Orb\\config", "D:/Orb/docs", "D:\\Orb\\docs"]
-    for _acp in _astra_code_prefixes:
-        if path.startswith(_acp):
-            logger.info("[action_executor] ASTRA code write routed to SANDBOX: %s", path)
-            break  # Fall through to sandbox write below
-    else:
-        # Host-direct write for known non-ASTRA paths (Android, desktop)
-        if _is_host_only(path):
-            try:
-                p = Path(path)
-                p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_text(content, encoding="utf-8")
-                logger.info("[action_executor] Host write: %s (%d chars)", path, len(content))
-                return f"Successfully wrote {len(content)} chars to {path}"
-            except Exception as e:
-                return f"Host write error: {e}"
+    # HARD BLOCK: protected directories (Orb core + Windows system)
+    if _is_host_write_blocked(path):
+        logger.warning("[action_executor] BLOCKED host write attempt: %s", path)
+        return (
+            f"BLOCKED: Cannot write to {path} — this is a protected directory. "
+            "Protected dirs: D:/Orb, D:/Orb.architecture, D:/orb-desktop, "
+            "D:/orb-electron-data, and Windows system folders."
+        )
 
-    # Sandbox write for everything else
+    # Host-only paths: write directly to host filesystem
+    if _is_host_only(path):
+        try:
+            p = Path(path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content, encoding="utf-8")
+            size_kb = len(content.encode("utf-8")) / 1024
+            logger.info("[action_executor] Host write: %s (%.1f KB)", path, size_kb)
+            return f"Successfully wrote {len(content)} chars ({size_kb:.1f} KB) to {path} (host)"
+        except Exception as e:
+            return f"Host write error for {path}: {e}"
+
+    # Sandbox paths: write via sandbox controller
+    sandbox_ok, sandbox_message = _sandbox_health_status()
+    if not sandbox_ok:
+        return sandbox_message
+
     try:
         import httpx
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -402,14 +498,14 @@ async def execute_write_file(params: Dict[str, Any]) -> str:
                 json={"path": path, "content": content, "overwrite": True},
             )
             if resp.status_code == 200:
-                return f"Successfully wrote {len(content)} chars to {path}"
+                return f"Successfully wrote {len(content)} chars to {path} (sandbox)"
             return f"Write failed ({resp.status_code}): {resp.text}"
     except Exception as e:
         return f"Write error: {e}"
 
 
 async def execute_edit_file(params: Dict[str, Any]) -> str:
-    """Edit a file via read-modify-write through sandbox controller."""
+    """Edit a file via read-modify-write. Host-only paths bypass sandbox."""
     path = params.get("path", "")
     old_text = params.get("old_text", "")
     new_text = params.get("new_text", "")
@@ -417,8 +513,41 @@ async def execute_edit_file(params: Dict[str, Any]) -> str:
     if not path or not old_text:
         return "Error: path and old_text are required."
 
+    resolved = _resolve_sandbox_path(path)
+
+    # HARD BLOCK: check write safety before doing any work
+    if _is_host_write_blocked(resolved):
+        logger.warning("[action_executor] BLOCKED host edit attempt: %s", resolved)
+        return (
+            f"BLOCKED: Cannot edit {resolved} — this is a protected directory. "
+            "Protected dirs: D:/Orb, D:/Orb.architecture, D:/orb-desktop, "
+            "D:/orb-electron-data, and Windows system folders."
+        )
+
+    # Host-only paths: read and write directly on the host
+    if _is_host_only(resolved):
+        current = _read_host_file(resolved)
+        if current is None:
+            return f"File not found on host: {resolved}"
+
+        if old_text not in current:
+            return f"Error: old_text not found in {resolved}. The text to replace must exist exactly."
+
+        count = current.count(old_text)
+        if count > 1:
+            return f"Error: old_text found {count} times in {resolved}. Must be unique."
+
+        updated = current.replace(old_text, new_text, 1)
+        return await execute_write_file({"path": resolved, "content": updated})
+
+    # Sandbox paths: require sandbox controller
+    sandbox_ok, sandbox_message = _sandbox_health_status()
+    if not sandbox_ok:
+        return sandbox_message
+
+    # Read current content from sandbox
     current = await execute_read_file({"path": path})
-    if current.startswith("Error"):
+    if current.startswith("Error") or current.startswith("Sandbox read failed"):
         return current
 
     if old_text not in current:
@@ -429,17 +558,18 @@ async def execute_edit_file(params: Dict[str, Any]) -> str:
         return f"Error: old_text found {count} times in {path}. Must be unique."
 
     updated = current.replace(old_text, new_text, 1)
-    return await execute_write_file({"path": path, "content": updated})
+    return await execute_write_file({"path": resolved, "content": updated})
 
 
 async def execute_run_command(params: Dict[str, Any]) -> str:
-    """Run a command — host-direct via asyncio subprocess.
+    """Run a command on the host via asyncio subprocess.
 
     Debug lock mode needs to run commands on the host (e.g. Gradle builds
     for Android projects, Python syntax checks). The sandbox may not have
     the required SDKs or project files.
     """
     import asyncio
+    import re
 
     command = params.get("command", "")
     cwd = params.get("cwd", "D:\\Orb")
@@ -448,17 +578,46 @@ async def execute_run_command(params: Dict[str, Any]) -> str:
     if not command:
         return "Error: command is required."
 
-    # Block dangerous commands
     cmd_lower = command.lower()
-    _BLOCKED = [
+
+    # Block destructive system commands
+    _BLOCKED_COMMANDS = [
         "remove-item c:\\", "del c:\\", "rd c:\\", "rmdir c:\\",
         "format-volume", "clear-disk", "stop-computer", "restart-computer",
         "set-executionpolicy", "new-service", "remove-service",
         "reg delete", "reg add", "net user", "net localgroup",
     ]
-    for blocked in _BLOCKED:
+    for blocked in _BLOCKED_COMMANDS:
         if blocked in cmd_lower:
-            return f"ERROR: Command blocked for safety — contains '{blocked}'"
+            logger.warning("[action_executor] BLOCKED dangerous command: %s", command[:80])
+            return f"BLOCKED: Command contains '{blocked}' — not allowed for safety."
+
+    # Block file-writing commands that target project directories
+    # Catches: echo > file, Set-Content, Out-File, >> redirect, etc.
+    # Protected host folders: D:\Orb, D:\Orb.architecture, D:\orb-desktop, D:\orb-electron-data
+    _PROTECTED_DIR_PATTERN = r'[dD]:[/\\](?:Orb[/\\]|Orb$|Orb\.architecture|orb-desktop|orb-electron-data)'
+    _WRITE_PATTERNS = [
+        r'[>|]\s*["\']?' + _PROTECTED_DIR_PATTERN,
+        r'set-content\s+.*' + _PROTECTED_DIR_PATTERN,
+        r'out-file\s+.*' + _PROTECTED_DIR_PATTERN,
+        r'add-content\s+.*' + _PROTECTED_DIR_PATTERN,
+        r'new-item\s+.*' + _PROTECTED_DIR_PATTERN,
+        r'copy-item\s+.*' + _PROTECTED_DIR_PATTERN,
+        r'move-item\s+.*' + _PROTECTED_DIR_PATTERN,
+        r'remove-item\s+.*' + _PROTECTED_DIR_PATTERN,
+    ]
+    for pat in _WRITE_PATTERNS:
+        if re.search(pat, cmd_lower):
+            logger.warning("[action_executor] BLOCKED write-via-command: %s", command[:80])
+            return (
+                "BLOCKED: This command would write to a protected project directory. "
+                "Use the sandbox for all file modifications."
+            )
+
+    # Block git commands — Taz handles all version control manually
+    if re.search(r'\bgit\b', cmd_lower):
+        logger.warning("[action_executor] BLOCKED git command: %s", command[:80])
+        return "BLOCKED: Git commands are not allowed. Taz handles all version control."
 
     try:
         import base64
@@ -484,13 +643,8 @@ async def execute_run_command(params: Dict[str, Any]) -> str:
 
 
 # =============================================================================
-# DISPATCHER
-# =============================================================================
-
-
-# ═══════════════════════════════════════════════════════════════
 # ADB EMULATOR TOOL HANDLERS
-# ═══════════════════════════════════════════════════════════════
+# =============================================================================
 
 async def execute_emulator_screenshot(params: Dict[str, Any]) -> str:
     from app.debug.adb_tools import take_screenshot
@@ -499,47 +653,50 @@ async def execute_emulator_screenshot(params: Dict[str, Any]) -> str:
         return result["error"]
     return f"Screenshot saved: {result['path']} ({result['size_bytes']} bytes)"
 
+
 async def execute_emulator_ui_dump(params: Dict[str, Any]) -> str:
     from app.debug.adb_tools import dump_ui_hierarchy
     return await dump_ui_hierarchy()
+
 
 async def execute_emulator_tap(params: Dict[str, Any]) -> str:
     from app.debug.adb_tools import tap
     return await tap(int(params.get("x", 0)), int(params.get("y", 0)))
 
+
 async def execute_emulator_type(params: Dict[str, Any]) -> str:
     from app.debug.adb_tools import type_text
     return await type_text(params.get("text", ""))
+
 
 async def execute_emulator_key(params: Dict[str, Any]) -> str:
     from app.debug.adb_tools import press_key
     return await press_key(params.get("keycode", "KEYCODE_ENTER"))
 
-# # Desktop computer use (split to _desktop_executors.py)
-# from app.debug._desktop_executors import (
-#     execute_desktop_screenshot, execute_desktop_click, execute_desktop_type,
-#     execute_desktop_key, execute_desktop_scroll, execute_desktop_find_window,
-#     execute_desktop_read_screen,
-# )
 
 async def execute_gradle_build(params: Dict[str, Any]) -> str:
     from app.debug.adb_tools import gradle_build
     return await gradle_build()
 
+
 async def execute_gradle_install(params: Dict[str, Any]) -> str:
     from app.debug.adb_tools import gradle_install
     return await gradle_install()
+
 
 async def execute_app_restart(params: Dict[str, Any]) -> str:
     from app.debug.adb_tools import restart_app
     return await restart_app()
 
+
 async def execute_get_crash_log(params: Dict[str, Any]) -> str:
     from app.debug.adb_tools import get_crash_log
     return await get_crash_log()
-# =========================================================================
+
+
+# =============================================================================
 # USER FILE TOOLS (v0.14.0)
-# =========================================================================
+# =============================================================================
 
 async def execute_search_my_files(params: Dict[str, Any]) -> str:
     """Search the drive_file_manifest for user files by name/category/extension."""
@@ -550,8 +707,6 @@ async def execute_search_my_files(params: Dict[str, Any]) -> str:
     if not query and not category and not extension:
         return "Please provide a search query, category, or extension."
 
-    # Replace spaces with wildcards for flexible filename matching
-    # Users say "learning roadmap" but files may be "Learning_Roadmap" or "learning-roadmap"
     if query:
         query = query.replace(" ", "%")
 
@@ -564,7 +719,6 @@ async def execute_search_my_files(params: Dict[str, Any]) -> str:
             q = db.query(DriveFileManifest)
 
             if query:
-                # Search both filename and full path for broader matching
                 from sqlalchemy import or_
                 q = q.filter(or_(
                     DriveFileManifest.filename.ilike(f"%{query}%"),
@@ -606,11 +760,9 @@ async def execute_read_user_file(params: Dict[str, Any]) -> str:
     if not os.path.isfile(path):
         return f"File not found: {path}"
 
-    # Security: only allow reading from known category paths
     try:
         from app.drive.file_utils import get_category_paths
         allowed_roots = [str(p) for p in get_category_paths().values()]
-        # Also allow ASTRA output and debug uploads
         allowed_roots.append(os.path.join("D:", os.sep, "Orb", "output"))
         allowed_roots.append(os.path.join("D:", os.sep, "Orb", "data", "debug_uploads"))
 
@@ -618,13 +770,12 @@ async def execute_read_user_file(params: Dict[str, Any]) -> str:
         if not any(path_norm.startswith(os.path.normpath(r)) for r in allowed_roots):
             return f"Access denied: {path} is outside allowed user file areas."
     except Exception:
-        pass  # If we can't check, proceed cautiously
+        pass
 
     try:
         from app.llm.file_analyzer import extract_text
         text, err = extract_text(file_path=path, filename=os.path.basename(path))
         if text:
-            # Cap at 50KB for context
             if len(text) > 50000:
                 return text[:50000] + f"\n\n... [TRUNCATED — {len(text)} chars total]"
             return _size_warn(text, path)
@@ -641,11 +792,7 @@ async def execute_read_user_file(params: Dict[str, Any]) -> str:
 # =============================================================================
 
 async def execute_web_search(params: Dict[str, Any]) -> str:
-    """Search the web via ASTRA's existing Brave/DDG infrastructure.
-
-    Delegates to app.tools.registry.web_search_handler which uses
-    Brave Search (primary) with DuckDuckGo fallback.
-    """
+    """Search the web via ASTRA's existing Brave/DDG infrastructure."""
     query = str(params.get("query", "")).strip()
     if not query:
         return "Error: query is required."
@@ -659,7 +806,6 @@ async def execute_web_search(params: Dict[str, Any]) -> str:
             {"query": query, "max_results": max_results},
             context=None,
         )
-        # Format results for the LLM
         results = result.get("results", [])
         provider = result.get("provider", "unknown")
         if not results:
@@ -677,8 +823,6 @@ async def execute_web_search(params: Dict[str, Any]) -> str:
         return f"Web search error: {e}"
 
 
-
-
 # =============================================================================
 # USER FILE WRITE TOOLS (v0.15.0) — write to personal folders
 # =============================================================================
@@ -686,7 +830,6 @@ async def execute_web_search(params: Dict[str, Any]) -> str:
 async def execute_write_user_file(params: Dict[str, Any]) -> str:
     """Write a file to the user's personal folders (Documents, Pictures, etc.).
 
-    v0.15.0: Host-direct write, scoped to user category paths only.
     Security: validates path is within allowed user folder roots.
     """
     path = params.get("path", "").strip()
@@ -711,27 +854,19 @@ async def execute_write_user_file(params: Dict[str, Any]) -> str:
                 f"Use get_user_folders to see valid base paths."
             )
 
-        # Create parent directories if needed
         target.parent.mkdir(parents=True, exist_ok=True)
-
-        # Write the file
         target.write_text(content, encoding="utf-8")
         size_kb = len(content.encode("utf-8")) / 1024
 
-        logger.info(
-            "[action_executor] User file write: %s (%.1f KB)", path, size_kb
-        )
+        logger.info("[action_executor] User file write: %s (%.1f KB)", path, size_kb)
 
-        # Update drive manifest so the file appears in search immediately
         try:
             from app.drive.manifest_scanner import index_single_file
             index_single_file(str(target))
         except Exception:
-            pass  # Non-fatal — manifest will catch it on next scan
+            pass
 
-        return (
-            f"Successfully wrote {len(content)} chars ({size_kb:.1f} KB) to {path}"
-        )
+        return f"Successfully wrote {len(content)} chars ({size_kb:.1f} KB) to {path}"
     except PermissionError:
         return f"Permission denied writing to {path}"
     except Exception as e:
@@ -754,8 +889,13 @@ async def execute_get_user_folders(params: Dict[str, Any]) -> str:
     except Exception as e:
         return f"Error resolving user folders: {e}"
 
+
+# =============================================================================
+# TOOL DISPATCHER
+# =============================================================================
+
 TOOL_HANDLERS = {
-    # User file tools (v0.15.0)
+    # User file tools
     "search_my_files":     execute_search_my_files,
     "read_user_file":      execute_read_user_file,
     "write_user_file":     execute_write_user_file,
@@ -780,14 +920,6 @@ TOOL_HANDLERS = {
     "gradle_install":       execute_gradle_install,
     "app_restart":          execute_app_restart,
     "get_crash_log":        execute_get_crash_log,
-    # Desktop computer use tools
-#     "desktop_screenshot":   execute_desktop_screenshot,
-#     "desktop_click":        execute_desktop_click,
-#     "desktop_type":         execute_desktop_type,
-#     "desktop_key":          execute_desktop_key,
-#     "desktop_scroll":       execute_desktop_scroll,
-#     "desktop_find_window":  execute_desktop_find_window,
-#     "desktop_read_screen":  execute_desktop_read_screen,
     # Universal tools (all models)
     "web_search":           execute_web_search,
 }

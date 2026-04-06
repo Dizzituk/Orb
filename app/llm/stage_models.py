@@ -71,16 +71,16 @@ class StageConfig:
 # v3.2: Defaults aligned with current .env config (google/anthropic only)
 # These only fire when .env vars are missing for a stage.
 STAGE_DEFAULTS: Dict[str, Tuple[str, str, int, int]] = {
-    # Core pipeline stages
-    "WEAVER":             ("google",    "gemini-3-flash-preview",      8000,  60),
-    "SPEC_GATE":          ("google",    "gemini-3.1-pro-preview",      4000,  90),
-    "PLANNER":            ("google",    "gemini-2.5-flash",            60000, 120),
+    # Core pipeline stages (aligned with .env 2026-04-05)
+    "WEAVER":             ("openai",    "gpt-5.4",                     8000,  60),
+    "SPEC_GATE":          ("anthropic", "claude-opus-4-6",             8000,  120),
+    "PLANNER":            ("openai",    "gpt-5.4",                     60000, 120),
     "ARCHITECTURE":       ("anthropic", "claude-opus-4-6",             60000, 300),
-    "CRITIQUE":           ("google",    "gemini-3.1-pro-preview",      60000, 180),
-    "REVISION":           ("anthropic", "claude-sonnet-4-6",           60000, 300),
-    "IMPLEMENTER":        ("anthropic", "claude-sonnet-4-6",           60000, 300),
-    "OVERWATCHER":        ("google",    "gemini-2.5-flash",            1200,  60),
-    "CRITICAL_PIPELINE":  ("google",    "gemini-3-flash-preview",      60000, 600),
+    "CRITIQUE":           ("anthropic", "claude-opus-4-6",             60000, 180),
+    "REVISION":           ("anthropic", "claude-opus-4-6",             60000, 300),
+    "IMPLEMENTER":        ("openai",    "gpt-5.4",                     60000, 300),
+    "OVERWATCHER":        ("anthropic", "claude-opus-4-6",             4000,  120),
+    "CRITICAL_PIPELINE":  ("openai",    "gpt-5.4",                     60000, 600),
 
     # Supervisor (Phase 2A — interface contracts between segments)
     "CRITICAL_SUPERVISOR": ("anthropic", "claude-opus-4-6",            8000, 120),

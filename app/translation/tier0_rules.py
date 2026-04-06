@@ -358,11 +358,12 @@ def _check_domain_patterns(text: str) -> Tier0RuleResult:
                 reason=f"Navigation command: '{nav_match.group(0)}' -> {matched_intent.value}",
             )
 
-    # Require at least a score of 1 to trigger domain routing.
-    # A single regex pattern match on a domain keyword is enough —
-    # false positives are low risk since domain chat just enriches
-    # context, it doesn't execute dangerous commands.
-    if best_intent and best_score >= 1:
+    # v3.1: Require at least a score of 2 to trigger domain routing.
+    # A single regex pattern match (score=1) is too easily triggered by
+    # common English words like "share" (investments), "market" (investments),
+    # "content" (content) in unrelated contexts.  Score of 2 means either
+    # a trigger phrase matched (+2) or two separate regex patterns matched.
+    if best_intent and best_score >= 2:
         return Tier0RuleResult(
             matched=True,
             intent=best_intent,

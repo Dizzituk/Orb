@@ -13,7 +13,7 @@ generated each response. This was missing, causing model info to be lost.
 """
 
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime
+from sqlalchemy import Boolean, Column, Integer, String, Text, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
 from app.db import Base
 
@@ -39,6 +39,7 @@ class Project(Base):
     
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    pinned = Column(Boolean, default=False, nullable=False)
 
     # Relationships
     notes = relationship("Note", back_populates="project", cascade="all, delete-orphan")

@@ -61,7 +61,7 @@ async def analyse_video(
     logger.info("[video_analyser] Video ready: %s", video_file.uri)
 
     # Step 2: Ask Gemini to analyse
-    model = genai.GenerativeModel("gemini-2.0-flash")
+    model = genai.GenerativeModel("gemini-3.1-pro-preview")
 
     hint_section = f"\nCreator's note: {user_hint}" if user_hint else ""
 

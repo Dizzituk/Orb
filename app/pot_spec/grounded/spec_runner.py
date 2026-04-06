@@ -157,6 +157,40 @@ async def run_spec_gate_grounded(
             project_paths = [_profile_root]
         else:
             project_paths = _extract_project_paths(combined_text)
+
+        # v11.0: Early sandbox check — if ALL paths are ASTRA repos and sandbox
+        # is offline, hard-stop with clear user message instead of silently
+        # falling through to a useless simple spec.
+        from app.pot_spec.grounded._sbx_fs import _is_astra_repo_path, sandbox_available
+        _all_astra = all(_is_astra_repo_path(p) for p in project_paths) if project_paths else False
+        if _all_astra and project_paths and not sandbox_available():
+            logger.warning("[spec_runner] v11.0 Sandbox offline — attempting auto-start...")
+            print("[spec_runner] v11.0 Sandbox offline — attempting auto-start...")
+
+            from app.pot_spec.grounded._sbx_fs import launch_sandbox
+            sandbox_started = launch_sandbox(wait_seconds=60)
+
+            if not sandbox_started:
+                logger.error("[spec_runner] v11.0 Sandbox auto-start failed — hard stop")
+                return SpecGateResult(
+                    ready_for_pipeline=False,
+                    hard_stopped=True,
+                    hard_stop_reason=(
+                        "🔴 **Sandbox Unavailable — Auto-Start Failed**\n\n"
+                        "This job requires access to ASTRA's codebase clone in the sandbox. "
+                        "ASTRA attempted to launch Windows Sandbox automatically but the "
+                        "controller did not come online within 60 seconds.\n\n"
+                        "**To fix manually:**\n"
+                        "1. Open `D:\\\\Orb\\\\sandbox_controller\\\\astra_sandbox.wsb`\n"
+                        "2. Wait for the sandbox to boot and the controller to start\n"
+                        "3. Retry this command\n"
+                    ),
+                    spec_version=round_n,
+                    validation_status="blocked",
+                )
+            else:
+                logger.info("[spec_runner] v11.0 Sandbox auto-started successfully")
+                print("[spec_runner] v11.0 Sandbox is now online — continuing with spec generation")
         # v8.0: Multi-file refactor detection DISABLED.
         # It repeatedly misclassifies CREATE/architecture jobs as refactors
         # by inferring false search/replace terms from natural language
@@ -351,6 +385,24 @@ async def _handle_create_path(
                 what_to_do=weaver_job_text or user_intent,
             )
         return spot_markdown, project_paths
+
+    # v11.0: Sandbox availability check for ASTRA repo paths
+    from app.pot_spec.grounded._sbx_fs import _is_astra_repo_path, sandbox_available
+    _astra_paths = [p for p in project_paths if _is_astra_repo_path(p)]
+    _app_paths = [p for p in project_paths if not _is_astra_repo_path(p)]
+
+    if _astra_paths and not sandbox_available():
+        logger.warning("[spec_runner] v11.0 Sandbox offline — ASTRA repo paths unavailable: %s", _astra_paths)
+        if not _app_paths:
+            # All paths need sandbox — cannot proceed
+            from app.pot_spec.grounded._spec_runner_utils_10 import _build_simple_spec as _fallback_spec
+            logger.error("[spec_runner] v11.0 HARD: All paths are ASTRA repos and sandbox is offline")
+            print("[spec_runner] v11.0 SANDBOX OFFLINE — all project paths are ASTRA repos, cannot inspect codebase")
+            spot_markdown = _fallback_spec(goal=goal, what_to_do=weaver_job_text or user_intent)
+            # Return with a note so the stream can surface the sandbox warning
+            return spot_markdown, []
+        else:
+            print(f"[spec_runner] v11.0 Sandbox offline. ASTRA paths {_astra_paths} unavailable. Using app paths: {_app_paths}")
 
     valid_paths = [p for p in project_paths if _sbx_isdir(p)]
 

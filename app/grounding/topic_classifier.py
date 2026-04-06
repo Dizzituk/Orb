@@ -92,7 +92,9 @@ _CLAIMS_SIGNALS = {
     r"\b(?:this\s+(?:week|month|quarter|year))\b",
     r"\b(?:yesterday|last\s+(?:week|month|night))\b",
     # Domain: finance / markets
-    r"\b(?:market|stock|share|crypto|bitcoin|ethereum|tao|price|trading)\b",
+    # v1.1: Removed bare "share" — false positive on "population share", "share this" etc.
+    r"\b(?:market\s+(?:cap|crash|rally|correction)|stock\s+(?:market|price|exchange))\b",
+    r"\b(?:crypto|bitcoin|ethereum|tao|trading)\b",
     r"\b(?:gdp|inflation|interest\s+rate|unemployment|recession|tariff)\b",
     r"\b(?:ftse|s&p|nasdaq|dow\s+jones|nikkei)\b",
     r"\b(?:exchange\s+rate|forex|currency)\b",
@@ -187,7 +189,13 @@ def _detect_domain(text: str) -> str:
 
 
 def _extract_search_queries(text: str, category: TopicCategory) -> list[str]:
-    """Generate suggested search queries from the user's message."""
+    """Generate suggested search queries from the user's message.
+
+    v1.1: Skip extraction for long messages (>150 words) — these are
+    instructions/prompts, not factual questions.  For shorter messages,
+    extract the first sentence rather than the last 6 words to avoid
+    grabbing irrelevant tail content (e.g. footer text, design notes).
+    """
     cleaned = re.sub(
         r"^(?:can\s+you\s+|could\s+you\s+|please\s+|i\s+want\s+to\s+know\s+|"
         r"tell\s+me\s+(?:about\s+)?|what(?:'s| is)\s+|explain\s+)",
@@ -197,11 +205,27 @@ def _extract_search_queries(text: str, category: TopicCategory) -> list[str]:
     if not cleaned or len(cleaned) < 3:
         return []
 
-    queries = [cleaned]
     words = cleaned.split()
+
+    # Long messages are instructions/prompts, not search-worthy questions.
+    # Grounding gate should not try to web-search a 500-word design brief.
+    if len(words) > 150:
+        return []
+
+    # For moderate-length messages, extract the first sentence as the
+    # primary query — it's far more likely to contain the actual question
+    # than the tail of the message.
+    first_sentence_match = re.match(r'^(.+?[.?!])\s', cleaned)
+    if first_sentence_match and len(first_sentence_match.group(1).split()) >= 4:
+        first_sentence = first_sentence_match.group(1).rstrip(".")
+        queries = [first_sentence[:200]]
+    else:
+        queries = [cleaned[:200]]
+
+    # Add a shorter version if the query is still long
     if len(words) > 8:
-        short = " ".join(words[-6:])
-        if short != cleaned:
+        short = " ".join(words[:6])  # First 6 words, not last 6
+        if short != queries[0]:
             queries.append(short)
 
     return queries[:3]
@@ -223,9 +247,18 @@ def classify_topic(text: str) -> ClassificationResult:
             confidence=1.0,
             matched_signals=["empty_input"],
         )
-
     text_clean = text.strip()
 
+    # v1.1: Long messages (>150 words) are instructions/prompts/design briefs,
+    # not factual questions that need grounding.  Skip classification entirely
+    # to avoid false-positive claims detection on embedded data/statistics.
+    if len(text_clean.split()) > 150:
+        return ClassificationResult(
+            category=TopicCategory.PERSONAL,
+            confidence=0.85,
+            matched_signals=["long_message_instruction"],
+            domain_hint="",
+        )
     # Count signal matches
     personal_hits = _count_matches(text_clean, _PERSONAL_RX)
     claims_hits = _count_matches(text_clean, _CLAIMS_RX)

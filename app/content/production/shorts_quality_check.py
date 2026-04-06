@@ -19,8 +19,9 @@ from dataclasses import dataclass, asdict
 
 logger = logging.getLogger(__name__)
 
-# Use Gemini 3.1 Pro Preview for quality — best video understanding
-QUALITY_MODEL = "gemini-2.0-flash"
+# Use Gemini 2.5 Flash for quality checks — good video
+# understanding, fast, and within free tier limits
+QUALITY_MODEL = "gemini-2.5-flash"
 PASS_THRESHOLD = 7
 FLAG_THRESHOLD = 4
 

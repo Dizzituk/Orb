@@ -618,6 +618,27 @@ def build_full_context(
     except Exception as _bio_err:
         print(f"[CONTEXT] Biographical injection failed: {_bio_err}")
 
+    # v14.0: Self-model user facts injection.
+    # Reads confirmed facts from the About You tab (self-model) and injects
+    # them into the system context so the LLM knows the user's preferences,
+    # biographical details, communication style, and interests.
+    try:
+        from app.self_model.user_model import get_user_model as _get_sm
+        _sm = _get_sm()
+        _sm_facts = _sm.get_all()
+        if _sm_facts:
+            _sm_lines = ["[SELF-MODEL: USER FACTS]"]
+            for _sf in _sm_facts:
+                _conf = _sf.confidence.value if hasattr(_sf.confidence, "value") else str(_sf.confidence)
+                _sm_lines.append(f"  {_sf.category}/{_sf.key}: {_sf.value} (confidence: {_conf})")
+            _sm_lines.append("[/SELF-MODEL: USER FACTS]")
+            full_context += "\n\n" + "\n".join(_sm_lines)
+            print(f"[CONTEXT] Self-model facts injected: {len(_sm_facts)} facts")
+        else:
+            print("[CONTEXT] No self-model user facts found")
+    except Exception as _sm_err:
+        print(f"[CONTEXT] Self-model injection failed: {_sm_err}")
+
     # v5.4: RAG memory injection from unified memory router
     try:
         from app.memory.integration import inject_memory_context

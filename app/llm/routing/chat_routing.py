@@ -225,10 +225,19 @@ def _detect_codebase_exploration(message: str) -> bool:
 
 # v10.3: Detect image generation intent — routes to image generation pipeline.
 # v3.1: Added chart/graph/infographic/plot for data-driven image requests.
+# v3.2: Added "this into an/a" and "turn/convert ... into" patterns
+# to catch natural voice-to-text phrasings like "make this into an image"
 _IMAGE_GEN_PATTERNS = _re.compile(
-    r'(?:create|draw|make|generate|design|paint|sketch|render|produce|build|compile|visuali[sz]e|need|plot|put\s+together)\s+'
-    r'(?:me\s+|yourself\s+)?(?:a\s+|an\s+|the\s+|another\s+)?'
-    r'(?:new\s+)?(?:image|picture|photo|illustration|avatar|icon|graphic|artwork|portrait|visual|banner|thumbnail|logo|cover|chart|graph|infographic|plot|diagram)',
+    r'(?:'
+        # Direct creation: "create/make/generate [me] [a] image"
+        r'(?:create|draw|make|generate|design|paint|sketch|render|produce|build|compile|visuali[sz]e|need|plot|put\s+together)\s+'
+        r'(?:me\s+|yourself\s+)?(?:a\s+|an\s+|the\s+|another\s+|this\s+into\s+(?:a|an)\s+)?'
+        r'(?:new\s+)?(?:image|picture|photo|illustration|avatar|icon|graphic|artwork|portrait|visual|banner|thumbnail|logo|cover|chart|graph|infographic|plot|diagram)'
+    r'|'
+        # Conversion: "turn/convert this into an image"
+        r'(?:turn|convert|transform)\s+(?:this|that|it)\s+into\s+(?:a\s+|an\s+)?'
+        r'(?:image|picture|photo|illustration|graphic|visual|chart|graph|infographic|diagram)'
+    r')',
     _re.IGNORECASE,
 )
 
@@ -320,30 +329,53 @@ def handle_chat_mode(
     
     # Build context
     full_context = build_full_context(db, req.project_id, req.message, req.use_semantic_search)
-    # v0.14.0: Inject uploaded file content into context.
-    # When a file is uploaded via the debug panel, the extracted text must be
-    # available to the chat model. The background knowledge hook runs async and
-    # may not be done yet, so we extract synchronously here.
+
+    # v14.0: Detect image/video uploads and build synthetic attachments list.
+    # The StreamRequest uses file_upload_* fields instead of an attachments list,
+    # so the complexity classifier never saw them as multimodal. This bridges the gap.
     _file_local_path = getattr(req, "file_upload_local_path", None)
     _file_name = getattr(req, "file_upload_name", None)
-    if _file_local_path and _file_name:
-        try:
-            from app.llm.file_analyzer import extract_text as _extract_text
-            _file_text, _file_err = _extract_text(file_path=_file_local_path, filename=_file_name)
-            if _file_text:
-                _preview = _file_text[:50000]  # Cap at 50KB for context
-                _upload_block = (
-                    f"=== UPLOADED FILE: {_file_name} ===\n"
-                    f"{_preview}\n"
-                    f"=== END FILE ===\n\n"
-                )
-                full_context = _upload_block + (full_context or "")
-                print(f"[CHAT_MODE] Injected uploaded file content: {_file_name} ({len(_file_text)} chars)")
-            elif _file_err:
-                print(f"[CHAT_MODE] File extraction failed for {_file_name}: {_file_err}")
-        except Exception as _fex:
-            print(f"[CHAT_MODE] File injection error: {_fex}")
+    _file_mime = getattr(req, "file_upload_mime", None) or ""
+    _file_gemini_name = getattr(req, "file_upload_gemini_name", None)
+    _file_gemini_uri = getattr(req, "file_upload_uri", None)
+    _is_image_upload = _file_mime.startswith("image/")
+    _is_video_upload = _file_mime.startswith("video/")
+    _synthetic_attachments = []
 
+    if _file_local_path and _file_name:
+        if _is_image_upload or _is_video_upload:
+            # Image/video: build synthetic attachment for multimodal routing.
+            # Do NOT try extract_text on images — it returns nothing useful.
+            # The image will be passed to Gemini as a vision input below.
+            _synthetic_attachments.append({
+                "path": _file_local_path,
+                "name": _file_name,
+                "mime": _file_mime,
+                "gemini_name": _file_gemini_name,
+                "gemini_uri": _file_gemini_uri,
+            })
+            print(f"[CHAT_MODE] Image/video upload detected: {_file_name} ({_file_mime})")
+            print(f"[CHAT_MODE]   -> Gemini URI: {_file_gemini_uri}")
+            print(f"[CHAT_MODE]   -> Gemini name: {_file_gemini_name}")
+            print(f"[CHAT_MODE]   -> Local path: {_file_local_path}")
+        else:
+            # Non-image file: extract text as before
+            try:
+                from app.llm.file_analyzer import extract_text as _extract_text
+                _file_text, _file_err = _extract_text(file_path=_file_local_path, filename=_file_name)
+                if _file_text:
+                    _preview = _file_text[:50000]
+                    _upload_block = (
+                        f"=== UPLOADED FILE: {_file_name} ===\n"
+                        f"{_preview}\n"
+                        f"=== END FILE ===\n\n"
+                    )
+                    full_context = _upload_block + (full_context or "")
+                    print(f"[CHAT_MODE] Injected uploaded file content: {_file_name} ({len(_file_text)} chars)")
+                elif _file_err:
+                    print(f"[CHAT_MODE] File extraction failed for {_file_name}: {_file_err}")
+            except Exception as _fex:
+                print(f"[CHAT_MODE] File injection error: {_fex}")
 
     # v7.0: Pre-gather codebase context for trusted models.
     # Reads files from the sandbox (read-only) via RAG-guided discovery.
@@ -436,17 +468,20 @@ def handle_chat_mode(
             print(f"[CHAT_MODE] Restored sticky model from history: {provider}/{model}")
     else:
         # v5.7: Run complexity classifier to decide model tier.
+        # v14.0: Use synthetic attachments from file_upload_* fields if available,
+        # otherwise fall back to the req.attachments field (which is typically None)
+        _all_attachments = _synthetic_attachments or getattr(req, "attachments", None) or []
         complexity = classify_complexity(
             query=req.message,
             intent=None,
-            attachments=getattr(req, 'attachments', None),
+            attachments=_all_attachments if _all_attachments else None,
         )
         print(f"[CHAT_MODE] Complexity: tier={complexity.tier}, target={complexity.model_target}, "
               f"confidence={complexity.confidence}, signals={complexity.signals}")
         
         import os as _os
         _chat_provider = _os.getenv("CHAT_PROVIDER", "openai")  # v2.3: default to OpenAI
-        _chat_model = _os.getenv("CHAT_MODEL", "gpt-5-mini")  # v2.3: GPT-5-mini for chat
+        _chat_model = _os.getenv("CHAT_MODEL", "gpt-5.4-mini")  # v14.1: GPT-5.4-mini for chat
 
         _skip_confirm = getattr(req, 'ui_context', None) is not None
 
@@ -466,10 +501,16 @@ def handle_chat_mode(
 
         if complexity.tier == "multimodal":
             # ── TIER 3: Multimodal — media attached, needs vision ──
-            attachments = getattr(req, 'attachments', None) or []
+            attachments = _all_attachments or getattr(req, "attachments", None) or []
             provider = "google"
-            model = _os.getenv("MULTIMODAL_MODEL", "gemini-3.1-pro-preview-customtools")
-            print(f"[CHAT_MODE] TIER 3 (multimodal): {len(attachments)} attachments -> {provider}/{model}")
+            # v14.1: Images use Gemini 2.5 Pro (faster, cheaper, plenty capable).
+            # Videos use Gemini 3.1 Pro (needs heavier multimodal processing).
+            if _is_image_upload:
+                model = _os.getenv("IMAGE_VISION_MODEL", "gemini-2.5-pro")
+                print(f"[CHAT_MODE] TIER 3 (image vision): {len(attachments)} attachments -> {provider}/{model}")
+            else:
+                model = _os.getenv("MULTIMODAL_MODEL", "gemini-3.1-pro-preview-customtools")
+                print(f"[CHAT_MODE] TIER 3 (video/multimodal): {len(attachments)} attachments -> {provider}/{model}")
             _set_sticky_model(req.project_id, provider, model)
 
         elif _arch_hits >= 2 or (_arch_hits >= 1 and _reasoning_hits >= 2):
@@ -563,7 +604,7 @@ def handle_chat_mode(
             elif provider == "anthropic":
                 model = _os2.getenv("ANTHROPIC_DEFAULT_MODEL", "claude-sonnet-4-6")
             elif provider == "openai":
-                model = _os2.getenv("OPENAI_DEFAULT_MODEL", "gpt-5-mini")  # v2.3
+                model = _os2.getenv("OPENAI_DEFAULT_MODEL", "gpt-5.4-mini")  # v14.1
         else:
             print(f"[CHAT_MODE] WARNING: No providers available at all")
     
@@ -755,6 +796,29 @@ def handle_chat_mode(
     if ui_ctx:
         print(f"[CHAT_MODE] UI context injected: view={ui_ctx.view_type}, job={ui_ctx.job_type}, label={ui_ctx.label}")
     
+    # v14.0: Inject image into the last user message for Gemini vision.
+    # When an image was uploaded, the multimodal tier routes to Gemini.
+    # We need to include the actual image data in the message so Gemini can see it.
+    if _is_image_upload and provider == "google" and _file_local_path:
+        try:
+            import base64 as _b64
+            with open(_file_local_path, "rb") as _img_f:
+                _img_bytes = _img_f.read()
+            _img_b64 = _b64.b64encode(_img_bytes).decode("utf-8")
+            # Find the last user message and convert it to multipart
+            for _i in range(len(messages) - 1, -1, -1):
+                if messages[_i].get("role") == "user":
+                    _text_content = messages[_i].get("content", "")
+                    # Replace content with a list of parts (Gemini multipart format)
+                    messages[_i]["content"] = [
+                        {"type": "text", "text": _text_content},
+                        {"type": "image", "mime_type": _file_mime, "data": _img_b64},
+                    ]
+                    print(f"[CHAT_MODE] Injected image into user message [{_i}]: {_file_mime}, {len(_img_bytes)} bytes")
+                    break
+        except Exception as _img_err:
+            print(f"[CHAT_MODE] Failed to inject image: {_img_err}")
+
     print(f"[CHAT_MODE] Calling generate_sse_stream: provider={provider}, model={model}, messages={len(messages)}")
     
     return StreamingResponse(

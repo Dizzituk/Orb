@@ -235,6 +235,21 @@ def _build_gemini_parts(msg: Dict) -> List:
                 if text:
                     parts.append(text)
 
+            elif block_type == "image":
+                # v14.0: Image upload — convert base64 to Gemini inline_data blob
+                import base64 as _b64_mod
+                _img_mime = block.get("mime_type", "image/png")
+                _img_data_b64 = block.get("data", "")
+                if _img_data_b64:
+                    _img_bytes = _b64_mod.b64decode(_img_data_b64)
+                    parts.append(glm.Part(
+                        inline_data=glm.Blob(
+                            mime_type=_img_mime,
+                            data=_img_bytes,
+                        )
+                    ))
+                    print(f"[GEMINI_PARTS] Injected inline image: {_img_mime}, {len(_img_bytes)} bytes")
+
             elif block_type == "tool_use":
                 # Assistant wants to call a tool -> function_call Part
                 args_struct = struct_pb2.Struct()

@@ -47,6 +47,10 @@ class AddFactRequest(BaseModel):
     value: str
     source: str = "user_provided"
 
+class DeclineFactRequest(BaseModel):
+    category: str
+    key: str
+
 
 # ── Capabilities ──────────────────────────────────────────
 
@@ -111,6 +115,42 @@ async def correct_user_fact(request: FactCorrectionRequest):
         f"New value: {request.new_value}",
     )
     return {"status": "corrected", "fact": fact.to_dict()}
+
+@router.post("/user/decline")
+async def decline_user_fact(request: DeclineFactRequest):
+    """Remove a fact the user has declined/rejected from the self-model."""
+    removed = get_user_model().remove_fact(request.category, request.key)
+    if not removed:
+        return {"status": "not_found"}
+    journal = get_journal()
+    journal.record_learning(
+        f"User declined {request.category}:{request.key}",
+        "Fact removed from self-model by user request",
+    )
+    return {"status": "declined", "category": request.category, "key": request.key}
+
+@router.post("/user/confirm")
+async def confirm_user_fact(request: DeclineFactRequest):
+    """Confirm a fact is correct - reinforces it (increases confidence/count)."""
+    model = get_user_model()
+    existing = model.get_fact(request.category, request.key)
+    if not existing:
+        return {"status": "not_found"}
+    from app.self_model.models import UserFact
+    # Re-add with same value — add_fact handles reinforcement
+    reinforced = model.add_fact(UserFact(
+        category=existing.category,
+        key=existing.key,
+        value=existing.value,
+        source="user_confirmed",
+    ))
+    journal = get_journal()
+    journal.record_learning(
+        f"User confirmed {request.category}:{request.key}",
+        f"Reinforced to count={reinforced.reinforcement_count}, confidence={reinforced.confidence}",
+    )
+    return {"status": "confirmed", "fact": reinforced.to_dict()}
+
 
 
 @router.post("/user/add")
