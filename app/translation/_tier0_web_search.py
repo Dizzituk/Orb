@@ -333,6 +333,116 @@ def _extract_query_by_keywords(text: str) -> Optional[str]:
     return query
 
 
+
+# =========================================================================
+# Staleness detector (v3.0) — auto-trigger web search for stale topics
+# =========================================================================
+# Topics that change faster than training data can keep up with.
+# If the user asks about any of these, ASTRA should verify online
+# rather than confidently answering from potentially outdated knowledge.
+
+# Current events, conflicts, politics — always changing
+_STALENESS_CURRENT_EVENTS = {
+    "war", "conflict", "invasion", "ceasefire", "bombing", "strike",
+    "election", "voted", "referendum", "coup",
+    "president", "prime minister", "chancellor", "leader",
+    "sanctions", "tariff", "tariffs", "trade war", "embargo",
+    "crisis", "emergency", "disaster", "earthquake", "hurricane",
+    "protest", "riot", "demonstration",
+}
+
+# Technology and AI — moves fast
+_STALENESS_TECH = {
+    "gpt", "claude", "gemini", "llama", "mistral", "deepseek",
+    "openai", "anthropic", "google ai", "meta ai",
+    "model release", "new model", "benchmark", "evaluation",
+    "api", "sdk", "framework", "library", "release",
+    "gpu", "nvidia", "amd", "rtx", "cuda",
+    "robotics", "self-driving", "autonomous",
+}
+
+# Finance and markets — real-time
+_STALENESS_FINANCE = {
+    "stock", "share price", "market", "bitcoin", "crypto",
+    "interest rate", "inflation", "recession",
+    "earnings", "quarterly", "ipo",
+}
+
+# Named entities that imply current state questions
+_STALENESS_CURRENT_STATE = {
+    "iran", "ukraine", "russia", "gaza", "israel", "taiwan",
+    "china", "north korea", "syria",
+    "nhs", "hmrc", "dwp",
+}
+
+# Temporal signals that imply the user wants current info
+_STALENESS_TEMPORAL = {
+    "latest", "recent", "current", "now", "today",
+    "this week", "this month", "this year", "2026", "2025",
+    "right now", "at the moment", "currently",
+    "still", "anymore", "yet",
+    "what happened", "what is happening", "what's happening",
+    "update", "news", "developments",
+}
+
+
+def _check_staleness(text: str) -> Optional[str]:
+    """Check if the topic is likely to have stale training data.
+
+    Returns a reason string if the topic is stale, None otherwise.
+    The reason is used in logging to explain why auto-search triggered.
+
+    v3.0: Initial implementation. Checks against known fast-moving
+    topic categories. This is intentionally broad — better to search
+    unnecessarily than to confidently give outdated information.
+    """
+    lower = text.lower()
+    words = set(re.findall(r"[a-z']+", lower))
+
+    # Check temporal signals first — strongest indicator
+    for signal in _STALENESS_TEMPORAL:
+        if signal in lower:
+            return f"temporal_signal:{signal}"
+
+    # Check current events keywords
+    for kw in _STALENESS_CURRENT_EVENTS:
+        if kw in lower:
+            return f"current_events:{kw}"
+
+    # Check named entities that are fast-moving situations
+    for entity in _STALENESS_CURRENT_STATE:
+        if entity in lower:
+            # Only trigger if the question seems to be about current state,
+            # not historical facts. "When did Iran become a republic" = no.
+            # "What's happening in Iran" = yes.
+            _historical = {"when did", "when was", "history of", "in 1979",
+                           "in the 1980s", "founded", "established"}
+            if not any(h in lower for h in _historical):
+                return f"current_state:{entity}"
+
+    # Check tech/AI topics — but only if it seems like a capability
+    # or status question, not a general concept question
+    for kw in _STALENESS_TECH:
+        if kw in lower:
+            # "What is a GPU" = conceptual, no search needed
+            # "What GPU should I buy" = current, search needed
+            # "What can GPT-5 do" = capability, search needed
+            _conceptual = {"what is a ", "what are ", "explain ", "define ",
+                           "how does a ", "concept of "}
+            _overrides = {"new ", "latest ", "current ", "feature", "update",
+                          "release", "capable", "benchmark", "can "}
+            is_conceptual = any(lower.startswith(c) for c in _conceptual)
+            has_override = any(o in lower for o in _overrides)
+            if not is_conceptual or has_override:
+                return f"tech_stale:{kw}"
+
+    # Check finance
+    for kw in _STALENESS_FINANCE:
+        if kw in lower:
+            return f"finance:{kw}"
+
+    return None
+
 def check_deep_research_trigger(text: str) -> Tier0RuleResult:
     """Check if the user wants deep/iterative research."""
     text_stripped = text.strip()
@@ -449,6 +559,23 @@ def check_web_search_trigger(text: str) -> Tier0RuleResult:
                 rule_name="web_search_keyword_fallback",
                 reason="Web search (keyword co-occurrence fallback)",
                 extracted_query=query,
+            )
+
+    # 4) STALENESS DETECTOR (v3.0)
+    # If the topic is likely to have changed since training data cutoff,
+    # auto-trigger web search even without explicit search keywords.
+    # The user should never have to say "go online" — ASTRA should know
+    # when its knowledge is likely stale and verify automatically.
+    if not _has_codebase_keywords(text_stripped):
+        staleness = _check_staleness(text_stripped)
+        if staleness:
+            return Tier0RuleResult(
+                matched=True,
+                intent=CanonicalIntent.WEB_SEARCH,
+                confidence=0.75,
+                rule_name="web_search_staleness_auto",
+                reason=f"Auto web search (stale topic: {staleness})",
+                extracted_query=text_stripped,
             )
 
     return Tier0RuleResult(matched=False)

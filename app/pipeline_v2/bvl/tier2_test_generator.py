@@ -174,28 +174,55 @@ def update_coverage(
 def _parse_flows(raw: str) -> List[TestFlow]:
     """Parse LLM response into TestFlow objects.
 
-    Handles markdown fences, partial JSON, and malformed output gracefully.
+    v1.1: More robust parsing. GPT-5.4 often wraps JSON in markdown
+    fences, adds explanatory text, or nests arrays in wrapper objects.
+    Handles all common patterns gracefully.
     """
     text = raw.strip()
 
-    # Strip markdown fences
-    if text.startswith("```"):
-        lines = text.split("\n")
-        text = "\n".join(lines[1:])
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
+    # Strip ALL markdown fence blocks — may be multiple
+    text = re.sub(r'```(?:json|JSON)?\s*\n?', '', text).strip()
 
     # Try direct JSON parse
     data = _try_json_parse(text)
+
+    # If it parsed as a dict with a list inside, extract the list
+    if isinstance(data, dict):
+        for key in ("flows", "test_flows", "tests", "testFlows"):
+            if key in data and isinstance(data[key], list):
+                data = data[key]
+                break
+
     if data is None:
-        # Try finding JSON array in text
-        match = re.search(r'\[.*\]', text, re.DOTALL)
-        if match:
-            data = _try_json_parse(match.group())
+        # Try bracket-matching instead of greedy regex
+        # Find the first [ and match its closing ]
+        start = text.find('[')
+        if start >= 0:
+            depth = 0
+            end = start
+            for i in range(start, len(text)):
+                if text[i] == '[':
+                    depth += 1
+                elif text[i] == ']':
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+            candidate = text[start:end]
+            data = _try_json_parse(candidate)
+
+    # If still a dict, try extracting list
+    if isinstance(data, dict):
+        for val in data.values():
+            if isinstance(val, list) and len(val) > 0:
+                data = val
+                break
 
     if not isinstance(data, list):
-        logger.warning("[tier2_gen] Could not parse flows from LLM output")
+        logger.warning(
+            "[tier2_gen] Could not parse flows from LLM output (%d chars, first 200: %s)",
+            len(raw), raw[:200],
+        )
         return []
 
     flows = []

@@ -103,6 +103,31 @@ async def transcribe_audio(
         )
         elapsed = time.time() - t0
 
+        # v2.1: If VAD filtered out all speech, retry with relaxed VAD.
+        # Common in noisy environments (van, wind, engine) where aggressive
+        # VAD misclassifies speech as noise. We retry with a much lower
+        # threshold (0.15) rather than disabling VAD entirely, because
+        # no-VAD causes Whisper to hallucinate on background noise ("You. You.").
+        if not result.text.strip() and vad_filter:
+            logger.info("[transcribe_router] VAD returned empty — retrying with relaxed VAD")
+            relaxed_vad_params = {
+                "threshold": 0.15,
+                "min_speech_duration_ms": 100,
+                "min_silence_duration_ms": 800,
+            }
+            t1 = time.time()
+            result = await loop.run_in_executor(
+                None,
+                lambda: _service.transcribe(
+                    audio_bytes=audio_bytes,
+                    language=language,
+                    vad_filter=True,
+                    vad_parameters=relaxed_vad_params,
+                ),
+            )
+            elapsed += time.time() - t1
+            logger.info("[transcribe_router] Relaxed VAD retry: '%s' (%.1fs)", result.text[:80], time.time() - t1)
+
         logger.info("[transcribe_router] Done in %.1fs: '%s'", elapsed, result.text[:80])
 
         return {

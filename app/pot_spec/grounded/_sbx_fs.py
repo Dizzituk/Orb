@@ -55,20 +55,33 @@ def sandbox_available() -> bool:
 
     Callers can use this to surface a clear hard-stop message before
     attempting any sandbox-dependent work.
+
+    v12.0 (2026-04-08): Uses GET instead of POST — the sandbox controller's
+    /health endpoint only accepts GET and returns 405 on POST, which made
+    this function always return False even when the controller was online.
     """
     try:
-        from app.sandbox_fs import _post
-        status, _, _ = _post("/health", {})
-        return status == 200
+        from urllib import request as _req, error as _err
+        from app.sandbox_fs import _get_controller_url
+        url = f"{_get_controller_url().rstrip('/')}/health"
+        req = _req.Request(url, method="GET")
+        with _req.urlopen(req, timeout=5) as resp:
+            return (resp.getcode() or 0) == 200
     except Exception:
         return False
 
 
 def launch_sandbox(wait_seconds: int = 60) -> bool:
-    """Attempt to auto-start Windows Sandbox with the ASTRA controller.
+    """Auto-start the Zobie-Orb Hyper-V VM and wait for the sandbox controller.
 
-    Launches the .wsb file from D:\\Orb\\sandbox_controller\\astra_sandbox.wsb,
-    then polls for the controller to come online.
+    The ASTRA sandbox runs as a persistent Hyper-V VM called 'Zobie-Orb',
+    NOT a disposable Windows Sandbox (.wsb). This function:
+      1. Checks if the controller is already reachable (quick exit).
+      2. Queries Hyper-V for the VM state.
+      3. If the VM is off, starts it via Start-VM.
+      4. Polls for the sandbox controller to come online.
+
+    v12.0 (2026-04-08): Rewritten from WindowsSandbox.exe to Hyper-V VM.
 
     Args:
         wait_seconds: Max time to wait for controller to respond.
@@ -79,42 +92,75 @@ def launch_sandbox(wait_seconds: int = 60) -> bool:
     import subprocess
     import time
 
-    wsb_path = os.path.join("D:\\", "Orb", "sandbox_controller", "astra_sandbox.wsb")
-    if not os.path.isfile(wsb_path):
-        logger.error("[_sbx_fs] Cannot auto-start sandbox: %s not found", wsb_path)
-        return False
+    VM_NAME = "Zobie-Orb"
 
-    # Check if already running
+    # Quick check — controller might already be up
     if sandbox_available():
         logger.info("[_sbx_fs] Sandbox already available — no launch needed")
         return True
 
-    logger.info("[_sbx_fs] Launching Windows Sandbox from %s ...", wsb_path)
+    # Query Hyper-V VM state
+    logger.info("[_sbx_fs] v12.0 Checking Hyper-V VM '%s' state...", VM_NAME)
     try:
-        subprocess.Popen(
-            ["WindowsSandbox.exe", wsb_path],
-            shell=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"(Get-VM -Name '{VM_NAME}' -ErrorAction Stop).State"],
+            capture_output=True, text=True, timeout=15,
         )
+        vm_state = result.stdout.strip()
+        if result.returncode != 0:
+            err = result.stderr.strip()
+            logger.error("[_sbx_fs] v12.0 Get-VM failed: %s", err)
+            return False
     except FileNotFoundError:
-        logger.error("[_sbx_fs] WindowsSandbox.exe not found — is Windows Sandbox enabled?")
+        logger.error("[_sbx_fs] v12.0 PowerShell not found")
+        return False
+    except subprocess.TimeoutExpired:
+        logger.error("[_sbx_fs] v12.0 Get-VM timed out — Hyper-V may be unresponsive")
         return False
     except Exception as e:
-        logger.error("[_sbx_fs] Failed to launch sandbox: %s", e)
+        logger.error("[_sbx_fs] v12.0 Failed to query VM state: %s", e)
         return False
 
+    logger.info("[_sbx_fs] v12.0 VM '%s' state: %s", VM_NAME, vm_state)
+
+    # Start the VM if it's not running
+    if vm_state.lower() != "running":
+        logger.info("[_sbx_fs] v12.0 Starting VM '%s'...", VM_NAME)
+        try:
+            start_result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 f"Start-VM -Name '{VM_NAME}' -ErrorAction Stop"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if start_result.returncode != 0:
+                err = start_result.stderr.strip()
+                logger.error("[_sbx_fs] v12.0 Start-VM failed: %s", err)
+                return False
+            logger.info("[_sbx_fs] v12.0 Start-VM issued successfully")
+        except subprocess.TimeoutExpired:
+            logger.error("[_sbx_fs] v12.0 Start-VM timed out")
+            return False
+        except Exception as e:
+            logger.error("[_sbx_fs] v12.0 Failed to start VM: %s", e)
+            return False
+    else:
+        logger.info(
+            "[_sbx_fs] v12.0 VM is running but controller not responding — "
+            "waiting for controller to come online"
+        )
+
     # Poll for controller to come online
-    logger.info("[_sbx_fs] Waiting up to %ds for sandbox controller ...", wait_seconds)
+    logger.info("[_sbx_fs] v12.0 Waiting up to %ds for sandbox controller ...", wait_seconds)
     for i in range(wait_seconds):
         time.sleep(1)
         if sandbox_available():
-            logger.info("[_sbx_fs] Sandbox controller online after %ds", i + 1)
+            logger.info("[_sbx_fs] v12.0 Sandbox controller online after %ds", i + 1)
             return True
         if (i + 1) % 10 == 0:
-            logger.info("[_sbx_fs] Still waiting for sandbox... (%d/%ds)", i + 1, wait_seconds)
+            logger.info("[_sbx_fs] v12.0 Still waiting for sandbox... (%d/%ds)", i + 1, wait_seconds)
 
-    logger.error("[_sbx_fs] Sandbox did not come online within %ds", wait_seconds)
+    logger.error("[_sbx_fs] v12.0 Sandbox did not come online within %ds", wait_seconds)
     return False
 
 

@@ -241,11 +241,25 @@ def resolve_project_from_message(
     text = message.lower()
 
     # ── Astra Bridge signals (most specific Android match) ──
+    # v2.1 (2026-04-08): Added in-van/driving domain signals. Jobs about
+    # TTS playback, wake words, hands-free voice, connection resilience
+    # while driving are AstraBridge work — they never refer to the ASTRA
+    # backend or desktop app explicitly, but the domain is unambiguous.
     bridge_signals = [
+        # Explicit product name
         "astra bridge", "astrabridge", "astra-bridge",
         "android bridge", "phone bridge",
         "bridge app", "mobile bridge", "the bridge",
         "companion app",
+        # In-van / driving domain (unique to AstraBridge)
+        "in the van", "in-van", "on-road", "on the road",
+        "while driving", "driving use", "hands-free",
+        "wake word", "wakeword", "astra pause", "astra continue",
+        "astra wake", "astra repeat", "astra playback",
+        "voice-command-friendly", "voice command",
+        "tts playback", "tts auto-play", "auto-play back",
+        "playback should resume", "buffered cutoff",
+        "exoplayer", "chatterbox",
     ]
     if any(sig in text for sig in bridge_signals):
         return ASTRA_BRIDGE

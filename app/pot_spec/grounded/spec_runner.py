@@ -177,12 +177,12 @@ async def run_spec_gate_grounded(
                     hard_stopped=True,
                     hard_stop_reason=(
                         "🔴 **Sandbox Unavailable — Auto-Start Failed**\n\n"
-                        "This job requires access to ASTRA's codebase clone in the sandbox. "
-                        "ASTRA attempted to launch Windows Sandbox automatically but the "
-                        "controller did not come online within 60 seconds.\n\n"
+                        "This job requires access to ASTRA's codebase clone in the Zobie-Orb "
+                        "Hyper-V VM. ASTRA attempted to start the VM automatically but the "
+                        "sandbox controller did not come online within 60 seconds.\n\n"
                         "**To fix manually:**\n"
-                        "1. Open `D:\\\\Orb\\\\sandbox_controller\\\\astra_sandbox.wsb`\n"
-                        "2. Wait for the sandbox to boot and the controller to start\n"
+                        "1. Open Hyper-V Manager and start the **Zobie-Orb** VM\n"
+                        "2. Wait for the VM to boot and the sandbox controller to start at `192.168.250.2:8765`\n"
                         "3. Retry this command\n"
                     ),
                     spec_version=round_n,

@@ -1,11 +1,11 @@
 # FILE: app/cloud/rclone_service.py
 """
-Proton Drive cloud service via rclone.
+Cloud storage service via rclone.
 
-Wraps rclone CLI commands to provide read/write access to Proton Drive.
-Requires: rclone installed + configured with a 'proton:' remote.
+Wraps rclone CLI commands to provide read/write access to cloud storage.
+Requires: rclone installed + configured with a remote (default: gdrive).
 
-Setup: run `rclone config` and add a protondrive remote named 'proton'.
+Setup: run `rclone config` and add a remote. Set ASTRA_CLOUD_REMOTE env var to override.
 
 v1.0 (2026-03-14): Initial — list, download, upload, delete, mkdir, info.
 """
@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 # The rclone remote name for Proton Drive
-REMOTE_NAME = os.getenv("ASTRA_CLOUD_REMOTE", "proton")
+REMOTE_NAME = os.getenv("ASTRA_CLOUD_REMOTE", "gdrive")
 RCLONE_BIN = os.getenv("RCLONE_PATH", "rclone")
 
 # Local cache directory for downloaded files

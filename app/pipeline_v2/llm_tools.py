@@ -242,7 +242,7 @@ async def _call_openai(
         logger.error("[llm_tools] OPENAI_API_KEY not set")
         return None, 0, 0
 
-    client = AsyncOpenAI(api_key=api_key)
+    client = AsyncOpenAI(api_key=api_key, timeout=180.0)
 
     try:
         response = await client.chat.completions.create(

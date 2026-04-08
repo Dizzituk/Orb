@@ -54,13 +54,38 @@ def _extract_project_paths(text: str, search_term: str = None, replace_term: str
     
     # Step 3: Check for project name patterns via DYNAMIC DISCOVERY
     # v4.5: Uses architecture index instead of hardcoded patterns
+    # v4.9 (2026-04-08): Multi-word aliases take priority over single-word.
+    # "astra" is a synonym for "orb" AND appears in "astra-bridge". When
+    # both match, the bare "astra" alias would add D:\Orb alongside the
+    # more specific "astra bridge" match for D:\Astra Android Folder\.
+    # Fix: collect multi-word matches first. If any multi-word alias matched,
+    # skip single-word aliases that are a substring of a matched multi-word.
     discovery = _discover_project_roots()
+    _matched_aliases = []
     for alias, alias_paths in discovery["aliases"].items():
         if alias in text_lower:
-            # Don't match aliases that are search/replace terms
             if alias not in excluded_terms:
-                print(f"[spec_runner] v4.5 DISCOVERED PROJECT: '{alias}' -> {alias_paths}")
-                paths.extend(alias_paths)
+                _matched_aliases.append((alias, alias_paths))
+
+    # Separate multi-word (specific) from single-word (broad) matches
+    _multi_word = [(a, p) for a, p in _matched_aliases if ' ' in a or '-' in a]
+    _single_word = [(a, p) for a, p in _matched_aliases if ' ' not in a and '-' not in a]
+
+    # Always add multi-word matches
+    for alias, alias_paths in _multi_word:
+        print(f"[spec_runner] v4.9 DISCOVERED PROJECT (specific): '{alias}' -> {alias_paths}")
+        paths.extend(alias_paths)
+
+    # Only add single-word matches if they aren't a substring of an
+    # already-matched multi-word alias. E.g. skip bare "astra" if
+    # "astra bridge" already matched — the specific match is authoritative.
+    _multi_word_text = ' '.join(a for a, _ in _multi_word)
+    for alias, alias_paths in _single_word:
+        if alias in _multi_word_text:
+            print(f"[spec_runner] v4.9 SKIPPED broad alias '{alias}' — subsumed by specific match")
+            continue
+        print(f"[spec_runner] v4.9 DISCOVERED PROJECT (broad): '{alias}' -> {alias_paths}")
+        paths.extend(alias_paths)
     
     # Step 3b: SCOPE-AWARE ROOT INJECTION (v4.6)
     # If alias matching found some paths but the scope flags indicate
@@ -72,9 +97,24 @@ def _extract_project_paths(text: str, search_term: str = None, replace_term: str
     # (dashboard, cards, dark theme, progress bar) without literally
     # saying "frontend". These semantic signals are just as valid.
     # v4.7: Don't apply visual intent signals when the spec is clearly about Android/Kotlin
+    # v4.8 (2026-04-08): Expanded Android/Bridge detection. The v4.7 list
+    # only matched explicit tech keywords (kotlin, gradle, etc.) but
+    # AstraBridge Weaver jobs talk about driving, TTS, wake words — domain
+    # terms that are unique to the phone app but don't mention "android".
+    # Without these, visual intent signals ("waveform", "colour change")
+    # incorrectly inject D:\orb-desktop for what is clearly a mobile job.
     _is_android_project = any(kw in text_lower for kw in [
+        # Explicit tech signals (v4.7 original)
         'android', 'kotlin', 'jetpack compose', '.kt', 'room database',
         'androidmanifest', 'gradle', 'copilot app', 'driver copilot',
+        # AstraBridge domain signals (v4.8)
+        'astra bridge', 'astra-bridge', 'astrabridge',
+        'bridge app', 'the bridge', 'companion app',
+        'in the van', 'in-van', 'on-road', 'while driving',
+        'wake word', 'wakeword', 'astra pause', 'astra continue',
+        'astra wake', 'hands-free', 'voice-command-friendly',
+        'tts playback', 'exoplayer', 'chatterbox',
+        'auto-play back', 'buffered cutoff',
     ])
     if not has_frontend_scope and not _is_android_project:
         from ._simple_create_utils_17 import _VISUAL_INTENT_SIGNALS

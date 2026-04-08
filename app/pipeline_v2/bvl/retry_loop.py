@@ -12,6 +12,7 @@ error signals so the builder can see what's already been tried.
 Token cost per retry: ~$0.01–$0.03 with GPT-5.4.
 
 v1.0 (2026-03-10): Initial implementation per ASTRA-SPEC-BVL-001.
+v1.1 (2026-04-06): Cross-model diagnostic — Opus diagnoses failures before GPT-5.4 fixes.
 """
 from __future__ import annotations
 
@@ -95,8 +96,38 @@ async def run_retry_loop(
 
         emit(f"   📦 Retry context: ~{ctx.estimated_tokens} tokens")
 
-        # Send to builder for fix
+        # v1.1: Cross-model diagnosis before builder fix
+        # Send the failure to Opus for diagnosis, then give that
+        # diagnosis to GPT-5.4 for the actual fix. Two perspectives
+        # on every failure instead of the builder debugging itself.
         fix_prompt = ctx.to_builder_prompt()
+
+        try:
+            from app.pipeline_v2.bvl.cross_model_diagnostic import (
+                diagnose_failure,
+                read_source_file,
+            )
+            source_code = await read_source_file(component_path, profile)
+            diagnosis = await diagnose_failure(
+                component_path=component_path,
+                error_signal=failed_tier.error_context[:2000],
+                logcat_excerpt=failed_tier.logcat_excerpt[:1000],
+                spec_slice=spec_slice,
+                source_code=source_code,
+                previous_errors=previous_errors,
+                profile=profile,
+                emit=emit,
+                full_spec=spec,
+                manifest=manifest,
+            )
+            if diagnosis:
+                fix_prompt = diagnosis
+                total_llm_calls += 1
+            else:
+                emit("   ⚠️ Cross-model diagnosis unavailable, using raw error context")
+        except Exception as _diag_err:
+            logger.warning("[retry_loop] Cross-model diagnosis failed: %s", _diag_err)
+            emit("   ⚠️ Cross-model diagnosis failed, using raw error context")
 
         from app.pipeline_v2.agentic_builder import run_agentic_builder
 

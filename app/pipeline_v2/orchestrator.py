@@ -275,7 +275,7 @@ async def run_v2_pipeline(
         emit(f"{'='*60}")
 
         try:
-            _compile_and_send_to_debug(result, job_id, spec, emit)
+            _compile_and_send_to_debug(result, job_id, spec, emit, profile)
         except Exception as _e:
             logger.warning("[orchestrator] Report compilation failed: %s", _e)
 
@@ -429,7 +429,7 @@ async def run_v2_pipeline(
     result.estimated_cost_usd = _estimate_cost(result)
 
     try:
-        _compile_and_send_to_debug(result, job_id, spec, emit)
+        _compile_and_send_to_debug(result, job_id, spec, emit, profile)
     except Exception as _report_err:
         logger.warning("[orchestrator] Report compilation failed: %s", _report_err)
 
@@ -453,6 +453,7 @@ def _compile_and_send_to_debug(
     job_id: str,
     spec: Dict,
     emit: Any,
+    profile: Any = None,
 ) -> None:
     """Compile the build report and create a debug project with it."""
     emit("\n📝 Compiling build report...")

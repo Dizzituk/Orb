@@ -535,7 +535,9 @@ def health():
 try:
     from app.bridge.router import router as bridge_router
     app.include_router(bridge_router)
-    print("[startup] Bridge API: [OK] registered")
+    from app.bridge.tts_proxy import router as bridge_tts_router
+    app.include_router(bridge_tts_router)
+    print("[startup] Bridge API: [OK] registered (+ TTS proxy)")
 except ImportError as _bridge_err:
     print(f"[startup] Bridge API: [WARN] {_bridge_err}")
 

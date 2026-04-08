@@ -2,6 +2,9 @@
 """
 Action Executor: Translates LLM tool calls into real operations.
 
+v9.6 (2026-04-06): Sandbox-first for protected paths — D:/Orb writes route
+# through sandbox instead of returning BLOCKED. ASTRA can now fix its own
+# code in the sandbox and promote to host after review.
 v9.5 (2026-03-30): Host write access — sandbox gate bypass for host-only paths.
   - execute_edit_file now bypasses sandbox health gate for host-only paths,
     reading and writing directly to host filesystem (fixes "sandbox controller
@@ -464,14 +467,71 @@ async def execute_write_file(params: Dict[str, Any]) -> str:
 
     path = _resolve_sandbox_path(path)
 
-    # HARD BLOCK: protected directories (Orb core + Windows system)
-    if _is_host_write_blocked(path):
-        logger.warning("[action_executor] BLOCKED host write attempt: %s", path)
-        return (
-            f"BLOCKED: Cannot write to {path} — this is a protected directory. "
-            "Protected dirs: D:/Orb, D:/Orb.architecture, D:/orb-desktop, "
-            "D:/orb-electron-data, and Windows system folders."
+    # v9.7: TRUNCATION GUARD — prevent accidental content destruction.
+    # If the file exists and new content is significantly shorter,
+    # refuse the write. Catches partial-read then full-write bugs.
+    _existing_size = 0
+    try:
+        _check_path = Path(path)
+        if _check_path.is_file():
+            _existing_size = _check_path.stat().st_size
+    except Exception:
+        pass
+    _new_size = len(content)
+    if _existing_size > 500 and _new_size < _existing_size * 0.5:
+        _pct = int((_new_size / _existing_size) * 100)
+        logger.warning(
+            "[action_executor] TRUNCATION GUARD: write_file would shrink %s "
+            "from %d to %d chars (%d%%). Blocked.",
+            path, _existing_size, _new_size, _pct,
         )
+        return (
+            f"BLOCKED - TRUNCATION GUARD: write_file would reduce {path} from "
+            f"{_existing_size} to {_new_size} chars ({_pct}% of original). "
+            f"This would destroy content. Use edit_file for targeted changes, "
+            f"or read the COMPLETE file first before using write_file."
+        )
+
+
+    # v9.6: Protected directories route through sandbox, not blocked outright.
+    # ASTRA's own repos (D:/Orb, D:/orb-desktop) are NEVER written on the host.
+    # Instead, writes go to the sandbox clone where ASTRA can safely modify
+    # its own code. Windows system paths are hard-blocked (no sandbox route).
+    _HARD_BLOCKED = ["C:/Windows", "C:\\Windows", "C:/Program Files",
+                     "C:\\Program Files", "C:/ProgramData", "C:\\ProgramData"]
+    norm_check = path.replace("\\", "/").rstrip("/")
+    for hb in _HARD_BLOCKED:
+        hb_norm = hb.replace("\\", "/").rstrip("/")
+        if norm_check == hb_norm or norm_check.startswith(hb_norm + "/"):
+            logger.warning("[action_executor] HARD BLOCKED system write: %s", path)
+            return f"BLOCKED: Cannot write to {path} — system directory."
+
+    if _is_host_write_blocked(path):
+        # Route through sandbox instead of blocking
+        logger.info("[action_executor] Protected path %s — routing to sandbox", path)
+        sandbox_ok, sandbox_message = _sandbox_health_status()
+        if not sandbox_ok:
+            return (
+                f"Cannot write to {path} on host (protected). "
+                f"Sandbox is also unavailable: {sandbox_message}\n"
+                "Start the sandbox to modify ASTRA's own code."
+            )
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    f"{SANDBOX_CONTROLLER_URL}/fs/write",
+                    json={"path": path, "content": content, "overwrite": True},
+                )
+                if resp.status_code == 200:
+                    return (
+                        f"Successfully wrote {len(content)} chars to {path} (SANDBOX).\n"
+                        "This change is in the sandbox clone, not the live host. "
+                        "Say 'promote' or use git to push changes to the host repo."
+                    )
+                return f"Sandbox write failed ({resp.status_code}): {resp.text}"
+        except Exception as e:
+            return f"Sandbox write error: {e}"
 
     # Host-only paths: write directly to host filesystem
     if _is_host_only(path):
@@ -515,14 +575,30 @@ async def execute_edit_file(params: Dict[str, Any]) -> str:
 
     resolved = _resolve_sandbox_path(path)
 
-    # HARD BLOCK: check write safety before doing any work
+    # v9.6: Protected paths route through sandbox for edits too
+    _HARD_BLOCKED_EDIT = ["C:/Windows", "C:\\Windows", "C:/Program Files",
+                          "C:\\Program Files", "C:/ProgramData", "C:\\ProgramData"]
+    norm_edit = resolved.replace("\\", "/").rstrip("/")
+    for hb in _HARD_BLOCKED_EDIT:
+        hb_norm = hb.replace("\\", "/").rstrip("/")
+        if norm_edit == hb_norm or norm_edit.startswith(hb_norm + "/"):
+            return f"BLOCKED: Cannot edit {resolved} — system directory."
+
     if _is_host_write_blocked(resolved):
-        logger.warning("[action_executor] BLOCKED host edit attempt: %s", resolved)
-        return (
-            f"BLOCKED: Cannot edit {resolved} — this is a protected directory. "
-            "Protected dirs: D:/Orb, D:/Orb.architecture, D:/orb-desktop, "
-            "D:/orb-electron-data, and Windows system folders."
-        )
+        # Route edit through sandbox — read from sandbox, apply edit, write back
+        logger.info("[action_executor] Protected edit %s — routing to sandbox", resolved)
+        current = await execute_read_file({"path": path})
+        if current and current.startswith("Error"):
+            return current
+        if not current:
+            return f"Cannot read {resolved} from sandbox for editing."
+        if old_text not in current:
+            return f"Error: old_text not found in {resolved} (sandbox). The text must exist exactly."
+        count = current.count(old_text)
+        if count > 1:
+            return f"Error: old_text found {count} times in {resolved}. Must be unique."
+        updated = current.replace(old_text, new_text, 1)
+        return await execute_write_file({"path": resolved, "content": updated})
 
     # Host-only paths: read and write directly on the host
     if _is_host_only(resolved):
@@ -891,6 +967,59 @@ async def execute_get_user_folders(params: Dict[str, Any]) -> str:
 
 
 # =============================================================================
+# CLOUD STORAGE TOOLS (Google Drive)
+# =============================================================================
+
+async def execute_cloud_upload(params: Dict[str, Any]) -> str:
+    """Upload a local file to Google Drive via rclone."""
+    local_path = params.get("local_path", "")
+    cloud_path = params.get("cloud_path", "")
+
+    if not local_path or not cloud_path:
+        return "Error: both local_path and cloud_path are required."
+
+    from pathlib import Path
+    if not Path(local_path).exists():
+        return f"Error: local file not found: {local_path}"
+
+    try:
+        from app.cloud.rclone_service import upload_file
+        result = await upload_file(local_path, cloud_path)
+        if result.get("success"):
+            size_kb = result.get("size", 0) / 1024
+            return f"Uploaded to Google Drive: {cloud_path} ({size_kb:.0f}KB)"
+        else:
+            return f"Upload failed: {result.get('error', 'unknown error')}"
+    except Exception as e:
+        logger.error("[action_executor] cloud_upload failed: %s", e)
+        return f"Upload error: {e}"
+
+
+async def execute_cloud_list(params: Dict[str, Any]) -> str:
+    """List files on Google Drive at a given path."""
+    cloud_path = params.get("path", "")
+
+    try:
+        from app.cloud.rclone_service import list_files
+        items = await list_files(cloud_path)
+        if not items:
+            return f"No files found at: {cloud_path or '(root)'}"
+
+        lines = [f"Google Drive: {cloud_path or '(root)'} ({len(items)} items)"]
+        for item in items:
+            kind = "[DIR]" if item.get("is_dir") else "[FILE]"
+            size = ""
+            if not item.get("is_dir") and item.get("size"):
+                size_kb = item["size"] / 1024
+                size = f" ({size_kb:.0f}KB)"
+            lines.append(f"  {kind} {item['name']}{size}")
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error("[action_executor] cloud_list failed: %s", e)
+        return f"Cloud list error: {e}"
+
+
+# =============================================================================
 # TOOL DISPATCHER
 # =============================================================================
 
@@ -922,6 +1051,9 @@ TOOL_HANDLERS = {
     "get_crash_log":        execute_get_crash_log,
     # Universal tools (all models)
     "web_search":           execute_web_search,
+    # Cloud storage tools (Google Drive)
+    "cloud_upload":         execute_cloud_upload,
+    "cloud_list":           execute_cloud_list,
 }
 
 

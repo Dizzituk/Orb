@@ -24,10 +24,13 @@ SEARCH_MY_FILES_TOOL = {
         "Search the user's personal files (Documents, Pictures, Music, Videos, "
         "Desktop, Screenshots, ASTRA Output, Android Project) by filename, "
         "extension, or category. Returns matching file paths, sizes, and types. "
-        "Use this when the user asks about their own files, documents, music, "
-        "photos, etc. Example: query='learning roadmap' finds files with that "
+        "Use this when the user asks to find, locate, open, or list files from "
+        "their computer. Example: query='learning roadmap' finds files with that "
         "name. You can also filter by category (documents, pictures, music, "
-        "videos, desktop, screenshots) or extension (pdf, docx, mp3, etc)."
+        "videos, desktop, screenshots) or extension (pdf, docx, mp3, etc). "
+        "NOTE: If the user has already pasted or shared content in the current "
+        "conversation, check whether they are referring to that content before "
+        "searching the filesystem. When in doubt, ask which they mean."
     ),
     "parameters": {
         "type": "object",
@@ -56,7 +59,9 @@ READ_USER_FILE_TOOL = {
         "Use the path returned by search_my_files. Works with text files, "
         "documents (docx, pdf, xlsx, pptx), code files, and other text-readable "
         "formats. Returns extracted text content. For images/audio/video, "
-        "returns metadata only."
+        "returns metadata only. "
+        "NOTE: If the user has already shared content in the conversation, check "
+        "whether they are referring to that content before reading from disk."
     ),
     "parameters": {
         "type": "object",
@@ -481,6 +486,57 @@ WEB_SEARCH_TOOL = {
 
 
 
+
+# =============================================================================
+# CLOUD STORAGE TOOLS (Google Drive via rclone)
+# =============================================================================
+
+CLOUD_UPLOAD_TOOL = {
+    "name": "cloud_upload",
+    "description": (
+        "Upload a file from the local filesystem to Google Drive. "
+        "Use this when the user asks you to put a file on their Drive, "
+        "share a document via Drive, or make a file accessible on their phone. "
+        "Provide the local file path (absolute) and a cloud destination path. "
+        "The cloud path is relative to the Drive root, e.g. 'Documents/report.pdf'. "
+        "Use search_my_files or get_user_folders to find the local file first."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "local_path": {
+                "type": "string",
+                "description": "Absolute path to the local file to upload.",
+            },
+            "cloud_path": {
+                "type": "string",
+                "description": "Destination path on Google Drive (e.g. 'Documents/report.pdf', 'ASTRA/output.txt'). Folders are created automatically.",
+            },
+        },
+        "required": ["local_path", "cloud_path"],
+    },
+}
+
+CLOUD_LIST_TOOL = {
+    "name": "cloud_list",
+    "description": (
+        "List files and folders on Google Drive at a given path. "
+        "Returns names, sizes, and whether each item is a file or directory. "
+        "Use to check what exists on Drive before uploading or to help the user "
+        "find files. Pass an empty string or '/' to list the root."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Cloud path to list (e.g. 'Documents', 'APKs'). Empty for root.",
+            },
+        },
+        "required": [],
+    },
+}
+
 # Desktop Computer Use Tools
 DESKTOP_SCREENSHOT_TOOL = {"name": "desktop_screenshot", "description": "Take a screenshot of the ASTRA desktop application or full screen. Optionally specify a window title to capture just that window.", "parameters": {"type": "object", "properties": {"window_title": {"type": "string", "description": "Optional window title to capture (e.g., 'Astra')."}}, "required": []}}
 DESKTOP_CLICK_TOOL = {"name": "desktop_click", "description": "Click at screen coordinates. Use desktop_screenshot first to see current state. Only works within approved windows (ASTRA, Windows Sandbox, Android Studio).", "parameters": {"type": "object", "properties": {"x": {"type": "integer", "description": "X coordinate"}, "y": {"type": "integer", "description": "Y coordinate"}, "button": {"type": "string", "description": "'left', 'right', or 'middle'. Default: 'left'"}, "clicks": {"type": "integer", "description": "1=single, 2=double. Default: 1"}}, "required": ["x", "y"]}}
@@ -515,6 +571,8 @@ def get_phase1_tools() -> List[dict]:
         READ_PIPELINE_STATE_TOOL,
         READ_LOGS_TOOL,
         SEARCH_FILES_TOOL,
+        CLOUD_UPLOAD_TOOL,
+        CLOUD_LIST_TOOL,
     ]
 
 

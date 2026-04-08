@@ -124,6 +124,13 @@ DEEP_EXPLORATION_KEYWORDS = {
     "driver copilot", "fitness app", "bar stock",  # ASTRA flagship apps
     # Domain awareness — broad terms that indicate the user wants ASTRA to act
     "domain", "capability", "capabilities",
+    # Cloud storage — needs tool access for cloud_upload/cloud_list
+    "upload to drive", "upload to google", "upload to cloud",
+    "put on drive", "put on google drive", "save to drive",
+    "google drive", "cloud storage", "upload the file",
+    "send to drive", "share on drive", "make accessible",
+    "upload it", "upload this", "put it on drive",
+    "download from drive", "get from drive", "list drive",
 }
 
 # Combined set for backward compat — anything that needs deep processing or tools

@@ -6,7 +6,8 @@ v9.0 (2026-03-07): V2.1 is the ONLY pipeline. The old per-segment
 architecture→critique→overwatcher→implementer loop and the v8.0
 agentic pipeline have been removed.
 
-v9.2 (2026-03-10): Multi-project targeting. Reads build_target_id from
+v9.2 (2026-03-10): Multi-project targeting.
+v9.3 (2026-04-06): Gradle daemon pre-warm for Android builds.. Reads build_target_id from
 the build project and passes the correct BuildTargetProfile to the
 v2.2 pipeline orchestrator.
 
@@ -189,6 +190,25 @@ async def run_segmented_job(
 
     # v9.2: Load the build target profile from the build project
     profile = _load_build_target_profile(project_id, emit)
+
+    # v9.3: Pre-warm Gradle daemon for Android builds
+    # Fires early so the daemon is ready by the time GPT needs to compile.
+    # Only triggers for Gradle-based build targets (Kotlin/Android).
+    # The daemon runs on the HOST — Android projects are not in the sandbox.
+    if profile:
+        try:
+            from app.pipeline_v2.gradle_daemon import needs_gradle, pre_warm_daemon
+            if needs_gradle(profile):
+                _warmed = await pre_warm_daemon(profile)
+                if _warmed:
+                    emit("   🔥 Gradle daemon pre-warming in background")
+                    logger.info(
+                        "[SEGMENT_LOOP] v9.3 Gradle daemon pre-warm started for %s",
+                        profile.project_name,
+                    )
+        except Exception as _warm_err:
+            logger.warning("[SEGMENT_LOOP] Gradle pre-warm failed (non-fatal): %s", _warm_err)
+
 
     # Load manifest
     _v2_manifest = {}
