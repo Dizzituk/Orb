@@ -113,6 +113,17 @@ ARCHITECTURAL_FILE_PATTERNS = [
     (r'^main\.(tsx|jsx)$', "Frontend entry point", "reference"),
     (r'^index\.(tsx|jsx)$', "Frontend entry point", "reference"),
     (r'^main\.py$', "Backend entry point", "reference"),
+    # v3.7: Android / Kotlin entries — without these, Android projects fall through
+    # the table entirely and end up labelled as React/FastAPI by default.
+    (r'^MainActivity\.kt$', "Android entry activity", "reference"),
+    (r'^AstraApp\.kt$', "Android Application class", "reference"),
+    (r'^Application\.kt$', "Android Application class", "reference"),
+    (r'^AndroidManifest\.xml$', "Android manifest", "reference"),
+    (r'^build\.gradle\.kts$', "Gradle build file (Kotlin DSL)", "reference"),
+    (r'^build\.gradle$', "Gradle build file (Groovy DSL)", "reference"),
+    (r'^settings\.gradle\.kts$', "Gradle project settings", "reference"),
+    (r'^settings\.gradle$', "Gradle project settings", "reference"),
+    (r'^libs\.versions\.toml$', "Gradle version catalog", "reference"),
     (r'^types\.(ts|d\.ts)$', "Type definitions", "reference"),
 ]
 def _score_integration_point(file_path: str, project_path: str) -> int:

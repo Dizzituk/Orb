@@ -130,27 +130,33 @@ async def run_spec_gate_grounded(
         # STEP 2: Detect if this needs a scan
         # =============================================================
 
-        # v2.3: Check for greenfield external project from build target profile
+        # v2.4 (2026-04-08): Check for greenfield external project.
+        # v2.3 assumed external = greenfield. Wrong — AstraBridge has 46 .kt
+        # files. Now we check whether source files actually exist at the root.
         _build_profile = (constraints_hint or {}).get("build_target_profile")
         _is_greenfield = False
         if _build_profile:
             _profile_root = _build_profile.get("project_root", "")
-            # Greenfield = project root exists but is NOT in the known ASTRA roots
-            # (i.e. not D:\Orb or D:\orb-desktop)
             _known_self_roots = {"D:/Orb", "D:\\Orb", "D:/orb-desktop", "D:\\orb-desktop"}
             _norm_root = _profile_root.replace("\\", "/").rstrip("/")
             if _norm_root and _norm_root not in _known_self_roots:
-                _is_greenfield = True
-                logger.info(
-                    "[spec_runner] v2.3 GREENFIELD detected: %s (%s) at %s",
-                    _build_profile.get("project_id"),
-                    _build_profile.get("language"),
-                    _profile_root,
-                )
-                print(
-                    f"[spec_runner] v2.3 GREENFIELD MODE: {_build_profile.get('project_id')} "
-                    f"({_build_profile.get('language')}) at {_profile_root}"
-                )
+                _src_root = _build_profile.get("source_root", "")
+                _check_dir = os.path.join(_profile_root, _src_root) if _src_root else _profile_root
+                _has_source = False
+                try:
+                    for _root, _dirs, _files in os.walk(_check_dir):
+                        if any(f.endswith(('.kt', '.java', '.py', '.ts', '.tsx', '.js', '.jsx')) for f in _files):
+                            _has_source = True
+                            break
+                except Exception:
+                    _has_source = False
+                if _has_source:
+                    logger.info("[spec_runner] v2.4 EXISTING external project: %s at %s", _build_profile.get("project_id"), _profile_root)
+                    print(f"[spec_runner] v2.4 EXISTING PROJECT (not greenfield): {_build_profile.get('project_id')} at {_profile_root}")
+                else:
+                    _is_greenfield = True
+                    logger.info("[spec_runner] v2.4 GREENFIELD: %s (%s) at %s", _build_profile.get("project_id"), _build_profile.get("language"), _profile_root)
+                    print(f"[spec_runner] v2.4 GREENFIELD MODE: {_build_profile.get('project_id')} ({_build_profile.get('language')}) at {_profile_root}")
 
         if _is_greenfield:
             # Greenfield: skip discovery, use profile root directly

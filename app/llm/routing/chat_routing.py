@@ -381,6 +381,33 @@ def handle_legacy_triggers(
 # PRIVATE HELPERS (shared by handle_chat_mode and handle_normal_routing)
 # =============================================================================
 
+def _resolve_message_with_documents(req: Any) -> str:
+    """Resolve req.message by inlining any attached document content.
+
+    v7.1 (2026-04-09): When the frontend converts large pastes into structured
+    documents, req.message is just '[Documents attached]'. This helper inlines
+    the actual document content so it gets persisted to DB and is available
+    to the Weaver and other downstream consumers that read conversation history.
+    """
+    user_content = req.message
+    docs = getattr(req, 'documents', None)
+    if docs and isinstance(docs, list) and len(docs) > 0:
+        doc_blocks = []
+        for doc in docs:
+            label = doc.get('label', 'Document')
+            body = doc.get('content', '')
+            idx = doc.get('index', '')
+            doc_blocks.append(
+                f"--- Document {idx}: {label} ---\n{body}\n--- End Document {idx} ---"
+            )
+        doc_text = '\n\n'.join(doc_blocks)
+        if user_content in ('[Documents attached]', ''):
+            user_content = doc_text
+        else:
+            user_content = user_content + '\n\n' + doc_text
+    return user_content
+
+
 def _persist_user_message(req: Any, db: Session) -> None:
     """Persist the user's message before any routing decisions."""
     try:
@@ -390,7 +417,11 @@ def _persist_user_message(req: Any, db: Session) -> None:
             _mem_schemas.MessageCreate(
                 project_id=req.project_id,
                 role="user",
-                content=req.message,
+                # v7.1 (2026-04-09): Persist document content, not placeholder.
+                # Large pastes arrive as req.documents but req.message is just
+                # '[Documents attached]'. Persisting the placeholder means the
+                # Weaver never sees the pasted content when it reads history.
+                content=_resolve_message_with_documents(req),
                 provider="system",
             ),
         )

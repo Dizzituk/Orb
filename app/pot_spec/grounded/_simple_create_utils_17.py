@@ -290,6 +290,41 @@ async def build_grounded_create_spec(
     
     # v2.0: Extract CONCEPTS (not raw keywords)
     combined_text = f"{goal} {what_to_do}"
+
+    # v2.3: BRIEF-MENTIONED ROOT INJECTION
+    # Scan the brief for absolute file paths and walk up to find project roots.
+    # Prepend any roots not already in project_paths so downstream walkers see
+    # the directories the user mentioned, not just the chat-context root.
+    try:
+        import re as _re_v23
+        _root_markers = ('app/build.gradle.kts', 'build.gradle.kts', 'settings.gradle.kts',
+                         'package.json', 'pyproject.toml', 'Cargo.toml', 'go.mod', '.git')
+        _path_pat = _re_v23.compile(r'([A-Za-z]:[\\/](?:[^\s`"\'<>|*?]+[\\/])+)')
+        _candidates = set()
+        for _m in _path_pat.finditer(combined_text):
+            _p = _m.group(1).rstrip('\\/').replace('/', os.sep)
+            _cur = _p
+            for _ in range(8):
+                if not _cur or len(_cur) < 4:
+                    break
+                if any(os.path.exists(os.path.join(_cur, _mk.replace('/', os.sep))) for _mk in _root_markers):
+                    _candidates.add(_cur)
+                    break
+                _parent = os.path.dirname(_cur)
+                if _parent == _cur:
+                    break
+                _cur = _parent
+        _existing = {os.path.normcase(os.path.normpath(p)) for p in project_paths}
+        _added = []
+        for _c in sorted(_candidates):
+            if os.path.normcase(os.path.normpath(_c)) not in _existing:
+                project_paths = list(project_paths) + [_c]
+                _added.append(_c)
+        if _added:
+            print(f"[simple_create] v2.3 BRIEF-ROOT INJECTION: added {len(_added)} root(s): {_added}")
+            logger.info("[simple_create] v2.3 Brief-root injection added: %s", _added)
+    except Exception as _e_v23:
+        logger.warning("[simple_create] v2.3 Brief-root injection failed: %s", _e_v23)
     concepts = _extract_task_keywords(combined_text)
     print(f"[simple_create] v2.0 Concepts: {concepts[:10]}")
     

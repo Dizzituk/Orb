@@ -45,7 +45,10 @@ def _find_integration_points(
         'dist', 'build', '.next', 'coverage', '.architecture',
         '_backup_before_audit', '_patches',
     }
-    source_exts = ('.tsx', '.jsx', '.ts', '.js', '.py', '.css')
+    # v2.2: Extended to cover Android (.kt, .kts), Rust (.rs), Go (.go), config files (.toml, .xml, .gradle).
+    # Without this, _scan_dir filters out Kotlin/Gradle/Android files BEFORE the
+    # ARCHITECTURAL_FILE_PATTERNS loop ever runs — the v3.7 Android patterns sat dead.
+    source_exts = ('.tsx', '.jsx', '.ts', '.js', '.py', '.css', '.kt', '.kts', '.rs', '.go', '.java', '.swift', '.toml', '.xml', '.gradle')
 
     def _scan_dir(dir_path: str, rel_root: str) -> None:
         try:

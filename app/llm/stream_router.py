@@ -608,12 +608,18 @@ async def stream_chat(
             # v5.3: Save user command message to history for cross-model context
             try:
                 from app.memory import service as _mem_svc, schemas as _mem_schemas
+                # v7.1: Inline document content before persisting
+                try:
+                    from app.llm.routing.chat_routing import _resolve_message_with_documents
+                    _resolved = _resolve_message_with_documents(req)
+                except Exception:
+                    _resolved = req.message
                 _mem_svc.create_message(
                     db,
                     _mem_schemas.MessageCreate(
                         project_id=req.project_id,
                         role="user",
-                        content=req.message,
+                        content=_resolved,
                         provider="system",
                     ),
                 )
