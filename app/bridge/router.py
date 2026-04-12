@@ -46,13 +46,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/bridge", tags=["Bridge"])
 
 
-# ---------------------------------------------------------------------------
-# Login
-# ---------------------------------------------------------------------------
-
 @router.post("/login", response_model=BridgeLoginResponse)
 async def bridge_login(req: BridgeLoginRequest):
-    """Log in from the bridge app. Returns a session token."""
     from app.auth import config as auth_config
 
     if not auth_config.is_auth_configured():
@@ -68,17 +63,12 @@ async def bridge_login(req: BridgeLoginRequest):
     )
 
 
-# ---------------------------------------------------------------------------
-# Projects & Messages
-# ---------------------------------------------------------------------------
-
 @router.get("/projects", response_model=List[BridgeProjectOut])
 async def bridge_list_projects(
     limit: int = 30,
     db: Session = Depends(get_db),
     _auth: bool = Depends(require_bridge_auth),
 ):
-    """List recent chat projects — same data that appears in desktop Recent Chats."""
     from app.memory.service import list_projects
 
     projects = list_projects(db)
@@ -102,7 +92,6 @@ async def bridge_get_messages(
     db: Session = Depends(get_db),
     _auth: bool = Depends(require_bridge_auth),
 ):
-    """Get message history for a project. Same messages visible on desktop."""
     from app.memory.service import get_project, list_messages
 
     project = get_project(db, project_id)
@@ -123,48 +112,33 @@ async def bridge_get_messages(
     ]
 
 
-# ---------------------------------------------------------------------------
-# Chat
-# ---------------------------------------------------------------------------
-
 @router.post("/chat", response_model=BridgeChatResponse)
 async def bridge_chat(
     req: BridgeChatRequest,
     db: Session = Depends(get_db),
     _auth: bool = Depends(require_bridge_auth),
 ):
-    """Send a chat message from the bridge app.
-
-    If project_id is provided, continues that conversation.
-    If not, creates a new project (appears in Recent Chats on desktop).
-    """
     from app.memory.service import create_message
     from app.memory.schemas import MessageCreate
     from app.memory._service_utils_2 import list_messages
 
-    # ── Resolve or create project ──
     project = _resolve_or_create_project(req, db)
 
-    # Save user message
     create_message(db, MessageCreate(
         project_id=project.id, role="user",
         content=req.message, provider="bridge", model="phone-input",
     ))
 
-    # Conversation history
     history = list_messages(db, project.id, limit=20)
     history_messages = [
         {"role": m.role, "content": m.content}
         for m in history if m.role in ("user", "assistant")
     ]
 
-    # ── Translation layer for domain awareness ──
     domain_context, translation_result, domain_info = _run_translation(req.message, db)
 
-    # ── Capability honesty ──
     from app.bridge.capability_honesty import (
         is_unsupported_on_bridge, get_unsupported_message,
-        get_search_failed_message, build_honesty_system_addendum,
     )
 
     resolved_intent = (
@@ -173,7 +147,6 @@ async def bridge_chat(
         else None
     )
 
-    # Block unsupported intents immediately
     if is_unsupported_on_bridge(resolved_intent):
         reply = get_unsupported_message(resolved_intent)
         logger.info("[bridge] Blocked unsupported intent: %s", resolved_intent)
@@ -186,12 +159,10 @@ async def bridge_chat(
             domain=domain_info.get("domain", "") if domain_info else "",
         )
 
-    # ── Web search (pre-fetch for capability layer) ──
     web_search_context, search_executed, search_succeeded, early_reply = (
         await _run_web_search(resolved_intent, translation_result, req.message)
     )
 
-    # ── Capability honesty early exit (search failure) ──
     if early_reply:
         from app.memory.service import create_message as _cm
         _cm(db, MessageCreate(
@@ -203,7 +174,6 @@ async def bridge_chat(
             domain=domain_info.get("domain", "") if domain_info else "",
         )
 
-    # ── Full capability layer (same path as desktop) ──
     from app.bridge.capability_layer import run_astra_chat
 
     result = await run_astra_chat(
@@ -223,13 +193,11 @@ async def bridge_chat(
     provider = result["provider"]
     model = result["model"]
 
-    # Save assistant reply
     create_message(db, MessageCreate(
         project_id=project.id, role="assistant",
         content=reply, provider=provider, model=model,
     ))
 
-    # Desktop navigation
     _detected_domain = domain_info.get("domain") if domain_info else None
     if _detected_domain:
         push_desktop_navigation(_detected_domain)
@@ -240,46 +208,44 @@ async def bridge_chat(
     )
 
 
-# ---------------------------------------------------------------------------
-# Chat-and-Speak
-# ---------------------------------------------------------------------------
-
 @router.post("/chat-and-speak")
 async def bridge_chat_and_speak(
     req: BridgeChatRequest,
+    request: Request,
     db: Session = Depends(get_db),
     _auth: bool = Depends(require_bridge_auth),
 ):
-    """Pipelined chat + TTS in a single request.
-
-    Streams LLM tokens, splits into sentences, synthesises each via
-    Chatterbox immediately, and returns a growing MP3 stream.
-    """
     from app.memory.service import create_message
     from app.memory.schemas import MessageCreate
     from app.memory._service_utils_2 import list_messages
     from urllib.parse import quote as url_quote
 
-    # ── Resolve or create project ──
     project = _resolve_or_create_project(req, db)
 
-    # Save user message
-    create_message(db, MessageCreate(
-        project_id=project.id, role="user",
-        content=req.message, provider="bridge", model="phone-input",
-    ))
+    idempotency_key = request.headers.get("X-Idempotency-Key")
+    history_before_save = list_messages(db, project.id, limit=100)
+    existing_user_message = next(
+        (
+            message for message in reversed(history_before_save)
+            if message.role == "user" and message.content == req.message
+        ),
+        None,
+    ) if idempotency_key else None
 
-    # Conversation history
+    if existing_user_message is None:
+        create_message(db, MessageCreate(
+            project_id=project.id, role="user",
+            content=req.message, provider="bridge", model="phone-input",
+        ))
+
     history = list_messages(db, project.id, limit=20)
     history_messages = [
         {"role": m.role, "content": m.content}
         for m in history if m.role in ("user", "assistant")
     ]
 
-    # ── Translation + capability honesty ──
     from app.bridge.capability_honesty import (
         is_unsupported_on_bridge, get_unsupported_message,
-        get_search_failed_message, build_honesty_system_addendum,
     )
 
     domain_context, translation_result, domain_info = _run_translation(req.message, db)
@@ -290,7 +256,6 @@ async def bridge_chat_and_speak(
         else None
     )
 
-    # Block unsupported intents
     if is_unsupported_on_bridge(resolved_intent):
         honest_reply = get_unsupported_message(resolved_intent)
         logger.info("[bridge] chat-and-speak: blocked unsupported %s", resolved_intent)
@@ -299,16 +264,13 @@ async def bridge_chat_and_speak(
             content=honest_reply, provider="bridge", model="capability-gate",
         ))
 
-    # ── Web search (pre-fetch for capability layer) ──
     web_search_context, search_executed, search_succeeded, honest_early_reply = (
         await _run_web_search(resolved_intent, translation_result, req.message)
     )
 
-    # ── Full capability layer → text first, then TTS ──
     from app.bridge.capability_layer import run_astra_chat
     from app.bridge.chat_and_speak import _synthesise_sentence, _split_into_sentences
 
-    # For blocked intents or search failures, use a pre-set reply
     if is_unsupported_on_bridge(resolved_intent):
         full_text = get_unsupported_message(resolved_intent)
         provider = "bridge"
@@ -337,13 +299,11 @@ async def bridge_chat_and_speak(
     project_id = project.id
     project_name = project.name
 
-    # Save assistant reply before streaming audio
-    create_message(db, MessageCreate(
+    assistant_message = create_message(db, MessageCreate(
         project_id=project_id, role="assistant",
         content=full_text, provider=provider, model=model,
     ))
 
-    # Stream text through TTS sentence-by-sentence
     async def generate_audio():
         sentences = _split_into_sentences(full_text)
         for sentence in sentences:
@@ -360,38 +320,27 @@ async def bridge_chat_and_speak(
             "X-Project-Id": str(project_id),
             "X-Project-Name": url_quote(project_name),
             "X-Full-Text": url_quote(full_text[:8000]),
+            "X-Message-Id": str(assistant_message.id),
             "Transfer-Encoding": "chunked",
         },
     )
 
 
-# ---------------------------------------------------------------------------
-# Navigation poll
-# ---------------------------------------------------------------------------
-
 @router.get("/pending-navigation")
 async def bridge_pending_navigation():
-    """Poll for pending navigation events from the bridge app."""
     event = pop_pending_navigation()
     if event:
         return {"pending": True, **event}
     return {"pending": False}
 
 
-# ---------------------------------------------------------------------------
-# Health + Crash report
-# ---------------------------------------------------------------------------
-
 @router.get("/health")
 async def bridge_health():
-    """Health check for the bridge app (no auth required)."""
     return {"status": "ok", "service": "astra-bridge-api"}
 
 
 @router.post("/crash-report")
 async def receive_crash_report(request: Request):
-    """Receive crash reports from AstraBridge Android app and email them."""
-    import json
     import os
     try:
         body = await request.json()
@@ -428,12 +377,7 @@ async def receive_crash_report(request: Request):
         return {"received": False, "error": str(e)}
 
 
-# =============================================================================
-# SHARED HELPERS (used by bridge_chat and bridge_chat_and_speak)
-# =============================================================================
-
 def _resolve_or_create_project(req: BridgeChatRequest, db: Session):
-    """Resolve existing project or create a new one."""
     from app.memory.service import get_project
     from app.memory.schemas import ProjectCreate
     from app.memory._service_utils_2 import create_project, get_project_by_name
@@ -463,10 +407,6 @@ def _resolve_or_create_project(req: BridgeChatRequest, db: Session):
 
 
 def _run_translation(message: str, db: Session) -> tuple:
-    """Run translation layer for domain awareness.
-
-    Returns (domain_context, translation_result, domain_info).
-    """
     domain_context = ""
     translation_result = None
     domain_info = None
@@ -495,10 +435,6 @@ async def _run_web_search(
     translation_result,
     message: str,
 ) -> tuple:
-    """Run web search if the intent requires it.
-
-    Returns (web_search_context, search_executed, search_succeeded, early_reply).
-    """
     from app.bridge.capability_honesty import get_search_failed_message
 
     web_search_context = ""
