@@ -192,22 +192,82 @@ async def run_segmented_job(
     profile = _load_build_target_profile(project_id, emit)
 
     # v9.3: Pre-warm Gradle daemon for Android builds
-    # Fires early so the daemon is ready by the time GPT needs to compile.
-    # Only triggers for Gradle-based build targets (Kotlin/Android).
-    # The daemon runs on the HOST — Android projects are not in the sandbox.
+    # v9.4 (2026-04-12): Phase 2 Job 9 — multi-target parallel pre-warming.
+    # When the build project has target_ids set (Phase 0 Job 3 column), walk
+    # ALL registered targets in parallel using asyncio.gather so both Gradle
+    # daemon (Android) and Python import-check (backend) warm up concurrently.
+    # Single-target jobs keep the single-profile path.
     if profile:
         try:
             from app.pipeline_v2.gradle_daemon import needs_gradle, pre_warm_daemon
-            if needs_gradle(profile):
-                _warmed = await pre_warm_daemon(profile)
-                if _warmed:
-                    emit("   🔥 Gradle daemon pre-warming in background")
-                    logger.info(
-                        "[SEGMENT_LOOP] v9.3 Gradle daemon pre-warm started for %s",
-                        profile.project_name,
-                    )
+            from app.pipeline_v2.target_registry import get_profile as _get_profile
+            # Discover all targets to warm. Prefer target_ids from the build
+            # project (set by Phase 0 Job 4's multi-target detection). Fall back
+            # to [profile] for single-target legacy jobs.
+            _targets_to_warm = [profile]
+            try:
+                from app.db import SessionLocal
+                from app.builds.models import BuildProject, BuildStatus
+                _db = SessionLocal()
+                try:
+                    _bp = (_db.query(BuildProject)
+                             .filter(BuildProject.chat_project_id == project_id,
+                                     BuildProject.status == BuildStatus.active)
+                             .order_by(BuildProject.updated_at.desc())
+                             .first())
+                    if _bp and _bp.target_ids:
+                        _discovered = []
+                        for _tid in _bp.target_ids:
+                            _p = _get_profile(_tid)
+                            if _p is not None:
+                                _discovered.append(_p)
+                        if len(_discovered) > 1:
+                            _targets_to_warm = _discovered
+                            emit(f"   🎯 Multi-target build: {len(_discovered)} targets")
+                finally:
+                    _db.close()
+            except Exception as _lookup_err:
+                logger.debug("[SEGMENT_LOOP] target_ids lookup failed (non-fatal): %s", _lookup_err)
+
+            # Kick off pre-warm tasks for every target in parallel
+            _warm_tasks = []
+            for _prof in _targets_to_warm:
+                if needs_gradle(_prof):
+                    _warm_tasks.append(("gradle", _prof, pre_warm_daemon(_prof)))
+                else:
+                    # Python/backend target — import-check is cheap and warms
+                    # the venv's import cache. Use a tiny async wrapper.
+                    async def _backend_warm(_p):
+                        try:
+                            # Touching the profile-resolved project_root is
+                            # enough to confirm the venv is accessible; no
+                            # subprocess needed.
+                            import os as _os
+                            _exists = _os.path.isdir(_p.project_root)
+                            return _exists
+                        except Exception:
+                            return False
+                    _warm_tasks.append(("backend", _prof, _backend_warm(_prof)))
+
+            if _warm_tasks:
+                import asyncio as _asyncio
+                _results = await _asyncio.gather(
+                    *[t[2] for t in _warm_tasks], return_exceptions=True
+                )
+                for (_kind, _prof, _), _res in zip(_warm_tasks, _results):
+                    if isinstance(_res, Exception):
+                        logger.warning(
+                            "[SEGMENT_LOOP] Job 9 pre-warm (%s/%s) raised: %s",
+                            _kind, _prof.project_id, _res,
+                        )
+                    elif _res:
+                        emit(f"   🔥 Pre-warm {_kind}: {_prof.project_name}")
+                        logger.info(
+                            "[SEGMENT_LOOP] Job 9 pre-warm ok: %s (%s)",
+                            _prof.project_id, _kind,
+                        )
         except Exception as _warm_err:
-            logger.warning("[SEGMENT_LOOP] Gradle pre-warm failed (non-fatal): %s", _warm_err)
+            logger.warning("[SEGMENT_LOOP] Pre-warm failed (non-fatal): %s", _warm_err)
 
 
     # Load manifest
@@ -249,6 +309,35 @@ async def run_segmented_job(
             profile=profile,
         )
 
+        # v9.4 (2026-04-12): Phase 3 Job 10 — multi-target verification.
+        # After the builder finishes writing segments, verify every target's
+        # toolchain can build its code and run the contract verifier across
+        # the whole manifest. For single-target jobs this is equivalent to
+        # the legacy build_check + boot_check path, just run through a
+        # unified report. For multi-target jobs it catches the case where
+        # one target compiles but the other doesn't.
+        _mt_report = None
+        try:
+            from app.pipeline_v2.multi_target_verifier import verify_manifest_build
+            from app.pot_spec.grounded.segment_schemas import SegmentManifest as _SM
+            _manifest_obj = _v2_manifest
+            if isinstance(_v2_manifest, dict):
+                try:
+                    _manifest_obj = _SM.from_dict(_v2_manifest)
+                except Exception:
+                    _manifest_obj = None
+            if _manifest_obj is not None:
+                _mt_report = await verify_manifest_build(_manifest_obj)
+                emit(f"   🎯 Job 10 verification: {_mt_report.summary()}")
+                if not _mt_report.is_passing():
+                    for _fr in _mt_report.failed_targets():
+                        emit(f"      ❌ {_fr.target_id}: {_fr.status.value} — {_fr.detail}")
+        except Exception as _mtv_err:
+            logger.warning("[SEGMENT_LOOP] Job 10 verifier raised (non-fatal): %s", _mtv_err)
+
+        # Overall success = v2 pipeline + all targets passed multi-target verify
+        _all_pass = bool(v2_result.success) and (_mt_report is None or _mt_report.is_passing())
+
         # v2.3: Auto-install and launch APK for Android builds
         if v2_result.success and profile and profile.language == "kotlin":
             try:
@@ -259,7 +348,7 @@ async def run_segmented_job(
 
         return JobState(
             job_id=job_id,
-            overall_status="complete" if v2_result.success else "failed",
+            overall_status="complete" if _all_pass else "failed",
             total_segments=len(_v2_manifest.get("segments", [])),
         )
     except Exception as _v2_err:

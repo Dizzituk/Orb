@@ -64,6 +64,32 @@ def _build_manifest_from_concepts(
         requirement_map=_distribute_requirements(requirements, segments),
     )
 
+    # v1.1 (2026-04-12): Phase 1 Job 6 — classify cross-target dependencies.
+    try:
+        from app.pot_spec.grounded.segmentation import classify_dependencies
+        classify_dependencies(manifest)
+    except Exception as _cd_err:
+        logger.debug("[segmentation] cross-target classification failed: %s", _cd_err)
+
+    # v1.2 (2026-04-12): Phase 1 Job 7 — verify interface contracts across
+    # segments. Diagnostic only at this stage; errors and warnings are logged
+    # but do not fail the manifest build. Phase 3 verifier may decide to
+    # escalate errors. Report is stashed on manifest for downstream consumers.
+    try:
+        from app.pot_spec.grounded.contract_verifier import verify_manifest_contracts
+        contract_report = verify_manifest_contracts(manifest)
+        manifest._contract_report = contract_report  # stash for Phase 3
+        if contract_report.errors():
+            for issue in contract_report.errors():
+                logger.warning(
+                    "[segmentation] Job 7 CONTRACT ERROR: %s %s[%s] (%s -> %s) — %s",
+                    issue.kind.value, issue.category, issue.identifier,
+                    issue.producer_segment or "?", issue.consumer_segment or "?",
+                    issue.detail,
+                )
+    except Exception as _cv_err:
+        logger.debug("[segmentation] contract verification failed: %s", _cv_err)
+
     if _validate_manifest_fn:
         valid, errors = _validate_manifest_fn(manifest)
         if not valid:
@@ -121,6 +147,9 @@ def _build_segment_specs(
         # v3.0: deduplicate file_scope
         files = list(dict.fromkeys(files))
 
+        # v1.2 (2026-04-12): Phase 1 Job 7b — pass exposes/consumes through
+        _exposes = _build_contract_from_dict(group.get("exposes"))
+        _consumes = _build_contract_from_dict(group.get("consumes"))
         segment = SegmentSpec(
             segment_id=seg_id,
             title=f"{title} — {len(files)} file(s)",
@@ -132,7 +161,30 @@ def _build_segment_specs(
             dependencies=[],
             estimated_files=len(files),
             grounding_data=grounding,
+            exposes=_exposes,
+            consumes=_consumes,
         )
+
+        # v1.1 (2026-04-12): Phase 1 Job 5c — per-segment target tagging.
+        try:
+            from app.pipeline_v2.target_registry import resolve_target_for_files
+            _tid, _hits = resolve_target_for_files(files)
+            segment.target_id = _tid
+            if _tid is None and len(_hits) > 1:
+                logger.warning(
+                    "[segmentation] MIXED-TARGET segment %s spans %s — "
+                    "target_id left None; downstream write_file will refuse "
+                    "ambiguous writes. Segment splitter needed (Phase 1.5).",
+                    seg_id, sorted(_hits),
+                )
+            elif _tid is None:
+                logger.debug(
+                    "[segmentation] segment %s has unresolvable paths "
+                    "(no registered root matched): files=%s",
+                    seg_id, files[:3],
+                )
+        except Exception as _tag_err:
+            logger.debug("[segmentation] target tagging failed: %s", _tag_err)
         segments.append(segment)
 
     return segments
@@ -596,3 +648,24 @@ def _assign_requirements(
         for sid in seg_ids:
             if sid in seg_id_to_seg:
                 seg_id_to_seg[sid].requirements.append(req)
+
+
+def _build_contract_from_dict(contract_data) -> "object | None":
+    """Build an InterfaceContract from the dict shape LLM produces in smart_segmentation.
+    Returns None if the dict is empty/missing/malformed rather than an empty contract, so
+    downstream (Job 7 verifier) can distinguish 'no declaration' from 'empty declaration'.
+    v1.0 (2026-04-12): Phase 1 Job 7b.
+    """
+    if not isinstance(contract_data, dict):
+        return None
+    try:
+        from app.pot_spec.grounded._segment_schemas_utils_1 import InterfaceContract
+    except Exception:
+        return None
+    contract = InterfaceContract(
+        class_names=list(contract_data.get("class_names", []) or []),
+        method_signatures=list(contract_data.get("method_signatures", []) or []),
+        endpoint_paths=list(contract_data.get("endpoint_paths", []) or []),
+        export_names=list(contract_data.get("export_names", []) or []),
+    )
+    return None if contract.is_empty() else contract

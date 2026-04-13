@@ -89,6 +89,15 @@ class BuildProject(Base):
     # The pipeline reads this to load the correct BuildTargetProfile.
     build_target_id = Column(String, nullable=True)
 
+    # v2.3 (2026-04-11): Multi-target awareness.
+    # target_ids holds the full list of target_id strings this build spans.
+    # For single-target jobs (legacy), target_ids = [build_target_id].
+    # For multi-target jobs, build_target_id holds the "primary" target
+    # (toolchain pre-warmed first) and target_ids holds the full set.
+    # target_group_id is set when targets match a registered TargetGroup.
+    target_ids = Column(JSON, nullable=True)
+    target_group_id = Column(String, nullable=True)
+
     # The original ramble / brief that kicked this off
     original_brief = Column(Text, nullable=True)
 

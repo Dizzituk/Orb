@@ -184,3 +184,70 @@ def validate_manifest(manifest: SegmentManifest) -> Tuple[bool, List[str]]:
             logger.warning("[segmentation]   - %s", err)
 
     return is_valid, errors
+
+
+# =============================================================================
+# CROSS-TARGET DEPENDENCY CLASSIFIER (Phase 1 Job 6)
+# =============================================================================
+
+def classify_dependencies(manifest) -> None:
+    """Walk the manifest's dependency edges and populate cross_target_edges.
+
+    After the segmenter has constructed segments (each with a target_id from
+    Job 5c) and resolved dependencies (each segment's `dependencies` list),
+    this function identifies which edges cross target boundaries and records
+    them on the manifest for Phase 3's verifier to consume.
+
+    Mutates the manifest in place. Safe to call multiple times (idempotent).
+
+    v1.0 (2026-04-12): Phase 1 Job 6.
+    """
+    if not manifest or not manifest.segments:
+        return
+
+    # Build a segment_id -> target_id lookup once
+    target_by_id = {s.segment_id: s.target_id for s in manifest.segments}
+
+    edges: list = []
+    cross_count = 0
+    same_count = 0
+    unlabelled = 0
+
+    for seg in manifest.segments:
+        for dep_id in seg.dependencies:
+            from_target = target_by_id.get(dep_id)
+            to_target = seg.target_id
+            if from_target is None or to_target is None:
+                unlabelled += 1
+                continue
+            if from_target != to_target:
+                edges.append({
+                    "from": dep_id,
+                    "from_target": from_target,
+                    "to": seg.segment_id,
+                    "to_target": to_target,
+                })
+                cross_count += 1
+            else:
+                same_count += 1
+
+    manifest.cross_target_edges = edges
+
+    if cross_count > 0:
+        by_pair: Dict[str, int] = {}
+        for e in edges:
+            key = f"{e['from_target']} -> {e['to_target']}"
+            by_pair[key] = by_pair.get(key, 0) + 1
+        summary = ", ".join(f"{k} ({v} edge{'s' if v != 1 else ''})"
+                            for k, v in sorted(by_pair.items()))
+        logger.info(
+            "[segmentation] Job 6: %d cross-target edge(s) detected: %s "
+            "(same-target: %d, unlabelled: %d)",
+            cross_count, summary, same_count, unlabelled,
+        )
+    else:
+        logger.debug(
+            "[segmentation] Job 6: no cross-target edges "
+            "(same-target: %d, unlabelled: %d)",
+            same_count, unlabelled,
+        )

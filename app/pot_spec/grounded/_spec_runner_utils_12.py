@@ -145,10 +145,10 @@ def _extract_project_paths(text: str, search_term: str = None, replace_term: str
     # Step 4: Check for explicit paths like "D:\orb-desktop" or "D:\Orb"
     # v4.3.4: Only match short, valid folder names (max 20 chars)
     # This prevents garbage like "D:\Orb Desktop front-end UI text"
-    for match in re.findall(r'([A-Za-z]:[\\/][A-Za-z][A-Za-z0-9_\-]{0,17})', text):
+    for match in re.findall(r'([A-Za-z]:[\\/](?:[A-Za-z0-9_\- ]{1,60}[\\/]?){1,5})', text):
         cleaned = match.rstrip(' \t')
         # Skip if too short or too long
-        if len(cleaned) < 4 or len(cleaned) > 20:
+        if len(cleaned) < 4 or len(cleaned) > 300 or not __import__('os').path.exists(cleaned):
             continue
         # Skip if it contains newlines  
         if '\n' in cleaned or '\r' in cleaned:
@@ -408,7 +408,20 @@ def _build_single_segment_manifest(
         acceptance_criteria=acceptance_criteria,
         estimated_files=len(file_scope),
     )
-    
+
+    # v1.1 (2026-04-12): Phase 1 Job 5c — single-segment target tagging.
+    try:
+        from app.pipeline_v2.target_registry import resolve_target_for_files
+        _tid, _hits = resolve_target_for_files(file_scope)
+        segment.target_id = _tid
+        if _tid is None and len(_hits) > 1:
+            logger.warning(
+                "[spec_runner] MIXED-TARGET single segment spans %s — "
+                "consider segmentation.", sorted(_hits),
+            )
+    except Exception:
+        pass
+
     manifest = SegmentManifest(
         parent_spec_id=spec_id,
         parent_spec_hash=spec_hash,

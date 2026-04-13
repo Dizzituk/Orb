@@ -137,8 +137,44 @@ async def run_agentic_builder(
     session = BuildSession(session_number=1)
 
     try:
-        from app.pipeline_v2.llm_tools import run_tool_loop, set_tool_profile
+        from app.pipeline_v2.llm_tools import run_tool_loop, set_tool_profile, set_tool_manifest, set_tool_segment
         set_tool_profile(profile)  # v2.3: Route tools to host for Android builds
+        # v2.4 (2026-04-12): Phase 2 Job 9 — activate Job 8b path-based
+        # auto-routing by registering the manifest. Every write_file call
+        # will now be routed by inspecting the path against segment file_scopes,
+        # so multi-target jobs land each file in the correct repo.
+        try:
+            set_tool_manifest(manifest)
+        except Exception as _mf_err:
+            logger.debug("[agentic_builder] set_tool_manifest skipped: %s", _mf_err)
+
+        # v2.5 (2026-04-12): Phase 4 Job 12 — reactive per-segment tracking.
+        # The tracker observes write_file calls and updates set_tool_segment
+        # based on which segment owns the path just written. Gives explicit
+        # per-segment awareness to the tool layer without rewriting the
+        # builder's run_tool_loop flow. Fires segment_start/complete events.
+        _tracker = None
+        try:
+            from app.pipeline_v2.segment_tracker import SegmentTracker
+            from app.pot_spec.grounded.segment_schemas import SegmentManifest as _SM
+            _manifest_obj = manifest
+            if isinstance(manifest, dict):
+                try:
+                    _manifest_obj = _SM.from_dict(manifest)
+                except Exception:
+                    _manifest_obj = None
+            if _manifest_obj is not None:
+                def _on_seg_start(seg):
+                    emit(f"   📍 Segment active: {seg.segment_id} (target: {seg.target_id})")
+                def _on_seg_complete(seg):
+                    emit(f"   ✓ Segment complete: {seg.segment_id}")
+                _tracker = SegmentTracker(
+                    _manifest_obj,
+                    on_segment_start=_on_seg_start,
+                    on_segment_complete=_on_seg_complete,
+                )
+        except Exception as _tracker_err:
+            logger.debug("[agentic_builder] SegmentTracker skipped: %s", _tracker_err)
 
         files_written = set()
 
@@ -150,6 +186,13 @@ async def run_agentic_builder(
             )
             emit(f"   🔧 {name}({summary})")
             session.tool_calls.append(ToolCall(tool=name, args=summary))
+            # v2.5 Job 12: feed every tool call to the segment tracker so it
+            # can update set_tool_segment and fire progress callbacks.
+            if _tracker is not None:
+                try:
+                    _tracker.on_tool_call(name, args)
+                except Exception as _te:
+                    logger.debug("[agentic_builder] tracker.on_tool_call raised: %s", _te)
             if name == "write_file" and path:
                 files_written.add(path)
                 try:
@@ -243,6 +286,23 @@ async def run_agentic_builder(
     result.total_duration_seconds = time.time() - t_start
     result.success = session.completed and len(result.all_files_written) > 0
     result.messages_history = messages
+
+    # v2.5 Job 12: log final per-segment progress + clear tracker state.
+    if _tracker is not None:
+        try:
+            emit(f"   📊 {_tracker.summary()}")
+            for _p in _tracker.progress_report():
+                _mark = "✓" if _p["complete"] else "✗"
+                emit(f"      {_mark} {_p['segment_id']:<20} "
+                     f"{_p['target_id'] or '?':<15} "
+                     f"{_p['files_written']}/{_p['files_in_scope']} files")
+        except Exception:
+            pass
+    # Clear segment state so the next build doesn't inherit stale routing.
+    try:
+        set_tool_segment(None)
+    except Exception:
+        pass
 
     emit(f"\n🤖 Builder complete: {len(result.all_files_written)} files, "
          f"{result.total_tool_calls} tool calls, "

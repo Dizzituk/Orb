@@ -116,6 +116,41 @@ async def run_spec_gate_grounded(
         round_n = max(1, min(3, int(spec_version or 1)))
         logger.info("[spec_runner] v4.0 Starting: job=%s, round=%d", job_id, round_n)
 
+        # v1.1 (2026-04-12): Phase 1 Job 14 - wire the ambient job target hint.
+        # Read target_ids from the BuildProject row (populated by pipeline_bridge
+        # at Weaver-save time, Phase 0 Job 3) so the segmenter can restrict
+        # resolve_target_for_files() to only the targets this job actually touches.
+        # Lookup order: chat_project_id (most reliable) -> job_id -> spec_id.
+        try:
+            from app.pipeline_v2.target_registry import set_job_target_hint
+            from app.builds.models import BuildProject, BuildStatus
+            _bp = None
+            if project_id is not None:
+                _bp = (
+                    db.query(BuildProject)
+                    .filter(
+                        BuildProject.chat_project_id == project_id,
+                        BuildProject.status == BuildStatus.active,
+                    )
+                    .order_by(BuildProject.updated_at.desc())
+                    .first()
+                )
+            if _bp is None:
+                _bp = db.query(BuildProject).filter(BuildProject.job_id == job_id).first()
+            if _bp is None:
+                _bp = db.query(BuildProject).filter(BuildProject.spec_id == job_id).first()
+            if _bp is not None and getattr(_bp, "target_ids", None):
+                set_job_target_hint(_bp.target_ids)
+            else:
+                set_job_target_hint(None)
+                logger.debug(
+                    "[spec_runner] No target_ids on BuildProject for "
+                    "job=%s project_id=%s (bp_found=%s)",
+                    job_id, project_id, _bp is not None,
+                )
+        except Exception as _hint_err:
+            logger.debug("[spec_runner] set_job_target_hint failed (non-fatal): %s", _hint_err)
+
         # =============================================================
         # STEP 1: Get Weaver spec
         # =============================================================

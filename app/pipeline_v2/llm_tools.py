@@ -326,11 +326,137 @@ def _make_assistant_message(response: Any, provider: str) -> Dict:
 # Module-level profile for tool execution routing (host vs sandbox).
 _tool_profile: Optional["BuildTargetProfile"] = None
 
+# v2.4 (2026-04-12): Phase 2 Job 8 — per-segment profile routing.
+# When the orchestrator is iterating a multi-target manifest, it sets the
+# current segment here. _resolve_active_profile() prefers the segment's
+# target over the global profile, so each segment routes to its own repo.
+_current_segment: Optional[Any] = None
+
+# v2.4b (2026-04-12): Phase 2 Job 8b — manifest-aware auto-routing.
+# When the LLM calls write_file/read_file but no segment is explicitly set,
+# we can still route correctly IF we know which manifest is active: look up
+# which segment owns the path, and use that segment's target. This lets the
+# legacy single-loop agentic_builder flow benefit from Job 5's per-segment
+# target tagging without needing the Job 12 DAG orchestrator rewrite first.
+_active_manifest: Optional[Any] = None
+
+
+def set_tool_manifest(manifest: Optional[Any]) -> None:
+    """Set the segment manifest for path-based auto-routing (Phase 2 Job 8b).
+
+    Called once per build, right after the manifest is finalised. Enables
+    write_file/read_file to figure out which segment a path belongs to,
+    even when set_tool_segment hasn't been called explicitly.
+    """
+    global _active_manifest
+    _active_manifest = manifest
+
+
+def _find_segment_for_path(path: str):
+    """Find the manifest segment whose file_scope contains `path`.
+
+    Uses os.path.normpath on both sides so "\\" vs "/" and mixed separators
+    don't cause spurious misses. Case-insensitive on Windows.
+
+    Returns None if no manifest is active or no segment owns the path.
+    """
+    if _active_manifest is None:
+        return None
+    # Resolve manifest.segments whether manifest is a dict or a dataclass
+    if isinstance(_active_manifest, dict):
+        segs = _active_manifest.get("segments", [])
+    else:
+        segs = getattr(_active_manifest, "segments", None) or []
+
+    import os as _os
+    target = _os.path.normpath(path).lower()
+    for seg in segs:
+        file_scope = seg.get("file_scope", []) if isinstance(seg, dict) else getattr(seg, "file_scope", [])
+        for fpath in file_scope:
+            candidate = _os.path.normpath(fpath).lower()
+            if candidate == target:
+                return seg
+            # also allow the stored path to be a suffix of the resolved target
+            # (covers relative paths stored in segments, absolute at call time)
+            if target.endswith(_os.sep + candidate) or target.endswith("/" + candidate.replace("\\", "/")):
+                return seg
+    return None
+
 
 def set_tool_profile(profile: Optional["BuildTargetProfile"]) -> None:
-    """Set the profile for tool execution routing."""
+    """Set the primary profile for tool execution routing."""
     global _tool_profile
     _tool_profile = profile
+
+
+def set_tool_segment(segment: Optional[Any]) -> None:
+    """Set the currently-active segment for per-call routing (Phase 2 Job 8).
+
+    Called by the orchestrator at the start of each segment's tool-loop run.
+    The segment's target_id is translated to a profile via target_registry.
+    Passing None clears the override so the global _tool_profile is used.
+    """
+    global _current_segment
+    _current_segment = segment
+    if segment is not None:
+        logger.debug(
+            "[llm_tools] Segment routing active: segment_id=%s target_id=%s",
+            getattr(segment, 'segment_id', '?'),
+            getattr(segment, 'target_id', None),
+        )
+
+
+def _resolve_active_profile(path: Optional[str] = None) -> Optional["BuildTargetProfile"]:
+    """Pick the profile to use for the next tool call.
+
+    Priority (v2.4b, Phase 2 Jobs 8 + 8b):
+      1. If _current_segment has a resolvable target_id -> that target's profile.
+      2. If _current_segment exists but target_id is None -> REFUSE (None).
+      3. If path provided AND manifest set AND path matches a segment with
+         a target_id -> that segment's profile (path-based auto-routing).
+      4. Otherwise fall back to _tool_profile (single-target legacy).
+    """
+    # Priority 1 + 2: explicit segment override
+    if _current_segment is not None:
+        tid = getattr(_current_segment, 'target_id', None)
+        if tid is not None:
+            try:
+                from app.pipeline_v2.target_registry import get_profile
+                seg_profile = get_profile(tid)
+                if seg_profile is not None:
+                    return seg_profile
+            except Exception as _err:
+                logger.warning(
+                    "[llm_tools] target_registry lookup failed for target_id=%s: %s",
+                    tid, _err,
+                )
+        else:
+            sid = getattr(_current_segment, 'segment_id', '?')
+            logger.error(
+                "[llm_tools] Segment %s has no target_id — refusing to route.",
+                sid,
+            )
+            return None
+    # Priority 3: path-based auto-routing via manifest
+    if path and _active_manifest is not None:
+        auto_seg = _find_segment_for_path(path)
+        if auto_seg is not None:
+            tid = auto_seg.get('target_id') if isinstance(auto_seg, dict) else getattr(auto_seg, 'target_id', None)
+            if tid:
+                try:
+                    from app.pipeline_v2.target_registry import get_profile
+                    seg_profile = get_profile(tid)
+                    if seg_profile is not None:
+                        sid = auto_seg.get('segment_id') if isinstance(auto_seg, dict) else getattr(auto_seg, 'segment_id', '?')
+                        logger.debug(
+                            "[llm_tools] Auto-routed path=%s -> segment=%s target=%s",
+                            path, sid, tid,
+                        )
+                        return seg_profile
+                except Exception as _err:
+                    logger.warning("[llm_tools] auto-route lookup failed: %s", _err)
+    # Priority 4: legacy fallback
+    return _tool_profile
 
 
 async def _execute_tool(name: str, args: Dict) -> str:
@@ -349,7 +475,8 @@ async def _execute_tool(name: str, args: Dict) -> str:
     try:
         if name == "read_file":
             path = args.get("path", "")
-            content = await sandbox_tools.read_file(path, profile=_tool_profile)
+            _active = _resolve_active_profile(path=path)
+            content = await sandbox_tools.read_file(path, profile=_active)
             if content is None:
                 return "ERROR: File not found: " + path
             if len(content) > 30000:
@@ -384,7 +511,16 @@ async def _execute_tool(name: str, args: Dict) -> str:
                 )
 
             # --- Write ---
-            ok = await sandbox_tools.write_file(path, content, profile=_tool_profile)
+            # v2.4 Job 8: resolve per-segment profile; refuse on ambiguous target.
+            _active = _resolve_active_profile(path=path)
+            if _active is None and _current_segment is not None:
+                return (
+                    "ERROR: Cannot write " + path + " — current segment has no target_id. "
+                    "Refusing ambiguous write. The segmenter left target_id=None "
+                    "(likely a mixed-target segment). Fix the segment manifest "
+                    "before retrying."
+                )
+            ok = await sandbox_tools.write_file(path, content, profile=_active)
             if not ok:
                 return "ERROR: Write failed for " + path
 
@@ -393,10 +529,11 @@ async def _execute_tool(name: str, args: Dict) -> str:
             # Host writes use direct open() — no transport corruption possible.
             # The integrity checker causes false positives from \r\n vs \n diffs.
             _skip_verify = False
-            if _tool_profile is not None:
+            _android_profile = _resolve_active_profile() or _tool_profile
+            if _android_profile is not None:
                 try:
                     from app.pipeline_v2.android_sandbox import is_android_build
-                    _skip_verify = is_android_build(_tool_profile)
+                    _skip_verify = is_android_build(_android_profile)
                 except Exception:
                     pass
 
@@ -462,8 +599,10 @@ async def _execute_tool(name: str, args: Dict) -> str:
         elif name == "run_shell":
             cmd = args.get("cmd", "")
             # v2.3: Longer timeout for Gradle builds (first run downloads deps)
-            _shell_timeout = 600 if (_tool_profile and _tool_profile.build_system == "gradle" and "gradlew" in cmd) else 30
-            result = await sandbox_tools.run_shell(cmd, timeout_sec=_shell_timeout, profile=_tool_profile)
+            _shell_profile = _resolve_active_profile() or _tool_profile
+            _shell_timeout = 600 if (_shell_profile and _shell_profile.build_system == "gradle" and "gradlew" in cmd) else 30
+            _active = _resolve_active_profile()
+            result = await sandbox_tools.run_shell(cmd, timeout_sec=_shell_timeout, profile=_active)
             stdout = result.get("stdout", "")[:1000]
             stderr = result.get("stderr", "")[:500]
             rc = result.get("returncode", -1)

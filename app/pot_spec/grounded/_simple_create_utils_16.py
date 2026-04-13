@@ -48,12 +48,12 @@ def _detect_tech_stack(project_path: str, sandbox_client: Any = None) -> TechSta
         "angular.json": ("frontend_framework", "Angular"),
         "vue.config.js": ("frontend_framework", "Vue"),
         # v2.2: Android / Kotlin / Rust / Go detection — closes evidence gap for non-React/Python projects
-        "settings.gradle.kts": ("backend_language", "Kotlin"),
+        "settings.gradle.kts": [("backend_language", "Kotlin"), ("frontend_language", "Kotlin")],
         "settings.gradle": ("backend_language", "Kotlin"),
-        "build.gradle.kts": ("backend_framework", "Gradle"),
-        "AndroidManifest.xml": ("frontend_framework", "Android"),
-        "app/build.gradle.kts": ("frontend_framework", "Android/Jetpack-Compose"),
-        "app/src/main/AndroidManifest.xml": ("frontend_framework", "Android"),
+        "build.gradle.kts": [("backend_framework", "Gradle"), ("frontend_language", "Kotlin")],
+        "AndroidManifest.xml": [("frontend_framework", "Android"), ("frontend_language", "Kotlin")],
+        "app/build.gradle.kts": [("frontend_framework", "Android/Jetpack-Compose"), ("frontend_language", "Kotlin")],
+        "app/src/main/AndroidManifest.xml": [("frontend_framework", "Android"), ("frontend_language", "Kotlin")],
         "Cargo.toml": ("backend_language", "Rust"),
         "go.mod": ("backend_language", "Go"),
         "requirements.txt": ("backend_language", "Python"),
@@ -66,7 +66,12 @@ def _detect_tech_stack(project_path: str, sandbox_client: Any = None) -> TechSta
         check_path = os.path.join(project_path, filename)
         try:
             if _sbx_exists(check_path):
-                setattr(stack, detection[0], detection[1])
+                # v2.3: detection may be a single (attr,val) pair OR a list of pairs for multi-attribute sets.
+                if isinstance(detection, list):
+                    for attr, val in detection:
+                        setattr(stack, attr, val)
+                else:
+                    setattr(stack, detection[0], detection[1])
         except Exception:
             pass
     

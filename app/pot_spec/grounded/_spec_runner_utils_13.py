@@ -243,8 +243,23 @@ def _extract_file_scope_from_spec(
         )
         for match in subpkg_pattern.finditer(spec_markdown):
             raw = match.group(1).replace('/', os.sep)
-            # Prepend app/ since these are app subdirectory paths
-            _add_path(f"app{os.sep}{raw}")
+            # v2.4 (2026-04-12): Phase 1 Job 15 — do NOT prepend app/ to paths
+            # that are unambiguously Android/Kotlin files. Pattern 1b is
+            # Orb-backend-centric: it discovers D:\\Orb\\app\\ subdirs and
+            # assumes anything using those names belongs under the backend.
+            # When a multi-target job references "voice/state/Foo.kt" (meant
+            # for the Android Astra-Bridge project), blindly prepending "app/"
+            # produces "app/voice/state/Foo.kt" which then joins against the
+            # Android root as D:/Astra Android Folder/Astra-Bridge/app/voice/...
+            # — the wrong location. For Android file types, add path as-is so
+            # the Android profile's path resolver handles it correctly.
+            _ext = raw.rsplit(".", 1)[-1].lower() if "." in raw else ""
+            _android_only_exts = {"kt", "kts", "xml", "gradle", "properties"}
+            if _ext in _android_only_exts:
+                _add_path(raw)
+            else:
+                # Prepend app/ since these are app subdirectory paths
+                _add_path(f"app{os.sep}{raw}")
     
     # Pattern 2: Absolute Windows paths (D:\Orb\app\foo.py or D:/Orb/app/foo.py)
     # Grounded CREATE specs from simple_create.py use full absolute paths.

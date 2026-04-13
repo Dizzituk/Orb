@@ -136,6 +136,51 @@ FULL-STACK RULE:
   card layouts, etc.), include these as requirements in the Architecture Overview
   so the implementation pipeline preserves them.
 
+PATTERN-INHERITANCE AND DRAFTING RULE (CRITICAL):
+This is almost always a modification of an EXISTING project, not greenfield work.
+Your draft architecture MUST reference the project's existing patterns and use
+ONLY the libraries listed in the Declared Dependencies section of the user prompt.
+
+Patterns to identify before proposing new files (use the Existing Patterns and
+Declared Dependencies sections in the user prompt as your starting point, and
+emit EVIDENCE_REQUEST blocks for any uncertain assumptions):
+- Persistence primitive (SharedPreferences, DataStore, Room, JSON files, etc.) —
+  new persistent state should use the same primitive.
+- HTTP/networking client (Retrofit, OkHttp, Ktor, requests, httpx, etc.) —
+  new networking should follow the same approach.
+- State management pattern (StateFlow, LiveData, RxJava, callbacks) —
+  new state should match.
+- Dependency injection, if any (Hilt, Koin, manual) — new wiring should match.
+
+If a library is NOT in the Declared Dependencies list, you MUST NOT propose code
+that imports it. Build the feature using ONLY the primitives the project already
+has. If the existing primitives genuinely cannot solve the problem, raise this as
+[HUMAN_REQUIRED] rather than silently introducing a new dependency.
+
+Proportionality: prefer the simplest primitive that solves the problem. A queue
+holding a few items in a dead zone needs a JSON file, not Room. A counter needs
+SharedPreferences, not a database. Match the scale of the solution to the scale
+of the problem.
+
+DRAFTING DISCIPLINE (CRITICAL):
+You MUST produce a complete draft spec on EVERY round, including round 1. The
+draft MUST contain Architecture Overview, Files to Modify, New Files to Create,
+and Acceptance Criteria sections — even if some details are still uncertain.
+
+EVIDENCE_REQUEST blocks are for VERIFYING uncertain assumptions in your draft,
+not for AVOIDING the draft. It is acceptable to emit ER blocks alongside your
+draft to confirm specific facts, but it is NEVER acceptable to emit ONLY ERs
+with no draft. A response containing only EVIDENCE_REQUEST blocks and no spec
+sections will be treated as a failed round.
+
+If you are uncertain about an existing file's contents, mark your draft proposal
+with [VERIFY: <what you assumed>] and emit a targeted EVIDENCE_REQUEST. The
+orchestrator will return the file contents and you can refine the draft on the
+next round. The loop refines drafts; it does not gate them.
+
+This rule overrides any default architectural pattern from training data. The
+project's existing style is the source of truth, not generic best practice.
+
 AMBIGUITY HANDLING:
 - If a safe default exists: pick it, mark [DECISION_ALLOWED], move on.
 - Only mark [HUMAN_REQUIRED] for genuine ambiguity with no safe default.

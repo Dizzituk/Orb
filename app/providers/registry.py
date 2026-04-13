@@ -150,6 +150,7 @@ class ProviderRegistry:
                     timeout_seconds=timeout_seconds,
                     tool_defs=tool_defs,
                     context=context,
+                    reasoning=reasoning,
                 )
             if chosen in ("google", "gemini"):
                 return await self._call_google(
@@ -430,6 +431,7 @@ class ProviderRegistry:
         timeout_seconds: int,
         tool_defs: List[dict],
         context: Optional[dict],
+        reasoning: Optional[dict] = None,  # v2.2: Anthropic extended thinking via {'effort': 'high'}
     ) -> LlmCallResult:
         import anthropic
 
@@ -451,6 +453,26 @@ class ProviderRegistry:
                 temperature=temperature,
                 max_tokens=min(max_tokens, 128000),
             )
+            # v2.2: Anthropic extended thinking. When reasoning={'effort': 'high'|'medium'|'low'}
+            # is passed, enable Opus/Sonnet extended thinking with a proportional budget.
+            # Extended thinking gives the model private reasoning space before emitting the
+            # visible response — critical for architecture-reasoning tasks like SpecGate.
+            # Thinking tokens count against max_tokens, so we also bump the output cap.
+            if reasoning and isinstance(reasoning, dict):
+                _effort = str(reasoning.get("effort", "")).lower()
+                _budget_map = {"high": 8000, "medium": 4000, "low": 2000}
+                _budget = _budget_map.get(_effort)
+                if _budget:
+                    # Temperature MUST be 1.0 when extended thinking is enabled (Anthropic API constraint)
+                    create_kwargs["temperature"] = 1.0
+                    create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": _budget}
+                    # Ensure max_tokens leaves room for both thinking and visible output
+                    _current_max = create_kwargs.get("max_tokens", 8192)
+                    _needed_max = _budget + 8192
+                    if _current_max < _needed_max:
+                        create_kwargs["max_tokens"] = min(_needed_max, 128000)
+                    logger.info("[registry] v2.2 Anthropic extended thinking enabled: effort=%s, budget=%d, max_tokens=%d",
+                                _effort, _budget, create_kwargs["max_tokens"])
             # Anthropic expects 'tools' to be a proper list; do not pass None.
             if tools_param is not None and isinstance(tools_param, list) and len(tools_param) > 0:
                 create_kwargs["tools"] = tools_param

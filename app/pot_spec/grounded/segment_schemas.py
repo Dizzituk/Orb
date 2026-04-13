@@ -167,6 +167,14 @@ class SegmentSpec:
     # source monolith path that THIS segment's files came from.
     deterministic_source: Optional[str] = None
 
+    # v1.1 (2026-04-11): Phase 1 Job 5 — per-segment target tagging.
+    # Set by smart_segmentation when the manifest is built. Resolves each
+    # file in file_scope against registered project roots; if all files
+    # belong to one target, target_id is that target's project_id. If files
+    # span targets, the segmenter splits the segment along target lines so
+    # every segment that reaches downstream is repo-pure.
+    target_id: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "segment_id": self.segment_id,
@@ -183,6 +191,7 @@ class SegmentSpec:
             "grounding_data": self.grounding_data.to_dict() if self.grounding_data else None,
             "deterministic_refactor": self.deterministic_refactor,
             "deterministic_source": self.deterministic_source,
+            "target_id": self.target_id,
         }
 
     @classmethod
@@ -205,6 +214,7 @@ class SegmentSpec:
             grounding_data=GroundingData.from_dict(grounding_data) if grounding_data else None,
             deterministic_refactor=data.get("deterministic_refactor", False),
             deterministic_source=data.get("deterministic_source"),
+            target_id=data.get("target_id"),
         )
 
     def to_json(self, indent: int = 2) -> str:

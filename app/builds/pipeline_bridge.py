@@ -364,6 +364,44 @@ def save_weaver_extraction(
         _weaver_text = " ".join(str(v) for v in extraction.values() if isinstance(v, (str, list)))
         if isinstance(extraction.get('key_requirements'), list):
             _weaver_text += " " + " ".join(str(r) for r in extraction['key_requirements'])
+        # v3.2 (2026-04-11): Phase 0 — multi-target awareness.
+        # Replaces the v3.1 single-target re-resolve with proper multi-target
+        # detection. If multiple known projects are matched in the Weaver
+        # text, persist all of them to target_ids and try to match them to a
+        # registered TargetGroup. The original "primary" build_target_id is
+        # set to the first hit (used by toolchain pre-warming) but downstream
+        # code (segmenter, write_file, verifier) reads target_ids for routing.
+        try:
+            from app.pipeline_v2.target_registry import (
+                detect_all_projects_from_message,
+                find_group_for_targets,
+                resolve_project_from_message,
+            )
+            _all_targets = detect_all_projects_from_message(_weaver_text)
+            if len(_all_targets) > 1:
+                _group = find_group_for_targets(_all_targets)
+                project.target_ids = sorted(_all_targets)
+                project.target_group_id = _group.group_id if _group else None
+                _primary = resolve_project_from_message(_weaver_text)
+                if _primary and _primary.project_id in _all_targets:
+                    project.build_target_id = _primary.project_id
+                    project.target_path = _primary.project_root
+                db.commit()
+                db.refresh(project)
+                logger.info(
+                    "[pipeline_bridge] MULTI-TARGET job: targets=%s group=%s primary=%s",
+                    sorted(_all_targets), project.target_group_id, project.build_target_id,
+                )
+                print(
+                    f"[PIPELINE_BRIDGE] MULTI-TARGET: {sorted(_all_targets)} "
+                    f"group={project.target_group_id} primary={project.build_target_id}"
+                )
+                return project
+            elif len(_all_targets) == 1:
+                project.target_ids = sorted(_all_targets)
+                db.commit()
+        except Exception as _mt_err:
+            logger.debug("[pipeline_bridge] Phase 0 multi-target detection failed: %s", _mt_err)
         try:
             from app.pipeline_v2.target_registry import resolve_project_from_message
             _new_profile = resolve_project_from_message(_weaver_text)

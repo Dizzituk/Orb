@@ -171,6 +171,37 @@ def generate_segments(
             estimated_files=len(files),
             grounding_data=grounding,
         )
+
+        # v1.2 (2026-04-12): Phase 1 Job 7b - attach contracts from group dict
+        try:
+            if isinstance(group, dict):
+                _exp = _build_contract_from_dict(group.get("exposes"))
+                _con = _build_contract_from_dict(group.get("consumes"))
+                segment.exposes = _exp
+                segment.consumes = _con
+        except Exception as _contract_err:
+            logger.debug("[segmentation] Job 7b contract attach failed: %s", _contract_err)
+
+        # v1.1 (2026-04-12): Phase 1 Job 5c — per-segment target tagging.
+        try:
+            from app.pipeline_v2.target_registry import resolve_target_for_files
+            _tid, _hits = resolve_target_for_files(files)
+            segment.target_id = _tid
+            if _tid is None and len(_hits) > 1:
+                logger.warning(
+                    "[segmentation] MIXED-TARGET segment %s spans %s — "
+                    "target_id left None; downstream write_file will refuse "
+                    "ambiguous writes. Segment splitter needed (Phase 1.5).",
+                    seg_id, sorted(_hits),
+                )
+            elif _tid is None:
+                logger.debug(
+                    "[segmentation] segment %s has unresolvable paths "
+                    "(no registered root matched): files=%s",
+                    seg_id, files[:3],
+                )
+        except Exception as _tag_err:
+            logger.debug("[segmentation] target tagging failed: %s", _tag_err)
         segments.append(segment)
 
     # v1.1: Distribute requirements to segments (heuristic, not trivial broadcast)
@@ -202,3 +233,24 @@ def generate_segments(
 
     logger.info("[segmentation] Manifest generated successfully: %s", manifest.summary())
     return manifest
+
+
+def _build_contract_from_dict(contract_data) -> "object | None":
+    """Build an InterfaceContract from the dict shape LLM produces in smart_segmentation.
+    Returns None if the dict is empty/missing/malformed rather than an empty contract, so
+    downstream (Job 7 verifier) can distinguish 'no declaration' from 'empty declaration'.
+    v1.0 (2026-04-12): Phase 1 Job 7b.
+    """
+    if not isinstance(contract_data, dict):
+        return None
+    try:
+        from app.pot_spec.grounded._segment_schemas_utils_1 import InterfaceContract
+    except Exception:
+        return None
+    contract = InterfaceContract(
+        class_names=list(contract_data.get("class_names", []) or []),
+        method_signatures=list(contract_data.get("method_signatures", []) or []),
+        endpoint_paths=list(contract_data.get("endpoint_paths", []) or []),
+        export_names=list(contract_data.get("export_names", []) or []),
+    )
+    return None if contract.is_empty() else contract

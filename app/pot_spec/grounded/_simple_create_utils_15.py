@@ -128,43 +128,143 @@ def _extract_patterns(
     integration_points: List[IntegrationPoint],
     tech_stack: TechStack,
 ) -> Dict[str, str]:
-    """Extract coding patterns from existing files."""
+    """Extract coding patterns from existing files.
+
+    v2.10: Multi-language pattern extraction. Detects idiomatic usage of the
+    libraries the project actually has, so the LLM can match existing style
+    when proposing new code. Domain-agnostic — looks at file extension and
+    pulls language-appropriate patterns.
+
+    Pattern keys returned (when found, format: "category:filename"):
+        persistence:    SharedPreferences / DataStore / JSON / Room / SQLAlchemy / pickle
+        http_client:    OkHttp / Retrofit / Ktor / requests / httpx / aiohttp / fetch
+        state_mgmt:     StateFlow / LiveData / RxJava / useState / Redux
+        di:             Hilt / Koin / FastAPI Depends / manual
+        component:      React fn / Compose @Composable / FastAPI router
+        import_block:   first run of imports (style anchor)
+    """
     from ._simple_create_utils_16 import IntegrationPoint
     from ._simple_create_utils_17 import TechStack
-    patterns = {}
-    
+    patterns: Dict[str, str] = {}
+
     for point in integration_points:
         if point.action != "modify":
             continue
-        
+
         content = _sbx_read(point.file_path)
-        if content:
-            
-            # Extract React component pattern
-            if point.file_name.endswith(('.tsx', '.jsx')):
-                # Find component definition
-                comp_match = re.search(
-                    r'((?:export\s+)?(?:const|function)\s+\w+\s*[=:]\s*(?:\([^)]*\)|[^=])*\s*(?:=>|{)[^}]*(?:return\s*\()?[^)]*<)',
-                    content[:2000]
-                )
-                if comp_match:
-                    patterns[f"component_pattern:{point.file_name}"] = comp_match.group(0)[:500]
-                
-                # Find import pattern
-                import_match = re.search(r"^(import\s+.+\n)+", content, re.MULTILINE)
-                if import_match:
-                    patterns[f"import_pattern:{point.file_name}"] = import_match.group(0)[:300]
-            
-            # Extract API call pattern
-            if 'api' in point.file_name.lower():
-                fetch_match = re.search(
-                    r'((?:export\s+)?(?:async\s+)?(?:function|const)\s+\w+\s*[=:]?\s*(?:async\s*)?\([^)]*\)[^{]*{[^}]*fetch[^}]*})',
-                    content,
-                    re.DOTALL
-                )
-                if fetch_match:
-                    patterns["api_call_pattern"] = fetch_match.group(0)[:600]
-    
+        if not content:
+            continue
+
+        fname = point.file_name
+        head = content[:4000]
+
+        # ------------------------------------------------------------------
+        # KOTLIN / ANDROID
+        # ------------------------------------------------------------------
+        if fname.endswith(".kt") or fname.endswith(".kts"):
+            # Persistence — SharedPreferences / DataStore / Room
+            if re.search(r"\bSharedPreferences\b|getSharedPreferences\(", content):
+                m = re.search(r"[^\n]*SharedPreferences[^\n]{0,120}", content)
+                if m:
+                    patterns[f"persistence:{fname}"] = m.group(0).strip()[:200]
+            elif re.search(r"\bDataStore\b|preferencesDataStore\(", content):
+                patterns[f"persistence:{fname}"] = "DataStore (preferences)"
+            elif re.search(r"@Entity\b|@Dao\b|RoomDatabase\b", content):
+                patterns[f"persistence:{fname}"] = "Room (androidx.room) — entity/dao detected"
+
+            # HTTP client — OkHttp / Retrofit / Ktor
+            if re.search(r"\bOkHttpClient\b|okhttp3\.", content):
+                m = re.search(r"OkHttpClient[^\n]{0,150}", content)
+                patterns[f"http_client:{fname}"] = (m.group(0).strip() if m else "OkHttp")[:200]
+            if re.search(r"\bRetrofit\b|retrofit2\.|@GET\(|@POST\(", content):
+                m = re.search(r"Retrofit\.Builder[^\n]{0,150}|@(?:GET|POST|PUT|DELETE)\([^\n]{0,80}", content)
+                patterns[f"http_client_retrofit:{fname}"] = (m.group(0).strip() if m else "Retrofit")[:200]
+            if re.search(r"\bHttpClient\b\s*\(|io\.ktor\.client", content):
+                patterns[f"http_client_ktor:{fname}"] = "Ktor HttpClient"
+
+            # State management — StateFlow / LiveData
+            if re.search(r"\bStateFlow\b|MutableStateFlow\(", content):
+                m = re.search(r"(?:Mutable)?StateFlow[^\n]{0,120}", content)
+                patterns[f"state_mgmt:{fname}"] = (m.group(0).strip() if m else "StateFlow")[:200]
+            elif re.search(r"\bLiveData\b|MutableLiveData\(", content):
+                patterns[f"state_mgmt:{fname}"] = "LiveData (legacy)"
+
+            # DI — Hilt / Koin
+            if re.search(r"@HiltAndroidApp|@AndroidEntryPoint|@Inject\b", content):
+                patterns[f"di:{fname}"] = "Hilt (@HiltAndroidApp / @AndroidEntryPoint / @Inject)"
+            elif re.search(r"\bKoin\b|startKoin\(", content):
+                patterns[f"di:{fname}"] = "Koin"
+
+            # Compose @Composable functions — anchor for new UI
+            comp_match = re.search(r"@Composable[\s\n]+(?:private\s+|public\s+|internal\s+)?fun\s+\w+[^\n]{0,150}", content)
+            if comp_match:
+                patterns[f"component:{fname}"] = comp_match.group(0).strip()[:250]
+
+            # Import block — style anchor
+            imp_match = re.search(r"((?:^import\s+\S+\s*\n){2,})", content, re.MULTILINE)
+            if imp_match:
+                patterns[f"import_block:{fname}"] = imp_match.group(1)[:400]
+
+        # ------------------------------------------------------------------
+        # PYTHON / BACKEND
+        # ------------------------------------------------------------------
+        elif fname.endswith(".py"):
+            # HTTP client — requests / httpx / aiohttp
+            if re.search(r"\bimport\s+httpx\b|httpx\.(?:AsyncClient|Client|get|post)\(", content):
+                patterns[f"http_client:{fname}"] = "httpx"
+            elif re.search(r"\bimport\s+requests\b|requests\.(?:get|post|put|delete)\(", content):
+                patterns[f"http_client:{fname}"] = "requests"
+            elif re.search(r"\bimport\s+aiohttp\b|aiohttp\.ClientSession\(", content):
+                patterns[f"http_client:{fname}"] = "aiohttp"
+
+            # Web framework — FastAPI / Flask / Django routers
+            if re.search(r"\bAPIRouter\(|@\w+\.(?:get|post|put|delete|patch)\(", content):
+                m = re.search(r"@\w+\.(?:get|post|put|delete|patch)\([^\n]{0,150}", content)
+                patterns[f"router:{fname}"] = (m.group(0).strip() if m else "FastAPI APIRouter")[:200]
+            elif re.search(r"\bfrom\s+flask\s+import|@app\.route\(", content):
+                patterns[f"router:{fname}"] = "Flask @app.route"
+
+            # Persistence — SQLAlchemy / sqlite3 / JSON / pickle
+            if re.search(r"\bfrom\s+sqlalchemy\b|Session\(|sessionmaker\(", content):
+                patterns[f"persistence:{fname}"] = "SQLAlchemy"
+            elif re.search(r"\bimport\s+sqlite3\b|sqlite3\.connect\(", content):
+                patterns[f"persistence:{fname}"] = "sqlite3 (stdlib)"
+            elif re.search(r"\bjson\.dump\(|\bjson\.load\(", content):
+                patterns[f"persistence:{fname}"] = "JSON file (json module)"
+
+            # Async style — asyncio / sync
+            if re.search(r"^async\s+def\s+", content, re.MULTILINE):
+                patterns[f"async_style:{fname}"] = "asyncio (async def)"
+
+            # Pydantic models / response shapes
+            if re.search(r"\bfrom\s+pydantic\b|\bclass\s+\w+\(BaseModel\)", content):
+                m = re.search(r"class\s+\w+\(BaseModel\)[^\n]{0,80}", content)
+                patterns[f"models:{fname}"] = (m.group(0).strip() if m else "pydantic BaseModel")[:200]
+
+        # ------------------------------------------------------------------
+        # REACT / TYPESCRIPT (existing behaviour preserved)
+        # ------------------------------------------------------------------
+        elif fname.endswith((".tsx", ".jsx")):
+            comp_match = re.search(
+                r'((?:export\s+)?(?:const|function)\s+\w+\s*[=:]\s*(?:\([^)]*\)|[^=])*\s*(?:=>|{)[^}]*(?:return\s*\()?[^)]*<)',
+                head
+            )
+            if comp_match:
+                patterns[f"component:{fname}"] = comp_match.group(0)[:500]
+            import_match = re.search(r"^(import\s+.+\n)+", content, re.MULTILINE)
+            if import_match:
+                patterns[f"import_block:{fname}"] = import_match.group(0)[:300]
+
+        # API call patterns (any language) — kept from prior version
+        if "api" in fname.lower():
+            fetch_match = re.search(
+                r'((?:export\s+)?(?:async\s+)?(?:function|const)\s+\w+\s*[=:]?\s*(?:async\s*)?\([^)]*\)[^{]*{[^}]*fetch[^}]*})',
+                content,
+                re.DOTALL
+            )
+            if fetch_match:
+                patterns["api_call_pattern"] = fetch_match.group(0)[:600]
+
     return patterns
 
 def _resolve_evidence_path(

@@ -9,6 +9,7 @@ from app.pot_spec.grounded._simple_create_utils_16 import CreateEvidence, Integr
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from app.pot_spec.grounded._sbx_fs import _sbx_isfile, _sbx_isdir
+from app.pot_spec.grounded._simple_create_utils_18 import inject_brief_mentioned_roots, priority_sort_project_paths, run_dependency_gate, filter_phantom_files
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,8 @@ async def _run_llm_analysis(
     model_id: str,
     llm_call_func: Optional[Callable],
     resolved_target_files: Optional[List[Dict]] = None,  # v5.1
+    patterns: Optional[Dict[str, str]] = None,  # v2.8 Fix C
+    project_paths: Optional[List[str]] = None,  # v2.8 Fix D
 ) -> Optional[str]:
     """
     v2.1: Use an LLM to analyze the feature request.
@@ -172,6 +175,51 @@ async def _run_llm_analysis(
             "as shown when emitting EVIDENCE_REQUESTs to read them."
         )
 
+
+    # v2.10 Fix C: format extracted patterns for prompt injection.
+    # Sort by category importance so the most architecturally relevant patterns
+    # appear first if truncation occurs. Cap at 25 — generous enough for 5+ files
+    # across 5 categories without flooding the prompt.
+    patterns_desc = ""
+    if patterns:
+        try:
+            _priority = ("persistence", "http_client", "state_mgmt", "di",
+                         "router", "models", "component", "async_style", "import_block")
+            def _sort_key(item):
+                k = item[0]
+                cat = k.split(":", 1)[0]
+                try:
+                    return (_priority.index(cat), k)
+                except ValueError:
+                    return (len(_priority), k)
+            _sorted = sorted(patterns.items(), key=_sort_key)
+            _lines = []
+            for k, v in _sorted[:25]:
+                _v = (v or "").strip().replace("\n", " ")[:200]
+                _lines.append(f"- {k}: {_v}")
+            patterns_desc = "\n".join(_lines)
+        except Exception:
+            pass
+
+
+    # v2.8 Fix D: walk project_paths and enumerate declared dependencies
+    declared_deps_desc = ""
+    try:
+        from app.pot_spec.grounded._dependency_presence import get_declared_dependencies
+        _all_deps = set()
+        for _root in (project_paths or []):
+            if _root:
+                try:
+                    _all_deps.update(get_declared_dependencies(_root))
+                except Exception:
+                    continue
+        if _all_deps:
+            _sorted = sorted(_all_deps)[:50]  # Cap at 50 to keep prompt focused
+            declared_deps_desc = ", ".join(_sorted)
+            if len(_all_deps) > 50:
+                declared_deps_desc += f" ... (+{len(_all_deps) - 50} more)"
+    except Exception as _e:
+        logger.warning("[simple_create] v2.8 Fix D dep enumeration failed: %s", _e)
     user_prompt = f"""Feature Request:
 {goal}
 
@@ -187,6 +235,12 @@ Existing Integration Points (VERIFIED — these files exist and can be read via 
 
 Suggested New Files:
 {chr(10).join(f'- {f}' for f in suggested_files) if suggested_files else 'None'}
+
+Existing Patterns (from project — match these in any new code):
+{patterns_desc if patterns_desc else 'None extracted'}
+
+Declared Dependencies (libraries the project ALREADY has — use ONLY these):
+{declared_deps_desc if declared_deps_desc else 'Not enumerated'}
 
 Constraints:
 {constraints_desc}
@@ -218,9 +272,10 @@ Please provide your structured analysis."""
                 model_id=attempt_model,
                 messages=[{"role": "user", "content": user_prompt}],
                 system_prompt=CREATE_ANALYSIS_SYSTEM_PROMPT,
-                temperature=0.2,
-                max_tokens=8192,  # v4.1: Increased from 4096 — LLM needs room for analysis + YAML ERs
-                timeout_seconds=attempt_timeout,
+                temperature=1.0,  # v2.7: Anthropic thinking mode requires temperature=1.0
+                max_tokens=16384,  # v2.7: 8K for thinking + 8K for visible response
+                timeout_seconds=max(attempt_timeout, 300),  # v2.7: thinking consumes wall-clock time
+                reasoning={"effort": "high"},  # v2.7: Opus 4.6 extended thinking — critical for architecture reasoning
             )
             
             if result.is_success() and result.content:
@@ -291,40 +346,11 @@ async def build_grounded_create_spec(
     # v2.0: Extract CONCEPTS (not raw keywords)
     combined_text = f"{goal} {what_to_do}"
 
-    # v2.3: BRIEF-MENTIONED ROOT INJECTION
-    # Scan the brief for absolute file paths and walk up to find project roots.
-    # Prepend any roots not already in project_paths so downstream walkers see
-    # the directories the user mentioned, not just the chat-context root.
-    try:
-        import re as _re_v23
-        _root_markers = ('app/build.gradle.kts', 'build.gradle.kts', 'settings.gradle.kts',
-                         'package.json', 'pyproject.toml', 'Cargo.toml', 'go.mod', '.git')
-        _path_pat = _re_v23.compile(r'([A-Za-z]:[\\/](?:[^\s`"\'<>|*?]+[\\/])+)')
-        _candidates = set()
-        for _m in _path_pat.finditer(combined_text):
-            _p = _m.group(1).rstrip('\\/').replace('/', os.sep)
-            _cur = _p
-            for _ in range(8):
-                if not _cur or len(_cur) < 4:
-                    break
-                if any(os.path.exists(os.path.join(_cur, _mk.replace('/', os.sep))) for _mk in _root_markers):
-                    _candidates.add(_cur)
-                    break
-                _parent = os.path.dirname(_cur)
-                if _parent == _cur:
-                    break
-                _cur = _parent
-        _existing = {os.path.normcase(os.path.normpath(p)) for p in project_paths}
-        _added = []
-        for _c in sorted(_candidates):
-            if os.path.normcase(os.path.normpath(_c)) not in _existing:
-                project_paths = list(project_paths) + [_c]
-                _added.append(_c)
-        if _added:
-            print(f"[simple_create] v2.3 BRIEF-ROOT INJECTION: added {len(_added)} root(s): {_added}")
-            logger.info("[simple_create] v2.3 Brief-root injection added: %s", _added)
-    except Exception as _e_v23:
-        logger.warning("[simple_create] v2.3 Brief-root injection failed: %s", _e_v23)
+    # v2.3: Brief-mentioned root injection — see _simple_create_utils_18.inject_brief_mentioned_roots
+    project_paths, _added_roots = inject_brief_mentioned_roots(project_paths, combined_text)
+    if _added_roots:
+        print(f"[simple_create] v2.3 BRIEF-ROOT INJECTION: added {len(_added_roots)} root(s): {_added_roots}")
+        logger.info("[simple_create] v2.3 Brief-root injection added: %s", _added_roots)
     concepts = _extract_task_keywords(combined_text)
     print(f"[simple_create] v2.0 Concepts: {concepts[:10]}")
     
@@ -332,6 +358,9 @@ async def build_grounded_create_spec(
     constraints = _extract_constraints(combined_text)
     print(f"[simple_create] v2.0 Constraints: {constraints}")
     
+    # v2.4: Priority-sort — see _simple_create_utils_18.priority_sort_project_paths
+    project_paths = priority_sort_project_paths(project_paths)
+
     # Detect tech stack for each project path
     tech_stack = TechStack()
     for path in project_paths:
@@ -339,8 +368,15 @@ async def build_grounded_create_spec(
             detected = _detect_tech_stack(path, sandbox_client)
             for attr in ['frontend_framework', 'frontend_language', 'backend_framework',
                         'backend_language', 'styling', 'state_management', 'api_pattern']:
-                if getattr(detected, attr) and not getattr(tech_stack, attr):
-                    setattr(tech_stack, attr, getattr(detected, attr))
+                _new_val = getattr(detected, attr)
+                _cur_val = getattr(tech_stack, attr)
+                if not _new_val:
+                    continue
+                # v2.4: Android-specific values always override React/Vite/Vue/etc.
+                # Mobile-specificity > web defaults when we're building for a mobile target.
+                _is_mobile = 'Android' in str(_new_val) or 'Kotlin' in str(_new_val) or 'Gradle' in str(_new_val)
+                if not _cur_val or _is_mobile:
+                    setattr(tech_stack, attr, _new_val)
     
     print(f"[simple_create] v2.0 Tech stack: {tech_stack.frontend_framework}/{tech_stack.backend_framework}")
     
@@ -352,6 +388,9 @@ async def build_grounded_create_spec(
             all_points.extend(points)
     
     print(f"[simple_create] v2.0 Found {len(all_points)} integration points")
+
+    # v2.6: Phantom-file filter — see _simple_create_utils_18.filter_phantom_files
+    all_points = filter_phantom_files(all_points, tech_stack)
     
     # Extract patterns from integration points
     patterns = _extract_patterns(all_points, tech_stack)
@@ -394,6 +433,8 @@ async def build_grounded_create_spec(
                 model_id=model_id,
                 llm_call_func=llm_call_func,
                 resolved_target_files=resolved_target_files,  # v5.1
+                patterns=patterns,  # v2.8 Fix C: existing patterns for prompt
+                project_paths=project_paths,  # v2.8 Fix D: for declared deps lookup
             )
 
             # v4.0: Fulfil EVIDENCE_REQUESTs from the LLM analysis
@@ -417,6 +458,9 @@ async def build_grounded_create_spec(
     else:
         print(f"[simple_create] v2.0 NO LLM: provider_id={provider_id}, model_id={model_id}")
     
+
+    # v2.5: Dependency gate — see _simple_create_utils_18.run_dependency_gate
+    llm_analysis = run_dependency_gate(llm_analysis, project_paths)
     # Build evidence bundle
     evidence = CreateEvidence(
         tech_stack=tech_stack,

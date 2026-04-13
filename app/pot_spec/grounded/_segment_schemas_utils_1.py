@@ -197,6 +197,15 @@ class SegmentManifest:
     generated_at: str = ""
     manifest_version: str = "1.0"
 
+    # v1.1 (2026-04-12): Phase 1 Job 6 — cross-target dependency DAG.
+    # Each entry: {"from": seg_id, "from_target": target_id,
+    #              "to": seg_id,   "to_target":   target_id}
+    # Populated by classify_dependencies() after segments are constructed.
+    # Read by Phase 3 verifier to decide when to run cross-target contract
+    # checks (e.g. "did the Android segment's Retrofit interface match the
+    # backend segment's FastAPI route?").
+    cross_target_edges: List[Dict[str, str]] = field(default_factory=list)
+
     # v5.18: External consumer files deferred to post-recon
     # Files that only need import-path updates after a file->package refactor.
     # These are NOT included in any segment's file_scope.
@@ -231,6 +240,7 @@ class SegmentManifest:
             "generated_at": self.generated_at,
             "manifest_version": self.manifest_version,
             "deferred_consumer_files": self.deferred_consumer_files,
+            "cross_target_edges": self.cross_target_edges,
             "deterministic_sources": self.deterministic_sources,
             # Backward compat for consumers reading manifest.json
             "deterministic_source": self.deterministic_source,
@@ -248,6 +258,7 @@ class SegmentManifest:
             parent_spec_id=data.get("parent_spec_id"),
             parent_spec_hash=data.get("parent_spec_hash"),
             deferred_consumer_files=data.get("deferred_consumer_files", []),
+            cross_target_edges=data.get("cross_target_edges", []),
             segments=[_load_segment_spec(s) for s in data.get("segments", [])],
             requirement_map=data.get("requirement_map", {}),
             total_segments=data.get("total_segments", 0),

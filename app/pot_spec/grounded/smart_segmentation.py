@@ -93,6 +93,31 @@ This is a one-way dependency: modules → facade, never facade → modules.
 - CYCLE PREVENTION: If segment A depends on segment B, then segment B MUST NOT \
 depend on segment A (directly or transitively). Before outputting, verify your \
 dependency graph has no cycles. If in doubt, remove the dependency.
+- CONTRACTS (v1.2, 2026-04-12): For every segment that has dependents OR is \
+depended on, declare the interface boundary explicitly in "exposes" and \
+"consumes" arrays using four categories. This is what lets the pipeline verify \
+producer/consumer coherence across segments — especially across different \
+repositories (e.g. a FastAPI backend publishing a route that an Android client \
+consumes). Populate these fields whenever the segment creates or uses a named \
+interface. Leaving them empty is acceptable for leaf segments with no public \
+surface, but REQUIRED when other segments depend on this one.
+
+CONTRACT CATEGORIES:
+- class_names: ["AudioCache", "SessionCheck"] — named classes/sealed types \
+this segment defines (exposes) or needs from elsewhere (consumes).
+- method_signatures: ["def store_audio(message_id: int, mp3_bytes: bytes) -> None"] \
+— callable signatures this segment defines or invokes. Include full signature \
+with types so mismatches are detectable.
+- endpoint_paths: ["POST /bridge/chat", "GET /bridge/missed-audio/{message_id}"] \
+— HTTP routes this segment defines (exposes) or calls (consumes). Include the \
+method. Path parameters must match exactly between producer and consumer.
+- export_names: ["useVoiceRecorder", "VoiceInput"] — named frontend exports this \
+segment defines or imports.
+
+CONTRACT MATCHING RULE: Consumer declarations must match producer declarations \
+verbatim (after whitespace normalization). "GET /foo/{id}" does NOT match \
+"GET /foo/{item_id}". If two segments disagree on a parameter name, that IS \
+the bug the verifier will catch — declare what your code actually uses.
 
 OUTPUT FORMAT:
 Return ONLY a JSON object, no markdown:
@@ -102,13 +127,27 @@ Return ONLY a JSON object, no markdown:
       "title": "Short descriptive title",
       "files": ["path/to/file1.py", "path/to/file2.py"],
       "concepts": ["concept1", "concept2"],
-      "depends_on": []
+      "depends_on": [],
+      "exposes": {
+        "class_names": ["AudioCache"],
+        "method_signatures": ["def store_audio(message_id: int, mp3_bytes: bytes) -> None"],
+        "endpoint_paths": [],
+        "export_names": []
+      },
+      "consumes": {
+        "class_names": [],
+        "method_signatures": [],
+        "endpoint_paths": [],
+        "export_names": []
+      }
     },
     {
       "title": "Another segment",
       "files": ["path/to/file3.py"],
       "concepts": ["concept3"],
-      "depends_on": [0]
+      "depends_on": [0],
+      "exposes": {"class_names": [], "method_signatures": [], "endpoint_paths": [], "export_names": []},
+      "consumes": {"class_names": ["AudioCache"], "method_signatures": [], "endpoint_paths": [], "export_names": []}
     }
   ],
   "reasoning": "Brief explanation of grouping logic"

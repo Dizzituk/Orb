@@ -60,7 +60,6 @@ async def run_scaffold_engine(
 
     segments = manifest.get("segments", [])
     skeleton_contract = _load_skeleton_contract(job_dir)
-
     # Collect all files across segments
     all_files: List[Dict[str, Any]] = []
     for seg in segments:
@@ -68,12 +67,16 @@ async def run_scaffold_engine(
         file_scope = seg.get("file_scope", [])
         requirements = seg.get("requirements", [])
         grounding = seg.get("grounding_data", {})
+        # v2.1 (2026-04-12): Phase 1 Job 15 — capture per-segment target_id
+        # so scaffold writes route to the correct repo for multi-target jobs.
+        seg_target_id = seg.get("target_id")
 
         for fp in file_scope:
             is_new = _is_create_file(fp, grounding)
             all_files.append({
                 "path": fp,
                 "segment_id": seg_id,
+                "target_id": seg_target_id,
                 "is_new": is_new,
                 "requirements": requirements,
                 "grounding": grounding,
@@ -88,13 +91,27 @@ async def run_scaffold_engine(
         fp = file_info["path"]
         is_new = file_info["is_new"]
 
+        # v2.1 (2026-04-12): Phase 1 Job 15 — resolve per-file profile from
+        # the segment's target_id. Falls back to the passed-in profile if
+        # the segment has no target (single-target or legacy jobs).
+        file_profile = profile
+        _tid = file_info.get("target_id")
+        if _tid:
+            try:
+                from app.pipeline_v2.target_registry import get_profile
+                _resolved = get_profile(_tid)
+                if _resolved is not None:
+                    file_profile = _resolved
+            except Exception as _pe:
+                logger.debug("[scaffold_engine] profile lookup failed for target_id=%s: %s", _tid, _pe)
+
         if is_new:
             skeleton = _generate_skeleton(
                 fp,
                 file_info["requirements"],
                 skeleton_contract,
                 spec,
-                profile,
+                file_profile,
             )
             scaffold_file = ScaffoldFile(
                 path=fp,
@@ -104,10 +121,11 @@ async def run_scaffold_engine(
             )
             result.files.append(scaffold_file)
 
-            # Write to sandbox
-            ok = await sandbox_write(fp, skeleton, profile=profile)
+            # Write to sandbox using per-file profile (multi-target aware)
+            ok = await sandbox_write(fp, skeleton, profile=file_profile)
             status = "✅" if ok else "❌"
-            emit(f"   {status} [CREATE] {fp} ({len(skeleton):,} chars)")
+            _tgt = file_profile.project_id if file_profile else "?"
+            emit(f"   {status} [CREATE] {fp} -> {_tgt} ({len(skeleton):,} chars)")
         else:
             # MODIFY files: don't write a skeleton, just record them
             scaffold_file = ScaffoldFile(

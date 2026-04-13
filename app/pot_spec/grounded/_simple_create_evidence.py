@@ -106,9 +106,10 @@ async def fulfil_evidence_requests(
                     model_id=model_id,
                     messages=[{"role": "user", "content": _final_prompt}],
                     system_prompt=system_prompt,
-                    temperature=0.2,
-                    max_tokens=8192,
-                    timeout_seconds=_CREATE_ANALYSIS_TIMEOUT,
+                temperature=1.0,  # v2.7: Anthropic thinking requires temperature=1.0
+                max_tokens=16384,  # v2.7: 8K thinking + 8K response
+                timeout_seconds=max(_CREATE_ANALYSIS_TIMEOUT, 300),  # v2.7: thinking consumes wall-clock
+                reasoning={"effort": "high"},  # v2.7: Opus 4.6 extended thinking for evidence reflection
                 )
                 if _final_result.is_success() and _final_result.content:
                     current_analysis = _final_result.content.strip()
@@ -138,9 +139,10 @@ async def fulfil_evidence_requests(
                 model_id=model_id,
                 messages=[{"role": "user", "content": re_prompt}],
                 system_prompt=system_prompt,
-                temperature=0.2,
-                max_tokens=8192,
-                timeout_seconds=_CREATE_ANALYSIS_TIMEOUT,
+                temperature=1.0,  # v2.7: Anthropic thinking requires temperature=1.0
+                max_tokens=16384,  # v2.7: 8K thinking + 8K response
+                timeout_seconds=max(_CREATE_ANALYSIS_TIMEOUT, 300),  # v2.7: thinking consumes wall-clock
+                reasoning={"effort": "high"},  # v2.7: Opus 4.6 extended thinking for evidence reflection
             )
             if result.is_success() and result.content:
                 current_analysis = result.content.strip()
@@ -371,9 +373,17 @@ def _build_re_prompt(
     else:
         return (
             f"The orchestrator has fulfilled {len(fulfilled_ids)} evidence requests. "
-            f"Revise your analysis using the REAL evidence below.\n\n"
+            f"Refine your draft using the REAL evidence below.\n\n"
             f"{job_context}"
-            f"--- PREVIOUS ANALYSIS ---\n\n{prev}\n\n"
+            f"--- PREVIOUS DRAFT ---\n\n{prev}\n\n"
             f"--- FULFILLED EVIDENCE ---\n\n{evidence_block}\n\n"
-            f"Provide your revised, grounded analysis."
+            f"REQUIRED OUTPUT: Produce a COMPLETE updated draft on this round, "
+            f"containing Architecture Overview, Files to Modify, New Files to Create, "
+            f"and Acceptance Criteria — every section, every time. The draft must "
+            f"reflect what you learned from the evidence.\n\n"
+            f"You MAY emit additional EVIDENCE_REQUEST blocks AFTER your draft if "
+            f"the evidence raised new uncertainties — but ONLY for verifying specific "
+            f"facts, never as a substitute for the draft itself. A response containing "
+            f"only EVIDENCE_REQUEST blocks with no draft sections will be treated as a "
+            f"failed round and the loop will be force-terminated."
         )
