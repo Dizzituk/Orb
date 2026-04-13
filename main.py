@@ -459,6 +459,12 @@ try:
     print("[startup] Debug Feedback: [OK] registered")
 except Exception as e:
     print(f"[startup] Debug Feedback not available: {e}")
+try:
+    from app.debug.orchestrator.endpoint import router as debug_orchestrator_router
+    app.include_router(debug_orchestrator_router, dependencies=[Depends(require_auth)], tags=["Debug Orchestrator"])
+    print("[startup] Debug Orchestrator: [OK] registered")
+except Exception as e:
+    print(f"[startup] Debug Orchestrator not available: {e}")
 app.include_router(introspection_router, tags=["Introspection"], dependencies=[Depends(require_auth)])
 
 if _TRANSCRIBE_AVAILABLE:
@@ -537,7 +543,9 @@ try:
     app.include_router(bridge_router)
     from app.bridge.tts_proxy import router as bridge_tts_router
     app.include_router(bridge_tts_router)
-    print("[startup] Bridge API: [OK] registered (+ TTS proxy)")
+    from app.bridge.missed_replies import router as bridge_missed_replies_router
+    app.include_router(bridge_missed_replies_router)
+    print("[startup] Bridge API: [OK] registered (+ TTS proxy, + missed-replies)")
 except ImportError as _bridge_err:
     print(f"[startup] Bridge API: [WARN] {_bridge_err}")
 

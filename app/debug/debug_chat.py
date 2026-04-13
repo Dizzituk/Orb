@@ -380,6 +380,98 @@ async def stream_debug_locked(
         # Phase 1: Gemini Vision Analysis (only if video/image attached)
         # ═══════════════════════════════════════════════════════════════
 
+        # --- AUTO-ROUTE: orchestrator vs chat ----------------------------
+        try:
+            from app.debug.orchestrator.router_classifier import classify_message
+            from app.debug.orchestrator.chat_stream_bridge import (
+                stream_orchestration_as_chat,
+            )
+            prior_assistant = ""
+            for m in reversed(panel_history or []):
+                if m.get("role") == "assistant":
+                    prior_assistant = (m.get("content") or "")[:4000]
+                    break
+            lower_prior = prior_assistant.lower()
+            history_has_plan = (
+                ("plan" in lower_prior or "steps" in lower_prior
+                 or "next i" in lower_prior or "going to" in lower_prior)
+                and (
+                    "1." in prior_assistant or "- " in prior_assistant
+                    or "* " in prior_assistant
+                )
+            )
+            decision = await classify_message(
+                message=message, history_has_plan=history_has_plan,
+            )
+            logger.info(
+                "[debug_locked] router decision=%s source=%s conf=%.2f reason=%s",
+                decision.get("decision"), decision.get("source"),
+                decision.get("confidence", 0.0), decision.get("reason", ""),
+            )
+
+            if decision.get("decision") == "orchestrate" and debug_project_id:
+                from app.debug.project_service import get_project as _get_proj
+                dp = _get_proj(debug_project_id)
+                bug_source = ""
+                if dp:
+                    bug_source = (dp.get("description") or "").strip()
+                    if not bug_source:
+                        bug_source = dp.get("error_summary") or ""
+                if len(message) > len(bug_source):
+                    bug_source = message
+                target_hint = None
+                try:
+                    meta = json.loads((dp or {}).get("metadata_json", "{}") or "{}")
+                    target_hint = meta.get("build_target_id")
+                except Exception:
+                    pass
+
+                logger.info(
+                    "[debug_locked] ROUTING TO ORCHESTRATOR (project=%s, target=%s)",
+                    debug_project_id, target_hint,
+                )
+                # Record user message in activity store
+                try:
+                    from app.debug.orchestrator.activity_store import record_user_message
+                    record_user_message(debug_project_id=str(debug_project_id), message=message)
+                except Exception as _act_err:
+                    logger.debug("[debug_locked] activity log (user) failed: %s", _act_err)
+                full_response = ""
+                async for chunk in stream_orchestration_as_chat(
+                    project_id=str(debug_project_id),
+                    bug_list=bug_source,
+                    target_project=target_hint,
+                    max_iterations=2,
+                    max_subagents_parallel=5,
+                    enable_behaviour_verify=False,
+                ):
+                    try:
+                        payload = json.loads(chunk.decode("utf-8").split("data: ", 1)[1].strip())
+                        if payload.get("type") == "token" and payload.get("content"):
+                            full_response += payload["content"]
+                    except Exception:
+                        pass
+                    yield chunk
+
+                try:
+                    from app.memory import service as mem_svc, schemas as mem_schemas
+                    mem_svc.create_message(db, mem_schemas.MessageCreate(
+                        project_id=project_id, role="user", content=message,
+                        provider="user", model="debug-input",
+                    ))
+                    if full_response.strip():
+                        mem_svc.create_message(db, mem_schemas.MessageCreate(
+                            project_id=project_id, role="assistant",
+                            content=full_response, provider="orchestrator",
+                            model="orchestrator",
+                        ))
+                except Exception as _persist_err:
+                    logger.warning("[debug_locked] orchestrator persistence failed: %s", _persist_err)
+                return
+        except Exception as _route_err:
+            logger.warning("[debug_locked] auto-router failed, continuing with chat: %s", _route_err)
+        # --- END AUTO-ROUTE ---------------------------------------------
+
         vision_analysis = None
         has_visual = bool(video_file_uri) or bool(file_upload_uri)
 
