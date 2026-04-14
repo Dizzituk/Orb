@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import Response, StreamingResponse
 
 from .schemas import BridgeTTSRequest, require_bridge_auth
@@ -69,9 +69,20 @@ async def bridge_tts_speak(
 @router.post("/stream")
 async def bridge_tts_stream(
     req: BridgeTTSRequest,
+    request: Request,
     _auth: bool = Depends(require_bridge_auth),
 ):
-    """Progressive TTS proxy — streams a growing MP3 from Chatterbox."""
+    """Progressive TTS proxy — streams a growing MP3 from Chatterbox.
+
+    v2.0 (2026-04-13): Client-disconnect handling. When the Bridge app
+    drops connection mid-stream (signal loss, app backgrounded with radio
+    killed, manual cancel), we now:
+      1. Poll request.is_disconnected() between chunks and break cleanly
+      2. Treat CancelledError / RemoteProtocolError as INFO not ERROR
+      3. Cancel the upstream Chatterbox request so it stops generating
+         audio for a listener that will never hear it (token waste).
+    """
+    import asyncio
     import httpx
 
     payload = {"text": req.text}
@@ -86,13 +97,26 @@ async def bridge_tts_stream(
         ))
 
         async def stream_from_chatterbox():
+            bytes_sent = 0
             try:
                 async with client.stream("POST", f"{TTS_BASE}/tts/progressive", json=payload) as resp:
                     resp.raise_for_status()
                     async for chunk in resp.aiter_bytes(chunk_size=8192):
+                        if await request.is_disconnected():
+                            logger.info(
+                                "[bridge] TTS client disconnected after %d bytes — aborting upstream",
+                                bytes_sent,
+                            )
+                            return
                         yield chunk
+                        bytes_sent += len(chunk)
+            except asyncio.CancelledError:
+                logger.info("[bridge] TTS stream cancelled after %d bytes", bytes_sent)
+                raise
+            except httpx.RemoteProtocolError as e:
+                logger.info("[bridge] TTS upstream closed after %d bytes: %s", bytes_sent, e)
             except Exception as e:
-                logger.error("[bridge] TTS progressive proxy error: %s", e)
+                logger.error("[bridge] TTS progressive proxy error after %d bytes: %s", bytes_sent, e)
             finally:
                 await client.aclose()
 

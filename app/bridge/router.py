@@ -377,6 +377,90 @@ async def receive_crash_report(request: Request):
         return {"received": False, "error": str(e)}
 
 
+@router.post("/upload")
+async def bridge_upload(
+    request: Request,
+    db: Session = Depends(get_db),
+    auth=Depends(require_bridge_auth),
+):
+    """Accept a raw file upload from the Astra Bridge OutboundQueueDrainer.
+    
+    Bridge posts raw bytes with:
+      - Authorization: Bearer <token>
+      - X-Idempotency-Key: <uuid>   (dedup on resend after transient failure)
+      - Content-Type: application/octet-stream
+    
+    Returns:
+      - 200 {id, bytes, path} on success
+      - 409 if this idempotency key was already accepted
+      - 401/403 handled upstream by require_bridge_auth
+    
+    Files are written to D:/Orb/uploads/bridge/ and survive restarts.
+    v1.0 (2026-04-13): initial implementation so Bridge attachments
+    actually reach the server. Previously Bridge POSTed to /upload (404).
+    """
+    import os
+    import uuid
+    import json
+    from datetime import datetime, timezone
+    
+    idempotency_key = request.headers.get("X-Idempotency-Key", "").strip()
+    if not idempotency_key:
+        # Generate one so the client can still succeed even if header was missing.
+        idempotency_key = uuid.uuid4().hex
+    
+    upload_dir = os.path.join("D:\\\\Orb", "uploads", "bridge")
+    os.makedirs(upload_dir, exist_ok=True)
+    ledger_path = os.path.join(upload_dir, "_ledger.jsonl")
+    
+    # Dedup: if idempotency_key is already in the ledger, return 409.
+    try:
+        if os.path.isfile(ledger_path):
+            with open(ledger_path, "r", encoding="utf-8") as lf:
+                for line in lf:
+                    try:
+                        entry = json.loads(line)
+                    except Exception:
+                        continue
+                    if entry.get("idempotency_key") == idempotency_key:
+                        logger.info("[bridge] upload duplicate for key=%s", idempotency_key[:12])
+                        raise HTTPException(status_code=409, detail="duplicate")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning("[bridge] ledger read failed, proceeding anyway: %s", e)
+    
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="empty body")
+    
+    file_id = uuid.uuid4().hex
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    filename = f"{ts}_{file_id}.bin"
+    out_path = os.path.join(upload_dir, filename)
+    with open(out_path, "wb") as f:
+        f.write(body)
+    
+    entry = {
+        "id": file_id,
+        "idempotency_key": idempotency_key,
+        "filename": filename,
+        "path": out_path,
+        "bytes": len(body),
+        "received_at": datetime.now(timezone.utc).isoformat(),
+        "content_type": request.headers.get("Content-Type", ""),
+    }
+    with open(ledger_path, "a", encoding="utf-8") as lf:
+        lf.write(json.dumps(entry) + "\n")
+    
+    logger.info(
+        "[bridge] upload received: id=%s bytes=%d key=%s",
+        file_id, len(body), idempotency_key[:12],
+    )
+    
+    return {"id": file_id, "bytes": len(body), "path": out_path}
+
+
 def _resolve_or_create_project(req: BridgeChatRequest, db: Session):
     from app.memory.service import get_project
     from app.memory.schemas import ProjectCreate

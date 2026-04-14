@@ -1,4 +1,4 @@
-"""
+﻿"""
 Orb Backend - FastAPI Application
 Version: 0.17.0
 
@@ -255,6 +255,22 @@ def on_startup():
         _scan_db.close()
     except Exception as e:
         print(f"[startup] Drive scan skipped: {e}")
+
+    # ── Live file watcher: keeps drive_file_manifest in sync between boots ──
+    try:
+        from app.drive.file_watcher import start_file_watcher
+        _watch_result = start_file_watcher()
+        _wstatus = _watch_result.get("status", "unknown")
+        _wpaths = _watch_result.get("paths", [])
+        if _wstatus == "running":
+            print(f"[startup] File watcher: [OK] watching {len(_wpaths)} path(s)")
+        elif _wstatus == "already_running":
+            print("[startup] File watcher: [OK] already running")
+        else:
+            print(f"[startup] File watcher: [WARN] status={_wstatus}")
+    except Exception as e:
+        print(f"[startup] File watcher skipped: {e}")
+
     try:
         from app.content.seed import seed_content_data
         from app.db import SessionLocal

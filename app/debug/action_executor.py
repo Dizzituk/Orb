@@ -1,4 +1,4 @@
-# FILE: app/debug/action_executor.py
+﻿# FILE: app/debug/action_executor.py
 """
 Action Executor: Translates LLM tool calls into real operations.
 
@@ -80,6 +80,8 @@ _HOST_WRITE_BLOCKED_PREFIXES = [
     "D:\\orb-desktop",
     "D:/orb-electron-data",
     "D:\\orb-electron-data",
+    "D:/Zobie-Orb",
+    "D:\\Zobie-Orb",
     # System paths — never touch
     "C:/Windows",
     "C:\\Windows",
@@ -87,6 +89,16 @@ _HOST_WRITE_BLOCKED_PREFIXES = [
     "C:\\Program Files",
     "C:/ProgramData",
     "C:\\ProgramData",
+]
+
+# Carve-outs: paths under a blocked prefix that ARE writable.
+# Used so ASTRA can still write to D:/Orb/output (generated media) even
+# though D:/Orb itself is protected. Checked BEFORE the blocklist.
+_HOST_WRITE_ALLOWED_SUBPATHS = [
+    "D:/Orb/output",
+    "D:\\Orb\\output",
+    "D:/Orb/data/debug_uploads",
+    "D:\\Orb\\data\\debug_uploads",
 ]
 
 # Paths served from the host filesystem for reads (not in sandbox).
@@ -140,10 +152,20 @@ def _is_host_write_blocked(path: str) -> bool:
     """Return True if the path must NEVER be written to on the host.
 
     This is the single source of truth for host write protection.
-    Covers the four Orb directories and Windows system paths.
-    Everything else on D: (Android projects, tools, etc.) is writable.
+    Covers the five Orb directories (Orb, Orb.architecture, orb-desktop,
+    orb-electron-data, Zobie-Orb) and Windows system paths.
+    Carve-outs (D:/Orb/output etc.) are allowed even when nested under
+    a blocked prefix. Everything else on D: is writable.
     """
     norm = path.replace("\\", "/").rstrip("/")
+
+    # Carve-outs win: if the path is under an allowed subpath, it's writable
+    # even if that subpath sits under a blocked prefix.
+    for allowed in _HOST_WRITE_ALLOWED_SUBPATHS:
+        allowed_norm = allowed.replace("\\", "/").rstrip("/")
+        if norm == allowed_norm or norm.startswith(allowed_norm + "/"):
+            return False
+
     for prefix in _HOST_WRITE_BLOCKED_PREFIXES:
         prefix_norm = prefix.replace("\\", "/").rstrip("/")
         # Exact match (e.g. "D:/Orb" == "D:/Orb") or
@@ -930,6 +952,15 @@ async def execute_write_user_file(params: Dict[str, Any]) -> str:
                 f"Use get_user_folders to see valid base paths."
             )
 
+        # Belt-and-braces: even within allowed roots, never write into
+        # ASTRA's own code directories (Orb, orb-desktop, Zobie-Orb, etc.).
+        if _is_host_write_blocked(str(target.resolve())):
+            logger.warning("[action_executor] user-file write blocked by host protection: %s", path)
+            return (
+                f"Access denied: {path} is inside a protected ASTRA directory. "
+                f"Host-side code is read-only; changes must go through the sandbox."
+            )
+
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         size_kb = len(content.encode("utf-8")) / 1024
@@ -1071,3 +1102,120 @@ async def execute_tool(tool_name: str, params: Dict[str, Any]) -> str:
     except Exception as e:
         logger.error("[action_executor] Tool %s failed: %s", tool_name, e)
         return f"Tool execution error: {e}"
+
+
+# =============================================================================
+# MANIFEST RESCAN TOOLS (v0.16.0) — force re-index when manifest is stale
+# =============================================================================
+
+async def execute_rescan_manifest(params: Dict[str, Any]) -> str:
+    """Force a full rescan of user folders and refresh the file manifest.
+
+    Use this ONLY as a fallback when search_my_files returns no results
+    for a file the user insists exists. The live watcher usually keeps
+    the manifest current, so rescans should rarely be needed.
+    """
+    try:
+        from app.drive.manifest_rescan import rescan_all
+        result = rescan_all()
+    except Exception as e:
+        return f"Rescan failed: {e}"
+
+    if result.get("status") != "ok":
+        return f"Rescan error: {result.get('error', 'unknown')}"
+
+    return (
+        f"Manifest rescanned: {result['total_files']} files total "
+        f"({result['new_files']} new, {result['modified_files']} modified, "
+        f"{result['deleted_files']} removed) in {result['duration_ms']}ms."
+    )
+
+
+async def execute_reindex_file(params: Dict[str, Any]) -> str:
+    """Refresh a single file's entry in the manifest.
+
+    Cheaper than a full rescan when you know the exact path. Inserts,
+    updates, or removes the row depending on whether the file exists.
+    """
+    path = params.get("path", "").strip()
+    if not path:
+        return "Error: path is required."
+
+    try:
+        from app.drive.manifest_rescan import rescan_path
+        result = rescan_path(path)
+    except Exception as e:
+        return f"Reindex failed: {e}"
+
+    status = result.get("status", "unknown")
+    if status == "error":
+        return f"Reindex error for {path}: {result.get('error', 'unknown')}"
+    if status == "not_found":
+        return f"No action: {path} does not exist and was not in the manifest."
+    if status == "removed":
+        return f"Removed stale manifest entry for {path} (file no longer exists)."
+    return (
+        f"Manifest {status}: {path} "
+        f"(category={result.get('category', '?')}, "
+        f"size={result.get('size', 0)} bytes)."
+    )
+
+# Register the late-defined executors (defined below the dict)
+TOOL_HANDLERS["rescan_manifest"] = execute_rescan_manifest
+TOOL_HANDLERS["reindex_file"] = execute_reindex_file
+
+async def execute_search_disk_live(params: Dict[str, Any]) -> str:
+    """Search the actual filesystem (bypassing the manifest cache).
+
+    Use as a fallback when search_my_files returns no results for a
+    file the user insists exists. Slower (100-500ms typical) but
+    authoritative — if the file is on disk, this finds it.
+    Auto-heals the manifest for any matches so the next cached search
+    will find them too.
+    """
+    query = params.get("query", "").strip()
+    category = params.get("category", "").strip() or None
+    extension = params.get("extension", "").strip() or None
+
+    if not query:
+        return "Error: query is required."
+
+    try:
+        from app.drive.disk_search import search_disk
+        result = search_disk(query, category=category, extension=extension)
+    except Exception as e:
+        return f"Live disk search failed: {e}"
+
+    if result.get("status") != "ok":
+        return f"Search error: {result.get('error', 'unknown')}"
+
+    matches = result.get("results", [])
+    elapsed = result.get("elapsed_ms", 0)
+    scanned = result.get("scanned", 0)
+    healed = result.get("manifest_healed", 0)
+
+    if not matches:
+        return (
+            f"No files matching {query!r} on disk "
+            f"(scanned {scanned} files in {elapsed}ms). "
+            f"The file genuinely does not exist in your user folders."
+        )
+
+    lines = [
+        f"Found {len(matches)} file(s) on disk for {query!r} "
+        f"(scanned {scanned} in {elapsed}ms"
+        + (f", healed manifest for {healed}" if healed else "")
+        + "):"
+    ]
+    for r in matches:
+        size_kb = r["size_bytes"] / 1024
+        size_str = f"{size_kb:.0f}KB" if size_kb < 1024 else f"{size_kb/1024:.1f}MB"
+        lines.append(f"  [{r['category']}] {r['filename']} ({size_str}, {r['file_class']})")
+        lines.append(f"    Path: {r['path']}")
+    if result.get("truncated"):
+        lines.append(f"  ... results capped; refine the query for more.")
+    return "\n".join(lines)
+
+
+# Register the late-defined disk search executor
+TOOL_HANDLERS["search_disk_live"] = execute_search_disk_live

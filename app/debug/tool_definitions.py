@@ -1,4 +1,4 @@
-# FILE: app/debug/tool_definitions.py
+﻿# FILE: app/debug/tool_definitions.py
 """
 Tool schemas for the Debug Assistant LLM.
 
@@ -566,6 +566,9 @@ def get_phase1_tools() -> List[dict]:
         READ_USER_FILE_TOOL,
         WRITE_USER_FILE_TOOL,
         GET_USER_FOLDERS_TOOL,
+        RESCAN_MANIFEST_TOOL,
+        REINDEX_FILE_TOOL,
+        SEARCH_DISK_LIVE_TOOL,
         READ_FILE_TOOL,
         LIST_FILES_TOOL,
         READ_PIPELINE_STATE_TOOL,
@@ -601,3 +604,73 @@ def get_tools_for_tier(tier: str) -> List[dict]:
     if tier == "agentic":
         return get_phase2_tools()
     return get_phase1_tools()
+
+
+# =============================================================================
+# MANIFEST RESCAN TOOLS (v0.16.0) — fallbacks for stale manifest
+# =============================================================================
+
+RESCAN_MANIFEST_TOOL = {
+    "name": "rescan_manifest",
+    "description": (
+        "Force a full rescan of the user's personal folders and refresh the "
+        "file manifest. Use this ONLY as a fallback when search_my_files "
+        "returns no results for a file the user insists exists. The live "
+        "file watcher normally keeps the manifest current, so this should "
+        "rarely be needed. Takes no parameters."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
+REINDEX_FILE_TOOL = {
+    "name": "reindex_file",
+    "description": (
+        "Refresh a single file's entry in the manifest. Faster than a full "
+        "rescan when you know the exact path of a file that is missing from "
+        "or stale in search_my_files results."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Absolute file path to reindex.",
+            },
+        },
+        "required": ["path"],
+    },
+}
+
+SEARCH_DISK_LIVE_TOOL = {
+    "name": "search_disk_live",
+    "description": (
+        "Search the actual filesystem for a file by name, bypassing the "
+        "manifest cache. Use this as a FALLBACK when search_my_files "
+        "returns no results for a file the user insists exists. Slower "
+        "(100-500ms) but authoritative — if the file is on disk, this "
+        "finds it. Automatically heals the manifest cache for any matches. "
+        "Same query semantics as search_my_files (case-insensitive substring)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Search term to match against filenames (case-insensitive substring).",
+            },
+            "category": {
+                "type": "string",
+                "description": "Optional: limit walk to one category (documents, pictures, music, videos, desktop, screenshots).",
+            },
+            "extension": {
+                "type": "string",
+                "description": "Optional: filter by file extension without dot (e.g. pdf, docx, mp3).",
+            },
+        },
+        "required": ["query"],
+    },
+}
