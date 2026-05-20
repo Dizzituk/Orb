@@ -1,39 +1,34 @@
-# FILE: app/briefing/briefing_scheduler.py
-"""
-Briefing Scheduler — Manages scheduled and on-demand briefing generation.
-
-Provides:
-- Background task that runs on a configurable schedule (daily/weekly)
-- On-demand generation triggered via API
-- Stores generated briefings for retrieval
-
-Uses asyncio tasks for scheduling rather than external cron/celery
-to keep the system self-contained.
-
-v1.0 (2026-03): Initial implementation.
-"""
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
 import os
-from dataclasses import dataclass, asdict, field
-from datetime import datetime, timezone, timedelta
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional
 
 logger = logging.getLogger(__name__)
-
-
-# =========================================================================
-# Briefing storage
-# =========================================================================
 
 BRIEFING_STORE_DIR = os.getenv(
     "BRIEFING_STORE_DIR",
     os.path.join(os.path.dirname(__file__), "..", "..", "data", "briefings"),
 )
+
+
+@dataclass
+class BriefingRecord:
+    id: str
+    frequency: str
+    generated_at: str
+    title: str
+    total_items: int
+    text_digest_path: str
+    audio_path: str = ""
+    astra_alerts: list[str] = field(default_factory=list)
+    profile: str = "default"
+    structure_path: str = ""
 
 
 def _ensure_store_dir() -> Path:
@@ -42,101 +37,108 @@ def _ensure_store_dir() -> Path:
     return path
 
 
-@dataclass
-class BriefingRecord:
-    """Stored briefing metadata."""
-    id: str
-    frequency: str              # "daily" or "weekly"
-    generated_at: str
-    title: str
-    total_items: int
-    text_digest_path: str       # Path to .md file
-    audio_path: str = ""        # Path to .mp3 file (if generated)
-    astra_alerts: List[str] = field(default_factory=list)
+def _index_path() -> Path:
+    return _ensure_store_dir() / "briefing_index.json"
 
 
-def _save_record(record: BriefingRecord) -> None:
-    """Save briefing record to JSON index."""
-    store = _ensure_store_dir()
-    index_path = store / "briefing_index.json"
-
-    records = []
-    if index_path.exists():
-        try:
-            records = json.loads(index_path.read_text())
-        except Exception:
-            records = []
-
-    records.append(asdict(record))
-
-    # Keep last 30 briefings
-    records = records[-30:]
-    index_path.write_text(json.dumps(records, indent=2))
-
-
-def get_recent_briefings(count: int = 10) -> list[dict]:
-    """Get the most recent briefing records."""
-    store = _ensure_store_dir()
-    index_path = store / "briefing_index.json"
+def _load_records() -> list[dict]:
+    index_path = _index_path()
     if not index_path.exists():
         return []
     try:
-        records = json.loads(index_path.read_text())
-        return records[-count:]
+        return json.loads(index_path.read_text(encoding="utf-8"))
     except Exception:
         return []
 
 
-def get_latest_briefing() -> Optional[dict]:
-    """Get the most recent briefing record."""
-    recent = get_recent_briefings(1)
+def _save_records(records: list[dict]) -> None:
+    _index_path().write_text(json.dumps(records[-30:], indent=2), encoding="utf-8")
+
+
+def _save_record(record: BriefingRecord) -> None:
+    records = _load_records()
+    records.append(asdict(record))
+    _save_records(records)
+
+
+def get_recent_briefings(count: int = 10, profile: Optional[str] = None) -> list[dict]:
+    records = _load_records()
+    if profile:
+        records = [record for record in records if record.get("profile", "default") == profile]
+    return records[-count:]
+
+
+def get_latest_briefing(profile: Optional[str] = None) -> Optional[dict]:
+    recent = get_recent_briefings(1, profile=profile)
     return recent[0] if recent else None
 
 
-# =========================================================================
-# Briefing generation
-# =========================================================================
+def load_briefing_structure(record: dict) -> dict:
+    structure_path = record.get("structure_path", "")
+    if structure_path and Path(structure_path).exists():
+        try:
+            return json.loads(Path(structure_path).read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("[briefing_scheduler] Failed to read structure %s: %s", structure_path, exc)
+    return {
+        "sections": [],
+        "astra_alerts": record.get("astra_alerts", []),
+        "profile": record.get("profile", "default"),
+    }
+
 
 async def generate_briefing(
     frequency: str = "daily",
     context: Optional[dict] = None,
+    profile: str = "default",
 ) -> BriefingRecord:
-    """
-    Generate a complete briefing: collect → compile → audio.
-
-    Args:
-        frequency: "daily" or "weekly"
-        context: Optional context dict for web searches
-
-    Returns:
-        BriefingRecord with paths to generated files.
-    """
     from app.briefing.briefing_collector import collect_all_topics
     from app.briefing.briefing_compiler import compile_briefing
     from app.briefing.briefing_config import get_schedule
 
-    logger.info("[briefing_scheduler] Starting %s briefing generation", frequency)
+    logger.info("[briefing_scheduler] Starting %s briefing generation for profile=%s", frequency, profile)
 
-    # 1. Collect stories
-    collection = await collect_all_topics(context=context)
-    logger.info(
-        "[briefing_scheduler] Collected: %d topics, %d stories",
-        len(collection.topics), collection.total_stories,
-    )
+    collection = await collect_all_topics(context=context, profile=profile)
+    briefing = compile_briefing(collection, frequency=frequency, profile=profile)
 
-    # 2. Compile briefing
-    briefing = compile_briefing(collection, frequency=frequency)
-
-    # 3. Save text digest
     store = _ensure_store_dir()
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    briefing_id = f"{frequency}_{timestamp}"
+    briefing_id = f"{profile}_{frequency}_{timestamp}"
 
     digest_path = store / f"{briefing_id}.md"
     digest_path.write_text(briefing.text_digest, encoding="utf-8")
-    logger.info("[briefing_scheduler] Text digest saved: %s", digest_path.name)
 
-    # 4. Generate audio (if enabled)
+    structure_path = store / f"{briefing_id}.json"
+    structure_payload = {
+        "id": briefing_id,
+        "profile": profile,
+        "title": briefing.title,
+        "generated_at": briefing.generated_at,
+        "total_items": briefing.total_items,
+        "astra_alerts": briefing.astra_alerts,
+        "sections": [
+            {
+                "topic_name": section.topic_name,
+                "topic_key": section.topic_key,
+                "description": section.description,
+                "items": [
+                    {
+                        "headline": item.headline,
+                        "summary": item.summary,
+                        "source_name": item.source_name,
+                        "source_url": item.source_url,
+                        "credibility": item.credibility,
+                        "topic_key": item.topic_key,
+                        "astra_flag": item.astra_flag,
+                    }
+                    for item in section.items
+                ],
+            }
+            for section in briefing.sections
+        ],
+    }
+    structure_path.write_text(json.dumps(structure_payload, indent=2), encoding="utf-8")
+
     audio_path = ""
     schedule = get_schedule()
     if schedule.audio_enabled:
@@ -145,11 +147,9 @@ async def generate_briefing(
             result = await generate_briefing_audio(briefing)
             if result:
                 audio_path = result
-                logger.info("[briefing_scheduler] Audio saved: %s", audio_path)
-        except Exception as e:
-            logger.warning("[briefing_scheduler] Audio generation failed: %s", e)
+        except Exception as exc:
+            logger.warning("[briefing_scheduler] Audio generation failed: %s", exc)
 
-    # 5. Save record
     record = BriefingRecord(
         id=briefing_id,
         frequency=frequency,
@@ -159,30 +159,20 @@ async def generate_briefing(
         text_digest_path=str(digest_path),
         audio_path=audio_path,
         astra_alerts=briefing.astra_alerts,
+        profile=profile,
+        structure_path=str(structure_path),
     )
     _save_record(record)
-
-    logger.info(
-        "[briefing_scheduler] Briefing complete: id=%s, items=%d, audio=%s",
-        briefing_id, briefing.total_items, "yes" if audio_path else "no",
-    )
-
     return record
 
-
-# =========================================================================
-# Background scheduler
-# =========================================================================
 
 _scheduler_task: Optional[asyncio.Task] = None
 
 
 async def _scheduler_loop():
-    """Background loop that generates briefings on schedule."""
     from app.briefing.briefing_config import get_schedule
 
     logger.info("[briefing_scheduler] Background scheduler started")
-
     while True:
         try:
             schedule = get_schedule()
@@ -191,80 +181,61 @@ async def _scheduler_loop():
                 continue
 
             now = datetime.now(timezone.utc)
-
-            # Check if it's time for daily briefing
             if now.hour == schedule.daily_hour and now.minute == schedule.daily_minute:
-                logger.info("[briefing_scheduler] Triggering daily briefing")
                 try:
                     await generate_briefing(frequency="daily")
-                except Exception as e:
-                    logger.error("[briefing_scheduler] Daily briefing failed: %s", e)
-                # Sleep past the trigger minute to avoid double-fire
+                except Exception as exc:
+                    logger.error("[briefing_scheduler] Daily briefing failed: %s", exc)
                 await asyncio.sleep(90)
                 continue
 
-            # Check if it's time for weekly briefing
-            if (now.weekday() == schedule.weekly_day
-                    and now.hour == schedule.weekly_hour
-                    and now.minute == schedule.weekly_minute):
-                logger.info("[briefing_scheduler] Triggering weekly briefing")
+            if now.weekday() == schedule.weekly_day and now.hour == schedule.weekly_hour and now.minute == schedule.weekly_minute:
                 try:
                     await generate_briefing(frequency="weekly")
-                except Exception as e:
-                    logger.error("[briefing_scheduler] Weekly briefing failed: %s", e)
+                except Exception as exc:
+                    logger.error("[briefing_scheduler] Weekly briefing failed: %s", exc)
                 await asyncio.sleep(90)
                 continue
 
-            # Sleep for 30 seconds then check again
             await asyncio.sleep(30)
-
         except asyncio.CancelledError:
             logger.info("[briefing_scheduler] Scheduler cancelled")
             break
-        except Exception as e:
-            logger.error("[briefing_scheduler] Scheduler error: %s", e)
+        except Exception as exc:
+            logger.error("[briefing_scheduler] Scheduler error: %s", exc)
             await asyncio.sleep(60)
 
 
 def start_scheduler():
-    """Start the background briefing scheduler."""
     global _scheduler_task
     if _scheduler_task and not _scheduler_task.done():
         logger.warning("[briefing_scheduler] Scheduler already running")
         return
-
     try:
         loop = asyncio.get_event_loop()
         _scheduler_task = loop.create_task(_scheduler_loop())
-        logger.info("[briefing_scheduler] Scheduler task created")
     except RuntimeError:
         logger.warning("[briefing_scheduler] No event loop — scheduler not started")
 
 
 def start_scheduler_background(loop: Optional[asyncio.AbstractEventLoop] = None):
-    """Start scheduler with an explicit event loop (called from main.py startup)."""
     global _scheduler_task
     if _scheduler_task and not _scheduler_task.done():
         logger.warning("[briefing_scheduler] Scheduler already running")
         return
-
     if loop is None:
         try:
             loop = asyncio.get_event_loop()
         except RuntimeError:
             logger.warning("[briefing_scheduler] No event loop available")
             return
-
     _scheduler_task = loop.create_task(_scheduler_loop())
-    logger.info("[briefing_scheduler] Background scheduler task created")
 
 
 def stop_scheduler():
-    """Stop the background briefing scheduler."""
     global _scheduler_task
     if _scheduler_task and not _scheduler_task.done():
         _scheduler_task.cancel()
-        logger.info("[briefing_scheduler] Scheduler stopped")
 
 
 __all__ = [
@@ -272,6 +243,7 @@ __all__ = [
     "generate_briefing",
     "get_recent_briefings",
     "get_latest_briefing",
+    "load_briefing_structure",
     "start_scheduler",
     "start_scheduler_background",
     "stop_scheduler",

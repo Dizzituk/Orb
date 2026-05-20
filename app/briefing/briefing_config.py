@@ -1,55 +1,34 @@
-# FILE: app/briefing/briefing_config.py
-"""
-Briefing Configuration — Topic categories, sources, and schedule settings.
-
-Configurable via environment variables and the defaults below.
-Each topic category defines search queries, priority, and
-optional source preferences.
-
-v1.0 (2026-03): Initial implementation.
-"""
 from __future__ import annotations
 
-import os
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional
+from typing import Optional
+
+from app.briefing.news_profiles import get_profile_topics
 
 logger = logging.getLogger(__name__)
 
-
-# =========================================================================
-# Briefing frequency
-# =========================================================================
 
 class BriefingFrequency(str, Enum):
     DAILY = "daily"
     WEEKLY = "weekly"
 
 
-# =========================================================================
-# Topic category definition
-# =========================================================================
-
 @dataclass
 class TopicConfig:
-    """Configuration for a briefing topic category."""
-    name: str                            # Display name: "Financial Markets"
-    key: str                             # Internal key: "finance"
+    name: str
+    key: str
     enabled: bool = True
-    priority: int = 1                    # Lower = higher priority in briefing order
-    search_queries: list = field(default_factory=list)  # Queries to run
-    max_stories: int = 5                 # Max stories per category
-    freshness_hint: str = "today"        # "today", "this week", "this month"
-    description: str = ""                # Short description for the briefing header
-    astra_relevant: bool = False         # Flag stories relevant to ASTRA's own domain
+    priority: int = 1
+    search_queries: list = field(default_factory=list)
+    max_stories: int = 5
+    freshness_hint: str = "today"
+    description: str = ""
+    astra_relevant: bool = False
 
-
-# =========================================================================
-# Default topic categories
-# =========================================================================
 
 _DEFAULT_TOPICS: list[TopicConfig] = [
     TopicConfig(
@@ -125,50 +104,48 @@ _DEFAULT_TOPICS: list[TopicConfig] = [
 
 
 def _load_topics_from_env() -> Optional[list[TopicConfig]]:
-    """Load topic config override from BRIEFING_TOPICS_JSON env var."""
     raw = os.getenv("BRIEFING_TOPICS_JSON", "").strip()
     if not raw:
         return None
     try:
         data = json.loads(raw)
-        topics = []
-        for item in data:
-            topics.append(TopicConfig(**item))
-        logger.info("[briefing_config] Loaded %d topics from env", len(topics))
-        return topics
-    except Exception as e:
-        logger.warning("[briefing_config] Failed to parse BRIEFING_TOPICS_JSON: %s", e)
+        return [TopicConfig(**item) for item in data]
+    except Exception as exc:
+        logger.warning("[briefing_config] Failed to parse BRIEFING_TOPICS_JSON: %s", exc)
         return None
 
 
-def get_topics() -> list[TopicConfig]:
-    """Get the active topic categories, sorted by priority."""
+def get_topics(profile: str = "default") -> list[TopicConfig]:
+    if profile != "default":
+        profile_topics = get_profile_topics(profile)
+        if profile_topics:
+            return profile_topics
     env_topics = _load_topics_from_env()
     topics = env_topics if env_topics is not None else _DEFAULT_TOPICS
-    return sorted(
-        [t for t in topics if t.enabled],
-        key=lambda t: t.priority,
-    )
+    return sorted([topic for topic in topics if topic.enabled], key=lambda topic: topic.priority)
 
-
-# =========================================================================
-# Schedule configuration
-# =========================================================================
 
 @dataclass
 class ScheduleConfig:
-    """Schedule settings for briefing generation."""
-    daily_hour: int = 6           # Hour (24h) to generate daily briefing
+    daily_hour: int = 6
     daily_minute: int = 0
-    weekly_day: int = 0           # 0=Monday
+    weekly_day: int = 0
     weekly_hour: int = 7
     weekly_minute: int = 0
-    auto_generate: bool = True    # Whether to auto-generate on schedule
-    audio_enabled: bool = True    # Whether to generate audio version
+    auto_generate: bool = True
+    audio_enabled: bool = True
+
+
+@dataclass
+class VoiceConfig:
+    voice_headlines: str = "en-GB-Chirp3-HD-Achird"
+    voice_analysis: str = "en-GB-Chirp3-HD-Fenrir"
+    speed: float = 1.0
+    pause_between_stories_ms: int = 800
+    pause_between_sections_ms: int = 1200
 
 
 def get_schedule() -> ScheduleConfig:
-    """Get schedule config with env overrides."""
     return ScheduleConfig(
         daily_hour=int(os.getenv("BRIEFING_DAILY_HOUR", "6")),
         daily_minute=int(os.getenv("BRIEFING_DAILY_MINUTE", "0")),
@@ -180,22 +157,7 @@ def get_schedule() -> ScheduleConfig:
     )
 
 
-# =========================================================================
-# Audio voice config
-# =========================================================================
-
-@dataclass
-class VoiceConfig:
-    """Dual-voice configuration for audio briefings."""
-    voice_headlines: str = "en-GB-Chirp3-HD-Achird"  # Voice A: headlines/summaries
-    voice_analysis: str = "en-GB-Chirp3-HD-Fenrir"   # Voice B: analysis/context
-    speed: float = 1.0
-    pause_between_stories_ms: int = 800
-    pause_between_sections_ms: int = 1200
-
-
 def get_voice_config() -> VoiceConfig:
-    """Get voice config with env overrides."""
     return VoiceConfig(
         voice_headlines=os.getenv("BRIEFING_VOICE_HEADLINES", "en-GB-Chirp3-HD-Achird"),
         voice_analysis=os.getenv("BRIEFING_VOICE_ANALYSIS", "en-GB-Chirp3-HD-Fenrir"),

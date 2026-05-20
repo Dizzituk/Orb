@@ -1,33 +1,15 @@
-# FILE: app/briefing/briefing_collector.py
-"""
-Briefing Collector — Gathers news stories via multi-topic web searches.
-
-For each enabled topic category, runs the configured search queries,
-deduplicates results, tags source credibility, and returns a structured
-collection of stories grouped by topic.
-
-Uses the existing web search infrastructure (Brave primary, DDG fallback)
-and source classifier.
-
-v1.0 (2026-03): Initial implementation.
-"""
 from __future__ import annotations
 
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
-# =========================================================================
-# Story model
-# =========================================================================
-
 @dataclass
 class BriefingStory:
-    """A single news story for the briefing."""
     title: str
     url: str
     snippet: str = ""
@@ -35,33 +17,28 @@ class BriefingStory:
     credibility_label: str = "unknown"
     source_type: str = "unknown"
     bias_note: str = ""
-    topic_key: str = ""               # Which category this belongs to
-    astra_relevant: bool = False      # Flagged as relevant to ASTRA's domain
-    page_text: str = ""               # Full page text (if fetched)
+    topic_key: str = ""
+    astra_relevant: bool = False
+    page_text: str = ""
 
 
 @dataclass
 class TopicCollection:
-    """Stories collected for a single topic category."""
     topic_key: str
     topic_name: str
     description: str = ""
-    stories: List[BriefingStory] = field(default_factory=list)
+    stories: list[BriefingStory] = field(default_factory=list)
     query_count: int = 0
     error: str = ""
 
 
 @dataclass
 class BriefingCollection:
-    """Complete collection across all topics."""
-    topics: List[TopicCollection] = field(default_factory=list)
+    topics: list[TopicCollection] = field(default_factory=list)
     total_stories: int = 0
-    errors: List[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    profile: str = "default"
 
-
-# =========================================================================
-# Collection logic
-# =========================================================================
 
 async def _search_topic(
     topic_key: str,
@@ -72,7 +49,6 @@ async def _search_topic(
     astra_relevant: bool,
     context: Optional[dict] = None,
 ) -> TopicCollection:
-    """Run searches for a single topic and return collected stories."""
     try:
         from app.llm.web_search import WebSearchRequest, search_and_answer
     except ImportError:
@@ -92,10 +68,8 @@ async def _search_topic(
         try:
             req = WebSearchRequest(query=query, max_results=5)
             resp = await search_and_answer(req, context=context)
-
             if not resp.ok or not resp.sources:
                 continue
-
             for src in resp.sources:
                 if src.url in seen_urls:
                     continue
@@ -112,8 +86,8 @@ async def _search_topic(
                     topic_key=topic_key,
                     astra_relevant=astra_relevant,
                 ))
-        except Exception as e:
-            logger.warning("[briefing_collector] Search failed: query='%s', error=%s", query, e)
+        except Exception as exc:
+            logger.warning("[briefing_collector] Search failed: query='%s', error=%s", query, exc)
             continue
 
     return TopicCollection(
@@ -125,38 +99,28 @@ async def _search_topic(
     )
 
 
-async def collect_all_topics(
-    context: Optional[dict] = None,
-) -> BriefingCollection:
-    """
-    Collect stories for all enabled topic categories.
-
-    Runs searches concurrently across topics for speed.
-    Returns a BriefingCollection with all gathered stories.
-    """
+async def collect_all_topics(context: Optional[dict] = None, profile: str = "default") -> BriefingCollection:
     from app.briefing.briefing_config import get_topics
 
-    topics = get_topics()
+    topics = get_topics(profile=profile)
     if not topics:
-        return BriefingCollection(errors=["No topics configured"])
+        return BriefingCollection(errors=["No topics configured"], profile=profile)
 
-    # Run topic searches concurrently
     tasks = [
         _search_topic(
-            topic_key=t.key,
-            topic_name=t.name,
-            description=t.description,
-            queries=t.search_queries,
-            max_stories=t.max_stories,
-            astra_relevant=t.astra_relevant,
+            topic_key=topic.key,
+            topic_name=topic.name,
+            description=topic.description,
+            queries=topic.search_queries,
+            max_stories=topic.max_stories,
+            astra_relevant=topic.astra_relevant,
             context=context,
         )
-        for t in topics
+        for topic in topics
     ]
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    collection = BriefingCollection()
+    collection = BriefingCollection(profile=profile)
     for result in results:
         if isinstance(result, Exception):
             collection.errors.append(str(result))
@@ -165,8 +129,8 @@ async def collect_all_topics(
         collection.total_stories += len(result.stories)
 
     logger.info(
-        "[briefing_collector] Collection complete: %d topics, %d stories, %d errors",
-        len(collection.topics), collection.total_stories, len(collection.errors),
+        "[briefing_collector] Collection complete: profile=%s, topics=%d, stories=%d, errors=%d",
+        profile, len(collection.topics), collection.total_stories, len(collection.errors),
     )
     return collection
 
