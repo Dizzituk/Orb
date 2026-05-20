@@ -466,7 +466,44 @@ async def stream_chat(
         user_id=user_id,
         conversation_id=conversation_id,
     )
-    
+
+    # Record classifier decision for chat-LLM context. See
+    # app/translation/recent_decisions.py — the chat LLM uses this to
+    # accurately answer "why did you think that was X?" instead of
+    # confabulating. Status reflects gate outcome: PENDING if user
+    # confirmation is awaited, AUTO if the intent will execute directly.
+    if translation_result is not None and translation_result.resolved_intent:
+        try:
+            from app.translation.recent_decisions import (
+                record_decision, STATUS_PENDING, STATUS_AUTO,
+            )
+            _rd_rule = translation_result.extracted_context.get(
+                "_classifier_rule"
+            ) or "unknown"
+            _rd_reason = translation_result.extracted_context.get(
+                "_classifier_reason"
+            ) or ""
+            _rd_gate = translation_result.confirmation_gate
+            _rd_pending = bool(
+                _rd_gate is not None
+                and _rd_gate.requires_confirmation
+                and not _rd_gate.passed
+            )
+            record_decision(
+                conversation_id=str(req.project_id),
+                intent=translation_result.resolved_intent.value,
+                rule_name=_rd_rule,
+                reason=_rd_reason,
+                message_excerpt=req.message,
+                confidence=translation_result.intent_confidence,
+                status=STATUS_PENDING if _rd_pending else STATUS_AUTO,
+            )
+        except Exception as _rd_err:
+            logger.debug(
+                "[stream_router] Failed to record classifier decision: %s",
+                _rd_err,
+            )
+
     if translation_result is not None:
         
         # Create stage trace for COMMAND mode
@@ -625,6 +662,21 @@ async def stream_chat(
                 )
             except Exception:
                 pass  # Non-fatal — don't block command execution
+
+            # Phase 7 fix: CHAT_ONLY command path also needs memory capture,
+            # otherwise identity facts and fragments never get recorded for
+            # conversational messages that arrive via command mode (e.g. STT).
+            try:
+                after_user_message(
+                    req.message,
+                    project_id=str(req.project_id),
+                    user_id=user_id,
+                    provider=getattr(req, 'provider', None),
+                    model=getattr(req, 'model', None),
+                    db_session=db,
+                )
+            except Exception as _aum_err:
+                logger.debug("[integration] command-mode after_user_message failed: %s", _aum_err)
             
             # Awaiting confirmation
             if (translation_result.confirmation_gate and 
@@ -717,26 +769,13 @@ async def stream_chat(
         _staleness_events = None
 
     # =========================================================================
-    # v3.2: IMAGE GENERATION INTERCEPT — catch image requests before normal routing
-    # This runs regardless of whether the message came through chat_mode or
-    # fell through from the translation layer as CHAT_ONLY.
+    # v16.0 (2026-05-01): Image generation no longer intercepted here.
+    # Image gen is handled inside handle_chat_mode — the chat LLM emits an
+    # [IMAGE_PROMPT]: marker that gets pulled out by image_extractor and
+    # fired straight at gpt-image-2. This block previously bypassed the
+    # chat LLM entirely (sending the raw user message to a fresh Gemini
+    # synth that lost all conversation context). Removed.
     # =========================================================================
-    try:
-        from app.llm.routing.chat_routing import _detect_image_gen_intent
-        if _detect_image_gen_intent(req.message):
-            print(f"[NORMAL_ROUTING] Image generation detected -> routing to image pipeline")
-            from app.llm.image_router import generate_image_stream
-            return StreamingResponse(
-                generate_image_stream(
-                    project_id=req.project_id,
-                    message=req.message,
-                    db=db,
-                ),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-            )
-    except ImportError as _img_err:
-        print(f"[NORMAL_ROUTING] Image gen import failed: {_img_err}")
 
     # =========================================================================
     # NORMAL ROUTING
@@ -784,13 +823,58 @@ async def reject_intent(
         from app.translation.confirmation_log import log_confirmation_event
 
         intent_enum = _CI(req.intent)
+
+        # Look up the matching classifier decision so we can log rule_name
+        # alongside the rejection. rule_suppression.py uses rule_name to
+        # compute per-rule reject counts, which lets the system silence
+        # rules that consistently misfire.
+        _rejected_rule_name = None
+        try:
+            from app.translation.recent_decisions import get_recent_decisions
+            _recent = get_recent_decisions(str(req.project_id))
+            _excerpt = req.original_message[:200]
+            for _d in reversed(_recent):
+                if _d.message_excerpt == _excerpt:
+                    _rejected_rule_name = _d.rule_name
+                    break
+            if _rejected_rule_name is None and _recent:
+                # Fallback: assume the most recent decision is the one being
+                # rejected. Excerpt mismatch can happen when the frontend
+                # truncates differently.
+                _rejected_rule_name = _recent[-1].rule_name
+        except Exception as _lookup_err:
+            logger.debug(
+                "[reject_intent] rule_name lookup failed: %s",
+                _lookup_err,
+            )
+
         log_confirmation_event(
             intent=intent_enum,
             user_message_excerpt=req.original_message[:200],
             confirmed=False,
             confidence=0.0,
             conversation_id=str(req.project_id),
+            rule_name=_rejected_rule_name,
         )
+
+        # Mark the matching classifier decision as rejected so the chat LLM
+        # sees the negative signal in its [CLASSIFIER DECISIONS] block and
+        # can answer accurately when the user asks why it fired.
+        try:
+            from app.translation.recent_decisions import (
+                mark_status, STATUS_REJECTED,
+            )
+            mark_status(
+                conversation_id=str(req.project_id),
+                status=STATUS_REJECTED,
+                message_excerpt=req.original_message[:200],
+            )
+        except Exception as _mk_err:
+            logger.debug(
+                "[reject_intent] Failed to mark decision rejected: %s",
+                _mk_err,
+            )
+
         logger.info(
             "[reject_intent] Rejection logged: intent=%s, message='%s'",
             req.intent, req.original_message[:50],

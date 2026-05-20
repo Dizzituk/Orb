@@ -148,5 +148,20 @@ def init_memory_system() -> dict:
         logger.error("[startup] Lifecycle scheduler failed: %s", e)
         summary["lifecycle_scheduler"] = {"error": str(e)}
 
+
+    # Step 5: Start confidence decay scheduler (24h cycle)
+    try:
+        from app.astra_memory.decay_job import get_scheduler
+        import asyncio
+        decay_sched = get_scheduler()
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(decay_sched.start())
+            summary["decay_scheduler"] = "started"
+        except RuntimeError:
+            summary["decay_scheduler"] = "no_event_loop"
+    except Exception as e:
+        logger.error("[startup] Decay scheduler failed: %s", e)
+        summary["decay_scheduler"] = {"error": str(e)}
     logger.info("[startup] Memory system initialised: %s", summary)
     return summary

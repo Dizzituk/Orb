@@ -8,6 +8,7 @@ import logging
 from datetime import date
 from sqlalchemy.orm import Session
 from app.finance.models import ExpenseCategory, TaxYear, SavingsGoal
+from app.finance.utils.tax_year import get_current_tax_year, tax_year_bounds
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,11 @@ DEFAULT_CATEGORIES = [
     {"name": "entertainment", "display_name": "Entertainment & Leisure", "hmrc_category": None, "default_scope": "personal", "is_deductible": False, "deductible_percentage": 0.0, "icon": "film", "colour": "#AEB6BF", "sort_order": 105},
     {"name": "other_personal", "display_name": "Other (Personal)", "hmrc_category": None, "default_scope": "personal", "is_deductible": False, "deductible_percentage": 0.0, "icon": "circle", "colour": "#D5D8DC", "sort_order": 199},
     {"name": "other_business", "display_name": "Other (Business)", "hmrc_category": "Other allowable business expenses", "default_scope": "business", "is_deductible": True, "deductible_percentage": 100.0, "icon": "briefcase", "colour": "#5D6D7E", "sort_order": 200},
+    # Income (not deductible — this is revenue, not spend)
+    {"name": "delivery_income", "display_name": "Delivery Income (Yodel)", "hmrc_category": "Turnover", "default_scope": "business", "is_deductible": False, "deductible_percentage": 0.0, "icon": "truck", "colour": "#2E86AB", "sort_order": 300},
+    # Van finance split (actual-costs method only)
+    {"name": "van_hp_interest", "display_name": "Van HP Interest", "hmrc_category": "Interest on bank and other loans", "default_scope": "business", "is_deductible": True, "deductible_percentage": 100.0, "icon": "percent", "colour": "#8B4513", "sort_order": 60},
+    {"name": "van_hp_capital", "display_name": "Van HP Capital (not deductible)", "hmrc_category": None, "default_scope": "business", "is_deductible": False, "deductible_percentage": 0.0, "icon": "archive", "colour": "#A0522D", "sort_order": 61},
 ]
 
 
@@ -55,13 +61,17 @@ def seed_finance_data(db: Session) -> dict:
             db.add(ExpenseCategory(**cat_data))
             result["categories_created"] += 1
 
-    # Seed current tax year (2025-26)
-    ty = db.query(TaxYear).filter(TaxYear.tax_year == "2025-26").first()
+    # Seed current tax year (year-aware — picks up whatever tax year we're in now).
+    current_ty = get_current_tax_year()
+    ty_start, ty_end = tax_year_bounds(current_ty)
+    ty = db.query(TaxYear).filter(TaxYear.tax_year == current_ty).first()
     if not ty:
+        # Clear any previously-marked current year so only one is flagged current
+        db.query(TaxYear).filter(TaxYear.is_current == True).update({"is_current": False})
         db.add(TaxYear(
-            tax_year="2025-26",
-            start_date=date(2025, 4, 6),
-            end_date=date(2026, 4, 5),
+            tax_year=current_ty,
+            start_date=ty_start,
+            end_date=ty_end,
             is_current=True,
         ))
         result["tax_year_created"] = True

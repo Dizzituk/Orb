@@ -22,8 +22,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The ONLY permitted parent directory for Android builds
-_ANDROID_BUILD_ROOT = os.path.normpath("D:/Astra Android Folder")
 
 # Directories that must NEVER be written to during Android builds
 _BLOCKED_ROOTS = [
@@ -68,17 +66,6 @@ def validate_android_write_path(
         raise AndroidPathViolation(
             f"Android build cannot write to '{norm_path}'. "
             f"Writes are restricted to '{norm_root}'."
-        )
-
-    # Check: path must be under the Android build root
-    if not norm_path.lower().startswith(_ANDROID_BUILD_ROOT.lower() + os.sep):
-        logger.error(
-            "[android_sandbox] BLOCKED write outside Android folder: %s",
-            norm_path,
-        )
-        raise AndroidPathViolation(
-            f"Android build cannot write to '{norm_path}'. "
-            f"All Android builds must be under '{_ANDROID_BUILD_ROOT}'."
         )
 
     # Check: path must NOT be in any blocked root

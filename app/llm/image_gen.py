@@ -18,9 +18,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from app.llm.image_output_dir import get_image_output_dir
 
-OUTPUT_DIR = os.getenv("ASTRA_OUTPUT_DIR", r"D:\Orb\output")
+logger = logging.getLogger(__name__)
 
 
 def _get_model() -> str:
@@ -98,8 +98,9 @@ async def generate_image(
         b64_data = response.data[0].b64_json
         image_bytes = base64.b64decode(b64_data)
 
-        # Save to output directory
-        output_dir = Path(OUTPUT_DIR) / "images"
+        # Save to output directory (resolved via shared helper — honours
+        # IMAGE_OUTPUT_DIR if set, else falls back to legacy ASTRA_OUTPUT_DIR/images)
+        output_dir = get_image_output_dir()
         output_dir.mkdir(parents=True, exist_ok=True)
 
         if not output_filename:

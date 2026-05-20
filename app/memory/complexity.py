@@ -215,7 +215,7 @@ EXPLICIT_MODEL_PATTERNS = {
         ],
         "tier": "explicit_claude",
         "provider": "anthropic",
-        "model": "claude-opus-4-6",
+        "model": "claude-opus-4-7",
         "target": "claude",
     },
     "gemini": {

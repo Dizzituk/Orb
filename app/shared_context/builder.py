@@ -48,12 +48,21 @@ def build_shared_context_package(
         # Build the item
         provenance = f"{result.source_type}:{result.source_id} chunk={result.chunk_index} sim={result.similarity:.2f}"
         pointer = f"/memory/{result.source_type}/{result.source_id}"
-        
+
+        # Phase 7 audit (2026-05-02): SharedContextItem schema declares
+        # source_type/source_id/chunk_index/content as required, but the
+        # original builder passed `summary=` (no such field) and skipped
+        # the required ones. Pydantic was raising ValidationError on every
+        # call — silently broken in callers wrapped in try/except. Pass
+        # the actually-required fields.
         item = SharedContextItem(
-            summary=result.content,
+            source_type=result.source_type,
+            source_id=result.source_id,
+            chunk_index=result.chunk_index,
+            similarity=result.similarity,
+            content=result.content,
             provenance=provenance,
             pointer=pointer,
-            similarity=result.similarity
         )
         
         # Format the item block
@@ -76,12 +85,18 @@ def build_shared_context_package(
         current_chars += len(item_text)
     
     formatted_block = "\n".join(formatted_lines)
-    
-    # Step 4: Return package
+
+    # Step 4: Return package.
+    # Phase 7 audit (2026-05-02): SharedContextPackage requires `query` and
+    # `budget_chars` (the original builder passed neither); kept the
+    # total_retrieved / total_searched fields and added them to the schema
+    # so they survive validation.
     return SharedContextPackage(
+        query=query,
         items=items,
         formatted_block=formatted_block,
+        truncated=truncated,
+        budget_chars=budget_chars,
         total_retrieved=len(results),
         total_searched=total_searched,
-        truncated=truncated
     )

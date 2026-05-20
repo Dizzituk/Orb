@@ -142,10 +142,16 @@ def _recompute_all_preferences(
     
     for pref in preferences:
         try:
-            recompute_preference_confidence(db, pref.id)
-            result["recomputed"] += 1
+            # recompute_preference_confidence() keys off preference_key (string),
+            # NOT the integer id. Passing pref.id silently fails lookup and
+            # leaves every confidence score stale. Bug fixed 2026-04-17.
+            updated = recompute_preference_confidence(db, pref.preference_key)
+            if updated is not None:
+                result["recomputed"] += 1
+            else:
+                result["errors"].append(f"Preference {pref.preference_key}: recompute returned None")
         except Exception as e:
-            result["errors"].append(f"Preference {pref.id}: {e}")
+            result["errors"].append(f"Preference {pref.preference_key}: {e}")
     
     logger.debug(f"[decay_job] Recomputed {result['recomputed']} preferences")
     return result
@@ -169,12 +175,12 @@ def _expire_low_confidence(
             # Very low - expire it
             pref.status = RecordStatus.EXPIRED
             result["expired"] += 1
-            logger.info(f"[decay_job] Expired preference {pref.namespace}.{pref.key} (confidence={pref.confidence:.2f})")
+            logger.info(f"[decay_job] Expired preference {pref.namespace}.{pref.preference_key} (confidence={pref.confidence:.2f})")
         else:
             # Low but not critical - mark disputed
             pref.status = RecordStatus.DISPUTED
             result["disputed"] += 1
-            logger.debug(f"[decay_job] Disputed preference {pref.namespace}.{pref.key} (confidence={pref.confidence:.2f})")
+            logger.debug(f"[decay_job] Disputed preference {pref.namespace}.{pref.preference_key} (confidence={pref.confidence:.2f})")
     
     return result
 
@@ -370,6 +376,50 @@ def run_decay_now() -> Dict[str, Any]:
     return get_scheduler().run_now()
 
 
+def start_decay_scheduler_background(
+    loop: Optional[asyncio.AbstractEventLoop] = None,
+    interval_hours: float = 24.0,
+) -> bool:
+    """
+    Start the decay scheduler as a background asyncio task on the given loop.
+
+    Mirrors briefing_scheduler.start_scheduler_background so it can be
+    called from main.py's on_startup (which is sync) without awaiting.
+
+    Returns True if a task was scheduled, False otherwise (already running,
+    or no event loop available).
+
+    v1.0 (2026-05-02): Added because the scheduler was defined but never
+    actually started at boot, leaving decay effectively off most of the
+    time. Pre-fix, the only way decay ran was via manual API calls to
+    POST /astra-memory/decay/scheduler/start, which did not survive a
+    process restart.
+    """
+    global _scheduler
+    if _scheduler is None:
+        _scheduler = DecayJobScheduler(interval_hours=interval_hours)
+
+    if _scheduler._running:
+        logger.warning("[decay_job] start_decay_scheduler_background: already running")
+        return False
+
+    if loop is None:
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            logger.warning("[decay_job] start_decay_scheduler_background: no event loop")
+            return False
+
+    # Mark running synchronously so a second caller in the same tick is a no-op.
+    _scheduler._running = True
+    _scheduler._task = loop.create_task(_scheduler._run_loop())
+    logger.info(
+        "[decay_job] Background scheduler task created (interval=%sh)",
+        interval_hours,
+    )
+    return True
+
+
 __all__ = [
     "DecayJobConfig",
     "DEFAULT_DECAY_CONFIG",
@@ -378,4 +428,5 @@ __all__ = [
     "DecayJobScheduler",
     "get_scheduler",
     "run_decay_now",
+    "start_decay_scheduler_background",
 ]

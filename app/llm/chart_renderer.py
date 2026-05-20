@@ -21,9 +21,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from app.llm.image_output_dir import get_image_output_dir
 
-OUTPUT_DIR = os.getenv("ASTRA_OUTPUT_DIR", r"D:\Orb\output")
+logger = logging.getLogger(__name__)
 
 # Chart type constants
 BAR = "bar"
@@ -126,8 +126,8 @@ def render_chart(
 
         b64 = base64.b64encode(img_bytes).decode("ascii")
 
-        # Save to output directory
-        output_dir = Path(OUTPUT_DIR) / "images"
+        # Save to output directory (shared helper — see image_output_dir.py)
+        output_dir = get_image_output_dir()
         output_dir.mkdir(parents=True, exist_ok=True)
 
         if not output_filename:

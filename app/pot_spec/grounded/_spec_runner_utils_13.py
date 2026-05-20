@@ -158,6 +158,7 @@ def _discover_project_roots() -> Dict[str, Any]:
 
     return result
 
+
 def _extract_file_scope_from_spec(
     spec_markdown: Optional[str],
     grounding_data: Optional[Dict] = None,
@@ -165,29 +166,36 @@ def _extract_file_scope_from_spec(
 ) -> List[str]:
     """
     v4.9: Extract file paths mentioned as targets in the spec.
-    
+
     Looks for patterns like:
     - Relative paths: `app/foo/bar.py`, `src/components/Foo.tsx`
     - Absolute Windows paths: `D:\\Orb\\app\\foo.py`, `D:/Orb/app/foo.py`
     - Backtick-wrapped paths in markdown
     - Paths from multi_file_op target files
     - Paths from grounding_data if available
-    
+
     v4.9 (2026-02-08): Added absolute path extraction and multi_file_op support.
-    Previous version only matched relative paths starting with app/, src/, etc.
-    This meant CREATE jobs (which use absolute paths from simple_create.py)
-    returned empty file scope and segmentation never triggered.
+    v5.19 (2026-04-18, Fix 3): Added Android-aware extraction. Previous
+        implementation required a hardcoded prefix (app|src|orb-desktop|
+        tests|scripts|config) which meant Kotlin paths like
+        'data/AddressCacheEntity.kt' or 'resolver/AddressResolver.kt' were
+        invisible to the extractor. Now, any relative path that resolves
+        to .kt/.kts/.xml/.gradle/.properties is accepted as-is when it
+        appears in a code-path context (backticks, bullet lists, etc.).
+    v5.20 (2026-04-18, Fix 3b): Added Weaver shorthand extraction for the
+        "- dir/ — File.kt, File.kt, File.kt" compression pattern Weaver uses
+        when listing multiple files in the same directory.
     """
     paths: List[str] = []
     seen_normalised: set = set()  # Normalised keys for dedup
-    
+
     def _add_path(p: str) -> None:
         """Add path with dedup (case-insensitive, separator-normalised)."""
         key = p.lower().replace('/', '\\').rstrip('\\')
         if key not in seen_normalised:
             seen_normalised.add(key)
             paths.append(p)
-    
+
     if not spec_markdown:
         # Still check multi_file_op even without spec markdown
         if multi_file_op and hasattr(multi_file_op, 'raw_matches'):
@@ -195,7 +203,7 @@ def _extract_file_scope_from_spec(
                 if isinstance(match_entry, dict) and 'file' in match_entry:
                     _add_path(match_entry['file'])
         return paths
-    
+
     # Pattern 1: Relative paths (existing — app/, src/, etc.)
     # v2.3: Added Kotlin/Android extensions: .kt, .kts, .xml, .properties, .gradle
     _KNOWN_EXTENSIONS = r'py|tsx|ts|jsx|js|json|yaml|yml|md|css|kts|kt|xml|properties|gradle'
@@ -208,7 +216,7 @@ def _extract_file_scope_from_spec(
     )
     for match in rel_pattern.finditer(spec_markdown):
         _add_path(match.group(1).replace('/', os.sep))
-    
+
     # Pattern 1b: Sub-package paths without app/ prefix (v5.16)
     # Specs often reference paths like "overwatcher/executor.py" instead of
     # "app/overwatcher/executor.py". Detect known app/ subdirectories used
@@ -230,7 +238,7 @@ def _extract_file_scope_from_spec(
             }
     except Exception:
         pass
-    
+
     if _app_subdirs:
         # Match paths starting with known app subdirs (e.g. overwatcher/foo.py)
         _subdir_pattern_str = '|'.join(re.escape(d) for d in sorted(_app_subdirs))
@@ -260,7 +268,7 @@ def _extract_file_scope_from_spec(
             else:
                 # Prepend app/ since these are app subdirectory paths
                 _add_path(f"app{os.sep}{raw}")
-    
+
     # Pattern 2: Absolute Windows paths (D:\Orb\app\foo.py or D:/Orb/app/foo.py)
     # Grounded CREATE specs from simple_create.py use full absolute paths.
     abs_pattern = re.compile(
@@ -314,7 +322,7 @@ def _extract_file_scope_from_spec(
         # Only keep the absolute path if no relative portion could be extracted
         if not _found_relative:
             _add_path(abs_path)
-    
+
     # Pattern 3: Extract from multi_file_op target files if available
     if multi_file_op:
         if hasattr(multi_file_op, 'raw_matches'):
@@ -326,7 +334,7 @@ def _extract_file_scope_from_spec(
             for f in (multi_file_op.target_files or []):
                 if isinstance(f, str):
                     _add_path(f)
-    
+
     # Pattern 4: Extract from grounding_data if provided
     if grounding_data and isinstance(grounding_data, dict):
         multi = grounding_data.get('multi_file', {})
@@ -376,18 +384,87 @@ def _extract_file_scope_from_spec(
         if len(paths) > _before_count:
             print(f"[spec_runner] v5.18 BROAD SCAN rescued {len(paths) - _before_count} additional path(s) (total={len(paths)})")
 
+    # --- v5.19 (2026-04-18, Fix 3): Android/Kotlin file extraction ---
+    # Match Kotlin/Android paths that don't start with one of the backend
+    # prefixes. Accept any path-shaped token that ends in a Kotlin or
+    # Android-specific extension and contains at least one directory
+    # separator. This catches specs like:
+    #   - `data/AddressCacheEntity.kt`
+    #   - `resolver/AddressResolver.kt`
+    #   - `ui_screens/AddressFinderScreen.kt`
+    #   - `app/build.gradle.kts`
+    _ANDROID_ONLY_EXTENSIONS = r'kt|kts|xml|gradle|properties'
+    if spec_markdown:
+        _android_pattern = re.compile(
+            r'(?:^|[\s`|,*\-\[])'
+            r'((?:[A-Za-z][\w\-]*[/\\])+'
+            r'[\w\-]+\.(?:' + _ANDROID_ONLY_EXTENSIONS + r'))'
+            r'(?:[\s`|,\]\n\r]|\Z)',
+            re.MULTILINE,
+        )
+        _before = len(paths)
+        for match in _android_pattern.finditer(spec_markdown):
+            candidate = match.group(1).replace('/', os.sep)
+            # Skip if this already looks absolute (handled by Pattern 2)
+            if len(candidate) > 1 and candidate[1] == ':':
+                continue
+            _ext = candidate.rsplit('.', 1)[-1].lower() if '.' in candidate else ''
+            if _ext not in {'kt', 'kts', 'xml', 'gradle', 'properties'}:
+                continue
+            _add_path(candidate)
+        if len(paths) > _before:
+            print(f"[spec_runner] v5.19 ANDROID-AWARE rescued {len(paths) - _before} Kotlin/Android path(s) (total={len(paths)})")
+
+    # --- v5.20 (2026-04-18, Fix 3b): Weaver shorthand "dir/ — File.kt, File.kt" ---
+    # Weaver commonly compresses file lists into a directory-prefix +
+    # filename-list format where the directory appears once followed by
+    # multiple bare filenames:
+    #   - data/ — AddressCacheEntity.kt, AddressCacheDao.kt, Room migration v8→v9
+    #   - resolver/ — AddressResolver.kt (orchestrator), GoogleGeocoder.kt
+    # Approach: walk the spec line by line. If a line matches
+    # "<bullet?> <dir>/ <separator> <rest>", extract each filename from
+    # the rest and prepend <dir>/.
+    if spec_markdown:
+        # Line-by-line (avoids tricky regex anchoring across newlines)
+        _dir_line_pattern = re.compile(
+            r'^\s*[-*\u2022]?\s*'
+            r'([A-Za-z][\w\-]*(?:[/\\][\w\-]+)*)/\s*'
+            r'[\s\u2014\u2013\-\u2500:]+\s*'
+            r'(.+?)\s*$'
+        )
+        _bare_filename_pattern = re.compile(
+            r'(?:^|[\s`|,(])'
+            r'([A-Z][\w\-]+\.(?:' + _ANDROID_ONLY_EXTENSIONS + r'))'
+            r'(?=[\s`|,)]|$)'
+        )
+        _before_shorthand = len(paths)
+        for line in spec_markdown.split('\n'):
+            line_match = _dir_line_pattern.match(line)
+            if not line_match:
+                continue
+            directory_raw = line_match.group(1)
+            rest = line_match.group(2)
+            directory = directory_raw.replace('/', os.sep).replace('\\', os.sep)
+            for fname_match in _bare_filename_pattern.finditer(rest):
+                fname = fname_match.group(1)
+                full = f"{directory}{os.sep}{fname}"
+                _add_path(full)
+        if len(paths) > _before_shorthand:
+            print(f"[spec_runner] v5.20 SHORTHAND rescued {len(paths) - _before_shorthand} dir/+file pairing(s) (total={len(paths)})")
+
     return paths
+
 
 def _extract_acceptance_from_spec(spec_markdown: Optional[str]) -> List[str]:
     """
     v4.8: Extract acceptance criteria from spec markdown.
-    
+
     Looks for checkbox items under Acceptance sections.
     """
     criteria: List[str] = []
     if not spec_markdown:
         return criteria
-    
+
     in_section = False
     for line in spec_markdown.split('\n'):
         stripped = line.strip()
@@ -399,7 +476,7 @@ def _extract_acceptance_from_spec(spec_markdown: Optional[str]) -> List[str]:
         elif stripped.startswith('## '):
             in_section = False
             continue
-        
+
         if in_section and stripped:
             # Match checkbox items: - [ ] or - [x] or just bullet points
             check_match = re.match(r'^[-*]\s*\[.?\]\s*(.*)', stripped)
@@ -407,5 +484,5 @@ def _extract_acceptance_from_spec(spec_markdown: Optional[str]) -> List[str]:
                 criteria.append(check_match.group(1).strip())
             elif stripped.startswith('- ') or stripped.startswith('* '):
                 criteria.append(stripped.lstrip('- *').strip())
-    
+
     return criteria

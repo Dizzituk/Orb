@@ -90,3 +90,15 @@ BVL_MONKEY_EVENTS = int(os.getenv("ASTRA_BVL_MONKEY_EVENTS", "500"))
 
 # Emulator boot timeout (seconds)
 BVL_EMULATOR_BOOT_TIMEOUT = int(os.getenv("ASTRA_BVL_BOOT_TIMEOUT", "120"))
+
+# ---------------------------------------------------------------------------
+# Decision Ledger (Piece 1 of v2.2 stability upgrade)
+# ---------------------------------------------------------------------------
+
+# Enable the decision ledger — binds pipeline stages to a shared record of
+# architectural decisions, with conflict detection on write.
+LEDGER_ENABLED = os.getenv("ASTRA_V2_LEDGER_ENABLED", "true").lower() == "true"
+
+# Max chars of ledger content injected into each stage prompt.
+LEDGER_PROMPT_MAX_CHARS = int(os.getenv("ASTRA_V2_LEDGER_PROMPT_MAX", "8000"))
+

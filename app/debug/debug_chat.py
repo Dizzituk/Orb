@@ -74,6 +74,7 @@ async def _call_llm_simple(
     system_prompt: str,
     tools: List[dict],
     max_tokens: int = 4096,
+    reasoning: Optional[dict] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Call the LLM via the registry (no tool loop).
@@ -113,10 +114,11 @@ async def _call_llm_simple(
             model_id=model,
             messages=messages,
             system_prompt=enhanced_prompt,
-            temperature=0.2,
+            temperature=(1.0 if reasoning else 0.2),
             max_tokens=max_tokens,
-            timeout_seconds=120,
+            timeout_seconds=(300 if reasoning else 120),
             enable_tools=False,  # Phase 1: no tool execution via registry
+            reasoning=reasoning,
         )
 
         if result.status.value != "success":
@@ -248,6 +250,7 @@ async def debug_chat(
             messages=messages,
             system_prompt=system_prompt,
             tools=tools,
+            reasoning=routing.reasoning,
         ):
             # Capture text tokens for history
             try:
@@ -736,8 +739,8 @@ async def stream_debug_locked(
             provider=actual_provider,
             model=actual_model,
             tools=tools,
-            enable_reasoning=False,
-            max_tokens=8192,
+            enable_reasoning=True,  # Debug tab: always reason. Non-negotiable — the whole venue is for thinking work.
+            max_tokens=24576,  # Room for reasoning tokens + visible output. Reasoning counts against this budget.
         ):
             chunk_type = chunk.get("type", "")
 

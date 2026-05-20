@@ -49,6 +49,16 @@ def _build_manifest_from_concepts(
         concept_groups, parent_spec_id, arch_paths,
     )
 
+    # v1.2 (2026-04-18): Phase 1 Job 5d — backfill target_id for segments
+    # whose file paths don't match any registered target signals. This
+    # fixes the "seg-01 has no target_id — refusing to route" failure
+    # mode observed for cross-cutting Android config files (build.gradle,
+    # AndroidManifest.xml, MainActivity.kt) whose relative paths don't
+    # include package-level discriminators like 'drivercopilot/'. When
+    # the overall job has a single primary target, segments with ambiguous
+    # paths should inherit it rather than being left stranded.
+    _backfill_single_target_segments(segments)
+
     _resolve_dependencies(segments, concept_groups)
     _break_cycles(segments, _topological_sort_fn)
     _relocate_existing_files(segments)
@@ -188,6 +198,60 @@ def _build_segment_specs(
         segments.append(segment)
 
     return segments
+
+
+# =============================================================================
+# STEP 1b: Backfill target_id for single-target jobs (v1.2 2026-04-18)
+# =============================================================================
+
+def _backfill_single_target_segments(segments: List[SegmentSpec]) -> None:
+    """For single-target jobs, assign the job's primary target to any
+    segment whose target_id resolution came back None.
+
+    Why this exists: resolve_target_for_files() matches paths against
+    each profile's registered signals (project_root prefix, folder name,
+    path_signals, file extension). Generic Android config paths like
+    'app/build.gradle.kts' or 'AndroidManifest.xml' or 'MainActivity.kt'
+    contain none of the project-specific discriminators, so the resolver
+    returns None even though the segment clearly belongs to the job's
+    sole target. Downstream llm_tools.route_write then rejects writes
+    to the segment with 'refusing to route', bricking the build.
+
+    This pass reads the ambient job target hint (set by the spec_runner
+    when the job starts — see target_registry.set_job_target_hint). If
+    exactly one target is in scope, None target_ids are filled in.
+    Multi-target jobs are left alone — ambiguity there is genuine and
+    needs the segment splitter to handle it.
+
+    Safe to call even when no job hint is set: it's a no-op.
+    """
+    try:
+        from app.pipeline_v2.target_registry import get_job_target_hint
+        hint = get_job_target_hint()
+    except Exception as e:
+        logger.debug("[segmentation] v1.2 backfill: could not read job hint: %s", e)
+        return
+
+    if not hint or len(hint) != 1:
+        return
+
+    primary = next(iter(hint))
+    backfilled = 0
+    for seg in segments:
+        if seg.target_id is None:
+            seg.target_id = primary
+            backfilled += 1
+            logger.info(
+                "[segmentation] v1.2 Backfilled target_id=%s on %s "
+                "(resolver returned None, single-target job hint available)",
+                primary, seg.segment_id,
+            )
+
+    if backfilled:
+        logger.info(
+            "[segmentation] v1.2 Backfilled %d segment(s) with job primary target=%s",
+            backfilled, primary,
+        )
 
 
 # =============================================================================

@@ -86,14 +86,21 @@ class BuildTargetProfile:
         so writes land in the correct package directory. This is necessary
         because SpecGate/LLMs often emit short Kotlin paths without the full
         package prefix.
+
+        v1.3 (2026-04-18): Don't expand .kts build scripts (build.gradle.kts,
+        settings.gradle.kts). Those always live at the module/project root,
+        never inside the package tree, so auto-expanding them produced
+        bogus paths like app/src/main/java/com/example/drivercopilot/app/
+        build.gradle.kts that Gradle ignores entirely. Only .kt source files
+        get the package-prefix treatment now.
         """
         norm = relative.replace("\\", "/")
         # Already absolute
         if len(norm) > 1 and norm[1] == ":":
             return norm
         root = self.project_root.replace("\\", "/").rstrip("/")
-        # Kotlin source-root expansion
-        if self.language == "kotlin" and norm.lower().endswith((".kt", ".kts")):
+        # Kotlin source-root expansion — .kt source files only, NOT .kts scripts
+        if self.language == "kotlin" and norm.lower().endswith(".kt"):
             src = (self.source_root or "").replace("\\", "/").strip("/")
             if src and not norm.lower().startswith(src.lower() + "/"):
                 # Also check that the path does not already contain the package

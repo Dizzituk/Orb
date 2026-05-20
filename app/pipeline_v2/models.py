@@ -123,6 +123,10 @@ class PipelineResult:
     build_result: Optional[BuildResult] = None
     verify_results: List[VerifyResult] = field(default_factory=list)
     bvl_report: Optional[Any] = None      # BVLReport from behavioral verification
+    # v1.3 (2026-04-18): Always-on spec reviewer output. None if review
+    # did not run (non-Android targets, etc.). Typed as Any to avoid a
+    # circular import between models.py and spec_review/.
+    spec_review_report: Optional[Any] = None
     total_llm_calls: int = 0
     total_duration_seconds: float = 0.0
     estimated_cost_usd: float = 0.0

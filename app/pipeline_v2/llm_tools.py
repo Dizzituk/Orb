@@ -102,6 +102,7 @@ async def run_tool_loop(
     on_tool_call: Optional[Callable[[str, Dict], None]] = None,
     on_text: Optional[Callable[[str], None]] = None,
     existing_messages: Optional[List[Dict]] = None,
+    reasoning: Optional[Dict] = None,
 ) -> Tuple[List[Dict], int, int]:
     """Run an agentic tool-calling loop.
 
@@ -150,6 +151,7 @@ async def run_tool_loop(
             messages=messages,
             tools=TOOLS,
             max_tokens=max_tokens,
+            reasoning=reasoning,
         )
         total_input_tokens += in_tok
         total_output_tokens += out_tok
@@ -204,11 +206,12 @@ async def _call_api(
     messages: List[Dict],
     tools: List[Dict],
     max_tokens: int,
+    reasoning: Optional[Dict] = None,
 ) -> Tuple[Optional[Any], int, int]:
     """Call the LLM API with tools. Returns (response, input_tokens, output_tokens)."""
 
     if provider == "openai":
-        return await _call_openai(model, messages, tools, max_tokens)
+        return await _call_openai(model, messages, tools, max_tokens, reasoning=reasoning)
     else:
         logger.warning("[llm_tools] Provider %s does not support tool calling — using text mode", provider)
         from app.pipeline_v2.llm_caller import call_llm
@@ -229,8 +232,14 @@ async def _call_openai(
     messages: List[Dict],
     tools: List[Dict],
     max_tokens: int,
+    reasoning: Optional[Dict] = None,
 ) -> Tuple[Optional[Any], int, int]:
-    """Call OpenAI API with function calling."""
+    """Call OpenAI API with function calling.
+
+    v1.2 (2026-04-18): Added reasoning support. When reasoning={'effort':...}
+    is passed, enable GPT-5.x reasoning via the `reasoning` param. Reasoning
+    models (gpt-5.*, o3/o4) don't accept temperature=0 — drop it.
+    """
     try:
         from openai import AsyncOpenAI
     except ImportError:
@@ -244,14 +253,30 @@ async def _call_openai(
 
     client = AsyncOpenAI(api_key=api_key, timeout=180.0)
 
-    try:
-        response = await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            tools=tools,
-            max_completion_tokens=min(max_tokens, 16384),
-            temperature=0,
+    # Build kwargs — reasoning models reject temperature, so branch on that.
+    _use_reasoning = bool(
+        reasoning
+        and isinstance(reasoning, dict)
+        and str(reasoning.get("effort", "")).lower() in ("low", "medium", "high", "xhigh", "max")
+    )
+    create_kwargs: Dict[str, Any] = dict(
+        model=model,
+        messages=messages,
+        tools=tools,
+        max_completion_tokens=min(max_tokens, 16384),
+    )
+    if _use_reasoning:
+        # Reasoning models don't accept temperature; also not top_p / logprobs.
+        create_kwargs["reasoning"] = {"effort": str(reasoning["effort"]).lower()}
+        logger.info(
+            "[llm_tools] v1.2 OpenAI reasoning enabled: model=%s effort=%s",
+            model, reasoning["effort"],
         )
+    else:
+        create_kwargs["temperature"] = 0
+
+    try:
+        response = await client.chat.completions.create(**create_kwargs)
 
         usage = response.usage
         in_tok = usage.prompt_tokens if usage else 0
@@ -260,6 +285,23 @@ async def _call_openai(
         return response, in_tok, out_tok
 
     except Exception as e:
+        # Retry without reasoning if the model doesn't accept it (older GPT,
+        # non-reasoning model). Strip reasoning, restore temperature, retry.
+        msg = str(e)
+        if _use_reasoning and ("reasoning" in msg or "unexpected keyword" in msg or "Unsupported" in msg):
+            logger.warning(
+                "[llm_tools] Model %s rejected reasoning param; retrying without: %s",
+                model, msg[:200],
+            )
+            create_kwargs.pop("reasoning", None)
+            create_kwargs["temperature"] = 0
+            try:
+                response = await client.chat.completions.create(**create_kwargs)
+                usage = response.usage
+                return response, (usage.prompt_tokens if usage else 0), (usage.completion_tokens if usage else 0)
+            except Exception as e2:
+                logger.error("[llm_tools] OpenAI API error (after reasoning retry): %s", e2)
+                return None, 0, 0
         logger.error("[llm_tools] OpenAI API error: %s", e)
         return None, 0, 0
 
@@ -598,9 +640,19 @@ async def _execute_tool(name: str, args: Dict) -> str:
 
         elif name == "run_shell":
             cmd = args.get("cmd", "")
-            # v2.3: Longer timeout for Gradle builds (first run downloads deps)
+            # v2.4 (2026-04-18): Bumped Gradle timeout from 600s to 1500s.
+            # Cold-start Gradle compiles (dependency downloads, first-time
+            # Kotlin compilation of new modules) can exceed 10 minutes on
+            # the Driver CoPilot build. The previous 600s cap caused the
+            # agent's shell call to time out on the first Gradle invocation
+            # even when Gradle was still making progress, forcing the agent
+            # to bail out just before BVL's Tier 1 would have succeeded
+            # (BVL retry built in ~12s because caches were already warm).
+            # 1500s gives comfortable headroom; matches 1200s used by
+            # sandbox_tools.build_check with extra margin for agent-driven
+            # explorations (e.g. --refresh-dependencies).
             _shell_profile = _resolve_active_profile() or _tool_profile
-            _shell_timeout = 600 if (_shell_profile and _shell_profile.build_system == "gradle" and "gradlew" in cmd) else 30
+            _shell_timeout = 1500 if (_shell_profile and _shell_profile.build_system == "gradle" and "gradlew" in cmd) else 30
             _active = _resolve_active_profile()
             result = await sandbox_tools.run_shell(cmd, timeout_sec=_shell_timeout, profile=_active)
             stdout = result.get("stdout", "")[:1000]

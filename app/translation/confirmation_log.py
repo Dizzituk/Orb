@@ -32,6 +32,7 @@ def log_confirmation_event(
     confirmed: bool,
     confidence: float = 0.0,
     conversation_id: Optional[str] = None,
+    rule_name: Optional[str] = None,
 ) -> None:
     """Log a confirmation event for future intent learning.
 
@@ -41,6 +42,8 @@ def log_confirmation_event(
         confirmed: Whether the user confirmed (True) or rejected (False).
         confidence: The intent confidence at time of gating.
         conversation_id: Optional conversation ID for tracing.
+        rule_name: Optional classifier rule_name (e.g. 'web_search_staleness_auto').
+            Used by rule_suppression.py to compute per-rule reject counts.
     """
     event = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -49,6 +52,7 @@ def log_confirmation_event(
         "confirmed": confirmed,
         "confidence": round(confidence, 4),
         "conversation_id": conversation_id,
+        "rule_name": rule_name,
     }
 
     try:

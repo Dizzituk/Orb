@@ -20,13 +20,22 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from app.finance.models import Transaction, VanFinance
+from app.finance.models import Transaction, VanFinance, ExpenseCategory
 
 logger = logging.getLogger(__name__)
 
-# Category IDs for HP transactions
-HP_INTEREST_CATEGORY_ID = 24   # van_hp_interest
-HP_CAPITAL_CATEGORY_ID = 25    # van_hp_capital
+# HP transactions resolve their category by NAME (not hard-coded IDs).
+# The seeded categories are `van_hp_interest` and `van_hp_capital`.
+HP_INTEREST_CATEGORY_NAME = "van_hp_interest"
+HP_CAPITAL_CATEGORY_NAME = "van_hp_capital"
+
+
+def _hp_interest_category_id(db: Session) -> Optional[int]:
+    """Look up the van_hp_interest category ID, or None if not seeded."""
+    cat = db.query(ExpenseCategory).filter(
+        ExpenseCategory.name == HP_INTEREST_CATEGORY_NAME
+    ).first()
+    return cat.id if cat else None
 
 
 @dataclass
@@ -238,6 +247,17 @@ def categorise_moneybarn_transactions(db: Session) -> dict:
     results = []
     biz_pct = van.business_use_percentage / 100.0
 
+    # Resolve the category ID by name at runtime — IDs vary per DB.
+    hp_interest_cat_id = _hp_interest_category_id(db)
+    if hp_interest_cat_id is None:
+        return {
+            "error": (
+                "van_hp_interest category not seeded. "
+                "Run the seed routine before categorising HP payments."
+            ),
+            "updated": 0,
+        }
+
     for i, tx in enumerate(mb_txs):
         month_num = i + 1
         if month_num > len(schedule.payments):
@@ -246,7 +266,7 @@ def categorise_moneybarn_transactions(db: Session) -> dict:
 
         split = schedule.payments[month_num - 1]
 
-        tx.category_id = HP_INTEREST_CATEGORY_ID
+        tx.category_id = hp_interest_cat_id
         tx.expense_scope = "business"
         tx.is_tax_deductible = True
         tx.deductible_amount = round(split.interest_paid * biz_pct, 2)

@@ -72,9 +72,17 @@ OUTPUT SCHEMA:
   "technical_context": "Languages, frameworks, files, architecture discussed",
   "attachments_described": ["filename.ext — brief description of what it contained"],
   "user_preferences_expressed": ["Preference or style instruction"],
+  "biographical_facts": ["Durable personal facts the user stated: DOB, birthplace, current location, family, job changes, relationships, nationality, contact details. ONLY include if the user explicitly stated it in this session. Quote the user's phrasing where possible so downstream extraction has a clean signal."],
   "models_involved": ["provider:model identifiers that participated"],
   "message_range": {"from_id": <int>, "to_id": <int>}
 }
+
+BIOGRAPHICAL PRESERVATION RULE:
+  If the user says anything like "I was born in X", "I live in Y", "my
+  name is Z", "I moved to A", "my birthday is B", "I work as a C",
+  preserve it in biographical_facts VERBATIM or near-verbatim. Do not
+  compress these into topic summaries — they are hard facts that later
+  stages depend on.
 """
 
 

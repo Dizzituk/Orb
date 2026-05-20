@@ -108,7 +108,7 @@ def calculate_van_summary(db: Session) -> Optional[VanFinanceSummary]:
     
     # Current month's split (next payment)
     next_pmt_idx = min(van.payments_made, len(schedule.payments) - 1)
-    s.monthly_interest = schedule.payments[next_pmt_idx].interest_portion
+    s.monthly_interest = schedule.payments[next_pmt_idx].interest_paid
     s.monthly_capital = schedule.payments[next_pmt_idx].capital_portion
     s.final_balloon = schedule.final_balance
 

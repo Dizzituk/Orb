@@ -30,11 +30,14 @@ from app.llm.streaming import (
 )
 
 from .chat_intent_detection import (
-    is_builds_context,
     detect_file_creation_intent,
     detect_image_gen_intent,
     detect_image_refinement,
     last_assistant_was_image,
+)
+from .cognitive_escalation import (
+    detect_cognitive_escalation,
+    is_small_model,
 )
 
 logger = logging.getLogger(__name__)
@@ -56,7 +59,75 @@ def set_sticky_model(project_id: int, provider: str, model: str) -> None:
 
 
 # v10.2: Elevated models that should persist via history-based stickiness
-_ELEVATED_MODELS = {'gpt-5.4', 'gpt-5.4-turbo', 'claude-opus-4-6', 'claude-opus-4-5'}
+_ELEVATED_MODELS = {'gpt-5.4', 'gpt-5.4-turbo', 'claude-opus-4-6', 'claude-opus-4-5', 'claude-opus-4-7'}
+
+
+# =============================================================================
+# FRONTIER MODEL  (v14.1, 2026-04-26)
+# =============================================================================
+# Single source of truth for "the current best non-mini reasoning model".
+# All routes that want a smart model (agentic tabs, cognitive escalation,
+# file creation, reasoning tier) default to this. When gpt-5.5 (or whatever
+# is next) ships, set FRONTIER_MODEL to it and every smart route follows.
+# Per-route env vars (e.g. WEB_AUTOMATION_MODEL, REASONING_MODEL) still
+# override this on a route-by-route basis when needed, but in normal use
+# the user changes one variable.
+def _frontier() -> tuple[str, str]:
+    return (
+        os.getenv("FRONTIER_PROVIDER", "openai"),
+        os.getenv("FRONTIER_MODEL", "gpt-5.4"),
+    )
+
+
+# =============================================================================
+# AGENTIC TAB CONTEXT DETECTION  (v14.1, 2026-04-26)
+# =============================================================================
+# Tabs whose work warrants a frontier model regardless of message intent.
+# Tab presence alone is enough — the user's explicit policy: as soon as I'm
+# in this tab, treat every command as agentic and route to the frontier
+# model. No intent-detection required, no "only if message looks like a
+# build request" gating. These flows often run unattended (driving), so
+# accuracy beats speed/cost.
+#
+# Covered:
+#   - Browser-driven flows (website, courses, social composer)
+#   - Builds / Debug (where ASTRA's own code or apps are being modified)
+#
+# Detection signal: req.ui_context.job OR req.ui_context.job_type. The
+# frontend uses different field names in different paths, so we check both.
+_AGENTIC_TAB_JOBS = {
+    # Browser-driven flows
+    "website",
+    "courses",
+    "coursera",
+    "social",
+    "social_media",
+    # Builds / debug
+    "builds",
+    "project_builds",
+    "debug",
+    "debug_assistant",
+}
+
+
+def _is_agentic_context(req: Any) -> bool:
+    """True when this chat turn happens in a browser/builds/debug tab.
+
+    Reads req.ui_context.job AND req.ui_context.job_type (different code
+    paths use different field names for the same concept) and matches
+    against the agentic job set. Tab-only — no message intent gating.
+    """
+    ui = getattr(req, "ui_context", None)
+    if ui is None:
+        return False
+    for field in ("job", "job_type"):
+        if isinstance(ui, dict):
+            v = ui.get(field)
+        else:
+            v = getattr(ui, field, None)
+        if isinstance(v, str) and v.lower() in _AGENTIC_TAB_JOBS:
+            return True
+    return False
 
 
 def infer_sticky_from_history(project_id: int, db) -> tuple[str, str] | None:
@@ -138,30 +209,91 @@ def select_chat_model(
         set_sticky_model(req.project_id, provider, model)
         return *ensure_provider_available(provider, model), extras
 
-    # ── Builds tab + project modification intent → GPT-5.4 ──
-    if is_builds_context(req):
-        provider = os.getenv("BUILD_CHAT_PROVIDER", "openai")
-        model = os.getenv("BUILD_CHAT_MODEL", "gpt-5.4")
-        print(f"[MODEL_SELECT] Builds context detected -> {provider}/{model}")
+    # ── Cognitive escalation / explicit model request (highest priority after frontend) ──
+    # Runs BEFORE intent-based routing (builds, file-creation, image-gen) because
+    # those detectors are regex-based and produce false positives on long messages
+    # that describe apps/concepts. If the user has explicitly said "think about
+    # this" or named a provider, that signal beats any implicit intent guess.
+    from app.memory.complexity import _detect_explicit_model_request as _detect_explicit
+    _first_line_lower = req.message.lower().strip().split("\n")[0]
+    _explicit = (
+        _detect_explicit(_first_line_lower)
+        or _detect_explicit(req.message.lower())
+    )
+    if _explicit:
+        provider = _explicit["provider"]
+        model = _explicit["model"]
+        print(f"[MODEL_SELECT] EXPLICIT model request (pre-intent): {provider}/{model}")
         set_sticky_model(req.project_id, provider, model)
         return *ensure_provider_available(provider, model), extras
 
-    # ── File creation → GPT-5.4 ──
+    _cog_match = detect_cognitive_escalation(req.message)
+    if _cog_match:
+        _current = (
+            get_sticky_model(req.project_id)
+            or infer_sticky_from_history(req.project_id, db)
+        )
+        if _current and not is_small_model(_current[1]):
+            provider, model = _current
+            print(
+                f"[MODEL_SELECT] COGNITIVE cue ({_cog_match!r}); "
+                f"keeping capable sticky: {provider}/{model}"
+            )
+            set_sticky_model(req.project_id, provider, model)
+            return *ensure_provider_available(provider, model), extras
+        # No capable sticky — escalate to frontier (or per-route override).
+        fp, fm = _frontier()
+        provider = os.getenv("COGNITIVE_ESCALATION_PROVIDER") or fp
+        model = os.getenv("COGNITIVE_ESCALATION_MODEL") or fm
+        print(
+            f"[MODEL_SELECT] COGNITIVE escalation ({_cog_match!r}) -> "
+            f"{provider}/{model}"
+        )
+        set_sticky_model(req.project_id, provider, model)
+        return *ensure_provider_available(provider, model), extras
+
+    # ── File creation → frontier model ──
     if detect_file_creation_intent(req.message):
-        provider = os.getenv("FILE_CREATION_PROVIDER", "openai")
-        model = os.getenv("FILE_CREATION_MODEL", "gpt-5.4")
+        fp, fm = _frontier()
+        provider = os.getenv("FILE_CREATION_PROVIDER") or fp
+        model = os.getenv("FILE_CREATION_MODEL") or fm
         print(f"[MODEL_SELECT] File creation detected -> {provider}/{model}")
         set_sticky_model(req.project_id, provider, model)
         return *ensure_provider_available(provider, model), extras
 
-    # ── Image generation / refinement → route to image pipeline ──
+    # ── Image generation / refinement → hint to chat layer (v16.0) ──
+    # Previously this returned empty strings to signal "bypass chat, go straight
+    # to image_router". That bypass routed to a fresh Gemini synth that lost
+    # all conversation context. Now we still flag image_route=True (so the
+    # chat layer wraps the stream with the [IMAGE_PROMPT] extractor and
+    # injects the marker instructions into the system prompt), but we ALSO
+    # return a real frontier model — the chat LLM is now responsible for
+    # writing the gpt-image-2 prompt itself, with full context in scope.
     if detect_image_gen_intent(req.message) or (
         detect_image_refinement(req.message)
         and last_assistant_was_image(req.project_id, db)
     ):
-        print(f"[MODEL_SELECT] Image generation detected -> routing to translation layer")
+        fp, fm = _frontier()
+        provider = os.getenv("IMAGE_CHAT_PROVIDER") or fp
+        model = os.getenv("IMAGE_CHAT_MODEL") or fm
+        print(f"[MODEL_SELECT] Image gen detected -> chat LLM writes prompt: {provider}/{model}")
         extras["image_route"] = True
-        return "", "", extras
+        set_sticky_model(req.project_id, provider, model)
+        return *ensure_provider_available(provider, model), extras
+
+    # ── Agentic tab context → frontier model ──
+    # Tab-only check (website / builds / debug / etc.) — no message intent
+    # gating. Subsumes the old separate builds-context and web-automation
+    # paths into one. Overrides any prior sticky-mini choice from earlier
+    # turns; if the user just opened the tab, this turn IS agentic
+    # regardless of what the chat was about before.
+    if _is_agentic_context(req):
+        fp, fm = _frontier()
+        provider = os.getenv("AGENTIC_CONTEXT_PROVIDER") or fp
+        model = os.getenv("AGENTIC_CONTEXT_MODEL") or fm
+        print(f"[MODEL_SELECT] Agentic tab context detected -> {provider}/{model}")
+        set_sticky_model(req.project_id, provider, model)
+        return *ensure_provider_available(provider, model), extras
 
     # ── Session model stickiness (with explicit override check) ──
     sticky = get_sticky_model(req.project_id)
@@ -266,8 +398,9 @@ def _select_by_complexity(
 
     # ── TIER 2: Reasoning + exploration ──
     if complexity.tier == "deep" and _reasoning_hits >= 1:
-        provider = os.getenv("REASONING_PROVIDER", "openai")
-        model = os.getenv("REASONING_MODEL", "gpt-5.4")
+        fp, fm = _frontier()
+        provider = os.getenv("REASONING_PROVIDER") or fp
+        model = os.getenv("REASONING_MODEL") or fm
         print(f"[MODEL_SELECT] TIER 2 (reasoning+tools): explore={_explore_hits}, reasoning={_reasoning_hits} -> {provider}/{model}")
         set_sticky_model(req.project_id, provider, model)
         return *ensure_provider_available(provider, model), extras
@@ -281,8 +414,9 @@ def _select_by_complexity(
 
     # ── TIER 2: Pure reasoning (no exploration keywords) ──
     if complexity.tier == "reasoning":
-        provider = os.getenv("REASONING_PROVIDER", "openai")
-        model = os.getenv("REASONING_MODEL", "gpt-5.4")
+        fp, fm = _frontier()
+        provider = os.getenv("REASONING_PROVIDER") or fp
+        model = os.getenv("REASONING_MODEL") or fm
         print(f"[MODEL_SELECT] TIER 2 (reasoning): reasoning={_reasoning_hits} -> {provider}/{model}")
         set_sticky_model(req.project_id, provider, model)
         return *ensure_provider_available(provider, model), extras

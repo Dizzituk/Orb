@@ -140,6 +140,26 @@ async def run_v2_pipeline(
     emit(f"{'='*60}")
 
     # ------------------------------------------------------------------
+    # DECISION LEDGER — Piece 1 of v2.2 stability upgrade
+    # Seed with decisions already implied by the finalised spec + profile.
+    # Stages read from it via load_ledger(job_dir); conflicts on write
+    # surface drift rather than hide it.
+    # ------------------------------------------------------------------
+    try:
+        from app.pipeline_v2.config import LEDGER_ENABLED
+        if LEDGER_ENABLED:
+            from app.pipeline_v2.ledger import load_or_create_ledger
+            from app.pipeline_v2.ledger_seed import seed_ledger_from_spec
+            _ledger = load_or_create_ledger(job_id, job_dir)
+            if _ledger.entry_count == 0:
+                _seeded = seed_ledger_from_spec(_ledger, spec, job_dir, profile=profile)
+                emit(f"   📒 Decision ledger seeded with {_seeded} entries")
+            else:
+                emit(f"   📒 Decision ledger loaded ({_ledger.entry_count} entries)")
+    except Exception as _lerr:
+        logger.warning("[orchestrator] Ledger seed failed: %s", _lerr)
+
+    # ------------------------------------------------------------------
     # STAGE 3: Scaffold Engine (deterministic, no LLM)
     # ------------------------------------------------------------------
     emit(f"\n{'='*60}")
@@ -184,6 +204,38 @@ async def run_v2_pipeline(
         ] if create_files or modify_files else [],
     )
 
+    # v2.2 Piece 5: stage summary for context threading
+    try:
+        from app.pipeline_v2.config import LEDGER_ENABLED
+        if LEDGER_ENABLED:
+            from app.pipeline_v2.stage_summaries import write_summary
+            _body = (
+                f"Produced {len(scaffold.files)} files "
+                f"({len(create_files)} new, {len(modify_files)} modify). "
+                f"Target: {profile.language}/{profile.framework}."
+            )
+            _handover_bits = []
+            if create_files:
+                _handover_bits.append(
+                    f"New files needing implementation: {', '.join(create_files[:10])}"
+                    + (" …" if len(create_files) > 10 else "")
+                )
+            if modify_files:
+                _handover_bits.append(
+                    f"Existing files to modify: {', '.join(modify_files[:10])}"
+                    + (" …" if len(modify_files) > 10 else "")
+                )
+            write_summary(
+                job_dir=job_dir,
+                stage="scaffold_engine",
+                body=_body,
+                handover_notes=" ".join(_handover_bits),
+                duration_s=scaffold.duration_seconds,
+                status="passed" if scaffold.files else "failed",
+            )
+    except Exception as _serr:
+        logger.debug("[orchestrator] Scaffold summary skipped: %s", _serr)
+
     if not scaffold.files:
         result.errors.append("Scaffold Engine produced no files")
         result.total_duration_seconds = time.time() - t_start
@@ -220,6 +272,38 @@ async def run_v2_pipeline(
         tokens_used=build_result.total_input_tokens + build_result.total_output_tokens,
         warnings=build_result.errors[:5] if build_result.errors else [],
     )
+
+    # v2.2 Piece 5: stage summary for context threading
+    try:
+        from app.pipeline_v2.config import LEDGER_ENABLED
+        if LEDGER_ENABLED:
+            from app.pipeline_v2.stage_summaries import write_summary
+            _bwritten = build_result.all_files_written
+            _bbody = (
+                f"Builder wrote {len(_bwritten)} files in "
+                f"{build_result.total_tool_calls} tool calls. "
+                f"Input tokens: {build_result.total_input_tokens:,}, "
+                f"output tokens: {build_result.total_output_tokens:,}."
+            )
+            _bhandover = ""
+            if build_result.errors:
+                _bhandover = f"Errors encountered: {'; '.join(build_result.errors[:3])}"
+            elif _bwritten:
+                _bhandover = (
+                    f"Files written: {', '.join(_bwritten[:10])}"
+                    + (" …" if len(_bwritten) > 10 else "")
+                )
+            _bstatus = "passed" if build_result.success else "failed"
+            write_summary(
+                job_dir=job_dir,
+                stage="agentic_builder",
+                body=_bbody,
+                handover_notes=_bhandover,
+                duration_s=build_result.total_duration_seconds,
+                status=_bstatus,
+            )
+    except Exception as _berr:
+        logger.debug("[orchestrator] Builder summary skipped: %s", _berr)
 
     _builder_messages = build_result.messages_history
 
@@ -264,6 +348,25 @@ async def run_v2_pipeline(
             detail = blocked[0].block_reason[:200] if blocked else "BVL verification incomplete"
             _update_stage_status("final_checkout", "failed", detail)
             result.success = False
+
+        # v1.3 (2026-04-18): Always-on spec reviewer.
+        # Runs AFTER BVL regardless of outcome. The reviewer reads the spec
+        # + every file the builder wrote + the BVL results and emits a
+        # structured report of any unmet requirements, unwired hooks, or
+        # real-bug patterns. Advisory only — does not fail the build.
+        try:
+            await _run_spec_review_stage(
+                result=result,
+                spec=spec,
+                intent_text=intent_text,
+                profile=profile,
+                emit=emit,
+                bvl_report=bvl_report,
+                job_id=job_id,
+            )
+        except Exception as _sr_exc:
+            logger.warning("[orchestrator] Spec review failed non-fatally: %s", _sr_exc)
+            emit(f"   ⚠️ Spec review skipped: {_sr_exc}")
 
         result.total_duration_seconds = time.time() - t_start
         result.estimated_cost_usd = _estimate_cost(result) + bvl_report.estimated_cost_usd
@@ -443,6 +546,7 @@ async def run_v2_pipeline(
     emit(f"   Est. cost: ${result.estimated_cost_usd:.2f}")
     if result.errors:
         emit(f"   Errors: {result.errors}")
+    _emit_ledger_summary(job_dir, emit)
     emit(f"{'='*60}")
 
     return result
@@ -495,6 +599,24 @@ def _compile_and_send_to_debug(
         if result.errors:
             lines.append(f"Errors: {'; '.join(result.errors[:3])}")
 
+        # v1.3 (2026-04-18): Fold spec-reviewer summary into the debug report
+        # so findings are visible in the build report without having to open
+        # the raw pipeline result.
+        review = getattr(result, "spec_review_report", None)
+        if review is not None:
+            lines.append("")
+            lines.append(f"Spec review: {review.summary_line()}")
+            if review.summary:
+                lines.append(f"  {review.summary}")
+            for finding in review.findings[:10]:
+                lines.append(f"  - {finding.one_line()}")
+            if len(review.findings) > 10:
+                lines.append(f"  … and {len(review.findings) - 10} more")
+            if review.requirements_unmet:
+                lines.append("  Unmet requirements:")
+                for req in review.requirements_unmet[:6]:
+                    lines.append(f"    ✗ {req}")
+
         description = "\n".join(lines)
         if report_json:
             description += f"\n\n--- BUILD REPORT ---\n{report_json[:5000]}"
@@ -530,3 +652,125 @@ def _estimate_cost(result: PipelineResult) -> float:
     verify_cost = len(result.verify_results) * 0.01
 
     return input_cost + output_cost + verify_cost
+
+
+def _emit_ledger_summary(job_dir: str, emit: Any) -> None:
+    """Emit a one-line summary of the decision ledger state, if present."""
+    try:
+        from app.pipeline_v2.config import LEDGER_ENABLED
+        if not LEDGER_ENABLED:
+            return
+        from app.pipeline_v2.ledger import load_ledger
+        ledger = load_ledger(job_dir)
+        if ledger is None:
+            return
+        decisions = sum(1 for e in ledger.entries if e.type == "decision")
+        corrections = sum(1 for e in ledger.entries if e.status == "corrected")
+        emit(
+            f"   📒 Ledger: {ledger.entry_count} entries "
+            f"({decisions} decisions, {corrections} superseded)"
+        )
+    except Exception as e:
+        logger.debug("[orchestrator] Ledger summary skipped: %s", e)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# v1.3 (2026-04-18): Always-on spec reviewer wrapper.
+#
+# Thin orchestrator-side wrapper that: imports the reviewer lazily (avoids
+# circular-import risk with models.py), captures any build output from
+# the BVL report, invokes the reviewer, attaches the report to the
+# PipelineResult, and folds the cost + LLM-call count into pipeline
+# totals. Never raises — the reviewer itself is fail-safe.
+# ═══════════════════════════════════════════════════════════════════
+
+async def _run_spec_review_stage(
+    result: PipelineResult,
+    spec: Dict,
+    intent_text: str,
+    profile: Any,
+    emit: Any,
+    bvl_report: Optional[Any] = None,
+    job_id: Optional[str] = None,
+) -> None:
+    """Run the always-on spec reviewer and attach the report to result."""
+    # Reviewer needs a BuildResult; if the builder didn't produce one,
+    # there's nothing to review.
+    if result.build_result is None or not result.build_result.all_files_written:
+        emit("   📋 Spec review skipped: no builder output to review.")
+        return
+
+    # Try to grab a useful build-output string from the BVL report.
+    build_output = _extract_build_output_from_bvl(bvl_report)
+
+    from app.pipeline_v2.spec_review import run_spec_review
+
+    review = await run_spec_review(
+        spec=spec,
+        build_result=result.build_result,
+        profile=profile,
+        intent_text=intent_text,
+        bvl_report=bvl_report,
+        build_output=build_output,
+        emit=emit,
+        job_id=job_id,
+    )
+
+    result.spec_review_report = review
+    # Count the reviewer's single LLM call toward pipeline totals so the
+    # final summary line includes it honestly.
+    result.total_llm_calls += 1
+
+    # Narrative row for the build project so the debug UI shows it.
+    try:
+        _push_narrative(
+            stage="spec_review",
+            title="Spec Review Complete",
+            output_summary=review.summary_line(),
+            sections=[
+                {
+                    "heading": "Summary",
+                    "body": review.summary or "(no summary)",
+                },
+                {
+                    "heading": "Findings",
+                    "body": "\n".join(
+                        f"- {f.one_line()}" for f in review.findings[:30]
+                    ) or "(none)",
+                },
+                {
+                    "heading": "Unmet requirements",
+                    "body": "\n".join(
+                        f"- {r}" for r in review.requirements_unmet[:20]
+                    ) or "(none)",
+                },
+            ],
+            model_used=review.model_used,
+            duration_ms=int(review.duration_seconds * 1000),
+            tokens_used=review.total_input_tokens + review.total_output_tokens,
+            warnings=[f.title for f in review.findings if f.severity.value in ("critical", "major")][:5],
+        )
+    except Exception as _nerr:
+        logger.debug("[orchestrator] Spec review narrative push failed: %s", _nerr)
+
+
+def _extract_build_output_from_bvl(bvl_report: Optional[Any]) -> str:
+    """Best-effort extraction of build/compile output from the BVL report.
+
+    BVLReport shapes vary between tiers; we grab whatever free-text build
+    output is available and cap it. Returns an empty string if nothing
+    useful is present — the reviewer handles that gracefully.
+    """
+    if bvl_report is None:
+        return ""
+    try:
+        components = getattr(bvl_report, "component_results", []) or []
+        pieces = []
+        for comp in components:
+            for tier in (getattr(comp, "tier_results", []) or []):
+                out = getattr(tier, "output", "") or getattr(tier, "stdout", "")
+                if out:
+                    pieces.append(str(out))
+        return "\n---\n".join(pieces)[:8000]
+    except Exception:
+        return ""

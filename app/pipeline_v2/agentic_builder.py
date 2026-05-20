@@ -126,12 +126,49 @@ async def run_agentic_builder(
         system_prompt = BUILDER_SYSTEM + '\n\n' + _get_principles()
         initial_prompt = _build_initial_prompt_legacy(spec, manifest, scaffold, handover_context)
 
+    # v2.2 Piece 1 + Piece 5: inject prior decisions + upstream stage
+    # summaries via the context assembler. The builder is a consumer of
+    # decisions, not a producer — reads to honour prior choices.
+    try:
+        from app.pipeline_v2.config import LEDGER_ENABLED, LEDGER_PROMPT_MAX_CHARS
+        if LEDGER_ENABLED:
+            from app.pipeline_v2.context_assembler import assemble_context
+            _ctx = assemble_context(
+                job_dir=job_dir,
+                stage="agentic_builder",
+                max_chars=LEDGER_PROMPT_MAX_CHARS,
+            )
+            if _ctx:
+                initial_prompt = (
+                    f"{_ctx}\n\n"
+                    "The decisions above are binding. Honour them. If you "
+                    "believe one is wrong, say so explicitly in your reply "
+                    "rather than silently contradicting it.\n\n"
+                    f"{initial_prompt}"
+                )
+    except Exception as _lerr:
+        logger.debug("[agentic_builder] Context assembly skipped: %s", _lerr)
+
     lang = profile.language if profile else "python"
     emit(f"🤖 Agentic Builder: Starting {lang} build loop...")
     emit(f"   Model: {BUILDER_PROVIDER}/{BUILDER_MODEL}")
     emit(f"   Scaffold: {scaffold.total_files} files")
     emit(f"   Max tool calls: {MAX_TOOL_CALLS}")
     emit(f"   Initial prompt: {len(initial_prompt):,} chars")
+
+    # v2.3 (2026-04-18): Resolve reasoning config from CRITICAL_PIPELINE stage.
+    # The Agentic Builder is load-bearing — it writes production code. Per
+    # Taz's directive, reasoning=high is on by default for this stage.
+    # Falls back to None (no reasoning) if stage_models lookup fails, so the
+    # builder still runs even if the alias system isn't available.
+    _builder_reasoning = None
+    try:
+        from app.llm.stage_models import get_stage_config
+        _builder_reasoning = get_stage_config("CRITICAL_PIPELINE").reasoning
+        if _builder_reasoning:
+            emit(f"   Reasoning: effort={_builder_reasoning.get('effort', '?')}")
+    except Exception as _rerr:
+        logger.debug("[agentic_builder] reasoning lookup skipped: %s", _rerr)
 
     # Run the agentic loop using proper tool calling
     session = BuildSession(session_number=1)
@@ -223,6 +260,7 @@ async def run_agentic_builder(
             on_tool_call=on_tool,
             on_text=on_text,
             existing_messages=existing_messages,
+            reasoning=_builder_reasoning,
         )
 
         # v2.1: Guard against premature BUILDER_COMPLETE.
@@ -251,6 +289,7 @@ async def run_agentic_builder(
                 on_tool_call=on_tool,
                 on_text=on_text,
                 existing_messages=messages,
+                reasoning=_builder_reasoning,
             )
             messages = messages_2
             in_tok += in_tok_2

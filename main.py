@@ -1,4 +1,4 @@
-﻿"""
+"""
 Orb Backend - FastAPI Application
 Version: 0.17.0
 
@@ -72,12 +72,17 @@ import app.builds.models  # noqa: F401 — register Build Projects tables with B
 import app.builds.messages  # noqa: F401 — register Build Project Messages table with Base
 from app.education.router import router as education_router
 import app.education.models  # noqa: F401 — register Education tables with Base
+import app.web_automation.models  # noqa: F401 — register Web Automation tables with Base
+import app.content.distribution.browser_analytics.models  # noqa: F401 — register ChannelAnalytics table with Base
+import app.learning.models  # noqa: F401 — register Course* tables with Base
 from app.settings.router import router as settings_router
 from app.transparency.router import router as transparency_router
 import app.transparency.models  # noqa: F401 — register Transparency tables with Base
 
 # Import refactored endpoints
 from app.endpoints import router as endpoints_router
+from app.endpoints.ambient import router as ambient_router
+from app.voice_ambient.router import router as voice_ambient_router
 
 # Import voice/transcription routers (safe - don't crash app if deps missing)
 try:
@@ -109,21 +114,59 @@ app = FastAPI(
 import logging as _logging
 
 class _QuietAccessFilter(_logging.Filter):
-    """Filter out high-frequency endpoints from uvicorn access logs."""
-    _QUIET_PATHS = (
-        '/drive/thumbnail',
-        '/bridge/pending-navigation',
-        '/ping',
+    """Suppress high-frequency polling endpoints from the live console.
+
+    Philosophy: the live console exists for things a human should notice —
+    errors, real user actions (POST/DELETE/PATCH), important state changes,
+    and warnings. UI poll loops do not qualify. They still flow to the file
+    log (uvicorn writes access entries through Python logging, and the file
+    handler set up in app.logging_config does not apply this filter), so
+    debugging is preserved — we just stop firehose-ing the eye.
+
+    Filter rules, in order:
+      1. Errors / non-2xx responses ALWAYS pass through (visibility on failure).
+      2. CORS preflights (OPTIONS) are silently dropped — never informative.
+      3. Successful GETs on known polling endpoints are silently dropped.
+      4. Everything else passes (POST/DELETE/PATCH = real user intent).
+    """
+
+    # GET endpoints hit by the frontend or Electron on a timer. Each of
+    # these has a comment so future-me knows why it's quiet — and can
+    # un-mute it cheaply if the polling cadence ever becomes a real signal.
+    _QUIET_GET_PATHS = (
+        '/drive/thumbnail',              # image previews — noisy and useless
+        '/bridge/pending-navigation',    # Android bridge poll
+        '/ping',                          # health checks (Chatterbox, Bridge)
+        '/web_automation/pending-action', # Electron long-poll, ~5x/5s
+        '/web_automation/sessions',       # Web tab list refresh
+        '/api/cost/tally',                # cost meter UI poll
+        '/auth/status',                   # auth header refresh
+        '/auth/check',                    # auth header refresh
+        '/memory/projects',               # left-nav project list refresh
+        '/drive/categories',              # Drive sidebar refresh
+        '/drive/storage-stats',           # Drive header stats
+        '/drive/files',                   # Drive listing refresh
     )
+
     def filter(self, record: _logging.LogRecord) -> bool:
         msg = record.getMessage()
-        # Suppress OPTIONS preflight requests
+
+        # CORS preflights — never useful in the live stream.
         if 'OPTIONS' in msg:
             return False
-        # Suppress noisy polling/thumbnail endpoints
-        for path in self._QUIET_PATHS:
-            if path in msg:
+
+        # Anything other than a clean success: let it through. uvicorn's
+        # access format ends with the status reason, e.g. '" 200 OK' or
+        # '" 304 Not Modified'. Treat both as "successful + boring".
+        is_clean_success = (' 200 OK' in msg) or (' 304 Not Modified' in msg)
+        if not is_clean_success:
+            return True
+
+        # Successful GET on a known polling path — mute.
+        for path in self._QUIET_GET_PATHS:
+            if f'"GET {path}' in msg:
                 return False
+
         return True
 
 _logging.getLogger('uvicorn.access').addFilter(_QuietAccessFilter())
@@ -291,6 +334,25 @@ def on_startup():
     except Exception as e:
         print(f"[startup] Investments scheduler: [WARN] {e}")
 
+    # ── ASTRA memory decay scheduler ──
+    # Recomputes preference confidence, expires low-confidence preferences,
+    # cleans stale hot index entries on a daily timer. Defined since v2.0
+    # but pre-2026-05-02 was never actually started at boot — the only
+    # path was a manual POST to /astra-memory/decay/scheduler/start that
+    # did not survive a process restart, so decay was effectively off.
+    if os.getenv("ASTRA_DECAY_SCHEDULER_ENABLED", "true").lower() not in ("false", "0", "no"):
+        try:
+            from app.astra_memory.decay_job import start_decay_scheduler_background
+            _decay_started = start_decay_scheduler_background(loop=_loop, interval_hours=24.0)
+            if _decay_started:
+                print("[startup] Decay scheduler: [OK] 24h interval")
+            else:
+                print("[startup] Decay scheduler: [WARN] not started (already running or no loop)")
+        except Exception as e:
+            print(f"[startup] Decay scheduler: [WARN] {e}")
+    else:
+        print("[startup] Decay scheduler: [SKIP] ASTRA_DECAY_SCHEDULER_ENABLED=false")
+
     # v3.0: Take a fresh investments snapshot on startup if stale/missing
     try:
         from app.db import SessionLocal
@@ -339,6 +401,20 @@ def on_startup():
         _ldb.close()
     except Exception as e:
         print(f"[startup] Lifestyle seed skipped: {e}")
+
+    # Web Automation — seed default sessions so ASTRA has something to drive
+    try:
+        from app.web_automation import seed_sessions as _seed_web_sessions
+        from app.db import SessionLocal
+        _wdb = SessionLocal()
+        _web_seed_result = _seed_web_sessions(_wdb)
+        if _web_seed_result.get("created", 0) > 0:
+            print(f"[startup] Web Automation: seeded {_web_seed_result['created']} session(s)")
+        else:
+            print(f"[startup] Web Automation: [OK] {_web_seed_result.get('total', 0)} session definitions present")
+        _wdb.close()
+    except Exception as e:
+        print(f"[startup] Web Automation seed skipped: {e}")
 
     try:
         from app.translation.confidence_graduation import run_graduation
@@ -431,6 +507,8 @@ try:
 except ImportError as e:
     print(f"[startup] Drive not available: {e}")
 app.include_router(endpoints_router)
+app.include_router(ambient_router)
+app.include_router(voice_ambient_router)
 app.include_router(rag_router)
 
 try:
@@ -523,15 +601,69 @@ try:
 except Exception as e:
     print(f"[startup] Self-Model: [WARN] {e}")
 
+
+# Self-Model identity store (Tier 1 hard facts) — separate router
+try:
+    from app.self_model.identity_router import router as identity_router
+    app.include_router(identity_router, tags=["Self-Model-Identity"], dependencies=[Depends(require_auth)])
+    print("[startup] Self-Model Identity: [OK] registered")
+except Exception as e:
+    print(f"[startup] Self-Model Identity: [WARN] {e}")
+
+# Self-Model proposal review router (Phase 3 audit, 2026-05-02).
+# In shadow mode this surfaces what the arbiter WOULD have done; in enforce
+# mode (Phase 4 onward) this is the path Taz uses to accept/reject proposed
+# Tier 1 writes. Kept in its own try/except so a failure here is visible
+# at boot rather than masked by the identity router's success.
+try:
+    from app.self_model.proposal_review_router import router as proposal_review_router
+    app.include_router(proposal_review_router, tags=["Self-Model-Proposals"], dependencies=[Depends(require_auth)])
+    print("[startup] Self-Model Proposals (arbiter): [OK] registered")
+except Exception as e:
+    print(f"[startup] Self-Model Proposals (arbiter): [WARN] {e}")
+
+# Self-Model fragments / themes (Phase 7 — long-term behavioural memory)
+try:
+    from app.self_model.fragments.router import router as fragments_router
+    app.include_router(fragments_router, tags=["Self-Model-Fragments"], dependencies=[Depends(require_auth)])
+    print("[startup] Self-Model Fragments: [OK] registered")
+except Exception as e:
+    print(f"[startup] Self-Model Fragments: [WARN] {e}")
+
+# Web Automation — Chromium-driven interaction with sites that lack APIs
+# (Coursera, TikTok/IG/FB publishing, WordPress admin). Electron shell
+# polls /web_automation/pending-action/* and executes primitives in
+# persistent session partitions.
+try:
+    from app.web_automation import router as web_automation_router, register_web_tools
+    app.include_router(web_automation_router)  # auth is per-endpoint; Electron polling is local-trusted
+    _wa_tool_count = register_web_tools()
+    print(f"[startup] Web Automation: [OK] registered ({_wa_tool_count} LLM tools)")
+except Exception as e:
+    print(f"[startup] Web Automation: [WARN] {e}")
+
+# Browser Analytics — scrapes insights pages inside the logged-in
+# WebContentsView sessions (Meta Business Suite, TikTok Studio, YouTube
+# Studio) to fill the Insights dashboard. Phase 1 is recon-only (dumps
+# page text to disk for selector discovery). Later phases add parsers,
+# DB writes, and scheduled pulls.
+try:
+    from app.content.distribution.browser_analytics import router as browser_analytics_router
+    app.include_router(browser_analytics_router)
+    print("[startup] Browser Analytics: [OK] registered (recon mode)")
+except Exception as e:
+    print(f"[startup] Browser Analytics: [WARN] {e}")
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-# Serve generated images (image generation pipeline output)
-_output_images_dir = os.path.join(
-    os.getenv("ASTRA_OUTPUT_DIR", os.path.join(os.path.dirname(__file__), "output")),
-    "images",
-)
+# Serve generated images (image generation pipeline output).
+# Path resolved via shared helper — honours IMAGE_OUTPUT_DIR if set,
+# else falls back to legacy ASTRA_OUTPUT_DIR/images. Setting
+# IMAGE_OUTPUT_DIR to a file_watcher-watched folder lets the agent's
+# search tools find generated images when posting to Meta etc.
+from app.llm.image_output_dir import get_image_output_dir
+_output_images_dir = str(get_image_output_dir())
 os.makedirs(_output_images_dir, exist_ok=True)
 app.mount("/output/images", StaticFiles(directory=_output_images_dir), name="output_images")
 print(f"[startup] Output images: [OK] serving {_output_images_dir} at /output/images")

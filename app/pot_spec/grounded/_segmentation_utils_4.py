@@ -207,6 +207,16 @@ def generate_segments(
     # v1.1: Distribute requirements to segments (heuristic, not trivial broadcast)
     requirement_map = _distribute_requirements(requirements, segments)
 
+    # v1.2 (2026-04-18): Backfill target_id for segments left None by the
+    # path-based resolver. See _manifest_builder._backfill_single_target_segments
+    # for full rationale — same bug, same fix, applied here for the legacy
+    # layer-based path.
+    try:
+        from ._manifest_builder import _backfill_single_target_segments
+        _backfill_single_target_segments(segments)
+    except Exception as _bf_err:
+        logger.debug("[segmentation] v1.2 backfill skipped: %s", _bf_err)
+
     # Assign requirements to each segment based on the map
     seg_id_to_seg = {s.segment_id: s for s in segments}
     for req, seg_ids in requirement_map.items():

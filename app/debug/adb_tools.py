@@ -68,6 +68,23 @@ async def _run_shell(cmd: str, timeout: int = 15) -> str:
     return await _run_adb("shell", cmd, timeout=timeout)
 
 
+def _normalize_activity_name(package_name: str, activity_name: Optional[str]) -> str:
+    if activity_name:
+        activity_name = activity_name.strip()
+        if activity_name.startswith(package_name + "/"):
+            return activity_name
+        if activity_name.startswith("."):
+            return f"{package_name}/{activity_name}"
+        if "/" in activity_name:
+            return activity_name
+        return f"{package_name}/.{activity_name}"
+    return f"{package_name}/.MainActivity"
+
+
+def _resolve_project_root(project_root: Optional[str]) -> str:
+    return project_root.strip() if project_root and project_root.strip() else ASTRA_BRIDGE_ROOT
+
+
 # ═══════════════════════════════════════════════════════════════
 # SCREENSHOT & VISUAL INSPECTION
 # ═══════════════════════════════════════════════════════════════
@@ -172,32 +189,36 @@ async def clear_field() -> str:
 # APP LIFECYCLE
 # ═══════════════════════════════════════════════════════════════
 
-async def launch_app() -> str:
-    """Launch AstraBridge on the emulator."""
-    result = await _run_shell(f"am start -n {ASTRA_BRIDGE_ACTIVITY}")
+async def launch_app(package_name: Optional[str] = None, activity_name: Optional[str] = None) -> str:
+    """Launch an Android app on the emulator."""
+    package_name = package_name or ASTRA_BRIDGE_PACKAGE
+    component = _normalize_activity_name(package_name, activity_name)
+    result = await _run_shell(f"am start -n {component}")
     return result
 
 
-async def force_stop_app() -> str:
-    """Force stop AstraBridge."""
-    result = await _run_shell(f"am force-stop {ASTRA_BRIDGE_PACKAGE}")
+async def force_stop_app(package_name: Optional[str] = None) -> str:
+    """Force stop an Android app."""
+    package_name = package_name or ASTRA_BRIDGE_PACKAGE
+    result = await _run_shell(f"am force-stop {package_name}")
     return result or "App force stopped"
 
 
-async def restart_app() -> str:
-    """Force stop and relaunch AstraBridge."""
-    await force_stop_app()
+async def restart_app(package_name: Optional[str] = None, activity_name: Optional[str] = None) -> str:
+    """Force stop and relaunch an Android app."""
+    await force_stop_app(package_name=package_name)
     await asyncio.sleep(1)
-    return await launch_app()
+    return await launch_app(package_name=package_name, activity_name=activity_name)
 
 
-async def clear_app_data() -> str:
+async def clear_app_data(package_name: Optional[str] = None) -> str:
     """Clear all app data (SharedPreferences, databases, cache)."""
-    result = await _run_shell(f"pm clear {ASTRA_BRIDGE_PACKAGE}")
+    package_name = package_name or ASTRA_BRIDGE_PACKAGE
+    result = await _run_shell(f"pm clear {package_name}")
     return result
 
 
-async def install_apk(apk_path: str) -> str:
+async def install_apk(apk_path: str, project_root: Optional[str] = None, package_name: Optional[str] = None, activity_name: Optional[str] = None) -> str:
     """Install an APK on the emulator."""
     result = await _run_adb("install", "-r", apk_path, timeout=60)
     return result
@@ -207,16 +228,16 @@ async def install_apk(apk_path: str) -> str:
 # BUILD & DEPLOY
 # ═══════════════════════════════════════════════════════════════
 
-async def gradle_build() -> str:
-    """Run Gradle assembleDebug for AstraBridge.
+async def gradle_build(project_root: Optional[str] = None) -> str:
+    """Run Gradle assembleDebug for an Android project.
 
     Returns the build output (last 30 lines for brevity).
     """
     proc = await asyncio.create_subprocess_shell(
-        f'cd /d "{ASTRA_BRIDGE_ROOT}" && gradlew.bat assembleDebug',
+        f'cd /d "{_resolve_project_root(project_root)}" && gradlew.bat assembleDebug',
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
-        cwd=ASTRA_BRIDGE_ROOT,
+        cwd=_resolve_project_root(project_root),
     )
     stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=300)
     output = stdout.decode("utf-8", errors="replace")
@@ -228,19 +249,23 @@ async def gradle_build() -> str:
     return f"{'BUILD SUCCESSFUL' if success else 'BUILD FAILED'}\n\n{summary}"
 
 
-async def gradle_install() -> str:
-    """Build and install AstraBridge debug APK on the emulator."""
+async def gradle_install(project_root: Optional[str] = None, apk_path: Optional[str] = None, package_name: Optional[str] = None, activity_name: Optional[str] = None) -> str:
+    """Build and install an Android debug APK on the emulator."""
     proc = await asyncio.create_subprocess_shell(
-        f'cd /d "{ASTRA_BRIDGE_ROOT}" && gradlew.bat installDebug',
+        f'cd /d "{_resolve_project_root(project_root)}" && gradlew.bat installDebug',
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
-        cwd=ASTRA_BRIDGE_ROOT,
+        cwd=_resolve_project_root(project_root),
     )
     stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=300)
     output = stdout.decode("utf-8", errors="replace")
     lines = output.strip().split("\n")
     summary = "\n".join(lines[-30:])
     success = "BUILD SUCCESSFUL" in output
+    if apk_path:
+        install_result = await install_apk(apk_path, project_root=project_root, package_name=package_name, activity_name=activity_name)
+        return f"{'BUILD SUCCESSFUL' if success else 'BUILD FAILED'}\n\n{summary}\n\nINSTALL RESULT:
+{install_result}"
     return f"{'BUILD + INSTALL SUCCESSFUL' if success else 'BUILD/INSTALL FAILED'}\n\n{summary}"
 
 

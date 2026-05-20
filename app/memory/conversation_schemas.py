@@ -87,6 +87,11 @@ class SummaryContent(BaseModel):
     technical_context: str = ""
     attachments_described: List[str] = []
     user_preferences_expressed: List[str] = []
+    # Phase 5: dedicated slot for durable biographical statements made
+    # during the session (DOB, birthplace, location changes, job changes,
+    # family, etc). Preserves hard facts through summarisation so the
+    # knowledge extractor has something to work with.
+    biographical_facts: List[str] = []
     models_involved: List[str] = []
     message_range: Optional[Dict[str, int]] = None  # {"from_id": N, "to_id": M}
 

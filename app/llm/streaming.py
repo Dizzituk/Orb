@@ -172,6 +172,33 @@ async def stream_openai(
 
     print(f"[STREAM_OPENAI] Using model: {use_model}")
 
+    # v0.20: Reasoning effort for gpt-5.x / o-series models.
+    # Controlled by OPENAI_REASONING_EFFORT env var (minimal | low | medium |
+    # high). Only applied to models that accept it (the same gate used for
+    # max_completion_tokens). Lets the user trade latency/cost for careful
+    # multi-step reasoning — specifically valuable for web automation flows
+    # where one wrong click breaks the whole sequence.
+    #
+    # v0.20.2 (2026-04-26): OpenAI rejects `tools` + `reasoning_effort` on
+    # the entire gpt-5.x family in /v1/chat/completions with HTTP 400 —
+    # not just mini. Confirmed: gpt-5.4-mini AND gpt-5.4 both fail with
+    # the same error. The only way to use reasoning_effort alongside tools
+    # is to switch to /v1/responses (different API shape — not done here).
+    # Practical effect: this env var is currently inert for chat (tools are
+    # always loaded). Agentic-tab routing still gives us full gpt-5.4 over
+    # mini, which is the main capability win; explicit reasoning_effort is
+    # an additional knob we can't use on this endpoint without restructuring.
+    reasoning_effort = os.getenv("OPENAI_REASONING_EFFORT", "").strip().lower()
+    apply_reasoning = (
+        reasoning_effort in ("minimal", "low", "medium", "high")
+        and _openai_needs_max_completion_tokens(use_model)
+        and not bool(tools)
+    )
+    if apply_reasoning:
+        print(f"[STREAM_OPENAI] Reasoning effort: {reasoning_effort}")
+    elif reasoning_effort and bool(tools) and _openai_needs_max_completion_tokens(use_model):
+        print(f"[STREAM_OPENAI] Reasoning effort skipped: {use_model} + tools not supported on /v1/chat/completions (use /v1/responses for tools+reasoning)")
+
     client = AsyncOpenAI(api_key=api_key)
 
     enhanced_prompt = enhance_system_prompt_with_reasoning(system_prompt, enable_reasoning)
@@ -226,6 +253,12 @@ async def stream_openai(
             create_kwargs["max_completion_tokens"] = int(max_completion_tokens or 32768)
         elif legacy_max_tokens is not None:
             create_kwargs["max_tokens"] = int(legacy_max_tokens)
+
+        # v0.20: pass reasoning_effort through to the API for gpt-5.x / o-series.
+        # Unknown params are stripped silently by older SDK versions, so this
+        # is safe to include unconditionally when the gate matched above.
+        if apply_reasoning:
+            create_kwargs["reasoning_effort"] = reasoning_effort
 
         try:
             stream = await client.chat.completions.create(

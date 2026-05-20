@@ -422,6 +422,17 @@ def _build_single_segment_manifest(
     except Exception:
         pass
 
+    # v1.2 (2026-04-18): Backfill single-segment target_id from job hint if
+    # the path-based resolver returned None. Fixes the same class of bug
+    # as _manifest_builder._backfill_single_target_segments: cross-cutting
+    # files (build.gradle, AndroidManifest) don't match registered project
+    # signals, so resolution fails, so the builder later refuses to route.
+    try:
+        from ._manifest_builder import _backfill_single_target_segments
+        _backfill_single_target_segments([segment])
+    except Exception as _bf_err:
+        logger.debug("[spec_runner] v1.2 single-segment backfill skipped: %s", _bf_err)
+
     manifest = SegmentManifest(
         parent_spec_id=spec_id,
         parent_spec_hash=spec_hash,

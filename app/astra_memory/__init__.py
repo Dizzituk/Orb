@@ -221,6 +221,7 @@ from app.astra_memory.decay_job import (
     DecayJobScheduler,
     get_scheduler,
     run_decay_now,
+    start_decay_scheduler_background,
 )
 
 # =============================================================================
@@ -348,4 +349,5 @@ __all__ = [
     "DecayJobScheduler",
     "get_scheduler",
     "run_decay_now",
+    "start_decay_scheduler_background",
 ]

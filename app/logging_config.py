@@ -37,6 +37,75 @@ LOG_FORMAT = "%(asctime)s [%(levelname)-7s] %(name)s: %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
+# ── Access log filter ───────────────────────────────────────────
+# Uvicorn's `uvicorn.access` logger emits one line per HTTP request.
+# The web-automation subsystem long-polls a handful of endpoints every
+# few seconds (one per registered session, plus the bridge), which
+# floods the console and drowns out everything else.
+#
+# This filter drops access-log records for those specific routes,
+# leaving the actual chat / tool / debug traffic visible. The polling
+# itself is unaffected — only the LOG line is suppressed.
+#
+# Override: set ORB_VERBOSE_HTTP=1 to disable the filter and see every
+# request again (useful when debugging the polling loop itself).
+_DEFAULT_NOISY_ROUTES = (
+    "/web_automation/pending-action",   # action queue long-poll
+    "/web_automation/sessions",          # frontend session list refresh
+    "/bridge/pending-navigation",        # bridge navigation long-poll
+)
+
+
+class _AccessLogNoiseFilter(logging.Filter):
+    """Drop uvicorn.access records whose path matches any noisy route.
+
+    Uvicorn formats access lines as:
+      '%s - "%s %s HTTP/%s" %d %s' % (client, method, path, http_ver, status, phrase)
+    so the path lives in record.args[2]. We check the rendered message
+    too as a defensive fallback in case uvicorn changes its format.
+    """
+
+    def __init__(self, noisy_routes: tuple[str, ...]):
+        super().__init__()
+        self.noisy_routes = noisy_routes
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Fast path: structured args.
+        path = None
+        if record.args and isinstance(record.args, tuple) and len(record.args) >= 3:
+            candidate = record.args[2]
+            if isinstance(candidate, str):
+                path = candidate
+        if path is None:
+            try:
+                path = record.getMessage()
+            except Exception:
+                return True
+        for noisy in self.noisy_routes:
+            if noisy in path:
+                return False
+        return True
+
+
+def _install_access_log_filter() -> None:
+    """Attach the noise filter to uvicorn.access unless ORB_VERBOSE_HTTP is set."""
+    if os.getenv("ORB_VERBOSE_HTTP", "").strip() in ("1", "true", "yes"):
+        logging.getLogger(__name__).info(
+            "ORB_VERBOSE_HTTP set — access log filter NOT installed"
+        )
+        return
+    extra = os.getenv("ORB_QUIET_ROUTES", "").strip()
+    routes = list(_DEFAULT_NOISY_ROUTES)
+    if extra:
+        routes.extend(r.strip() for r in extra.split(",") if r.strip())
+    flt = _AccessLogNoiseFilter(tuple(routes))
+    logging.getLogger("uvicorn.access").addFilter(flt)
+    logging.getLogger(__name__).info(
+        "Access log filter installed: suppressing %d route pattern(s)",
+        len(routes),
+    )
+
+
 def setup_file_logging(level: int = logging.DEBUG) -> str:
     """Attach a RotatingFileHandler to the root logger.
 
@@ -94,6 +163,13 @@ def setup_file_logging(level: int = logging.DEBUG) -> str:
         "urllib3.connectionpool",
     ):
         logging.getLogger(_noisy).setLevel(logging.WARNING)
+
+    # ── v1.2 Suppress polling-loop access log noise ───────────────
+    # web_automation/pending-action and bridge/pending-navigation are
+    # long-polled by every registered session every 5s; their access
+    # log lines drown out everything else. Filter installs unless
+    # ORB_VERBOSE_HTTP=1 is set.
+    _install_access_log_filter()
 
     # Log the setup itself
     logger = logging.getLogger(__name__)

@@ -16,6 +16,7 @@ Hook points:
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -178,6 +179,16 @@ def on_subsystem_error(
 # KNOWLEDGE EXTRACTION HOOKS
 # ══════════════════════════════════════════════════════════
 
+# Keys from knowledge extractor that should ALSO be written to the
+# Tier 1 identity store (these are hard biographical facts that
+# belong in the always-injected identity block, not only in the
+# confidence-scored self-model).
+_IDENTITY_ROUTED_KEYS = {
+    "name", "preferred_name", "date_of_birth", "birthplace",
+    "current_location", "nationality", "occupation", "email", "phone",
+}
+
+
 def on_knowledge_extracted(
     category: str,
     key: str,
@@ -203,6 +214,58 @@ def on_knowledge_extracted(
                 f"Learned {category} fact: {key} = {value[:60]}",
                 source,
             )
+
+        # Phase 5: mirror biographical hard facts into the Tier 1
+        # identity store so they end up in the always-injected block.
+        #
+        # Phase 1 audit (2026-05-02): this mirror is the path that
+        # wrote `knowledge_extractor:session:NN` corruptions like
+        # current_location = "Grew up in Lagos, Algarve, Portugal."
+        # into identity.json. The LLM extractor is fallible and there
+        # is no validation between its output and the Tier 1 store.
+        #
+        # Default behaviour is now LOG-ONLY: record what the extractor
+        # would have written so Phase 3's arbiter has training data,
+        # but do not actually mutate identity.json. Set
+        # ASTRA_KNOWLEDGE_EXTRACTOR_IDENTITY_MIRROR=true to restore
+        # the old behaviour (not recommended).
+        if category == "biographical" and key in _IDENTITY_ROUTED_KEYS:
+            # Phase 3 audit (2026-05-02): observe via arbiter regardless of
+            # mirror flag — this gives us a record of every extractor decision
+            # that targeted Tier 1, even when the mirror is suppressed.
+            try:
+                from app.self_model.write_arbiter import propose as _arbiter_propose
+                _arbiter_propose(
+                    field_name=key,
+                    proposed_value=value,
+                    source=f"knowledge_extractor:{source}",
+                    evidence={"category": category},
+                )
+            except Exception as _arb_err:
+                logger.debug("[self_model] arbiter observe failed: %s", _arb_err)
+
+            _mirror_enabled = os.getenv(
+                "ASTRA_KNOWLEDGE_EXTRACTOR_IDENTITY_MIRROR", "false",
+            ).lower() in ("1", "true", "yes")
+            if not _mirror_enabled:
+                logger.info(
+                    "[self_model] identity mirror SUPPRESSED (Phase 1): "
+                    "would have written %s = %r (source=knowledge_extractor:%s)",
+                    key, value, source,
+                )
+            else:
+                try:
+                    from app.self_model.identity import get_identity_store
+                    r = get_identity_store().set(
+                        key, value,
+                        source=f"knowledge_extractor:{source}",
+                    )
+                    logger.info(
+                        "[self_model] mirrored to identity store: %s -> %s",
+                        key, r.get("action"),
+                    )
+                except Exception as id_err:
+                    logger.debug("[self_model] identity mirror failed: %s", id_err)
     except Exception as e:
         logger.debug("[self_model] knowledge hook error: %s", e)
 

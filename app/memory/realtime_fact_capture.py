@@ -84,11 +84,13 @@ def capture_biographical_facts(
     db=None,
 ) -> int:
     """
-    Scan a user message for biographical facts and write them
-    to ASTRA's permanent preference system immediately.
-
-    Returns the number of facts captured.
+    DISABLED (Phase 7 cleanup — 2026-04-14).
+    Superseded by app.self_model.identity_capture which writes to the
+    Tier 1 identity.json store instead of astra_preferences SQL table.
     """
+    return 0
+
+    # old implementation retained for reference, never executed
     if not message or len(message) < 5:
         return 0
 

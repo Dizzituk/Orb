@@ -148,8 +148,14 @@ def link_card_payment(
 ) -> Optional[LinkedPayment]:
     """Link a NatWest transaction to a credit card and apply the split.
 
-    Sets the transaction's expense_scope to 'mixed' and stores
-    the card linkage. The actual amounts are derived from the card split.
+    Sets the transaction's `deductible_amount` to the business portion of
+    the payment (payment_amount × business_pct / 100). Previously only the
+    `is_tax_deductible` flag was set — `deductible_amount` was left at 0,
+    which meant card spend contributed nothing to the tax deduction even
+    when every purchase on the card was categorised as business.
+
+    The card's business/personal split is computed live from the
+    card's own transaction history (CreditCardTransaction rows).
     """
     tx = db.query(Transaction).filter(Transaction.id == transaction_id).first()
     if not tx:
@@ -166,13 +172,14 @@ def link_card_payment(
     tx.linked_card_id = card_id
     tx.expense_scope = "mixed"
     tx.is_tax_deductible = split.business_pct > 0
+    tx.deductible_amount = biz_amount
     tx.user_confirmed = True
     db.commit()
 
     logger.info(
-        "[card_linker] tx#%d linked to card %d (%s): %.1f%% biz / %.1f%% per",
+        "[card_linker] tx#%d linked to card %d (%s): %.1f%% biz / %.1f%% per, deductible £%.2f",
         transaction_id, card_id, split.card_name,
-        split.business_pct, split.personal_pct,
+        split.business_pct, split.personal_pct, biz_amount,
     )
 
     return LinkedPayment(
@@ -213,6 +220,37 @@ def auto_link_card_payments(db: Session) -> list[LinkedPayment]:
         )
 
     return linked
+
+
+def refresh_linked_deductibles(db: Session) -> dict:
+    """Re-apply the current card split to every already-linked payment.
+
+    Call this after re-categorising card transactions to update the
+    business-portion `deductible_amount` on each NatWest bill-pay row.
+    Without this, changes to card-transaction categories have no effect
+    on the tax calculation until the next manual re-link.
+    """
+    already_linked = db.query(Transaction).filter(
+        Transaction.linked_card_id.isnot(None),
+        Transaction.is_deleted == False,
+    ).all()
+
+    refreshed = 0
+    total_deductible = 0.0
+    for tx in already_linked:
+        split = get_card_split(db, tx.linked_card_id)
+        if not split:
+            continue
+        tx.deductible_amount = round(tx.amount * split.business_pct / 100, 2)
+        tx.is_tax_deductible = split.business_pct > 0
+        refreshed += 1
+        total_deductible += tx.deductible_amount
+
+    db.commit()
+    return {
+        "refreshed": refreshed,
+        "total_deductible": round(total_deductible, 2),
+    }
 
 
 def get_unlinked_card_payments(db: Session) -> list[dict]:

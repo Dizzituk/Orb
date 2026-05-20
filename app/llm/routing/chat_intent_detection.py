@@ -145,17 +145,56 @@ def detect_codebase_exploration(message: str) -> bool:
 
 
 # =============================================================================
-# IMAGE GENERATION  (v10.3 / v3.1 / v3.2)
+# IMAGE GENERATION  (v10.3 / v3.1 / v3.2 / v10.5)
 # =============================================================================
+#
+# v10.5 (2026-05-01): Added optional adjective slot before chart/graph/plot/
+# diagram nouns so requests like "make me a bar chart", "pie chart",
+# "line graph", "stacked column chart", "scatter plot" etc. trigger image
+# generation instead of falling through to the document-creation path.
+#
+# Without this slot, the regex required the noun to sit immediately after
+# the article ("make me a chart" matched, "make me a bar chart" did not),
+# so chart-type-prefixed requests were silently treated as ordinary text
+# document creation — which produced HTML reports instead of routing to
+# gpt-image-2. See conversation 161 / 2026-05-01 for the failure trace.
+#
+# Adjective list covers the common chart families. Standalone nouns still
+# match because the prefix group is optional.
+# Optional chart-type adjective group. The `{0,3}` after the outer non-capture
+# group matches 0–3 stacked adjectives, so:
+#   "chart"               → 0 adjectives, noun matches "chart"
+#   "bar chart"           → 1 adjective "bar ", noun matches "chart"
+#   "stacked bar chart"   → 2 adjectives "stacked " + "bar ", noun matches
+#   "horizontal grouped bar chart" → 3 adjectives stacked
+# Capped at 3 to avoid pathological backtracking.
+_CHART_ADJ_OPT = (
+    r'(?:'
+    r'(?:bar|pie|line|column|stacked|grouped|donut|doughnut|scatter|area|'
+    r'bubble|gantt|waterfall|candlestick|horizontal|vertical|venn|tree|'
+    r'network|flow|sankey|pivot|radar|heat|heat\s*map|funnel|polar|box|'
+    r'violin|step)\s+'
+    r'){0,3}'
+)
 
 _IMAGE_GEN_PATTERNS = re.compile(
     r'(?:'
-        r'(?:create|draw|make|generate|design|paint|sketch|render|produce|build|compile|visuali[sz]e|need|plot|put\s+together)\s+'
-        r'(?:me\s+|yourself\s+)?(?:a\s+|an\s+|the\s+|another\s+|this\s+into\s+(?:a|an)\s+)?'
-        r'(?:new\s+)?(?:image|picture|photo|illustration|avatar|icon|graphic|artwork|portrait|visual|banner|thumbnail|logo|cover|chart|graph|infographic|plot|diagram)'
+        r'(?:create|recreate|draw|redraw|make|remake|generate|regenerate|design|paint|sketch|render|produce|build|compile|visuali[sz]e|need|plot|put\s+together|do|show)\s+'
+        r'(?:me\s+|yourself\s+)?(?:a\s+|an\s+|the\s+|another\s+|that\s+|this\s+|this\s+into\s+(?:a|an)\s+)?'
+        r'(?:new\s+)?'
+        r'(?:'
+            r'image|picture|photo|illustration|avatar|icon|graphic|artwork|'
+            r'portrait|visual|banner|thumbnail|logo|cover|infographic'
+            r'|'
+            + _CHART_ADJ_OPT + r'(?:chart|graph|plot|diagram)'
+        + r')'
     r'|'
         r'(?:turn|convert|transform)\s+(?:this|that|it)\s+into\s+(?:a\s+|an\s+)?'
-        r'(?:image|picture|photo|illustration|graphic|visual|chart|graph|infographic|diagram)'
+        r'(?:'
+            r'image|picture|photo|illustration|graphic|visual|infographic'
+            r'|'
+            + _CHART_ADJ_OPT + r'(?:chart|graph|plot|diagram)'
+        + r')'
     r')',
     re.IGNORECASE,
 )
@@ -171,7 +210,7 @@ def detect_image_gen_intent(message: str) -> bool:
 # =============================================================================
 
 _IMAGE_REFINE_PATTERNS = re.compile(
-    r'(?:change|modify|adjust|tweak|fix|redo|again\s+but|same\s+but|less\s+\w+|more\s+\w+|make\s+it|try\s+again|not\s+(?:quite|right)|too\s+\w+)',
+    r'(?:change|modify|adjust|tweak|fix|redo|recreate|regenerate|redraw|remake|again\s+but|same\s+but|less\s+\w+|more\s+\w+|make\s+it|try\s+again|another\s+(?:version|image|one|picture|photo|chart|graph|graphic|illustration|visual|infographic|diagram)|do\s+(?:that|this|it)\s+again|not\s+(?:quite|right)|too\s+\w+)',
     re.IGNORECASE,
 )
 
@@ -181,15 +220,34 @@ def detect_image_refinement(message: str) -> bool:
     return bool(_IMAGE_REFINE_PATTERNS.search(message))
 
 
+# Markers written by image_router into assistant messages on successful
+# image generation. Detecting by content keeps this decoupled from any
+# specific image-gen model name (gpt-image-2, gemini-2.5-flash-image,
+# nano-banana-2, plotly/kaleido, etc.) so future model swaps don't break it.
+_IMAGE_MSG_MARKERS = (
+    "/output/images/",
+    "Generated with ",
+    "Generated image:",
+    "rendered with Plotly",
+)
+
+
 def last_assistant_was_image(project_id: int, db) -> bool:
-    """Check if the most recent assistant message was a Nano Banana image generation."""
+    """Check if the most recent assistant message was an image generation.
+
+    Matches by content markers written by image_router (filename in
+    /output/images/ path or 'Generated with...' prefix) rather than by
+    model name, so it stays robust as image-gen models change.
+    """
     try:
         msgs = memory_service.get_messages(db, project_id, limit=3)
         for msg in reversed(msgs):
-            if msg.role == 'assistant' and msg.model == 'nano-banana-2':
+            if msg.role != 'assistant':
+                continue
+            content = msg.content or ""
+            if any(marker in content for marker in _IMAGE_MSG_MARKERS):
                 return True
-            if msg.role == 'assistant':
-                return False
+            return False  # First assistant message wasn't image
     except Exception:
         pass
     return False

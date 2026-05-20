@@ -18,16 +18,21 @@ from app.finance.models import (
     ExpenseCategory, RecurringCost, SavingsGoal,
 )
 from app.finance.engines.hmrc_tax_engine import HMRCTaxEngine, TaxYearConfig
+from app.finance.utils.tax_year import (
+    get_current_tax_year as _canonical_tax_year,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def get_current_tax_year() -> str:
-    """Return current UK tax year string (e.g., '2025-26')."""
-    today = date.today()
-    if today.month >= 4 and today.day >= 6:
-        return f"{today.year}-{str(today.year + 1)[2:]}"
-    return f"{today.year - 1}-{str(today.year)[2:]}"
+    """Return current UK tax year string (e.g., '2025-26').
+
+    Thin wrapper around app.finance.utils.tax_year.get_current_tax_year
+    so existing imports from this module keep working. The boundary
+    logic lives in ONE place now.
+    """
+    return _canonical_tax_year()
 
 
 def _calculate_hours(start: Optional[str], end: Optional[str], breaks: float = 0.0) -> tuple[Optional[float], Optional[float]]:
@@ -206,13 +211,20 @@ def calculate_tax_estimate(db: Session, tax_year: Optional[str] = None) -> dict:
 
     Cost-method-aware: checks van finance record to determine whether
     to use mileage rates or actual vehicle running costs.
+
+    Under the MILEAGE method, vehicle running-cost categories (fuel,
+    insurance, MOT, maintenance) are excluded from the deduction total
+    — the 45p/25p rate already covers them. Without this, the system
+    would double-dip and understate the tax bill.
     """
     from app.finance.models import VanFinance
     from app.finance.engines.vehicle_costs_engine import calculate_vehicle_costs
+    from app.finance.engines.mileage_method_enforcer import enforce_mileage_method
 
     ty = tax_year or get_current_tax_year()
-    engine = HMRCTaxEngine()
-    config = TaxYearConfig()
+    # Use year-aware config so 26-27 rates apply automatically.
+    config = TaxYearConfig.for_year(ty)
+    engine = HMRCTaxEngine(config)
     today = date.today()
     weeks = max(1, (today - config.start_date).days // 7)
 
@@ -223,16 +235,21 @@ def calculate_tax_estimate(db: Session, tax_year: Optional[str] = None) -> dict:
         Transaction.is_deleted == False,
     ).scalar()
 
-    # Sum non-vehicle deductible expenses (phone, tools, clothing etc.)
-    expenses = db.query(func.coalesce(func.sum(Transaction.deductible_amount), 0.0)).filter(
-        Transaction.tax_year == ty,
-        Transaction.is_tax_deductible == True,
-        Transaction.is_deleted == False,
-    ).scalar()
-
     # Determine cost method from van finance record
     van = db.query(VanFinance).filter(VanFinance.is_active == True).first()
     cost_method = (van.cost_method if van else None) or "mileage"
+
+    # Load deductible transactions, then apply mileage method enforcement
+    # BEFORE summing. Under mileage method, vehicle running-cost rows are
+    # suppressed from the total (but their underlying records are not
+    # modified — user can still see what they spent).
+    deductible_txs = db.query(Transaction).filter(
+        Transaction.tax_year == ty,
+        Transaction.is_tax_deductible == True,
+        Transaction.is_deleted == False,
+    ).all()
+    enforcement = enforce_mileage_method(deductible_txs, cost_method=cost_method)
+    expenses = enforcement.adjusted_deductible_total
 
     # Mileage data (needed for both methods — tracking even if not claiming)
     mileage_summary = db.query(MileageYearSummary).filter(
@@ -286,6 +303,22 @@ def calculate_tax_estimate(db: Session, tax_year: Optional[str] = None) -> dict:
     # Attach cost method and vehicle breakdown
     result = breakdown.__dict__
     result["cost_method"] = cost_method
+    result["mileage_enforcement"] = {
+        "suppressed_total": enforcement.suppressed_total,
+        "suppressed_count": enforcement.suppressed_count,
+        "unchanged_count": enforcement.unchanged_count,
+        "suppressed_transactions": [
+            {
+                "transaction_id": s.transaction_id,
+                "description": s.description,
+                "amount": s.amount,
+                "original_deductible": s.original_deductible,
+                "category_name": s.category_name,
+                "reason": s.reason,
+            }
+            for s in enforcement.suppressed_transactions
+        ],
+    }
     if vehicle_costs:
         result["vehicle_costs"] = vehicle_costs.to_dict()
         # Override mileage_deduction to 0 for actual costs

@@ -13,7 +13,8 @@ Usage: Called from command_dispatch.py around handler invocation.
 
 import json
 import logging
-from typing import AsyncGenerator, Optional
+import time
+from typing import AsyncGenerator, Dict, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -45,6 +46,62 @@ _STAGE_MAP = {
 
 # Stages that should trigger build project tracking
 _TRACKED_STAGES = set(_STAGE_MAP.keys())
+
+# ══════════════════════════════════════════════════════════════════
+# v2.2 (2026-04-18) Dispatch deduplication
+# ══════════════════════════════════════════════════════════════════
+#
+# Both the auto-advance SSE event (emitted by stage_hooks when a prior
+# stage passes) and explicit user confirmations (voice/typed "Send to
+# Spec Gate") route to the same stage handler. When both arrive in
+# quick succession, the stage runs twice — two Claude Opus calls with
+# extended thinking, two ~9-minute inspections, double cost, and a
+# confused build project state.
+#
+# This module-level registry tracks in-flight stage dispatches keyed by
+# (chat_project_id, dispatch_stage). Additions and checks are atomic
+# within asyncio's single-threaded event loop (no await between check
+# and add). A timestamp-based cooldown covers rare cases where the
+# first invocation completes so fast that the second arrives after the
+# tracking key was already removed.
+
+_IN_FLIGHT_STAGES: Dict[Tuple[int, str], float] = {}
+# Window during which a second identical dispatch is treated as a
+# duplicate even if the first one is no longer "in flight". Covers the
+# race where the auto-advance event and the user's voice command
+# overlap by just a few seconds after a fast stage completion.
+_DUPLICATE_DISPATCH_WINDOW_SEC = 15.0
+
+
+def _is_duplicate_dispatch(chat_project_id: int, dispatch_stage: str) -> bool:
+    """Check whether this (chat_project_id, stage) pair is already in
+    flight or completed within the cooldown window. Atomic in the
+    asyncio sense — no await between read and write.
+    """
+    key = (chat_project_id, dispatch_stage)
+    now = time.monotonic()
+    # Purge stale entries that fell outside the dedup window entirely.
+    # Keeps the dict small over long-running processes.
+    for k in list(_IN_FLIGHT_STAGES.keys()):
+        if now - _IN_FLIGHT_STAGES[k] > _DUPLICATE_DISPATCH_WINDOW_SEC * 10:
+            _IN_FLIGHT_STAGES.pop(k, None)
+    ts = _IN_FLIGHT_STAGES.get(key)
+    if ts is not None and (now - ts) < _DUPLICATE_DISPATCH_WINDOW_SEC:
+        return True
+    _IN_FLIGHT_STAGES[key] = now
+    return False
+
+
+def _release_dispatch_slot(chat_project_id: int, dispatch_stage: str) -> None:
+    """Remove the in-flight marker once the stage has finished streaming.
+    The timestamp stays in _IN_FLIGHT_STAGES only until the cooldown
+    window expires — see _is_duplicate_dispatch for the purge logic.
+    """
+    key = (chat_project_id, dispatch_stage)
+    # Refresh timestamp so the cooldown window starts from stage end, not
+    # stage start. This is what catches the 'user said the thing right
+    # after auto-advance finished' race.
+    _IN_FLIGHT_STAGES[key] = time.monotonic()
 
 # v2.1 Auto-advance: when a stage passes, which intent to fire next.
 # This creates the one-button flow: Weaver → SpecGate → Builder (auto).
@@ -242,6 +299,30 @@ async def wrap_with_build_tracking(
             yield chunk
         return
 
+    # v2.2 (2026-04-18): Dispatch deduplication — reject concurrent or
+    # near-concurrent duplicate invocations for the same (chat_project,
+    # stage) pair. Fixes the auto-advance + voice-command collision that
+    # caused two Claude Opus spec_gate calls in the previous run.
+    if _is_duplicate_dispatch(chat_project_id, dispatch_stage):
+        logger.info(
+            "[stage_hooks] v2.2 DUPLICATE DISPATCH suppressed: stage=%s "
+            "chat_project=%s — already in flight or within %.0fs cooldown",
+            dispatch_stage, chat_project_id, _DUPLICATE_DISPATCH_WINDOW_SEC,
+        )
+        print(
+            f"[STAGE_HOOKS] v2.2 DUPLICATE SUPPRESSED: "
+            f"{dispatch_stage} for chat_project={chat_project_id}"
+        )
+        # Emit a minimal SSE event so the frontend knows something arrived
+        # but was no-op'd, then return without invoking the inner stream.
+        yield _make_sse_event({
+            "type": "duplicate_dispatch_suppressed",
+            "stage": dispatch_stage,
+            "chat_project_id": chat_project_id,
+            "reason": "already_in_flight_or_cooldown",
+        })
+        return
+
     # Extract the actual brief from conversation history, not the command text
     brief = _extract_brief_from_conversation(db, chat_project_id) or message
 
@@ -422,3 +503,10 @@ async def wrap_with_build_tracking(
             "build_project_id": build_project_id,
             "chat_project_id": chat_project_id,
         })
+
+    # v2.2 (2026-04-18): Refresh the dispatch-dedup timestamp to NOW so the
+    # cooldown window starts from stage completion, not stage entry. This
+    # is what catches the common race: auto-advance fires immediately on
+    # stage pass, and the user's follow-up voice/typed confirmation
+    # arrives moments later — inside the cooldown window.
+    _release_dispatch_slot(chat_project_id, dispatch_stage)

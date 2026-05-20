@@ -258,6 +258,16 @@ def _write_facts_to_memory(
         category = item["category"]
         key = item["key"]
         value = item["value"]
+
+        # Security: never store API keys, secrets, or tokens
+        _val_str = str(value).lower() if value else ""
+        _key_lower = key.lower() if key else ""
+        if any(x in _key_lower for x in ("api_key", "secret", "token", "client_key", "client_id", "app_id", "app_secret")):
+            logger.debug("[doc_promoter] Skipping sensitive key: %s", key)
+            continue
+        if any(_val_str.startswith(x) for x in ("sk-", "sk_", "aizasy", "gocspx")):
+            logger.debug("[doc_promoter] Skipping value resembling API key: %s", key)
+            continue
         permanence = item.get("permanence", "soft")
 
         pref_key = f"doc_extract:{category}:{key}"

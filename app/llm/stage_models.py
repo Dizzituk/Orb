@@ -24,14 +24,25 @@ Example .env:
     CRITICAL_PIPELINE_PROVIDER=anthropic
     CRITICAL_PIPELINE_MODEL=claude-sonnet-4-5-20250929
 
+v1.2 (2026-04-18): Frontier alias resolution + per-stage reasoning defaults.
+    STAGE_DEFAULTS now references aliases like ``openai:frontier-reasoning``
+    (see app.llm.frontier_models) so the "latest good model" lives in ONE
+    file. get_stage_config() resolves aliases at call time and attaches the
+    stage's reasoning config automatically. Concrete env-var overrides still
+    work unchanged.
 v1.1 (2026-01): Added all pipeline stages, token limits, timeouts
 v1.0 (2026-01): Initial implementation
 """
 
 import os
 import logging
-from dataclasses import dataclass
-from typing import Optional, Dict, Tuple, List
+from dataclasses import dataclass, field
+from typing import Optional, Dict, Tuple, List, Any
+
+from app.llm.frontier_models import (
+    resolve_model_alias,
+    get_reasoning_for_stage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +59,15 @@ class StageConfig:
     stage_name: str
     max_output_tokens: int = 4000
     timeout_seconds: int = 60
-    
+    # v1.2: Reasoning / thinking config attached per stage.
+    # Shape: ``{"effort": "low"|"medium"|"high"|"xhigh"|"max"}`` or None.
+    # Resolved from app.llm.frontier_models.STAGE_REASONING.
+    reasoning: Optional[Dict[str, str]] = field(default=None)
+
     def __str__(self) -> str:
-        return f"{self.stage_name}: {self.provider}/{self.model}"
-    
+        r = f" reasoning={self.reasoning}" if self.reasoning else ""
+        return f"{self.stage_name}: {self.provider}/{self.model}{r}"
+
     def to_dict(self) -> dict:
         return {
             "stage": self.stage_name,
@@ -59,6 +75,7 @@ class StageConfig:
             "model": self.model,
             "max_output_tokens": self.max_output_tokens,
             "timeout_seconds": self.timeout_seconds,
+            "reasoning": self.reasoning,
         }
 
 
@@ -68,43 +85,54 @@ class StageConfig:
 # Default (provider, model, max_tokens, timeout) per stage
 # Used when env vars not set - intentionally cheap/fast for safety
 
-# v3.2: Defaults aligned with current .env config (google/anthropic only)
-# These only fire when .env vars are missing for a stage.
+# v1.2 (2026-04-18): Replaced hard-coded model IDs with frontier aliases.
+# Single source of truth for "latest good model" now lives in
+# app.llm.frontier_models.FRONTIER_ALIASES. When new models drop, update
+# that one file; every stage picks up the new model automatically.
+#
+# HARD RULE: no stage points to a Pro-tier OpenAI model (gpt-*-pro).
+# The reasoning parameter gets us most of the quality lift at a fraction
+# of the cost.
 STAGE_DEFAULTS: Dict[str, Tuple[str, str, int, int]] = {
-    # Core pipeline stages (aligned with .env 2026-04-05)
-    "WEAVER":             ("openai",    "gpt-5.4",                     8000,  60),
-    "SPEC_GATE":          ("anthropic", "claude-opus-4-6",             8000,  120),
-    "PLANNER":            ("openai",    "gpt-5.4",                     60000, 120),
-    "ARCHITECTURE":       ("anthropic", "claude-opus-4-6",             60000, 300),
-    "CRITIQUE":           ("anthropic", "claude-opus-4-6",             60000, 180),
-    "REVISION":           ("anthropic", "claude-opus-4-6",             60000, 300),
-    "IMPLEMENTER":        ("openai",    "gpt-5.4",                     60000, 300),
-    "OVERWATCHER":        ("anthropic", "claude-opus-4-6",             4000,  120),
-    "CRITICAL_PIPELINE":  ("openai",    "gpt-5.4",                     60000, 600),
+    # Core pipeline stages
+    "WEAVER":             ("openai",    "openai:frontier-reasoning",         8000,  60),
+    "SPEC_GATE":          ("anthropic", "anthropic:frontier-opus-thinking",  8000,  120),
+    "PLANNER":            ("openai",    "openai:frontier-reasoning",         60000, 120),
+    "ARCHITECTURE":       ("anthropic", "anthropic:frontier-opus-thinking",  60000, 300),
+    "CRITIQUE":           ("anthropic", "anthropic:frontier-opus-thinking",  60000, 180),
+    "REVISION":           ("anthropic", "anthropic:frontier-opus-thinking",  60000, 300),
+    "IMPLEMENTER":        ("openai",    "openai:frontier-reasoning",         60000, 300),
+    "OVERWATCHER":        ("anthropic", "anthropic:frontier-opus-thinking",  4000,  120),
+    "CRITICAL_PIPELINE":  ("openai",    "openai:frontier-reasoning",         60000, 600),
 
     # Supervisor (Phase 2A — interface contracts between segments)
-    "CRITICAL_SUPERVISOR": ("anthropic", "claude-opus-4-6",            8000, 120),
-    "COHESION_CHECK":      ("anthropic", "claude-opus-4-6",            4000, 120),
-    "NEEDLE_CLASSIFIER":   ("google",    "gemini-2.5-flash-lite",      500,  30),
-    "SMART_SEGMENTATION":  ("google",    "gemini-2.5-flash",           2000, 45),
+    "CRITICAL_SUPERVISOR": ("anthropic", "anthropic:frontier-opus-thinking", 8000, 120),
+    "COHESION_CHECK":      ("anthropic", "anthropic:frontier-sonnet",        4000, 120),
+    "NEEDLE_CLASSIFIER":   ("google",    "google:frontier-flash-lite",       500,  30),
+    "SMART_SEGMENTATION":  ("google",    "google:frontier-flash",            2000, 45),
     # Phase 3C: Needle-based model tiers for architecture generation
-    "ARCH_TIER_LOW":       ("google",    "gemini-2.5-flash",           60000, 600),
-    "ARCH_TIER_HIGH":      ("anthropic", "claude-opus-4-6",            60000, 600),
+    "ARCH_TIER_LOW":       ("google",    "google:frontier-flash",            60000, 600),
+    "ARCH_TIER_HIGH":      ("anthropic", "anthropic:frontier-opus-thinking", 60000, 600),
     # Phase 3D: Cohesion autofix micro-patch
-    "COHESION_MICRO_PATCH": ("google",   "gemini-2.5-flash",           8000, 60),
+    "COHESION_MICRO_PATCH": ("google",   "google:frontier-flash",            8000, 60),
     # Phase 4A: Post-write verification
-    "JOB_CHECKER":         ("anthropic", "claude-sonnet-4-6",          1500, 45),
+    "JOB_CHECKER":         ("anthropic", "anthropic:frontier-sonnet",        1500, 45),
     # Phase 4C: Weaver conversation compaction
-    "WEAVER_COMPACTION":   ("google",    "gemini-2.5-flash",           1500, 45),
+    "WEAVER_COMPACTION":   ("google",    "google:frontier-flash",            1500, 45),
+
+    # v1.3 (2026-04-18): Always-on spec reviewer. Opus 4.7 with reasoning
+    # high, 16k output budget so detailed findings + rationale fit.
+    # Timeout generous because reasoning + 200KB source context is slow.
+    "SPEC_REVIEW":         ("anthropic", "anthropic:frontier-opus-thinking", 16000, 600),
 
     # Support stages
-    "CHAT":               ("google",    "gemini-2.5-flash",            4000,  30),
-    "ARCHMAP":            ("anthropic", "claude-opus-4-6",             60000, 300),
-    "SUMMARIZER":         ("google",    "gemini-2.5-flash-lite",       2000,  60),
-    "CLASSIFIER":         ("google",    "gemini-2.5-flash-lite",       500,   10),
+    "CHAT":               ("google",    "google:frontier-flash",             4000,  30),
+    "ARCHMAP":            ("anthropic", "anthropic:frontier-opus-thinking",  60000, 300),
+    "SUMMARIZER":         ("google",    "google:frontier-flash-lite",        2000,  60),
+    "CLASSIFIER":         ("google",    "google:frontier-flash-lite",        500,   10),
 
     # Legacy/aliases
-    "OVERWATCH":          ("google",    "gemini-2.5-flash",            1200,  60),
+    "OVERWATCH":          ("google",    "google:frontier-flash",             1200,  60),
 }
 
 
@@ -251,12 +279,24 @@ def get_stage_config(stage: str) -> StageConfig:
     except ValueError:
         timeout = default_timeout
     
+    # v1.2 (2026-04-18): Resolve frontier aliases to concrete model IDs.
+    # Aliases from app.llm.frontier_models (e.g. "openai:frontier-reasoning"
+    # -> "gpt-5.4") pass through here. Concrete model names are returned
+    # unchanged, so env-var overrides that hardcode models still work.
+    model = resolve_model_alias(model)
+
+    # v1.2: Attach per-stage reasoning config. None means "no reasoning"
+    # (light stages like classifier/summariser). High-stakes stages get
+    # reasoning=high by default per Taz's directive.
+    reasoning = get_reasoning_for_stage(stage_upper)
+
     config = StageConfig(
         provider=provider,
         model=model,
         stage_name=stage_upper,
         max_output_tokens=max_tokens,
         timeout_seconds=timeout,
+        reasoning=reasoning,
     )
     
     logger.debug(f"[stage_models] {config}")

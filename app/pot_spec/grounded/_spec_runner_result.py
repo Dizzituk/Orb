@@ -115,6 +115,18 @@ def build_spec_result(
     # contains [HUMAN_REQUIRED], the spec is incomplete and should NOT be
     # marked as validated. This prevents the auto-advance chain from pushing
     # an empty spec through the Critical Pipeline / Scaffold Engine.
+    #
+    # Fix 4 (2026-04-18): Tightened guard. The original v4.7 version only
+    # fired when [HUMAN_REQUIRED] was also present. But the real failure
+    # mode we saw today is a spec that LOOKS complete (full Weaver job
+    # description, explicit file names, explicit build target) where the
+    # deterministic extractor simply couldn't parse the paths. No
+    # [HUMAN_REQUIRED] marker is present — the spec silently passes with
+    # 0 files, Scaffold Engine runs on an empty manifest, pipeline "succeeds"
+    # having done nothing. The new guard is: if the spec text mentions file
+    # paths (any .kt/.kts/.py/.tsx/.xml/.gradle reference) AND the manifest
+    # has zero files in scope, that is an EXTRACTION FAILURE, not a valid
+    # zero-file spec. Block it.
     _total_manifest_files = 0
     if segmentation_manifest:
         for _seg in segmentation_manifest.segments:
@@ -122,21 +134,66 @@ def build_spec_result(
     _has_human_required = (
         spot_markdown and "[HUMAN_REQUIRED]" in spot_markdown
     )
-    if _total_manifest_files == 0 and _has_human_required:
-        logger.warning(
-            "[spec_runner] v4.7 EMPTY-SCOPE GUARD: 0 files in manifest + "
-            "[HUMAN_REQUIRED] present — blocking as needs_clarification"
-        )
-        print(
-            "[spec_runner] v4.7 EMPTY-SCOPE GUARD TRIGGERED: "
-            "spec has no file scope and requires human input"
-        )
-        final_status = "needs_clarification"
 
-    logger.info("[spec_runner] v4.6 DONE: ready_for_pipeline=True, status=%s", final_status)
+    # Fix 4: Detect file-path mentions in the spec text itself.
+    _spec_text_mentions_files = False
+    if spot_markdown and _total_manifest_files == 0:
+        # Look for any file-extension token that implies the spec is talking
+        # about real files. Use a conservative set of extensions so we don't
+        # trigger on incidental mentions like "config.yaml" in prose.
+        _fileish_re = re.compile(
+            r'\b[\w\-]+\.(?:kt|kts|py|tsx|ts|jsx|js|xml|gradle|properties|yaml|yml|json|md|css)\b',
+            re.IGNORECASE,
+        )
+        _matches = _fileish_re.findall(spot_markdown)
+        # Require at least 3 distinct file-ish tokens so we don't block on
+        # a spec that just references "requirements.txt" once.
+        if len(set(_matches)) >= 3:
+            _spec_text_mentions_files = True
+            logger.warning(
+                "[spec_runner] Fix 4 EMPTY-SCOPE EXTRACTION FAILURE: "
+                "spec mentions %d distinct file-ish tokens but manifest "
+                "has zero files. Sample: %s",
+                len(set(_matches)), sorted(set(_matches))[:6],
+            )
+            print(
+                f"[spec_runner] Fix 4 EXTRACTION FAILURE: spec references "
+                f"{len(set(_matches))} files but manifest is empty — "
+                f"blocking as needs_clarification. Sample files: {sorted(set(_matches))[:6]}"
+            )
+
+    _block_pipeline = False
+    if _total_manifest_files == 0 and (_has_human_required or _spec_text_mentions_files):
+        if _has_human_required:
+            logger.warning(
+                "[spec_runner] v4.7 EMPTY-SCOPE GUARD: 0 files in manifest + "
+                "[HUMAN_REQUIRED] present — blocking as needs_clarification"
+            )
+            print(
+                "[spec_runner] v4.7 EMPTY-SCOPE GUARD TRIGGERED: "
+                "spec has no file scope and requires human input"
+            )
+        final_status = "needs_clarification"
+        _block_pipeline = True
+
+    # Fix 4 (2026-04-18): When extraction failed (0 files + spec references files),
+    # ready_for_pipeline must also be False so auto-advance doesn't fire. The
+    # previous condition `files > 0 or not HUMAN_REQUIRED` would still let
+    # an empty manifest through when no HUMAN_REQUIRED marker was present.
+    _ready_for_pipeline = (
+        _total_manifest_files > 0
+        and not _block_pipeline
+    ) or (
+        not _has_human_required and not _spec_text_mentions_files
+    )
+
+    logger.info(
+        "[spec_runner] v4.6 DONE: ready_for_pipeline=%s, status=%s, files=%d, blocked=%s",
+        _ready_for_pipeline, final_status, _total_manifest_files, _block_pipeline,
+    )
 
     return SpecGateResult(
-        ready_for_pipeline=_total_manifest_files > 0 or not _has_human_required,
+        ready_for_pipeline=_ready_for_pipeline,
         open_questions=[],
         spot_markdown=spot_markdown,
         db_persisted=False,

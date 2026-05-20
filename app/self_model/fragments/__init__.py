@@ -1,0 +1,1 @@
+"""Fragment-based long-term memory layer (Phase 7)."""

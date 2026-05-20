@@ -275,3 +275,10 @@ def get_intent_auto_execute_status(intent_value: str) -> dict:
         "rate": s["rate"],
         "gap": AUTO_EXECUTE_THRESHOLD - s["rate"],
     }
+
+
+# Alias for main.py startup hook. Historical name used in main.py is
+# `run_graduation`; the implementation function is `regenerate_learned_rules`.
+# Without this alias the startup hook silently swallows ImportError and
+# the graduation pipeline never runs.
+run_graduation = regenerate_learned_rules

@@ -157,6 +157,39 @@ def after_user_message(
     except Exception as e:
         logger.debug("[integration] Biographical capture skipped: %s", e)
 
+    # b2) Phase 3: Tier 1 identity capture — independent of SQL preference path.
+    # Writes to data/self_model/identity.json (the always-injected block).
+    try:
+        from app.self_model.identity_capture import capture_and_persist as _id_cap
+        _id_result = _id_cap(message, source=f"chat:{project_id}")
+        if _id_result.get("written"):
+            logger.info(
+                "[integration] Identity facts captured: %s",
+                ", ".join(w.get("field", "?") for w in _id_result["written"]),
+            )
+    except Exception as e:
+        logger.debug("[integration] Identity capture skipped: %s", e)
+
+    # b3) Phase 7: fragment capture — lifetime associative memory.
+    # Every user message → classified → embedded → clustered into themes.
+    # Never deleted, decays over time, hot themes inject, cold themes surface on match.
+    try:
+        from app.self_model.fragments.capture import capture_fragment
+        _frag_result = capture_fragment(
+            message,
+            source=f"chat:{project_id}",
+            project_id=int(project_id) if str(project_id).isdigit() else None,
+        )
+        if _frag_result.get("fragment_id"):
+            logger.info(
+                "[integration] fragment captured: signal=%s claim=%s theme=%s",
+                _frag_result.get("signal"),
+                _frag_result.get("claim"),
+                _frag_result.get("theme_id", "(none)"),
+            )
+    except Exception as e:
+        logger.debug("[integration] fragment capture skipped: %s", e)
+
     # c) Context extraction (facts and decisions)
     try:
         from app.memory.domains.context import ContextStore

@@ -191,9 +191,9 @@ def compare_tax_methods(
         return comp
 
     # ── MILEAGE METHOD ──
-    miles_result = db.query(func.sum(MileageLog.miles)).filter(
-        MileageLog.log_date >= str(start),
-        MileageLog.log_date <= str(end),
+    miles_result = db.query(func.sum(MileageLog.total_miles)).filter(
+        MileageLog.log_date >= start,
+        MileageLog.log_date <= end,
     ).scalar()
     total_miles = float(miles_result or 0)
 

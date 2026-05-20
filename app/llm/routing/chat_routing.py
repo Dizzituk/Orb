@@ -142,14 +142,14 @@ def handle_chat_mode(
         is_video_upload=is_video_upload,
     )
 
-    # Image route — early return to image pipeline
-    if extras.get("image_route"):
-        from app.llm.image_router import generate_image_stream
-        return StreamingResponse(
-            generate_image_stream(project_id=req.project_id, message=req.message, db=db),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
+    # v16.0 (2026-05-01): Image gen no longer bypasses the chat LLM.
+    # Previously this short-circuited to a fresh Gemini synth that lost
+    # all conversation context. Now: chat LLM (gpt-5.4) handles the turn,
+    # emits an [IMAGE_PROMPT]: marker, and the wrapper sends that prompt
+    # straight to gpt-image-2. extras["image_route"] is now a *hint* that
+    # tells the system prompt builder to include image-gen instructions
+    # and tells the stream wrapper to scan for the marker.
+    _image_intent_detected = bool(extras.get("image_route"))
 
     # Confirmation gate — early return with confirmation SSE
     if extras.get("confirmation_sse"):
@@ -177,8 +177,11 @@ def handle_chat_mode(
         except Exception as e:
             print(f"[CHAT_MODE] Codebase context failed (non-fatal): {e}")
 
-    # ── 9. Build system prompt ──
-    system_prompt = build_system_prompt(project, full_context, ui_context=ui_ctx)
+    # ── 9. Build system prompt (with image-gen marker instructions if relevant) ──
+    system_prompt = build_system_prompt(
+        project, full_context, ui_context=ui_ctx,
+        image_intent=_image_intent_detected,
+    )
 
     # ── 10. Grounding gate ──
     system_prompt = _run_grounding_gate(req, system_prompt, label="CHAT_MODE")
@@ -202,19 +205,32 @@ def handle_chat_mode(
 
     print(f"[CHAT_MODE] Calling generate_sse_stream: provider={provider}, model={model}, messages={len(messages)}")
 
+    _inner_stream = generate_sse_stream(
+        project_id=req.project_id,
+        message=req.message,
+        provider=provider,
+        model=model,
+        system_prompt=system_prompt,
+        messages=messages,
+        db=db,
+        trace=trace,
+        enable_reasoning=req.enable_reasoning,
+        tools=_chat_tools,
+    )
+
+    # v16.0: Wrap stream with image dispatcher when image intent was detected.
+    # The chat LLM will emit [IMAGE_PROMPT]: <prompt> in its response; the
+    # wrapper extracts it and fires gpt-image-2 directly. No Gemini synth
+    # in between, full conversation context preserved.
+    if _image_intent_detected:
+        from app.llm.image_extractor import wrap_stream_with_image_dispatch
+        print("[CHAT_MODE] Image intent detected — wrapping stream with image dispatcher")
+        _inner_stream = wrap_stream_with_image_dispatch(
+            _inner_stream, project_id=req.project_id, db=db,
+        )
+
     return StreamingResponse(
-        generate_sse_stream(
-            project_id=req.project_id,
-            message=req.message,
-            provider=provider,
-            model=model,
-            system_prompt=system_prompt,
-            messages=messages,
-            db=db,
-            trace=trace,
-            enable_reasoning=req.enable_reasoning,
-            tools=_chat_tools,
-        ),
+        _inner_stream,
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

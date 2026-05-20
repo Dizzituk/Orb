@@ -342,6 +342,18 @@ async def auto_link_card_payments_endpoint(db: Session = Depends(get_db)):
     }
 
 
+@router.post("/card-payments/refresh-deductibles")
+async def refresh_card_deductibles_endpoint(db: Session = Depends(get_db)):
+    """Re-apply current card splits to already-linked payments.
+
+    Run this after re-categorising credit card transactions so the
+    `deductible_amount` on the NatWest bill-pay rows reflects the
+    updated business/personal split.
+    """
+    from app.finance.services.card_payment_linker import refresh_linked_deductibles
+    return refresh_linked_deductibles(db)
+
+
 @router.post("/card-payments/{tx_id}/link/{card_id}")
 async def link_card_payment_endpoint(
     tx_id: int, card_id: int, db: Session = Depends(get_db)
@@ -516,12 +528,18 @@ async def import_bank_csv(
 @router.post("/upload/screenshot", response_model=schemas.ScreenshotOCRResult)
 async def upload_screenshot(
     file: UploadFile = File(...),
+    save: bool = Query(True, description="If true, also create/update the DailyWorkLog row"),
+    db: Session = Depends(get_db),
 ):
-    """Upload a Yodel Finish Tour screenshot for OCR extraction."""
-    from app.finance.services.screenshot_ocr_service import (
-        save_screenshot,
-        extract_via_llm,
-    )
+    """Upload a Yodel Finish Tour screenshot.
+
+    Runs the unified OCR pipeline (Tesseract -> Gemini Flash -> OpenAI).
+    When `save=true` (default) it also upserts a DailyWorkLog so the
+    earnings actually get recorded — previously this endpoint only
+    returned the extracted data and required a second manual call.
+    """
+    from app.finance.services.ocr_pipeline import extract_from_bytes
+    from app.finance.services.daily_log_ingest import save_ocr_result_as_log
 
     allowed_types = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
     if file.content_type not in allowed_types:
@@ -531,29 +549,19 @@ async def upload_screenshot(
     if len(image_bytes) > 10 * 1024 * 1024:  # 10MB limit
         raise HTTPException(400, "File too large (max 10MB)")
 
-    # Save the screenshot
-    save_path = save_screenshot(image_bytes, file.filename)
-
-    # Extract data via LLM
-    result = await extract_via_llm(image_bytes, file.content_type)
-
-    return schemas.ScreenshotOCRResult(
-        success=result.success,
-        work_date=result.work_date,
-        tour_id=result.tour_id,
-        user_id=result.user_id,
-        delivery_count=result.delivery_count,
-        collections=result.collections,
-        stops=result.stops,
-        attempted=result.attempted,
-        done=result.done,
-        failed_deliveries=result.failed_deliveries,
-        gross_earnings=result.gross_earnings,
-        route_area=result.route_area,
-        raw_text=result.raw_text,
-        confidence=result.confidence,
-        message=result.message,
+    result = await extract_from_bytes(
+        image_bytes, mime_type=file.content_type, filename=file.filename,
     )
+
+    if save and result.success:
+        log = save_ocr_result_as_log(db, result)
+        if log:
+            result.message = (
+                f"{result.message} Saved as daily log #{log.id} "
+                f"({log.work_date}, £{log.gross_earnings:.2f})."
+            )
+
+    return result
 
 
 # ─── Categorisation Confirmation ─────────────────────────
@@ -653,26 +661,35 @@ def categorise_van_expenses(db: Session = Depends(get_db)):
 
 @router.get("/van/tax-year-interest")
 def get_tax_year_interest(
-    tax_year: str = "2025/2026",
+    tax_year: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
-    """Get HP interest claimable for a specific tax year."""
+    """Get HP interest claimable for a specific tax year.
+
+    Accepts canonical 'YYYY-YY' format (e.g. '2025-26'). Legacy
+    'YYYY/YYYY' format is still accepted for backwards compat.
+    """
     from app.finance.services.hp_amortisation_service import (
         build_amortisation_schedule,
         get_tax_year_summary,
     )
     from app.finance.services.van_finance_service import get_van_finance
+    from app.finance.utils.tax_year import tax_year_bounds
     from datetime import date
 
     van = get_van_finance(db)
     if not van:
         raise HTTPException(404, "No active van finance record")
 
-    # Parse tax year
-    parts = tax_year.split("/")
-    start_year = int(parts[0])
-    ty_start = date(start_year, 4, 6)
-    ty_end = date(start_year + 1, 4, 5)
+    ty = tax_year or finance_service.get_current_tax_year()
+
+    # Parse tax year — accept canonical 'YYYY-YY' or legacy 'YYYY/YYYY'
+    if "/" in ty:
+        start_year = int(ty.split("/")[0])
+        ty_start = date(start_year, 4, 6)
+        ty_end = date(start_year + 1, 4, 5)
+    else:
+        ty_start, ty_end = tax_year_bounds(ty)
 
     schedule = build_amortisation_schedule(
         finance_amount=van.finance_amount,
@@ -708,7 +725,7 @@ async def export_tax_pdf(
         logger.error("[finance] PDF export failed: %s", e, exc_info=True)
         raise HTTPException(500, f"Failed to generate PDF: {e}")
 
-    ty = tax_year or "2025-26"
+    ty = tax_year or finance_service.get_current_tax_year()
     filename = f"tax_pack_{ty.replace('-', '_')}.pdf"
     return StreamingResponse(
         iter([pdf_bytes]),
@@ -730,7 +747,7 @@ async def export_tax_xlsx(
         logger.error("[finance] XLSX export failed: %s", e, exc_info=True)
         raise HTTPException(500, f"Failed to generate XLSX: {e}")
 
-    ty = tax_year or "2025-26"
+    ty = tax_year or finance_service.get_current_tax_year()
     filename = f"tax_workbook_{ty.replace('-', '_')}.xlsx"
     return StreamingResponse(
         iter([xlsx_bytes]),

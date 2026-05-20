@@ -83,26 +83,49 @@ def get_user_context_for_conversation(
     past interactions, preferences, and project context.
 
     Returns formatted string for inclusion in Weaver's system prompt.
+
+    Phase 7 audit (2026-05-02): the v3.0 spec used the wrong call signature
+    for retrieve_for_query (`query=`, `project_id=`, `max_results=` — none
+    of those parameters exist). The TypeError was being swallowed by the
+    surrounding try/except, so this function silently returned "" forever.
+    Fixed to use the actual `user_message` / `depth_override` signature, and
+    to read records off `result.candidates` rather than the non-existent
+    `result.records` attribute.
     """
     try:
         from app.astra_memory.retrieval import retrieve_for_query
 
         result = retrieve_for_query(
             db=db,
-            query=query,
-            project_id=project_id,
-            max_results=max_results,
+            user_message=query,
+            depth_override=None,
         )
 
-        if not result or not result.records:
+        if not result:
+            return ""
+
+        # The retrieval result exposes the selected candidates under .candidates;
+        # we accept either attribute name to stay forward-compatible.
+        records = (
+            getattr(result, "candidates", None)
+            or getattr(result, "records", None)
+            or []
+        )
+        if not records:
             return ""
 
         lines = ["## RELEVANT CONTEXT FROM PAST INTERACTIONS"]
-        for record in result.records[:max_results]:
-            title = record.title or ""
-            summary = record.summary or ""
-            if title:
+        for record in records[:max_results]:
+            title = getattr(record, "title", "") or ""
+            summary = (
+                getattr(record, "summary", "")
+                or getattr(record, "one_liner", "")
+                or ""
+            )
+            if title and summary:
                 lines.append(f"- **{title}**: {summary[:150]}")
+            elif title:
+                lines.append(f"- **{title}**")
             elif summary:
                 lines.append(f"- {summary[:150]}")
 

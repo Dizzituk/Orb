@@ -198,12 +198,19 @@ def recompute_preference_confidence(
         evidence_list.append((ev.weight, age_days, is_hard_rule))
         total_weight += ev.weight
     
-    # Bad-learning prevention: require evidence_count >= 2 OR explicit instruction
+    # Bad-learning prevention: require evidence_count >= 2 OR explicit
+    # instruction OR a single high-weight evidence (weight >= 3.0).
+    # High-weight extractions represent commitments, load-bearing facts,
+    # or philosophy statements that should register on first mention.
     evidence_count = len(evidence_records)
     cfg = get_config()
     
-    if evidence_count < cfg.thresholds.min_evidence_count and not has_explicit:
-        # Not enough evidence for implicit-only preference
+    has_high_weight = any(w >= 3.0 for w, _, _ in evidence_list)
+    
+    if (evidence_count < cfg.thresholds.min_evidence_count
+            and not has_explicit
+            and not has_high_weight):
+        # Not enough evidence for implicit-only, low-weight preference
         confidence = 0.0
     else:
         confidence = compute_confidence_score(evidence_list)

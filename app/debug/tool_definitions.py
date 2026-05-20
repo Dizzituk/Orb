@@ -417,13 +417,31 @@ GRADLE_BUILD_TOOL = {
 GRADLE_INSTALL_TOOL = {
     "name": "gradle_install",
     "description": (
-        "Build and install AstraBridge debug APK on the emulator. "
-        "Compiles, packages, and deploys in one step. Use after fixing "
-        "code to get the new version running on the emulator for testing."
+        "Build and install an Android debug APK on the emulator. "
+        "Provide package/activity/project details for the app under test when available. "
+        "Compiles, packages, and deploys in one step. Use after fixing code to get "
+        "the new version running on the emulator for testing."
     ),
     "input_schema": {
         "type": "object",
-        "properties": {},
+        "properties": {
+            "project_root": {
+                "type": "string",
+                "description": "Absolute path to the Android project root. Defaults to the AstraBridge project for backward compatibility.",
+            },
+            "apk_path": {
+                "type": "string",
+                "description": "Optional absolute path to a built APK to install instead of building from project_root.",
+            },
+            "package_name": {
+                "type": "string",
+                "description": "Android package name for the app under test.",
+            },
+            "activity_name": {
+                "type": "string",
+                "description": "Fully qualified or relative launcher activity name for the app under test.",
+            },
+        },
         "required": [],
     },
 }
@@ -546,21 +564,236 @@ DESKTOP_SCROLL_TOOL = {"name": "desktop_scroll", "description": "Scroll at a pos
 DESKTOP_FIND_WINDOW_TOOL = {"name": "desktop_find_window", "description": "Find a window by title and get its position and size.", "parameters": {"type": "object", "properties": {"title": {"type": "string", "description": "Window title to search for (partial match)"}}, "required": ["title"]}}
 DESKTOP_READ_SCREEN_TOOL = {"name": "desktop_read_screen", "description": "OCR the screen to extract visible text. Optionally specify a region.", "parameters": {"type": "object", "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}, "width": {"type": "integer"}, "height": {"type": "integer"}}, "required": []}}
 
-def get_universal_tools() -> List[dict]:
-    """Tools available to ALL models - web search, etc.
+# =============================================================================
+# SOCIAL MEDIA API TOOLS
+# First-party HTTP integrations. Preferred over browser automation whenever
+# the platform has an API equivalent (deterministic, single round-trip,
+# structured errors). Browser flow stays for engagement / discovery work.
+# =============================================================================
 
-    These are injected regardless of model trust level.
+META_POST_TOOL = {
+    "name": "meta_post",
+    "description": (
+        "Publish (or schedule) an image post to Facebook via the Meta Graph "
+        "API. Use this whenever the user asks you to post, publish, share, "
+        "or schedule an image to Facebook. PREFER this over the browser "
+        "upload flow (web_open_session 'meta_business' + system_keys + etc.) "
+        "because it is deterministic: one HTTP call, structured success or "
+        "structured error, no focus races, no native-dialog vision blind "
+        "spots. The browser path remains for engagement reading, comment "
+        "drafting, and tasks without an API equivalent.\n\n"
+        "Required: image_path (absolute), caption (text; empty string "
+        "allowed). Optional: scheduled_at (Unix timestamp; must be 11 min "
+        "to 180 days ahead). Default target is 'facebook'. Instagram is "
+        "not yet supported through this tool (needs a public image URL; "
+        "hosting decision pending).\n\n"
+        "Configuration: Settings -> API Keys must contain 'meta_access_token' "
+        "(long-lived User or Page Access Token with pages_manage_posts "
+        "scope) and 'facebook_page_id'. If either is missing the tool "
+        "returns a config error — surface that to the user verbatim so they "
+        "know exactly what to add."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "image_path": {
+                "type": "string",
+                "description": (
+                    "Absolute path to image file on disk "
+                    "(PNG, JPG, JPEG, WebP, GIF)."
+                ),
+            },
+            "caption": {
+                "type": "string",
+                "description": "Caption text for the post. Empty string allowed.",
+            },
+            "target": {
+                "type": "string",
+                "description": (
+                    "Target platform. Currently only 'facebook' (default). "
+                    "Instagram pending public image hosting decision."
+                ),
+            },
+            "scheduled_at": {
+                "type": "integer",
+                "description": (
+                    "Unix timestamp for scheduled publish. Must be at least "
+                    "11 minutes and at most 180 days in the future. Omit "
+                    "to publish immediately."
+                ),
+            },
+            "verify": {
+                "type": "boolean",
+                "description": (
+                    "If true (default), performs a cross-channel "
+                    "verification after upload by reading the post back via "
+                    "a separate GET request. Skipped automatically for "
+                    "scheduled posts (object not yet queryable until "
+                    "publish time)."
+                ),
+            },
+        },
+        "required": ["image_path", "caption"],
+    },
+}
+
+# =============================================================================
+# FLOW MEMORY TOOLS
+# Cached, verified multi-step interaction patterns. Each step has a
+# precondition, an action, and a postcondition; the runner halts on the
+# first verification failure with a structured diagnostic that names the
+# failed step and lists every step that confirmed working before it.
+# This is the failure-isolation guarantee: when something breaks, the
+# system knows exactly which stage is the problem and the rest is preserved.
+# =============================================================================
+
+FLOW_RUN_TOOL = {
+    "name": "flow_run",
+    "description": (
+        "Execute a previously-saved interaction flow on a platform "
+        "(Meta, TikTok, WordPress, Coursera, etc.). Each step's "
+        "postcondition is verified before moving on, so successful "
+        "runs end with high confidence the task actually completed; "
+        "failed runs halt at the exact step that broke and tell you "
+        "which steps confirmed working before it. Prefer this over "
+        "manually re-driving the same task with web_click + "
+        "web_dom_snapshot loops once a flow has been recorded.\n\n"
+        "Use flow_inspect first if you need to see what flows exist "
+        "or read a flow's step definitions. Use flow_save to record a "
+        "new flow after completing a task manually."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "platform": {
+                "type": "string",
+                "description": (
+                    "Platform key, e.g. 'meta_business', 'tiktok_studio', "
+                    "'wordpress', 'coursera'."
+                ),
+            },
+            "task": {
+                "type": "string",
+                "description": (
+                    "Task key, e.g. 'reply_top_comment', 'schedule_video', "
+                    "'publish_draft', 'mark_lesson_complete'."
+                ),
+            },
+            "default_session": {
+                "type": "string",
+                "description": (
+                    "Optional web session id used for any step that "
+                    "doesn't specify its own session. Usually the same "
+                    "key as platform."
+                ),
+            },
+        },
+        "required": ["platform", "task"],
+    },
+}
+
+FLOW_SAVE_TOOL = {
+    "name": "flow_save",
+    "description": (
+        "Save (create or update) a flow definition. Use this AFTER you "
+        "have just successfully completed a multi-step task on a "
+        "platform, to record the exact sequence of actions and the "
+        "verifications that confirmed each one worked. The next time "
+        "the same task is needed, flow_run replays the cached pattern "
+        "in a fraction of the time with built-in failure isolation.\n\n"
+        "Each step is a dict with these fields:\n"
+        "  step_id      : short stable identifier ('open_composer')\n"
+        "  description  : one-line human-readable summary\n"
+        "  session      : web session id (for browser steps)\n"
+        "  precondition : optional Check that must hold before the action\n"
+        "  action       : {kind: <tool_name>, params: {...}}\n"
+        "  postcondition: Check that confirms the action worked\n\n"
+        "A Check is {kind: dom_includes|dom_excludes|url_includes|"
+        "text_includes|always_pass, expected: [...substrings...], "
+        "timeout_ms: int}. Substrings match against the result of "
+        "web_dom_snapshot, web_current_state, or web_extract_text "
+        "depending on kind. Choose substrings that are stable across "
+        "sessions (aria-labels, button text) and unique enough to not "
+        "match unrelated pages."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "platform": {"type": "string", "description": "Platform key."},
+            "task": {"type": "string", "description": "Task key."},
+            "description": {
+                "type": "string",
+                "description": "Optional human-readable description of the flow.",
+            },
+            "steps": {
+                "type": "array",
+                "description": (
+                    "Ordered list of step dicts. See description above "
+                    "for the schema of each step."
+                ),
+                "items": {"type": "object"},
+            },
+        },
+        "required": ["platform", "task", "steps"],
+    },
+}
+
+FLOW_INSPECT_TOOL = {
+    "name": "flow_inspect",
+    "description": (
+        "List saved flows or read one in full. Call with no params to "
+        "list every saved flow across all platforms. Call with platform "
+        "alone to filter by platform. Call with both platform and task "
+        "to read a single flow's full JSON definition (useful before "
+        "editing it via flow_save, or after a flow_run failure to find "
+        "the failing step's current expectations)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "platform": {
+                "type": "string",
+                "description": "Optional platform filter.",
+            },
+            "task": {
+                "type": "string",
+                "description": (
+                    "Optional task key; combined with platform, returns "
+                    "the full flow definition."
+                ),
+            },
+        },
+        "required": [],
+    },
+}
+
+def get_universal_tools() -> List[dict]:
+    """Tools available to ALL models - web search + memory access.
+
+    These are injected regardless of model trust level. Memory tools
+    are universal because the chat LLM needs to be able to write to
+    memory in every turn, on every model.
     """
-    return [WEB_SEARCH_TOOL]
+    from app.debug.memory_tool_definitions import get_memory_tools
+    return [WEB_SEARCH_TOOL] + get_memory_tools()
 
 
 def get_phase1_tools() -> List[dict]:
-    """Core tools: read + user file write access.
+    """Core tools: read + user file write access + web browsing.
 
     v0.15.0: Added write_user_file and get_user_folders so ALL models
     can create/save files in the user's personal folders (Documents,
     Pictures, Desktop, etc.) while keeping codebase writes sandbox-only.
+
+    v0.18.0: Added web browsing tools (web_list_sessions, web_navigate,
+    web_dom_snapshot, etc.) so chat can drive the user's logged-in
+    browser sessions - Coursera, Meta Business Suite, TikTok Studio,
+    YouTube Studio, WordPress. Same read+user-write tier because
+    browsing is read-equivalent for the filesystem; any writes happen
+    to third-party services the user has authed into.
     """
+    from app.debug.web_tool_definitions import get_web_tools
+
     return [
         SEARCH_MY_FILES_TOOL,
         READ_USER_FILE_TOOL,
@@ -569,6 +802,14 @@ def get_phase1_tools() -> List[dict]:
         RESCAN_MANIFEST_TOOL,
         REINDEX_FILE_TOOL,
         SEARCH_DISK_LIVE_TOOL,
+        CREATE_FOLDER_TOOL,
+        MOVE_FILE_TOOL,
+        MOVE_FILES_BATCH_TOOL,
+        CREATE_DOCX_TOOL,
+        CREATE_PDF_TOOL,
+        CREATE_XLSX_TOOL,
+        CREATE_HTML_REPORT_TOOL,
+        READ_IMAGE_TOOL,
         READ_FILE_TOOL,
         LIST_FILES_TOOL,
         READ_PIPELINE_STATE_TOOL,
@@ -576,7 +817,11 @@ def get_phase1_tools() -> List[dict]:
         SEARCH_FILES_TOOL,
         CLOUD_UPLOAD_TOOL,
         CLOUD_LIST_TOOL,
-    ]
+        META_POST_TOOL,
+        FLOW_RUN_TOOL,
+        FLOW_SAVE_TOOL,
+        FLOW_INSPECT_TOOL,
+    ] + get_web_tools()
 
 
 def get_phase2_tools() -> List[dict]:
@@ -672,5 +917,278 @@ SEARCH_DISK_LIVE_TOOL = {
             },
         },
         "required": ["query"],
+    },
+}
+
+READ_IMAGE_TOOL = {
+    "name": "read_image",
+    "description": (
+        "Read the visual content of an image file (PNG, JPEG, WebP, GIF, etc.) "
+        "using Gemini Vision. Returns a description of what is shown in the image, "
+        "including any visible text, UI elements, timestamps, or notable details. "
+        "Use this when the user asks what is shown in a screenshot or photo, or when "
+        "you need to extract information from an image rather than just list its filename. "
+        "Provide a specific question for targeted answers; otherwise omit it for a "
+        "general description."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Absolute path to the image file on disk.",
+            },
+            "question": {
+                "type": "string",
+                "description": (
+                    "Optional question to ask about the image. If omitted, returns a "
+                    "general description of contents, visible text, and notable elements."
+                ),
+            },
+        },
+        "required": ["path"],
+    },
+}
+# =============================================================================
+# FILE OPS TOOLS (v0.17.0) - move/create/batch-move for user folder organisation
+# =============================================================================
+
+CREATE_FOLDER_TOOL = {
+    "name": "create_folder",
+    "description": (
+        "Create a new directory in the user's personal folders (Documents, "
+        "Pictures, Desktop, Downloads, Music, Videos, OneDrive, etc.). "
+        "Creates parent directories as needed. Cannot create folders inside "
+        "ASTRA's protected codebase or Windows system paths. Returns "
+        "confirmation or 'already exists' if the folder is already there."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Absolute path of the folder to create.",
+            },
+        },
+        "required": ["path"],
+    },
+}
+
+MOVE_FILE_TOOL = {
+    "name": "move_file",
+    "description": (
+        "Move or rename a single file. Both source and destination must be "
+        "inside allowed user folders. Refuses to overwrite an existing "
+        "destination unless overwrite=true is passed explicitly. Use this for "
+        "renaming or relocating files; for many files at once, use "
+        "move_files_batch instead."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "source": {"type": "string", "description": "Absolute path of the file to move."},
+            "destination": {"type": "string", "description": "Absolute target path (full filename, not just folder)."},
+            "overwrite": {"type": "boolean", "description": "If true, replace destination when it exists. Default false."},
+        },
+        "required": ["source", "destination"],
+    },
+}
+
+MOVE_FILES_BATCH_TOOL = {
+    "name": "move_files_batch",
+    "description": (
+        "Move many files in one call. Use this when sorting or reorganising "
+        "more than two or three files - one call is far cheaper than many "
+        "sequential move_file calls. Skip-and-continue: a failure on one "
+        "file does NOT abort the batch. Returns a summary with succeeded "
+        "count and a list of failures."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "moves": {
+                "type": "array",
+                "description": "List of {source, destination} objects.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "source": {"type": "string"},
+                        "destination": {"type": "string"},
+                    },
+                    "required": ["source", "destination"],
+                },
+            },
+            "overwrite": {"type": "boolean", "description": "If true, replace destinations that exist. Default false."},
+        },
+        "required": ["moves"],
+    },
+}
+
+
+# =============================================================================
+# STYLED FILE CREATION TOOLS (v0.17.0) - presentation-quality docs
+# =============================================================================
+
+# Shared content schema description for all four styled creators
+_CONTENT_SCHEMA_DESC = (
+    "List of block objects. Each block has a 'type' field. Supported types:\n"
+    "  - {type:'heading', level:1-4, text:'...'}\n"
+    "  - {type:'paragraph', text:'...'}\n"
+    "  - {type:'list', items:['...','...'], ordered:false}\n"
+    "  - {type:'table', headers:['col1','col2'], rows:[['a','b'],['c','d']]}\n"
+    "  - {type:'rule'}    (horizontal divider)\n"
+    "  - {type:'spacer'}  (blank line)\n"
+    "  - {type:'code', text:'...', language:'python'}\n"
+    "Order in the list determines render order."
+)
+
+_THEME_DESC = (
+    "Visual theme. 'auto' (default) inspects the filename for keywords like "
+    "'legal', 'evidence', 'letter' and picks 'astra_minimal' (plain, formal); "
+    "everything else gets 'astra_default' (modern, branded). Pass 'minimal' "
+    "or 'default' to force a choice."
+)
+
+_SKILL_DESC = (
+    "Optional skill playbook ID that guides document structure and tone. "
+    "Available skills: 'formal_document' (legal, letters to MPs, formal "
+    "reports - serif, restrained, no tables in body), 'casual_document' "
+    "(personal writing, friendly updates - sans-serif, natural voice), "
+    "'data_spreadsheet' (for xlsx: proper header row, evidence ref column, "
+    "no inline totals). If omitted, the skill is auto-detected from the "
+    "filename and title keywords. Pass an explicit value to override."
+)
+
+_BRIEF_DESC = (
+    "Natural-language description of what the document should contain. When "
+    "provided INSTEAD of pre-structured 'content', ASTRA runs a reasoning-"
+    "tier structuring pass that follows the chosen skill\u2019s playbook to "
+    "produce the final document. Use this when you do not want to hand-build "
+    "content blocks yourself. You can combine brief with 'source_material' "
+    "to provide facts, data, or prior text that should be incorporated."
+)
+
+_SOURCE_MATERIAL_DESC = (
+    "Optional supporting data for the structuring pass. Can be a plain string "
+    "(prior text to incorporate), a JSON object/array (structured facts, a "
+    "dataset of records), or a JSON-encoded string. Ignored when 'content' "
+    "or 'sheets' is provided directly."
+)
+
+CREATE_DOCX_TOOL = {
+    "name": "create_docx",
+    "description": (
+        "Create a styled Microsoft Word document. Use this when the user "
+        "wants a presentation-quality .docx for a report, summary, proposal, "
+        "letter, or evidence pack. "
+        "Two modes: (1) pass pre-structured 'content' blocks for exact "
+        "control, or (2) pass a natural-language 'brief' and let ASTRA "
+        "structure the document via a skill playbook using a reasoning-tier "
+        "model. Mode 2 is preferred for most cases - you describe what the "
+        "doc should say and ASTRA produces proper structure automatically. "
+        "Theme auto-selects from filename keywords (legal/evidence/letter "
+        "-> minimal plain style; everything else -> branded styled). Cover "
+        "page is added automatically for the styled theme."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Absolute output path. .docx extension added if missing."},
+            "title": {"type": "string", "description": "Document title (used on cover page and Word metadata)."},
+            "subtitle": {"type": "string", "description": "Optional subtitle."},
+            "author": {"type": "string", "description": "Optional author name."},
+            "theme": {"type": "string", "description": _THEME_DESC},
+            "skill": {"type": "string", "description": _SKILL_DESC},
+            "brief": {"type": "string", "description": _BRIEF_DESC},
+            "source_material": {"description": _SOURCE_MATERIAL_DESC},
+            "content": {"type": "array", "description": _CONTENT_SCHEMA_DESC, "items": {"type": "object"}},
+        },
+        "required": ["path", "title"],
+    },
+}
+
+CREATE_PDF_TOOL = {
+    "name": "create_pdf",
+    "description": (
+        "Create a styled PDF document. Same schema, skill, and brief modes "
+        "as create_docx. Output is a clean A4 PDF with page numbers and "
+        "generated-date footer. Good for documents that will be shared, "
+        "printed, or attached to correspondence. For editable outputs prefer "
+        "create_docx (the user can then export to PDF themselves)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Absolute output path. .pdf extension added if missing."},
+            "title": {"type": "string", "description": "Document title."},
+            "subtitle": {"type": "string", "description": "Optional subtitle."},
+            "author": {"type": "string", "description": "Optional author name."},
+            "theme": {"type": "string", "description": _THEME_DESC},
+            "skill": {"type": "string", "description": _SKILL_DESC},
+            "brief": {"type": "string", "description": _BRIEF_DESC},
+            "source_material": {"description": _SOURCE_MATERIAL_DESC},
+            "content": {"type": "array", "description": _CONTENT_SCHEMA_DESC, "items": {"type": "object"}},
+        },
+        "required": ["path", "title"],
+    },
+}
+
+CREATE_XLSX_TOOL = {
+    "name": "create_xlsx",
+    "description": (
+        "Create a styled Excel workbook. Two modes: (1) pass pre-built "
+        "'sheets' objects for exact control, or (2) pass a natural-language "
+        "'brief' and optional 'source_material' and let ASTRA structure the "
+        "workbook via the data_spreadsheet skill using a reasoning-tier "
+        "model. Mode 2 is preferred when you have raw data that needs "
+        "turning into a proper workbook. Header row gets theme fill and bold "
+        "text, column widths auto-fit, freeze pane and auto-filter applied."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Absolute output path. .xlsx extension added if missing."},
+            "title": {"type": "string", "description": "Workbook title (used as Excel metadata)."},
+            "theme": {"type": "string", "description": _THEME_DESC},
+            "skill": {"type": "string", "description": _SKILL_DESC},
+            "brief": {"type": "string", "description": _BRIEF_DESC},
+            "source_material": {"description": _SOURCE_MATERIAL_DESC},
+            "sheets": {
+                "type": "array",
+                "description": (
+                    "List of sheet objects (mode 1): "
+                    "{name:'Tab name', headers:['col1','col2'], rows:[[...],[...]], "
+                    "freeze_header:true, auto_filter:true, column_widths:[12,30]}. "
+                    "Only 'name' is mandatory; everything else has sensible defaults."
+                ),
+                "items": {"type": "object"}
+            },
+        },
+        "required": ["path"],
+    },
+}
+
+CREATE_HTML_REPORT_TOOL = {
+    "name": "create_html_report",
+    "description": (
+        "Create a single-file HTML report with embedded CSS. Same schema, "
+        "skill, and brief modes as create_docx. Renders cleanly in any "
+        "browser, prints well, respects prefers-color-scheme. Use for "
+        "shareable web reports or dashboards-as-documents."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Absolute output path. .html extension added if missing."},
+            "title": {"type": "string", "description": "Report title."},
+            "subtitle": {"type": "string", "description": "Optional subtitle."},
+            "author": {"type": "string", "description": "Optional author name."},
+            "theme": {"type": "string", "description": _THEME_DESC},
+            "skill": {"type": "string", "description": _SKILL_DESC},
+            "brief": {"type": "string", "description": _BRIEF_DESC},
+            "source_material": {"description": _SOURCE_MATERIAL_DESC},
+            "content": {"type": "array", "description": _CONTENT_SCHEMA_DESC, "items": {"type": "object"}},
+        },
+        "required": ["path", "title"],
     },
 }

@@ -357,10 +357,53 @@ def _inject_chat_tools(
                 "You have access to a web_search tool. Use it when you need current information.\n"
                 "IMPORTANT: Actually CALL the tool. Do not just say you will.\n"
             )
+
+        # Memory tools addendum — always appended, whether or not other
+        # tools were available. The rule against confabulated memory
+        # writes is load-bearing: without it, the model will claim to
+        # have saved things when no write happened.
+        system_prompt += _build_memory_tools_addendum()
     except ImportError:
         pass
 
     return chat_tools, system_prompt
+
+
+def _build_memory_tools_addendum() -> str:
+    """System-prompt addendum describing the memory tools and enforcing
+    the no-confabulation rule. Kept here rather than in the tool
+    definition itself so we can tune it centrally."""
+    return (
+        "\n\n## MEMORY TOOLS — CRITICAL RULES\n"
+        "You have tools to write to ASTRA's tiered memory system: "
+        "save_to_memory, update_memory, forget_memory, search_memory, save_residence.\n\n"
+        "**HARD RULE**: NEVER claim to have saved, remembered, stored, "
+        "noted, or recorded anything unless you have actually called "
+        "save_to_memory (or save_residence / update_memory) in THIS turn "
+        "AND received a result with saved=true. If you did not call the "
+        "tool, you did not save anything — do not tell the user you did.\n\n"
+        "**When to save proactively**:\n"
+        "- The user states a durable biographical fact (where they've lived, "
+        "what they do, family, background)\n"
+        "- The user states a preference they want to persist ('I prefer X', "
+        "'I always want Y', 'from now on Z')\n"
+        "- The user explicitly says 'remember this' / 'don't forget' / "
+        "'save that' — use weight=5 and permanence=permanent for these\n"
+        "- The user corrects a previously-stored fact — use update_memory, "
+        "not save_to_memory\n\n"
+        "**When NOT to save**:\n"
+        "- Aspirations stated in passing ('I might go to Spain one day')\n"
+        "- Current-session context that won't matter tomorrow\n"
+        "- Questions the user is asking you — those aren't facts\n"
+        "- API keys, passwords, secrets — tools refuse these anyway\n\n"
+        "**Residence history**: When the user mentions a PAST place they "
+        "lived ('I grew up in X', 'I lived in Y for N years'), use "
+        "save_residence, not save_to_memory. For where they live NOW, use "
+        "save_to_memory with key='current_location' and permanence=permanent.\n\n"
+        "**Answering 'what do you know about me' questions**: Call "
+        "search_memory first to get the real state, then answer from that. "
+        "Do not guess from conversation context alone.\n"
+    )
 
 
 def _create_llm_stream(messages, system_prompt, provider, model, chat_tools):

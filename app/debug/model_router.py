@@ -36,6 +36,10 @@ class RoutingDecision:
     model: str
     reason: str
     enable_tools: bool = False
+    # Reasoning effort for GPT-5.x / extended-thinking-capable models.
+    # Format: {"effort": "low"|"medium"|"high"} or None for no reasoning.
+    # Bound to tier: Triage=None, Analysis=high, Agentic=high.
+    reasoning: Optional[dict] = None
 
 
 # =============================================================================
@@ -47,14 +51,27 @@ TIER_MODELS = {
         "provider": "openai",
         "model": os.getenv("OPENAI_DEFAULT_MODEL", "gpt-5.4-mini"),
     },
+    # v2 (2026-04-15): Analysis + Agentic moved from Claude Sonnet to GPT-5.4
+    # per user preference: GPT-5.4 with reasoning_effort=high is better AND
+    # cheaper than Sonnet extended thinking for debug workloads.
     DebugTier.ANALYSIS: {
-        "provider": "anthropic",
-        "model": "claude-sonnet-4-6",
+        "provider": "openai",
+        "model": "gpt-5.4",
     },
     DebugTier.AGENTIC: {
-        "provider": "anthropic",
-        "model": "claude-sonnet-4-6",
+        "provider": "openai",
+        "model": "gpt-5.4",
     },
+}
+
+# Reasoning effort bound to tier. Passed through to providers via the
+# registry's `reasoning` parameter. Triage stays cheap; Analysis + Agentic
+# get high-effort reasoning because by the time the classifier has decided
+# a query is "think about this", it always deserves the thinking budget.
+TIER_REASONING = {
+    DebugTier.TRIAGE:   None,
+    DebugTier.ANALYSIS: {"effort": "high"},
+    DebugTier.AGENTIC:  {"effort": "high"},
 }
 
 
@@ -82,8 +99,12 @@ AGENTIC_PATTERNS = [
     r"\bremove\s+(the|this)\b",
 ]
 
-# Keywords that suggest deeper reasoning is needed
+# Keywords that suggest deeper reasoning is needed.
+# v2 (2026-04-15): expanded for natural / voice-dictated phrasing.
+# The formal words (analyse, diagnose, root cause) rarely appear in
+# real speech — people say "have a look", "go through", "dig into".
 ANALYSIS_PATTERNS = [
+    # Original formal patterns
     r"\bwhy\s+(did|does|is|was|would|doesn.t)\b",
     r"\broot\s+cause\b",
     r"\bexplain\s+(the|this|why)\b",
@@ -99,6 +120,24 @@ ANALYSIS_PATTERNS = [
     r"\bwhat.s\s+(causing|wrong\s+with)\b",
     r"\bsugg(est|estion)\b",
     r"\brecommend\b",
+    # v2: natural / voice-dictated phrasing
+    r"\bhave\s+a\s+(look|think|gander)\b",
+    r"\btake\s+a\s+(look|think)\b",
+    r"\bgo\s+(and\s+)?(have\s+a\s+look|look|through|over|into)\b",
+    r"\blook\s+(at|through|over|into)\b",
+    r"\bgo\s+through\s+(the|this|that|my|your)\b",
+    r"\bdig\s+(in|into|through)\b",
+    r"\bwork\s+out\s+(what|why|how|where)\b",
+    r"\bfigure\s+out\s+(what|why|how|where)\b",
+    r"\bunderstand(ing)?\b",
+    r"\bdeep\s+dive\b",
+    r"\bthink\s+(about|through)\b",
+    r"\breason\s+(about|through)\b",
+    r"\bgive\s+(me\s+)?a\s+(good|deep|full|proper|thorough)\b",
+    r"\b(check|review)\s+(the|this|that|my)\s+(code|codebase|base|project|logic|flow)\b",
+    r"\bwhat.s\s+(going\s+on|happening|up)\b",
+    r"\bwhat\s+could\s+be\b",
+    r"\b(audit|inspect)\s+(the|this|my)\b",
 ]
 
 _AGENTIC_RX = [re.compile(p, re.IGNORECASE) for p in AGENTIC_PATTERNS]
@@ -109,6 +148,26 @@ _ANALYSIS_RX = [re.compile(p, re.IGNORECASE) for p in ANALYSIS_PATTERNS]
 # ROUTING LOGIC
 # =============================================================================
 
+def _make_decision(tier: DebugTier, reason: str, enable_tools: bool = False) -> RoutingDecision:
+    """Build a RoutingDecision from a tier — single source of truth for
+    model + reasoning binding. Adding a new tier means one place to update."""
+    cfg = TIER_MODELS[tier]
+    return RoutingDecision(
+        tier=tier,
+        provider=cfg["provider"],
+        model=cfg["model"],
+        reason=reason,
+        enable_tools=enable_tools,
+        reasoning=TIER_REASONING.get(tier),
+    )
+
+
+# Long messages (typically voice-dictated deep-dive requests) almost never
+# belong in triage, even if none of the regex patterns happen to match.
+# This is a safety net for natural phrasing the patterns miss.
+_LONG_MESSAGE_CHAR_THRESHOLD = 400
+
+
 def classify_query(
     message: str,
     conversation_history: Optional[List[dict]] = None,
@@ -116,43 +175,53 @@ def classify_query(
     """
     Classify a debug query and determine the appropriate model tier.
 
+    Decision order:
+      1. Agentic patterns (fix/implement/edit) → AGENTIC
+      2. Analysis patterns (why/look/dig/understand) → ANALYSIS
+      3. Long message escalation (>400 chars) → ANALYSIS
+      4. Prior-turn uncertainty from assistant → ANALYSIS
+      5. Default → TRIAGE
+
+    Reasoning effort is bound to tier via TIER_REASONING, so any match
+    that escalates past triage automatically gets reasoning enabled.
+
     Args:
         message: The user's current message.
-        conversation_history: Previous messages in the conversation (for context).
+        conversation_history: Previous messages in the conversation.
 
     Returns:
-        RoutingDecision with tier, provider, model, and reasoning.
+        RoutingDecision with tier, provider, model, reasoning, tools.
     """
     msg_lower = message.lower().strip()
 
-    # Check for agentic intent first (highest tier)
+    # 1. Agentic intent (highest tier — user wants an action)
     for rx in _AGENTIC_RX:
         if rx.search(msg_lower):
-            cfg = TIER_MODELS[DebugTier.AGENTIC]
-            return RoutingDecision(
-                tier=DebugTier.AGENTIC,
-                provider=cfg["provider"],
-                model=cfg["model"],
+            return _make_decision(
+                DebugTier.AGENTIC,
                 reason=f"Agentic pattern matched: {rx.pattern}",
                 enable_tools=True,
             )
 
-    # Check for analysis intent
+    # 2. Analysis intent (reasoning required)
     for rx in _ANALYSIS_RX:
         if rx.search(msg_lower):
-            cfg = TIER_MODELS[DebugTier.ANALYSIS]
-            return RoutingDecision(
-                tier=DebugTier.ANALYSIS,
-                provider=cfg["provider"],
-                model=cfg["model"],
+            return _make_decision(
+                DebugTier.ANALYSIS,
                 reason=f"Analysis pattern matched: {rx.pattern}",
-                enable_tools=False,
             )
 
-    # Check conversation context for escalation signals
+    # 3. Length-based escalation. Voice-dictated deep-dive requests often
+    # wander past any single keyword but are clearly not triage material.
+    if len(message) >= _LONG_MESSAGE_CHAR_THRESHOLD:
+        return _make_decision(
+            DebugTier.ANALYSIS,
+            reason=f"Long message escalation ({len(message)} chars >= {_LONG_MESSAGE_CHAR_THRESHOLD})",
+        )
+
+    # 4. Prior-turn uncertainty — if the last assistant reply hedged,
+    # escalate so the next turn has reasoning to work with.
     if conversation_history and len(conversation_history) > 2:
-        # If the conversation has been going back and forth, the simple model
-        # may not be cutting it — escalate to analysis
         recent_assistant = [
             m for m in conversation_history[-4:]
             if m.get("role") == "assistant"
@@ -163,24 +232,13 @@ def classify_query(
                 "i'm not sure", "i can't determine", "unclear",
                 "need more context", "difficult to say",
             ]):
-                cfg = TIER_MODELS[DebugTier.ANALYSIS]
-                return RoutingDecision(
-                    tier=DebugTier.ANALYSIS,
-                    provider=cfg["provider"],
-                    model=cfg["model"],
+                return _make_decision(
+                    DebugTier.ANALYSIS,
                     reason="Escalated: previous response showed uncertainty",
-                    enable_tools=False,
                 )
 
-    # Default: triage tier
-    cfg = TIER_MODELS[DebugTier.TRIAGE]
-    return RoutingDecision(
-        tier=DebugTier.TRIAGE,
-        provider=cfg["provider"],
-        model=cfg["model"],
-        reason="Default triage routing",
-        enable_tools=False,
-    )
+    # 5. Default: triage
+    return _make_decision(DebugTier.TRIAGE, reason="Default triage routing")
 
 
 def get_tier_cost_estimate(tier: DebugTier) -> dict:

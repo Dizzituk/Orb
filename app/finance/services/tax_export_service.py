@@ -139,7 +139,7 @@ def _get_cc_transactions(db: Session, tax_year: str) -> list[dict]:
         "amount": t.amount,
         "description": t.description or "",
         "card": t.card.name if t.card else "",
-        "category": t.expense_category.display_name if t.expense_category else "Uncategorised",
+        "category": t.category.display_name if t.category else "Uncategorised",
         "scope": t.expense_scope or "",
         "merchant": t.merchant_name or "",
     } for t in txs]

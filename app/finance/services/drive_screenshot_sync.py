@@ -118,10 +118,6 @@ async def sync_screenshots(db: Session) -> dict:
         list_folder_contents,
         download_file_bytes,
     )
-    from app.finance.services.screenshot_ocr_service import (
-        save_screenshot,
-        extract_via_llm,
-    )
 
     config = db.query(ScreenshotFolderConfig).first()
     if not config:
@@ -180,70 +176,43 @@ async def sync_screenshots(db: Session) -> dict:
                 error_count += 1
                 continue
 
-            # OCR: deterministic Tesseract first (also saves locally), API fallback
-            from app.finance.services.screenshot_ocr_deterministic import extract_from_image
-            from app.finance.services.screenshot_ocr_service import ScreenshotOCRResult
+            # Unified OCR pipeline (Tesseract → Gemini Flash → OpenAI)
+            from app.finance.services.ocr_pipeline import extract_from_bytes
+            from app.finance.services.daily_log_ingest import save_ocr_result_as_log
 
-            local_path = save_screenshot(file_bytes, filename)
-            det_result = extract_from_image(local_path)
+            ocr_result = await extract_from_bytes(
+                file_bytes, mime_type=mime, filename=filename,
+            )
 
-            if det_result.is_valid and det_result.confidence >= 70:
-                # Deterministic OCR succeeded — map to expected format
-                # Override OCR date with filename date (most reliable)
-                import re as _re
-                fname_date_m = _re.search(r'(\d{4})(\d{2})(\d{2})', filename)
-                if fname_date_m:
-                    from datetime import date as _date
-                    try:
-                        fname_date = _date(
-                            int(fname_date_m.group(1)),
-                            int(fname_date_m.group(2)),
-                            int(fname_date_m.group(3)),
-                        )
-                        det_result.work_date = fname_date
-                    except ValueError:
-                        pass
+            # Drive filename often carries the real date (YYYYMMDD_HHMMSS_...).
+            # If the OCR missed the date, or the filename date is newer/cleaner,
+            # prefer the filename date. This was the old behaviour too.
+            import re as _re
+            fname_date_m = _re.search(r'(\d{4})(\d{2})(\d{2})', filename)
+            if fname_date_m and ocr_result.success:
+                from datetime import date as _date
+                try:
+                    fname_date = _date(
+                        int(fname_date_m.group(1)),
+                        int(fname_date_m.group(2)),
+                        int(fname_date_m.group(3)),
+                    )
+                    if not ocr_result.work_date:
+                        ocr_result.work_date = fname_date
+                except ValueError:
+                    pass
 
-                ocr_result = ScreenshotOCRResult(
-                    success=True,
-                    work_date=det_result.work_date,
-                    tour_id=det_result.tour_id,
-                    user_id=det_result.user_id,
-                    delivery_count=det_result.delivery_count,
-                    collections=det_result.collections,
-                    stops=det_result.attempted_stops,
-                    attempted=det_result.attempted_stops,
-                    done=det_result.deliveries or det_result.delivery_count,
-                    failed_deliveries=det_result.not_attempted,
-                    gross_earnings=det_result.gross_earnings,
-                    route_area=None,
-                    message=f"Deterministic OCR ({det_result.confidence}% confidence)",
-                )
-                logger.info(
-                    "[screenshot_sync] Deterministic OCR: %s (%s%% confidence, %d fields)",
-                    filename, det_result.confidence, len(det_result.fields_extracted),
-                )
-            else:
-                # Fall back to API-based vision OCR
-                logger.info(
-                    "[screenshot_sync] Deterministic OCR insufficient (%s%% confidence), "
-                    "falling back to API for %s",
-                    det_result.confidence, filename,
-                )
-                ocr_result = await extract_via_llm(file_bytes, mime)
-
-            if ocr_result.success:
-                # Create work log entry
-                work_log_id = await _create_work_log_from_ocr(db, ocr_result)
+            if ocr_result.success and ocr_result.work_date:
+                log = save_ocr_result_as_log(db, ocr_result)
                 record.ocr_success = True
-                record.work_log_id = work_log_id
+                record.work_log_id = log.id if log else None
                 results.append({
                     "filename": filename,
                     "success": True,
                     "work_date": str(ocr_result.work_date),
                     "deliveries": ocr_result.delivery_count,
                     "earnings": ocr_result.gross_earnings,
-                    "work_log_id": work_log_id,
+                    "work_log_id": log.id if log else None,
                 })
             else:
                 record.ocr_success = False
@@ -283,70 +252,6 @@ async def sync_screenshots(db: Session) -> dict:
         "errors": error_count,
         "results": results,
     }
-
-
-async def _create_work_log_from_ocr(db: Session, ocr) -> int:
-    """Create a DailyWorkLog entry from OCR extraction."""
-    from app.finance.models import DailyWorkLog
-
-    # Check for duplicate date
-    existing = db.query(DailyWorkLog).filter(
-        DailyWorkLog.work_date == ocr.work_date
-    ).first()
-
-    if existing:
-        logger.info(
-            "[screenshot_sync] Work log already exists for %s, updating",
-            ocr.work_date,
-        )
-        existing.tour_id = ocr.tour_id or existing.tour_id
-        existing.delivery_count = ocr.delivery_count or existing.delivery_count
-        existing.collections = ocr.collections or existing.collections
-        existing.stops = ocr.stops or existing.stops
-        existing.attempted = ocr.attempted or existing.attempted
-        existing.done = ocr.done or existing.done
-        existing.failed_deliveries = ocr.failed_deliveries or existing.failed_deliveries
-        existing.gross_earnings = ocr.gross_earnings or existing.gross_earnings
-        existing.route_area = ocr.route_area or existing.route_area
-        # source: drive_sync
-        db.commit()
-        return existing.id
-
-    total_parcels = ocr.delivery_count + ocr.collections
-    rate = (ocr.gross_earnings / total_parcels) if total_parcels > 0 else 0.0
-
-    # Compute HMRC tax year (6 Apr - 5 Apr)
-    wd = ocr.work_date
-    if wd.month > 4 or (wd.month == 4 and wd.day >= 6):
-        tax_year = f"{wd.year}/{str(wd.year + 1)[-2:]}"
-    else:
-        tax_year = f"{wd.year - 1}/{str(wd.year)[-2:]}"
-
-    log = DailyWorkLog(
-        work_date=ocr.work_date,
-        tour_id=ocr.tour_id,
-        user_id=ocr.user_id,
-        delivery_count=ocr.delivery_count,
-        collections=ocr.collections,
-        stops=ocr.stops,
-        attempted=ocr.attempted,
-        done=ocr.done,
-        failed_deliveries=ocr.failed_deliveries,
-        gross_earnings=ocr.gross_earnings,
-        route_area=ocr.route_area,
-        rate_per_parcel=round(rate, 2),
-        total_parcels=total_parcels,
-        tax_year=tax_year,
-    )
-    db.add(log)
-    db.commit()
-    db.refresh(log)
-
-    logger.info(
-        "[screenshot_sync] Created work log #%d for %s (%d deliveries, £%.2f)",
-        log.id, ocr.work_date, ocr.delivery_count, ocr.gross_earnings,
-    )
-    return log.id
 
 
 async def get_sync_history(db: Session, limit: int = 20) -> list:

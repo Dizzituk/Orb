@@ -15,7 +15,11 @@ from typing import Optional
 
 @dataclass
 class TaxYearConfig:
-    """All HMRC rates and thresholds for a tax year."""
+    """All HMRC rates and thresholds for a tax year.
+
+    Rates can be selected with `TaxYearConfig.for_year("2026-27")`.
+    Defaults to the current tax year (year-aware).
+    """
     tax_year: str = "2025-26"
     start_date: date = date(2025, 4, 6)
     end_date: date = date(2026, 4, 5)
@@ -30,14 +34,19 @@ class TaxYearConfig:
     additional_rate: float = 0.45
 
     # NI Self-Employed
-    ni_class2_weekly: float = 3.45
+    # Class 2 is VOLUNTARY from April 2024. Profits above the small profits
+    # threshold are treated as paid for state-pension purposes without the
+    # sole trader actually paying. Set `ni_class2_mandatory = False` so the
+    # calculator stops adding it to the tax bill automatically.
+    ni_class2_weekly: float = 3.50
+    ni_class2_mandatory: bool = False
     ni_class2_threshold: float = 12_570.0
     ni_class4_lower: float = 12_570.0
     ni_class4_upper: float = 50_270.0
     ni_class4_main_rate: float = 0.06
     ni_class4_additional_rate: float = 0.02
 
-    # Mileage
+    # Mileage (frozen since 2011/12)
     mileage_first_10k: float = 0.45
     mileage_after_10k: float = 0.25
     mileage_threshold: float = 10_000.0
@@ -56,6 +65,48 @@ class TaxYearConfig:
     mtd_q2_deadline: date = date(2025, 11, 7)
     mtd_q3_deadline: date = date(2026, 2, 7)
     mtd_q4_deadline: date = date(2026, 5, 7)
+
+    @classmethod
+    def for_year(cls, tax_year: Optional[str] = None) -> "TaxYearConfig":
+        """Build a config for a specific tax year (e.g. '2026-27').
+
+        Defaults to the current tax year if not specified. Only rates
+        that actually changed between 25-26 and 26-27 are overridden
+        below; frozen values (PA, mileage, Class 4 rates/thresholds)
+        stay at the dataclass defaults.
+        """
+        from app.finance.utils.tax_year import (
+            get_current_tax_year, tax_year_bounds,
+        )
+        ty = tax_year or get_current_tax_year()
+        start, end = tax_year_bounds(ty)
+
+        # Rate overrides by tax year (only what differs from 2025-26 defaults)
+        per_year_overrides: dict = {
+            "2026-27": {
+                # Class 2 rose from £3.50 → £3.65 per September CPI uprate,
+                # still voluntary for most self-employed.
+                "ni_class2_weekly": 3.65,
+            },
+        }
+
+        cfg = cls(
+            tax_year=ty,
+            start_date=start,
+            end_date=end,
+            # Adjust MTD deadlines to match the selected year
+            mtd_q1_end=date(start.year, 7, 5),
+            mtd_q2_end=date(start.year, 10, 5),
+            mtd_q3_end=date(end.year, 1, 5),
+            mtd_q4_end=date(end.year, 4, 5),
+            mtd_q1_deadline=date(start.year, 8, 7),
+            mtd_q2_deadline=date(start.year, 11, 7),
+            mtd_q3_deadline=date(end.year, 2, 7),
+            mtd_q4_deadline=date(end.year, 5, 7),
+        )
+        for field_name, val in per_year_overrides.get(ty, {}).items():
+            setattr(cfg, field_name, val)
+        return cfg
 
 
 @dataclass
@@ -120,7 +171,13 @@ class HMRCTaxEngine:
 
     def calculate_ni(self, taxable_profit: float) -> dict:
         c = self.config
-        class2 = c.ni_class2_weekly * 52 if taxable_profit >= c.ni_class2_threshold else 0.0
+        # Class 2 is voluntary from April 2024 — do NOT add automatically.
+        # Set ni_class2_mandatory=True in the config only if the trader
+        # has opted to pay it voluntarily.
+        if c.ni_class2_mandatory and taxable_profit >= c.ni_class2_threshold:
+            class2 = c.ni_class2_weekly * 52
+        else:
+            class2 = 0.0
 
         class4_main = 0.0
         class4_add = 0.0

@@ -135,15 +135,28 @@ Respond in JSON only (no markdown, no backticks):
 }}"""
 
         try:
-            response = await self._client.chat.completions.create(
-                model=os.getenv("OPENAI_DEFAULT_MODEL", "gpt-5.4-mini"),
-                messages=[
+            model = os.getenv("OPENAI_DEFAULT_MODEL", "gpt-5.4-mini")
+            # GPT-5.x / o-series reasoning models reject `temperature` and
+            # `max_tokens` — they use `max_completion_tokens` and the default
+            # temperature only. Detect by model name prefix.
+            def _is_reasoning(m: str) -> bool:
+                m = (m or "").lower()
+                return m.startswith(("gpt-5", "o1", "o3", "o4"))
+
+            kwargs = {
+                "model": model,
+                "messages": [
                     {"role": "system", "content": HMRC_RULES_CONTEXT},
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.1,
-                max_tokens=800,
-            )
+            }
+            if _is_reasoning(model):
+                kwargs["max_completion_tokens"] = 800
+            else:
+                kwargs["max_tokens"] = 800
+                kwargs["temperature"] = 0.1
+
+            response = await self._client.chat.completions.create(**kwargs)
 
             raw = response.choices[0].message.content.strip()
             # Strip any markdown fences

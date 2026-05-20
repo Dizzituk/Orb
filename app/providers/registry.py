@@ -453,26 +453,42 @@ class ProviderRegistry:
                 temperature=temperature,
                 max_tokens=min(max_tokens, 128000),
             )
-            # v2.2: Anthropic extended thinking. When reasoning={'effort': 'high'|'medium'|'low'}
-            # is passed, enable Opus/Sonnet extended thinking with a proportional budget.
-            # Extended thinking gives the model private reasoning space before emitting the
-            # visible response — critical for architecture-reasoning tasks like SpecGate.
-            # Thinking tokens count against max_tokens, so we also bump the output cap.
+            # v2.3 (2026-04-18): Updated for Claude Opus 4.7 API.
+            # Opus 4.7 REJECTS the old {'type': 'enabled', 'budget_tokens': N} shape.
+            # New shape: thinking={'type': 'adaptive'} + output_config={'effort': <level>}.
+            # Opus 4.6 and Sonnet 4.6 also accept the new shape (budget_tokens deprecated).
+            # Opus 4.7 also REJECTS non-default temperature/top_p/top_k — so when thinking
+            # is enabled, we remove temperature entirely from the request.
+            #
+            # NOTE: anthropic-python 0.75.x doesn't yet expose output_config as a
+            # top-level kwarg, so we route it via extra_body which the SDK forwards
+            # verbatim into the HTTP request body. Remove this indirection once
+            # the SDK ships native support.
             if reasoning and isinstance(reasoning, dict):
                 _effort = str(reasoning.get("effort", "")).lower()
-                _budget_map = {"high": 8000, "medium": 4000, "low": 2000}
-                _budget = _budget_map.get(_effort)
-                if _budget:
-                    # Temperature MUST be 1.0 when extended thinking is enabled (Anthropic API constraint)
-                    create_kwargs["temperature"] = 1.0
-                    create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": _budget}
-                    # Ensure max_tokens leaves room for both thinking and visible output
-                    _current_max = create_kwargs.get("max_tokens", 8192)
-                    _needed_max = _budget + 8192
-                    if _current_max < _needed_max:
-                        create_kwargs["max_tokens"] = min(_needed_max, 128000)
-                    logger.info("[registry] v2.2 Anthropic extended thinking enabled: effort=%s, budget=%d, max_tokens=%d",
-                                _effort, _budget, create_kwargs["max_tokens"])
+                if _effort in ("low", "medium", "high", "xhigh", "max"):
+                    create_kwargs["thinking"] = {"type": "adaptive"}
+                    create_kwargs["extra_body"] = {
+                        "output_config": {"effort": _effort},
+                    }
+                    # Temperature MUST be omitted (not set to 1.0) on Opus 4.7.
+                    # Also safe to omit on 4.6 — default temperature is fine.
+                    create_kwargs.pop("temperature", None)
+                    # Give thinking + visible output adequate headroom.
+                    # Docs recommend 64k as a reasonable default for xhigh/max.
+                    _min_max_tokens = {
+                        "low": 8192,
+                        "medium": 16000,
+                        "high": 32000,
+                        "xhigh": 64000,
+                        "max": 64000,
+                    }.get(_effort, 16000)
+                    if create_kwargs.get("max_tokens", 0) < _min_max_tokens:
+                        create_kwargs["max_tokens"] = min(_min_max_tokens, 128000)
+                    logger.info(
+                        "[registry] v2.3 Anthropic adaptive thinking: effort=%s, max_tokens=%d",
+                        _effort, create_kwargs["max_tokens"],
+                    )
             # Anthropic expects 'tools' to be a proper list; do not pass None.
             if tools_param is not None and isinstance(tools_param, list) and len(tools_param) > 0:
                 create_kwargs["tools"] = tools_param

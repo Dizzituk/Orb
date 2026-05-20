@@ -297,9 +297,28 @@ def _is_refactor_task(text: str) -> bool:
     - "Replace all occurrences of X with Y"
     - "Rebrand from Orb to Astra"
     - "Find and replace in all files"
-    
-    Returns True if a refactor ACTION PATTERN matches.
+
+    v3.11 (2026-04-17): Added size gate. A genuine pure-rename request is
+    always short. If the input is > MAX_REFACTOR_INPUT_LEN chars, the input
+    is a capability spec / design doc / project plan that happens to contain
+    a rename pattern somewhere in it — NOT a refactor task. This prevents
+    the whole document being thrown away because one section mentions
+    renaming a nav label.
+
+    Returns True if a refactor ACTION PATTERN matches AND the input is
+    short enough to plausibly be a refactor request.
     """
+    # v3.11 size gate — real rename requests are short.
+    MAX_REFACTOR_INPUT_LEN = 4000
+    if len(text) > MAX_REFACTOR_INPUT_LEN:
+        print(
+            f"[WEAVER] v3.11 NOT refactor task — input too long "
+            f"({len(text)} > {MAX_REFACTOR_INPUT_LEN} chars). Refactor patterns "
+            f"in large documents are almost always incidental references, "
+            f"not the primary intent."
+        )
+        return False
+
     text_lower = text.lower()
     
     for pattern in REFACTOR_ACTION_PATTERNS:

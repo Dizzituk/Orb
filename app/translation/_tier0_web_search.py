@@ -375,15 +375,48 @@ _STALENESS_CURRENT_STATE = {
     "nhs", "hmrc", "dwp",
 }
 
-# Temporal signals that imply the user wants current info
-_STALENESS_TEMPORAL = {
-    "latest", "recent", "current", "now", "today",
-    "this week", "this month", "this year", "2026", "2025",
-    "right now", "at the moment", "currently",
-    "still", "anymore", "yet",
-    "what happened", "what is happening", "what's happening",
-    "update", "news", "developments",
+# Single-word temporal signals — checked against tokenised words
+# (whole-word match) to avoid substring collisions like "now" inside
+# "know" or "current" inside "currents". Common conversational words
+# ("now", "still", "yet", "update", "developments") removed because
+# they fire on benign tutoring/discussion language.
+_STALENESS_TEMPORAL_SINGLE = {
+    "latest", "recent", "current", "today", "currently",
+    "anymore", "trending", "headlines",
+    "2026", "2025",
 }
+
+# Multi-word temporal phrases — substring-matched since they are
+# deliberate phrasings unlikely to collide with normal language.
+_STALENESS_TEMPORAL_MULTI = {
+    "this week", "this month", "this year",
+    "right now", "at the moment",
+    "what happened", "what is happening", "what's happening",
+}
+
+# Statement / explanation markers — when the message is framed as
+# the user's own reasoning, hypothesis, restatement, or answer, it
+# is NOT a search request. Used to suppress staleness firing on
+# tutoring and discussion language like "well, I think the answer
+# is...". Order matters: prefixes are anchored at start of message.
+_STALENESS_STATEMENT_PREFIXES = (
+    "well,", "well ",
+    "i think", "i believe", "i guess", "i reckon",
+    "in my opinion",
+    "the answer", "my answer",
+    "so we", "so the",
+    "actually,",
+    "because", "the reason",
+)
+
+_STALENESS_STATEMENT_PHRASES = (
+    "the answer is", "the answer would",
+    "that's how", "that is how",
+    "that's because", "thats because",
+    "the reason is",
+    "i would say",
+    "it depends",
+)
 
 
 def _check_staleness(text: str) -> Optional[str]:
@@ -392,17 +425,47 @@ def _check_staleness(text: str) -> Optional[str]:
     Returns a reason string if the topic is stale, None otherwise.
     The reason is used in logging to explain why auto-search triggered.
 
-    v3.0: Initial implementation. Checks against known fast-moving
+    v3.0 (2026-02): Initial implementation. Checks against known fast-moving
     topic categories. This is intentionally broad — better to search
     unnecessarily than to confidently give outdated information.
+
+    v3.1 (2026-05-01): Tightened to stop false positives in tutoring and
+    discussion contexts. Three guards added:
+
+    1. Length cap of 30 words (separate from the explicit-search cap of
+       50). Staleness signals on long messages are almost always part of
+       an explanation, not a search request.
+    2. Statement-marker guard. Messages framed as the user's own
+       reasoning ("well, I think...", "the answer is...", "so we...")
+       are not search requests, even if they contain "news" or "today".
+    3. Whole-word match for single-word temporal signals via token-set
+       intersection — "now" no longer fires inside "know", "current"
+       no longer fires inside "currents". Conversational noise words
+       ("now", "still", "yet", "update", "developments") removed from
+       the temporal list entirely.
     """
     lower = text.lower()
     words = set(re.findall(r"[a-z']+", lower))
 
-    # Check temporal signals first — strongest indicator
-    for signal in _STALENESS_TEMPORAL:
+    # Length guard: staleness fires on short queries, not long explanations.
+    if len(text.split()) > 30:
+        return None
+
+    # Statement guard: don't fire on the user's own reasoning / answers.
+    stripped = lower.lstrip()
+    if any(stripped.startswith(p) for p in _STALENESS_STATEMENT_PREFIXES):
+        return None
+    if any(p in lower for p in _STALENESS_STATEMENT_PHRASES):
+        return None
+
+    # Check temporal signals first — strongest indicator.
+    # Multi-word phrases substring-matched, single words whole-word matched.
+    for signal in _STALENESS_TEMPORAL_MULTI:
         if signal in lower:
             return f"temporal_signal:{signal}"
+    matched_single = words & _STALENESS_TEMPORAL_SINGLE
+    if matched_single:
+        return f"temporal_signal:{sorted(matched_single)[0]}"
 
     # Check current events keywords
     for kw in _STALENESS_CURRENT_EVENTS:

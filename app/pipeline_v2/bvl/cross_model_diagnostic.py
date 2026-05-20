@@ -140,7 +140,10 @@ async def diagnose_failure(
         config = get_overwatcher_config()
         provider = config.provider
         model = config.model
-        max_tokens = min(config.max_output, 1500)  # Surgical: cap output for diagnosis
+        # v1.1 (2026-04-18): Was `config.max_output` — that field doesn't
+        # exist on StageConfig. Real field is max_output_tokens. Prior typo
+        # caused the diagnostic to silently fail to initialise on every run.
+        max_tokens = min(config.max_output_tokens, 1500)  # Surgical: cap output for diagnosis
     except Exception as e:
         logger.error("[cross_model] Failed to load overwatcher config: %s", e)
         return None

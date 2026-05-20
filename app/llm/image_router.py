@@ -208,6 +208,7 @@ async def generate_image_stream(
     used_provider = primary
     model_name = os.getenv("IMAGE_GEN_MODEL", "gpt-image-1.5")
     result = None
+    synth_prompt: Optional[str] = None  # set in creative branch; saved on success
 
     # Emit metadata so frontend shows the correct provider badge
     yield _sse("metadata", provider=primary, model=model_name)
@@ -322,6 +323,25 @@ async def generate_image_stream(
 
         yield _sse_status("Enriching image prompt...")
 
+        # If this looks like a refinement of a previous image, thread the
+        # previous synth prompt through so the synth's refinement path fires.
+        # Without this, "recreate that image" loses its subject anchor and
+        # the image-gen model autocompletes to canonical training-data examples
+        # (e.g. asks for a steep-decline chart -> gets WWF biodiversity index).
+        previous_prompt: Optional[str] = None
+        try:
+            from app.llm.routing.chat_intent_detection import detect_image_refinement
+            from app.llm.image_prompt_log import get_last_prompt_for_project
+            if detect_image_refinement(message):
+                previous_prompt = get_last_prompt_for_project(project_id)
+                if previous_prompt:
+                    logger.info(
+                        "[image_stream] Refinement detected \u2014 threading previous prompt (%d chars)",
+                        len(previous_prompt),
+                    )
+        except Exception as e:
+            logger.warning("[image_stream] Refinement lookup failed: %s", e)
+
         # Prompt synthesis for creative images
         try:
             from app.llm.image_prompt_synth import synthesise_image_prompt
@@ -339,6 +359,7 @@ async def generate_image_stream(
             synth_prompt, aspect_ratio = await synthesise_image_prompt(
                 user_message=message,
                 conversation_history=history,
+                previous_image_prompt=previous_prompt,
             )
             logger.info("[image_stream] Synthesised prompt: %s (ar=%s)",
                          synth_prompt[:120], aspect_ratio or "default")
@@ -398,6 +419,16 @@ async def generate_image_stream(
         ))
     except Exception as e:
         logger.warning("[image_stream] Failed to save history: %s", e)
+
+    # Save the synth prompt so future "recreate that image" / "make it darker"
+    # requests can thread it back through the synth's refinement path.
+    # Plotly charts skip this \u2014 refinements there go through chart_data flow.
+    if used_provider != "plotly" and synth_prompt:
+        try:
+            from app.llm.image_prompt_log import save_prompt
+            save_prompt(project_id, result['filename'], synth_prompt)
+        except Exception as e:
+            logger.warning("[image_stream] Failed to save prompt log: %s", e)
 
     yield _sse("done", provider=used_provider, model=model_name,
               total_length=len(response_text))

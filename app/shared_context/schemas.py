@@ -20,3 +20,8 @@ class SharedContextPackage(BaseModel):
     formatted_block: str = Field(..., description="Ready-to-inject text block")
     truncated: bool = Field(default=False, description="True if budget forced truncation")
     budget_chars: int = Field(..., description="Character budget used")
+    # Phase 7 audit (2026-05-02): builder.py also reports retrieval-stage
+    # counts. Adding here so the schema matches what's actually produced;
+    # downstream consumers can ignore them if they don't care.
+    total_retrieved: int = Field(default=0, description="Total items returned by retrieval before selection")
+    total_searched: int = Field(default=0, description="Total items the embedding search scanned")

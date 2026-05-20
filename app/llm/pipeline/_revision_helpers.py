@@ -26,6 +26,13 @@ from app.jobs.schemas import (
 )
 from app.providers.registry import llm_call as registry_llm_call
 
+# Lazy-import to avoid circular dependency with app.llm.pipeline.revision.
+# _get_revision_model_config() is called from call_opus_revision() below; it
+# only needs to resolve at call time, not at import time.
+def _get_revision_model_config():
+    from app.llm.pipeline.revision import _get_revision_model_config as _impl
+    return _impl()
+
 logger = logging.getLogger(__name__)
 
 # Legacy exports (for backward compatibility - these get value at import time)

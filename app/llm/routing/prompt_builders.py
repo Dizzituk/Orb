@@ -5,6 +5,10 @@ System prompt and message builders for stream routing.
 v1.0 (2026-01-20): Extracted from stream_router.py for modularity.
 v1.1 (2026-01-20): Added large-output truncation for command outputs.
 v1.2 (2026-02-09): Added scan-aware context injection — TOC replacement + section retrieval.
+v1.3 (2026-05-01): Extracted CONVERSATIONAL_GUIDELINES and IMAGE_GEN_MARKER_INSTRUCTIONS
+    into sibling module ._prompt_blocks to bring this file under the 30KB hard limit.
+    Same module also rewrites CONVERSATIONAL_GUIDELINES to fix the "Yes —" /
+    "Yeah —" / "Got it —" opener tic and add explicit register guidance.
 
 This module provides:
 - `build_system_prompt()` - Constructs system prompt with capability layer
@@ -29,148 +33,20 @@ from .handler_registry import (
     get_capability_context,
 )
 
+# Prompt string blocks live in a sibling module to keep this file under
+# the 30KB hard limit. CONVERSATIONAL_GUIDELINES is injected into every
+# chat-mode system prompt; IMAGE_GEN_MARKER_INSTRUCTIONS is injected only
+# when the chat router detected image-gen intent.
+from ._prompt_blocks import (
+    CONVERSATIONAL_GUIDELINES as _CONVERSATIONAL_GUIDELINES,
+    IMAGE_GEN_MARKER_INSTRUCTIONS as _IMAGE_GEN_MARKER_INSTRUCTIONS,
+)
+
 logger = logging.getLogger(__name__)
 
 
 # Architecture map file path (host filesystem, read-only)
 ARCHMAP_PATH = r'D:\Orb\.architecture\ARCHITECTURE_MAP.md'
-
-
-# v5.0 (2026-02-04): CONVERSATIONAL MODE GUIDELINES
-# The baseline/chat LLM must behave as a conversational assistant, NOT
-# a code generator. It should clarify, ask questions, and build context.
-# The downstream pipeline (Weaver → SpecGate → CriticalPipeline) handles
-# the actual implementation work.
-_CONVERSATIONAL_GUIDELINES = """
-
-## YOUR ROLE IN THE PIPELINE
-
-You are the **conversational front-end** of a multi-stage development pipeline.
-Your job is to UNDERSTAND what the user wants through natural dialogue.
-You are NOT responsible for implementation - that happens in later pipeline stages.
-
-## CRITICAL BEHAVIOUR RULES
-
-1. **DO NOT write code or implementation files** unless the user explicitly asks
-   you to write specific code right now. Your role is conversation, not generation.
-2. **ONE QUESTION AT A TIME.** This is non-negotiable. When you need to clarify
-   something, ask ONE question, wait for the answer, then ask the next one.
-   Never dump a numbered list of 5-10 questions. The user communicates via voice
-   while driving — they cannot process or remember a batch of questions.
-   Build understanding incrementally: ask, listen, absorb, ask the next thing.
-   If you have multiple things to clarify, pick the MOST IMPORTANT one first.
-3. **Keep responses focused and concise** - a few paragraphs maximum.
-   Do not dump walls of text, architecture docs, or full file contents.
-4. **Summarise your understanding** back to the user. Confirm what you think
-   they want before the pipeline starts building it.
-5. **Flag potential concerns** naturally: scope, complexity, ambiguity.
-   But do it conversationally, not as a checklist.
-6. **No numbered lists of options unless asked.** Present information
-   conversationally. Instead of "Option A: ... Option B: ... Option C: ..."
-   just say what you think is best and why, then ask if they agree.
-
-## WHAT TO DO INSTEAD OF WRITING CODE
-
-- Acknowledge the request
-- Ask about unclear aspects (target platform, integration points, preferences)
-- Confirm scope ("So you want X that does Y, right?")
-- Mention any obvious considerations ("This will need a backend endpoint too")
-- Let the user know the pipeline will handle the implementation
-
-## CODEBASE CONTEXT
-
-If your context includes a [CODEBASE CONTEXT] block, source files have been
-pre-loaded for you from the sandbox. You already have the code. Do NOT:
-- Call execute_command, shell commands, or generate tool_call JSON to explore files
-- Say "let me look at the codebase" or "give me a moment to dig"
-Instead, reference the loaded files directly. Cite patterns, variable names,
-component structures, and CSS tokens from the code you can already see.
-
-## CONVERSATION CONTEXT PRIORITY
-
-When the user has pasted or shared text content in the conversation, always check
-whether they are referring to that content before searching the filesystem.
-
-For example, if the user pastes a spec and then says 'write this out' or 'use this
-as the job description', they mean the content they just shared — not a file on disk.
-Read from the conversation context first.
-
-If it is genuinely unclear whether the user means conversation content or a file on
-their computer, ask them: 'Do you mean the content you just shared, or would you
-like me to find a file on your system?'
-
-File search tools (search_my_files, read_user_file) remain fully available for when
-the user asks to find, browse, or open files from their computer.
-
-## EXAMPLES
-
-GOOD: "Got it - a companion app that connects to Astra from your phone. First
-thing I need to know: are you thinking Android only, or do you want iOS as well?"
-[wait for answer, then ask next question]
-
-GOOD: "Makes sense. So Android it is. Next question - when you are out on the
-road, should the phone connect directly to your desktop, or go through a cloud
-relay so it works even when your PC is behind a firewall?"
-
-BAD: "Here are my 9 questions: 1. Platform? 2. Connectivity model? 3. Real-time
-vs batch? 4. Speech recognition? 5. Notifications? 6. Authentication? 7. Dashboard
-contents? 8. Privacy? 9. Offline behaviour?"
-
-BAD: [generating 500 lines of React components, Python endpoints, and config files]
-
-## FILE GENERATION
-
-EXCEPTION to the "no code" rule: When the user explicitly asks you to CREATE
-a file (HTML page, document, etc.) — for example "create me an HTML file",
-"build this as a webpage", "make that into a downloadable file" — you SHOULD
-generate the complete file content in a fenced code block.
-
-Rules for file generation:
-- Output the COMPLETE file in a single `html (or appropriate language) code block
-- Make it self-contained (inline CSS/JS, no external dependencies except CDN fonts)
-- Do NOT ask where to save it — the system handles file extraction automatically
-- Do NOT ask for confirmation before generating — if they asked for a file, make it
-- Be creative and thorough — this is your chance to show what you can build
-- The system will automatically extract HTML from your response, save it to disk,
-  and present it to the user as a clickable file they can open in their browser
-- Keep your surrounding message SHORT — a brief sentence or two before the code block
-  explaining what you built, then the code block, then done. The user does NOT want to
-  scroll through 200 lines of HTML in chat — they will open the file via the download
-  card that appears automatically. Do not describe the code after the block either.
-
-## VISUAL CONTENT IN HTML PAGES
-
-When creating HTML pages (websites, blog posts, interactive articles), you are ENCOURAGED
-to include rich visual content to make pages more engaging and immersive:
-
-### Images
-- Use CSS art, SVG graphics, and CSS gradients for decorative visuals (these are self-contained)
-- For concept illustrations and hero images, create detailed SVG inline graphics
-- Use CSS animations and @keyframes for animated visual elements
-- For placeholder images where a real photo would go, use solid gradient backgrounds
-  with descriptive overlay text explaining what the image would show
-
-### Animated Elements (GIF-like effects)
-- Use CSS animations (@keyframes) to create animated visuals: pulsing orbs, flowing
-  gradients, particle effects, rotating elements, scroll-triggered reveals
-- Use SVG animations (animateTransform, animate) for animated diagrams and illustrations
-- Create "living" page elements: animated backgrounds, breathing glows, flowing lines,
-  orbiting nodes, progress animations
-- These CSS/SVG animations serve the same purpose as GIFs but are self-contained,
-  resolution-independent, and much smaller in file size
-
-### Interactive Visualisations
-- Use JavaScript + Canvas or SVG for interactive charts, timelines, and diagrams
-- Add scroll-triggered animations that reveal content as the user reads
-- Include toggle buttons that switch between different data views
-- Create hover effects that reveal additional information
-
-### Design Philosophy
-- Every section of a blog or webpage should have VISUAL INTEREST — not just text
-- Alternate between text sections and visual/interactive sections
-- Use the page's colour palette consistently across all generated visuals
-- Animated elements should be subtle and purposeful, not distracting
-"""
 
 
 # =============================================================================
@@ -370,18 +246,28 @@ def _build_ui_context_block(ui_context: Any) -> str:
         return ""
 
 
-def build_system_prompt(project: Any, full_context: str, ui_context: Any = None) -> str:
+def build_system_prompt(
+    project: Any,
+    full_context: str,
+    ui_context: Any = None,
+    image_intent: bool = False,
+) -> str:
     """
     Build system prompt with project context and ASTRA capability layer.
     
     v4.9: Injects capability layer at the top of every system prompt.
     v5.0: Adds conversational guidelines to prevent code dumping.
     v6.0: Injects UI context from Universal Chat Panel.
+    v16.0 (2026-05-01): Adds image-gen marker instructions when image_intent
+         is set. Replaces the old Gemini synth bypass — chat LLM now writes
+         the gpt-image-2 prompt itself, with full conversation context.
     
     Args:
         project: Project ORM object with name and description
         full_context: Pre-built context string (semantic, documents, etc.)
         ui_context: Optional UIContext from chat panel (which tab user is viewing)
+        image_intent: If True, inject image-gen marker instructions so the
+            chat LLM emits [IMAGE_PROMPT]: <prompt> for direct dispatch.
     
     Returns:
         Complete system prompt string
@@ -411,6 +297,13 @@ def build_system_prompt(project: Any, full_context: str, ui_context: Any = None)
     ui_block = _build_ui_context_block(ui_context)
     if ui_block:
         system_prompt += ui_block
+
+    # v16.0: Inject image marker instructions when an image was requested.
+    # This is what tells the chat LLM to emit [IMAGE_PROMPT]: ... so the
+    # stream wrapper can fire it directly at gpt-image-2.
+    if image_intent:
+        system_prompt += _IMAGE_GEN_MARKER_INSTRUCTIONS
+        print("[PROMPT_BUILDER] Image-gen marker instructions injected")
     
     # Combine: capabilities first, then project context
     if capability_layer:
@@ -603,57 +496,62 @@ def build_full_context(
     if doc_context:
         full_context += "=== UPLOADED DOCUMENTS ===" + doc_context
     
-    # v0.14.0: Always inject biographical preferences into context.
-    # These are permanent facts about the user (name, location, job, etc.)
-    # that should be available to every model in every session.
-    try:
-        from app.db import get_db_session as _get_bio_db
-        from app.astra_memory.preference_models import PreferenceRecord, RecordStatus
-        _bio_db = _get_bio_db()
-        try:
-            _bio_prefs = (
-                _bio_db.query(PreferenceRecord)
-                .filter(
-                    PreferenceRecord.preference_key.like("doc_extract:biographical:%"),
-                    PreferenceRecord.status == RecordStatus.ACTIVE,
-                )
-                .all()
-            )
-            if _bio_prefs:
-                _bio_lines = ["[USER PROFILE]"]
-                for _bp in _bio_prefs:
-                    _key_short = _bp.preference_key.replace("doc_extract:biographical:", "")
-                    _bio_lines.append(f"  {_key_short}: {_bp.preference_value}")
-                _bio_lines.append("[/USER PROFILE]")
-                full_context += "\n\n" + "\n".join(_bio_lines)
-                print(f"[CONTEXT] User profile injected: {len(_bio_prefs)} biographical facts")
-            else:
-                print("[CONTEXT] No biographical prefs found in DB")
-        finally:
-            _bio_db.close()
-    except Exception as _bio_err:
-        print(f"[CONTEXT] Biographical injection failed: {_bio_err}")
+    # v0.14.0 DISABLED (Phase 7 cleanup — 2026-04-14).
+    # The old SQL PreferenceRecord biographical injection has been replaced by
+    # the Tier 1 identity store block (see v15 below). The old data is still in
+    # astra_preferences; garbage rows have been marked SUPERSEDED, but this
+    # injector was double-injecting on top of [USER IDENTITY] so it is disabled.
 
-    # v14.0: Self-model user facts injection.
-    # Reads confirmed facts from the About You tab (self-model) and injects
-    # them into the system context so the LLM knows the user's preferences,
-    # biographical details, communication style, and interests.
+    # v15 (Phase 2): Tier 1 identity block — hard facts, always injected.
+    # Loaded from data/self_model/identity.json. No confidence scoring,
+    # no retrieval, always present when set.
     try:
-        from app.self_model.user_model import get_user_model as _get_sm
-        _sm = _get_sm()
-        _sm_facts = _sm.get_all()
-        if _sm_facts:
-            _sm_lines = ["[SELF-MODEL: USER FACTS]"]
-            for _sf in _sm_facts:
-                _conf = _sf.confidence.value if hasattr(_sf.confidence, "value") else str(_sf.confidence)
-                _sm_lines.append(f"  {_sf.category}/{_sf.key}: {_sf.value} (confidence: {_conf})")
-            _sm_lines.append("[/SELF-MODEL: USER FACTS]")
-            full_context += "\n\n" + "\n".join(_sm_lines)
-            print(f"[CONTEXT] Self-model facts injected: {len(_sm_facts)} facts")
+        from app.self_model.identity_format import build_identity_block
+        _id_block = build_identity_block()
+        if _id_block:
+            full_context += "\n\n" + _id_block
+            print(f"[CONTEXT] Identity block injected ({len(_id_block)} chars)")
+    except Exception as _id_err:
+        print(f"[CONTEXT] Identity injection failed: {_id_err}")
+
+    # v14.1 (Phase 1): Self-model facts injected via filter.
+    # Noise reduction — only HIGH-confidence project/learning, MEDIUM+
+    # preferences/patterns, and ALL biographical/philosophy facts pass.
+    # Set env SELF_MODEL_INJECT_ALL=1 to bypass filter for debugging.
+    try:
+        from app.self_model.injection import build_self_model_block
+        _sm_block = build_self_model_block()
+        if _sm_block:
+            full_context += "\n\n" + _sm_block
+            print(f"[CONTEXT] Self-model block injected ({len(_sm_block)} chars)")
         else:
-            print("[CONTEXT] No self-model user facts found")
+            print("[CONTEXT] Self-model block empty after filter")
     except Exception as _sm_err:
         print(f"[CONTEXT] Self-model injection failed: {_sm_err}")
+
+    # v17 (2026-04-25): ASTRA filesystem facts — always-on knowledge of where
+    # generated outputs live on disk. Stops the agent wasting tool calls
+    # searching for files that a previous turn produced (see image_output_dir.py).
+    try:
+        from app.llm.astra_filesystem_block import build_filesystem_block
+        _fs_block = build_filesystem_block()
+        if _fs_block:
+            full_context += "\n\n" + _fs_block
+            print(f"[CONTEXT] Filesystem block injected ({len(_fs_block)} chars)")
+    except Exception as _fs_err:
+        print(f"[CONTEXT] Filesystem block injection failed: {_fs_err}")
+
+    # v16 (Phase 7): Long-term behavioural / interest themes.
+    # Only HOT themes (sustained evidence, diversified) appear here.
+    # Cold themes surface via a separate surfacing path, not this block.
+    try:
+        from app.self_model.fragments.injection import build_fragments_block
+        _fg_block = build_fragments_block()
+        if _fg_block:
+            full_context += "\n\n" + _fg_block
+            print(f"[CONTEXT] Learned-patterns block injected ({len(_fg_block)} chars)")
+    except Exception as _fg_err:
+        print(f"[CONTEXT] Learned-patterns injection failed: {_fg_err}")
 
     # v5.4: RAG memory injection from unified memory router
     try:
@@ -679,6 +577,25 @@ def build_full_context(
             full_context += "\n\n" + summary_ctx
     except Exception:
         pass  # Non-fatal
+
+    # v18 (2026-05-01): Recent classifier-decision context.
+    # When the translation layer fires a confirmation gate or auto-executes
+    # an intent, the rule_name and reason are recorded by
+    # app/translation/recent_decisions.py. Surfacing them here lets the
+    # chat LLM answer "why did you think that was a web search?" accurately
+    # instead of confabulating. Without this block the chat LLM has no
+    # visibility into the classifier's reasoning.
+    try:
+        from app.translation.recent_decisions import build_decisions_block
+        _cd_block = build_decisions_block(str(project_id))
+        if _cd_block:
+            full_context += "\n\n" + _cd_block
+            print(
+                f"[CONTEXT] Classifier decisions block injected "
+                f"({len(_cd_block)} chars)"
+            )
+    except Exception as _cd_err:
+        print(f"[CONTEXT] Classifier decisions injection failed: {_cd_err}")
 
     return full_context
 

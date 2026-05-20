@@ -241,10 +241,41 @@ class Translator:
 
         # Step 3a: Tier 0 Rules (run FIRST to catch known commands)
         tier0_result = tier0_classify(text)
+
+        # v2.5 (2026-05-01): Per-rule suppression. If this rule has been
+        # rejected enough times recently (see rule_suppression.py), treat
+        # it as no match so the message falls through to the next stage.
+        # Self-healing: rolling 30-day window means a rule that gets fixed
+        # naturally returns once old rejections age out.
+        _tier0_suppressed = False
         if tier0_result.matched:
+            try:
+                from app.translation.rule_suppression import is_rule_suppressed
+                if is_rule_suppressed(tier0_result.rule_name):
+                    _tier0_suppressed = True
+                    logger.info(
+                        "[translator] Tier 0 rule suppressed by rejection "
+                        "history: %s",
+                        tier0_result.rule_name,
+                    )
+            except Exception as _supp_err:
+                logger.debug(
+                    "[translator] Suppression check failed: %s",
+                    _supp_err,
+                )
+
+        if tier0_result.matched and not _tier0_suppressed:
             result.resolved_intent = tier0_result.intent
             result.intent_confidence = tier0_result.confidence
             result.latency_tier = LatencyTier.TIER_0_RULES
+            # Stash classifier metadata so chat-LLM context can explain WHY
+            # this routing decision was made (see recent_decisions.py).
+            result.extracted_context["_classifier_rule"] = (
+                tier0_result.rule_name or "tier0_unknown"
+            )
+            result.extracted_context["_classifier_reason"] = (
+                tier0_result.reason or ""
+            )
             logger.debug(f"Tier 0 match: {tier0_result.rule_name} -> {tier0_result.intent}")
             
             if tier0_result.intent == CanonicalIntent.CHAT_ONLY:
@@ -282,19 +313,50 @@ class Translator:
                     from app.translation.contextual_intent import detect_contextual_intent
                     ctx_result = detect_contextual_intent(text, was_astra_addressed=True)
                     if ctx_result.canonical_intent is not None and ctx_result.confidence >= 0.7:
-                        logger.info(
-                            "[translator] Contextual intent override: %s (%.2f) — %s",
-                            ctx_result.implied_type.value,
-                            ctx_result.confidence,
-                            ctx_result.reasoning,
+                        # v2.5: Per-rule suppression. Skip applying this
+                        # override if the rule has been rejected enough
+                        # times recently.
+                        _ctx_rule = (
+                            f"contextual_intent_{ctx_result.implied_type.value}"
                         )
-                        result.resolved_intent = ctx_result.canonical_intent
-                        result.intent_confidence = ctx_result.confidence
-                        result.latency_tier = LatencyTier.TIER_0_RULES
-                        if ctx_result.extracted_query:
-                            result.extracted_context["extracted_query"] = ctx_result.extracted_query
-                        result.extracted_context["contextual_intent_type"] = ctx_result.implied_type.value
-                        return await self._apply_gates(text, result, ui_context, conversation_id)
+                        _ctx_apply = True
+                        try:
+                            from app.translation.rule_suppression import (
+                                is_rule_suppressed,
+                            )
+                            if is_rule_suppressed(_ctx_rule):
+                                logger.info(
+                                    "[translator] Contextual intent rule "
+                                    "suppressed by rejection history: %s",
+                                    _ctx_rule,
+                                )
+                                _ctx_apply = False
+                        except Exception as _supp_err:
+                            logger.debug(
+                                "[translator] Contextual suppression "
+                                "check failed: %s",
+                                _supp_err,
+                            )
+
+                        if _ctx_apply:
+                            logger.info(
+                                "[translator] Contextual intent override: %s (%.2f) — %s",
+                                ctx_result.implied_type.value,
+                                ctx_result.confidence,
+                                ctx_result.reasoning,
+                            )
+                            result.resolved_intent = ctx_result.canonical_intent
+                            result.intent_confidence = ctx_result.confidence
+                            result.latency_tier = LatencyTier.TIER_0_RULES
+                            if ctx_result.extracted_query:
+                                result.extracted_context["extracted_query"] = ctx_result.extracted_query
+                            result.extracted_context["contextual_intent_type"] = ctx_result.implied_type.value
+                            # Stash classifier metadata for chat-LLM context.
+                            result.extracted_context["_classifier_rule"] = _ctx_rule
+                            result.extracted_context["_classifier_reason"] = (
+                                ctx_result.reasoning or ""
+                            )
+                            return await self._apply_gates(text, result, ui_context, conversation_id)
                 except Exception as e:
                     logger.debug("[translator] Contextual intent failed: %s", e)
             
@@ -315,6 +377,11 @@ class Translator:
             result.latency_tier = LatencyTier.TIER_0_RULES  # Cache is Tier 0
             result.from_phrase_cache = True
             result.cache_pattern_matched = entry.pattern
+            # Stash classifier metadata for chat-LLM context.
+            result.extracted_context["_classifier_rule"] = "phrase_cache"
+            result.extracted_context["_classifier_reason"] = (
+                f"Cached pattern: {entry.pattern}"
+            )
             logger.debug(f"Cache hit: {entry.pattern} -> {intent}")
             
             if intent == CanonicalIntent.CHAT_ONLY:
@@ -344,7 +411,13 @@ class Translator:
             return result
         
         result.resolved_intent = classifier_response.intent
-        
+
+        # Stash classifier metadata for chat-LLM context.
+        result.extracted_context["_classifier_rule"] = "tier1_classifier"
+        result.extracted_context["_classifier_reason"] = (
+            f"Tier 1 LLM classifier (confidence {classifier_response.confidence:.2f})"
+        )
+
         # Auto-cache high-confidence classifications
         self._phrase_cache.add_from_tier1(
             text=text,

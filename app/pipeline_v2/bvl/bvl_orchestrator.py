@@ -13,6 +13,13 @@ The orchestrator is NOT smart. It is reliable. It routes data between
 tiers, manages the retry budget, and assembles the final report.
 
 v1.0 (2026-03-10): Initial implementation per ASTRA-SPEC-BVL-001.
+v1.1 (2026-04-18): Fix double-append bug — retry results now REPLACE failed
+                   results for the same tier instead of stacking alongside
+                   them. The previous behaviour caused the final
+                   all(tr.passed ...) sign-off check to see the old failed
+                   result and mark the component as not-signed-off even when
+                   retries succeeded. Helper _replace_tier_result keeps only
+                   the latest result per tier.
 """
 from __future__ import annotations
 
@@ -119,7 +126,7 @@ async def run_bvl(
         )
         total_llm_calls += llm_calls
         total_retries += min(MAX_RETRIES_PER_TIER, 3)
-        tier_results.append(t1_result)
+        _replace_tier_result(tier_results, t1_result)
 
         if not t1_result.passed:
             # BLOCKED at T1 — cannot proceed
@@ -167,7 +174,7 @@ async def run_bvl(
         )
         total_llm_calls += llm_calls
         total_retries += min(MAX_RETRIES_PER_TIER, 3)
-        tier_results.append(t2_result)
+        _replace_tier_result(tier_results, t2_result)
 
         if not t2_result.passed:
             return _build_report(
@@ -213,7 +220,7 @@ async def run_bvl(
         )
         total_llm_calls += llm_calls
         total_retries += min(MAX_RETRIES_PER_TIER, 3)
-        tier_results.append(t3_result)
+        _replace_tier_result(tier_results, t3_result)
 
     # ── All tiers complete ──
     all_passed = all(
@@ -294,3 +301,25 @@ def _spec_to_text(spec: Dict[str, Any]) -> str:
     if isinstance(spec, dict):
         return json.dumps(spec, indent=2)
     return str(spec)
+
+
+def _replace_tier_result(
+    tier_results: List[TierResult],
+    new_result: TierResult,
+) -> None:
+    """Replace the existing result for this tier with the new one.
+
+    If no prior result exists for this tier, append. Otherwise, overwrite
+    the existing entry. This ensures the final sign-off check
+    (``all(tr.passed ...)``) sees only the latest state per tier, so a
+    failed-then-retried-successfully tier is treated as passed, not failed.
+
+    v1.1 (2026-04-18): Introduced to fix the "always fails" bug where
+    retry results were being appended alongside the original failed result,
+    poisoning the aggregate sign-off check.
+    """
+    for i, tr in enumerate(tier_results):
+        if tr.tier == new_result.tier:
+            tier_results[i] = new_result
+            return
+    tier_results.append(new_result)

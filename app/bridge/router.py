@@ -123,6 +123,15 @@ async def bridge_chat(
     from app.memory._service_utils_2 import list_messages
 
     project = _resolve_or_create_project(req, db)
+    # Phase 3: scan for identity facts (DOB, birthplace, location, etc.)
+    # Fire-and-forget — writes to Tier 1 identity store if matched.
+    from app.bridge.identity_hook import capture_from_bridge_message
+    capture_from_bridge_message(req.message, source_label=f"bridge:{project.id}")
+
+    # Phase 7: capture fragment for long-term associative memory.
+    # Every message embedded + clustered into themes; decays over time.
+    from app.bridge.identity_hook import capture_fragment_from_bridge
+    capture_fragment_from_bridge(req.message, project_id=project.id)
 
     create_message(db, MessageCreate(
         project_id=project.id, role="user",
@@ -221,6 +230,15 @@ async def bridge_chat_and_speak(
     from urllib.parse import quote as url_quote
 
     project = _resolve_or_create_project(req, db)
+    # Phase 3: scan for identity facts (DOB, birthplace, location, etc.)
+    # Fire-and-forget — writes to Tier 1 identity store if matched.
+    from app.bridge.identity_hook import capture_from_bridge_message
+    capture_from_bridge_message(req.message, source_label=f"bridge:{project.id}")
+
+    # Phase 7: capture fragment for long-term associative memory.
+    # Every message embedded + clustered into themes; decays over time.
+    from app.bridge.identity_hook import capture_fragment_from_bridge
+    capture_fragment_from_bridge(req.message, project_id=project.id)
 
     idempotency_key = request.headers.get("X-Idempotency-Key")
     history_before_save = list_messages(db, project.id, limit=100)
