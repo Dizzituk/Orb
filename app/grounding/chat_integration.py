@@ -64,38 +64,30 @@ def run_grounding_sync(
         # Try to get the running event loop
         try:
             loop = asyncio.get_running_loop()
-            # We're already in an async context — can't use run_until_complete.
-            # Create a task and return. This shouldn't normally happen since
-            # handle_chat_mode is sync, but handle it gracefully.
+            # v17.1 (2026-05-20): handle_chat_mode is sync but called inside
+            # FastAPI's event loop. The previous code started a worker thread
+            # but discarded the result and fell back to classification-only
+            # mode — defeating the whole point of automatic grounding.
+            # Fix: run the async gate in a worker thread (which gets its own
+            # event loop via asyncio.run) and block on the future. The main
+            # thread's event loop is paused for the search duration
+            # (typically 1-5s); acceptable for personal single-user use,
+            # 30s hard cap to bound worst case.
             import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                result = loop.run_in_executor(
-                    pool,
-                    lambda: asyncio.run(evaluate_grounding(message, context=context)),
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(
+                    lambda: asyncio.run(evaluate_grounding(message, context=context))
                 )
-                # This won't work synchronously — fall back to topic-only classification
-                logger.warning("[grounding_integration] Already in async context, falling back to classification only")
-                from app.grounding.topic_classifier import classify_topic
-                classification = classify_topic(message)
-                if classification.category.value == "personal":
+                try:
+                    result = future.result(timeout=30)
+                except concurrent.futures.TimeoutError:
+                    logger.warning(
+                        "[grounding_integration] Grounding search timed out after 30s"
+                    )
                     return system_prompt, {
                         "grounding_applied": False,
-                        "category": classification.category.value,
-                        "reason": "personal_topic",
+                        "reason": "timeout",
                     }
-                # Can't do async search from here — inject a search-needed hint
-                from app.grounding.source_attribution import GROUNDING_SYSTEM_PROMPT
-                hint = (
-                    "\n\n## GROUNDING NOTICE\n"
-                    "This query appears to be claims-dependent but grounding search "
-                    "could not be performed in this context. Caveat any factual claims "
-                    "and suggest the user ask ASTRA to search for the latest data.\n"
-                )
-                return system_prompt + hint, {
-                    "grounding_applied": False,
-                    "category": classification.category.value,
-                    "reason": "async_context_limitation",
-                }
         except RuntimeError:
             # No running event loop — we can use asyncio.run()
             result = asyncio.run(evaluate_grounding(message, context=context))

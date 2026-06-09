@@ -50,14 +50,48 @@ async def run_astra_chat(
         web_search_context, search_executed, search_succeeded,
     )
 
-    # Image route — no LLM call needed
+    # Image route — bypass the LLM call and run the same image-gen
+    # pipeline the desktop uses (classification, refinement detection,
+    # prompt synthesis, primary + fallback provider). Result file lands
+    # in IMAGE_OUTPUT_DIR. Reply text is TTS-friendly (no markdown URL)
+    # and ends with an [ASTRA_ARTIFACT:image:<filename>] marker that the
+    # bridge router strips before sending to the phone and uses to build
+    # the X-Artifacts header / attachments field. Marker stays in the DB
+    # so historical messages can re-emit the chip on reload.
     if prep.get("image_route"):
+        from app.llm.image_router import generate_image_core
+        try:
+            result = await generate_image_core(project_id, message, db)
+        except Exception as e:
+            logger.error("[%s] Image generation crashed: %s", source, e)
+            result = None
+
+        if not result:
+            return {
+                "reply": (
+                    "I tried to make the image but the generation failed. "
+                    "Want me to try again, or describe it instead?"
+                ),
+                "provider": "bridge",
+                "model": "image-gen-failed",
+                "tools_used": ["image_generation"],
+            }
+
+        provider_name = result.get("provider", "image-gen")
+        model_name = result.get("model", "unknown")
+        filename = result.get("filename", "")
+        # TTS-friendly reply. The artifact marker is appended *after* the
+        # user-facing sentence so the phone-side stripper produces clean
+        # text for both the chat bubble and the spoken audio.
+        reply = (
+            f"I've made the image for you. "
+            f"[ASTRA_ARTIFACT:image:{filename}]"
+        )
         return {
-            "reply": "Image generation is available on the desktop app. "
-                     "From the phone, I can describe images or help plan visual content.",
-            "provider": "bridge",
-            "model": "capability-gate",
-            "tools_used": [],
+            "reply": reply,
+            "provider": provider_name,
+            "model": model_name,
+            "tools_used": ["image_generation"],
         }
 
     provider = prep["provider"]
@@ -210,6 +244,34 @@ async def _prepare_astra_chat(
     from app.llm.routing.chat_intent_detection import detect_codebase_exploration
     from app.memory import service as memory_service
 
+    # v1.0 (2026-05-24): Bind project_id into the working-set context
+    # var so Bridge tool calls auto-register the files they touch.
+    try:
+        from app.memory.working_set import set_current as _ws_set_current
+        _ws_set_current(project_id, "bridge")
+    except Exception:
+        pass
+
+    # v1.1 (2026-05-24): Bootstrap working set from explicit file
+    # references in the user's message.  Same rules as desktop:
+    # exactly-one match per reference or skip silently.
+    try:
+        from app.memory._working_set_bootstrap import bootstrap_from_message
+        from app.memory import service as _mem_svc
+        _proj_name = None
+        try:
+            _proj = _mem_svc.get_project(db, project_id)
+            _proj_name = getattr(_proj, "name", None)
+        except Exception:
+            pass
+        bootstrap_from_message(
+            project_id=project_id,
+            project_name=_proj_name,
+            message=message,
+        )
+    except Exception:
+        pass
+
     # ── 1. Build context ──
     full_context = build_full_context(db, project_id, message, use_semantic_search=True)
     if domain_context:
@@ -330,11 +392,22 @@ def _inject_chat_tools(
             print(f"[{source}] Tool access ENABLED: {provider}/{model} ({len(chat_tools)} tools)")
             system_prompt += (
                 "\n\n## TOOL ACCESS\n"
-                "You have tool access for exploring the codebase AND writing to user folders.\n\n"
-                "CODEBASE TOOLS (read-only): read_file, list_files, search_files, read_logs, search_my_files, read_user_file\n"
-                "USER FILE TOOLS (read+write): get_user_folders, write_user_file\n"
-                "CLOUD STORAGE TOOLS: cloud_upload (upload local file to Google Drive), cloud_list (list Drive contents)\n"
-                "Use get_user_folders to discover real folder paths, then write_user_file to save files there.\n\n"
+                "You have tool access for exploring the codebase AND reading/writing the user's files.\n\n"
+                "CODEBASE TOOLS (read-only): read_file, list_files, search_files, read_logs\n"
+                "USER FILE TOOLS: search_my_files, read_user_file, write_user_file, get_user_folders, list_files\n"
+                "CLOUD STORAGE TOOLS: cloud_upload (upload local file to Google Drive), cloud_list (list Drive contents).\n\n"
+                "## Updating existing user files (READ-MODIFY-WRITE pattern)\n"
+                "When the user asks you to ADD TO, UPDATE, or MODIFY an existing file\n"
+                "(dashboard.html, log.html, a spreadsheet, etc.), follow this sequence:\n"
+                "  1. list_files on the target folder (e.g. C:/Users/dizzi/OneDrive/Documents/Work/)\n"
+                "     to confirm what is on disk. The conversation may not mention it,\n"
+                "     but the file usually exists already.\n"
+                "  2. read_user_file on the existing file to load its current contents.\n"
+                "  3. Construct the new full contents in your head (existing contents plus your change).\n"
+                "  4. write_user_file with the FULL new contents. write_user_file OVERWRITES\n"
+                "     the whole file, so you must include every existing line you want kept.\n"
+                "NEVER call write_user_file with only the new section. That deletes the rest.\n"
+                "NEVER ask the user 'Documents or Desktop?' — check the filesystem first with list_files.\n\n"
                 "IMPORTANT: Actually USE the tools. Do not just say you will — call them.\n"
             )
     except ImportError:

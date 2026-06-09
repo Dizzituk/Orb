@@ -167,22 +167,57 @@ def stage1_candidate_selection(
     # Filter by record type
     if record_types:
         query = query.filter(HotIndex.record_type.in_(record_types))
+
+    # Phase 9 retrieval-quality work (2026-05-13): when the caller has
+    # tag/entity hints, FILTER the over-fetch to records matching at least
+    # one tag or one entity. Previously the over-fetch was unfiltered
+    # (`query.limit(max_candidates * 2)`), so with 1,500+ records the
+    # 200 it pulled often didn't even contain the topically-relevant ones
+    # — making the rescore bonuses for tag/entity match irrelevant.
+    #
+    # SQLite JSON arrays are stored as text, so the cleanest portable
+    # filter is LIKE on the serialised column. The over-fetch is still
+    # bounded (max_candidates * 4 here, so 400 records) and rescored
+    # against the static priority + recency before slicing to
+    # max_candidates.
+    if query_tags or query_entities:
+        from sqlalchemy import or_ as _or_, cast as _cast
+        from sqlalchemy.types import String as _String
+        filters = []
+        if query_tags:
+            for tag in query_tags:
+                # JSON serialisation surrounds string values with quotes,
+                # so LIKE '%"investments"%' is reliable.
+                filters.append(_cast(HotIndex.tags, _String).like(f'%"{tag}"%'))
+        if query_entities:
+            for ent in query_entities:
+                filters.append(_cast(HotIndex.entities, _String).like(f'%"{ent}"%'))
+        if filters:
+            query = query.filter(_or_(*filters))
+        fetch_multiplier = 4
+    else:
+        fetch_multiplier = 2
     
     candidates = []
     
-    for hot in query.limit(max_candidates * 2).all():  # Over-fetch for scoring
+    for hot in query.limit(max_candidates * fetch_multiplier).all():  # Over-fetch for scoring
         # Calculate relevance score
         score = hot.retrieval_priority
         
-        # Tag matching
+        # Tag matching — Phase 9 (2026-05-13): bumped from 0.2 per tag to
+        # 0.4, and entity matching from 0.3 per entity to 0.6, so a
+        # message with a strong topical match (0.4 priority + 0.4 tag +
+        # 0.6 entity = 1.4) outranks an off-topic project (0.9 priority
+        # alone). Tag/entity contribution capped at +1.5 total to stop
+        # over-tagged records dominating.
         if query_tags and hot.tags:
             matching_tags = set(query_tags) & set(hot.tags)
-            score += len(matching_tags) * 0.2
+            score += min(len(matching_tags) * 0.4, 0.8)
         
         # Entity matching
         if query_entities and hot.entities:
             matching_entities = set(query_entities) & set(hot.entities)
-            score += len(matching_entities) * 0.3
+            score += min(len(matching_entities) * 0.6, 0.9)
         
         # Recency boost
         if hot.updated_at:

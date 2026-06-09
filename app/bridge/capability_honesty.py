@@ -34,7 +34,6 @@ TOOL_BACKED_INTENTS = {
 
 # Intents that are not yet wired through the bridge
 UNSUPPORTED_BRIDGE_INTENTS = {
-    "GENERATE_IMAGE",
     "BUILD_AND_DEPLOY",
     "RUN_CRITICAL_PIPELINE_FOR_JOB",
     "WEAVER_BUILD_SPEC",
@@ -43,11 +42,6 @@ UNSUPPORTED_BRIDGE_INTENTS = {
 
 # Human-friendly messages for unsupported capabilities
 _UNSUPPORTED_MESSAGES = {
-    "GENERATE_IMAGE": (
-        "I can't generate images from the Bridge app yet. "
-        "That capability is available on the desktop. "
-        "I'll let you know when it's wired through to mobile."
-    ),
     "BUILD_AND_DEPLOY": (
         "Build and deploy operations aren't available from the Bridge app yet. "
         "Use the desktop builds tab for now."

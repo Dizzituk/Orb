@@ -40,7 +40,13 @@ from .handler_registry import (
 from ._prompt_blocks import (
     CONVERSATIONAL_GUIDELINES as _CONVERSATIONAL_GUIDELINES,
     IMAGE_GEN_MARKER_INSTRUCTIONS as _IMAGE_GEN_MARKER_INSTRUCTIONS,
+    LOCAL_FILES_DISCIPLINE as _LOCAL_FILES_DISCIPLINE,
 )
+from ._prompt_blocks_action import ACT_ON_TASKS as _ACT_ON_TASKS
+# v17.0 (2026-05-20): Always inject current date/time/timezone so the LLM
+# knows when "now" is. Wired into every chat-mode system prompt.
+from app.llm.context import get_system_context as _get_system_context
+
 
 logger = logging.getLogger(__name__)
 
@@ -292,6 +298,33 @@ def build_system_prompt(
 
     # v5.0: Add conversational guidelines
     system_prompt += _CONVERSATIONAL_GUIDELINES
+
+    # v18.0 (2026-05-24): Local files discipline — tells the LLM where the
+    # user's files actually live (OneDrive paths) and to list_dir before
+    # writing. Mirrors the image-turn path discipline so text-only
+    # follow-ups (e.g. "add X to the dashboard") behave consistently.
+    system_prompt += _LOCAL_FILES_DISCIPLINE
+
+    # v20.0 (2026-05-30): Bias-to-action override. Appended AFTER the scoping
+    # guidance so it wins for tool-backed tasks (stop re-asking answered
+    # questions / pausing mid-batch). See _prompt_blocks_action.
+    system_prompt += _ACT_ON_TASKS
+
+    # v19.0 (2026-05-24): Working-set context block.  Injects the list
+    # of files this project's conversation has touched, with cached
+    # contents inlined for the most-recently-used ones.  Cross-model
+    # handoff: GPT-mini and Gemini both see the same set of files
+    # without needing tool calls to rediscover them.
+    try:
+        from app.memory.working_set import build_context_block as _ws_block
+        _ws_project_id = getattr(project, "id", None)
+        if _ws_project_id:
+            _block = _ws_block(_ws_project_id)
+            if _block:
+                system_prompt += _block
+                print(f"[PROMPT_BUILDER] Working-set block injected ({len(_block)} chars)")
+    except Exception as _ws_err:
+        print(f"[PROMPT_BUILDER] Working-set inject failed (non-fatal): {_ws_err}")
     
     # v6.0: Inject UI context from Universal Chat Panel
     ui_block = _build_ui_context_block(ui_context)
@@ -305,10 +338,14 @@ def build_system_prompt(
         system_prompt += _IMAGE_GEN_MARKER_INSTRUCTIONS
         print("[PROMPT_BUILDER] Image-gen marker instructions injected")
     
-    # Combine: capabilities first, then project context
+    # v17.0: Prepend current date/time/timezone before capabilities so the
+    # LLM always knows when "now" is. ASTRA's inbuilt calendar/clock.
+    datetime_header = "## SYSTEM CONTEXT\n" + _get_system_context()
+
+    # Combine: datetime first, then capabilities, then project context
     if capability_layer:
-        return f"{capability_layer}\n\n{system_prompt}"
-    return system_prompt
+        return f"{datetime_header}\n\n{capability_layer}\n\n{system_prompt}"
+    return f"{datetime_header}\n\n{system_prompt}"
 
 
 def build_messages(

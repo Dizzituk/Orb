@@ -53,6 +53,8 @@ _DEFAULT_NOISY_ROUTES = (
     "/web_automation/pending-action",   # action queue long-poll
     "/web_automation/sessions",          # frontend session list refresh
     "/bridge/pending-navigation",        # bridge navigation long-poll
+    "=/health",                          # liveness probe (frontend + mobile, every ~1-2s)
+    "=/ping",                            # service ping
 )
 
 
@@ -82,7 +84,13 @@ class _AccessLogNoiseFilter(logging.Filter):
             except Exception:
                 return True
         for noisy in self.noisy_routes:
-            if noisy in path:
+            if noisy.startswith("="):
+                # Exact path match (ignoring any query string) — used for short
+                # paths like /health that would otherwise substring-match longer
+                # routes such as /bridge/health.
+                if path.split("?", 1)[0] == noisy[1:]:
+                    return False
+            elif noisy in path:
                 return False
         return True
 

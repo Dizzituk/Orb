@@ -10,6 +10,12 @@ v2.0 (2026-03-21): Streaming refactor — yields structured events in
     real-time instead of returning a final string. Enables the frontend
     to show tool calls, thinking text, and the final response as they
     happen rather than after the entire loop completes.
+v2.1 (2026-05-26): Lifestyle tools added via gemini_lifestyle_tools.
+    Five domain tools (log_nutrition, log_workout, get_recent_nutrition,
+    get_weight_trend, get_recent_workouts) are merged in alongside the
+    existing file tools so image-bearing turns can route "log this into
+    nutrition" to the lifestyle database instead of writing HTML files.
+    Existing file tools are byte-identical to v2.0.
 
 Event types yielded:
   - tool_start:  ASTRA is about to call a tool (name + args summary)
@@ -26,10 +32,28 @@ import os
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
+from app.debug.gemini_lifestyle_tools import (
+    LIFESTYLE_TOOL_DECLARATIONS,
+    LIFESTYLE_TOOL_EXECUTORS,
+    summarise_lifestyle_call,
+    summarise_lifestyle_result,
+)
+from app.debug.gemini_finance_tools import (
+    FINANCE_TOOL_DECLARATIONS,
+    FINANCE_TOOL_EXECUTORS,
+    summarise_finance_call,
+    summarise_finance_result,
+)
+
 logger = logging.getLogger(__name__)
 
 SANDBOX_BASE = os.getenv("ASTRA_SANDBOX_URL", "http://192.168.250.2:8765")
 MAX_TOOL_ROUNDS = 30
+
+# Default model for the loop — from the model registry (ONE source,
+# overridable via ASTRA_MODEL_ROLE_VISION_TOOLS in .env), not hardcoded.
+from app.llm.model_families import resolve as _resolve_model
+_DEFAULT_MODEL = _resolve_model("role_vision_tools")
 
 # ---------------------------------------------------------------------------
 # Filesystem safety
@@ -61,10 +85,11 @@ def _is_path_allowed(path_str: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Tool declarations (Google Generative AI function declaration format)
+# File tool declarations (unchanged from v2.0)
+# Lifestyle tools are added below via list concatenation.
 # ---------------------------------------------------------------------------
 
-TOOL_DECLARATIONS = [
+_FILE_TOOL_DECLARATIONS = [
     {
         "name": "read_file",
         "description": (
@@ -89,7 +114,13 @@ TOOL_DECLARATIONS = [
             "Create or overwrite a file on the filesystem. Use absolute paths "
             "(e.g. D:/Orb/..., D:/Astra Android Folder/..., C:/Users/dizzi/...). "
             "Can write any file type: .py, .kt, .tsx, .txt, .html, .md, .json, etc. "
-            "Parent directories are created automatically if they don't exist."
+            "Parent directories are created automatically if they don't exist. "
+            "Do NOT use this to log nutrition or workouts — use log_nutrition / "
+            "log_workout for those, and start_work_day / finish_work_day to log a "
+            "delivery work day or shift (the 'work tab') - all of those write to "
+            "the database, not a file. "
+            "Use write_file for documents, dashboards, reports, code, and other "
+            "non-domain files."
         ),
         "parameters": {
             "type": "object",
@@ -110,7 +141,10 @@ TOOL_DECLARATIONS = [
         "name": "edit_file",
         "description": (
             "Apply targeted find-and-replace edits to a file. The old_text must "
-            "match exactly and appear only once in the file. Use absolute paths."
+            "match exactly and appear only once in the file. Use absolute paths. "
+            "NEVER use edit_file to log a delivery work day or shift by editing an "
+            "HTML or dashboard file - use start_work_day / finish_work_day, which "
+            "write to the work-day database."
         ),
         "parameters": {
             "type": "object",
@@ -193,8 +227,12 @@ TOOL_DECLARATIONS = [
 ]
 
 
+# Public: the full tool set Gemini sees. File tools first, then lifestyle.
+TOOL_DECLARATIONS = _FILE_TOOL_DECLARATIONS + LIFESTYLE_TOOL_DECLARATIONS + FINANCE_TOOL_DECLARATIONS
+
+
 # ---------------------------------------------------------------------------
-# Tool executors
+# File-tool executors (unchanged from v2.0)
 # ---------------------------------------------------------------------------
 
 async def _exec_read_file(args: dict) -> str:
@@ -320,6 +358,7 @@ async def _exec_list_dir(args: dict) -> str:
         return f"ERROR: {e}"
 
 
+# Compose the executor map: file tools first, then lifestyle tools merged in.
 _TOOL_EXECUTORS = {
     "read_file": _exec_read_file,
     "write_file": _exec_write_file,
@@ -327,6 +366,8 @@ _TOOL_EXECUTORS = {
     "run_shell": _exec_run_shell,
     "search_files": _exec_search_files,
     "list_dir": _exec_list_dir,
+    **LIFESTYLE_TOOL_EXECUTORS,
+    **FINANCE_TOOL_EXECUTORS,
 }
 
 
@@ -334,8 +375,16 @@ _TOOL_EXECUTORS = {
 # Human-readable tool call summaries
 # ---------------------------------------------------------------------------
 
+_LIFESTYLE_TOOL_NAMES = set(LIFESTYLE_TOOL_EXECUTORS.keys())
+_FINANCE_TOOL_NAMES = set(FINANCE_TOOL_EXECUTORS.keys())
+
+
 def _summarise_tool_call(name: str, args: dict) -> str:
     """Create a concise, human-readable summary of what a tool call is doing."""
+    if name in _LIFESTYLE_TOOL_NAMES:
+        return summarise_lifestyle_call(name, args)
+    if name in _FINANCE_TOOL_NAMES:
+        return summarise_finance_call(name, args)
     if name == "read_file":
         path = args.get("path", "")
         filename = Path(path).name if path else "unknown"
@@ -367,6 +416,10 @@ def _summarise_tool_call(name: str, args: dict) -> str:
 
 def _summarise_tool_result(name: str, result: str) -> str:
     """Create a concise summary of a tool result for the UI."""
+    if name in _LIFESTYLE_TOOL_NAMES:
+        return summarise_lifestyle_result(name, result)
+    if name in _FINANCE_TOOL_NAMES:
+        return summarise_finance_result(name, result)
     if result.startswith("ERROR:"):
         return result[:120]
     elif name == "read_file":
@@ -395,7 +448,7 @@ def _summarise_tool_result(name: str, result: str) -> str:
 async def stream_gemini_tool_loop(
     system_prompt: str,
     messages: List[dict],
-    model_id: str = "gemini-3.1-pro-preview-customtools",
+    model_id: str = _DEFAULT_MODEL,
     temperature: float = 0.2,
     max_tokens: int = 8192,
     content_parts: Optional[List] = None,
@@ -552,7 +605,7 @@ async def stream_gemini_tool_loop(
 async def run_gemini_tool_loop(
     system_prompt: str,
     messages: List[dict],
-    model_id: str = "gemini-3.1-pro-preview-customtools",
+    model_id: str = _DEFAULT_MODEL,
     temperature: float = 0.2,
     max_tokens: int = 8192,
     on_tool_call: Optional[callable] = None,

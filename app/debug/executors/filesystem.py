@@ -31,6 +31,12 @@ from app.debug.executors._paths import (
     resolve_sandbox_path,
     sandbox_health_status,
 )
+from app.debug.executors.filesystem_guards import (
+    check_syntax,
+    describe_line_numbered_corruption,
+    looks_like_line_numbered_content,
+    strip_line_number_prefixes,
+)
 from app.debug.size_warning import add_size_warning as _size_warn
 
 logger = logging.getLogger(__name__)
@@ -58,13 +64,16 @@ async def execute_read_file(params: Dict[str, Any]) -> str:
             return _size_warn(result, path) if not head and not tail else result
         return f"File not found on host: {path}"
 
-    # Everything else: sandbox controller
+    # Everything else: sandbox controller.
+    # Note: include_line_numbers is False by default so the raw content
+    # ASTRA sees matches what would be written back. Decorated output is
+    # a foot-gun: it has caused real corruption when read-then-written.
     try:
         import httpx
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
                 f"{SANDBOX_CONTROLLER_URL}/fs/contents",
-                json={"paths": [path], "max_file_size": 500000, "include_line_numbers": True},
+                json={"paths": [path], "max_file_size": 500000, "include_line_numbers": False},
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -73,6 +82,15 @@ async def execute_read_file(params: Dict[str, Any]) -> str:
                     if files[0].get("error"):
                         return f"Error: {files[0]['error']}"
                     content = files[0].get("content", "")
+                    # Defence in depth: even if a future controller change
+                    # re-introduces decoration, strip it here so writes are safe.
+                    cleaned, was_stripped = strip_line_number_prefixes(content)
+                    if was_stripped:
+                        logger.warning(
+                            "[executors.filesystem] sandbox returned line-numbered content for %s; stripped %d -> %d chars",
+                            path, len(content), len(cleaned),
+                        )
+                        content = cleaned
                     if head:
                         content = "\n".join(content.splitlines()[:head])
                     elif tail:
@@ -196,11 +214,57 @@ async def execute_search_files(params: Dict[str, Any]) -> str:
 # =============================================================================
 
 async def execute_write_file(params: Dict[str, Any]) -> str:
-    """Write a file. Host-only paths write directly; everything else via sandbox."""
+    """Write a file. Host-only paths write directly; everything else via sandbox.
+
+    Two corruption guards apply before the actual write:
+      1. Line-numbered prefix detection: rejects writes whose content looks
+         like the output of a line-numbered reader (e.g. "  1: foo"), which
+         is almost always the result of read-then-write contamination.
+      2. Post-write syntax check (.py / .json): if the written content fails
+         to parse, the previous file content is restored and an error is
+         returned to the caller.
+    """
     path = params.get("path", "")
     content = params.get("content", "")
     if not path:
         return "Error: path is required."
+
+    # GUARD: reject obviously corrupted content (line-numbered read output
+    # being written back). Catches multi-level decoration too.
+    if looks_like_line_numbered_content(content):
+        preview = describe_line_numbered_corruption(content)
+        logger.warning(
+            "[executors.filesystem] WRITE GUARD: content appears line-numbered for %s. Refusing write.",
+            path,
+        )
+        return (
+            "BLOCKED - LINE-NUMBER GUARD: write_file content has line-number "
+            "prefixes (e.g. '  1: foo'). This usually means you wrote back "
+            "the output of a previous read instead of raw file content. The "
+            "read tool no longer adds line numbers by default, so this should "
+            "not happen. If you DO need the line-numbered view for reasoning, "
+            "do not paste it into write_file -- strip the prefixes first or "
+            "call edit_file with the original (un-decorated) text.\n\n"
+            f"First lines of rejected content:\n{preview}"
+        )
+
+    # GUARD: syntax check for languages with cheap in-process parsers
+    # (.py, .json). Catches: brace mismatches, accidental indentation,
+    # half-applied edits, etc. Non-parseable extensions (.ts, .css, .md,
+    # .txt) are skipped -- check_syntax returns None for them.
+    syntax_error = check_syntax(path, content)
+    if syntax_error:
+        logger.warning(
+            "[executors.filesystem] SYNTAX GUARD: %s would have syntax error: %s",
+            path, syntax_error,
+        )
+        return (
+            f"BLOCKED - SYNTAX GUARD: writing this content to {path} would "
+            f"produce a syntax error:\n  {syntax_error}\n\n"
+            "Fix the syntax in the content you're sending, then retry. "
+            "This guard prevents broken files from being committed -- it "
+            "runs the same parser Python / json.loads would use at import time."
+        )
 
     path = resolve_sandbox_path(path)
 

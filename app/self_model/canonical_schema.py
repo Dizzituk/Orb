@@ -13,6 +13,11 @@ docs/memory_canonical_schema.md. If you change the schema doc, change
 this file in the same commit.
 
 Authoritative since Phase 3 (2026-05-02).
+
+Health coaching fields added 2026-05-25 to support the unified ASTRA
+coaching model: every chat session has access to these facts so any
+conversation that touches food, training, or wellbeing can engage
+coherently without re-asking the user about their baseline.
 """
 from __future__ import annotations
 
@@ -167,6 +172,55 @@ def _v_short_string(v, max_len: int = 80) -> ValidatorResult:
     return (True, "")
 
 
+def _v_text_paragraph(v, max_len: int = 500) -> ValidatorResult:
+    """
+    A short free-form paragraph — for narrative fields like a training
+    goal summary. Allows multi-sentence content but caps length so the
+    Tier 1 injection budget doesn't blow up.
+    """
+    if not isinstance(v, str):
+        return (False, "not a string")
+    s = v.strip()
+    if not (10 <= len(s) <= max_len):
+        return (False, f"length {len(s)} outside 10-{max_len}")
+    return (True, "")
+
+
+def _v_short_string_list(v, max_items: int = 12, max_item_len: int = 80) -> ValidatorResult:
+    """
+    Ordered list of short strings. Used for prioritised lists like
+    training_priorities where ordering carries meaning.
+
+    Rejects: non-list, empty list, non-string elements, blanks, items
+    over the per-item length cap, or more than max_items entries.
+    """
+    if not isinstance(v, list):
+        return (False, "not a list")
+    if not v:
+        return (False, "empty list")
+    if len(v) > max_items:
+        return (False, f"more than {max_items} items")
+    for i, item in enumerate(v):
+        if not isinstance(item, str):
+            return (False, f"item {i} is not a string ({type(item).__name__})")
+        s = item.strip()
+        if not s:
+            return (False, f"item {i} is empty/whitespace")
+        if len(s) > max_item_len:
+            return (False, f"item {i} length {len(s)} exceeds {max_item_len}")
+    return (True, "")
+
+
+def _v_consideration_list(v) -> ValidatorResult:
+    """
+    List of short health consideration strings. Each item is one bullet
+    (e.g. "ADHD - affects eating timing", "low-impact knee-friendly only").
+    Allows slightly longer items than _v_short_string_list since each item
+    may carry a brief explanation.
+    """
+    return _v_short_string_list(v, max_items=15, max_item_len=200)
+
+
 # =============================================================================
 # Field schema records
 # =============================================================================
@@ -260,6 +314,41 @@ _TIER_1_FIELDS: Dict[str, FieldSchema] = {
         canonical_writer="arbiter:confirmed",
         aliases=("occupation",),
     ),
+
+    # ── Health coaching fields (added 2026-05-25) ───────────────────────────
+    # These exist so any ASTRA chat — not just a "health tab" — has the
+    # baseline facts to engage coherently when food, training, or wellbeing
+    # come up. Tier 1 because they are stable about the person and need to
+    # be injected on every conversation.
+    "primary_sport": FieldSchema(
+        name="primary_sport",
+        tier=Tier.T1,
+        description="The user's primary sporting pursuit (e.g. 'bodyboarding')",
+        validator=lambda v: _v_short_string(v, max_len=40),
+        canonical_writer="arbiter:confirmed",
+    ),
+    "training_goal_summary": FieldSchema(
+        name="training_goal_summary",
+        tier=Tier.T1,
+        description=(
+            "Short narrative summary of what the user is training toward "
+            "(e.g. 'improve bodyboarding endurance and paddle power, "
+            "gradual controlled mass reduction over 12 months')"
+        ),
+        validator=_v_text_paragraph,
+        canonical_writer="arbiter:confirmed",
+    ),
+    "nutrition_approach": FieldSchema(
+        name="nutrition_approach",
+        tier=Tier.T1,
+        description=(
+            "The user's stated nutritional approach in their own words "
+            "(e.g. 'broadly low-carb, managing sugar cravings, batch-cooks "
+            "three meals at a time')"
+        ),
+        validator=lambda v: _v_short_string(v, max_len=300),
+        canonical_writer="arbiter:confirmed",
+    ),
 }
 
 # Structured list fields (separate write tools — arbiter doesn't gate these
@@ -278,6 +367,31 @@ _TIER_1_LIST_FIELDS: Dict[str, FieldSchema] = {
         description="Career timeline (list of {role, employer, from, to, notes})",
         validator=lambda v: (isinstance(v, list), "must be a list"),
         canonical_writer="tool:save_occupation",
+    ),
+
+    # ── Health coaching list fields (added 2026-05-25) ──────────────────────
+    "training_priorities": FieldSchema(
+        name="training_priorities",
+        tier=Tier.T1,
+        description=(
+            "Ordered list of training priorities, most important first. "
+            "Each item is a short string (e.g. ['endurance', 'flexibility', "
+            "'controlled mass reduction', 'light explosive power'])"
+        ),
+        validator=_v_short_string_list,
+        canonical_writer="arbiter:confirmed",
+    ),
+    "health_considerations": FieldSchema(
+        name="health_considerations",
+        tier=Tier.T1,
+        description=(
+            "List of short health-relevant considerations ASTRA should keep "
+            "in mind across all conversations. Each item is one bullet, "
+            "optionally with a brief note "
+            "(e.g. ['ADHD — affects eating timing', 'manages sugar cravings'])"
+        ),
+        validator=_v_consideration_list,
+        canonical_writer="arbiter:confirmed",
     ),
 }
 

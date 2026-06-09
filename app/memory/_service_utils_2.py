@@ -19,7 +19,15 @@ def get_project_by_name(db: Session, name: str) -> Optional[models.Project]:
     return db.query(models.Project).filter(models.Project.name == name).first()
 
 def list_projects(db: Session) -> List[models.Project]:
-    return db.query(models.Project).order_by(models.Project.created_at.desc()).all()
+    # Pin-aware ordering: pinned projects first (so they survive any LIMIT
+    # the caller applies), then by recency. .desc() on a Boolean sorts True
+    # (1) before False (0). The bridge endpoint depends on this so the phone
+    # always sees pinned chats even if they're older than the recency cutoff.
+    return (
+        db.query(models.Project)
+        .order_by(models.Project.pinned.desc(), models.Project.created_at.desc())
+        .all()
+    )
 
 def get_file_by_name(db: Session, project_id: int, filename: str) -> Optional[models.File]:
     return (

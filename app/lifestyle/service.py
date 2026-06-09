@@ -18,7 +18,8 @@ from sqlalchemy.orm import Session
 
 from app.lifestyle.models import (
     WeightEntry, NutritionLog, WorkoutSession,
-    LifestyleGoal, DailySummary,
+    LifestyleGoal, DailySummary, LifestyleProfile,
+    FoodPreference, MealPlan,
 )
 from app.lifestyle.schemas import (
     WeightEntryOut, WeightTrend,
@@ -26,9 +27,22 @@ from app.lifestyle.schemas import (
     WorkoutSessionOut,
     GoalOut,
     DashboardSummary, DailySummaryPoint, DashboardHistory,
+    ProfileOut, MetabolicSummary,
+    FoodPreferenceOut, MealPlanOut,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _naive_utc(dt):
+    """Coerce any datetime to naive UTC so it compares safely with DB-stored
+    (naive) datetimes. SQLite drops tzinfo on round-trip, so reads come back
+    naive; mixing them with a tz-aware 'now' raises TypeError."""
+    if dt is None:
+        return None
+    if getattr(dt, "tzinfo", None) is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
 # ═══════════════════════════════════════════
@@ -56,7 +70,8 @@ def log_weight(db: Session, weight_kg: float, source: str = "manual",
 
 def get_weight_trend(db: Session, days: int = 90) -> WeightTrend:
     """Get weight entries and trend data for the chart."""
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    now = _naive_utc(datetime.now(timezone.utc))
+    cutoff = now - timedelta(days=days)
 
     entries = (
         db.query(WeightEntry)
@@ -73,16 +88,16 @@ def get_weight_trend(db: Session, days: int = 90) -> WeightTrend:
     # 7-day change
     change_7d = None
     if len(entries) >= 2:
-        week_ago = datetime.now(timezone.utc) - timedelta(days=7)
-        older = [e for e in entries if e.recorded_at <= week_ago]
+        week_ago = now - timedelta(days=7)
+        older = [e for e in entries if _naive_utc(e.recorded_at) <= week_ago]
         if older:
             change_7d = round(current - older[-1].weight_kg, 1) if current else None
 
     # 30-day change
     change_30d = None
     if len(entries) >= 2:
-        month_ago = datetime.now(timezone.utc) - timedelta(days=30)
-        older_30 = [e for e in entries if e.recorded_at <= month_ago]
+        month_ago = now - timedelta(days=30)
+        older_30 = [e for e in entries if _naive_utc(e.recorded_at) <= month_ago]
         if older_30:
             change_30d = round(current - older_30[-1].weight_kg, 1) if current else None
 
@@ -133,6 +148,130 @@ def log_nutrition(db: Session, description: str, meal_type: str = "meal",
     return _nutrition_to_out(entry)
 
 
+def log_nutrition_items(db: Session, items: List[dict], meal_type: str = "meal",
+                        on_date: Optional[date] = None) -> List[NutritionLogOut]:
+    """Log several distinct foods as SEPARATE rows in one transaction, then
+    update the day summary once. Each item dict carries its own description +
+    calories/protein_g/carbs_g/fat_g(+sugar_g). Itemising like this lets the
+    user see every food with its own macros and check each estimate, rather
+    than one merged blob. `on_date` (default today) stamps the rows — used by
+    prep-splitting to write meals into future days. Returns the created entries.
+    """
+    target = on_date or date.today()
+    logged_at = datetime.combine(target, datetime.min.time()).replace(tzinfo=timezone.utc) \
+        + timedelta(hours=12)  # noon, so the row sits cleanly inside the day window
+    created = []
+    for it in items:
+        cal = it.get("calories")
+        entry = NutritionLog(
+            description=str(it.get("description") or "").strip(),
+            meal_type=meal_type,
+            calories=cal,
+            protein_g=it.get("protein_g"),
+            carbs_g=it.get("carbs_g"),
+            fat_g=it.get("fat_g"),
+            sugar_g=it.get("sugar_g"),
+            is_estimate=bool(it.get("is_estimate", True)),
+            confidence=0.9 if cal is not None else 0.0,
+            source=it.get("source") or "text",
+            logged_at=logged_at,
+        )
+        db.add(entry)
+        created.append(entry)
+    db.commit()
+    for e in created:
+        db.refresh(e)
+    _update_daily_summary(db, target)
+    logger.info(f"[lifestyle] Logged {len(created)} itemised nutrition rows for {target.isoformat()}")
+    return [_nutrition_to_out(e) for e in created]
+
+
+def _coerce_num(v):
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def log_nutrition_items_checked(db: Session, raw_items: list, meal_type: str = "meal") -> dict:
+    """Validate then log a list of food items as separate rows.
+
+    Hard rule per item: each needs a description + calories/protein/carbs/fat.
+    Returns {'ok': True, 'rows': [NutritionLogOut, ...]} on success, or
+    {'ok': False, 'incomplete': [{'item','missing'}, ...]} if any item is
+    missing required fields (nothing is logged in that case).
+    """
+    req = ("calories", "protein_g", "carbs_g", "fat_g")
+    norm, incomplete = [], []
+    for idx, it in enumerate(raw_items):
+        if not isinstance(it, dict):
+            continue
+        desc = str(it.get("description") or "").strip()
+        vals = {k: _coerce_num(it.get(k)) for k in
+                ("calories", "protein_g", "carbs_g", "fat_g", "sugar_g")}
+        miss = [k for k in req if vals[k] is None]
+        if not desc:
+            miss = ["description"] + miss
+        if miss:
+            incomplete.append({"item": desc or f"item {idx + 1}", "missing": miss})
+        else:
+            norm.append({"description": desc, **vals})
+    if incomplete:
+        return {"ok": False, "incomplete": incomplete}
+    return {"ok": True, "rows": log_nutrition_items(db, norm, meal_type)}
+
+
+def prep_split(db: Session, description: str, total: dict, days: int,
+               start_date: Optional[date] = None, meal_type: str = "meal") -> dict:
+    """Divide a batch cook's TOTAL macros evenly across `days` and write one
+    portion row into each day, starting at `start_date` (default tomorrow).
+
+    `total` is the whole-batch {calories, protein_g, carbs_g, fat_g[, sugar_g]}.
+    Each day gets total/days, so the per-day portion is what the user actually
+    eats. Rows are tagged source='prep' and the description notes the portion
+    (e.g. 'Chicken curry batch (1/3)'). Future days then show the prepped meal
+    in the diary. Returns {'ok', 'days': [{date, item}], 'per_day': {...}}.
+    """
+    n = max(1, min(14, int(days)))
+    req = ("calories", "protein_g", "carbs_g", "fat_g")
+    vals = {k: _coerce_num(total.get(k)) for k in
+            ("calories", "protein_g", "carbs_g", "fat_g", "sugar_g")}
+    missing = [k for k in req if vals[k] is None]
+    if not str(description or "").strip():
+        missing = ["description"] + missing
+    if missing:
+        return {"ok": False, "missing": missing}
+
+    per_day = {k: (round(v / n, 1) if v is not None else None) for k, v in vals.items()}
+    base = (start_date or (date.today() + timedelta(days=1)))
+
+    written = []
+    for i in range(n):
+        d = base + timedelta(days=i)
+        item = {
+            "description": f"{description.strip()} (1/{n} prepped portion)",
+            "source": "prep",
+            **per_day,
+        }
+        rows = log_nutrition_items(db, [item], meal_type, on_date=d)
+        written.append({"date": d.isoformat(), "item": _to_dict_safe(rows[0]) if rows else None})
+
+    logger.info(f"[lifestyle] Prep-split '{description}' over {n} days from {base.isoformat()}")
+    return {"ok": True, "days": written, "per_day": per_day, "n": n,
+            "start_date": base.isoformat()}
+
+
+def _to_dict_safe(obj):
+    """Pydantic v1/v2 -> dict (local helper to avoid importing the tools layer)."""
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    if hasattr(obj, "dict"):
+        return obj.dict()
+    return dict(obj)
+
+
 def get_daily_nutrition(db: Session, target_date: Optional[date] = None) -> DailyNutrition:
     """Get all nutrition logs for a given day with totals."""
     target = target_date or date.today()
@@ -169,6 +308,19 @@ def get_nutrition_history(db: Session, days: int = 30) -> List[DailyNutrition]:
         result.append(get_daily_nutrition(db, d))
     result.reverse()
     return result
+
+
+def delete_nutrition(db: Session, log_id: int) -> bool:
+    """Delete a nutrition log by id and recompute that day's summary."""
+    entry = db.query(NutritionLog).filter(NutritionLog.id == log_id).first()
+    if not entry:
+        return False
+    entry_date = entry.logged_at.date() if entry.logged_at else date.today()
+    db.delete(entry)
+    db.commit()
+    _update_daily_summary(db, entry_date)
+    logger.info(f"[lifestyle] Nutrition log {log_id} deleted")
+    return True
 
 
 # ═══════════════════════════════════════════
@@ -302,7 +454,7 @@ def get_dashboard_summary(db: Session) -> DashboardSummary:
     # 7-day weight change
     weight_7d = None
     if latest_weight:
-        week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+        week_ago = _naive_utc(datetime.now(timezone.utc)) - timedelta(days=7)
         older = (
             db.query(WeightEntry)
             .filter(WeightEntry.recorded_at <= week_ago)
@@ -328,8 +480,27 @@ def get_dashboard_summary(db: Session) -> DashboardSummary:
         .first()
     )
 
-    # Targets from goals
+    # Targets: the metabolic engine is the SINGLE source of truth for the four
+    # computed macro targets (calories / protein / carbs / fat) — the exact same
+    # numbers the Plan tab shows, so the two tabs can never disagree. They are
+    # derived from BMR / TDEE / weight goal, not user-set, so there is
+    # deliberately NO goal override for them (a stale seeded calorie goal used
+    # to shadow the computed value here). Weight target and the sugar limit DO
+    # still come from active goals.
     targets = {g.goal_type: g.target_value for g in get_active_goals(db)}
+    try:
+        metab = get_metabolic_summary(db)
+    except Exception:
+        metab = None
+    m_cal = getattr(metab, "target_calories", None) if metab else None
+    m_pro = getattr(metab, "protein_g", None) if metab else None
+    m_carb = getattr(metab, "carbs_g", None) if metab else None
+    m_fat = getattr(metab, "fat_g", None) if metab else None
+
+    # Today's wearable headline (steps / floors / active calories) if synced
+    today_row = (
+        db.query(DailySummary).filter(DailySummary.date == date.today()).first()
+    )
 
     return DashboardSummary(
         current_weight_kg=latest_weight.weight_kg if latest_weight else None,
@@ -340,13 +511,18 @@ def get_dashboard_summary(db: Session) -> DashboardSummary:
         today_carbs_g=today_nutr.total_carbs_g,
         today_fat_g=today_nutr.total_fat_g,
         today_sugar_g=today_nutr.total_sugar_g,
-        calories_target=targets.get("calories", 2200),
-        protein_target=targets.get("protein", 180),
+        calories_target=m_cal or 2200,
+        protein_target=m_pro or 180,
+        carbs_target=m_carb,
+        fat_target=m_fat,
         sugar_limit=targets.get("sugar_limit", 25),
         activity_streak_days=streak,
         sessions_this_week=weekly["session_count"],
         last_activity=last_session.started_at.isoformat() if last_session else None,
         last_activity_type=last_session.activity_type if last_session else None,
+        today_steps=today_row.steps if today_row else None,
+        today_floors=today_row.floors if today_row else None,
+        today_active_calories=today_row.active_calories if today_row else None,
     )
 
 
@@ -517,3 +693,174 @@ def _update_daily_summary(db: Session, target_date: date) -> None:
     summary.activity_types = activity[1] if activity and activity[1] else None
 
     db.commit()
+
+
+# ═══════════════════════════════════════════
+# PROFILE & METABOLIC
+# ═══════════════════════════════════════════
+
+def _profile_to_out(p: LifestyleProfile) -> ProfileOut:
+    return ProfileOut(
+        sex=p.sex,
+        height_cm=p.height_cm,
+        dob=p.dob.isoformat() if p.dob else None,
+        age_years=p.age_years,
+        activity_level=p.activity_level or "moderate",
+        goal_pace=p.goal_pace or "moderate",
+    )
+
+
+def get_profile(db: Session) -> Optional[ProfileOut]:
+    """Return the single profile row, or None if it hasn't been set up yet."""
+    p = db.query(LifestyleProfile).order_by(LifestyleProfile.id.asc()).first()
+    return _profile_to_out(p) if p else None
+
+
+def upsert_profile(db: Session, *, sex: Optional[str] = None,
+                   height_cm: Optional[float] = None, dob: Optional[str] = None,
+                   age_years: Optional[int] = None,
+                   activity_level: Optional[str] = None,
+                   goal_pace: Optional[str] = None) -> ProfileOut:
+    """Create or partially update the single profile row. Only set fields change."""
+    p = db.query(LifestyleProfile).order_by(LifestyleProfile.id.asc()).first()
+    if not p:
+        p = LifestyleProfile()
+        db.add(p)
+
+    if sex is not None:
+        p.sex = sex.strip().lower()
+    if height_cm is not None:
+        p.height_cm = float(height_cm)
+    if dob is not None:
+        p.dob = _parse_date(dob)
+    if age_years is not None:
+        p.age_years = int(age_years)
+    if activity_level is not None:
+        p.activity_level = activity_level.strip().lower()
+    if goal_pace is not None:
+        p.goal_pace = goal_pace.strip().lower()
+    p.updated_at = datetime.now(timezone.utc)
+
+    db.commit()
+    db.refresh(p)
+    logger.info("[lifestyle] Profile updated")
+    return _profile_to_out(p)
+
+
+def _parse_date(value: str):
+    """Parse an ISO date string (YYYY-MM-DD) to a date; None on failure."""
+    try:
+        return datetime.strptime(value.strip()[:10], "%Y-%m-%d").date()
+    except (ValueError, AttributeError):
+        return None
+
+
+def _effective_age(p: LifestyleProfile) -> Optional[float]:
+    """Age in years from dob if present, else the stored age_years."""
+    if p.dob:
+        today = date.today()
+        years = today.year - p.dob.year - (
+            (today.month, today.day) < (p.dob.month, p.dob.day)
+        )
+        return float(years)
+    return float(p.age_years) if p.age_years else None
+
+
+def get_metabolic_summary(db: Session) -> MetabolicSummary:
+    """
+    Gather profile + latest weight + recent wearable burn + weight goal, then
+    compute BMR / TDEE / sustainable calorie + protein targets via metabolic.py.
+    """
+    from app.lifestyle import metabolic
+
+    p = db.query(LifestyleProfile).order_by(LifestyleProfile.id.asc()).first()
+
+    latest_weight = (
+        db.query(WeightEntry).order_by(WeightEntry.recorded_at.desc()).first()
+    )
+    weight_kg = latest_weight.weight_kg if latest_weight else None
+    goal_weight = _get_active_goal_value(db, "weight")
+
+    # Daily burn from a rolling average of real active calories (Garmin +
+    # hand-logged workouts), only trusted past a minimum sample. See burn.py.
+    from app.lifestyle.burn import compute_burn_signal
+    burn = compute_burn_signal(db)
+    active_cals = burn.avg_active_calories if burn.trusted else None
+
+    plan = metabolic.build_plan(
+        weight_kg=weight_kg,
+        height_cm=p.height_cm if p else None,
+        age_years=_effective_age(p) if p else None,
+        sex=p.sex if p else None,
+        activity_level=(p.activity_level if p else None) or metabolic.DEFAULT_ACTIVITY,
+        pace=(p.goal_pace if p else None) or metabolic.DEFAULT_PACE,
+        active_calories=active_cals,
+        goal_weight_kg=goal_weight,
+    )
+
+    height_cm = p.height_cm if p else None
+    bmi = None
+    bmi_category = None
+    if weight_kg and height_cm:
+        h_m = height_cm / 100.0
+        if h_m > 0:
+            bmi = round(weight_kg / (h_m * h_m), 1)
+            bmi_category = _bmi_category(bmi)
+
+    return MetabolicSummary(
+        complete=plan.get("complete", False),
+        missing=plan.get("missing", []),
+        bmr=plan.get("bmr"),
+        tdee=plan.get("tdee"),
+        tdee_source=burn.source_label,
+        activity_level=plan.get("activity_level"),
+        active_calories_used=plan.get("active_calories_used"),
+        target_calories=plan.get("target_calories"),
+        deficit_kcal=plan.get("deficit_kcal"),
+        floored_at_bmr=plan.get("floored_at_bmr", False),
+        pace=plan.get("pace"),
+        protein_g=plan.get("protein_g"),
+        carbs_g=plan.get("carbs_g"),
+        fat_g=plan.get("fat_g"),
+        current_weight_kg=plan.get("current_weight_kg"),
+        goal_weight_kg=plan.get("goal_weight_kg"),
+        height_cm=height_cm,
+        bmi=bmi,
+        bmi_category=bmi_category,
+    )
+
+
+def _bmi_category(bmi: float) -> str:
+    if bmi < 18.5:
+        return "underweight"
+    if bmi < 25:
+        return "healthy"
+    if bmi < 30:
+        return "overweight"
+    return "obese"
+
+
+# ══════════════════════════════════
+# COACHING: food preferences + written plan
+# (moved to app/lifestyle/coaching.py; re-exported here for back-compat)
+# ══════════════════════════════════
+from app.lifestyle.coaching import (  # noqa: E402,F401
+    add_food_preference, update_food_preference, get_food_preferences,
+    delete_food_preference, get_meal_plan, set_meal_plan,
+    _PREF_CATEGORIES, _PREF_STABILITIES, _PREF_STALE_DAYS,
+    _is_stale, _pref_to_out,
+)
+
+
+# ══════════════════════════════════
+# STRENGTH: exercise-set logging + progressive-overload history
+# (lives in app/lifestyle/strength.py; re-exported here for back-compat)
+# ══════════════════════════════════
+from app.lifestyle.strength import (  # noqa: E402,F401
+    log_exercise_set, log_exercise_sets, delete_exercise_set,
+    get_exercise_history, get_strength_log, list_recent_exercises,
+    _normalise_exercise_name,
+)
+
+# Long-arc daily history reads (lives in app/lifestyle/history.py)
+from app.lifestyle.history import get_health_history  # noqa: E402,F401

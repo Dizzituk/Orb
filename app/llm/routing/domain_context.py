@@ -58,25 +58,24 @@ def get_all_domain_names() -> list:
 
 
 def _finance_context(db: Session) -> str:
-    """Pull finance summary: earnings, tax, budget, recent activity."""
-    lines = ["## Finance Context"]
+    """Pull a summary of the delivery work ledger for the current tax year."""
+    lines = ["## Work Ledger Context"]
     try:
-        from app.finance.services.finance_service import get_dashboard_data
-        data = get_dashboard_data(db)
-        if data:
-            lines.append(f"This week's earnings: £{data.get('this_week_earnings', 0):.2f}")
-            lines.append(f"This week's deliveries: {data.get('this_week_deliveries', 0)}")
-            lines.append(f"This week's hours: {data.get('this_week_hours', 0):.1f}")
-            lines.append(f"Per hour gross: £{data.get('per_hour_gross', 0):.2f}")
-            lines.append(f"Weekly costs: £{data.get('weekly_costs', 0):.2f}")
-            lines.append(f"Spendable this week: £{data.get('spendable_this_week', 0):.2f}")
-            lines.append(f"Spendable per day: £{data.get('spendable_per_day', 0):.2f}")
-            lines.append(f"Tax aside weekly: £{data.get('tax_weekly_aside', 0):.2f}")
-            lines.append(f"Estimated annual tax: £{data.get('tax_estimated_annual', 0):.2f}")
-            lines.append(f"Effective tax rate: {data.get('effective_tax_rate', 0):.1f}%")
-            lines.append(f"Tax year: {data.get('tax_year', 'N/A')}")
+        from app.finance.work_router import build_dashboard, list_tax_years
+        ty = list_tax_years(db)["current"]
+        d = build_dashboard(db, ty)
+        s = d["stats"]
+        lines.append(f"Tax year: {ty}")
+        lines.append(f"Gross pay YTD: £{s['gross_pay_ytd']:.2f}")
+        lines.append(f"Total parcels: {s['total_parcels']}")
+        lines.append(f"Days worked: {s['days_worked']}")
+        lines.append(f"Hours worked: {s['total_hours']:.1f}")
+        lines.append(f"Work miles: {s['total_work_miles']:.0f}")
+        lines.append(f"Estimated net YTD: £{s['estimated_net']:.2f}")
+        lines.append(f"Net hourly: £{s['net_hourly']:.2f}")
+        lines.append(f"Fixed weekly burn: £{d['fixed_costs']['weekly_burn']:.2f}")
     except Exception as e:
-        lines.append(f"Finance data: {e}")
+        lines.append(f"Work ledger data: {e}")
     return "\n".join(lines)
 
 

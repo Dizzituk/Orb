@@ -384,6 +384,12 @@ async def wrap_with_build_tracking(
     had_error = False
     is_awaiting = False
     spec_id = None
+    # v17 (2026-05-20): track hard-stop signals from spec_gate_stream.
+    # When SpecGate hard-stops (e.g. sandbox unreachable) it emits the
+    # signal inside the 'done' event payload rather than as an 'error',
+    # so without explicit detection the stage falsely reports as passed.
+    hard_stopped = False
+    hard_stop_reason = ""
     chunk_count = 0
 
     print(f"[STAGE_HOOKS] About to iterate inner stream for stage '{pipeline_stage}'")
@@ -410,16 +416,24 @@ async def wrap_with_build_tracking(
                         is_awaiting = True
                     elif event_type in ("spec_ready", "spec_segmented"):
                         spec_id = parsed.get("spec_id")
+                    elif event_type == "done" and parsed.get("hard_stopped"):
+                        # v17: SpecGate signals hard-stop in the done event.
+                        hard_stopped = True
+                        # The reason is the most recent token containing 'HARD STOP'.
+                        for _part in reversed(output_parts):
+                            if "HARD STOP" in _part:
+                                hard_stop_reason = _part.replace("HARD STOP", "").replace("**", "").strip("*\n :")
+                                break
 
     except Exception as e:
         had_error = True
         logger.warning("[stage_hooks] Stream error after %d chunks: %s", chunk_count, e)
 
-    print(f"[STAGE_HOOKS] Stage '{pipeline_stage}' stream FINISHED: {chunk_count} chunks, {sum(len(p) for p in output_parts)} output chars, error={had_error}, awaiting={is_awaiting}")
+    print(f"[STAGE_HOOKS] Stage '{pipeline_stage}' stream FINISHED: {chunk_count} chunks, {sum(len(p) for p in output_parts)} output chars, error={had_error}, awaiting={is_awaiting}, hard_stopped={hard_stopped}")
 
     # Finish transparency trace for this stage
     try:
-        t_status = "failed" if had_error else ("warning" if is_awaiting else "passed")
+        t_status = "failed" if (had_error or hard_stopped) else ("warning" if is_awaiting else "passed")
         t_summary = f"{pipeline_stage} {'failed' if had_error else 'awaiting input' if is_awaiting else 'completed'}: {chunk_count} chunks, {sum(len(p) for p in output_parts)} chars output"
         finished_event = await transparency.finish_stage(
             status=t_status,
@@ -471,8 +485,12 @@ async def wrap_with_build_tracking(
         except Exception:
             pass
 
-    # Notify stage completion
-    if had_error:
+    # Notify stage completion. Hard-stop is checked first because it's a
+    # subtype of failure with a specific reason worth surfacing to the UI.
+    if hard_stopped:
+        _detail = f"Hard stop: {hard_stop_reason}" if hard_stop_reason else "Hard stop"
+        notify_stage_failed(db, build_project_id, pipeline_stage, detail=_detail)
+    elif had_error:
         notify_stage_failed(db, build_project_id, pipeline_stage, detail="Stream error")
     elif is_awaiting:
         notify_stage_awaiting(db, build_project_id, pipeline_stage, detail="Awaiting user input")
@@ -480,7 +498,7 @@ async def wrap_with_build_tracking(
         notify_stage_passed(db, build_project_id, pipeline_stage)
 
     # Emit final build project update event
-    final_status = "failed" if had_error else ("awaiting_input" if is_awaiting else "passed")
+    final_status = "failed" if (had_error or hard_stopped) else ("awaiting_input" if is_awaiting else "passed")
     yield _make_sse_event({
         "type": "build_project_update",
         "build_project_id": build_project_id,

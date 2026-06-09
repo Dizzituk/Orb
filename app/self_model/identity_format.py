@@ -14,21 +14,39 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Display order and pretty labels for known fields
+# Display order and pretty labels for known fields. Health coaching fields
+# appended 2026-05-25 — placed at the end so the biographical block reads
+# first, then the coaching context for any chat that touches food, training,
+# or wellbeing.
 _DISPLAY_ORDER = [
-    ("name",              "Name"),
-    ("preferred_name",    "Preferred name"),
-    ("date_of_birth",     "Date of birth"),
-    ("birthplace",        "Birthplace"),
-    ("current_location",  "Current location"),
-    ("address",           "Full address"),
-    ("residence_history", "Places lived"),
-    ("nationality",       "Nationality"),
-    ("languages",         "Languages"),
-    ("occupation",        "Occupation"),
-    ("email",             "Email"),
-    ("phone",             "Phone"),
+    ("name",                  "Name"),
+    ("preferred_name",        "Preferred name"),
+    ("date_of_birth",         "Date of birth"),
+    ("birthplace",            "Birthplace"),
+    ("current_location",      "Current location"),
+    ("address",               "Full address"),
+    ("residence_history",     "Places lived"),
+    ("nationality",           "Nationality"),
+    ("languages",             "Languages"),
+    ("occupation",            "Occupation"),
+    ("email",                 "Email"),
+    ("phone",                 "Phone"),
+    # Health coaching block — visible in every chat so any conversation
+    # can engage as a coach without re-asking baseline questions.
+    ("primary_sport",         "Primary sport"),
+    ("training_goal_summary", "Training goal"),
+    ("training_priorities",   "Training priorities (in order)"),
+    ("nutrition_approach",    "Nutrition approach"),
+    ("health_considerations", "Health considerations"),
 ]
+
+# Fields whose list-of-strings value should render as a bulleted block
+# rather than a comma-joined inline. Used where item ordering or item
+# length makes the bulleted form much more readable for the LLM.
+_BULLET_RENDER_FIELDS = {
+    "training_priorities",
+    "health_considerations",
+}
 
 
 def _compute_age(dob_value: str) -> Optional[int]:
@@ -67,15 +85,36 @@ def _format_residence_entry(entry: dict) -> str:
     return " — ".join(bits) if len(bits) > 1 else bits[0]
 
 
-def _format_value(v) -> str:
+def _format_string_list_bullets(items: list) -> str:
+    """
+    Render a list of strings as an indented bulleted block. Used for
+    ordered priority lists where the bullet form makes ordering visible
+    to the model.
+    """
+    return "\n    - " + "\n    - ".join(str(x) for x in items)
+
+
+def _format_value(v, field_name: Optional[str] = None) -> str:
+    """
+    Format a value for the identity block.
+
+    field_name is optional and used to route specific fields to a
+    bulleted render even when the value is a list of plain strings
+    (e.g. training_priorities, where ordering matters).
+    """
     if isinstance(v, list):
+        if not v:
+            return ""
         # List of dicts (structured) → multi-line sub-entries.
-        # List of scalars → comma-joined.
-        if v and isinstance(v[0], dict):
+        if isinstance(v[0], dict):
             return "\n    - " + "\n    - ".join(
                 _format_residence_entry(item) if "place" in item else str(item)
                 for item in v
             )
+        # List of scalars where the field opts into bullet rendering.
+        if field_name in _BULLET_RENDER_FIELDS:
+            return _format_string_list_bullets(v)
+        # Default scalar-list render: comma-joined.
         return ", ".join(str(x) for x in v)
     return str(v)
 
@@ -103,7 +142,7 @@ def build_identity_block() -> Optional[str]:
         f = fields.get(key)
         if f is None or f.value in (None, "", []):
             continue
-        lines.append(f"  {label}: {_format_value(f.value)}")
+        lines.append(f"  {label}: {_format_value(f.value, field_name=key)}")
         # Append derived age right after DOB
         if key == "date_of_birth":
             age = _compute_age(f.value)
@@ -116,7 +155,7 @@ def build_identity_block() -> Optional[str]:
             continue
         if f.value in (None, "", []):
             continue
-        lines.append(f"  {key}: {_format_value(f.value)}")
+        lines.append(f"  {key}: {_format_value(f.value, field_name=key)}")
 
     if len(lines) == 1:
         return None  # no fields actually had values

@@ -45,8 +45,8 @@ logger = logging.getLogger(__name__)
 #
 _DEFAULTS: dict[str, str] = {
     # OpenAI — GPT-5 family
-    "openai_flagship": "gpt-5.4",         # reasoning-capable, highest quality
-    "openai_balanced": "gpt-5.4",         # same as flagship for now
+    "openai_flagship": "gpt-5.5",         # reasoning-capable, highest quality
+    "openai_balanced": "gpt-5.5",         # same as flagship for now
     "openai_fast":     "gpt-5.4-mini",    # lower cost, still GPT-5 family
     "openai_turbo":    "gpt-5.4-turbo",   # cost-optimised variant
 
@@ -56,17 +56,25 @@ _DEFAULTS: dict[str, str] = {
     "anthropic_fast":     "claude-haiku-4-5-20251001",
 
     # Google — Gemini 3 family
-    "google_flagship": "gemini-3.1-pro-preview-customtools",
-    "google_balanced": "gemini-3.1-pro-preview",
-    "google_fast":     "gemini-flash-latest",
+    "google_flagship": "gemini-3.1-pro-preview",
+    "google_balanced": "gemini-3.5-flash",
+    "google_fast":     "gemini-3.1-flash-lite",
 
     # Role-specific families — abstract "what's this FOR" from
     # "which model". Lets you change providers per role without
     # touching call sites.
-    "chat_flagship":    "gpt-5.4",          # voice / conversational chat
+    "chat_flagship":    "gpt-5.5",          # voice / conversational chat
     "chat_tools":       "claude-opus-4-6",  # tool-heavy agentic chat
     "embedding":        "gemini-embedding-2-preview",
-    "vision_fast":      "gemini-flash-latest",
+    "vision_fast":      "gemini-3.5-flash",
+
+    # -- ASTRA role models: primary = cheaper everyday model;
+    #    fallback = pricier model, used only if the primary fails. --
+    "role_chat":                  "gemini-3.5-flash",
+    "role_chat_fallback":         "gpt-5.5",
+    "role_vision_tools":          "gemini-3.5-flash",
+    "role_vision_tools_fallback": "gpt-5.5",
+    "role_cheap":                 "gemini-3.1-flash-lite",
 }
 
 
@@ -159,3 +167,20 @@ def snapshot() -> dict[str, dict]:
 #
 # Keeping the legacy ENV var as the first check preserves anyone's
 # existing overrides; the family resolver is the new default path.
+
+
+def chain(role: str) -> list:
+    """Return [primary, fallback] model strings for a role.
+
+    Primary is resolve(role). If a "<role>_fallback" family (or its
+    ASTRA_MODEL_<ROLE>_FALLBACK env override) exists and differs, it is
+    appended. Lets callers run a cheap-primary / pricier-fallback chain
+    where the fallback only fires if the primary errors.
+    """
+    primary = resolve(role)
+    out = [primary]
+    fb_key = role + "_fallback"
+    fb = os.getenv(_env_key(fb_key)) or _DEFAULTS.get(fb_key)
+    if fb and fb != primary:
+        out.append(fb)
+    return out

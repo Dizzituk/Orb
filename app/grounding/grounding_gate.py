@@ -87,6 +87,37 @@ def _min_confidence_threshold() -> float:
     except ValueError:
         return 0.5
 
+def _get_int_env(key: str, default: int, lo: int = 1, hi: int = 30) -> int:
+    """Bounded int from env. Falls back to default on invalid or missing."""
+    val = os.getenv(key, "").strip()
+    if not val:
+        return default
+    try:
+        return max(lo, min(hi, int(val)))
+    except ValueError:
+        return default
+
+
+def _max_queries_standard() -> int:
+    """Max queries per claims-grounding pass. v17: default raised 3 -> 6."""
+    return _get_int_env("GROUNDING_MAX_QUERIES", 6)
+
+
+def _max_results_standard() -> int:
+    """Max results per query for claims grounding. v17: default raised 5 -> 8."""
+    return _get_int_env("GROUNDING_MAX_RESULTS_PER_QUERY", 8)
+
+
+def _max_queries_balanced() -> int:
+    """Max queries for balanced (contested) grounding. v17: 5 -> 8."""
+    return _get_int_env("GROUNDING_MAX_BALANCED_QUERIES", 8)
+
+
+def _max_results_balanced() -> int:
+    """Max results per query for balanced grounding. v17: 4 -> 6."""
+    return _get_int_env("GROUNDING_MAX_BALANCED_RESULTS", 6)
+
+
 
 # =========================================================================
 # Search execution
@@ -94,7 +125,7 @@ def _min_confidence_threshold() -> float:
 
 async def _perform_grounding_search(
     queries: list[str],
-    max_results_per_query: int = 5,
+    max_results_per_query: Optional[int] = None,
     context: Optional[dict] = None,
 ) -> list[dict]:
     """
@@ -115,7 +146,10 @@ async def _perform_grounding_search(
     all_sources: list[dict] = []
     seen_urls: set[str] = set()
     
-    for query in queries[:3]:  # Cap at 3 queries
+    # v17: env-configurable caps. Defaults raised from 3 queries / 5 results.
+    if max_results_per_query is None:
+        max_results_per_query = _max_results_standard()
+    for query in queries[:_max_queries_standard()]:
         try:
             req = WebSearchRequest(
                 query=query,
@@ -163,15 +197,15 @@ async def _perform_balanced_search(
     except ImportError:
         logger.warning("[grounding_gate] perspective_engine not available, using basic search")
         queries = [message.strip()[:200], f"{message.strip()[:150]} arguments for", f"{message.strip()[:150]} arguments against"]
-        sources = await _perform_grounding_search(queries=queries, max_results_per_query=4, context=context)
+        sources = await _perform_grounding_search(queries=queries, max_results_per_query=_max_results_balanced(), context=context)
         return sources, None
     
     analysis = analyse_debate(message)
     
     # Use the engine's targeted queries (neutral + per-perspective)
     sources = await _perform_grounding_search(
-        queries=analysis.search_queries[:5],
-        max_results_per_query=4,
+        queries=analysis.search_queries[:_max_queries_balanced()],
+        max_results_per_query=_max_results_balanced(),
         context=context,
     )
     

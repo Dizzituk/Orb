@@ -23,7 +23,7 @@ import logging
 from typing import List
 
 from fastapi import APIRouter, HTTPException, Depends, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -34,6 +34,8 @@ from .schemas import (
     BridgeChatRequest,
     BridgeChatResponse,
     BridgeProjectOut,
+    BridgeArtifactRef,
+    BridgePinRequest,
     BridgeMessageOut,
     require_bridge_auth,
 )
@@ -41,9 +43,43 @@ from .llm_helpers import (
     push_desktop_navigation,
     pop_pending_navigation,
 )
+from .uploads_store import save_upload, is_duplicate
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/bridge", tags=["Bridge"])
+
+def _process_artifacts(content: str) -> tuple[str, list[BridgeArtifactRef]]:
+    """Extract artifact markers from message content.
+
+    Returns (stripped_content, refs). The stripped content has the markers
+    removed so the phone displays clean text in the chat bubble and TTS
+    speaks clean audio. The refs are enriched with size + mime via stat
+    on the actual file and given absolute /bridge/artifacts URLs so the
+    phone can fetch them via the auth-gated endpoint.
+
+    Empty refs list when the content has no markers, which is the
+    overwhelmingly common case. Both outputs are safe to pass to clients
+    even when no artifacts exist.
+    """
+    from app.bridge.artifacts import (
+        extract_artifacts, strip_artifacts, enrich_artifact_ref,
+    )
+    refs = extract_artifacts(content)
+    if not refs:
+        return content, []
+    stripped = strip_artifacts(content)
+    out: list[BridgeArtifactRef] = []
+    for r in refs:
+        enriched = enrich_artifact_ref(r)
+        out.append(BridgeArtifactRef(
+            kind=enriched.kind,
+            filename=enriched.filename,
+            size_bytes=enriched.size_bytes,
+            mime_type=enriched.mime_type,
+            url=f"/bridge/artifacts/{enriched.kind}/{enriched.filename}",
+        ))
+    return stripped, out
+
 
 
 @router.post("/login", response_model=BridgeLoginResponse)
@@ -81,8 +117,42 @@ async def bridge_list_projects(
             type=p.type if hasattr(p, "type") else None,
             created_at=p.created_at.isoformat() if p.created_at else "",
             updated_at=p.updated_at.isoformat() if p.updated_at else "",
+            pinned=bool(getattr(p, "pinned", False)),
         ))
     return result
+
+@router.post("/projects/{project_id}/pin", response_model=BridgeProjectOut)
+async def bridge_pin_project(
+    project_id: int,
+    req: BridgePinRequest,
+    db: Session = Depends(get_db),
+    _auth: bool = Depends(require_bridge_auth),
+):
+    """Set the pinned state of a project.
+
+    Idempotent: the caller declares the desired final state via req.pinned
+    (rather than this endpoint toggling). Returns the updated project so the
+    client can reconcile its view without re-fetching the full list.
+
+    Used by the Bridge phone app's long-press pin gesture; the desktop
+    sees the change on its next /projects fetch because pin state lives on
+    the Project row itself, not in any per-client cache.
+    """
+    from app.memory.service import update_project
+    from app.memory.schemas import ProjectUpdate
+
+    project = update_project(db, project_id, ProjectUpdate(pinned=req.pinned))
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return BridgeProjectOut(
+        id=project.id,
+        name=project.name,
+        description=project.description,
+        type=getattr(project, "type", None),
+        created_at=project.created_at.isoformat() if project.created_at else "",
+        updated_at=project.updated_at.isoformat() if project.updated_at else "",
+        pinned=bool(getattr(project, "pinned", False)),
+    )
 
 
 @router.get("/projects/{project_id}/messages", response_model=List[BridgeMessageOut])
@@ -99,17 +169,56 @@ async def bridge_get_messages(
         raise HTTPException(404, f"Project {project_id} not found")
 
     messages = list_messages(db, project_id, limit=limit)
-    return [
-        BridgeMessageOut(
+    out: list[BridgeMessageOut] = []
+    for m in messages:
+        # Per-message artifact extraction. Cheap when content has no marker
+        # (early-exits inside extract_artifacts). On marker-bearing messages
+        # we strip the marker so the phone shows clean text plus the chip.
+        stripped, refs = _process_artifacts(m.content)
+        out.append(BridgeMessageOut(
             id=m.id,
             role=m.role,
-            content=m.content,
+            content=stripped,
             provider=m.provider if hasattr(m, "provider") else None,
             model=m.model if hasattr(m, "model") else None,
             created_at=m.created_at.isoformat() if m.created_at else "",
-        )
-        for m in messages
-    ]
+            attachments=refs,
+        ))
+    return out
+
+
+@router.get("/artifacts/{kind}/{filename}")
+async def bridge_get_artifact(
+    kind: str,
+    filename: str,
+    _auth: bool = Depends(require_bridge_auth),
+):
+    """Stream a generated artifact (image, etc.) to the phone.
+
+    Auth-gated download endpoint backing the chip's tap action. The kind
+    and filename come from a marker emitted by some earlier turn (see
+    app.bridge.artifacts.ARTIFACT_MARKER_RE for the syntax) — the phone
+    constructs this URL from the BridgeArtifactRef the server returned.
+
+    Safety: resolve_artifact_path enforces the safe-path check (charset
+    re-validation + traversal block + "inside base dir" assertion +
+    is_file). Any failure path returns 404 without revealing which check
+    fired so attackers cannot probe the filesystem layout.
+
+    Returns a streamed FileResponse so multi-MB images don't get pulled
+    into memory; OkHttp on the phone handles the chunked download.
+    """
+    from app.bridge.artifacts import resolve_artifact_path
+    path = resolve_artifact_path(kind, filename)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    import mimetypes
+    mime, _ = mimetypes.guess_type(str(path))
+    return FileResponse(
+        path=str(path),
+        media_type=mime or "application/octet-stream",
+        filename=filename,
+    )
 
 
 @router.post("/chat", response_model=BridgeChatResponse)
@@ -184,9 +293,15 @@ async def bridge_chat(
         )
 
     from app.bridge.capability_layer import run_astra_chat
+    from app.bridge.attachment_describe import augment_user_message
+
+    # Same attachment handling as bridge_chat_and_speak: prepend vision /
+    # document text to the LLM-input message, keep req.message clean for
+    # the DB record and identity hook. No-op when attachment_ids is empty.
+    llm_input_message = augment_user_message(req, history_messages)
 
     result = await run_astra_chat(
-        message=req.message,
+        message=llm_input_message,
         project_id=project.id,
         history=history_messages,
         db=db,
@@ -211,9 +326,15 @@ async def bridge_chat(
     if _detected_domain:
         push_desktop_navigation(_detected_domain)
 
+    # Process artifact markers: strip from reply for clean display, build
+    # BridgeArtifactRef list for the response. The DB still holds the raw
+    # reply (with markers) so history reload can re-emit the same chips.
+    display_reply, attachments = _process_artifacts(reply)
+
     return BridgeChatResponse(
-        reply=reply, project_id=project.id,
+        reply=display_reply, project_id=project.id,
         project_name=project.name, domain=_detected_domain,
+        attachments=attachments,
     )
 
 
@@ -298,8 +419,17 @@ async def bridge_chat_and_speak(
         provider = "bridge"
         model = "search-gate"
     else:
+        # Augment with image descriptions / document text if any attachments
+        # were uploaded. req.message stays untouched so identity_hook,
+        # translation, and the DB record all see the user's actual words.
+        # See attachment_describe.augment_user_message for the contract;
+        # the helper is shared with bridge_chat (text-only path) so both
+        # endpoints have identical attachment handling.
+        from app.bridge.attachment_describe import augment_user_message
+        llm_input_message = augment_user_message(req, history_messages)
+
         result = await run_astra_chat(
-            message=req.message,
+            message=llm_input_message,
             project_id=project.id,
             history=history_messages,
             db=db,
@@ -322,8 +452,17 @@ async def bridge_chat_and_speak(
         content=full_text, provider=provider, model=model,
     ))
 
+    # Process artifact markers. The DB row keeps the raw full_text
+    # (with markers) so history reload re-emits the chips; the streaming
+    # response uses display_text for the X-Full-Text header and TTS so
+    # the marker syntax never reaches the user. attachments_payload is
+    # JSON-serialised into the X-Artifacts header for the phone to parse.
+    import json
+    display_text, attachments = _process_artifacts(full_text)
+    attachments_payload = json.dumps([a.model_dump() for a in attachments])
+
     async def generate_audio():
-        sentences = _split_into_sentences(full_text)
+        sentences = _split_into_sentences(display_text)
         for sentence in sentences:
             try:
                 mp3_bytes = await _synthesise_sentence(sentence)
@@ -337,8 +476,9 @@ async def bridge_chat_and_speak(
         headers={
             "X-Project-Id": str(project_id),
             "X-Project-Name": url_quote(project_name),
-            "X-Full-Text": url_quote(full_text[:8000]),
+            "X-Full-Text": url_quote(display_text[:8000]),
             "X-Message-Id": str(assistant_message.id),
+            "X-Artifacts": url_quote(attachments_payload),
             "Transfer-Encoding": "chunked",
         },
     )
@@ -398,85 +538,57 @@ async def receive_crash_report(request: Request):
 @router.post("/upload")
 async def bridge_upload(
     request: Request,
-    db: Session = Depends(get_db),
     auth=Depends(require_bridge_auth),
 ):
     """Accept a raw file upload from the Astra Bridge OutboundQueueDrainer.
-    
+
     Bridge posts raw bytes with:
       - Authorization: Bearer <token>
       - X-Idempotency-Key: <uuid>   (dedup on resend after transient failure)
-      - Content-Type: application/octet-stream
-    
-    Returns:
-      - 200 {id, bytes, path} on success
-      - 409 if this idempotency key was already accepted
-      - 401/403 handled upstream by require_bridge_auth
-    
-    Files are written to D:/Orb/uploads/bridge/ and survive restarts.
-    v1.0 (2026-04-13): initial implementation so Bridge attachments
-    actually reach the server. Previously Bridge POSTed to /upload (404).
+      - Content-Type: image/jpeg etc. (used to pick the saved-file extension)
+
+    Returns 200 {id, bytes, path} on success; 409 on duplicate idempotency
+    key; 401/403 from require_bridge_auth on bad auth.
+
+    Files land under the user's Pictures folder (see uploads_store.UPLOADS_ROOT)
+    with their real extension, tracked by a shared JSONL ledger. All path
+    resolution and writes are delegated to app.bridge.uploads_store so the
+    endpoint stays small and the destination is easy to change.
+
+    v2.0 (2026-05-24): delegated to uploads_store; destination changed from
+    D:/Orb/uploads/bridge/ to OneDrive\\Pictures\\Astra Mobile Uploads so
+    files are visible to the user and indexed by the drive watcher.
+    v1.0 (2026-04-13): initial implementation so Bridge attachments actually
+    reach the server. Previously Bridge POSTed to /upload (404).
     """
-    import os
     import uuid
-    import json
-    from datetime import datetime, timezone
-    
+
     idempotency_key = request.headers.get("X-Idempotency-Key", "").strip()
     if not idempotency_key:
-        # Generate one so the client can still succeed even if header was missing.
+        # Generate one so the client can still succeed if the header was missing.
         idempotency_key = uuid.uuid4().hex
-    
-    upload_dir = os.path.join("D:\\\\Orb", "uploads", "bridge")
-    os.makedirs(upload_dir, exist_ok=True)
-    ledger_path = os.path.join(upload_dir, "_ledger.jsonl")
-    
-    # Dedup: if idempotency_key is already in the ledger, return 409.
-    try:
-        if os.path.isfile(ledger_path):
-            with open(ledger_path, "r", encoding="utf-8") as lf:
-                for line in lf:
-                    try:
-                        entry = json.loads(line)
-                    except Exception:
-                        continue
-                    if entry.get("idempotency_key") == idempotency_key:
-                        logger.info("[bridge] upload duplicate for key=%s", idempotency_key[:12])
-                        raise HTTPException(status_code=409, detail="duplicate")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.warning("[bridge] ledger read failed, proceeding anyway: %s", e)
-    
+
+    if is_duplicate(idempotency_key):
+        logger.info("[bridge] upload duplicate for key=%s", idempotency_key[:12])
+        raise HTTPException(status_code=409, detail="duplicate")
+
     body = await request.body()
     if not body:
         raise HTTPException(status_code=400, detail="empty body")
-    
-    file_id = uuid.uuid4().hex
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    filename = f"{ts}_{file_id}.bin"
-    out_path = os.path.join(upload_dir, filename)
-    with open(out_path, "wb") as f:
-        f.write(body)
-    
-    entry = {
-        "id": file_id,
-        "idempotency_key": idempotency_key,
-        "filename": filename,
-        "path": out_path,
-        "bytes": len(body),
-        "received_at": datetime.now(timezone.utc).isoformat(),
-        "content_type": request.headers.get("Content-Type", ""),
-    }
-    with open(ledger_path, "a", encoding="utf-8") as lf:
-        lf.write(json.dumps(entry) + "\n")
-    
-    logger.info(
-        "[bridge] upload received: id=%s bytes=%d key=%s",
-        file_id, len(body), idempotency_key[:12],
+
+    record = save_upload(
+        body=body,
+        content_type=request.headers.get("Content-Type", ""),
+        idempotency_key=idempotency_key,
+        original_filename=request.headers.get("X-Original-Filename", "").strip(),
     )
-    
-    return {"id": file_id, "bytes": len(body), "path": out_path}
+
+    logger.info(
+        "[bridge] upload received: id=%s bytes=%d key=%s path=%s",
+        record.id, record.bytes, idempotency_key[:12], record.path,
+    )
+
+    return {"id": record.id, "bytes": record.bytes, "path": record.path}
 
 
 def _resolve_or_create_project(req: BridgeChatRequest, db: Session):

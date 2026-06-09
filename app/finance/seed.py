@@ -7,8 +7,7 @@ Aligned with HMRC SA103 self-employment supplementary pages.
 import logging
 from datetime import date
 from sqlalchemy.orm import Session
-from app.finance.models import ExpenseCategory, TaxYear, SavingsGoal
-from app.finance.utils.tax_year import get_current_tax_year, tax_year_bounds
+from app.finance.models import ExpenseCategory
 
 logger = logging.getLogger(__name__)
 
@@ -51,44 +50,14 @@ DEFAULT_CATEGORIES = [
 
 
 def seed_finance_data(db: Session) -> dict:
-    """Seed categories and current tax year. Safe to call multiple times."""
-    result = {"categories_created": 0, "tax_year_created": False, "goals_created": 0}
+    """Seed expense categories. Safe to call multiple times."""
+    result = {"categories_created": 0}
 
-    # Seed categories
     existing = {c.name for c in db.query(ExpenseCategory.name).all()}
     for cat_data in DEFAULT_CATEGORIES:
         if cat_data["name"] not in existing:
             db.add(ExpenseCategory(**cat_data))
             result["categories_created"] += 1
-
-    # Seed current tax year (year-aware — picks up whatever tax year we're in now).
-    current_ty = get_current_tax_year()
-    ty_start, ty_end = tax_year_bounds(current_ty)
-    ty = db.query(TaxYear).filter(TaxYear.tax_year == current_ty).first()
-    if not ty:
-        # Clear any previously-marked current year so only one is flagged current
-        db.query(TaxYear).filter(TaxYear.is_current == True).update({"is_current": False})
-        db.add(TaxYear(
-            tax_year=current_ty,
-            start_date=ty_start,
-            end_date=ty_end,
-            is_current=True,
-        ))
-        result["tax_year_created"] = True
-
-    # Seed default tax reserve goal
-    existing_goals = {g.name for g in db.query(SavingsGoal.name).all()}
-    if "Tax Reserve" not in existing_goals:
-        db.add(SavingsGoal(
-            name="Tax Reserve",
-            description="Auto-calculated tax liability set aside weekly.",
-            target_amount=0.0,
-            priority="critical",
-            is_tax_reserve=True,
-            is_recurring=True,
-            status="active",
-        ))
-        result["goals_created"] += 1
 
     db.commit()
     logger.info("[finance_seed] Seeded: %s", result)

@@ -196,6 +196,17 @@ _CODEBASE_GUARD_WORDS_MULTI = {
     # Frontend / UI phrases (v2.3)
     "front end", "front-end", "the code", "search the code",
     "the style", "the styles",
+    # Local-file-context phrases (v2.4): suppress web search when the
+    # user is clearly referring to a local artefact / running file, not
+    # asking the system to look something up online. These fire only on
+    # contextual/fallback/staleness — explicit "search the web for X"
+    # patterns still pass through.
+    "the html", "the dashboard", "the spreadsheet",
+    "is already live", "is live", "already exists",
+    "go in there", "go into the", "open the",
+    "look at it", "look at the", "look in the",
+    "add what i", "update what i", "change what i",
+    "the work folder", "this folder", "this file",
 }
 
 
@@ -548,6 +559,19 @@ def check_web_search_trigger(text: str) -> Tier0RuleResult:
     """
     text_stripped = text.strip()
     if not text_stripped or len(text_stripped) < 5:
+        return Tier0RuleResult(matched=False)
+
+    # v2.4: Negation guard. If the user explicitly says this is NOT a
+    # web search, do not match. Catches the rejection loop where the
+    # phrase "not a web search" itself contained keywords ("web",
+    # "search") that triggered the keyword fallback.
+    _lower = text_stripped.lower()
+    _negation_starts = ("no,", "no ", "nope", "not a ", "not an ", "this is not", "this isn't", "this ain't")
+    _negation_about_search = ("not a web search", "not a search", "isn't a web search", "isn't a search", "ain't a search")
+    if any(_lower.startswith(p) for p in _negation_starts) and any(p in _lower for p in _negation_about_search):
+        return Tier0RuleResult(matched=False)
+    # Also catch plain "no, this is not a web search" / "no this isn't a search"
+    if any(p in _lower for p in _negation_about_search):
         return Tier0RuleResult(matched=False)
 
     # v2.3: Length guard — web search queries are short.

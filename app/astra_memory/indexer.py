@@ -53,31 +53,24 @@ def _summarize_message(content: str, max_len: int = 100) -> str:
     return content[:max_len].rsplit(' ', 1)[0] + '...'
 
 
+# Phase 9 retrieval-quality work (2026-05-13):
+# Replaced the hardcoded six-tag local extractor with the topic_tagger
+# module. Old extractor only knew code/python/testing/architecture/
+# documentation/debugging — so every TAO / immigration / legal / lifestyle
+# discussion was tagged with a code label or untagged, making it
+# invisible to topic-driven retrieval. The new tagger covers ~11 topic
+# domains plus the legacy code tags, and also produces entity arrays
+# (specific names like TAO, Yodel, Leigh Day, ASTRA) for high-precision
+# match.
+from app.astra_memory.topic_tagger import extract_tags, extract_entities
+
+
 def _extract_tags_from_content(content: str) -> List[str]:
-    """Extract simple tags from content."""
-    tags = []
-    
-    # Code-related
-    if any(kw in content.lower() for kw in ['def ', 'class ', 'import ', 'function', 'async ']):
-        tags.append('code')
-    if 'python' in content.lower():
-        tags.append('python')
-    if any(kw in content.lower() for kw in ['test', 'pytest', 'unittest']):
-        tags.append('testing')
-    
-    # Architecture
-    if any(kw in content.lower() for kw in ['architect', 'design', 'structure', 'pattern']):
-        tags.append('architecture')
-    
-    # Documentation
-    if any(kw in content.lower() for kw in ['document', 'readme', 'guide', 'tutorial']):
-        tags.append('documentation')
-    
-    # Error/debug
-    if any(kw in content.lower() for kw in ['error', 'bug', 'fix', 'debug', 'traceback']):
-        tags.append('debugging')
-    
-    return tags[:5]  # Max 5 tags
+    """
+    Wrapper kept for backward compatibility with any external callers.
+    New code should call topic_tagger.extract_tags directly.
+    """
+    return extract_tags(content)
 
 
 def index_messages(db: Session, project_id: Optional[int] = None, limit: int = 1000) -> int:
@@ -102,7 +95,12 @@ def index_messages(db: Session, project_id: Optional[int] = None, limit: int = 1
             continue
         
         one_liner = _summarize_message(content)
-        tags = _extract_tags_from_content(content)
+        # Phase 9 (2026-05-13): also extract entities so retrieval can
+        # match on specific names (TAO, Yodel etc.) rather than only
+        # by coarse domain. Empty list — NOT None — when nothing matches
+        # so the SQLite JSON column stores [] instead of 'null'.
+        tags = extract_tags(content)
+        entities = extract_entities(content)
         
         # Create title from first line or summary
         first_line = content.split('\n')[0][:80]
@@ -115,6 +113,7 @@ def index_messages(db: Session, project_id: Optional[int] = None, limit: int = 1
             title=title,
             one_liner=one_liner,
             tags=tags,
+            entities=entities,
             retrieval_priority=0.4,  # Messages are lower priority than structured data
             retrieval_cost=RetrievalCost.TINY,
         )
@@ -137,14 +136,22 @@ def index_projects(db: Session) -> int:
     count = 0
     for proj in projects:
         description = proj.description or f"Project: {proj.name}"
-        
+
+        # Combine name + description for tag/entity extraction
+        combined = f"{proj.name}\n{description}"
+        tags = extract_tags(combined)
+        if "project" not in tags:
+            tags = ["project"] + tags
+        entities = extract_entities(combined)
+
         upsert_hot_index(
             db=db,
             record_type="project",
             record_id=str(proj.id),
             title=proj.name,
             one_liner=description[:200],
-            tags=["project"],
+            tags=tags,
+            entities=entities,
             retrieval_priority=0.6,  # Projects are higher priority
             retrieval_cost=RetrievalCost.TINY,
         )
@@ -172,14 +179,15 @@ def index_notes(db: Session, project_id: Optional[int] = None) -> int:
     for note in notes:
         content = note.content or ""
         one_liner = _summarize_message(content)
-        
-        # Parse tags from note.tags field
-        tags = []
+
+        # Parse tags from note.tags field, plus topic-tagger output, plus
+        # entities from content.
+        explicit_tags: List[str] = []
         if note.tags:
-            tags = [t.strip() for t in note.tags.split(',')]
-        tags.extend(_extract_tags_from_content(content))
-        tags = list(set(tags))[:5]
-        
+            explicit_tags = [t.strip() for t in note.tags.split(',') if t.strip()]
+        tags = sorted(set(explicit_tags) | set(extract_tags(content)))[:8]
+        entities = extract_entities(content)
+
         upsert_hot_index(
             db=db,
             record_type="note",
@@ -187,6 +195,7 @@ def index_notes(db: Session, project_id: Optional[int] = None) -> int:
             title=note.title,
             one_liner=one_liner,
             tags=tags,
+            entities=entities,
             retrieval_priority=0.7,  # Notes are high priority (user-created)
             retrieval_cost=RetrievalCost.TINY,
         )
@@ -210,11 +219,15 @@ def index_jobs(db: Session, limit: int = 500) -> int:
     for job in jobs:
         intent = job.user_intent or f"Job {job.job_id}"
         one_liner = _summarize_message(intent)
-        
+
         tags = ["job", job.status]
         if job.primary_provider:
             tags.append(job.primary_provider)
-        
+        # Phase 9 (2026-05-13): include topic tags so jobs are findable by
+        # what they were about, not only by status.
+        tags = sorted(set(tags) | set(extract_tags(intent)))[:8]
+        entities = extract_entities(intent)
+
         upsert_hot_index(
             db=db,
             record_type="job",
@@ -222,6 +235,7 @@ def index_jobs(db: Session, limit: int = 500) -> int:
             title=f"Job: {one_liner[:50]}",
             one_liner=one_liner,
             tags=tags,
+            entities=entities,
             retrieval_priority=0.5,
             retrieval_cost=RetrievalCost.MEDIUM,  # Jobs may have more data
         )
@@ -243,13 +257,20 @@ def index_global_prefs(db: Session) -> int:
     
     count = 0
     for pref in prefs:
+        value_str = str(pref.value)
+        topic_tags = extract_tags(f"{pref.key} {value_str}")
+        base_tags = ["preference", pref.category] if pref.category else ["preference"]
+        tags = sorted(set(base_tags) | set(topic_tags))[:8]
+        entities = extract_entities(f"{pref.key} {value_str}")
+
         upsert_hot_index(
             db=db,
             record_type="global_pref",
             record_id=pref.key,
             title=pref.key,
-            one_liner=str(pref.value)[:200],
-            tags=["preference", pref.category] if pref.category else ["preference"],
+            one_liner=value_str[:200],
+            tags=tags,
+            entities=entities,
             retrieval_priority=0.8,  # Prefs are high priority
             retrieval_cost=RetrievalCost.TINY,
         )

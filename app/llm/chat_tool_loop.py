@@ -101,11 +101,43 @@ def get_chat_tools(tier: str = TOOL_TIER_READ) -> List[Dict]:
     else:
         raw_tools = get_phase1_tools()
 
-    return [_to_anthropic_tool_format(t) for t in raw_tools]
+    tools = [_to_anthropic_tool_format(t) for t in raw_tools]
+    # Work-day ledger tools - let any chat start/finish/reconcile a delivery
+    # day straight to the DB (the 'Work' tab), via the same declarations the
+    # image loop uses. Without these, "starting work, 11, 1500 miles" has no
+    # tool to call and the model wrongly reaches for write_file / edit_file.
+    try:
+        from app.debug.gemini_finance_tools import FINANCE_TOOL_DECLARATIONS
+        tools.extend(_to_anthropic_tool_format(t) for t in FINANCE_TOOL_DECLARATIONS)
+    except Exception as exc:
+        logger.warning("[chat_tool_loop] finance tools unavailable: %s", exc)
+    # Expense logging tool ("log £120 fuel") - its own module, same wiring.
+    try:
+        from app.debug.gemini_expense_tools import EXPENSE_TOOL_DECLARATIONS
+        tools.extend(_to_anthropic_tool_format(t) for t in EXPENSE_TOOL_DECLARATIONS)
+    except Exception as exc:
+        logger.warning("[chat_tool_loop] expense tools unavailable: %s", exc)
+    return tools
 
 
 async def execute_chat_tool(name: str, params: Dict) -> str:
     """Execute a tool call and return the result string."""
+    # Work-day ledger tools run via their own adapters (central-registry
+    # handlers), not the debug action_executor - same path as the image loop.
+    try:
+        from app.debug.gemini_finance_tools import FINANCE_TOOL_EXECUTORS
+        if name in FINANCE_TOOL_EXECUTORS:
+            return await FINANCE_TOOL_EXECUTORS[name](params or {})
+    except Exception as exc:
+        logger.error("[chat_tool_loop] finance tool %s failed: %s", name, exc)
+        return f"Tool error: {exc}"
+    try:
+        from app.debug.gemini_expense_tools import EXPENSE_TOOL_EXECUTORS
+        if name in EXPENSE_TOOL_EXECUTORS:
+            return await EXPENSE_TOOL_EXECUTORS[name](params or {})
+    except Exception as exc:
+        logger.error("[chat_tool_loop] expense tool %s failed: %s", name, exc)
+        return f"Tool error: {exc}"
     from app.debug.action_executor import execute_tool
     try:
         result = await execute_tool(name, params)

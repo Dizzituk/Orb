@@ -772,10 +772,16 @@ def get_universal_tools() -> List[dict]:
 
     These are injected regardless of model trust level. Memory tools
     are universal because the chat LLM needs to be able to write to
-    memory in every turn, on every model.
+    memory in every turn, on every model. Lifestyle logging tools
+    (log_weight, log_nutrition, log_workout, set_goal + the matching
+    reads) are universal for the same reason: the user logs weight,
+    food, and workouts by voice in ordinary chat, so every model needs
+    them in front of it — otherwise it falls back to save_to_memory and
+    the entry never reaches the lifestyle DB the Health dashboard reads.
     """
     from app.debug.memory_tool_definitions import get_memory_tools
-    return [WEB_SEARCH_TOOL] + get_memory_tools()
+    from app.debug.gemini_lifestyle_tools import LIFESTYLE_TOOL_DECLARATIONS
+    return [WEB_SEARCH_TOOL] + get_memory_tools() + LIFESTYLE_TOOL_DECLARATIONS
 
 
 def get_phase1_tools() -> List[dict]:

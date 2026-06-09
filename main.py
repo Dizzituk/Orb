@@ -489,14 +489,8 @@ from app.investments.router import router as investments_router
 app.include_router(investments_router)
 from app.investments.chat_router import router as investments_chat_router
 app.include_router(investments_chat_router)
-from app.finance.router import router as finance_router
-app.include_router(finance_router)
-from app.finance.drive_router import router as finance_drive_router
-app.include_router(finance_drive_router)
-from app.finance.budget_router import router as finance_budget_router
-app.include_router(finance_budget_router)
-from app.finance.credit_card_router import router as finance_cc_router
-app.include_router(finance_cc_router)
+from app.finance.work_router import router as finance_work_router
+app.include_router(finance_work_router)
 from app.lifestyle.router import router as lifestyle_router
 app.include_router(lifestyle_router)
 # ASTRA Drive — local file system management
@@ -689,6 +683,8 @@ def health():
 try:
     from app.bridge.router import router as bridge_router
     app.include_router(bridge_router)
+    from app.bridge.dashboards import router as bridge_dashboards_router
+    app.include_router(bridge_dashboards_router)
     from app.bridge.tts_proxy import router as bridge_tts_router
     app.include_router(bridge_tts_router)
     from app.bridge.missed_replies import router as bridge_missed_replies_router
@@ -741,6 +737,7 @@ def list_providers(auth=Depends(require_auth)):
 def list_job_types(auth=Depends(require_auth)):
     from app.llm import JobType
     return {"job_types": [{"value": jt.value, "name": jt.name} for jt in JobType]}
+
 
 
 

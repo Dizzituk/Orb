@@ -231,11 +231,33 @@ def build_memory_context(
     
     if depth != IntentDepth.D0:
         try:
-            # Extract tags/entities from message for better retrieval
-            # (Simple implementation - could be enhanced with NER)
-            query_tags = None
-            query_entities = None
-            
+            # Phase 9 (2026-05-13): extract tags/entities from the user
+            # message and pass them through. Previously this was hardcoded
+            # to None, None, which meant stage1_candidate_selection had no
+            # semantic filter and fell back to "top-N by static priority +
+            # recency" — i.e. retrieval ignored what the question was
+            # actually ABOUT. The topic_tagger uses the same vocab the
+            # indexer uses to tag records, so tags from the query match
+            # tags on the records.
+            try:
+                from app.astra_memory.topic_tagger import (
+                    extract_tags as _q_extract_tags,
+                    extract_entities as _q_extract_entities,
+                )
+                _qt = _q_extract_tags(user_message)
+                # Drop the 'general' fallback when used as a query filter —
+                # filtering on 'general' adds no signal.
+                query_tags = [t for t in _qt if t != "general"] or None
+                _qe = _q_extract_entities(user_message)
+                query_entities = _qe or None
+            except Exception as _tag_err:
+                logger.debug(
+                    "[memory_injection] topic_tagger failed, falling back "
+                    "to unfiltered retrieval: %s", _tag_err,
+                )
+                query_tags = None
+                query_entities = None
+
             result = retrieve_for_query(
                 db=db,
                 user_message=user_message,

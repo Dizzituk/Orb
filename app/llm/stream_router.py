@@ -142,6 +142,38 @@ async def stream_chat(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    # v1.0 (2026-05-24): Working-set context var.  Sets the current
+    # project_id (and an informational model hint) so tool executions
+    # in this turn auto-register their touched files.  Cleared
+    # implicitly when the request handler returns (each FastAPI
+    # request gets its own contextvars scope).
+    try:
+        from app.memory.working_set import set_current as _ws_set_current
+        _model_hint = (getattr(req, "model", None) or "")
+        _ws_set_current(req.project_id, _model_hint)
+    except Exception as _ws_err:
+        logger.debug("[stream_router] working-set context bind failed: %s", _ws_err)
+
+    # v1.1 (2026-05-24): Bootstrap — if the user's message references a
+    # known file ("the HTML", "the dashboard"), auto-discover the file
+    # in the project's canonical folder and register it into the working
+    # set BEFORE prompt building.  Strict rules: exactly-one match
+    # only, never auto-pick on ambiguity.
+    try:
+        from app.memory._working_set_bootstrap import bootstrap_from_message
+        _bs_registered = bootstrap_from_message(
+            project_id=req.project_id,
+            project_name=getattr(project, "name", None),
+            message=req.message,
+        )
+        if _bs_registered:
+            logger.info(
+                "[stream_router] Working-set bootstrap registered %d file(s)",
+                _bs_registered,
+            )
+    except Exception as _bs_err:
+        logger.debug("[stream_router] working-set bootstrap failed: %s", _bs_err)
+
     # =========================================================================
     # v5.5: ASTRA COMMAND BYPASS — explicit commands punch through debug lock
     # "Astra, command: CREATE ARCHITECTURE MAP" must reach the translation
@@ -189,6 +221,22 @@ async def stream_chat(
             ),
             media_type="text/event-stream",
         )
+    # =========================================================================
+    # v6.0 (2026-05-24): IMAGE-BEARING TURN INTERCEPT
+    # When a chat request carries a freshly-uploaded image (Gemini Files API
+    # ref present on the request), bypass MODEL_SELECT and route the entire
+    # turn through Gemini multimodal + tools. Avoids the vision-to-text-to-GPT
+    # hop, gives Gemini the ability to act on what it sees (file edits, tool
+    # calls) in a single pass. Text-only turns continue to existing routing.
+    # =========================================================================
+    from app.llm.routing.image_chat_routing import has_image_attachment, stream_image_chat
+    if has_image_attachment(req):
+        logger.info("[stream_router] Image attachment detected — routing to Gemini multimodal+tools")
+        return StreamingResponse(
+            stream_image_chat(req=req, db=db),
+            media_type="text/event-stream",
+        )
+
 
     # =========================================================================
     # v11.2: BUILD-DEPLOY INTERCEPT — now goes through confirmation gate.
@@ -527,7 +575,8 @@ async def stream_chat(
         # WEAVER AUTO-REWEAVE (v5.2)
         # If user replies during active weaver flow, auto-route to UPDATE
         # =================================================================
-        response = _handle_weaver_design_questions(req, db, trace, stage_trace, translation_result)
+        from app.llm.routing.weaver_reweave_handler import handle_weaver_design_questions
+        response = handle_weaver_design_questions(req, db, trace, stage_trace, translation_result)
         if response:
             return response
         
@@ -818,191 +867,6 @@ async def reject_intent(
     the frontend calls this endpoint to record the negative signal.
     This feeds into the graduated confidence system.
     """
-    try:
-        from app.translation.schemas import CanonicalIntent as _CI
-        from app.translation.confirmation_log import log_confirmation_event
+    from app.llm.routing.reject_intent_handler import handle_reject_intent
+    return await handle_reject_intent(req)
 
-        intent_enum = _CI(req.intent)
-
-        # Look up the matching classifier decision so we can log rule_name
-        # alongside the rejection. rule_suppression.py uses rule_name to
-        # compute per-rule reject counts, which lets the system silence
-        # rules that consistently misfire.
-        _rejected_rule_name = None
-        try:
-            from app.translation.recent_decisions import get_recent_decisions
-            _recent = get_recent_decisions(str(req.project_id))
-            _excerpt = req.original_message[:200]
-            for _d in reversed(_recent):
-                if _d.message_excerpt == _excerpt:
-                    _rejected_rule_name = _d.rule_name
-                    break
-            if _rejected_rule_name is None and _recent:
-                # Fallback: assume the most recent decision is the one being
-                # rejected. Excerpt mismatch can happen when the frontend
-                # truncates differently.
-                _rejected_rule_name = _recent[-1].rule_name
-        except Exception as _lookup_err:
-            logger.debug(
-                "[reject_intent] rule_name lookup failed: %s",
-                _lookup_err,
-            )
-
-        log_confirmation_event(
-            intent=intent_enum,
-            user_message_excerpt=req.original_message[:200],
-            confirmed=False,
-            confidence=0.0,
-            conversation_id=str(req.project_id),
-            rule_name=_rejected_rule_name,
-        )
-
-        # Mark the matching classifier decision as rejected so the chat LLM
-        # sees the negative signal in its [CLASSIFIER DECISIONS] block and
-        # can answer accurately when the user asks why it fired.
-        try:
-            from app.translation.recent_decisions import (
-                mark_status, STATUS_REJECTED,
-            )
-            mark_status(
-                conversation_id=str(req.project_id),
-                status=STATUS_REJECTED,
-                message_excerpt=req.original_message[:200],
-            )
-        except Exception as _mk_err:
-            logger.debug(
-                "[reject_intent] Failed to mark decision rejected: %s",
-                _mk_err,
-            )
-
-        logger.info(
-            "[reject_intent] Rejection logged: intent=%s, message='%s'",
-            req.intent, req.original_message[:50],
-        )
-        return {"status": "ok", "logged": True}
-    except Exception as e:
-        logger.warning("[reject_intent] Failed to log rejection: %s", e)
-        return {"status": "error", "detail": str(e)}
-
-
-# =============================================================================
-# INTERNAL ROUTING HELPERS
-# =============================================================================
-
-# v5.1: Explicit command intents that should NOT be intercepted by flow state
-
-
-# v5.2: Intents that indicate the user wants to LEAVE the weaver flow
-# If the user says one of these, don't auto-reweave — let it through.
-
-
-def _handle_weaver_design_questions(req, db, trace, stage_trace, translation_result=None):
-    """Handle auto-reweave: route user replies back to Weaver UPDATE.
-    
-    v5.2 (2026-02-04): AUTO-REWEAVE
-    When Weaver finishes, flow enters AWAITING_SPEC_GATE_CONFIRM.
-    If the user replies with anything that ISN'T an explicit command
-    (like 'send to spec gate' or 'run critical pipeline'), we assume
-    they're adding more requirements or answering questions, so we
-    auto-route back to Weaver UPDATE mode.
-    
-    This creates a natural loop:
-      Weaver outputs (with or without questions)
-      → User replies (answers, additions, refinements)
-      → Auto-triggers Weaver UPDATE
-      → Repeat until user says 'send to spec gate'
-    
-    Previous behaviour (broken): Required keyword detection from
-    hardcoded WEAVER_DESIGN_QUESTIONS stage, which was never set
-    after v4.0 removed the slot/question infrastructure.
-    """
-    if not _FLOW_STATE_AVAILABLE or not get_active_flow:
-        return None
-    
-    active_flow = get_active_flow(req.project_id)
-    if not active_flow:
-        return None
-    
-    # Only intercept in weaver-active stages
-    if active_flow.stage not in (
-        SpecFlowStage.WEAVER_DESIGN_QUESTIONS,
-        SpecFlowStage.AWAITING_SPEC_GATE_CONFIRM,
-    ):
-        return None
-    
-    # v5.2: If translation resolved to a weaver-exit intent, DON'T intercept
-    # Let the user proceed to spec gate / critical pipeline / etc.
-    if translation_result is not None:
-        intent = translation_result.resolved_intent
-        if intent and intent in _WEAVER_EXIT_INTENTS:
-            logger.info(
-                "[weaver_reweave] User issued exit intent '%s' — leaving weaver flow",
-                intent.value
-            )
-            print(f"[WEAVER_REWEAVE] Exit intent '{intent.value}' — NOT auto-reweaving")
-            return None
-        # Also skip if it's any explicit command (architecture, sandbox, etc.)
-        if intent and intent in _EXPLICIT_COMMAND_INTENTS:
-            logger.info(
-                "[weaver_reweave] Explicit command '%s' — bypassing auto-reweave",
-                intent.value
-            )
-            print(f"[WEAVER_REWEAVE] Explicit command '{intent.value}' — NOT auto-reweaving")
-            return None
-    
-    # Auto-route to Weaver UPDATE
-    if _WEAVER_AVAILABLE:
-        weaver_provider, weaver_model = _get_weaver_config()
-        if stage_trace:
-            stage_trace.enter_stage("weaver_auto_reweave", provider=weaver_provider, model=weaver_model)
-        
-        logger.info("[weaver_reweave] Auto-routing to Weaver UPDATE (flow stage: %s)", active_flow.stage.value)
-        print(f"[WEAVER_REWEAVE] Auto-routing to Weaver UPDATE (user replied in active weaver flow)")
-        
-        # v4.1.0: Pass req.message as pending_user_message to fix race condition.
-        # The user's reply may not be in the DB yet when Weaver reads messages,
-        # causing hash-based dedup to see "nothing new". This ensures the reply
-        # is always visible to the weaver regardless of persistence timing.
-        generator = generate_weaver_stream(
-            project_id=req.project_id,
-            message=req.message,
-            db=db,
-            trace=trace,
-            conversation_id=str(req.project_id),
-            is_continuation=True,
-            captured_answers=None,
-            pending_user_message=req.message,
-        )
-        
-        # v9.0: Wrap re-weave in build tracking so the builds tab updates.
-        # Previously the re-weave bypassed wrap_with_build_tracking, so the
-        # build project kept the stale first-weave output.
-        try:
-            from app.builds.stage_hooks import is_tracked_stage, wrap_with_build_tracking
-            if is_tracked_stage("weaver"):
-                generator = wrap_with_build_tracking(
-                    stream=generator,
-                    db=db,
-                    chat_project_id=req.project_id,
-                    dispatch_stage="weaver",
-                    message=req.message,
-                    provider=weaver_provider,
-                    model=weaver_model,
-                )
-        except ImportError:
-            pass  # Build tracking not available — stream still works
-        
-        return StreamingResponse(
-            generator,
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
-    else:
-        log_routing_failure(
-            stage_trace,
-            "Weaver handler not available for auto-reweave routing",
-            "generate_weaver_stream",
-            "falling through to normal routing"
-        )
-    
-    return None

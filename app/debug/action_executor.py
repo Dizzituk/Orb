@@ -198,6 +198,17 @@ TOOL_HANDLERS = {
     "flow_inspect":        execute_flow_inspect,
 }
 
+# Lifestyle tools (nutrition, workouts, weight, goals). Their executors live
+# in gemini_lifestyle_tools (shared with the Gemini multimodal path) and
+# already have the (params) -> str shape this dispatcher expects, so they
+# merge straight in. Wiring them here is what lets the TEXT chat path log to
+# the lifestyle DB instead of falling back to save_to_memory.
+try:
+    from app.debug.gemini_lifestyle_tools import LIFESTYLE_TOOL_EXECUTORS
+    TOOL_HANDLERS.update(LIFESTYLE_TOOL_EXECUTORS)
+except Exception as _life_err:  # pragma: no cover - defensive
+    logger.warning("[action_executor] lifestyle tools not wired: %s", _life_err)
+
 
 async def execute_tool(tool_name: str, params: Dict[str, Any]) -> str:
     """Execute a tool call from the LLM."""
@@ -209,6 +220,15 @@ async def execute_tool(tool_name: str, params: Dict[str, Any]) -> str:
     try:
         result = await handler(params)
         logger.info("[action_executor] Tool %s completed (%d chars)", tool_name, len(result))
+        # v1.0 (2026-05-24): Working-set registration hook.  Records
+        # the touched file into the per-project working set so future
+        # turns (and other models) see it in their context block.
+        # Failures are swallowed inside the hook - never break the call.
+        try:
+            from app.debug._working_set_hook import register_if_tracked
+            register_if_tracked(tool_name, params, result)
+        except Exception as _hook_err:
+            logger.debug("[action_executor] working-set hook error: %s", _hook_err)
         return result
     except Exception as e:
         logger.error("[action_executor] Tool %s failed: %s", tool_name, e)

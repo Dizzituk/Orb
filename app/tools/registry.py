@@ -441,5 +441,37 @@ def _register_defaults() -> None:
         )
     )
 
+    # Lifestyle / health coaching tools — added 2026-05-25.
+    # Five tools that let any chat read recent nutrition / weight / workouts
+    # and log new nutrition + workout entries. See app/tools/lifestyle_tools.py
+    # for the handlers; schemas live in app/tools/schemas.py.
+    try:
+        from app.tools.lifestyle_tools import register_lifestyle_tools
+        register_lifestyle_tools()
+    except Exception as exc:
+        # Never let a tool-registration failure stop the rest of the
+        # registry from coming up — log and carry on.
+        logger.exception("[registry] lifestyle tools registration failed: %s", exc)
+
+    # Strength / gym set-logging tools - added 2026-05-31.
+    # log_exercise_set + get_exercise_history for per-exercise progressive
+    # overload. Handlers in app/tools/strength_tools.py; schemas in
+    # app/tools/schemas.py; service in app/lifestyle/strength.py.
+    try:
+        from app.tools.strength_tools import register_strength_tools
+        register_strength_tools()
+    except Exception as exc:
+        logger.exception("[registry] strength tools registration failed: %s", exc)
+
+    # Work-day ledger tools - added 2026-05-30 (v8.0 finance rebuild).
+    # Lets any chat (and AstraBridge) start/finish a work day, reconcile a
+    # forgotten day, and set personal mileage - written straight to the DB.
+    # See app/tools/finance_tools.py (self-contained: schemas + handlers).
+    try:
+        from app.tools.finance_tools import register_finance_tools
+        register_finance_tools()
+    except Exception as exc:
+        logger.exception("[registry] finance tools registration failed: %s", exc)
+
 
 _register_defaults()

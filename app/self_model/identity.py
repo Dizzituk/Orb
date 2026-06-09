@@ -48,6 +48,11 @@ _IDENTITY_FILE = _DATA_DIR / "identity.json"
 # Canonical identity fields. Adding a new field here means it gets a slot
 # in the injected block and the UI tab. Order matters — this is the
 # display order in the prompt.
+#
+# Health coaching fields appended 2026-05-25 — these are surfaced in
+# every chat so ASTRA can engage coherently on training, nutrition, or
+# wellbeing without re-asking baseline questions. See canonical_schema.py
+# for the matching validators.
 KNOWN_FIELDS: List[str] = [
     "name",
     "preferred_name",
@@ -61,12 +66,29 @@ KNOWN_FIELDS: List[str] = [
     "occupation",
     "email",
     "phone",
+    # Health coaching block — kept together at the end so the injection
+    # template can stylise it as one section if it ever needs to.
+    "primary_sport",
+    "training_goal_summary",
+    "training_priorities",
+    "nutrition_approach",
+    "health_considerations",
 ]
 
 # Fields whose VALUE is a list of structured entries rather than a
 # scalar. These append/merge by entry rather than overwriting, and
 # the identity block renders them as bulleted sub-entries.
-LIST_FIELDS: set = {"residence_history", "languages"}
+#
+# training_priorities and health_considerations are lists of plain
+# strings rather than lists of dicts, but they live here so the
+# injection layer renders them as bullets rather than as one long
+# scalar value.
+LIST_FIELDS: set = {
+    "residence_history",
+    "languages",
+    "training_priorities",
+    "health_considerations",
+}
 
 _lock = Lock()
 
