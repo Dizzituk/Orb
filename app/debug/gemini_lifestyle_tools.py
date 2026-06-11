@@ -541,6 +541,27 @@ async def _exec_get_health_history(args: dict) -> str:
 # Public maps for gemini_tool_loop to merge with its existing tool set
 # ---------------------------------------------------------------------------
 
+async def _exec_copy_nutrition_day(args: dict) -> str:
+    from app.tools.lifestyle_nutrition_tools import copy_nutrition_day_handler
+    r = await copy_nutrition_day_handler(args, context=None)
+    if not r.get("ok"):
+        return f"ERROR: {r.get('error', 'unknown error')}"
+    totals = r.get("totals") or {}
+    bits = []
+    if totals.get("calories") is not None:
+        bits.append(f"{totals['calories']:.0f} kcal")
+    for label, key in (("P", "protein_g"), ("C", "carbs_g"), ("F", "fat_g"), ("S", "sugar_g")):
+        v = totals.get(key)
+        if v:
+            bits.append(f"{label}={v:.0f}g")
+    skipped = r.get("skipped_duplicates") or 0
+    skip_s = f", {skipped} already there" if skipped else ""
+    return (
+        f"Copied {r.get('copied')} item(s) from {r.get('source_date')} to "
+        f"{r.get('target_date')} ({', '.join(bits)}){skip_s}. Target day's totals refreshed."
+    )
+
+
 LIFESTYLE_TOOL_EXECUTORS = {
     "log_nutrition": _exec_log_nutrition,
     "delete_nutrition": _exec_delete_nutrition,
@@ -556,6 +577,7 @@ LIFESTYLE_TOOL_EXECUTORS = {
     "get_exercise_history": _exec_get_exercise_history,
     "get_workout_log": _exec_get_workout_log,
     "prep_split": _exec_prep_split,
+    "copy_nutrition_day": _exec_copy_nutrition_day,
     "get_health_history": _exec_get_health_history,
     "log_workout": _exec_log_workout,
     "log_weight": _exec_log_weight,
@@ -598,6 +620,11 @@ def summarise_lifestyle_call(name: str, args: dict) -> str:
         return "Reading the workout log"
     if name == "prep_split":
         return f"Splitting {args.get('description', 'batch')[:40]} over {args.get('days', '')} days"
+    if name == "copy_nutrition_day":
+        return (
+            f"Copying {args.get('source_date', 'yesterday')}'s food to "
+            f"{args.get('target_date', 'today')}"
+        )
     if name == "get_health_history":
         return "Reading health history"
     if name == "log_workout":

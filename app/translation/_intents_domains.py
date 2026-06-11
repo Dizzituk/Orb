@@ -191,6 +191,11 @@ DOMAIN_INTENTS: Dict[CanonicalIntent, IntentDefinition] = {
             "exercise routine",
             "sugar intake",
             "health goals",
+            "copy yesterday's food",
+            "copy my food",
+            "duplicate my food",
+            "same as yesterday",
+            "what did i eat",
             "how am I doing with fitness",
             "go to health",
             "open health",
@@ -205,6 +210,13 @@ DOMAIN_INTENTS: Dict[CanonicalIntent, IntentDefinition] = {
             r"\b(workout|exercise|gym|fitness|body\s*fat|weight|keto|diet|calorie|macro|surf\w*|bodyboard\w*)\b",
             r"\b(log|track|record)\s+(my\s+)?(workout|exercise|weight|meal|food|run)\b",
             r"\b(how.*(fitness|health|diet|weight|keto).*going)\b",
+            # Food-diary actions (2026-06-11): copy/duplicate/repeat a day's
+            # food, 'eating the same as yesterday', 'what did I eat' — these
+            # were falling through to the web-search fallback.
+            r"(?!.*\b(?:files?|folders?|modules?|class|function|scripts?|directory|repo|sandbox)\b)\b(copy|duplicate|repeat|mirror|carry)\b.{0,60}\b(food|meals?|diet|diary|eating|intake)\b",
+            r"\b(food|meals?|nutrition|diet|diary|intake)\b.{0,50}\b(yesterday|today|tomorrow)\b|\b(yesterday|today|tomorrow)\b.{0,50}\b(food|meals?|nutrition|diet|diary|intake)\b",
+            r"\b(eat(ing)?|having|had)\b.{0,40}\bsame\b.{0,50}\b(yesterday|today|tomorrow)\b",
+            r"\bwhat\s+(did|have)\s+i\s+(eat|eaten|ate)\b",
         ],
     ),
 

@@ -599,6 +599,43 @@ async def stream_chat(
             if _domain_info and _domain_info.get("type") == "domain_chat":
                 _domain_name = _domain_info["domain"]
                 logger.info("[stream_router] Domain chat: %s", _domain_name)
+
+                # Lifestyle quick-commands (2026-06-11): deterministic voice
+                # actions — "copy yesterday's food into today", "I'm eating
+                # the same as yesterday" — execute directly against the
+                # nutrition service. No LLM round-trip, no misrouting; the
+                # diary updates instantly and ASTRA confirms in one line.
+                if _domain_name == "lifestyle":
+                    _quick_reply = None
+                    try:
+                        from app.lifestyle.nutrition_copy import try_quick_nutrition_command
+                        _quick_reply = try_quick_nutrition_command(req.message, db)
+                    except Exception as _qn_err:
+                        logger.warning("[stream_router] lifestyle quick-command failed: %s", _qn_err)
+                    if _quick_reply:
+                        after_user_message(
+                            req.message,
+                            project_id=str(req.project_id),
+                            user_id=user_id,
+                            provider=getattr(req, 'provider', None),
+                            model=getattr(req, 'model', None),
+                            db_session=db,
+                        )
+
+                        async def _quick_stream(_text=_quick_reply):
+                            import json as _json
+                            _sse = lambda obj: f"data: {_json.dumps(obj)}\n\n"
+                            yield _sse({"type": "domain_navigate", "domain": "lifestyle", "job_type": "health_fitness"})
+                            yield _sse({"type": "metadata", "provider": "local", "model": "lifestyle-quick-command"})
+                            yield _sse({"type": "token", "content": _text})
+                            yield _sse({"type": "done", "provider": "local", "model": "lifestyle-quick-command", "total_length": len(_text)})
+
+                        return StreamingResponse(
+                            _quick_stream(),
+                            media_type="text/event-stream",
+                            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                        )
+
                 try:
                     from app.llm.routing.domain_context import get_domain_context
                     _domain_ctx = get_domain_context(_domain_name, db)

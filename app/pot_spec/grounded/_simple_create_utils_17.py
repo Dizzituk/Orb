@@ -455,6 +455,23 @@ async def build_grounded_create_spec(
                 print(f"[SPEC_GATE_EVIDENCE] Fulfilment complete: {len(llm_analysis)} chars")
             elif llm_analysis:
                 logger.info("[SPEC_GATE_EVIDENCE] No EVIDENCE_REQUESTs in LLM analysis — skipping fulfilment")
+
+            # Self-review pass: audit the finished draft against the intent and
+            # verify every reuse-target is actually grounded (read), not guessed.
+            # Any core reuse-target only assumed triggers a fresh EVIDENCE_REQUEST
+            # so the real file is read before the spec is finalised.
+            if llm_analysis:
+                from ._simple_create_review import run_spec_self_review
+                llm_analysis = await run_spec_self_review(
+                    llm_analysis=llm_analysis,
+                    provider_id=provider_id,
+                    model_id=model_id,
+                    llm_call_func=llm_call_func,
+                    project_paths=project_paths,
+                    goal=goal,
+                    what_to_do=what_to_do,
+                    integration_points=all_points,
+                )
     else:
         print(f"[simple_create] v2.0 NO LLM: provider_id={provider_id}, model_id={model_id}")
     

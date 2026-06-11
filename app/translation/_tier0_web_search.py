@@ -305,6 +305,29 @@ _KEYWORD_ACTION_VERBS = {
 }
 
 
+def _has_lifestyle_diary_keywords(text: str) -> bool:
+    """v3.1 (2026-06-11): personal food-diary commands must never be
+    swallowed by the web-search fallbacks. 'Copy yesterday's food into
+    today', 'log my lunch', 'I'm eating the same as yesterday' were
+    matching the keyword/staleness fallbacks and routing to WEB_SEARCH
+    instead of the lifestyle domain. Requires BOTH a diary action or
+    first-person eating cue AND a food noun, so genuine searches like
+    'best food in Lisbon' still pass through."""
+    t = text.lower()
+    if not re.search(
+        r"\b(food|meals?|nutrition|diet|diary|macros?|calories|breakfast|lunch|dinner|snack)\b", t
+    ):
+        return False
+    action = re.search(
+        r"\b(log|logged|copy|copied|duplicate|repeat|mirror|carry|track|record)\b", t
+    )
+    first_person = re.search(
+        r"\b(i\s+(ate|had|eat)|i'?m\s+(eating|having)|what\s+(did|have)\s+i\s+(eat|eaten|ate)"
+        r"|my\s+(food|meals?|diet|diary|macros|calories))\b", t
+    )
+    return bool(action or first_person)
+
+
 def _extract_query_by_keywords(text: str) -> Optional[str]:
     """Extract a web search query using keyword co-occurrence.
     
@@ -614,7 +637,7 @@ def check_web_search_trigger(text: str) -> Tier0RuleResult:
                     )
 
     # 2) Contextual patterns - only if no codebase keywords
-    if not _has_codebase_keywords(text_stripped):
+    if not _has_codebase_keywords(text_stripped) and not _has_lifestyle_diary_keywords(text_stripped):
         for candidate in [cleaned, text_stripped]:
             if not candidate:
                 continue
@@ -636,7 +659,7 @@ def check_web_search_trigger(text: str) -> Tier0RuleResult:
     # Catches natural phrasings like "go online and find AI news today"
     # that don't match any structural regex. Uses keyword co-occurrence
     # and extracts the query by stripping web/action words.
-    if not _has_codebase_keywords(text_stripped):
+    if not _has_codebase_keywords(text_stripped) and not _has_lifestyle_diary_keywords(text_stripped):
         query = _extract_query_by_keywords(text_stripped)
         if query:
             return Tier0RuleResult(
@@ -653,7 +676,7 @@ def check_web_search_trigger(text: str) -> Tier0RuleResult:
     # auto-trigger web search even without explicit search keywords.
     # The user should never have to say "go online" — ASTRA should know
     # when its knowledge is likely stale and verify automatically.
-    if not _has_codebase_keywords(text_stripped):
+    if not _has_codebase_keywords(text_stripped) and not _has_lifestyle_diary_keywords(text_stripped):
         staleness = _check_staleness(text_stripped)
         if staleness:
             return Tier0RuleResult(

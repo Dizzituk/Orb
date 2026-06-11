@@ -166,6 +166,37 @@ LIFESTYLE_TOOL_DECLARATIONS_MORE: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "copy_nutrition_day",
+        "description": (
+            "Copy one day's ENTIRE food diary onto another day. USE THIS when "
+            "the user says they're eating the same as another day or wants a "
+            "day's food duplicated \u2014 e.g. 'copy yesterday's food into "
+            "today', 'I'm eating the same as yesterday', 'duplicate today's "
+            "meals for tomorrow', 'repeat Monday's food today'. It clones every "
+            "logged item with its macros and meal times onto the target day "
+            "and refreshes that day's totals. Items already on the target day "
+            "are skipped, so it's safe to call even if some food is logged.\n"
+            "\n"
+            "source_date and target_date each accept YYYY-MM-DD or the words "
+            "yesterday / today / tomorrow / a weekday name. Defaults are "
+            "source=yesterday, target=today. Do NOT also call log_nutrition "
+            "for the same items \u2014 this tool does the logging."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "source_date": {
+                    "type": "string",
+                    "description": "Day to copy FROM: YYYY-MM-DD, yesterday, today, tomorrow, or a weekday. Default yesterday.",
+                },
+                "target_date": {
+                    "type": "string",
+                    "description": "Day to copy ONTO: YYYY-MM-DD, yesterday, today, tomorrow, or a weekday. Default today.",
+                },
+            },
+        },
+    },
+    {
         "name": "get_health_history",
         "description": (
             "Read the full daily health series over a date RANGE for long-arc "

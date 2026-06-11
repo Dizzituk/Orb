@@ -4,7 +4,7 @@ import os
 import re
 from app.pot_spec.grounded._simple_create_utils_13 import CONCEPT_KEYWORDS, KEYWORD_STOPWORDS, MIN_KEYWORD_LENGTH, NEGATION_PATTERNS, PLACEHOLDER_GOALS
 from typing import List, Optional, Tuple
-from app.pot_spec.grounded._sbx_fs import _sbx_isfile, _sbx_isdir, _sbx_exists
+from app.pot_spec.grounded._sbx_fs import _sbx_isfile, _sbx_isdir, _sbx_exists, _sbx_ls
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 
@@ -184,13 +184,17 @@ def _host_list_directory(dir_path: str, max_entries: int = 200, project_paths: O
         return False, f"Path is not a directory: {dir_path}"
 
     try:
+        # Route listing through _sbx_ls so ASTRA's own repos (Orb, orb-desktop)
+        # list from the sandbox clone, not the host; external apps (e.g.
+        # Astra-Bridge) still list from the host. Matches the content reads.
+        all_names = sorted(_sbx_ls(dir_path))
         entries = []
-        for entry in sorted(os.listdir(dir_path)):
+        for entry in all_names:
             full = os.path.join(dir_path, entry)
             tag = "[DIR]" if _sbx_isdir(full) else "[FILE]"
             entries.append(f"  {tag} {entry}")
             if len(entries) >= max_entries:
-                entries.append(f"  ... ({len(os.listdir(dir_path)) - max_entries} more entries)")
+                entries.append(f"  ... ({len(all_names) - max_entries} more entries)")
                 break
         listing = f"{dir_path}/\n" + "\n".join(entries)
         logger.info("[SPEC_GATE_EVIDENCE] Listed %d entries from %s", len(entries), dir_path)

@@ -76,3 +76,29 @@ async def prep_split_handler(input_data: dict, context: Optional[dict]) -> dict:
         "per_day": r.get("per_day"),
         "dates": [d.get("date") for d in r.get("days", [])],
     }
+
+
+async def copy_nutrition_day_handler(input_data: dict, context: Optional[dict]) -> dict:
+    """Copy one day's food diary onto another day (2026-06-11).
+
+    Args: source_date, target_date — each YYYY-MM-DD or
+    yesterday/today/tomorrow/weekday name. Defaults: yesterday -> today.
+    Idempotent: items already on the target day are skipped.
+    """
+    from app.lifestyle.nutrition_copy import copy_day_nutrition, resolve_day_word
+
+    try:
+        source_day = resolve_day_word(input_data.get("source_date"), default="yesterday")
+        target_day = resolve_day_word(
+            input_data.get("target_date"), default="today", future_bias=True,
+        )
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+    try:
+        with _db_session() as db:
+            result = copy_day_nutrition(db, source_day, target_day)
+    except Exception as exc:
+        logger.exception("[lifestyle_tools] copy_nutrition_day failed")
+        return {"ok": False, "error": str(exc)}
+    return result
