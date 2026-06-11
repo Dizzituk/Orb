@@ -154,7 +154,11 @@ async def _try_smart_repair(
 ) -> bool:
     """Ask the agentic builder to fix the boot error."""
     try:
-        from app.pipeline_v2.llm_tools import run_agentic_loop
+        # JOB 16 (2026-06-10): run_agentic_loop never existed in llm_tools
+        # (phantom API from an older design) — this import was failing
+        # silently inside the except below, so smart boot-repair never ran.
+        # The legacy signature now lives in llm_compat as a real adapter.
+        from app.pipeline_v2.llm_compat import run_agentic_loop
 
         repair_prompt = _build_repair_prompt(boot_error)
         result = await run_agentic_loop(

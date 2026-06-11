@@ -178,3 +178,52 @@ def should_apply_preference(pref: PreferenceRecord) -> Tuple[bool, str]:
         return (True, "apply_silently")
     
     return (True, "suggest_only")
+
+
+# =============================================================================
+# RETRIEVAL REINFORCEMENT — Job 2 unified strength model (2026-06-10)
+# =============================================================================
+
+def reinforce_accessed(db, records, bump: float = 0.02, cap: float = 1.0) -> int:
+    """
+    Touch hot-index entries that were actually returned to the model.
+
+    The counter-force to _demote_stale_hot_index in decay_job.py: memories
+    that get USED have updated_at refreshed (resetting the staleness clock)
+    and retrieval_priority bumped slightly (capped). Memories that are never
+    retrieved drift down via demotion; memories you keep returning to stay
+    strong — human-like recall strengthening.
+
+    Called only for topical retrievals (tag/entity matched) or deep-context
+    queries (D2+) — never for the default D1 hot-layer skim, which would
+    otherwise reinforce the same top-N records on every casual message
+    (rich-get-richer feedback loop).
+
+    Best-effort: failures roll back and are swallowed by the caller.
+    Returns count of records touched.
+    """
+    from datetime import datetime, timezone
+    from app.astra_memory.preference_models import HotIndex
+
+    if not records:
+        return 0
+
+    now = datetime.now(timezone.utc)
+    touched = 0
+    try:
+        for record in records:
+            hot = db.query(HotIndex).filter(
+                HotIndex.record_type == record.record_type,
+                HotIndex.record_id == record.record_id,
+            ).first()
+            if not hot:
+                continue
+            hot.updated_at = now
+            hot.retrieval_priority = min((hot.retrieval_priority or 0.0) + bump, cap)
+            touched += 1
+        if touched:
+            db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return touched

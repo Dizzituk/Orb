@@ -39,6 +39,7 @@ v1.0 (2026-04-18): Initial implementation. Replaces scattered hard-coded
 from __future__ import annotations
 
 import logging
+import os
 from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -59,7 +60,7 @@ logger = logging.getLogger(__name__)
 #
 # Current frontier (2026-04-18):
 #   - OpenAI latest non-Pro GPT = gpt-5.4 (reasoning param supported)
-#   - Anthropic latest Opus = claude-opus-4-7 (adaptive thinking only)
+#   - Anthropic latest Opus = claude-opus-4-8 (adaptive thinking only)
 #   - Anthropic latest Sonnet = claude-sonnet-4-6
 #   - Google frontier flash = gemini-2.5-flash
 #
@@ -75,10 +76,16 @@ FRONTIER_ALIASES: Dict[str, str] = {
     # ── Anthropic ─────────────────────────────────────────────────────
     # Primary thinking model for SpecGate, Overwatcher, Verifier.
     # Thinking is enabled via adaptive thinking + output_config.effort.
-    "anthropic:frontier-opus-thinking": "claude-opus-4-7",
+    "anthropic:frontier-opus-thinking": "claude-opus-4-8",
     # Same model without thinking routed in (for cheaper diagnostic
     # calls that still benefit from Opus's reasoning).
-    "anthropic:frontier-opus":          "claude-opus-4-7",
+    "anthropic:frontier-opus":          "claude-opus-4-8",
+    # JOB 12 (2026-06-10): THE verifier-family slot. Agentic verifier,
+    # spec review and cross-model diagnosis all resolve through this one
+    # alias. Fable 5 is the tier above Opus (Taz's verifier decision,
+    # jobs list 2026-06-09); override the whole family with one .env line:
+    #   ASTRA_VERIFIER_FAMILY_MODEL=claude-opus-4-8
+    "anthropic:frontier-verifier":      "claude-fable-5",
     # Mid-tier Claude for lighter work (e.g. job-checker, compaction).
     "anthropic:frontier-sonnet":        "claude-sonnet-4-6",
 
@@ -118,6 +125,7 @@ STAGE_REASONING: Dict[str, Optional[Dict[str, str]]] = {
     "REVISION":            {"effort": "high"},
     "OVERWATCHER":         {"effort": "high"},   # Verifier second-opinion
     "SPEC_REVIEW":         {"effort": "high"},   # Always-on spec reviewer
+    "VERIFIER_AGENT":      {"effort": "high"},   # JOB 11: agentic checkout
 
     # Needle-based architecture tiers: medium for the cheaper route,
     # high for the premium route.
@@ -165,6 +173,12 @@ def resolve_model_alias(model: str) -> str:
     if not model:
         return model
     stripped = model.strip()
+    # JOB 12 (2026-06-10): single .env knob for the whole verifier family.
+    if stripped == "anthropic:frontier-verifier":
+        _env_override = os.getenv("ASTRA_VERIFIER_FAMILY_MODEL", "").strip()
+        if _env_override:
+            logger.debug("[frontier_models] Verifier family overridden -> %s", _env_override)
+            return _env_override
     if stripped in FRONTIER_ALIASES:
         resolved = FRONTIER_ALIASES[stripped]
         logger.debug("[frontier_models] Resolved alias %s -> %s", stripped, resolved)

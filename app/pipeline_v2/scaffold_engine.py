@@ -86,7 +86,7 @@ async def run_scaffold_engine(
         seg_id = seg.get("segment_id", "")
         file_scope = seg.get("file_scope", [])
         requirements = seg.get("requirements", [])
-        grounding = seg.get("grounding_data", {})
+        grounding = seg.get("grounding_data") or {}
         # v2.1 (2026-04-12): Phase 1 Job 15 — capture per-segment target_id
         # so scaffold writes route to the correct repo for multi-target jobs.
         seg_target_id = seg.get("target_id")
@@ -659,6 +659,7 @@ def _skeleton_css(path: str, requirements: List[str]) -> str:
 
 def _is_create_file(file_path: str, grounding: Dict) -> bool:
     """Determine if a file is CREATE (new) or MODIFY (existing)."""
+    grounding = grounding or {}
     create_targets = grounding.get("create_targets", [])
     for ct in create_targets:
         if isinstance(ct, dict):

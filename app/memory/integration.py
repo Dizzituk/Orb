@@ -206,6 +206,29 @@ def after_user_message(
     )
 
 
+def record_session_activity(
+    project_id,
+    provider=None,
+    model=None,
+    db_session=None,
+) -> None:
+    """Session + summary handling ONLY (no preference/identity/fragment
+    capture). For callers like the Bridge that already run their own
+    capture hooks (identity_hook.capture_from_bridge_message etc.) and
+    would double-count preference evidence if they called the full
+    after_user_message(). v2026-06-10: added so phone conversations get
+    sessions and rolling summaries like the desktop path.
+
+    Non-blocking -- failures are logged and swallowed downstream.
+    """
+    _handle_conversation_session(
+        project_id=str(project_id),
+        provider=provider,
+        model=model,
+        db=db_session,
+    )
+
+
 def _handle_conversation_session(
     project_id: str,
     provider: Optional[str] = None,

@@ -272,6 +272,41 @@ def build_memory_context(
         except Exception as e:
             logger.warning(f"[memory_injection] Failed to retrieve facts: {e}")
     
+    # ── Job 5 (2026-06-10): daily coach nudge — if the lifestyle scheduler has
+    # produced an active nudge, weave it into context once (cooldown handled
+    # inside get_nudge_for_injection so it doesn't repeat every message).
+    try:
+        from app.lifestyle.nudges import get_nudge_for_injection
+        _nudge = get_nudge_for_injection()
+        if _nudge:
+            facts_text = (facts_text + "\n\n" if facts_text else "") + (
+                "[DAILY COACH NOTE — mention once, naturally, if the moment fits]: " + _nudge
+            )
+    except Exception as _nudge_exc:
+        logger.debug(f"[memory_injection] nudge injection skipped: {_nudge_exc}")
+
+    # ── Job 1b (2026-06-10): pending identity confirmations — surface queued
+    # arbiter proposals conversationally (max once per 6h per process) so
+    # Tier 1 facts get confirmed instead of expiring unseen after 30 days.
+    try:
+        import time as _time
+        _state = globals().setdefault("_PROPOSAL_INJECT_STATE", {"ts": 0.0})
+        if _time.time() - _state["ts"] > 6 * 3600:
+            from app.self_model.proposed_facts import get_proposed_facts_store
+            _queued = get_proposed_facts_store().list(status="queued", limit=3)
+            if _queued:
+                _state["ts"] = _time.time()
+                _p = _queued[0]
+                facts_text = (facts_text + "\n\n" if facts_text else "") + (
+                    f"[PENDING IDENTITY CONFIRMATION — {len(_queued)} queued]: ASTRA noticed a "
+                    f"possible fact about the user: {_p.field_name} = {_p.proposed_value!r} "
+                    f"(currently {_p.current_value!r}). At a natural moment, ask once whether "
+                    f"that's correct; applying or rejecting it is one tap in Self Model → "
+                    f"Identity on the desktop."
+                )
+    except Exception as _prop_exc:
+        logger.debug(f"[memory_injection] proposal injection skipped: {_prop_exc}")
+
     # Estimate tokens (rough: 4 chars per token)
     total_text = preferences_text + facts_text
     token_estimate = len(total_text) // 4

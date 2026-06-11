@@ -5,7 +5,7 @@ Periodic Confidence Decay Job for ASTRA Memory System.
 Runs on schedule to:
 1. Recompute confidence scores as evidence ages
 2. Expire very low confidence preferences
-3. Clean up stale hot index entries
+3. Demote stale hot index entries (gradient decay — never hard-delete)
 4. Generate metrics/stats
 
 Spec §7.2: Periodic confidence decay job
@@ -52,8 +52,17 @@ class DecayJobConfig:
     preference_batch_size: int = 100
     hot_index_batch_size: int = 500
     
-    # Stale thresholds
-    hot_index_stale_days: int = 90  # Remove entries not accessed in X days
+    # Stale thresholds — Job 2 unified strength model (2026-06-10).
+    # Previously entries not updated in `hot_index_stale_days` were DELETED
+    # outright (a 90-day cliff, blind to importance). Now they are DEMOTED:
+    # retrieval_priority decays multiplicatively each run, with a floor, so
+    # old memories sink out of fast recall but remain findable by tag/entity
+    # match forever. Retrieval reinforcement (see _retrieval_utils.
+    # reinforce_accessed) is the counter-force: memories that get used are
+    # touched and bumped, so they stay fresh — human-like memory.
+    hot_index_stale_days: int = 90   # Demotion starts after this many days untouched
+    hot_index_demote_factor: float = 0.97  # Per-run multiplier on retrieval_priority once stale
+    hot_index_priority_floor: float = 0.05 # Never demote below this — topical match keeps it reachable
     
     # Job limits
     max_preferences_per_run: int = 1000
@@ -87,7 +96,7 @@ def run_confidence_decay(
         "preferences_recomputed": 0,
         "preferences_expired": 0,
         "preferences_disputed": 0,
-        "hot_index_cleaned": 0,
+        "hot_index_demoted": 0,
         "errors": [],
     }
     
@@ -102,9 +111,9 @@ def run_confidence_decay(
         results["preferences_expired"] = expire_result["expired"]
         results["preferences_disputed"] = expire_result["disputed"]
         
-        # 3. Clean stale hot index entries
-        clean_result = _clean_stale_hot_index(db, config)
-        results["hot_index_cleaned"] = clean_result["cleaned"]
+        # 3. Demote stale hot index entries (gradient decay, never delete)
+        clean_result = _demote_stale_hot_index(db, config)
+        results["hot_index_demoted"] = clean_result["demoted"]
         
         db.commit()
         
@@ -121,7 +130,7 @@ def run_confidence_decay(
         f"[decay_job] Complete: recomputed={results['preferences_recomputed']}, "
         f"expired={results['preferences_expired']}, "
         f"disputed={results['preferences_disputed']}, "
-        f"cleaned={results['hot_index_cleaned']}, "
+        f"demoted={results['hot_index_demoted']}, "
         f"duration={results['duration_seconds']:.2f}s"
     )
     
@@ -185,27 +194,44 @@ def _expire_low_confidence(
     return result
 
 
-def _clean_stale_hot_index(
+def _demote_stale_hot_index(
     db: Session,
     config: DecayJobConfig,
 ) -> Dict[str, Any]:
-    """Remove stale hot index entries."""
-    result = {"cleaned": 0}
-    
+    """
+    Gradient decay for the hot index — Job 2 unified strength model
+    (2026-06-10). Replaces the old delete-at-90-days cliff.
+
+    Entries not touched in `hot_index_stale_days` get their
+    retrieval_priority multiplied by `hot_index_demote_factor` each run
+    (daily by default), floored at `hot_index_priority_floor`. Nothing is
+    ever deleted: a demoted record loses its place in recency/priority
+    ranking but stays fully findable through tag/entity (and semantic)
+    match, and climbs back up if retrieval reinforcement touches it.
+    """
+    result = {"demoted": 0}
+
     stale_cutoff = datetime.now(timezone.utc) - timedelta(days=config.hot_index_stale_days)
-    
-    # Find stale entries (not updated recently)
+
     stale_entries = db.query(HotIndex).filter(
         HotIndex.updated_at < stale_cutoff,
+        HotIndex.retrieval_priority > config.hot_index_priority_floor,
     ).limit(config.hot_index_batch_size).all()
-    
+
     for entry in stale_entries:
-        db.delete(entry)
-        result["cleaned"] += 1
-    
-    if result["cleaned"] > 0:
-        logger.info(f"[decay_job] Cleaned {result['cleaned']} stale hot index entries")
-    
+        new_priority = max(
+            (entry.retrieval_priority or 0.0) * config.hot_index_demote_factor,
+            config.hot_index_priority_floor,
+        )
+        entry.retrieval_priority = new_priority
+        result["demoted"] += 1
+
+    if result["demoted"] > 0:
+        logger.info(
+            f"[decay_job] Demoted {result['demoted']} stale hot index entries "
+            f"(factor={config.hot_index_demote_factor}, floor={config.hot_index_priority_floor})"
+        )
+
     return result
 
 

@@ -35,6 +35,56 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# JOB 14 (2026-06-10): profile-resolved checkout targets.
+# All boot/render/smoke endpoints and working directories resolve from the
+# build profile + test_env instead of hardcoded host values, and every shell
+# command is routed with the profile so sandbox self-builds are exercised IN
+# the sandbox. Previously checkout pinged host localhost:8000/5173 and
+# cd'd into D:\orb-desktop even while verifying the sandbox clone — it was
+# testing the LIVE system. Endpoint overrides live in config/test_env.json
+# under extras keys: checkout_backend_url / checkout_frontend_url.
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CheckoutTargets:
+    backend_url: str = "http://127.0.0.1:8000"
+    frontend_url: str = "http://localhost:5173"
+    frontend_root: str = "D:\\orb-desktop"
+    shell_profile: Any = None
+    where: str = "legacy (no profile)"
+
+
+def resolve_checkout_targets(profile: Any = None) -> CheckoutTargets:
+    """Resolve URLs + working dir + shell placement from the build profile."""
+    t = CheckoutTargets(shell_profile=profile)
+    if profile is None:
+        return t
+    try:
+        root = str(getattr(profile, "project_root", "") or "")
+        lang = str(getattr(profile, "language", "") or "")
+        if root and lang == "typescript":
+            t.frontend_root = root.replace("/", "\\")
+        t.where = f"profile:{getattr(profile, 'project_id', '?')}"
+        from app.pipeline_v2.test_env import get_test_env_for_profile
+        env = get_test_env_for_profile(profile)
+        if env and isinstance(env.extras, dict):
+            t.backend_url = env.extras.get("checkout_backend_url", t.backend_url)
+            t.frontend_url = env.extras.get("checkout_frontend_url", t.frontend_url)
+    except Exception as exc:
+        logger.warning("[checkout] target resolution failed (using defaults): %s", exc)
+    return t
+
+
+def _fill(script: str, targets: CheckoutTargets) -> str:
+    """Substitute placeholder tokens in a checkout script."""
+    return (
+        script.replace("__BACKEND_URL__", targets.backend_url)
+        .replace("__FRONTEND_URL__", targets.frontend_url)
+        .replace("__FRONTEND_ROOT__", targets.frontend_root)
+    )
+
+
+# ---------------------------------------------------------------------------
 # Data models
 # ---------------------------------------------------------------------------
 
@@ -101,13 +151,13 @@ class CheckoutReport:
 # Step 1: Boot check — backend + frontend actually start
 # ---------------------------------------------------------------------------
 
-async def _step_boot(emit: Callable) -> CheckResult:
+async def _step_boot(emit: Callable, targets: CheckoutTargets) -> CheckResult:
     """Verify backend boots and frontend compiles."""
     t0 = time.time()
     emit("   🔄 Step 1: Boot check...")
 
-    # Backend boot
-    ok, output = await boot_check()
+    # Backend boot — profile routing decides host vs sandbox placement
+    ok, output = await boot_check(profile=targets.shell_profile)
     if not ok:
         return CheckResult(
             step="Backend Boot",
@@ -119,7 +169,7 @@ async def _step_boot(emit: Callable) -> CheckResult:
     emit("   ✅ Backend boots OK")
 
     # Frontend TypeScript check
-    ts_ok, ts_output = await build_check()
+    ts_ok, ts_output = await build_check(profile=targets.shell_profile)
     if not ts_ok:
         return CheckResult(
             step="Frontend Build",
@@ -150,7 +200,7 @@ Get-Process -Name "electron","node" -ErrorAction SilentlyContinue | Stop-Process
 Start-Sleep -Seconds 1
 
 # Start the Electron app
-$proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c cd /d D:\orb-desktop && npm run electron:dev" `
+$proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c cd /d __FRONTEND_ROOT__ && npm run electron:dev" `
     -WindowStyle Normal -PassThru
 
 # Wait for the window to appear (poll every second, max 20s)
@@ -184,7 +234,7 @@ $maxWait = 15
 $waited = 0
 while ($waited -lt $maxWait) {
     try {
-        $resp = Invoke-WebRequest -Uri "http://localhost:5173" -TimeoutSec 2 -UseBasicParsing
+        $resp = Invoke-WebRequest -Uri "__FRONTEND_URL__" -TimeoutSec 2 -UseBasicParsing
         if ($resp.StatusCode -eq 200) {
             Write-Output "VITE_READY waited=${waited}s"
             break
@@ -199,7 +249,7 @@ if ($waited -ge $maxWait) {
 
 # Also check backend is responding
 try {
-    $resp = Invoke-WebRequest -Uri "http://127.0.0.1:8000/ping" -TimeoutSec 2 -UseBasicParsing
+    $resp = Invoke-WebRequest -Uri "__BACKEND_URL__/ping" -TimeoutSec 2 -UseBasicParsing
     if ($resp.StatusCode -eq 200) {
         Write-Output "BACKEND_READY"
     }
@@ -209,22 +259,26 @@ try {
 """
 
 
-async def _step_render(emit: Callable) -> CheckResult:
+async def _step_render(emit: Callable, targets: CheckoutTargets) -> CheckResult:
     """Launch the app and wait for it to fully render before screenshotting."""
     t0 = time.time()
     emit("   🖥️ Step 2: Launch & render check...")
 
     # Check if app is already running (Vite dev server)
     pre_check = await run_shell(
-        'try { $r = Invoke-WebRequest -Uri "http://localhost:5173" -TimeoutSec 2 -UseBasicParsing; '
+        f'try {{ $r = Invoke-WebRequest -Uri "{targets.frontend_url}" -TimeoutSec 2 -UseBasicParsing; '
         'Write-Output "VITE_ALREADY_RUNNING" } catch { Write-Output "VITE_NOT_RUNNING" }',
         timeout_sec=5,
+        profile=targets.shell_profile,
     )
 
     if "VITE_ALREADY_RUNNING" not in pre_check["stdout"]:
         # Need to launch the app
         emit("   🚀 Launching Electron app...")
-        launch_result = await run_shell(LAUNCH_AND_WAIT_SCRIPT, timeout_sec=30)
+        launch_result = await run_shell(
+            _fill(LAUNCH_AND_WAIT_SCRIPT, targets), timeout_sec=30,
+            profile=targets.shell_profile,
+        )
         if "APP_LAUNCH_TIMEOUT" in launch_result["stdout"]:
             return CheckResult(
                 step="App Launch",
@@ -238,7 +292,10 @@ async def _step_render(emit: Callable) -> CheckResult:
         emit("   ✅ App already running")
 
     # Wait for both Vite and backend to be ready
-    render_result = await run_shell(WAIT_FOR_RENDER_SCRIPT, timeout_sec=20)
+    render_result = await run_shell(
+        _fill(WAIT_FOR_RENDER_SCRIPT, targets), timeout_sec=20,
+        profile=targets.shell_profile,
+    )
     stdout = render_result["stdout"]
 
     if "VITE_TIMEOUT" in stdout:
@@ -319,6 +376,7 @@ _TAB_NAVIGATION = {
 async def _step_navigate_tab(
     target_tab: str,
     emit: Callable,
+    targets: CheckoutTargets,
 ) -> CheckResult:
     """Navigate to a specific tab and verify it renders.
 
@@ -335,11 +393,12 @@ async def _step_navigate_tab(
     # First: verify the backend API for this tab responds
     if api_endpoint:
         api_result = await run_shell(
-            f'try {{ $r = Invoke-WebRequest -Uri "http://127.0.0.1:8000{api_endpoint}" '
+            f'try {{ $r = Invoke-WebRequest -Uri "{targets.backend_url}{api_endpoint}" '
             f'-TimeoutSec 5 -UseBasicParsing; '
             f'Write-Output "API_OK status=$($r.StatusCode) len=$($r.Content.Length)" }} '
             f'catch {{ Write-Output "API_FAIL: $_" }}',
             timeout_sec=10,
+            profile=targets.shell_profile,
         )
         if "API_OK" in api_result["stdout"]:
             emit(f"   ✅ Backend API {api_endpoint} responds")
@@ -383,6 +442,7 @@ async def _step_smoke_test(
     spec: dict,
     target_tab: str,
     emit: Callable,
+    targets: CheckoutTargets,
 ) -> CheckResult:
     """Run feature-specific smoke tests via the backend API.
 
@@ -397,14 +457,14 @@ async def _step_smoke_test(
     results: Dict[str, Any] = {}
 
     if tab_lower == "education":
-        results = await _smoke_test_education(emit)
+        results = await _smoke_test_education(emit, targets)
     elif tab_lower == "content":
         results = await _smoke_test_generic(
-            emit, "/content/projects", "Content projects"
+            emit, "/content/projects", "Content projects", targets
         )
     elif tab_lower == "builds":
         results = await _smoke_test_generic(
-            emit, "/builds/projects", "Build projects"
+            emit, "/builds/projects", "Build projects", targets
         )
     else:
         emit(f"   ⏭️ No smoke test defined for {target_tab}")
@@ -429,16 +489,17 @@ async def _step_smoke_test(
     )
 
 
-async def _smoke_test_education(emit: Callable) -> Dict[str, Any]:
+async def _smoke_test_education(emit: Callable, targets: CheckoutTargets) -> Dict[str, Any]:
     """Education-specific smoke tests."""
     results: Dict[str, Any] = {}
 
     # Test 1: Course list endpoint
     r = await run_shell(
-        'try { $r = Invoke-RestMethod -Uri "http://127.0.0.1:8000/education/courses" '
+        f'try {{ $r = Invoke-RestMethod -Uri "{targets.backend_url}/education/courses" '
         '-TimeoutSec 5; Write-Output "OK count=$($r.Count)" } '
         'catch { Write-Output "FAIL: $_" }',
         timeout_sec=10,
+        profile=targets.shell_profile,
     )
     if "OK" in r["stdout"]:
         results["list_courses"] = {"status": "passed", "output": r["stdout"][:200]}
@@ -451,11 +512,12 @@ async def _smoke_test_education(emit: Callable) -> Dict[str, Any]:
     test_url = "https://www.coursera.org/learn/learning-how-to-learn"
     r = await run_shell(
         f'try {{ $body = @{{ url = "{test_url}" }} | ConvertTo-Json; '
-        f'$r = Invoke-RestMethod -Uri "http://127.0.0.1:8000/education/courses" '
+        f'$r = Invoke-RestMethod -Uri "{targets.backend_url}/education/courses" '
         f'-Method Post -Body $body -ContentType "application/json" -TimeoutSec 15; '
         f'Write-Output "SCRAPE_OK id=$($r.id) modules=$($r.modules.Count)" }} '
         f'catch {{ Write-Output "SCRAPE_FAIL: $_" }}',
         timeout_sec=20,
+        profile=targets.shell_profile,
     )
     if "SCRAPE_OK" in r["stdout"]:
         results["scrape_course"] = {"status": "passed", "output": r["stdout"][:200]}
@@ -472,13 +534,15 @@ async def _smoke_test_generic(
     emit: Callable,
     endpoint: str,
     label: str,
+    targets: CheckoutTargets,
 ) -> Dict[str, Any]:
     """Generic smoke test — just check the list endpoint responds."""
     r = await run_shell(
-        f'try {{ $r = Invoke-RestMethod -Uri "http://127.0.0.1:8000{endpoint}" '
+        f'try {{ $r = Invoke-RestMethod -Uri "{targets.backend_url}{endpoint}" '
         f'-TimeoutSec 5; Write-Output "OK" }} '
         f'catch {{ Write-Output "FAIL: $_" }}',
         timeout_sec=10,
+        profile=targets.shell_profile,
     )
     status = "passed" if "OK" in r["stdout"] else "failed"
     if status == "passed":
@@ -582,33 +646,43 @@ def _detect_target_tab(spec: Any) -> str:
 async def run_enhanced_checkout(
     spec: Any,
     emit: Callable = None,
+    profile: Any = None,
 ) -> CheckoutReport:
     """Run the full enhanced checkout protocol.
 
     Returns a CheckoutReport with per-step results.
+
+    JOB 14: pass the build profile so endpoints + shell placement resolve
+    per-target (sandbox VM for self-builds, host for desktop builds).
     """
     emit = emit or (lambda msg: None)
     t0 = time.time()
     report = CheckoutReport()
 
+    targets = resolve_checkout_targets(profile)
+
     target_tab = _detect_target_tab(spec)
     report.target_tab = target_tab
     emit(f"\n{'='*60}")
     emit(f"🔍 ENHANCED CHECKOUT — target: {target_tab}")
+    emit(
+        f"   endpoints: backend={targets.backend_url} frontend={targets.frontend_url} "
+        f"root={targets.frontend_root} [{targets.where}]"
+    )
     emit(f"{'='*60}")
 
     # Collect screenshots for batch visual verification
     screenshots: List[Tuple[str, str]] = []
 
     # Step 1: Boot
-    boot_result = await _step_boot(emit)
+    boot_result = await _step_boot(emit, targets)
     report.steps.append(boot_result)
     if boot_result.status == CheckStatus.FAILED:
         report.total_duration_ms = int((time.time() - t0) * 1000)
         return report
 
     # Step 2: Launch + render
-    render_result = await _step_render(emit)
+    render_result = await _step_render(emit, targets)
     report.steps.append(render_result)
     if render_result.screenshot_b64:
         screenshots.append(("Default view after launch", render_result.screenshot_b64))
@@ -618,13 +692,13 @@ async def run_enhanced_checkout(
 
     # Step 3: Navigate to target tab
     if target_tab != "default":
-        nav_result = await _step_navigate_tab(target_tab, emit)
+        nav_result = await _step_navigate_tab(target_tab, emit, targets)
         report.steps.append(nav_result)
         if nav_result.screenshot_b64:
             screenshots.append((f"{target_tab} tab view", nav_result.screenshot_b64))
 
     # Step 4: Smoke test
-    smoke_result = await _step_smoke_test(spec, target_tab, emit)
+    smoke_result = await _step_smoke_test(spec, target_tab, emit, targets)
     report.steps.append(smoke_result)
     report.smoke_test_results = smoke_result.details
 

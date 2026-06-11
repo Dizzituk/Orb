@@ -111,6 +111,27 @@ _AUTO_ADVANCE_MAP = {
     # critical_pipeline → final_checkout is handled inside the v2.1 orchestrator
 }
 
+# JOB 16 (2026-06-10): ungrounded-spec gate. A finalised spec that still
+# carries HUMAN_REQUIRED / unverified-evidence markers must NOT auto-advance
+# into the builder — that is exactly how ungrounded guesses become code.
+# Only the AUTOMATIC advance is blocked (the human can still send it on
+# manually after answering); the stage records as awaiting instead.
+_UNGROUNDED_MARKERS = (
+    "HUMAN_REQUIRED",
+    "UNVERIFIED-EVIDENCE",
+    "UNVERIFIED_EVIDENCE",
+)
+
+
+def _spec_output_blocks_advance(stage: str, full_output: str) -> Optional[str]:
+    """Return the blocking marker if this spec output must not auto-advance."""
+    if stage != "spec_gate" or not full_output:
+        return None
+    for marker in _UNGROUNDED_MARKERS:
+        if marker in full_output:
+            return marker
+    return None
+
 
 def is_tracked_stage(stage_name: str) -> bool:
     """Check if a dispatch stage should trigger build project tracking."""
@@ -416,14 +437,25 @@ async def wrap_with_build_tracking(
                         is_awaiting = True
                     elif event_type in ("spec_ready", "spec_segmented"):
                         spec_id = parsed.get("spec_id")
-                    elif event_type == "done" and parsed.get("hard_stopped"):
-                        # v17: SpecGate signals hard-stop in the done event.
-                        hard_stopped = True
-                        # The reason is the most recent token containing 'HARD STOP'.
-                        for _part in reversed(output_parts):
-                            if "HARD STOP" in _part:
-                                hard_stop_reason = _part.replace("HARD STOP", "").replace("**", "").strip("*\n :")
-                                break
+                    elif event_type == "segment_loop_complete":
+                        # JOB 1 (2026-06-10): belt-and-braces — a pipeline that
+                        # finished in any non-complete state is a failed stage,
+                        # even if no explicit error event made it through.
+                        if parsed.get("overall_status") not in (None, "complete"):
+                            had_error = True
+                    elif event_type == "done":
+                        if parsed.get("hard_stopped"):
+                            # v17: SpecGate signals hard-stop in the done event.
+                            hard_stopped = True
+                            # The reason is the most recent token containing 'HARD STOP'.
+                            for _part in reversed(output_parts):
+                                if "HARD STOP" in _part:
+                                    hard_stop_reason = _part.replace("HARD STOP", "").replace("**", "").strip("*\n :")
+                                    break
+                        # JOB 1 (2026-06-10): a done event carrying an error or a
+                        # non-complete job_status also marks the stage failed.
+                        if parsed.get("error") or parsed.get("job_status") not in (None, "complete"):
+                            had_error = True
 
     except Exception as e:
         had_error = True
@@ -511,16 +543,39 @@ async def wrap_with_build_tracking(
     # automatically so the pipeline flows end-to-end without manual clicks.
     # ----------------------------------------------------------------
     if final_status == "passed" and pipeline_stage in _AUTO_ADVANCE_MAP:
-        next_intent = _AUTO_ADVANCE_MAP[pipeline_stage]
-        logger.info("[stage_hooks] Auto-advance: %s passed → triggering %s", pipeline_stage, next_intent)
-        print(f"[STAGE_HOOKS] Auto-advance: {pipeline_stage} → {next_intent}")
-        yield _make_sse_event({
-            "type": "auto_advance",
-            "from_stage": pipeline_stage,
-            "next_intent": next_intent,
-            "build_project_id": build_project_id,
-            "chat_project_id": chat_project_id,
-        })
+        # JOB 16 (2026-06-10): block auto-advance for ungrounded specs.
+        _block_marker = _spec_output_blocks_advance(pipeline_stage, full_output)
+        if _block_marker:
+            logger.warning(
+                "[stage_hooks] Auto-advance BLOCKED: %s output contains %s — needs human input",
+                pipeline_stage, _block_marker,
+            )
+            print(f"[STAGE_HOOKS] Auto-advance BLOCKED: spec contains {_block_marker}")
+            try:
+                notify_stage_awaiting(
+                    db, build_project_id, pipeline_stage,
+                    detail=f"Spec contains {_block_marker} — auto-advance blocked, answer the open points first",
+                )
+            except Exception:
+                pass
+            yield _make_sse_event({
+                "type": "auto_advance_blocked",
+                "from_stage": pipeline_stage,
+                "reason": f"spec contains {_block_marker} — needs human input before building",
+                "build_project_id": build_project_id,
+                "chat_project_id": chat_project_id,
+            })
+        else:
+            next_intent = _AUTO_ADVANCE_MAP[pipeline_stage]
+            logger.info("[stage_hooks] Auto-advance: %s passed → triggering %s", pipeline_stage, next_intent)
+            print(f"[STAGE_HOOKS] Auto-advance: {pipeline_stage} → {next_intent}")
+            yield _make_sse_event({
+                "type": "auto_advance",
+                "from_stage": pipeline_stage,
+                "next_intent": next_intent,
+                "build_project_id": build_project_id,
+                "chat_project_id": chat_project_id,
+            })
 
     # v2.2 (2026-04-18): Refresh the dispatch-dedup timestamp to NOW so the
     # cooldown window starts from stage completion, not stage entry. This

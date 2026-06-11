@@ -198,6 +198,17 @@ async def run_spec_gate_grounded(
             project_paths = [_profile_root]
         else:
             project_paths = _extract_project_paths(combined_text)
+            # Ground the injected build-target root, not only the paths
+            # scraped from the chat text. Without this, a job whose
+            # conversation mentions the backend (Orb) grounds Orb instead of
+            # the actual target (e.g. Astra-Bridge on the host), producing a
+            # spec that is blind to the real target code.
+            if _build_profile:
+                _tgt_root = _build_profile.get("project_root", "")
+                if _tgt_root:
+                    _existing_norm = [p.replace("\\", "/").rstrip("/") for p in project_paths]
+                    if _tgt_root.replace("\\", "/").rstrip("/") not in _existing_norm:
+                        project_paths.insert(0, _tgt_root)
 
         # v11.0: Early sandbox check — if ALL paths are ASTRA repos and sandbox
         # is offline, hard-stop with clear user message instead of silently

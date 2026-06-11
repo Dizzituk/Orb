@@ -47,6 +47,32 @@ VERIFIER_MODEL = os.getenv("ASTRA_V2_VERIFIER_MODEL", "gemini-2.5-flash")
 VERIFIER_MAX_OUTPUT = int(os.getenv("ASTRA_V2_VERIFIER_MAX_OUTPUT", "4000"))
 
 # ---------------------------------------------------------------------------
+# Agentic Verifier (Jobs 11-12, 2026-06-10)
+# ---------------------------------------------------------------------------
+# The Claude final-checkout stage that drives the real app. OFF by default
+# because it spends real tokens; enable with ASTRA_AGENTIC_VERIFIER=1.
+# The model resolves through the verifier-family alias in
+# app/llm/frontier_models.py (claude-fable-5); one .env line moves the
+# whole verifier family: ASTRA_VERIFIER_FAMILY_MODEL=...
+
+VERIFIER_AGENT_ENABLED = os.getenv("ASTRA_AGENTIC_VERIFIER", "0").strip().lower() in ("1", "true", "yes")
+
+
+def _resolve_verifier_model() -> str:
+    explicit = os.getenv("ASTRA_VERIFIER_MODEL", "").strip()
+    if explicit:
+        return explicit
+    try:
+        from app.llm.frontier_models import resolve_model_alias
+        return resolve_model_alias("anthropic:frontier-verifier")
+    except Exception:
+        return "claude-fable-5"
+
+
+VERIFIER_AGENT_MODEL = _resolve_verifier_model()
+VERIFIER_FALLBACK_MODEL = os.getenv("ASTRA_VERIFIER_FALLBACK", "claude-opus-4-8")
+
+# ---------------------------------------------------------------------------
 # Limits
 # ---------------------------------------------------------------------------
 

@@ -14,78 +14,38 @@ adapter logic (not implemented yet — GPT-5.4 is primary).
 v1.0 (2026-03-07): Initial implementation for ASTRA v2.1.
 v1.1 (2026-03-08): Added write integrity checking — pre-flight content
                     validation + post-write read-back verification.
+v1.4 (2026-06-09): Tools+reasoning now routes through the Responses API
+                    (llm_responses_api.py) — gpt-5.x rejects reasoning_effort
+                    with function tools on /v1/chat/completions. All API calls
+                    wrapped in an asyncio.wait_for hard timeout: the client's
+                    own timeout was observed not firing (a wedged call froze a
+                    build for 17 minutes).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from app.pipeline_v2.llm_response_parsing import (
+    _extract_tool_calls,
+    _extract_text,
+    _make_assistant_message,
+)
+
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Tool definitions (OpenAI function-calling format)
+# Tool definitions — moved to llm_tool_defs.py (2026-06-10 file-size split;
+# Jobs 8-9 needed room in this file). Imported here so existing
+# `from app.pipeline_v2.llm_tools import TOOLS` callers keep working.
+# JOB 9: the toolset now includes edit_file (surgical unique replace).
 # ---------------------------------------------------------------------------
 
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "read_file",
-            "description": "Read a file from the codebase. Returns the file contents.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Relative path (e.g. 'app/debug/models.py' or 'src/components/debug/DebugView.tsx')",
-                    },
-                },
-                "required": ["path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "write_file",
-            "description": "Write content to a file. Creates or overwrites.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Relative path to write to",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Complete file content",
-                    },
-                },
-                "required": ["path", "content"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "run_shell",
-            "description": "Run a PowerShell command. Use for syntax checks, booting app, npm commands.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "cmd": {
-                        "type": "string",
-                        "description": "PowerShell command to execute",
-                    },
-                },
-                "required": ["cmd"],
-            },
-        },
-    },
-]
+from app.pipeline_v2.llm_tool_defs import TOOLS
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +86,24 @@ async def run_tool_loop(
     Returns:
         (messages_history, total_input_tokens, total_output_tokens)
     """
+    if provider == "anthropic":
+        # JOB 8 (2026-06-10): Claude models run through the Anthropic adapter
+        # (tool_use / tool_result blocks, thinking, image tool results).
+        # NOTE: existing_messages must be Anthropic-native format when used
+        # with this provider — the formats are not interchangeable.
+        from app.pipeline_v2.llm_tools_anthropic import run_anthropic_tool_loop
+        return await run_anthropic_tool_loop(
+            system_prompt=system_prompt,
+            initial_user_message=initial_user_message,
+            model=model,
+            max_iterations=max_iterations,
+            max_tokens=max_tokens,
+            on_tool_call=on_tool_call,
+            on_text=on_text,
+            existing_messages=existing_messages,
+            thinking=(True if reasoning else None),
+        )
+
     if existing_messages:
         messages = list(existing_messages)
         messages.append({"role": "user", "content": initial_user_message})
@@ -200,6 +178,18 @@ async def run_tool_loop(
 # API call (OpenAI)
 # ---------------------------------------------------------------------------
 
+# Hard per-call timeout (Issue #3, 2026-06-09): the AsyncOpenAI client's own
+# timeout=180 was observed NOT firing — a wedged request froze a build for
+# 17 minutes with no error. asyncio.wait_for guarantees cancellation.
+HARD_CALL_TIMEOUT = int(os.getenv("ASTRA_V2_BUILDER_CALL_TIMEOUT", "300"))
+
+
+def _sanitize_for_chat_api(messages: List[Dict]) -> List[Dict]:
+    """Strip private keys (e.g. _responses_raw_items) — chat completions
+    rejects unknown message fields."""
+    return [{k: v for k, v in m.items() if not k.startswith("_")} for m in messages]
+
+
 async def _call_api(
     provider: str,
     model: str,
@@ -234,11 +224,13 @@ async def _call_openai(
     max_tokens: int,
     reasoning: Optional[Dict] = None,
 ) -> Tuple[Optional[Any], int, int]:
-    """Call OpenAI API with function calling.
+    """Call OpenAI with function calling.
 
-    v1.2 (2026-04-18): Added reasoning support. When reasoning={'effort':...}
-    is passed, enable GPT-5.x reasoning via the `reasoning` param. Reasoning
-    models (gpt-5.*, o3/o4) don't accept temperature=0 — drop it.
+    v1.4 (2026-06-09): reasoning + tools => Responses API (chat completions
+    rejects that combination on gpt-5.x). On Responses failure, falls back to
+    chat completions WITHOUT reasoning — same behaviour the 400-fallback gave
+    before, but now logged loudly. Every call is hard-capped by
+    asyncio.wait_for so a wedged request cannot freeze the build.
     """
     try:
         from openai import AsyncOpenAI
@@ -253,113 +245,82 @@ async def _call_openai(
 
     client = AsyncOpenAI(api_key=api_key, timeout=180.0)
 
-    # Build kwargs — reasoning models reject temperature, so branch on that.
     _use_reasoning = bool(
         reasoning
         and isinstance(reasoning, dict)
         and str(reasoning.get("effort", "")).lower() in ("low", "medium", "high", "xhigh", "max")
     )
+
+    # --- Tools + reasoning: Responses API path (v1.4) ---
+    if _use_reasoning and tools:
+        try:
+            from app.pipeline_v2.llm_responses_api import call_openai_responses
+            adapted, in_tok, out_tok = await asyncio.wait_for(
+                call_openai_responses(
+                    client, model, messages, tools, max_tokens,
+                    str(reasoning["effort"]).lower(),
+                ),
+                timeout=HARD_CALL_TIMEOUT,
+            )
+            return adapted, in_tok, out_tok
+        except asyncio.TimeoutError:
+            logger.error(
+                "[llm_tools] Responses API call hard-timed out after %ss — cancelled",
+                HARD_CALL_TIMEOUT,
+            )
+            return None, 0, 0
+        except Exception as e:
+            logger.warning(
+                "[llm_tools] Responses API path failed (%s) — falling back to "
+                "chat completions WITHOUT reasoning",
+                str(e)[:300],
+            )
+
+    # --- Chat Completions path (no reasoning, or Responses fallback) ---
     create_kwargs: Dict[str, Any] = dict(
         model=model,
-        messages=messages,
+        messages=_sanitize_for_chat_api(messages),
         tools=tools,
         max_completion_tokens=min(max_tokens, 16384),
+        temperature=0,
     )
-    if _use_reasoning:
-        # Reasoning models don't accept temperature; also not top_p / logprobs.
-        create_kwargs["reasoning"] = {"effort": str(reasoning["effort"]).lower()}
-        logger.info(
-            "[llm_tools] v1.2 OpenAI reasoning enabled: model=%s effort=%s",
-            model, reasoning["effort"],
-        )
-    else:
-        create_kwargs["temperature"] = 0
 
     try:
-        response = await client.chat.completions.create(**create_kwargs)
-
+        response = await asyncio.wait_for(
+            client.chat.completions.create(**create_kwargs),
+            timeout=HARD_CALL_TIMEOUT,
+        )
         usage = response.usage
-        in_tok = usage.prompt_tokens if usage else 0
-        out_tok = usage.completion_tokens if usage else 0
-
-        return response, in_tok, out_tok
-
+        return response, (usage.prompt_tokens if usage else 0), (usage.completion_tokens if usage else 0)
+    except asyncio.TimeoutError:
+        logger.error(
+            "[llm_tools] Chat completions call hard-timed out after %ss — cancelled",
+            HARD_CALL_TIMEOUT,
+        )
+        return None, 0, 0
     except Exception as e:
-        # Retry without reasoning if the model doesn't accept it (older GPT,
-        # non-reasoning model). Strip reasoning, restore temperature, retry.
+        # Some gpt-5.x variants only accept the default temperature — retry once without it.
         msg = str(e)
-        if _use_reasoning and ("reasoning" in msg or "unexpected keyword" in msg or "Unsupported" in msg):
-            logger.warning(
-                "[llm_tools] Model %s rejected reasoning param; retrying without: %s",
-                model, msg[:200],
-            )
-            create_kwargs.pop("reasoning", None)
-            create_kwargs["temperature"] = 0
+        if "temperature" in msg:
+            create_kwargs.pop("temperature", None)
             try:
-                response = await client.chat.completions.create(**create_kwargs)
+                response = await asyncio.wait_for(
+                    client.chat.completions.create(**create_kwargs),
+                    timeout=HARD_CALL_TIMEOUT,
+                )
                 usage = response.usage
                 return response, (usage.prompt_tokens if usage else 0), (usage.completion_tokens if usage else 0)
             except Exception as e2:
-                logger.error("[llm_tools] OpenAI API error (after reasoning retry): %s", e2)
+                logger.error("[llm_tools] OpenAI API error (after temperature retry): %s", e2)
                 return None, 0, 0
         logger.error("[llm_tools] OpenAI API error: %s", e)
         return None, 0, 0
 
 
 # ---------------------------------------------------------------------------
-# Response parsing
+# Response parsing — moved to llm_response_parsing.py (2026-06-09 file-size
+# split; llm_tools hit the 30KB ceiling). Imported at the top of this file.
 # ---------------------------------------------------------------------------
-
-def _extract_tool_calls(response: Any, provider: str) -> List[Dict]:
-    """Extract tool calls from API response."""
-    if provider == "openai" and hasattr(response, "choices"):
-        msg = response.choices[0].message
-        if msg.tool_calls:
-            calls = []
-            for tc in msg.tool_calls:
-                try:
-                    args = json.loads(tc.function.arguments)
-                except (json.JSONDecodeError, AttributeError):
-                    args = {}
-                calls.append({
-                    "id": tc.id,
-                    "name": tc.function.name,
-                    "args": args,
-                })
-            return calls
-    return []
-
-
-def _extract_text(response: Any, provider: str) -> Optional[str]:
-    """Extract text content from API response."""
-    if provider == "openai" and hasattr(response, "choices"):
-        return response.choices[0].message.content
-    if isinstance(response, dict) and "text" in response:
-        return response["text"]
-    return None
-
-
-def _make_assistant_message(response: Any, provider: str) -> Dict:
-    """Convert API response to an assistant message for the conversation."""
-    if provider == "openai" and hasattr(response, "choices"):
-        msg = response.choices[0].message
-        result = {"role": "assistant", "content": msg.content or ""}
-        if msg.tool_calls:
-            result["tool_calls"] = [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    },
-                }
-                for tc in msg.tool_calls
-            ]
-        return result
-    text = _extract_text(response, provider) or ""
-    return {"role": "assistant", "content": text}
-
 
 # ---------------------------------------------------------------------------
 # Tool execution (with write integrity checking)
@@ -637,6 +598,22 @@ async def _execute_tool(name: str, args: Dict) -> str:
                     "the transport layer corrupted it. Try writing again."
                 )
                 return "\n".join(error_parts)
+
+        elif name == "edit_file":
+            # JOB 9 (2026-06-10): surgical exact-string replacement with
+            # unique-match enforcement + dated .bak. The verifier patches
+            # precisely; it never rewrites whole files.
+            path = args.get("path", "")
+            old_str = args.get("old_str", "")
+            new_str = args.get("new_str", "")
+            _active = _resolve_active_profile(path=path)
+            if _active is None and _current_segment is not None:
+                return (
+                    "ERROR: Cannot edit " + path + " — current segment has no target_id. "
+                    "Refusing ambiguous edit."
+                )
+            ok, msg = await sandbox_tools.edit_file(path, old_str, new_str, profile=_active)
+            return ("OK: " + msg) if ok else ("EDIT REFUSED: " + msg)
 
         elif name == "run_shell":
             cmd = args.get("cmd", "")

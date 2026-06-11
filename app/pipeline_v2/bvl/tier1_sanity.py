@@ -74,32 +74,32 @@ async def run_tier1(
     check_build = await _check_gradle_build(profile, emit)
     checks.append(check_build)
     if not check_build.passed:
-        return _make_result(checks, t_start, check_build.message)
+        return await _make_result(checks, t_start, check_build.message)
 
     # ── Check 2: Emulator ready ──
     check_emu = await _check_emulator_ready(emit)
     checks.append(check_emu)
     if not check_emu.passed:
-        return _make_result(checks, t_start, check_emu.message)
+        return await _make_result(checks, t_start, check_emu.message)
 
     # ── Check 3: APK install ──
     apk_path = _resolve_apk_path(profile)
     check_install = await _check_apk_install(apk_path, emit)
     checks.append(check_install)
     if not check_install.passed:
-        return _make_result(checks, t_start, check_install.message)
+        return await _make_result(checks, t_start, check_install.message)
 
     # ── Check 4: App launch (no crash) ──
     check_launch = await _check_app_launch(profile.package_name, emit)
     checks.append(check_launch)
     if not check_launch.passed:
-        return _make_result(checks, t_start, check_launch.message)
+        return await _make_result(checks, t_start, check_launch.message)
 
     # ── Check 5: First screen renders ──
     check_render = await _check_first_render(profile.package_name, emit)
     checks.append(check_render)
     if not check_render.passed:
-        return _make_result(checks, t_start, check_render.message)
+        return await _make_result(checks, t_start, check_render.message)
 
     # ── Check 6: Screenshot capture ──
     check_screenshot = await _check_screenshot(emit)
@@ -363,12 +363,17 @@ def _resolve_apk_path(profile: "BuildTargetProfile") -> str:
     return f"{root}/app/build/outputs/apk/debug/app-debug.apk"
 
 
-def _make_result(
+async def _make_result(
     checks: list,
     t_start: float,
     error_context: str,
 ) -> TierResult:
-    """Build a FAILED TierResult from accumulated checks."""
+    """Build a FAILED TierResult from accumulated checks.
+
+    JOB 7 (2026-06-10): ALWAYS capture a screenshot + UI-tree excerpt on
+    failure so the diagnosing model never reasons blind — previously a
+    render failure skipped the screenshot step entirely.
+    """
     duration_ms = int((time.time() - t_start) * 1000)
     # Grab logcat from the last check if available
     logcat = ""
@@ -380,11 +385,29 @@ def _make_result(
             logcat = c.details["build_output"]
             break
 
+    screenshot_b64 = None
+    ui_excerpt = ""
+    try:
+        from app.pipeline_v2.bvl.emulator_bridge import (
+            dump_ui_tree,
+            is_emulator_running,
+            screenshot_as_base64,
+        )
+        if await is_emulator_running():
+            screenshot_b64 = await screenshot_as_base64()
+            ui_excerpt = ((await dump_ui_tree()) or "")[:1500]
+    except Exception:
+        pass
+
+    if ui_excerpt:
+        logcat = (logcat + "\n--- UI TREE AT FAILURE (excerpt) ---\n" + ui_excerpt)
+
     return TierResult(
         tier=TierName.SANITY,
         status=TierStatus.FAILED,
         checks=checks,
         error_context=error_context,
-        logcat_excerpt=logcat[:2000],
+        logcat_excerpt=logcat[:3500],
+        screenshot_b64=screenshot_b64,
         duration_ms=duration_ms,
     )

@@ -81,6 +81,43 @@ async def run_retry_loop(
     spec_slice = _extract_spec_slice(spec, component_path)
 
     for attempt in range(1, MAX_RETRIES_PER_TIER + 1):
+        # JOB 7 (2026-06-10): environment-vs-code gate. Environmental failures
+        # (no emulator, login screen, backend unreachable) never reach the
+        # builder — they get ONE preflight remediation attempt, then block
+        # with the reason, consuming ZERO builder fix cycles.
+        try:
+            from app.pipeline_v2.bvl.failure_classifier import ENVIRONMENT, classify_failure
+            _cls = await classify_failure(failed_tier, profile)
+        except Exception as _cls_err:
+            logger.warning("[retry_loop] failure classification crashed: %s", _cls_err)
+            _cls = None
+
+        if _cls is not None and _cls.kind == ENVIRONMENT:
+            emit(f"   🌍 ENVIRONMENT failure (not code): {_cls.reason}")
+            if _cls.remediation:
+                emit(f"      Remediation: {_cls.remediation}")
+            if attempt == 1:
+                emit("   🔧 Attempting automatic remediation (preflight)...")
+                try:
+                    from app.pipeline_v2.bvl.preflight import run_preflight
+                    await run_preflight(profile, emit)
+                except Exception as _pf_err:
+                    logger.warning("[retry_loop] preflight remediation crashed: %s", _pf_err)
+                emit(f"   🔍 Re-running {failed_tier.tier.value} after remediation...")
+                new_result = await tier_runner()
+                if new_result.passed:
+                    emit(f"   ✅ {failed_tier.tier.value} PASSED after environment remediation")
+                    return new_result, total_llm_calls, messages
+                previous_errors.append(new_result.error_context[:500])
+                failed_tier = new_result
+                continue
+            failed_tier.error_context = (
+                f"ENVIRONMENT: {_cls.reason} | {_cls.remediation} | "
+                + (failed_tier.error_context or "")
+            )[:2000]
+            emit("   🚫 Blocked by ENVIRONMENT, not code — no builder fix attempts spent")
+            return failed_tier, total_llm_calls, messages
+
         emit(f"   🔄 Retry {attempt}/{MAX_RETRIES_PER_TIER} for {component_path}")
 
         # Build retry context

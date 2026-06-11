@@ -17,12 +17,29 @@ from .tier0_rules import Tier0RuleResult
 # v2.3: ASTRA ADDRESS STRIPPING
 # =============================================================================
 
-_ASTRA_PREFIX = re.compile(r"^(?:hey[,.]?\s+)?astr[aoe][,.]?\s+", re.IGNORECASE)
+_ASTRA_PREFIX = re.compile(
+    r"^(?:hey[,.]?\s+)?astr[aoe][,.]?\s+(?:command[:,.]?\s+)?",
+    re.IGNORECASE,
+)
+# JOB 16 (2026-06-10): trailing politeness + STT punctuation. Voice-to-text
+# produces 'run the pipeline.' or '... please' — both failed the $-anchored
+# trigger patterns. No tier0 rule depends on trailing punctuation (verified).
+_TRAILING_NOISE = re.compile(r"[\s,]*(?:please)?[\s.!?]*$", re.IGNORECASE)
 
 
 def _strip_astra(text: str) -> str:
-    """Strip 'Astra,' / 'Hey Astra,' / 'Astro,' prefix from text for trigger matching."""
-    return _ASTRA_PREFIX.sub("", text.strip()).strip()
+    """Strip 'Astra,' / 'Hey Astra,' / 'Astra, command:' prefixes and trailing
+    politeness/punctuation for trigger matching.
+
+    JOB 16 (2026-06-10): the documented voice form 'Astra, command: run the
+    pipeline' previously stripped only 'Astra,' — the leftover 'command:'
+    meant the canonical phrasing NEVER matched any ^-anchored pattern, so
+    the voice pipeline trigger was dead. Now 'command' is consumed as part
+    of the wake-phrase prefix.
+    """
+    out = _ASTRA_PREFIX.sub("", text.strip()).strip()
+    out = _TRAILING_NOISE.sub("", out)
+    return out.strip()
 
 
 # =============================================================================

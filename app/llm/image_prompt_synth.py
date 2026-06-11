@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -175,6 +176,84 @@ def _build_context_block(
 
 
 # ============================================================================
+# SYNTH CALL + TRUNCATION GUARD (v3.1, 2026-06-10)
+# ============================================================================
+
+_MIN_PROMPT_CHARS = 60          # anything shorter is certainly broken
+_SHORT_PROMPT_CHARS = 200       # short AND unterminated => treat as cut off
+_TERMINAL_CHARS = '.!?")'
+
+
+def _generate_once(client, types, model, system, contents, max_tokens):
+    """Single synth call. Returns (text, finish_reason_str)."""
+    cfg_kwargs = dict(
+        system_instruction=system,
+        temperature=0.3,
+        max_output_tokens=max_tokens,
+    )
+    # gemini-2.5+ are thinking models: without a zero thinking budget the
+    # internal reasoning consumes max_output_tokens and the visible text
+    # gets silently truncated (root cause of the 2026-06-10 85-char
+    # fragment that reached gpt-image-2). Older SDKs lack ThinkingConfig,
+    # so fall back gracefully.
+    try:
+        cfg_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+        config = types.GenerateContentConfig(**cfg_kwargs)
+    except (AttributeError, TypeError):
+        cfg_kwargs.pop("thinking_config", None)
+        config = types.GenerateContentConfig(**cfg_kwargs)
+
+    response = client.models.generate_content(
+        model=model, contents=contents, config=config,
+    )
+
+    text = ""
+    finish = ""
+    if response.candidates:
+        cand = response.candidates[0]
+        finish = str(getattr(cand, "finish_reason", "") or "")
+        if cand.content:
+            for part in cand.content.parts:
+                if hasattr(part, "text") and part.text:
+                    text += part.text
+    return text.strip().strip('"').strip("'").strip("`"), finish
+
+
+def _looks_truncated(text: str, finish_reason: str) -> bool:
+    """True if the synth output is unusable as an image prompt."""
+    if not text:
+        return True
+    fr = (finish_reason or "").upper()
+    if "MAX_TOKEN" in fr or "LENGTH" in fr:
+        return True
+    if len(text) < _MIN_PROMPT_CHARS:
+        return True
+    if len(text) < _SHORT_PROMPT_CHARS and text[-1] not in _TERMINAL_CHARS:
+        return True
+    return False
+
+
+def _build_fallback_prompt(user_message, conversation_history):
+    """Deterministic fallback when synthesis fails twice: the user's request
+    plus the most recent assistant message (which usually contains the
+    content being illustrated, e.g. the agreed quote text). Far better than
+    the bare user message, which is often just 'yep make the image please'.
+    """
+    parts = [user_message.strip()]
+    if conversation_history:
+        for msg in reversed(conversation_history):
+            if msg.get("role") == "assistant" and msg.get("content"):
+                snippet = msg["content"][:1200]
+                parts.append(
+                    "Use the following conversation content as the subject "
+                    "of the image (include any quoted text verbatim):\n"
+                    + snippet
+                )
+                break
+    return "\n\n".join(parts)
+
+
+# ============================================================================
 # MAIN SYNTHESIS FUNCTION
 # ============================================================================
 
@@ -224,27 +303,32 @@ async def synthesise_image_prompt(
         synth_model = _get_synth_model()
         logger.info("[image_prompt_synth] Using model: %s", synth_model)
 
-        response = client.models.generate_content(
-            model=synth_model,
-            contents=full_prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=system,
-                temperature=0.3,
-                max_output_tokens=400,
-            ),
+        # v3.1 (2026-06-10): truncation guard + one retry. A truncated
+        # fragment must never reach the image backend -- that is how an
+        # 85-char prompt with no quote text produced a junk image.
+        synthesised, finish = _generate_once(
+            client, types, synth_model, system, full_prompt, max_tokens=1024,
         )
+        if _looks_truncated(synthesised, finish):
+            logger.warning(
+                "[image_prompt_synth] Output looks truncated "
+                "(finish=%s, %d chars) -- retrying with larger budget",
+                finish, len(synthesised),
+            )
+            synthesised, finish = _generate_once(
+                client, types, synth_model, system, full_prompt,
+                max_tokens=2048,
+            )
 
-        synthesised = ""
-        if response.candidates and response.candidates[0].content:
-            for part in response.candidates[0].content.parts:
-                if hasattr(part, 'text') and part.text:
-                    synthesised += part.text
-
-        synthesised = synthesised.strip().strip('"').strip("'").strip("`")
-
-        if not synthesised:
-            logger.warning("[image_prompt_synth] Empty synthesis, falling back to raw")
-            return user_message, None
+        if _looks_truncated(synthesised, finish):
+            fallback = _build_fallback_prompt(user_message, conversation_history)
+            logger.error(
+                "[image_prompt_synth] Synthesis unusable after retry "
+                "(finish=%s, %d chars) -- using deterministic fallback "
+                "(%d chars)",
+                finish, len(synthesised), len(fallback),
+            )
+            return fallback, _detect_aspect_ratio(user_message, "")
 
         # Detect aspect ratio from the synthesised prompt or user message
         aspect_ratio = _detect_aspect_ratio(user_message, synthesised)
@@ -261,27 +345,60 @@ async def synthesise_image_prompt(
         return user_message, None
 
 
-def _detect_aspect_ratio(user_msg: str, synth_prompt: str) -> str | None:
-    """Detect intended aspect ratio from user message or synthesised prompt."""
-    combined = (user_msg + " " + synth_prompt).lower()
+def _word_in(text: str, *words: str) -> bool:
+    """Whole-word match so 'history' never matches 'story', 'iconic'
+    never matches 'icon', etc."""
+    for w in words:
+        if re.search(r"\b" + re.escape(w) + r"\b", text):
+            return True
+    return False
 
-    if any(kw in combined for kw in [
-        'banner', '16:9', '2048', 'youtube banner', 'landscape banner',
-    ]):
-        return "16:9"
-    if any(kw in combined for kw in [
-        '9:16', 'vertical', 'phone wallpaper', 'story', 'reels',
-    ]):
-        return "9:16"
-    if any(kw in combined for kw in [
-        'square', '1:1', 'instagram square', 'profile picture', 'avatar', 'icon',
-    ]):
+
+def _ar_from_text(text: str) -> str | None:
+    """Ordered aspect-ratio detection within ONE piece of text.
+
+    v3.1 (2026-06-10): explicit ratios first, then named formats, then
+    bare adjectives LAST. Previously 'vertical' was checked before
+    'square', so a synth prompt containing 'split vertically' forced an
+    Instagram SQUARE request into 9:16 portrait.
+    """
+    t = (text or "").lower()
+    if not t:
+        return None
+    # 1. Explicit ratios beat everything
+    for token, ar in (("16:9", "16:9"), ("9:16", "9:16"), ("1:1", "1:1"),
+                      ("4:3", "4:3"), ("21:9", "21:9")):
+        if token in t:
+            return ar
+    # 2. Named formats
+    if ("instagram square" in t or "insta square" in t
+            or "profile picture" in t
+            or _word_in(t, "avatar", "icon", "icons")):
         return "1:1"
-    if any(kw in combined for kw in ['thumbnail', '4:3']):
+    if _word_in(t, "banner", "banners"):
+        return "16:9"
+    if "phone wallpaper" in t or _word_in(t, "story", "stories", "reel", "reels"):
+        return "9:16"
+    if _word_in(t, "thumbnail", "thumbnails"):
         return "4:3"
-    if any(kw in combined for kw in ['widescreen', '21:9', 'ultrawide']):
+    if _word_in(t, "ultrawide"):
+        return "21:9"
+    # 3. Bare adjectives last (weakest signal)
+    if _word_in(t, "square"):
+        return "1:1"
+    if _word_in(t, "vertical", "portrait"):
+        return "9:16"
+    if _word_in(t, "widescreen"):
         return "21:9"
     return None
+
+
+def _detect_aspect_ratio(user_msg: str, synth_prompt: str) -> str | None:
+    """Detect intended aspect ratio. The USER'S message wins outright;
+    the synthesised prompt is only consulted when the user gave no
+    signal. (Previously both were concatenated, letting synth wording
+    override the user's explicit format request.)"""
+    return _ar_from_text(user_msg) or _ar_from_text(synth_prompt)
 
 
 __all__ = ["synthesise_image_prompt"]

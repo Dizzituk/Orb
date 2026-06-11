@@ -46,6 +46,7 @@ async def assemble_review_context(
     intent_text: str = "",
     bvl_report: Optional[Any] = None,
     build_output: str = "",
+    manifest: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
     """Build the context dictionary ready to format into the user prompt.
 
@@ -79,8 +80,20 @@ async def assemble_review_context(
 
     # ── Files written ────────────────────────────────────────────────
     files_written = list(build_result.all_files_written or [])
+    # JOB 2 (2026-06-10): the reviewer reviews the WHOLE feature file-set,
+    # not just this run's diff. Re-runs that touched one file were handing
+    # the reviewer a single file of source, producing false "never created"
+    # criticals about files that exist on disk.
+    feature_files = _collect_feature_files(spec, manifest, files_written)
+    extra_files = [f for f in feature_files if f not in files_written]
     if files_written:
         ctx["files_written"] = "\n".join(f"- {f}" for f in files_written)
+        if extra_files:
+            ctx["files_written"] += (
+                "\n\nAdditional feature files included for review "
+                "(written in earlier runs, part of this feature's file scope):\n"
+                + "\n".join(f"- {f}" for f in extra_files)
+            )
     else:
         ctx["files_written"] = "(builder reported no files)"
 
@@ -95,11 +108,47 @@ async def assemble_review_context(
 
     # ── Source concatenation ────────────────────────────────────────
     ctx["source_concatenation"] = await _concat_sources(
-        files_written=files_written,
+        files_written=feature_files or files_written,
         profile=profile,
     )
 
     return ctx
+
+
+def _collect_feature_files(
+    spec: Dict[str, Any],
+    manifest: Optional[Dict[str, Any]],
+    files_written: List[str],
+) -> List[str]:
+    """JOB 2 (2026-06-10): union of this run's files + the feature's full
+    file scope, so re-runs review the whole feature.
+
+    Priority order: files written this run first, then manifest segment
+    file_scope, then spec segment file_scope. Deduped case-insensitively on
+    normalised separators, original casing preserved.
+    """
+    ordered: List[str] = []
+    seen = set()
+
+    def _add(path: Any) -> None:
+        if not path or not isinstance(path, str):
+            return
+        key = path.replace("\\", "/").lower()
+        if key in seen:
+            return
+        seen.add(key)
+        ordered.append(path)
+
+    for f in files_written or []:
+        _add(f)
+    for source in (manifest, spec):
+        if not isinstance(source, dict):
+            continue
+        for seg in source.get("segments", []) or []:
+            if isinstance(seg, dict):
+                for f in seg.get("file_scope", []) or []:
+                    _add(f)
+    return ordered
 
 
 # ═══════════════════════════════════════════════════════════════════

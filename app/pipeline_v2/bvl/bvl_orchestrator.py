@@ -92,6 +92,24 @@ async def run_bvl(
     from app.pipeline_v2.bvl.emulator_bridge import set_active_profile
     set_active_profile(profile)
     emit(f"   Target: {profile.project_name} ({profile.language})")
+
+    # ── PRE-FLIGHT (Job 6, 2026-06-10): get the app into a testable state ──
+    emit(f"\n{'─'*40}")
+    emit("🛫 PRE-FLIGHT: environment readiness")
+    emit(f"{'─'*40}")
+    try:
+        from app.pipeline_v2.bvl.preflight import run_preflight
+        _pf = await run_preflight(profile, emit)
+        for _name, _ok, _msg in _pf.steps:
+            emit(f"   {'✅' if _ok else '⚠️'} {_name}" + (f": {_msg}" if _msg else ""))
+        if _pf.ready:
+            emit("   🛫 Pre-flight: app is testable (logged in)")
+        else:
+            emit(f"   ⚠️ Pre-flight incomplete: {_pf.reason} — continuing; failures will be classified")
+    except Exception as _pf_exc:
+        logger.warning("[bvl] preflight crashed (non-fatal): %s", _pf_exc)
+        emit(f"   ⚠️ Pre-flight crashed (non-fatal): {_pf_exc}")
+
     # ── TIER 1: Sanity Gate ──
     emit(f"\n{'─'*40}")
     emit("🔍 TIER 1: SANITY GATE")

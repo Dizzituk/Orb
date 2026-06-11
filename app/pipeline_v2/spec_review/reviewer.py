@@ -51,6 +51,7 @@ async def run_spec_review(
     build_output: str = "",
     emit: Optional[Callable[[str], None]] = None,
     job_id: Optional[str] = None,
+    manifest: Optional[Dict[str, Any]] = None,
 ) -> ReviewReport:
     """Run the always-on spec reviewer over the builder's output.
 
@@ -92,6 +93,7 @@ async def run_spec_review(
             intent_text=intent_text,
             bvl_report=bvl_report,
             build_output=build_output,
+            manifest=manifest,
         )
     except Exception as exc:
         logger.exception("[spec_review] Context assembly failed: %s", exc)

@@ -184,3 +184,28 @@ def add_project_message(
         stage=stage, provider=provider, model=model,
     )
     return BuildMessageResponse.model_validate(msg)
+
+
+# ── JOB 15 (2026-06-10): Promote verified sandbox self-builds to live ──
+# Full URLs: POST /builds/projects/promote/plan, /builds/projects/promote/apply
+# Static segments don't collide with /{project_id}/... routes above.
+
+from app.pipeline_v2.promote import PromoteApplyRequest, PromotePlanRequest
+
+
+@router.post("/promote/plan")
+async def promote_plan(req: PromotePlanRequest):
+    """Diff a self-build job's file scope: sandbox clone vs live host."""
+    from app.pipeline_v2.promote import build_promote_plan
+    return await build_promote_plan(req.job_id)
+
+
+@router.post("/promote/apply")
+async def promote_apply(req: PromoteApplyRequest):
+    """Apply a verified self-build to live Orb (requires confirm=true).
+
+    Writes dated .baks of every replaced file first; never restarts the
+    backend itself — the response flags restart_required.
+    """
+    from app.pipeline_v2.promote import apply_promote
+    return await apply_promote(req)

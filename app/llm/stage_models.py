@@ -102,7 +102,7 @@ STAGE_DEFAULTS: Dict[str, Tuple[str, str, int, int]] = {
     "CRITIQUE":           ("anthropic", "anthropic:frontier-opus-thinking",  60000, 180),
     "REVISION":           ("anthropic", "anthropic:frontier-opus-thinking",  60000, 300),
     "IMPLEMENTER":        ("openai",    "openai:frontier-reasoning",         60000, 300),
-    "OVERWATCHER":        ("anthropic", "anthropic:frontier-opus-thinking",  4000,  120),
+    "OVERWATCHER":        ("anthropic", "anthropic:frontier-verifier",      4000,  120),
     "CRITICAL_PIPELINE":  ("openai",    "openai:frontier-reasoning",         60000, 600),
 
     # Supervisor (Phase 2A — interface contracts between segments)
@@ -120,10 +120,16 @@ STAGE_DEFAULTS: Dict[str, Tuple[str, str, int, int]] = {
     # Phase 4C: Weaver conversation compaction
     "WEAVER_COMPACTION":   ("google",    "google:frontier-flash",            1500, 45),
 
-    # v1.3 (2026-04-18): Always-on spec reviewer. Opus 4.7 with reasoning
-    # high, 16k output budget so detailed findings + rationale fit.
-    # Timeout generous because reasoning + 200KB source context is slow.
-    "SPEC_REVIEW":         ("anthropic", "anthropic:frontier-opus-thinking", 16000, 600),
+    # v1.3 (2026-04-18): Always-on spec reviewer. 16k output budget so
+    # detailed findings + rationale fit. Timeout generous because
+    # reasoning + 200KB source context is slow.
+    # JOB 12 (2026-06-10): now resolves through the verifier-family alias
+    # (claude-fable-5 by default; ASTRA_VERIFIER_FAMILY_MODEL overrides).
+    "SPEC_REVIEW":         ("anthropic", "anthropic:frontier-verifier", 16000, 600),
+
+    # JOB 11-12 (2026-06-10): the agentic verifier final checkout. Gated
+    # behind ASTRA_AGENTIC_VERIFIER=1; the most expensive stage when on.
+    "VERIFIER_AGENT":      ("anthropic", "anthropic:frontier-verifier", 16000, 900),
 
     # Support stages
     "CHAT":               ("google",    "google:frontier-flash",             4000,  30),

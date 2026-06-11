@@ -363,6 +363,7 @@ async def run_v2_pipeline(
                 emit=emit,
                 bvl_report=bvl_report,
                 job_id=job_id,
+                manifest=manifest,
             )
         except Exception as _sr_exc:
             logger.warning("[orchestrator] Spec review failed non-fatally: %s", _sr_exc)
@@ -389,7 +390,7 @@ async def run_v2_pipeline(
     # ------------------------------------------------------------------
     if ENHANCED_CHECKOUT:
         from app.pipeline_v2.checkout import run_enhanced_checkout
-        checkout_report = await run_enhanced_checkout(spec=spec, emit=emit)
+        checkout_report = await run_enhanced_checkout(spec=spec, emit=emit, profile=profile)
         result.total_llm_calls += 1
 
         if checkout_report.overall_passed:
@@ -413,7 +414,7 @@ async def run_v2_pipeline(
                 _builder_messages = fix_result.messages_history
 
                 emit("   🔄 Re-running checkout after fix...")
-                checkout_report_2 = await run_enhanced_checkout(spec=spec, emit=emit)
+                checkout_report_2 = await run_enhanced_checkout(spec=spec, emit=emit, profile=profile)
                 result.total_llm_calls += 1
 
                 if checkout_report_2.overall_passed:
@@ -692,6 +693,7 @@ async def _run_spec_review_stage(
     emit: Any,
     bvl_report: Optional[Any] = None,
     job_id: Optional[str] = None,
+    manifest: Optional[Dict] = None,
 ) -> None:
     """Run the always-on spec reviewer and attach the report to result."""
     # Reviewer needs a BuildResult; if the builder didn't produce one,
@@ -714,6 +716,7 @@ async def _run_spec_review_stage(
         build_output=build_output,
         emit=emit,
         job_id=job_id,
+        manifest=manifest,
     )
 
     result.spec_review_report = review

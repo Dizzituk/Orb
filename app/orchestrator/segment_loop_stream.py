@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from typing import Any, AsyncGenerator, Optional
 
 from sqlalchemy.orm import Session
@@ -281,11 +282,19 @@ async def generate_segment_loop_stream(
         # Step 5: Execute the segment loop
         # =================================================================
 
-        # Progress messages are collected via callback and yielded as SSE
-        progress_messages = []
+        # JOB 4 (2026-06-10): live progress + watchdog. Progress messages are
+        # pushed onto an asyncio queue by the pipeline's on_progress callback
+        # and yielded AS THEY HAPPEN, instead of being buffered until the
+        # whole pipeline returns (which made long builds look like silence
+        # and hid wedged calls). A heartbeat event fires every 15s of quiet
+        # so the frontend can distinguish "working" from "dead".
+        progress_queue: asyncio.Queue = asyncio.Queue()
 
         def on_progress(msg: str):
-            progress_messages.append(msg)
+            try:
+                progress_queue.put_nowait(msg)
+            except Exception:
+                pass
 
         # Emit a "pipeline_started" event for the frontend
         yield _sse(
@@ -294,8 +303,8 @@ async def generate_segment_loop_stream(
             manifest_path=manifest_path,
         )
 
-        # Run the orchestrator loop
-        final_state = await run_segmented_job(
+        # Run the orchestrator loop as a task so we can stream while it runs
+        run_task = asyncio.create_task(run_segmented_job(
             job_id=job_id,
             manifest_path=manifest_path,
             parent_spec=parent_spec,
@@ -303,12 +312,29 @@ async def generate_segment_loop_stream(
             project_id=project_id,
             on_progress=on_progress,
             implement_only=implement_only,
-        )
+        ))
 
-        # Yield all collected progress messages as SSE tokens
-        for msg in progress_messages:
-            yield _emit(msg)
-            await asyncio.sleep(0.01)  # Small delay to avoid SSE flooding
+        _HEARTBEAT_SEC = 15.0
+        _last_beat = time.monotonic()
+        while True:
+            if run_task.done() and progress_queue.empty():
+                break
+            try:
+                msg = await asyncio.wait_for(progress_queue.get(), timeout=1.0)
+                yield _emit(msg)
+            except asyncio.TimeoutError:
+                pass
+            _now = time.monotonic()
+            if _now - _last_beat >= _HEARTBEAT_SEC:
+                _last_beat = _now
+                yield _sse(
+                    "heartbeat",
+                    job_id=job_id,
+                    elapsed_quiet_s=int(_HEARTBEAT_SEC),
+                )
+
+        # Re-raise any crash from the pipeline task (handled by outer except)
+        final_state = run_task.result()
 
         # =================================================================
         # Step 5b: Emit integration check events (Phase 3)
@@ -379,6 +405,17 @@ async def generate_segment_loop_stream(
         else:
             yield _emit(f"\n❌ **Segmented execution {final_state.overall_status}**")
 
+        # JOB 1 (2026-06-10): explicit machine-readable failure signal.
+        # stage_hooks only flips a stage to FAILED on an SSE event of type
+        # "error" — plain ❌ tokens were recording crashed builds as passed.
+        if final_state.overall_status != "complete":
+            yield _sse(
+                "error",
+                content=f"Pipeline finished with status: {final_state.overall_status}",
+                job_id=job_id,
+                overall_status=final_state.overall_status,
+            )
+
         yield _done(
             provider=pipeline_provider,
             model=pipeline_model,
@@ -390,6 +427,8 @@ async def generate_segment_loop_stream(
     except Exception as e:
         logger.exception("[SEGMENT_LOOP] Stream failed: %s", e)
         yield _emit(f"\n❌ **Segment loop error:** {e}")
+        # JOB 1 (2026-06-10): machine-readable crash signal for stage_hooks.
+        yield _sse("error", content=f"Segment loop crashed: {e}")
         yield _done(
             provider=pipeline_provider,
             model=pipeline_model,

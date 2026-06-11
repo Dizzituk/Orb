@@ -238,6 +238,71 @@ async def write_file(
     return data is not None and data.get("status") == "ok"
 
 
+async def edit_file(
+    path: str,
+    old_str: str,
+    new_str: str,
+    profile: Optional["BuildTargetProfile"] = None,
+    make_backup: bool = True,
+) -> tuple:
+    """JOB 9 (2026-06-10): surgical exact-string replacement.
+
+    Enforces a UNIQUE match of old_str: zero matches or 2+ matches refuse
+    with a precise reason so the caller (builder/verifier) can adjust its
+    anchor. A dated .bak of the original is written alongside before the
+    change (first edit of the day only — the .bak preserves the pre-session
+    state, not every intermediate).
+
+    Routes through read_file/write_file, so host-vs-sandbox resolution is
+    identical to every other file operation.
+
+    Returns:
+        (ok: bool, message: str)
+    """
+    if not old_str:
+        return False, "old_str is empty - refusing"
+    if old_str == new_str:
+        return False, "old_str and new_str are identical - nothing to do"
+
+    content = await read_file(path, profile=profile)
+    if content is None:
+        return False, f"File not found: {path}"
+
+    count = content.count(old_str)
+    if count == 0:
+        return False, (
+            f"old_str not found in {path}. The match must be EXACT "
+            "(whitespace and line breaks included). Re-read the file and "
+            "copy the anchor verbatim."
+        )
+    if count > 1:
+        return False, (
+            f"old_str matches {count} times in {path} - must be unique. "
+            "Include more surrounding context to disambiguate."
+        )
+
+    if make_backup:
+        import datetime
+        stamp = datetime.date.today().isoformat()
+        bak_path = f"{path}.bak-{stamp}-edit"
+        try:
+            if not await file_exists(bak_path, profile=profile):
+                bak_ok = await write_file(bak_path, content, profile=profile)
+                if not bak_ok:
+                    logger.warning("[edit_file] Backup write failed for %s - proceeding", bak_path)
+        except Exception as exc:
+            logger.warning("[edit_file] Backup failed for %s: %s - proceeding", path, exc)
+
+    new_content = content.replace(old_str, new_str, 1)
+    ok = await write_file(path, new_content, profile=profile)
+    if not ok:
+        return False, f"Write failed for {path}"
+    return True, (
+        f"replaced 1 occurrence in {path} "
+        f"({len(old_str)} -> {len(new_str)} chars)"
+    )
+
+
 async def file_exists(
     path: str,
     profile: Optional["BuildTargetProfile"] = None,

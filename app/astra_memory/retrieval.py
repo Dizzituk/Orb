@@ -499,11 +499,32 @@ def retrieve_for_query(
         record_types=record_types,
     )
     
+    # Job 3 (2026-06-10): semantic channel — merge embedding matches into the
+    # keyword candidates (D2+ always; any depth when tags/entities are empty,
+    # which is the recall-rescue case for the ~50% of records tagged 'general').
+    try:
+        from app.astra_memory.semantic_candidates import augment_with_semantic
+        candidates = augment_with_semantic(
+            db, candidates, user_message, depth, query_tags, query_entities,
+        )
+    except Exception as _sem_exc:
+        logger.debug(f"[retrieval] semantic augmentation unavailable: {_sem_exc}")
+
     # Step 3: Apply cost ranking
     candidates = apply_cost_ranking(candidates, depth)
     
     # Step 4: Stage 2 - Expand
     expanded = stage2_expand_candidates(db, candidates, depth)
+
+    # Job 2 (2026-06-10): retrieval reinforcement. Records that were actually
+    # used are touched + bumped so they survive demotion. Only for topical
+    # retrievals or D2+ — the default D1 skim must not reinforce itself.
+    if expanded and (query_tags or query_entities or depth not in (IntentDepth.D0, IntentDepth.D1)):
+        try:
+            from app.astra_memory._retrieval_utils import reinforce_accessed
+            reinforce_accessed(db, expanded)
+        except Exception as _reinforce_exc:
+            logger.debug(f"[retrieval] reinforcement skipped: {_reinforce_exc}")
     
     # Step 5: Estimate tokens
     token_estimate = sum(len(r.content) // 4 for r in expanded)  # ~4 chars/token

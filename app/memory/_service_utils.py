@@ -39,13 +39,19 @@ def list_files(db: Session, project_id: int) -> List[models.File]:
     )
 
 def list_messages(db: Session, project_id: int, limit: int = 100) -> List[models.Message]:
-    return (
+    # v2026-06-10 FIX: was .order_by(created_at.asc()).limit(limit), which
+    # returns the FIRST N messages ever -- freezing conversation history at
+    # the start of any chat longer than `limit`. Fetch the most recent N
+    # (by id, monotonic and tie-safe) then reverse so callers still get
+    # chronological order.
+    rows = (
         db.query(models.Message)
         .filter(models.Message.project_id == project_id)
-        .order_by(models.Message.created_at.asc())
+        .order_by(models.Message.id.desc())
         .limit(limit)
         .all()
     )
+    return list(reversed(rows))
 
 def get_document_content_by_file_id(
     db: Session, file_id: int

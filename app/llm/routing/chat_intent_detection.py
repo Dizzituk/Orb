@@ -177,21 +177,34 @@ _CHART_ADJ_OPT = (
     r'){0,3}'
 )
 
+# v10.6 (2026-06-10): Added square/card/poster/wallpaper/meme nouns and an
+# optional "instagram/insta" prefix -- "make this quote into an Instagram
+# Square" previously matched nothing and fell through to plain chat (see
+# conversations 270/271, 2026-06-10 failure trace). The second alternation
+# also gains "make" and tolerates a short noun phrase between the subject
+# and "into" ("make this quote into...", "turn it all into...").
+_IMAGE_NOUNS = (
+    r'image|picture|photo|illustration|avatar|icon|graphic|artwork|'
+    r'portrait|visual|banner|thumbnail|logo|cover|infographic|'
+    r'(?:quote\s+)?card|square|poster|wallpaper|meme'
+)
+
 _IMAGE_GEN_PATTERNS = re.compile(
     r'(?:'
         r'(?:create|recreate|draw|redraw|make|remake|generate|regenerate|design|paint|sketch|render|produce|build|compile|visuali[sz]e|need|plot|put\s+together|do|show)\s+'
         r'(?:me\s+|yourself\s+)?(?:a\s+|an\s+|the\s+|another\s+|that\s+|this\s+|this\s+into\s+(?:a|an)\s+)?'
         r'(?:new\s+)?'
+        r'(?:instagram\s+|insta\s+)?'
         r'(?:'
-            r'image|picture|photo|illustration|avatar|icon|graphic|artwork|'
-            r'portrait|visual|banner|thumbnail|logo|cover|infographic'
+            + _IMAGE_NOUNS +
             r'|'
             + _CHART_ADJ_OPT + r'(?:chart|graph|plot|diagram)'
         + r')'
     r'|'
-        r'(?:turn|convert|transform)\s+(?:this|that|it)\s+into\s+(?:a\s+|an\s+)?'
+        r'(?:turn|convert|transform|make)\s+(?:this|that|it)(?:\s+[\w\'-]+){0,3}?\s+into\s+(?:a\s+|an\s+|the\s+)?'
+        r'(?:instagram\s+|insta\s+)?'
         r'(?:'
-            r'image|picture|photo|illustration|graphic|visual|infographic'
+            + _IMAGE_NOUNS +
             r'|'
             + _CHART_ADJ_OPT + r'(?:chart|graph|plot|diagram)'
         + r')'
@@ -209,8 +222,11 @@ def detect_image_gen_intent(message: str) -> bool:
 # IMAGE REFINEMENT  (v10.4)
 # =============================================================================
 
+# v10.6 (2026-06-10): added redesign/restyle/rework/resend, "send it
+# again", and wrong-image phrasings -- "Redesign it please and send it
+# again" previously matched nothing and routed to plain chat.
 _IMAGE_REFINE_PATTERNS = re.compile(
-    r'(?:change|modify|adjust|tweak|fix|redo|recreate|regenerate|redraw|remake|again\s+but|same\s+but|less\s+\w+|more\s+\w+|make\s+it|try\s+again|another\s+(?:version|image|one|picture|photo|chart|graph|graphic|illustration|visual|infographic|diagram)|do\s+(?:that|this|it)\s+again|not\s+(?:quite|right)|too\s+\w+)',
+    r"(?:change|modify|adjust|tweak|fix|redo|redesign|restyle|rework|recreate|regenerate|redraw|remake|re-?send|again\s+but|same\s+but|less\s+\w+|more\s+\w+|make\s+it|try\s+again|send\s+(?:it|that)\s+(?:to\s+me\s+)?again|another\s+(?:version|image|one|picture|photo|chart|graph|graphic|illustration|visual|infographic|diagram)|do\s+(?:that|this|it)\s+again|not\s+(?:quite|right)|(?:isn|wasn)'?t\s+the\s+(?:image|picture|one)|wrong\s+(?:image|picture|quote|text|colou?rs?)|too\s+\w+)",
     re.IGNORECASE,
 )
 
@@ -229,25 +245,32 @@ _IMAGE_MSG_MARKERS = (
     "Generated with ",
     "Generated image:",
     "rendered with Plotly",
+    "[ASTRA_ARTIFACT:image:",   # bridge/phone image path (v2026-06-10)
 )
 
 
 def last_assistant_was_image(project_id: int, db) -> bool:
-    """Check if the most recent assistant message was an image generation.
+    """True if there is a recent image generation in this conversation.
 
-    Matches by content markers written by image_router (filename in
-    /output/images/ path or 'Generated with...' prefix) rather than by
-    model name, so it stays robust as image-gen models change.
+    v2026-06-10 FIX (two dead-code bugs):
+      1. Called memory_service.get_messages(), which does not exist --
+         the AttributeError was silently swallowed and this ALWAYS
+         returned False, killing refinement detection entirely.
+      2. Even repaired, 'strictly the last assistant message' was wrong
+         in practice: users chat about the image ('describe it for me')
+         between generation and refinement. Scan the last few messages.
+
+    Matches by content markers written by image_router / the bridge
+    image path rather than by model name, so model swaps don't break it.
     """
     try:
-        msgs = memory_service.get_messages(db, project_id, limit=3)
+        msgs = memory_service.list_messages(db, project_id, limit=8)
         for msg in reversed(msgs):
             if msg.role != 'assistant':
                 continue
             content = msg.content or ""
             if any(marker in content for marker in _IMAGE_MSG_MARKERS):
                 return True
-            return False  # First assistant message wasn't image
     except Exception:
         pass
     return False

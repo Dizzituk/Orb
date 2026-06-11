@@ -322,6 +322,18 @@ async def bridge_chat(
         content=reply, provider=provider, model=model,
     ))
 
+    # v2026-06-10: session + summary tracking for bridge conversations.
+    # The hook previously only ran on the desktop stream path, so phone
+    # chats never got conversation_sessions rows or rolling summaries.
+    try:
+        from app.memory.integration import record_session_activity
+        record_session_activity(
+            project_id=project.id, provider=provider,
+            model=model, db_session=db,
+        )
+    except Exception as _sess_err:
+        logger.debug("[bridge] session tracking failed: %s", _sess_err)
+
     _detected_domain = domain_info.get("domain") if domain_info else None
     if _detected_domain:
         push_desktop_navigation(_detected_domain)
@@ -451,6 +463,16 @@ async def bridge_chat_and_speak(
         project_id=project_id, role="assistant",
         content=full_text, provider=provider, model=model,
     ))
+
+    # v2026-06-10: session + summary tracking (see bridge_chat above).
+    try:
+        from app.memory.integration import record_session_activity
+        record_session_activity(
+            project_id=project_id, provider=provider,
+            model=model, db_session=db,
+        )
+    except Exception as _sess_err:
+        logger.debug("[bridge] session tracking failed: %s", _sess_err)
 
     # Process artifact markers. The DB row keeps the raw full_text
     # (with markers) so history reload re-emits the chips; the streaming

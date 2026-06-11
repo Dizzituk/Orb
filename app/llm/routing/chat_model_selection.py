@@ -134,7 +134,11 @@ def infer_sticky_from_history(project_id: int, db) -> tuple[str, str] | None:
     """Check last assistant message in history for an elevated model.
     Falls back when the in-memory cache is empty (e.g. after app restart)."""
     try:
-        msgs = memory_service.get_messages(db, project_id, limit=5)
+        # v2026-06-10 FIX: memory_service.get_messages() never existed --
+        # the AttributeError was swallowed and sticky inference silently
+        # never worked after a restart. list_messages now returns the
+        # most recent N in chronological order.
+        msgs = memory_service.list_messages(db, project_id, limit=10)
         for msg in reversed(msgs):
             if msg.role == 'assistant' and msg.model and msg.model in _ELEVATED_MODELS:
                 prov = msg.provider or 'openai'

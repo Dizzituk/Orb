@@ -191,6 +191,36 @@ async def run_segmented_job(
     # v9.2: Load the build target profile from the build project
     profile = _load_build_target_profile(project_id, emit)
 
+    # PROVING RUN (2026-06-10): clone freshness gate for self-builds. ASTRA
+    # only ever builds ITSELF in the sandbox clone; building on a stale or
+    # dirty clone wastes the run, and promoting from one would roll live
+    # work backwards. Gate runs BEFORE any pre-warm or builder spend, and
+    # FAILS CLOSED for self-builds: a broken gate must never wave a
+    # self-build through unchecked.
+    if profile is not None:
+        _gate_passed = True
+        try:
+            from app.pipeline_v2.clone_freshness import is_self_build, check_clone_freshness
+            if is_self_build(profile):
+                _fresh = await check_clone_freshness(profile)
+                for _fl in _fresh.render_lines():
+                    emit(_fl)
+                _gate_passed = _fresh.ok
+                if not _gate_passed:
+                    emit("❌ Self-build refused: sandbox clone is not coherent with the host (see gate above)")
+        except Exception as _cf_err:
+            logger.error("[SEGMENT_LOOP] clone freshness gate crashed: %s", _cf_err)
+            try:
+                from app.pipeline_v2.clone_freshness import is_self_build as _isb
+                if _isb(profile):
+                    emit(f"❌ Self-build refused: freshness gate failed to run ({_cf_err}) — failing closed")
+                    _gate_passed = False
+            except Exception:
+                emit(f"❌ Self-build refused: freshness gate unavailable — failing closed")
+                _gate_passed = False
+        if not _gate_passed:
+            return JobState(job_id=job_id, overall_status="failed", total_segments=0)
+
     # v9.3: Pre-warm Gradle daemon for Android builds
     # v9.4 (2026-04-12): Phase 2 Job 9 — multi-target parallel pre-warming.
     # When the build project has target_ids set (Phase 0 Job 3 column), walk
@@ -337,6 +367,45 @@ async def run_segmented_job(
 
         # Overall success = v2 pipeline + all targets passed multi-target verify
         _all_pass = bool(v2_result.success) and (_mt_report is None or _mt_report.is_passing())
+
+        # JOB 3 (2026-06-10): one merged verdict (BVL + contract + spec review)
+        # so the human signs off from a single table instead of refereeing
+        # three contradicting reports.
+        _verdict = None
+        try:
+            from app.pipeline_v2.final_verdict import build_final_verdict, push_verdict_narrative
+            _verdict = build_final_verdict(
+                pipeline_result=v2_result,
+                contract_report=_mt_report,
+                spec=_v2_spec or parent_spec,
+            )
+            for _vline in _verdict.render_lines():
+                emit(_vline)
+            push_verdict_narrative(_verdict)
+        except Exception as _fv_err:
+            logger.warning("[SEGMENT_LOOP] Final verdict assembly failed (non-fatal): %s", _fv_err)
+
+        # JOB 11 (2026-06-10): agentic verifier final checkout — Claude with
+        # hands, driving the real app per acceptance criterion. Gated behind
+        # ASTRA_AGENTIC_VERIFIER=1 (real token spend) and Android targets
+        # only for now (perception tools are ADB-based). Advisory: it does
+        # not change _all_pass; the human sign-off remains the gate.
+        try:
+            from app.pipeline_v2.config import VERIFIER_AGENT_ENABLED
+            from app.pipeline_v2.clone_freshness import is_self_build as _vg_isb
+            if VERIFIER_AGENT_ENABLED and profile and (profile.language == "kotlin" or _vg_isb(profile)):
+                from app.pipeline_v2.verifier_agent.agent import run_verifier_agent
+                _ev_text = "\n".join(_verdict.render_lines()) if _verdict else ""
+                await run_verifier_agent(
+                    spec=_v2_spec or parent_spec or {},
+                    profile=profile,
+                    intent_text="",
+                    evidence_summary=_ev_text,
+                    job_id=job_id,
+                    emit=emit,
+                )
+        except Exception as _va_err:
+            logger.warning("[SEGMENT_LOOP] Agentic verifier failed (non-fatal): %s", _va_err)
 
         # v2.3: Auto-install and launch APK for Android builds
         if v2_result.success and profile and profile.language == "kotlin":
