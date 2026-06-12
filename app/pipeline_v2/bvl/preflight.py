@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/bvl/preflight.py
+# Purpose: JOB 6 (2026-06-10) - Pre-flight stage: get the app into a TESTABLE state
+# Called-by: app.pipeline_v2.bvl.bvl_orchestrator, app.pipeline_v2.bvl.retry_loop
+# Depends-on: app.pipeline_v2.build_targets, app.pipeline_v2.bvl.emulator_bridge, app.pipeline_v2.test_env
+# Last-renovated: 2026-06-11
 """
 JOB 6 (2026-06-10) - Pre-flight stage: get the app into a TESTABLE state
 before any verification runs, unattended.

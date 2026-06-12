@@ -1,4 +1,8 @@
 # FILE: app/experience/context.py
+# Purpose: Job context for journal emission.
+# Called-by: app.llm.critical_pipeline.stream_handler, app.orchestrator.final_checkout
+# Depends-on: app.experience.journal_writer
+# Last-renovated: 2026-06-11
 """
 Job context for journal emission.
 

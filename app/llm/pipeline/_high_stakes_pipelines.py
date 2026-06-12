@@ -1,4 +1,8 @@
 # FILE: app/llm/pipeline/_high_stakes_pipelines.py
+# Purpose: High-stakes pipeline: Block 4-6 artifact pipeline and legacy critique pipeline.
+# Called-by: app.llm.pipeline.high_stakes
+# Depends-on: app.jobs.schemas, app.llm.pipeline._high_stakes_helpers, app.llm.pipeline._high_stakes_utils, app.llm.pipeline.critique (+4 more)
+# Last-renovated: 2026-06-11
 """
 High-stakes pipeline: Block 4-6 artifact pipeline and legacy critique pipeline.
 

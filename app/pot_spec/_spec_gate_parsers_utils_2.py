@@ -1,3 +1,7 @@
+# Purpose: spec gate parsers utils 2
+# Called-by: app.pot_spec.spec_gate_parsers
+# Depends-on: app.pot_spec.spec_gate_parsers
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
 import os

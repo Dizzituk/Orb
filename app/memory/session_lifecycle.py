@@ -1,4 +1,8 @@
 # FILE: app/memory/session_lifecycle.py
+# Purpose: Scheduled job for conversation session lifecycle management.
+# Called-by: app.memory.startup, tests.test_conversation_memory
+# Depends-on: app.db, app.memory.conversation_models, app.memory.conversation_service, app.memory.knowledge_extractor
+# Last-renovated: 2026-06-11
 """
 Scheduled job for conversation session lifecycle management.
 

@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/_fd_powershell.py
+# Purpose: File Discovery — PowerShell command builders and output parsers.
+# Called-by: app.pot_spec.grounded.file_discovery
+# Depends-on: app.pot_spec.grounded._fd_models
+# Last-renovated: 2026-06-11
 """
 File Discovery — PowerShell command builders and output parsers.
 

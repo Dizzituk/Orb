@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/refactor_classifier.py
+# Purpose: SpecGate v2.0 - Refactor Match Classifier
+# Called-by: app.pot_spec.grounded._multi_file_detection_utils_2, app.pot_spec.grounded._refactor_classifier_utils_6, app.pot_spec.grounded._refactor_classifier_utils_7, app.pot_spec.grounded._refactor_classifier_utils_8 (+1 more)
+# Depends-on: app.pot_spec.grounded._refactor_classifier_utils_6, app.pot_spec.grounded._refactor_classifier_utils_7, app.pot_spec.grounded._refactor_classifier_utils_8, app.pot_spec.grounded.refactor_schemas (+1 more)
+# Last-renovated: 2026-06-11
 """
 SpecGate v2.0 - Refactor Match Classifier
 
@@ -27,9 +31,7 @@ Design Principles:
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 import re
 import time
 from collections import defaultdict

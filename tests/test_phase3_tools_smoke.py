@@ -1,3 +1,7 @@
+# Purpose: test phase3 tools smoke
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.pipeline_v2, app.pipeline_v2.llm_tool_defs, app.pipeline_v2.llm_tools_anthropic, app.pipeline_v2.sandbox_tools
+# Last-renovated: 2026-06-11
 import sys, asyncio
 sys.path.insert(0, "D:/Orb")
 

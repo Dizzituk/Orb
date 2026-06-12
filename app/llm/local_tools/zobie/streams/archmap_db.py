@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/streams/archmap_db.py
+# Purpose: CREATE ARCHITECTURE MAP (from DB) stream generator - Opus generates map.
+# Called-by: app.llm.local_tools.zobie.streams, app.llm.local_tools.zobie.streams.archmap_full
+# Depends-on: app.llm.audit_logger, app.llm.local_tools.archmap_helpers, app.llm.local_tools.zobie.config, app.llm.local_tools.zobie.db_ops (+6 more)
+# Last-renovated: 2026-06-11
 """CREATE ARCHITECTURE MAP (from DB) stream generator - Opus generates map.
 
 Extracted from zobie_tools.py for modularity.

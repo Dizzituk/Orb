@@ -1,4 +1,8 @@
 # FILE: app/memory/conversation_schemas.py
+# Purpose: Pydantic schemas for the Conversational Memory Layer.
+# Called-by: app.memory.conversation_service, app.memory.summary_generator, tests.test_conversation_memory
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Pydantic schemas for the Conversational Memory Layer.
 

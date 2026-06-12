@@ -1,4 +1,8 @@
 # FILE: app/cloud/gdrive_service.py
+# Purpose: Google Drive cloud service via Google Drive API.
+# Called-by: app.cloud.router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Google Drive cloud service via Google Drive API.
 
@@ -9,8 +13,6 @@ v1.0 (2026-03-14): Initial — upload, list, download via Google API.
 """
 from __future__ import annotations
 
-import io
-import json
 import logging
 import os
 from pathlib import Path

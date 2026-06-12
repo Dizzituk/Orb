@@ -1,4 +1,8 @@
 # FILE: app/jobs/schemas.py
+# Purpose: Phase 4 Job System - Schemas and Envelopes (SPEC-COMPLIANT)
+# Called-by: app.artefacts.service, app.introspection.service, app.jobs._engine_helpers, app.jobs.engine (+16 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Phase 4 Job System - Schemas and Envelopes (SPEC-COMPLIANT)
 

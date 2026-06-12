@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/fs_live_ops.py
+# Purpose: Live filesystem operations for the filesystem query system.
+# Called-by: app.llm.local_tools.zobie._fs_live_ops_utils_1, app.llm.local_tools.zobie._fs_write_ops_utils_2, app.llm.local_tools.zobie.fs_write_ops, app.llm.local_tools.zobie.streams._fs_query_utils_3 (+2 more)
+# Depends-on: app.llm.local_tools.zobie._fs_live_ops_utils_1, app.llm.local_tools.zobie.config, app.llm.local_tools.zobie.fs_path_utils, app.llm.local_tools.zobie.sandbox_client (+1 more)
+# Last-renovated: 2026-06-11
 """Live filesystem operations for the filesystem query system.
 
 v10.0 (2026-03): Sandbox-only. All reads go through the sandbox controller.

@@ -1,4 +1,8 @@
 # FILE: app/content/video_pipeline/edl_builder.py
+# Purpose: EDL Builder — deterministic Edit Decision List construction.
+# Called-by: app.content.video_pipeline.orchestrator
+# Depends-on: app.content.production.edit_engine, app.content.video_pipeline.models
+# Last-renovated: 2026-06-11
 """
 EDL Builder — deterministic Edit Decision List construction.
 

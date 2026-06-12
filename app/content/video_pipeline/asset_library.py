@@ -1,4 +1,8 @@
 # FILE: app/content/video_pipeline/asset_library.py
+# Purpose: Video Asset Library — semantic search over previously downloaded clips.
+# Called-by: app.content.video_pipeline.asset_resolver, app.content.video_pipeline.bake_segment, app.content.video_pipeline.orchestrator
+# Depends-on: app.db, app.embeddings.service, app.memory.rag_entries_model
+# Last-renovated: 2026-06-11
 """
 Video Asset Library — semantic search over previously downloaded clips.
 

@@ -1,4 +1,8 @@
 # FILE: app/optimize/executor.py
+# Purpose: Phase D: Executor.
+# Called-by: app.optimize.orchestrator
+# Depends-on: app.optimize.models, app.optimize.profiler, app.pipeline_v2.agentic_builder, app.pipeline_v2.models (+1 more)
+# Last-renovated: 2026-06-11
 """
 Phase D: Executor.
 

@@ -1,4 +1,8 @@
 # FILE: app/debug/memory_tool_definitions.py
+# Purpose: Tool schemas for the conversation LLM's memory access.
+# Called-by: app.debug.tool_definitions
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Tool schemas for the conversation LLM's memory access.
 

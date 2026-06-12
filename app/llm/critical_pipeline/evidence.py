@@ -1,4 +1,8 @@
 # FILE: app/llm/critical_pipeline/evidence.py
+# Purpose: Evidence gathering for Critical Pipeline.
+# Called-by: app.llm.critical_pipeline, app.llm.critical_pipeline._stream_handler_utils, app.llm.critical_pipeline.quickcheck_micro, app.llm.critical_pipeline.stream_handler
+# Depends-on: app.llm.critical_pipeline.config, app.sandbox_fs
+# Last-renovated: 2026-06-11
 """
 Evidence gathering for Critical Pipeline.
 

@@ -1,4 +1,8 @@
 # FILE: app/memory/knowledge_extractor.py
+# Purpose: Layer 3: Extract durable knowledge from conversation summaries
+# Called-by: app.memory.session_lifecycle, tests.test_conversation_memory
+# Depends-on: app.astra_memory.confidence_scoring, app.astra_memory.preference_models, app.astra_memory.preference_service, app.llm._streaming_utils_3 (+3 more)
+# Last-renovated: 2026-06-11
 """
 Layer 3: Extract durable knowledge from conversation summaries
 and promote it to ASTRA's permanent memory system.

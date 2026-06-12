@@ -1,3 +1,7 @@
+# Purpose: Context utilities for LLM calls.
+# Called-by: app.capabilities.injector, app.llm.routing.prompt_builders, tests.test_context
+# Depends-on: app.capabilities
+# Last-renovated: 2026-06-11
 # app/llm/context.py
 """
 Context utilities for LLM calls.

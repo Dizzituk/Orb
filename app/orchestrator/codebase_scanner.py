@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/codebase_scanner.py
+# Purpose: Enhanced Codebase Scanner — AST-based symbol extraction with call graph.
+# Called-by: app.llm.local_tools.zobie.streams._codebase_report_structural, app.orchestrator.refactor_pipeline
+# Depends-on: app.orchestrator, app.orchestrator._codebase_scanner_health, app.orchestrator._codebase_scanner_utils_2, app.orchestrator._codebase_scanner_utils_3 (+3 more)
+# Last-renovated: 2026-06-11
 """
 Enhanced Codebase Scanner — AST-based symbol extraction with call graph.
 
@@ -16,11 +20,8 @@ BUILD_ID: 2026-02-20-v1.0-enhanced-codebase-scanner
 from __future__ import annotations
 
 import ast
-import hashlib
 import logging
 import os
-import re
-import sys
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.orchestrator.codebase_scanner_models import (

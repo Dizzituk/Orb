@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/scaffolds/android_config_scaffolds.py
+# Purpose: Android Configuration File Scaffolds.
+# Called-by: app.pipeline_v2.bvl.tier1_sanity, app.pipeline_v2.scaffold_engine
+# Depends-on: app.pipeline_v2.build_targets
+# Last-renovated: 2026-06-11
 """
 Android Configuration File Scaffolds.
 

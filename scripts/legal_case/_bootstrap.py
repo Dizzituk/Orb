@@ -1,4 +1,8 @@
 # FILE: scripts/legal_case/_bootstrap.py
+# Purpose: Shared bootstrap for the legal_case_* scripts.
+# Called-by: scripts.legal_case.legal_case_extractor, scripts.legal_case.legal_case_rebuild, scripts.legal_case.legal_case_reconcile
+# Depends-on: app.crypto, app.db, app.settings.service, app.voice.tts_server
+# Last-renovated: 2026-06-11
 """
 Shared bootstrap for the legal_case_* scripts.
 

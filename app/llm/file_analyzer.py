@@ -1,4 +1,8 @@
 # FILE: app/llm/file_analyzer.py
+# Purpose: File analysis utilities for LLM routing.
+# Called-by: app.bridge.attachment_describe, app.debug.executors.user_files, app.drive.content_indexer, app.drive.router (+7 more)
+# Depends-on: app.llm._file_analyzer_utils_2, app.llm._pptx_extractor, app.llm._xlsx_extractor
+# Last-renovated: 2026-06-11
 """
 File analysis utilities for LLM routing.
 
@@ -20,10 +24,7 @@ PDF ROUTING RULE:
 - image_count > 0 → Gemini image.complex
 """
 
-import os
 import io
-import re
-import json
 import logging
 from typing import Optional, Dict, Any, Tuple, Callable
 from pathlib import Path

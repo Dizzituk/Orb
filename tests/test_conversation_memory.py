@@ -1,4 +1,8 @@
 # FILE: tests/test_conversation_memory.py
+# Purpose: Integration tests for the Conversational Memory Layer (CONV-MEMORY-001).
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.db, app.memory.conversation_models, app.memory.conversation_schemas, app.memory.conversation_service (+8 more)
+# Last-renovated: 2026-06-11
 """
 Integration tests for the Conversational Memory Layer (CONV-MEMORY-001).
 

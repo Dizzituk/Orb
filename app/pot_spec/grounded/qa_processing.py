@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/qa_processing.py
+# Purpose: Q&A File Analysis and Reply Generation (v1.30)
+# Called-by: app.pot_spec.grounded, app.pot_spec.grounded._evidence_gathering_utils_8
+# Depends-on: app.pot_spec.grounded._qa_processing_utils_6, app.pot_spec.grounded._qa_processing_utils_7, app.pot_spec.grounded._qa_processing_utils_8, app.pot_spec.grounded.sandbox_discovery
+# Last-renovated: 2026-06-11
 """
 Q&A File Analysis and Reply Generation (v1.30)
 
@@ -37,7 +41,6 @@ v1.8 (2026-01): LLM-powered reply generation
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any, Dict, List, Optional
 from app.pot_spec.grounded._qa_processing_utils_6 import DEEP_ANALYSIS_MAX_TOKENS, DEEP_ANALYSIS_MIN_TOKENS, NON_QA_MAX_TOKENS, QA_PROCESSING_BUILD_ID, STANDARD_QA_MAX_TOKENS, STANDARD_QA_MIN_TOKENS, STANDARD_QA_TOKENS_PER_QUESTION, _generate_reply_fallback
 from app.pot_spec.grounded._qa_processing_utils_7 import DEEP_ANALYSIS_BASE_TOKENS, DEEP_ANALYSIS_TOKENS_PER_QUESTION, MULTI_FILE_SYNTHESIS_MAX_TOKENS, MULTI_FILE_SYNTHESIS_MIN_TOKENS, MULTI_FILE_SYNTHESIS_TOKENS_PER_FILE, STANDARD_QA_BASE_TOKENS, _needs_deep_analysis, detect_simple_instruction

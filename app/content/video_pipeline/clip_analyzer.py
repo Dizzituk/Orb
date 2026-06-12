@@ -1,4 +1,8 @@
 # FILE: app/content/video_pipeline/clip_analyzer.py
+# Purpose: Clip Analyzer — rich visual description of downloaded clips.
+# Called-by: app.content.video_pipeline.asset_resolver
+# Depends-on: app.content.video_pipeline.models
+# Last-renovated: 2026-06-11
 """
 Clip Analyzer — rich visual description of downloaded clips.
 

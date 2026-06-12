@@ -1,4 +1,8 @@
 # FILE: app/investments/router.py
+# Purpose: FastAPI router for investments endpoints.
+# Called-by: main
+# Depends-on: app.auth, app.db, app.investments, app.investments.coinmarketcap_client (+4 more)
+# Last-renovated: 2026-06-11
 """
 FastAPI router for investments endpoints.
 

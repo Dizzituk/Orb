@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/refactor_schemas.py
+# Purpose: SpecGate v2.0 - Refactor Classification Schemas
+# Called-by: app.pot_spec.grounded._multi_file_detection_utils_2, app.pot_spec.grounded._refactor_classifier_utils_6, app.pot_spec.grounded._refactor_classifier_utils_7, app.pot_spec.grounded._refactor_classifier_utils_8 (+3 more)
+# Depends-on: app.pot_spec.grounded._refactor_schemas_utils_1
+# Last-renovated: 2026-06-11
 """
 SpecGate v2.0 - Refactor Classification Schemas
 

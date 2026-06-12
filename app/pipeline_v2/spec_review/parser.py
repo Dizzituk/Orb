@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/spec_review/parser.py
+# Purpose: Parses Opus's JSON response into a ReviewReport.
+# Called-by: app.pipeline_v2.spec_review.reviewer
+# Depends-on: app.pipeline_v2.spec_review.models
+# Last-renovated: 2026-06-11
 """
 Parses Opus's JSON response into a ReviewReport.
 

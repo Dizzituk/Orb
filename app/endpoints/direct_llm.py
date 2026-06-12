@@ -1,4 +1,8 @@
 # FILE: app/endpoints/direct_llm.py
+# Purpose: Direct LLM endpoint - LLM calls without project context.
+# Called-by: app.endpoints
+# Depends-on: app.auth, app.auth.middleware, app.helpers.llm_utils, app.llm (+2 more)
+# Last-renovated: 2026-06-11
 """
 Direct LLM endpoint - LLM calls without project context.
 

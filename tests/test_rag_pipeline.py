@@ -1,3 +1,7 @@
+# Purpose: Tests for RAG pipeline.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.db, app.rag.models, app.rag.pipeline
+# Last-renovated: 2026-06-11
 # tests/test_rag_pipeline.py
 """Tests for RAG pipeline."""
 

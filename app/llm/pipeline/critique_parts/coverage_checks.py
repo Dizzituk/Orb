@@ -1,4 +1,8 @@
 # FILE: app/llm/pipeline/critique_parts/coverage_checks.py
+# Purpose: Deterministic Critique — Acceptance Criteria Coverage.
+# Called-by: app.llm.pipeline.critique_parts.deterministic_verdict
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Deterministic Critique — Acceptance Criteria Coverage.
 

@@ -1,3 +1,7 @@
+# Purpose: Orb LLM Routing Policy Module
+# Called-by: app.llm, tests.test_llm_policy
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Orb LLM Routing Policy Module
 

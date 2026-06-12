@@ -1,4 +1,8 @@
 # FILE: app/builds/router.py
+# Purpose: Build project router — CRUD + pipeline state endpoints.
+# Called-by: main
+# Depends-on: app.auth, app.builds, app.builds.messages, app.builds.schemas (+3 more)
+# Last-renovated: 2026-06-11
 """
 Build project router — CRUD + pipeline state endpoints.
 Prefix: /builds/projects

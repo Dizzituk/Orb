@@ -1,4 +1,8 @@
 # FILE: D:\Orb\app\llm\local_tools\arch_query.py
+# Purpose: Architecture Query Tool - Reads signature files directly (no service).
+# Called-by: app.llm.pipeline._evidence_loop_utils_3, app.llm.routing.local_actions, app.pot_spec.evidence_collector
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Architecture Query Tool - Reads signature files directly (no service).
 

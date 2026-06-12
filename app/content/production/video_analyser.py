@@ -1,4 +1,8 @@
 # FILE: app/content/production/video_analyser.py
+# Purpose: Video Analyser — Gemini watches a video and extracts full context.
+# Called-by: app.content.distribution.youtube_router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Video Analyser — Gemini watches a video and extracts full context.
 

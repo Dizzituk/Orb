@@ -1,4 +1,8 @@
 # FILE: app/content/video_pipeline/orchestrator.py
+# Purpose: Pipeline Orchestrator — chains all stages together.
+# Called-by: app.content.video_pipeline.router
+# Depends-on: app.content.production.edit_engine, app.content.production.thumbnail_gen, app.content.video_pipeline.asset_library, app.content.video_pipeline.asset_resolver (+10 more)
+# Last-renovated: 2026-06-11
 """
 Pipeline Orchestrator — chains all stages together.
 
@@ -18,7 +22,6 @@ import os
 import json
 import uuid
 import logging
-import asyncio
 from datetime import datetime, timezone
 from typing import Optional, Callable, Awaitable, AsyncGenerator
 from pathlib import Path

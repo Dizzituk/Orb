@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/checkout.py
+# Purpose: ASTRA v2.2 Enhanced Checkout — multi-step verification protocol.
+# Called-by: app.pipeline_v2.orchestrator
+# Depends-on: app.pipeline_v2.config, app.pipeline_v2.llm_caller, app.pipeline_v2.sandbox_tools, app.pipeline_v2.screenshot (+1 more)
+# Last-renovated: 2026-06-11
 """
 ASTRA v2.2 Enhanced Checkout — multi-step verification protocol.
 
@@ -21,7 +25,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum

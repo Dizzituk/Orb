@@ -1,4 +1,8 @@
 # FILE: tests/test_spec_gate_grounded.py
+# Purpose: Tests for SpecGate Contract v1 (Grounded Implementation).
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.llm.spec_gate_stream, app.pot_spec.evidence_collector, app.pot_spec.spec_gate_grounded, app.pot_spec.spec_gate_types
+# Last-renovated: 2026-06-11
 """
 Tests for SpecGate Contract v1 (Grounded Implementation).
 

@@ -1,4 +1,8 @@
 # FILE: app/embeddings/router.py
+# Purpose: FastAPI routes for embedding operations.
+# Called-by: main
+# Depends-on: app.auth, app.db, app.embeddings, app.embeddings.models (+5 more)
+# Last-renovated: 2026-06-11
 """
 FastAPI routes for embedding operations.
 """

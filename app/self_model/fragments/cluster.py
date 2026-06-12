@@ -1,4 +1,8 @@
 # FILE: app/self_model/fragments/cluster.py
+# Purpose: Theme clustering — group semantically-similar fragments into themes.
+# Called-by: app.self_model.fragments.capture, app.self_model.fragments.router, app.self_model.fragments.surfacing
+# Depends-on: app.self_model.fragments.models, app.self_model.fragments.store
+# Last-renovated: 2026-06-11
 """
 Theme clustering — group semantically-similar fragments into themes.
 

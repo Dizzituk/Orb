@@ -1,4 +1,8 @@
 # FILE: app/invocation/tier_gate.py
+# Purpose: Tier Promotion Gate.
+# Called-by: app.invocation, app.invocation.router
+# Depends-on: app.invocation.classifier, app.invocation.models
+# Last-renovated: 2026-06-11
 """
 Tier Promotion Gate.
 

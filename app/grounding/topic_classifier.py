@@ -1,4 +1,8 @@
 # FILE: app/grounding/topic_classifier.py
+# Purpose: Topic Classifier for the Grounded Intelligence System.
+# Called-by: app.grounding.grounding_gate
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Topic Classifier for the Grounded Intelligence System.
 

@@ -1,4 +1,8 @@
 # FILE: tests/test_architecture_commands.py
+# Purpose: Tests for architecture commands:
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.llm.local_tools.archmap_helpers, app.llm.local_tools.zobie_tools
+# Last-renovated: 2026-06-11
 """
 Tests for architecture commands:
 - UPDATE ARCHITECTURE: Scan repo → store in .architecture/

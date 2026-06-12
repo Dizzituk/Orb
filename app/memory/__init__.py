@@ -1,4 +1,8 @@
 # FILE: app/memory/__init__.py
+# Purpose: ASTRA Unified Memory System.
+# Called-by: app.bridge.capability_layer, app.builds.pipeline_bridge, app.builds.stage_hooks, app.db (+44 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 ASTRA Unified Memory System.
 

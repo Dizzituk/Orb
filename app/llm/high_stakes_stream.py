@@ -1,4 +1,8 @@
 # FILE: app/llm/high_stakes_stream.py
+# Purpose: High-stakes critique stream generator.
+# Called-by: app.llm.routing.handler_registry
+# Depends-on: app.llm.audit_logger, app.llm.router, app.llm.schemas, app.llm.stage_trace (+4 more)
+# Last-renovated: 2026-06-11
 """
 High-stakes critique stream generator.
 

@@ -1,4 +1,8 @@
 # FILE: app/astra_memory/confidence_config.py
+# Purpose: ASTRA Memory Confidence System - Configuration
+# Called-by: app.astra_memory, app.astra_memory._retrieval_utils, app.astra_memory.confidence_scoring, app.astra_memory.decay_job (+4 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 ASTRA Memory Confidence System - Configuration
 

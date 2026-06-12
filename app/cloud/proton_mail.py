@@ -1,4 +1,8 @@
 # FILE: app/cloud/proton_mail.py
+# Purpose: Proton Mail send stub.
+# Called-by: app.bridge.router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Proton Mail send stub.
 

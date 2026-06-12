@@ -1,3 +1,7 @@
+# Purpose: rename policy utils 2
+# Called-by: app.pot_spec.grounded.rename_policy
+# Depends-on: app.pot_spec.grounded.rename_policy
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import re
 from dataclasses import dataclass, field

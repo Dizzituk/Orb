@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/bvl/tier2_test_generator.py
+# Purpose: Tier 2 Test Generator — LLM-powered behavioral test script generation.
+# Called-by: app.pipeline_v2.bvl.bvl_orchestrator, app.pipeline_v2.bvl.tier2_behavioral
+# Depends-on: app.pipeline_v2.build_targets, app.pipeline_v2.bvl.bvl_models, app.pipeline_v2.config, app.pipeline_v2.llm_caller
+# Last-renovated: 2026-06-11
 """
 Tier 2 Test Generator — LLM-powered behavioral test script generation.
 

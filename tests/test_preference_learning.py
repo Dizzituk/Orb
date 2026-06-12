@@ -1,4 +1,8 @@
 # FILE: tests/test_preference_learning.py
+# Purpose: Tests for ASTRA Memory preference learning module.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.astra_memory.learning, app.astra_memory.router, app.db
+# Last-renovated: 2026-06-11
 """
 Tests for ASTRA Memory preference learning module.
 """

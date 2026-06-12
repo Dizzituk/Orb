@@ -1,3 +1,7 @@
+# Purpose: service utils 2
+# Called-by: app.bridge.missed_replies, app.bridge.router, app.memory.service
+# Depends-on: app.memory, app.memory.models, app.memory.schemas
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 from app.memory import models, schemas
 from sqlalchemy.orm import Session

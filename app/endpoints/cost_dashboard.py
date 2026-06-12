@@ -1,4 +1,8 @@
 # FILE: app/endpoints/cost_dashboard.py
+# Purpose: Cost dashboard API endpoint.
+# Called-by: main
+# Depends-on: app.cost.cost_budget, app.cost.cost_ledger, app.orchestrator.architecture_cache, app.pot_spec.spec_cache
+# Last-renovated: 2026-06-11
 """
 Cost dashboard API endpoint.
 

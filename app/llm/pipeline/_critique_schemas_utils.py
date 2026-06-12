@@ -1,3 +1,7 @@
+# Purpose: critique schemas utils
+# Called-by: app.llm.pipeline.critique_schemas
+# Depends-on: app.llm.pipeline.critique_schemas
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import json
 import logging

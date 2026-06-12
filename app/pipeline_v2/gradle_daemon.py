@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/gradle_daemon.py
+# Purpose: Gradle Daemon Pre-Warm & Async Build Manager.
+# Called-by: app.orchestrator.segment_loop
+# Depends-on: app.pipeline_v2.build_targets
+# Last-renovated: 2026-06-11
 """
 Gradle Daemon Pre-Warm & Async Build Manager.
 

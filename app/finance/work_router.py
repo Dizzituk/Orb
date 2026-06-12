@@ -1,4 +1,8 @@
 # FILE: app/finance/work_router.py
+# Purpose: Work-ledger read API (v8.0 rebuild).
+# Called-by: app.bridge.dashboards, app.llm.routing.domain_context, main
+# Depends-on: app.auth, app.db, app.finance.models, app.finance.models_workday (+1 more)
+# Last-renovated: 2026-06-11
 """
 Work-ledger read API (v8.0 rebuild).
 
@@ -38,7 +42,55 @@ router = APIRouter(
 
 # ─── serialization ───────────────────────────────────────
 
-def _serialize_day(d: WorkDay) -> dict:
+def _fuel_rate_per_mile(db: Session) -> float | None:
+    """Estimated fuel cost per mile (2026-06-11): total logged fuel fills
+    divided by total logged work-day miles — trailing 90 days when that
+    window has enough data (2+ fills, 200+ miles), else all-time. A tank
+    fill pays for future miles, so per-day fuel is always an apportioned
+    estimate, never the fill amount on the day it happened."""
+    from datetime import date, timedelta
+    from app.finance.models import Transaction
+
+    def _window(since):
+        fq = db.query(func.coalesce(func.sum(Transaction.amount), 0.0)).filter(
+            Transaction.is_deleted == False,  # noqa: E712
+            Transaction.transaction_type == "expense",
+            Transaction.description.ilike("%fuel%"),
+        )
+        fc = db.query(func.count(Transaction.id)).filter(
+            Transaction.is_deleted == False,  # noqa: E712
+            Transaction.transaction_type == "expense",
+            Transaction.description.ilike("%fuel%"),
+        )
+        mq = db.query(func.coalesce(func.sum(WorkDay.total_distance), 0.0)).filter(
+            WorkDay.status == "complete",
+        )
+        if since is not None:
+            fq = fq.filter(Transaction.transaction_date >= since)
+            fc = fc.filter(Transaction.transaction_date >= since)
+            mq = mq.filter(WorkDay.work_date >= since)
+        return float(fq.scalar() or 0.0), int(fc.scalar() or 0), float(mq.scalar() or 0.0)
+
+    try:
+        spend, fills, miles = _window(date.today() - timedelta(days=90))
+        if fills < 2 or miles < 200:
+            spend, fills, miles = _window(None)
+        if spend > 0 and miles > 0:
+            return spend / miles
+    except Exception:  # pragma: no cover - estimate must never break the ledger
+        pass
+    return None
+
+
+def _serialize_day(d: WorkDay, fuel_rate: float | None = None) -> dict:
+    # Fuel column semantics (2026-06-11): an explicit per-day figure wins if
+    # ever set; otherwise estimate rate x distance so every completed day
+    # shows its true share of fuel instead of a dash or a misplaced fill.
+    fuel_value = d.fuel_cost
+    fuel_estimated = False
+    if not fuel_value and fuel_rate and d.total_distance:
+        fuel_value = round(fuel_rate * d.total_distance, 2)
+        fuel_estimated = True
     return {
         "id": d.id,
         "work_date": d.work_date.isoformat() if d.work_date else None,
@@ -58,7 +110,8 @@ def _serialize_day(d: WorkDay) -> dict:
         "gross_earnings": d.gross_earnings,
         "per_hour": d.per_hour,
         "per_parcel": d.per_parcel,
-        "fuel_cost": d.fuel_cost,
+        "fuel_cost": fuel_value,
+        "fuel_estimated": fuel_estimated,
         "route_area": d.route_area,
         "tax_year": d.tax_year,
     }
@@ -81,7 +134,8 @@ def days_for(db: Session, tax_year: str) -> list[dict]:
               .filter(WorkDay.tax_year == tax_year)
               .order_by(WorkDay.work_date.desc())
               .all())
-    return [_serialize_day(d) for d in rows]
+    rate = _fuel_rate_per_mile(db)
+    return [_serialize_day(d, rate) for d in rows]
 
 
 def _active_fixed_costs(db: Session):

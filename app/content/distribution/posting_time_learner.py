@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/posting_time_learner.py
+# Purpose: Posting Time Learner — optimises scheduling based on real analytics.
+# Called-by: app.content.distribution.algorithm_strategy, app.content.distribution.scheduler, app.content.distribution_router
+# Depends-on: app.content.models
+# Last-renovated: 2026-06-11
 """
 Posting Time Learner — optimises scheduling based on real analytics.
 

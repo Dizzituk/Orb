@@ -1,4 +1,8 @@
 # FILE: app/lifestyle/product_service.py
+# Purpose: Product library service — Job 4 of the memory roadmap (2026-06-10).
+# Called-by: app.lifestyle.product_router
+# Depends-on: app.lifestyle.models, app.lifestyle.product_models
+# Last-renovated: 2026-06-11
 """
 Product library service — Job 4 of the memory roadmap (2026-06-10).
 

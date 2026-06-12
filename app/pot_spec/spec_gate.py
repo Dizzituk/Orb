@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/spec_gate.py
+# Purpose: Spec Gate - Converts user intent into a PoT spec DRAFT as a single JSON object.
+# Called-by: app.jobs.engine, app.pot_spec, tests.test_spec_gate_parse
+# Depends-on: app.llm.streaming
+# Last-renovated: 2026-06-11
 """
 Spec Gate - Converts user intent into a PoT spec DRAFT as a single JSON object.
 

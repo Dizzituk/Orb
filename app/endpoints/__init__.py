@@ -1,4 +1,8 @@
 # FILE: app/endpoints/__init__.py
+# Purpose: Endpoint routers for Orb API.
+# Called-by: main
+# Depends-on: app.endpoints.chat, app.endpoints.chat_attachments, app.endpoints.direct_llm
+# Last-renovated: 2026-06-11
 """
 Endpoint routers for Orb API.
 

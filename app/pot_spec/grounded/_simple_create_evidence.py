@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/_simple_create_evidence.py
+# Purpose: Evidence fulfilment loop for SpecGate CREATE path.
+# Called-by: app.pot_spec.grounded.simple_create
+# Depends-on: app.llm.pipeline.evidence_loop, app.pot_spec.grounded._simple_create_utils_12, app.pot_spec.grounded._simple_create_utils_14, app.pot_spec.grounded._simple_create_utils_15
+# Last-renovated: 2026-06-11
 """
 Evidence fulfilment loop for SpecGate CREATE path.
 
@@ -24,6 +28,7 @@ from app.pot_spec.grounded._simple_create_utils_14 import (
     _host_list_directory,
 )
 from app.pot_spec.grounded._simple_create_utils_15 import _host_read_file
+from app.pot_spec.grounded._stage_reasoning import spec_gate_reasoning, spec_gate_timeout_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -106,10 +111,10 @@ async def fulfil_evidence_requests(
                     model_id=model_id,
                     messages=[{"role": "user", "content": _final_prompt}],
                     system_prompt=system_prompt,
-                temperature=1.0,  # v2.7: Anthropic thinking requires temperature=1.0
-                max_tokens=16384,  # v2.7: 8K thinking + 8K response
-                timeout_seconds=max(_CREATE_ANALYSIS_TIMEOUT, 300),  # v2.7: thinking consumes wall-clock
-                reasoning={"effort": "high"},  # v2.7: Opus 4.6 extended thinking for evidence reflection
+                temperature=1.0,  # stripped by registry when the model requires it
+                max_tokens=16384,  # floored upward by registry per effort level
+                timeout_seconds=max(_CREATE_ANALYSIS_TIMEOUT, spec_gate_timeout_seconds()),
+                reasoning=spec_gate_reasoning(),  # v2.8: env-overridable (SPEC_GATE_REASONING_EFFORT)
                 )
                 if _final_result.is_success() and _final_result.content:
                     current_analysis = _final_result.content.strip()
@@ -139,10 +144,10 @@ async def fulfil_evidence_requests(
                 model_id=model_id,
                 messages=[{"role": "user", "content": re_prompt}],
                 system_prompt=system_prompt,
-                temperature=1.0,  # v2.7: Anthropic thinking requires temperature=1.0
-                max_tokens=16384,  # v2.7: 8K thinking + 8K response
-                timeout_seconds=max(_CREATE_ANALYSIS_TIMEOUT, 300),  # v2.7: thinking consumes wall-clock
-                reasoning={"effort": "high"},  # v2.7: Opus 4.6 extended thinking for evidence reflection
+                temperature=1.0,  # stripped by registry when the model requires it
+                max_tokens=16384,  # floored upward by registry per effort level
+                timeout_seconds=max(_CREATE_ANALYSIS_TIMEOUT, spec_gate_timeout_seconds()),
+                reasoning=spec_gate_reasoning(),  # v2.8: env-overridable (SPEC_GATE_REASONING_EFFORT)
             )
             if result.is_success() and result.content:
                 current_analysis = result.content.strip()

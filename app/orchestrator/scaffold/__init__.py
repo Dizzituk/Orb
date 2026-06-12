@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/scaffold/__init__.py
+# Purpose: Scaffold Engine — Deterministic Code Generation.
+# Called-by: app.orchestrator.scaffold.integration, app.orchestrator.scaffold.validator
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Scaffold Engine — Deterministic Code Generation.
 

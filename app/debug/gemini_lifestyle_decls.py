@@ -1,4 +1,8 @@
 # FILE: app/debug/gemini_lifestyle_tools.py
+# Purpose: Lifestyle tool declarations and executors for the Gemini multimodal
+# Called-by: app.debug.gemini_lifestyle_tools
+# Depends-on: app.debug.gemini_lifestyle_decls2
+# Last-renovated: 2026-06-11
 """
 Lifestyle tool declarations and executors for the Gemini multimodal
 tool loop (app.debug.gemini_tool_loop).

@@ -1,4 +1,8 @@
 # FILE: app/endpoints/chat.py
+# Purpose: Chat endpoint - text-only chat without attachments.
+# Called-by: app.endpoints
+# Depends-on: app.auth, app.auth.middleware, app.db, app.embeddings (+8 more)
+# Last-renovated: 2026-06-11
 """
 Chat endpoint - text-only chat without attachments.
 

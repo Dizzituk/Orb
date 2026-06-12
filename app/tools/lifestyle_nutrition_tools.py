@@ -1,4 +1,8 @@
 # FILE: app/tools/lifestyle_nutrition_tools.py
+# Purpose: Nutrition tool handlers that don't fit in lifestyle_tools.py (kept under the
+# Called-by: app.debug.gemini_lifestyle_tools, app.tools.lifestyle_tools
+# Depends-on: app.lifestyle.nutrition_copy, app.lifestyle.service, app.tools.lifestyle_tools
+# Last-renovated: 2026-06-11
 """
 Nutrition tool handlers that don't fit in lifestyle_tools.py (kept under the
 size ceiling). Currently: meal-prep splitting — divide a batch cook's macros

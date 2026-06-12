@@ -1,4 +1,8 @@
 # FILE: app/llm/pipeline/evidence_contract_prompt.py
+# Purpose: Shared prompt block for the Evidence-or-Request Contract (v2.0).
+# Called-by: app.llm.pipeline._high_stakes_prompt_build, app.llm.pipeline.high_stakes
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Shared prompt block for the Evidence-or-Request Contract (v2.0).
 

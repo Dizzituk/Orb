@@ -1,4 +1,8 @@
 # FILE: app/debug/gemini_tool_loop.py
+# Purpose: Gemini Tool Loop — native function-calling loop for debug lock mode.
+# Called-by: app.llm.routing.image_chat_routing
+# Depends-on: app.debug.gemini_finance_tools, app.debug.gemini_lifestyle_tools, app.llm.model_families
+# Last-renovated: 2026-06-11
 """
 Gemini Tool Loop — native function-calling loop for debug lock mode.
 
@@ -26,7 +30,6 @@ Event types yielded:
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 from pathlib import Path

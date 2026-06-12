@@ -1,3 +1,7 @@
+# Purpose: refactor classifier utils 6
+# Called-by: app.pot_spec.grounded.refactor_classifier
+# Depends-on: app.pot_spec.grounded.refactor_classifier, app.pot_spec.grounded.refactor_schemas
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 from .refactor_schemas import BucketSummary, ChangeDecision, ClassifiedMatch, MatchBucket, RiskLevel
 from .refactor_schemas import ClassifiedMatchV3, ExpansionFailureReason, ExpansionResult, ReasonCode

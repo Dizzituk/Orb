@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/bvl/bvl_orchestrator.py
+# Purpose: BVL Orchestrator — coordinates the three-tier verification cascade.
+# Called-by: app.pipeline_v2.orchestrator
+# Depends-on: app.pipeline_v2.build_targets, app.pipeline_v2.bvl.bvl_models, app.pipeline_v2.bvl.emulator_bridge, app.pipeline_v2.bvl.preflight (+6 more)
+# Last-renovated: 2026-06-11
 """
 BVL Orchestrator — coordinates the three-tier verification cascade.
 

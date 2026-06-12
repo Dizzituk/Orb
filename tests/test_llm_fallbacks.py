@@ -1,4 +1,8 @@
 # FILE: tests/test_llm_fallbacks.py
+# Purpose: Tests for app/llm/fallbacks.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.llm, app.llm.fallbacks
+# Last-renovated: 2026-06-11
 """
 Tests for app/llm/fallbacks.py
 LLM failover logic - handles provider failures gracefully.

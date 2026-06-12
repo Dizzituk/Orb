@@ -1,4 +1,8 @@
 # FILE: app/self_model/fragments/surfacing.py
+# Purpose: Cold-memory surfacing.
+# Called-by: app.self_model.fragments.router
+# Depends-on: app.embeddings.gemini_provider, app.self_model.fragments.cluster, app.self_model.fragments.store, app.self_model.fragments.weights
+# Last-renovated: 2026-06-11
 """
 Cold-memory surfacing.
 

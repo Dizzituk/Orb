@@ -1,3 +1,7 @@
+# Purpose: news profiles
+# Called-by: app.briefing.briefing_compiler, app.briefing.briefing_config
+# Depends-on: app.briefing.briefing_config
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 
 from dataclasses import dataclass

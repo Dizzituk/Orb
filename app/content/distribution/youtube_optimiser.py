@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/youtube_optimiser.py
+# Purpose: YouTube Metadata Optimiser.
+# Called-by: app.content.distribution.youtube_router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 YouTube Metadata Optimiser.
 

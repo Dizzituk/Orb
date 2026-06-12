@@ -1,4 +1,8 @@
 # FILE: app/translation/gates.py
+# Purpose: Safety gates for ASTRA Translation Layer.
+# Called-by: app.translation, app.translation.tier0_rules, app.translation.translator
+# Depends-on: app, app.translation.confirmation_log, app.translation.intents, app.translation.schemas
+# Last-renovated: 2026-06-11
 """
 Safety gates for ASTRA Translation Layer.
 - Directive vs Story Gate: Blocks past tense, questions, future planning

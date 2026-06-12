@@ -1,3 +1,7 @@
+# Purpose: decomposer
+# Called-by: app.optimize.orchestrator
+# Depends-on: app.optimize.architecture_paths, app.optimize.config, app.optimize.models, app.optimize.target_registry (+2 more)
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 
 import json

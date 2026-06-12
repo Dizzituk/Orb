@@ -1,4 +1,8 @@
 # FILE: app/llm/pipeline/high_stakes.py
+# Purpose: High-stakes critique pipeline - Main orchestrator.
+# Called-by: app.llm.critical_pipeline.config, app.llm.routing.chat_routing, app.llm.routing.core, app.llm.routing.envelope
+# Depends-on: app.jobs.schemas, app.llm.gemini_vision, app.llm.job_classifier, app.llm.pipeline._high_stakes_helpers (+10 more)
+# Last-renovated: 2026-06-11
 """High-stakes critique pipeline - Main orchestrator.
 
 Implements Blocks 4, 5, 6 of the PoT (Proof of Thought) system:

@@ -1,4 +1,8 @@
 # FILE: app/memory/schemas_unified.py
+# Purpose: Shared data classes for the unified memory system.
+# Called-by: app.memory.domains.architecture, app.memory.domains.confidence, app.memory.domains.context, app.memory.domains.knowledge (+3 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Shared data classes for the unified memory system.
 

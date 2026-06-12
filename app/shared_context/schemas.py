@@ -1,3 +1,7 @@
+# Purpose: schemas
+# Called-by: app.shared_context, app.shared_context.builder, app.shared_context.router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 from pydantic import BaseModel, Field
 from typing import List
 

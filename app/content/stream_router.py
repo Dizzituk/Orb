@@ -1,4 +1,8 @@
 # FILE: app/content/stream_router.py
+# Purpose: Content SSE stream router — real-time pipeline events.
+# Called-by: main
+# Depends-on: app.auth.config, app.content.sse_manager
+# Last-renovated: 2026-06-11
 """
 Content SSE stream router — real-time pipeline events.
 Prefix: /content

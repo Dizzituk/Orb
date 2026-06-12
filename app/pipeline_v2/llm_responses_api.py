@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/llm_responses_api.py
+# Purpose: OpenAI Responses API adapter for the Agentic Builder tool loop.
+# Called-by: app.pipeline_v2.llm_tools
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 OpenAI Responses API adapter for the Agentic Builder tool loop.
 

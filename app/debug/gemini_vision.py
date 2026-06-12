@@ -1,4 +1,8 @@
 # FILE: app/debug/gemini_vision.py
+# Purpose: Gemini Vision Analyser — extracts structured observations from video/image uploads.
+# Called-by: app.debug.debug_chat
+# Depends-on: app.debug.screen_capture
+# Last-renovated: 2026-06-11
 """
 Gemini Vision Analyser — extracts structured observations from video/image uploads.
 

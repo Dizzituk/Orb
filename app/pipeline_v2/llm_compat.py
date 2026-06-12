@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/llm_compat.py
+# Purpose: JOB 16 (2026-06-10) - legacy-signature compatibility adapters.
+# Called-by: app.optimize.boot_recovery, tests.test_j16_gate_smoke
+# Depends-on: app.pipeline_v2.llm_tools
+# Last-renovated: 2026-06-11
 """
 JOB 16 (2026-06-10) - legacy-signature compatibility adapters.
 

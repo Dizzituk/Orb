@@ -1,4 +1,8 @@
 # FILE: app/debug/executors/social_actions.py
+# Purpose: Chat tool executor for social media API actions.
+# Called-by: app.debug.executors
+# Depends-on: app.social.meta_post
+# Last-renovated: 2026-06-11
 """
 Chat tool executor for social media API actions.
 

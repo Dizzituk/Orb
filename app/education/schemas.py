@@ -1,3 +1,7 @@
+# Purpose: schemas
+# Called-by: app.education.router, app.education.scraper, app.education.service
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 
 from datetime import datetime

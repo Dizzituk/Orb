@@ -1,4 +1,8 @@
 # FILE: tests/test_universal_ingestion/test_extractors.py
+# Purpose: Test suite for Universal Document Ingestion (Capability 1).
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.llm.file_analyzer
+# Last-renovated: 2026-06-11
 """
 Test suite for Universal Document Ingestion (Capability 1).
 

@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/step_derivation.py
+# Purpose: Step/Test Derivation for SpecGate
+# Called-by: app.pot_spec.grounded.question_generator, app.pot_spec.grounded.spec_generation
+# Depends-on: app.pot_spec.grounded.domain_detection, app.pot_spec.grounded.sandbox_discovery, app.pot_spec.grounded.spec_models
+# Last-renovated: 2026-06-11
 """
 Step/Test Derivation for SpecGate
 

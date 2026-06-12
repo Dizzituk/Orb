@@ -1,4 +1,8 @@
 # FILE: app/content/scout_router.py
+# Purpose: Content Scout & Review API endpoints.
+# Called-by: main
+# Depends-on: app.auth, app.content.models, app.content.review, app.content.scout (+1 more)
+# Last-renovated: 2026-06-11
 """
 Content Scout & Review API endpoints.
 

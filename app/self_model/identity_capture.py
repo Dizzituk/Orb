@@ -1,4 +1,8 @@
 # FILE: app/self_model/identity_capture.py
+# Purpose: Real-time identity capture — regex-based pattern matching for
+# Called-by: app.bridge.identity_hook, app.memory.integration
+# Depends-on: app.self_model.identity, app.self_model.write_arbiter
+# Last-renovated: 2026-06-11
 """
 Real-time identity capture — regex-based pattern matching for
 biographical hard facts in user messages.

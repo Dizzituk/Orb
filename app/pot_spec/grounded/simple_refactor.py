@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/simple_refactor.py
+# Purpose: SpecGate v3.8 - Direct Spec Builder
+# Called-by: app.pot_spec.grounded.spec_runner
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 SpecGate v3.8 - Direct Spec Builder
 

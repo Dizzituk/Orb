@@ -1,4 +1,8 @@
 # FILE: scripts/local_ai/verify_stack.py
+# Purpose: Quick verification of the Local AI stack.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 r"""
 Quick verification of the Local AI stack.
 Run after install_local_ai_stack.ps1 to confirm everything works.

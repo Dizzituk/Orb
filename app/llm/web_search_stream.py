@@ -1,4 +1,8 @@
 # FILE: app/llm/web_search_stream.py
+# Purpose: SSE stream handler for web search intent.
+# Called-by: app.llm.routing.handler_registry
+# Depends-on: app.llm.web_search, app.memory, app.memory.schemas, app.memory.service
+# Last-renovated: 2026-06-11
 """
 SSE stream handler for web search intent.
 

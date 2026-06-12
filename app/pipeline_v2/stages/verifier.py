@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/stages/verifier.py
+# Purpose: Stage 5 — The Verifier.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.pipeline_v2.config, app.pipeline_v2.llm_caller, app.pipeline_v2.models, app.pipeline_v2.sandbox_tools
+# Last-renovated: 2026-06-11
 """
 Stage 5 — The Verifier.
 

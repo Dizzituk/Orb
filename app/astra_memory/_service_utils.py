@@ -1,11 +1,55 @@
+# Purpose: service utils
+# Called-by: app.astra_memory.service
+# Depends-on: app.astra_memory.models, app.pot_spec.ledger_core
+# Last-renovated: 2026-06-11
 import hashlib
-from app.astra_memory.models import AstraJob, GlobalPref, JobFile, OverwatchPattern, OverwatchSummary
-from sqlalchemy.orm import Session
-from typing import List, Optional
-from app.astra_memory.models import AstraJob, GlobalPref, JobEvent, JobFile, OverwatchPattern, OverwatchSummary
-from app.pot_spec.ledger_core import append_event as ledger_append
-from datetime import datetime
+import logging
+import os
+from datetime import datetime, timezone
 from typing import List, Optional, Tuple
+
+from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
+
+# C4 fix (2026-06-11): when these helpers were split out of service.py the
+# guarded-import availability flags and the small time/path helpers never
+# came across — every function below raised NameError the moment it was
+# called. Restored verbatim from service.py's originals; the module is now
+# self-contained (no circular import back into service).
+
+try:
+    from app.astra_memory.models import (
+        AstraJob,
+        JobFile,
+        JobEvent,
+        OverwatchSummary,
+        GlobalPref,
+        OverwatchPattern,
+    )
+    _MODELS_AVAILABLE = True
+except ImportError:
+    _MODELS_AVAILABLE = False
+    logger.warning("[astra_memory] Models not available")
+
+try:
+    from app.pot_spec.ledger_core import append_event as ledger_append
+    _LEDGER_AVAILABLE = True
+except ImportError:
+    _LEDGER_AVAILABLE = False
+    logger.warning("[astra_memory] Ledger not available")
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _utc_ts() -> str:
+    return _utc_now().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _artifact_root() -> str:
+    return os.path.abspath(os.getenv("ORB_JOB_ARTIFACT_ROOT", "jobs"))
 
 
 def _hash_content(content: str) -> str:
@@ -14,14 +58,12 @@ def _hash_content(content: str) -> str:
 
 def get_files_for_job(db: Session, job_id: str) -> List[JobFile]:
     """Get all files touched by a job."""
-    from .service import JobFile
     if not _MODELS_AVAILABLE:
         return []
     return db.query(JobFile).filter(JobFile.job_id == job_id).all()
 
 def get_global_pref(db: Session, key: str) -> Optional[str]:
     """Get a global preference value."""
-    from .service import GlobalPref
     if not _MODELS_AVAILABLE:
         return None
 
@@ -30,7 +72,6 @@ def get_global_pref(db: Session, key: str) -> Optional[str]:
 
 def get_prefs_for_component(db: Session, component: str) -> List[GlobalPref]:
     """Get all active preferences that apply to a component."""
-    from .service import GlobalPref
     if not _MODELS_AVAILABLE:
         return []
 
@@ -45,7 +86,6 @@ def get_prefs_for_component(db: Session, component: str) -> List[GlobalPref]:
 
 def get_patterns_for_file(db: Session, path: str) -> List[OverwatchPattern]:
     """Get all patterns for a file path."""
-    from .service import OverwatchPattern
     if not _MODELS_AVAILABLE:
         return []
 
@@ -58,14 +98,12 @@ def get_patterns_for_file(db: Session, path: str) -> List[OverwatchPattern]:
 
 def get_job(db: Session, job_id: str) -> Optional[AstraJob]:
     """Get a job by ID."""
-    from .service import AstraJob
     if not _MODELS_AVAILABLE:
         return None
     return db.query(AstraJob).filter(AstraJob.job_id == job_id).first()
 
 def get_jobs_by_status(db: Session, status: str, limit: int = 100) -> List[AstraJob]:
     """Get jobs by status."""
-    from .service import AstraJob
     if not _MODELS_AVAILABLE:
         return []
     return (
@@ -78,7 +116,6 @@ def get_jobs_by_status(db: Session, status: str, limit: int = 100) -> List[Astra
 
 def get_escalated_jobs(db: Session, limit: int = 100) -> List[AstraJob]:
     """Get jobs where Overwatcher escalated."""
-    from .service import AstraJob, OverwatchSummary
     if not _MODELS_AVAILABLE:
         return []
 

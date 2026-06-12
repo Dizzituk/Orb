@@ -1,4 +1,8 @@
 # FILE: app/jobs/models.py
+# Purpose: Phase 4 Job System - Database Models
+# Called-by: app.artefacts.router, app.artefacts.service, app.db, app.introspection.service (+4 more)
+# Depends-on: app.crypto, app.db
+# Last-renovated: 2026-06-11
 """
 Phase 4 Job System - Database Models
 

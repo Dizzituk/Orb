@@ -1,3 +1,7 @@
+# Purpose: Cohesion Check — Cross-Segment Architecture Verification.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.orchestrator
+# Last-renovated: 2026-06-11
 """
 Cohesion Check — Cross-Segment Architecture Verification.
 

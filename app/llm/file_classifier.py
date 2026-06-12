@@ -1,4 +1,8 @@
 # FILE: app/llm/file_classifier.py
+# Purpose: File Classification and File Map Builder for Orb Routing.
+# Called-by: app.llm, app.llm._file_classifier_utils_2, app.llm.job_classifier, app.llm.preprocessor (+1 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 File Classification and File Map Builder for Orb Routing.
 
@@ -30,7 +34,6 @@ FILE MAP FORMAT:
 
 Usage:
     from app.llm.file_classifier import classify_attachments, build_file_map
-from app.llm._file_classifier_utils_2 import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, build_file_map_for_task, classify_from_attachment_info, get_file_by_id, get_files_by_type, has_any_media, has_vision_content
     
     result = classify_attachments(attachments)
     file_map_str = build_file_map(result.classified_files)
@@ -43,6 +46,20 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass, field
+
+# C4 fix (2026-06-11): the renovation's header pass dropped this import INSIDE
+# the module docstring above — it was documentation, not code, so these names
+# (including VIDEO/AUDIO_EXTENSIONS used at runtime) raised NameError.
+from app.llm._file_classifier_utils_2 import (
+    AUDIO_EXTENSIONS,
+    VIDEO_EXTENSIONS,
+    build_file_map_for_task,
+    classify_from_attachment_info,
+    get_file_by_id,
+    get_files_by_type,
+    has_any_media,
+    has_vision_content,
+)
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)

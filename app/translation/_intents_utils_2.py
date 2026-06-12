@@ -1,3 +1,7 @@
+# Purpose: intents utils 2
+# Called-by: app.translation.intents
+# Depends-on: app.translation.intents, app.translation.schemas
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 from .schemas import CanonicalIntent, IntentDefinition
 from typing import List, Optional

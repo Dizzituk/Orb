@@ -1,4 +1,8 @@
 # FILE: app/briefing/briefing_audio.py
+# Purpose: Briefing Audio — Dual-voice TTS generation for podcast-style audio.
+# Called-by: app.briefing.briefing_scheduler
+# Depends-on: app.briefing.briefing_compiler, app.briefing.briefing_config
+# Last-renovated: 2026-06-11
 """
 Briefing Audio — Dual-voice TTS generation for podcast-style audio.
 
@@ -17,11 +21,8 @@ v1.0 (2026-03): Initial implementation.
 """
 from __future__ import annotations
 
-import asyncio
-import io
 import logging
 import os
-import struct
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional

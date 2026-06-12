@@ -1,4 +1,8 @@
 # FILE: app/debug/screen_capture.py
+# Purpose: Gemini multimodal video utilities.
+# Called-by: app.debug.file_upload_router, app.debug.gemini_vision, app.debug.recordings_router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Gemini multimodal video utilities.
 

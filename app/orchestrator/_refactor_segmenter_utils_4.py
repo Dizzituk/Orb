@@ -1,3 +1,7 @@
+# Purpose: refactor segmenter utils 4
+# Called-by: app.orchestrator.refactor_segmenter
+# Depends-on: app.orchestrator._refactor_segmenter_utils_2, app.orchestrator.refactor_segmenter_models
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
 import os

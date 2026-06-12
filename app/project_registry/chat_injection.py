@@ -1,4 +1,8 @@
 # FILE: app/project_registry/chat_injection.py
+# Purpose: Chat routing integration for project staleness detection.
+# Called-by: app.llm.stream_router
+# Depends-on: app.project_registry.staleness
+# Last-renovated: 2026-06-11
 """
 Chat routing integration for project staleness detection.
 

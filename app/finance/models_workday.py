@@ -1,4 +1,8 @@
 # FILE: app/finance/models_workday.py
+# Purpose: WorkDay — unified daily ledger model (v8.0 rebuild).
+# Called-by: app.finance.models, app.finance.services.work_day_service, app.finance.services.work_folder_logger, app.finance.work_router
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """
 WorkDay — unified daily ledger model (v8.0 rebuild).
 

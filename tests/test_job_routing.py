@@ -1,4 +1,8 @@
 # FILE: tests/test_job_routing.py
+# Purpose: Tests for app/llm/routing/job_routing.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.llm.routing, app.llm.routing.job_routing
+# Last-renovated: 2026-06-11
 """
 Tests for app/llm/routing/job_routing.py
 Job routing - routes jobs to appropriate handlers.

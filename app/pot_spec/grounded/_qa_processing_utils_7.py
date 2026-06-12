@@ -1,3 +1,7 @@
+# Purpose: qa processing utils 7
+# Called-by: app.pot_spec.grounded._qa_processing_utils_8, app.pot_spec.grounded.qa_processing
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
 import re

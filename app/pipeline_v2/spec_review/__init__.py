@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/spec_review/__init__.py
+# Purpose: Always-on spec reviewer package.
+# Called-by: app.pipeline_v2.orchestrator
+# Depends-on: app.pipeline_v2.spec_review.models, app.pipeline_v2.spec_review.reviewer
+# Last-renovated: 2026-06-11
 """
 Always-on spec reviewer package.
 

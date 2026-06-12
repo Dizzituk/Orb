@@ -1,4 +1,8 @@
 # FILE: app/llm/pipeline/critique_schemas.py
+# Purpose: Structured schemas for machine-driven critique pipeline (Block 5).
+# Called-by: app.llm.critical_pipeline.config, app.llm.pipeline._critique_schemas_utils, app.llm.pipeline.critique, app.llm.pipeline.critique_parts.blocker_filtering (+8 more)
+# Depends-on: app.llm.pipeline._critique_schemas_utils
+# Last-renovated: 2026-06-11
 """Structured schemas for machine-driven critique pipeline (Block 5).
 
 The critique output is strict JSON for deterministic pass/fail decisioning.

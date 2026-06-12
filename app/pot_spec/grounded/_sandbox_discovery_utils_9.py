@@ -1,3 +1,7 @@
+# Purpose: sandbox discovery utils 9
+# Called-by: app.pot_spec.grounded._sandbox_discovery_utils_10, app.pot_spec.grounded.sandbox_discovery
+# Depends-on: app.pot_spec.grounded._sandbox_discovery_utils_8, app.pot_spec.grounded.sandbox_discovery
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
 import re

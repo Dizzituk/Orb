@@ -1,4 +1,8 @@
 # FILE: tests/test_capabilities.py
+# Purpose: Tests for ASTRA Capability Layer
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.capabilities.injector, app.capabilities.loader
+# Last-renovated: 2026-06-11
 """
 Tests for ASTRA Capability Layer
 

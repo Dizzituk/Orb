@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/command_dispatch.py
+# Purpose: Command dispatch for stream routing — routes intents to stream handlers.
+# Called-by: app.llm._stream_router_utils, app.llm.routing.weaver_reweave_handler, app.llm.stream_router
+# Depends-on: app.builds.stage_hooks, app.llm.routing._cd_dispatch_table, app.llm.routing._command_dispatch_utils, app.llm.routing.handler_registry (+1 more)
+# Last-renovated: 2026-06-11
 """
 Command dispatch for stream routing — routes intents to stream handlers.
 

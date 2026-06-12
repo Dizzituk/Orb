@@ -1,3 +1,7 @@
+# Purpose: streaming utils 2
+# Called-by: app.llm._streaming_utils_3, app.llm.streaming
+# Depends-on: app.llm.streaming
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional

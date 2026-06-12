@@ -1,4 +1,8 @@
 # FILE: app/overwatcher/cost_recorder.py
+# Purpose: Cost recording hook for the provider registry.
+# Called-by: app.debug.debug_chat, app.providers._registry_utils_3
+# Depends-on: app.cost.cost_budget, app.cost.cost_guard, app.cost.cost_ledger, app.cost.cost_pricing
+# Last-renovated: 2026-06-11
 """
 Cost recording hook for the provider registry.
 

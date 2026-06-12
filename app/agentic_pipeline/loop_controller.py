@@ -1,4 +1,8 @@
 # FILE: app/agentic_pipeline/loop_controller.py
+# Purpose: Agentic Loop Controller — Turn Management Engine.
+# Called-by: app.agentic_pipeline.pipeline, app.agentic_pipeline.segment_printer, app.pipeline_v2.stages.architect, app.pipeline_v2.stages.builder
+# Depends-on: app.agentic_pipeline, app.agentic_pipeline.checks
+# Last-renovated: 2026-06-11
 """
 Agentic Loop Controller — Turn Management Engine.
 
@@ -14,7 +18,6 @@ v1.0 (2026-03-05): Initial implementation.
 """
 from __future__ import annotations
 
-import json
 import logging
 import time
 from dataclasses import dataclass, field

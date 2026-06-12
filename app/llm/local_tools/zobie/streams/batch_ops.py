@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/streams/batch_ops.py
+# Purpose: Batch Operations Progress Stream (v1.0 - Phase 6)
+# Called-by: app.llm.local_tools.zobie.streams
+# Depends-on: app.overwatcher
+# Last-renovated: 2026-06-11
 """
 Batch Operations Progress Stream (v1.0 - Phase 6)
 

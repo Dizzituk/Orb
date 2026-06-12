@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/archmap_helpers.py
+# Purpose: Helpers and configuration for architecture tools.
+# Called-by: app.llm.legacy_triggers, app.llm.local_tools._archmap_helpers_utils_2, app.llm.local_tools.zobie.config, app.llm.local_tools.zobie.streams.archmap_db (+6 more)
+# Depends-on: app.llm.local_tools._archmap_helpers_utils_2, app.memory, app.memory.schemas, app.memory.service
+# Last-renovated: 2026-06-11
 """Helpers and configuration for architecture tools.
 
 Commands:

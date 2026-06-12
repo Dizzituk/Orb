@@ -1,4 +1,8 @@
 # FILE: app/content/engagement/models.py
+# Purpose: Engagement Database Models.
+# Called-by: app.content.engagement.dispatcher, app.content.engagement.responder, app.content.engagement.router, app.content.engagement.scanner (+1 more)
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """
 Engagement Database Models.
 

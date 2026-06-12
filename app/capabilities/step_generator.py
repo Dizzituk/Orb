@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/step_generator.py
+# Purpose: Auto-Generate Steps from Capabilities
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Auto-Generate Steps from Capabilities
 

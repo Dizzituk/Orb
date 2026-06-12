@@ -1,4 +1,8 @@
 # FILE: app/llm/chat_tool_loop.py
+# Purpose: Chat Tool Loop — gives trusted models real tool access in chat mode.
+# Called-by: app.bridge.capability_layer, app.debug.debug_chat, app.endpoints._video_code_tools, app.llm.routing.chat_routing (+1 more)
+# Depends-on: app.debug.action_executor, app.debug.gemini_expense_tools, app.debug.gemini_finance_tools, app.debug.tool_definitions (+2 more)
+# Last-renovated: 2026-06-11
 """
 Chat Tool Loop — gives trusted models real tool access in chat mode.
 

@@ -1,4 +1,8 @@
 # FILE: app/optimize/models.py
+# Purpose: Optimize Tab data models.
+# Called-by: app.optimize.decomposer, app.optimize.executor, app.optimize.orchestrator, app.optimize.profiler (+3 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Optimize Tab data models.
 

@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/refactor_segmenter_models.py
+# Purpose: Data models for the deterministic refactor segmenter.
+# Called-by: app.orchestrator._deterministic_architecture_utils_2, app.orchestrator._refactor_segmenter_utils_2, app.orchestrator._refactor_segmenter_utils_3, app.orchestrator._refactor_segmenter_utils_4 (+3 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Data models for the deterministic refactor segmenter.
 

@@ -1,4 +1,8 @@
 # FILE: app/memory/confidence_model.py
+# Purpose: SQLAlchemy model for the confidence_scores table.
+# Called-by: app.db, app.memory.domains.confidence
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """
 SQLAlchemy model for the confidence_scores table.
 

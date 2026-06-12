@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/scaffold_engine.py
+# Purpose: ASTRA v2.2 Scaffold Engine — deterministic file generator.
+# Called-by: app.pipeline_v2.orchestrator
+# Depends-on: app.pipeline_v2.build_targets, app.pipeline_v2.models, app.pipeline_v2.sandbox_tools, app.pipeline_v2.scaffolds.android_config_scaffolds (+2 more)
+# Last-renovated: 2026-06-11
 """
 ASTRA v2.2 Scaffold Engine — deterministic file generator.
 

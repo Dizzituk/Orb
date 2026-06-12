@@ -1,4 +1,8 @@
 # FILE: tests/test_ledger.py
+# Purpose: Tests for refactored ledger modules.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.pot_spec.ledger
+# Last-renovated: 2026-06-11
 """Tests for refactored ledger modules.
 
 Tests:

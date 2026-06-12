@@ -1,4 +1,8 @@
 # FILE: app/agentic_pipeline/__init__.py
+# Purpose: Agentic Pipeline - Redesigned ASTRA Build Pipeline.
+# Called-by: app.agentic_pipeline.loop_controller, app.agentic_pipeline.pipeline, app.agentic_pipeline.segment_printer, app.orchestrator.phase_checkout (+2 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Agentic Pipeline - Redesigned ASTRA Build Pipeline.
 

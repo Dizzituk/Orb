@@ -1,4 +1,8 @@
 # FILE: tests/test_confidence_system.py
+# Purpose: Tests for ASTRA Memory Confidence System.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.astra_memory.confidence_config, app.astra_memory.confidence_scoring, app.astra_memory.models, app.astra_memory.preference_models (+3 more)
+# Last-renovated: 2026-06-11
 """
 Tests for ASTRA Memory Confidence System.
 

@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/canonical.py
+# Purpose: Canonical JSON serialization for deterministic hashing.
+# Called-by: tests.test_canonical
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """Canonical JSON serialization for deterministic hashing.
 
 RULES (must be universal across all stages):

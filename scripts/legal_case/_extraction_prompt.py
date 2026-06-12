@@ -1,4 +1,8 @@
 # FILE: scripts/legal_case/_extraction_prompt.py
+# Purpose: Prompt used to classify and extract fields from a delivery-work screenshot.
+# Called-by: scripts.legal_case.legal_case_extractor
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Prompt used to classify and extract fields from a delivery-work screenshot.
 

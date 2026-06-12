@@ -1,4 +1,8 @@
 # FILE: app/web_automation/memory/diagnostics.py
+# Purpose: Failure-context formatter.
+# Called-by: app.web_automation.memory, app.web_automation.memory.runner
+# Depends-on: app.web_automation.memory.models
+# Last-renovated: 2026-06-11
 """
 Failure-context formatter.
 

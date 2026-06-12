@@ -1,4 +1,8 @@
 # FILE: test_overwatcher_standalone.py
+# Purpose: Standalone Overwatcher Smoke Test - works without full app structure.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """Standalone Overwatcher Smoke Test - works without full app structure.
 
 This test runs the core Overwatcher logic directly without requiring

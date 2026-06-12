@@ -1,4 +1,8 @@
 # FILE: app/llm/relationship_detector.py
+# Purpose: Relationship Detector for Orb Routing Pipeline.
+# Called-by: app.llm, app.llm._relationship_detector_utils_2, app.llm.routing.core
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Relationship Detector for Orb Routing Pipeline.
 
@@ -30,7 +34,6 @@ SUMMARY BUILDING (Spec §3.1):
 
 Usage:
     from app.llm.relationship_detector import detect_relationships, RelationshipResult
-from app.llm._relationship_detector_utils_2 import RELATIONSHIP_DETECTION_ENABLED, RELATIONSHIP_PROMPT, ROUTER_DEBUG, build_code_summary, build_image_summary, build_text_summary, build_video_preteaser, detect_relationships_heuristic
     
     result = await detect_relationships(
         classification_result=classification,
@@ -39,13 +42,26 @@ from app.llm._relationship_detector_utils_2 import RELATIONSHIP_DETECTION_ENABLE
     )
 """
 
-import os
 import re
 import json
 import logging
 from enum import Enum
 from typing import Optional, List, Dict, Any, Callable, Awaitable
 from dataclasses import dataclass, field
+
+# C4 fix (2026-06-11): the renovation's header pass dropped this import INSIDE
+# the module docstring above, so it was documentation, not code — every name
+# below raised NameError at call time.
+from app.llm._relationship_detector_utils_2 import (
+    RELATIONSHIP_DETECTION_ENABLED,
+    RELATIONSHIP_PROMPT,
+    ROUTER_DEBUG,
+    build_code_summary,
+    build_image_summary,
+    build_text_summary,
+    build_video_preteaser,
+    detect_relationships_heuristic,
+)
 
 logger = logging.getLogger(__name__)
 

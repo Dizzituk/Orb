@@ -1,4 +1,8 @@
 # FILE: app/introspection/chat_integration.py
+# Purpose: Chat Layer Integration for Log Introspection
+# Called-by: app.introspection, app.llm.legacy_triggers, app.llm.routing.handler_registry, app.llm.stream_handlers
+# Depends-on: app.introspection.schemas, app.introspection.service, app.introspection.summarizer
+# Last-renovated: 2026-06-11
 """
 Chat Layer Integration for Log Introspection
 

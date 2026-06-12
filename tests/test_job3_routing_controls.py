@@ -1,4 +1,8 @@
 # FILE: tests/test_job3_routing_controls.py
+# Purpose: Tests for Job 3: Routing Controls (Standalone)
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Tests for Job 3: Routing Controls (Standalone)
 """

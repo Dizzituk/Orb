@@ -1,4 +1,8 @@
 # FILE: app/experience/experience_store.py
+# Purpose: CRUD operations for Experience Patterns.
+# Called-by: app.experience.distillation, app.experience.retrieval
+# Depends-on: app.experience.models
+# Last-renovated: 2026-06-11
 """
 CRUD operations for Experience Patterns.
 

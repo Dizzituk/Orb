@@ -1,6 +1,9 @@
+# Purpose: simple create utils 17
+# Called-by: app.pot_spec.grounded._simple_create_utils_14, app.pot_spec.grounded._simple_create_utils_15, app.pot_spec.grounded._simple_create_utils_16, app.pot_spec.grounded._spec_runner_utils_12 (+1 more)
+# Depends-on: app.pot_spec.grounded._dependency_presence, app.pot_spec.grounded._sbx_fs, app.pot_spec.grounded._simple_create_review, app.pot_spec.grounded._simple_create_utils_12 (+8 more)
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
-import os
 from app.pot_spec.grounded._simple_create_utils_12 import _CREATE_ANALYSIS_MODEL, _FALLBACK_MODELS
 from app.pot_spec.grounded._simple_create_utils_13 import _resolve_mentioned_files
 from app.pot_spec.grounded._simple_create_utils_14 import _CREATE_ANALYSIS_TIMEOUT, _extract_constraints, _extract_task_keywords, _suggest_new_files
@@ -10,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from app.pot_spec.grounded._sbx_fs import _sbx_isfile, _sbx_isdir
 from app.pot_spec.grounded._simple_create_utils_18 import inject_brief_mentioned_roots, priority_sort_project_paths, run_dependency_gate, filter_phantom_files
+from app.pot_spec.grounded._stage_reasoning import spec_gate_reasoning, spec_gate_timeout_seconds
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 
@@ -272,10 +276,10 @@ Please provide your structured analysis."""
                 model_id=attempt_model,
                 messages=[{"role": "user", "content": user_prompt}],
                 system_prompt=CREATE_ANALYSIS_SYSTEM_PROMPT,
-                temperature=1.0,  # v2.7: Anthropic thinking mode requires temperature=1.0
-                max_tokens=16384,  # v2.7: 8K for thinking + 8K for visible response
-                timeout_seconds=max(attempt_timeout, 300),  # v2.7: thinking consumes wall-clock time
-                reasoning={"effort": "high"},  # v2.7: Opus 4.6 extended thinking — critical for architecture reasoning
+                temperature=1.0,  # stripped by registry when the model requires it
+                max_tokens=16384,  # floored upward by registry per effort level
+                timeout_seconds=max(attempt_timeout, spec_gate_timeout_seconds()),
+                reasoning=spec_gate_reasoning(),  # v2.8: env-overridable (SPEC_GATE_REASONING_EFFORT)
             )
             
             if result.is_success() and result.content:

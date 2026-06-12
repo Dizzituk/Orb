@@ -1,4 +1,8 @@
 # FILE: tests/test_token_budgeting.py
+# Purpose: Tests for app/llm/token_budgeting.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.llm, app.llm.token_budgeting
+# Last-renovated: 2026-06-11
 """
 Tests for app/llm/token_budgeting.py
 Token management - manages token budgets and counting.

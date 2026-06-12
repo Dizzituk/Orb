@@ -1,4 +1,8 @@
 # FILE: app/astra_memory/router.py
+# Purpose: ASTRA Memory API Router
+# Called-by: main, tests.test_preference_learning
+# Depends-on: app.astra_memory, app.astra_memory.decay_job, app.astra_memory.indexer, app.astra_memory.learning (+7 more)
+# Last-renovated: 2026-06-11
 """
 ASTRA Memory API Router
 

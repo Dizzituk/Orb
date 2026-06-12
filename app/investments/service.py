@@ -1,4 +1,8 @@
 # FILE: app/investments/service.py
+# Purpose: Core business logic for the investments module.
+# Called-by: app.bridge.dashboards, app.investments.chat_service, app.investments.router, app.investments.scheduler (+1 more)
+# Depends-on: app.investments.cache, app.investments.coinmarketcap_client, app.investments.models, app.investments.schemas (+2 more)
+# Last-renovated: 2026-06-11
 """
 Core business logic for the investments module.
 

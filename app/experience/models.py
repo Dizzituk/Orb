@@ -1,4 +1,8 @@
 # FILE: app/experience/models.py
+# Purpose: SQLAlchemy models for the Experience Database.
+# Called-by: app.db, app.experience.distillation, app.experience.experience_store, app.experience.retrieval
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """
 SQLAlchemy models for the Experience Database.
 

@@ -1,4 +1,8 @@
 # FILE: app/jobs/engine.py
+# Purpose: Phase 4 Job Engine - Core Execution Logic
+# Called-by: app.jobs.router, tests.test_job_engine
+# Depends-on: app.artefacts.service, app.jobs._engine_helpers, app.jobs.models, app.jobs.schemas (+6 more)
+# Last-renovated: 2026-06-11
 """
 Phase 4 Job Engine - Core Execution Logic
 
@@ -30,7 +34,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import datetime
 from typing import Any, Optional
 from uuid import uuid4

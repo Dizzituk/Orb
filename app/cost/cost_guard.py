@@ -1,4 +1,8 @@
 # FILE: app/overwatcher/cost_guard.py
+# Purpose: Cost Guard for ASTRA Pipeline (Job 3)
+# Called-by: app.cost.cost_recorder, app.llm.routing.routing_persistence
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Cost Guard for ASTRA Pipeline (Job 3)
 

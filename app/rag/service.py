@@ -1,3 +1,7 @@
+# Purpose: Public service interface for RAG.
+# Called-by: app.debug.debug_chat
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Public service interface for RAG.
 

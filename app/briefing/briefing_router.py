@@ -1,3 +1,7 @@
+# Purpose: briefing router
+# Called-by: main
+# Depends-on: app.auth, app.briefing.briefing_config, app.briefing.briefing_scheduler
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 
 import logging

@@ -1,4 +1,8 @@
 # FILE: app/content/video_pipeline/clip_verifier.py
+# Purpose: Clip Verifier — pre-bake relevance scoring via Gemini.
+# Called-by: app.content.video_pipeline.orchestrator
+# Depends-on: app.content.video_pipeline.models
+# Last-renovated: 2026-06-11
 """
 Clip Verifier — pre-bake relevance scoring via Gemini.
 

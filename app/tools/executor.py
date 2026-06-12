@@ -1,4 +1,8 @@
 # FILE: app/tools/executor.py
+# Purpose: Tool execution + lightweight schema validation for Orb local tools.
+# Called-by: app.tools.registry
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Tool execution + lightweight schema validation for Orb local tools.
 

@@ -1,4 +1,8 @@
 # FILE: app/content/project_schemas.py
+# Purpose: Pydantic schemas for the Content Hub project endpoints.
+# Called-by: app.content.item_router, app.content.project_router, app.content.project_service, app.content.style_router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Pydantic schemas for the Content Hub project endpoints.
 """

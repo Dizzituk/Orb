@@ -1,4 +1,8 @@
 # FILE: app/security/__init__.py
+# Purpose: Security Module: Firewall and access control for Orb.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.security.firewall
+# Last-renovated: 2026-06-11
 """Security Module: Firewall and access control for Orb.
 
 CRITICAL SAFETY: This module enforces one-way control between Main Orb

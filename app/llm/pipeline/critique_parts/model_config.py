@@ -1,4 +1,8 @@
 # FILE: app/llm/pipeline/critique_parts/model_config.py
+# Purpose: Model and provider configuration resolution for the critique pipeline.
+# Called-by: app.llm.pipeline._critique_legacy, app.llm.pipeline.critique
+# Depends-on: app.llm.stage_models
+# Last-renovated: 2026-06-11
 """Model and provider configuration resolution for the critique pipeline."""
 
 import logging

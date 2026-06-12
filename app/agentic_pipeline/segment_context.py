@@ -1,4 +1,8 @@
 # FILE: app/agentic_pipeline/segment_context.py
+# Purpose: Single-Segment Context Builder.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Single-Segment Context Builder.
 

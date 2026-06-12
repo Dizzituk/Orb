@@ -1,4 +1,8 @@
 # FILE: tests/test_pipeline_critique.py
+# Purpose: Tests for app/llm/pipeline/critique.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.llm.pipeline, app.llm.pipeline.critique
+# Last-renovated: 2026-06-11
 """
 Tests for app/llm/pipeline/critique.py
 Critique pipeline - critiques and improves LLM outputs.

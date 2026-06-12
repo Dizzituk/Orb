@@ -1,4 +1,8 @@
 # FILE: app/llm/critical_pipeline_stream.py
+# Purpose: Backward-compatibility shim for Critical Pipeline.
+# Called-by: app.llm.routing.handler_registry
+# Depends-on: app.llm.critical_pipeline
+# Last-renovated: 2026-06-11
 """
 Backward-compatibility shim for Critical Pipeline.
 

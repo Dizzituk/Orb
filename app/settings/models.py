@@ -1,4 +1,8 @@
 # FILE: app/settings/models.py
+# Purpose: Settings Database Models.
+# Called-by: app.db, app.settings.service
+# Depends-on: app.crypto, app.db
+# Last-renovated: 2026-06-11
 """
 Settings Database Models.
 

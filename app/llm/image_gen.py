@@ -1,4 +1,8 @@
 # FILE: app/llm/image_gen.py
+# Purpose: OpenAI image generation backend (GPT Image 1.5).
+# Called-by: app.llm.image_extractor, app.llm.image_router
+# Depends-on: app.llm.image_output_dir
+# Last-renovated: 2026-06-11
 """
 OpenAI image generation backend (GPT Image 1.5).
 

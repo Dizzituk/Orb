@@ -1,4 +1,8 @@
 # FILE: app/astra_memory/indexer.py
+# Purpose: ASTRA Memory Hot Index Population
+# Called-by: app.astra_memory.router, main
+# Depends-on: app.astra_memory.models, app.astra_memory.preference_models, app.astra_memory.retrieval, app.astra_memory.topic_tagger (+2 more)
+# Last-renovated: 2026-06-11
 """
 ASTRA Memory Hot Index Population
 
@@ -346,7 +350,6 @@ def get_index_stats(db: Optional[Session] = None) -> Dict[str, Any]:
 # =============================================================================
 
 if __name__ == "__main__":
-    import sys
     
     logging.basicConfig(level=logging.INFO)
     

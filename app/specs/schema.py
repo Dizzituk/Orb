@@ -1,4 +1,8 @@
 # FILE: app/specs/schema.py
+# Purpose: Canonical JSON Schema for ASTRA Specs.
+# Called-by: app.llm.weaver_stream_core, app.pot_spec._spec_gate_persistence_utils_2, app.pot_spec.spec_gate_persistence, app.specs (+5 more)
+# Depends-on: app.specs._schema_utils_2, app.specs._schema_utils_3
+# Last-renovated: 2026-06-11
 """
 Canonical JSON Schema for ASTRA Specs.
 

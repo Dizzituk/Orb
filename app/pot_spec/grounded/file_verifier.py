@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/file_verifier.py
+# Purpose: Architecture Map File Verification (v1.0)
+# Called-by: app.pot_spec.grounded._manifest_builder, app.pot_spec.grounded._segmentation_utils_4, app.pot_spec.grounded.segmentation
+# Depends-on: app.pot_spec.grounded._sbx_fs, app.pot_spec.grounded.segment_schemas
+# Last-renovated: 2026-06-11
 """
 Architecture Map File Verification (v1.0)
 
@@ -34,7 +38,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import stat
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 

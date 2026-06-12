@@ -1,4 +1,8 @@
 # FILE: app/rag/jobs/__init__.py
+# Purpose: RAG background jobs.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.rag.jobs.embedding_job
+# Last-renovated: 2026-06-11
 """
 RAG background jobs.
 

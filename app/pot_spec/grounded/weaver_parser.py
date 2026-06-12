@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/weaver_parser.py
+# Purpose: Weaver Intent Parser for SpecGate
+# Called-by: app.pot_spec.grounded.spec_generation, app.pot_spec.grounded.spec_runner
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Weaver Intent Parser for SpecGate
 

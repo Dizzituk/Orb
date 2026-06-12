@@ -1,4 +1,8 @@
 # FILE: app/project_registry/scanner.py
+# Purpose: Multi-project architecture scanner.
+# Called-by: app.llm.routing.handler_registry
+# Depends-on: app.llm.audit_logger, app.llm.local_tools.zobie.db_ops, app.llm.local_tools.zobie.sandbox_client, app.llm.local_tools.zobie.sse (+6 more)
+# Last-renovated: 2026-06-11
 """
 Multi-project architecture scanner.
 
@@ -14,7 +18,6 @@ v1.0 (2026-03): Initial implementation.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 from datetime import datetime

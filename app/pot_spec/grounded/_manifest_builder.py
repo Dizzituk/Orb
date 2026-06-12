@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/_manifest_builder.py
+# Purpose: v5.5 PHASE 3B: Build SegmentManifest from concept-aware groupings.
+# Called-by: app.pot_spec.grounded._segmentation_utils_4, app.pot_spec.grounded._spec_runner_utils_12, app.pot_spec.grounded.segmentation
+# Depends-on: app.pipeline_v2.target_registry, app.pot_spec.grounded._segment_schemas_utils_1, app.pot_spec.grounded._segmentation_utils_3, app.pot_spec.grounded.contract_verifier (+3 more)
+# Last-renovated: 2026-06-11
 """
 v5.5 PHASE 3B: Build SegmentManifest from concept-aware groupings.
 

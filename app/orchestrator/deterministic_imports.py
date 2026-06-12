@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/deterministic_imports.py
+# Purpose: Deterministic Import Generator — Job 2.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Deterministic Import Generator — Job 2.
 

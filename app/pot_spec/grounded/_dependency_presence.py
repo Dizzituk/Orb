@@ -1,3 +1,7 @@
+# Purpose: Dependency Presence Gate (v1.0)
+# Called-by: app.pot_spec.grounded._simple_create_utils_17, app.pot_spec.grounded._simple_create_utils_18
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Dependency Presence Gate (v1.0)
 ================================

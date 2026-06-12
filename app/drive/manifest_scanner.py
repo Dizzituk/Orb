@@ -1,4 +1,8 @@
 # FILE: app/drive/manifest_scanner.py
+# Purpose: Filesystem manifest scanner — Tier 1 of the boot scan.
+# Called-by: app.debug.executors.file_ops, app.debug.executors.user_files, app.drive.boot_scan, app.drive.file_watcher (+1 more)
+# Depends-on: app.drive.file_utils, app.drive.manifest_models
+# Last-renovated: 2026-06-11
 """
 Filesystem manifest scanner — Tier 1 of the boot scan.
 

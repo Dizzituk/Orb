@@ -1,3 +1,7 @@
+# Purpose: sandbox inspector utils 5
+# Called-by: app.llm.local_tools.zobie.sandbox_inspector
+# Depends-on: app.llm.local_tools.zobie._sandbox_inspector_utils_4, app.llm.local_tools.zobie.content_classifier, app.llm.local_tools.zobie.sandbox_client, app.llm.local_tools.zobie.sandbox_inspector
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
 from .content_classifier import classify_content, score_file_for_intent

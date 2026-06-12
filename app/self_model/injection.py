@@ -1,4 +1,8 @@
 # FILE: app/self_model/injection.py
+# Purpose: Self-Model → Prompt injection filter.
+# Called-by: app.llm.routing.prompt_builders
+# Depends-on: app.self_model.user_model
+# Last-renovated: 2026-06-11
 """
 Self-Model → Prompt injection filter.
 

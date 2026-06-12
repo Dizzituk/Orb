@@ -1,3 +1,7 @@
+# Purpose: spec runner utils 10
+# Called-by: app.pot_spec.grounded._spec_runner_utils_11, app.pot_spec.grounded._spec_runner_utils_12, app.pot_spec.grounded._spec_runner_utils_13, app.pot_spec.grounded.spec_runner
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import os
 from typing import Any, Optional

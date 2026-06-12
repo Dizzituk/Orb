@@ -1,4 +1,8 @@
 # FILE: app/llm/nano_banana.py
+# Purpose: Google Gemini image generation backend (Nano Banana).
+# Called-by: app.llm.image_router
+# Depends-on: app.llm.image_output_dir
+# Last-renovated: 2026-06-11
 """
 Google Gemini image generation backend (Nano Banana).
 

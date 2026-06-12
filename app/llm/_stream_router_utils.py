@@ -1,3 +1,7 @@
+# Purpose: stream router utils
+# Called-by: app.llm.routing.weaver_reweave_handler, app.llm.stream_router
+# Depends-on: app.llm.project_scoping_stream, app.llm.routing.chat_routing, app.llm.routing.command_dispatch, app.llm.routing.handler_registry (+3 more)
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import json
 import logging

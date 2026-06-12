@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/size_analyzer.py
+# Purpose: Size Analyzer — Pre-Segmentation File Size Estimation & Decomposition.
+# Called-by: app.pot_spec.grounded._spec_runner_segmentation
+# Depends-on: app.pot_spec.grounded._sbx_fs, app.pot_spec.grounded.python_parser, app.pot_spec.grounded.size_decomposition, app.pot_spec.grounded.size_models (+1 more)
+# Last-renovated: 2026-06-11
 """
 Size Analyzer — Pre-Segmentation File Size Estimation & Decomposition.
 

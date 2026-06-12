@@ -1,4 +1,8 @@
 # FILE: app/content/style_router.py
+# Purpose: Style reference router — upload, list, analyse.
+# Called-by: main
+# Depends-on: app.auth, app.content, app.content.project_models, app.content.project_schemas (+4 more)
+# Last-renovated: 2026-06-11
 """
 Style reference router — upload, list, analyse.
 Prefix: /content (nested under projects and standalone for refs)

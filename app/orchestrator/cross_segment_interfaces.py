@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/cross_segment_interfaces.py
+# Purpose: Cross-Segment Interface Binding — v1.0
+# Called-by: app.orchestrator.arch_template.engine
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Cross-Segment Interface Binding — v1.0
 

@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/final_verdict.py
+# Purpose: JOB 3 (2026-06-10) - One merged verdict instead of three contradicting reports.
+# Called-by: app.orchestrator.segment_loop, app.pipeline_v2.verifier_agent.agent, tests.test_phase1_verdict_smoke
+# Depends-on: app.pipeline_v2.orchestrator
+# Last-renovated: 2026-06-11
 """
 JOB 3 (2026-06-10) - One merged verdict instead of three contradicting reports.
 

@@ -1,4 +1,8 @@
 # FILE: app/jobs/router.py
+# Purpose: Phase 4 Jobs Router - HTTP API Endpoints
+# Called-by: main, tests.test_job_router
+# Depends-on: app.db, app.jobs.engine, app.jobs.models, app.jobs.schemas
+# Last-renovated: 2026-06-11
 """
 Phase 4 Jobs Router - HTTP API Endpoints
 

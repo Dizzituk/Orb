@@ -1,4 +1,8 @@
 # FILE: app/styling/html_builder.py
+# Purpose: Build single-file styled HTML reports from a structured content list.
+# Called-by: app.debug.executors.styled_files
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Build single-file styled HTML reports from a structured content list.
 

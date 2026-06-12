@@ -1,4 +1,8 @@
 # FILE: app/translation/_intents_operations.py
+# Purpose: Intent definitions: Operations domain.
+# Called-by: app.translation.intents
+# Depends-on: app.translation.schemas
+# Last-renovated: 2026-06-11
 """
 Intent definitions: Operations domain.
 RAG, embeddings, filesystem, codebase reports, multi-file, segments,

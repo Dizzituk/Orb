@@ -1,4 +1,8 @@
 # FILE: app/llm/_weaver_prompts.py
+# Purpose: System prompts for Weaver stream handler.
+# Called-by: app.llm._weaver_stream_modes
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 System prompts for Weaver stream handler.
 

@@ -1,4 +1,8 @@
 # FILE: app/tools/lifestyle_strength_tools.py
+# Purpose: Strength tool handlers — the LLM-facing layer for exercise-set logging
+# Called-by: app.tools.lifestyle_tools
+# Depends-on: app.lifestyle.service, app.tools.lifestyle_tools
+# Last-renovated: 2026-06-11
 """
 Strength tool handlers — the LLM-facing layer for exercise-set logging
 and progressive-overload history.

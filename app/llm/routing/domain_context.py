@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/domain_context.py
+# Purpose: Domain Context Providers — pull real data from ASTRA's domain services
+# Called-by: app.bridge.router, app.llm.stream_router
+# Depends-on: app.builds.models, app.content.models, app.education.models, app.finance.work_router (+2 more)
+# Last-renovated: 2026-06-11
 """
 Domain Context Providers — pull real data from ASTRA's domain services
 for injection into LLM system prompts.

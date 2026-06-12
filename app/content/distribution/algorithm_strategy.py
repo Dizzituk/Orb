@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/algorithm_strategy.py
+# Purpose: YouTube Algorithm Strategy — platform-aware content optimisation.
+# Called-by: app.content.distribution.youtube_router
+# Depends-on: app.content.distribution.posting_time_learner
+# Last-renovated: 2026-06-11
 """
 YouTube Algorithm Strategy — platform-aware content optimisation.
 

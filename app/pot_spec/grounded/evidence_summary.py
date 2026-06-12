@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/evidence_summary.py
+# Purpose: v2.2: Signature-only evidence mode for cost-optimised prompts.
+# Called-by: app.pot_spec.grounded._evidence_gathering_utils_8
+# Depends-on: app.pot_spec.grounded._sbx_fs
+# Last-renovated: 2026-06-11
 """
 v2.2: Signature-only evidence mode for cost-optimised prompts.
 

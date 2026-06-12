@@ -1,4 +1,8 @@
 # FILE: app/self_model/fragments/models.py
+# Purpose: Fragment store data model.
+# Called-by: app.self_model.fragments.capture, app.self_model.fragments.classifier, app.self_model.fragments.cluster, app.self_model.fragments.injection (+2 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Fragment store data model.
 

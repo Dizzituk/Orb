@@ -1,4 +1,8 @@
 # FILE: app/translation/schemas.py
+# Purpose: Pydantic models for the ASTRA Translation Layer.
+# Called-by: app.llm.routing.reject_intent_handler, app.llm.stream_router, app.project_registry.tier0_checks, app.translation (+21 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Pydantic models for the ASTRA Translation Layer.
 Defines canonical intents, modes, gate results, and feedback structures.

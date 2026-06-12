@@ -1,4 +1,8 @@
 # FILE: app/content/video_pipeline/bake_segment.py
+# Purpose: Segment Baker — simple, correct clip assembly.
+# Called-by: app.content.video_pipeline.orchestrator
+# Depends-on: app.content.video_pipeline.asset_library
+# Last-renovated: 2026-06-11
 """
 Segment Baker — simple, correct clip assembly.
 

@@ -1,3 +1,7 @@
+# Purpose: registry utils 2
+# Called-by: app.providers.registry
+# Depends-on: app.tools.registry
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import json
 import time

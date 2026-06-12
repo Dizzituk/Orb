@@ -1,4 +1,8 @@
 # FILE: app/debug/executors/styled_files.py
+# Purpose: Styled file creation executors: create_docx, create_pdf, create_xlsx, create_html_report.
+# Called-by: app.debug.executors
+# Depends-on: app.debug.executors.file_ops, app.styling.docx_builder, app.styling.html_builder, app.styling.pdf_builder (+4 more)
+# Last-renovated: 2026-06-11
 """
 Styled file creation executors: create_docx, create_pdf, create_xlsx, create_html_report.
 

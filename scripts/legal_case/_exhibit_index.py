@@ -1,4 +1,8 @@
 # FILE: scripts/legal_case/_exhibit_index.py
+# Purpose: Build the exhibit index table rows from the reconciliation JSON.
+# Called-by: scripts.legal_case._rebuild_docx
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Build the exhibit index table rows from the reconciliation JSON.
 

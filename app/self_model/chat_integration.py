@@ -1,4 +1,8 @@
 # FILE: app/self_model/chat_integration.py
+# Purpose: Chat Integration for the Self-Model
+# Called-by: app.self_model.hooks
+# Depends-on: app.self_model.capability_map, app.self_model.journal, app.self_model.observer, app.self_model.suggestions (+1 more)
+# Last-renovated: 2026-06-11
 """
 Chat Integration for the Self-Model
 

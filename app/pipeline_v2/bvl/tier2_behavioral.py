@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/bvl/tier2_behavioral.py
+# Purpose: Tier 2 — Behavioral Gate.
+# Called-by: app.pipeline_v2.bvl.bvl_orchestrator
+# Depends-on: app.pipeline_v2.build_targets, app.pipeline_v2.bvl.bvl_models, app.pipeline_v2.bvl.emulator_bridge, app.pipeline_v2.bvl.tier2_test_generator
+# Last-renovated: 2026-06-11
 """
 Tier 2 — Behavioral Gate.
 

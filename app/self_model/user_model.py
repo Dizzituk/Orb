@@ -1,4 +1,8 @@
-﻿from __future__ import annotations
+# Purpose: user model
+# Called-by: app.self_model, app.self_model.chat_integration, app.self_model.hooks, app.self_model.injection (+1 more)
+# Depends-on: app.self_model.models
+# Last-renovated: 2026-06-11
+from __future__ import annotations
 
 import json
 import logging

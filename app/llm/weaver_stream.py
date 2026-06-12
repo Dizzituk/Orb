@@ -1,4 +1,8 @@
 # FILE: app/llm/weaver_stream.py
+# Purpose: Weaver Stream Handler for ASTRA v4.2.0
+# Called-by: app.llm.routing.handler_registry, tests.test_weaver_slot_reconciliation, tests.test_weaver_v352_regression
+# Depends-on: app.experience.user_memory, app.llm._weaver_stream_modes, app.llm._weaver_stream_prepare, app.llm._weaver_stream_utils_12 (+12 more)
+# Last-renovated: 2026-06-11
 """
 Weaver Stream Handler for ASTRA v4.2.0
 

@@ -1,4 +1,8 @@
 # FILE: app/web_automation/session_registry.py
+# Purpose: CRUD helpers for WebSession.
+# Called-by: app.content.distribution.browser_analytics.recon, app.content.distribution.browser_analytics.scrape, app.web_automation.bridge, app.web_automation.router (+2 more)
+# Depends-on: app.web_automation.models
+# Last-renovated: 2026-06-11
 """
 CRUD helpers for WebSession.
 

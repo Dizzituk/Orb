@@ -1,4 +1,8 @@
 # FILE: app/tools/strength_tools.py
+# Purpose: Strength tool handlers — per-exercise set logging + progressive-overload recall.
+# Called-by: app.tools.registry
+# Depends-on: app.db, app.lifestyle.strength, app.tools.registry, app.tools.schemas
+# Last-renovated: 2026-06-11
 """
 Strength tool handlers — per-exercise set logging + progressive-overload recall.
 

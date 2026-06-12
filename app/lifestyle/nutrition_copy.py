@@ -1,4 +1,8 @@
 # FILE: app/lifestyle/nutrition_copy.py
+# Purpose: Copy a day's food diary onto another day — voice-first nutrition reuse
+# Called-by: app.llm.stream_router, app.tools.lifestyle_nutrition_tools, main
+# Depends-on: app.db, app.lifestyle.models, app.lifestyle.service
+# Last-renovated: 2026-06-11
 """
 Copy a day's food diary onto another day — voice-first nutrition reuse
 (2026-06-11, built from Taz's request: "copy yesterday's food over into

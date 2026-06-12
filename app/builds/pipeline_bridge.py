@@ -1,4 +1,8 @@
 # FILE: app/builds/pipeline_bridge.py
+# Purpose: Pipeline Bridge — glue between command dispatch and Build Projects.
+# Called-by: app.builds.stage_hooks, app.llm.spec_gate_stream, app.orchestrator.segment_loop, app.pipeline_v2.orchestrator
+# Depends-on: app.builds, app.builds.models, app.builds.schemas, app.builds.service (+4 more)
+# Last-renovated: 2026-06-11
 """
 Pipeline Bridge — glue between command dispatch and Build Projects.
 

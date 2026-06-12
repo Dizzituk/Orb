@@ -1,4 +1,8 @@
 # FILE: app/llm/weaver_memory.py
+# Purpose: Progressive Memory for Weaver — Context Compaction for Long Conversations.
+# Called-by: app.llm.weaver_stream
+# Depends-on: app.llm.stage_models, app.providers.registry
+# Last-renovated: 2026-06-11
 """
 Progressive Memory for Weaver — Context Compaction for Long Conversations.
 
@@ -30,10 +34,8 @@ v1.0 (2026-02-10): Initial implementation — Phase 4C.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 

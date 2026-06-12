@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/llm_caller.py
+# Purpose: LLM Caller — unified interface for calling any model from pipeline stages.
+# Called-by: app.intelligent_memory.extraction, app.pipeline_v2.bvl.cross_model_diagnostic, app.pipeline_v2.bvl.tier2_test_generator, app.pipeline_v2.checkout (+4 more)
+# Depends-on: app.llm.streaming
+# Last-renovated: 2026-06-11
 """
 LLM Caller — unified interface for calling any model from pipeline stages.
 

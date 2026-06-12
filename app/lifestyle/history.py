@@ -1,4 +1,8 @@
 # FILE: app/lifestyle/history.py
+# Purpose: Long-arc health history reads — the daily series Astra reads across weeks and
+# Called-by: app.lifestyle.service
+# Depends-on: app.lifestyle.models
+# Last-renovated: 2026-06-11
 """
 Long-arc health history reads — the daily series Astra reads across weeks and
 months to spot trends ("resting HR drifted down this month, weight fell, here's

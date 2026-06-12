@@ -1,4 +1,8 @@
 # FILE: app/memory/domains/preference_seeds.py
+# Purpose: Seed initial user preferences.
+# Called-by: app.memory.domains, app.memory.startup
+# Depends-on: app.astra_memory.preference_models, app.astra_memory.preference_service, app.db
+# Last-renovated: 2026-06-11
 """
 Seed initial user preferences.
 

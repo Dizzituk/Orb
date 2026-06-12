@@ -1,3 +1,7 @@
+# Purpose: Live self-test for the Anthropic tool-loop adapter (Job 8) + fable-5
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.crypto.encryption, app.db, app.pipeline_v2, app.pipeline_v2.llm_tool_defs (+3 more)
+# Last-renovated: 2026-06-11
 """Live self-test for the Anthropic tool-loop adapter (Job 8) + fable-5
 access check (Job 12). One trivial agentic task: read a planted buggy file,
 fix one line surgically, run a shell check, report DONE.
@@ -42,8 +46,11 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
         finally:
             _db.close()
     else:
-        print("\nNO KEY AVAILABLE: set ORB_MASTER_KEY in this shell first (see comment above).")
-        sys.exit(2)
+        # Phase 5 fix (2026-06-11): was sys.exit(2), which aborted the ENTIRE pytest
+        # collection run. Module-level skip keeps the rest of the suite collectable.
+        import pytest
+        pytest.skip("live test: set ORB_MASTER_KEY in this shell first (see comment above)",
+                    allow_module_level=True)
 assert os.environ.get("ANTHROPIC_API_KEY"), "ANTHROPIC_API_KEY missing from .env AND settings store"
 
 PLAY = r"D:\Orb\jobs\verifier_selftest"

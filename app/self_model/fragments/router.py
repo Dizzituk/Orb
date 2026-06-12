@@ -1,4 +1,8 @@
 # FILE: app/self_model/fragments/router.py
+# Purpose: FastAPI endpoints for the fragment / theme layer.
+# Called-by: main
+# Depends-on: app.self_model.fragments.cluster, app.self_model.fragments.injection, app.self_model.fragments.store, app.self_model.fragments.surfacing (+1 more)
+# Last-renovated: 2026-06-11
 """
 FastAPI endpoints for the fragment / theme layer.
 

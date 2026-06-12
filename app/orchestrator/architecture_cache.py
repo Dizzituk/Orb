@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/architecture_cache.py
+# Purpose: v2.2: Architecture template cache — reuse successful architectures for repeat patterns.
+# Called-by: app.endpoints.cost_dashboard, app.llm.pipeline._high_stakes_pipelines
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 v2.2: Architecture template cache — reuse successful architectures for repeat patterns.
 

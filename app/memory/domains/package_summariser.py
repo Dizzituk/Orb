@@ -1,4 +1,8 @@
 # FILE: app/memory/domains/package_summariser.py
+# Purpose: Tier 5 — Package Summaries.
+# Called-by: app.memory.seed_tiers
+# Depends-on: app.db, app.memory.rag_entries_model
+# Last-renovated: 2026-06-11
 """
 Tier 5 — Package Summaries.
 

@@ -1,4 +1,8 @@
 # FILE: app/llm/critical_pipeline/quickcheck_micro.py
+# Purpose: Micro-execution quickcheck — fast deterministic validation (NO LLM calls).
+# Called-by: app.llm.critical_pipeline, app.llm.critical_pipeline._stream_handler_utils, app.llm.critical_pipeline.stream_handler
+# Depends-on: app.llm.critical_pipeline.evidence
+# Last-renovated: 2026-06-11
 """
 Micro-execution quickcheck — fast deterministic validation (NO LLM calls).
 

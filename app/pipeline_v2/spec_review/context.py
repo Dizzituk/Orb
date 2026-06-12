@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/spec_review/context.py
+# Purpose: Builds the full context package the reviewer sees.
+# Called-by: app.pipeline_v2.spec_review.reviewer, tests.test_phase1_verdict_smoke
+# Depends-on: app.pipeline_v2, app.pipeline_v2.build_targets, app.pipeline_v2.models, app.pipeline_v2.sandbox_tools
+# Last-renovated: 2026-06-11
 """
 Builds the full context package the reviewer sees.
 

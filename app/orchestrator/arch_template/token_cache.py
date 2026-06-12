@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/arch_template/token_cache.py
+# Purpose: Design Token Cache — persistent storage for extracted CSS tokens.
+# Called-by: app.llm.critical_pipeline.stream_handler
+# Depends-on: app.orchestrator.arch_template.token_registry, app.sandbox_fs
+# Last-renovated: 2026-06-11
 """
 Design Token Cache — persistent storage for extracted CSS tokens.
 

@@ -1,4 +1,8 @@
 # FILE: app/astra_memory/preference_models.py
+# Purpose: ASTRA Memory System - Preference & Evidence Models
+# Called-by: app.astra_memory, app.astra_memory._retrieval_utils, app.astra_memory.confidence_scoring, app.astra_memory.decay_job (+22 more)
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """
 ASTRA Memory System - Preference & Evidence Models
 

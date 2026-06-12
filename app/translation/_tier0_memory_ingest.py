@@ -1,4 +1,8 @@
 # FILE: app/translation/_tier0_memory_ingest.py
+# Purpose: Tier 0 rule: Memory ingest and store intent detection.
+# Called-by: app.translation.tier0_rules
+# Depends-on: app.translation.schemas
+# Last-renovated: 2026-06-11
 """
 Tier 0 rule: Memory ingest and store intent detection.
 

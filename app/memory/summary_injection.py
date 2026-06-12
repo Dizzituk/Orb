@@ -1,4 +1,8 @@
 # FILE: app/memory/summary_injection.py
+# Purpose: Shared utility for injecting conversation summaries into LLM context.
+# Called-by: app.llm.routing.prompt_builders, tests.test_conversation_memory
+# Depends-on: app.memory.conversation_service
+# Last-renovated: 2026-06-11
 """
 Shared utility for injecting conversation summaries into LLM context.
 

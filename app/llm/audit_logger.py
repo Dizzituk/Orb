@@ -1,4 +1,8 @@
 # FILE: app/llm/audit_logger.py
+# Purpose: Non-sensitive, structured audit logging + lightweight live telemetry.
+# Called-by: app.endpoints.direct_llm, app.llm, app.llm._audit_logger_utils, app.llm.critical_pipeline.config (+22 more)
+# Depends-on: app.llm._audit_logger_utils
+# Last-renovated: 2026-06-11
 """ 
 Non-sensitive, structured audit logging + lightweight live telemetry.
 
@@ -23,7 +27,6 @@ from __future__ import annotations
 import json
 import os
 import threading
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum

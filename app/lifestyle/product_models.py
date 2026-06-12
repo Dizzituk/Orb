@@ -1,4 +1,8 @@
 # FILE: app/lifestyle/product_models.py
+# Purpose: Personal food product library — Job 4 of the memory roadmap (2026-06-10).
+# Called-by: app.lifestyle.product_router, app.lifestyle.product_service
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """
 Personal food product library — Job 4 of the memory roadmap (2026-06-10).
 

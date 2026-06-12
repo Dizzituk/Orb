@@ -1,4 +1,8 @@
 # FILE: app/grounding/freshness_policy.py
+# Purpose: Freshness Policy for the Grounded Intelligence System.
+# Called-by: app.grounding.grounding_gate
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Freshness Policy for the Grounded Intelligence System.
 

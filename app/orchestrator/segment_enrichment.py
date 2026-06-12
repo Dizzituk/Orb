@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/segment_enrichment.py
+# Purpose: Stage 4B: Segment Enrichment
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.orchestrator
+# Last-renovated: 2026-06-11
 """
 Stage 4B: Segment Enrichment
 
@@ -33,10 +37,8 @@ v1.0 (2026-02-16): Initial implementation
 from __future__ import annotations
 
 import ast
-import json
 import logging
 import os
-import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple

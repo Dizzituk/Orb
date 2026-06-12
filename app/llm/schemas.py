@@ -1,4 +1,8 @@
 # FILE: app/llm/schemas.py
+# Purpose: LLM routing schemas: job types, task definitions, and result models.
+# Called-by: app.endpoints._chat_media_processors, app.endpoints.chat, app.endpoints.chat_attachments, app.endpoints.direct_llm (+22 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 LLM routing schemas: job types, task definitions, and result models.
 

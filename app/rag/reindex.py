@@ -1,4 +1,8 @@
 # FILE: app/rag/reindex.py
+# Purpose: Reindex new/modified chunks after a rescan.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.embeddings.models, app.embeddings.service, app.rag.descriptors.descriptor_gen, app.rag.models
+# Last-renovated: 2026-06-11
 """
 Reindex new/modified chunks after a rescan.
 

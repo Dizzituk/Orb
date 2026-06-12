@@ -1,4 +1,8 @@
 # FILE: app/overwatcher/__init__.py
+# Purpose: Overwatcher — legacy package, mostly retired.
+# Called-by: app.llm.local_tools.zobie.streams.batch_ops, app.llm.routing.routing_persistence, tests.test_evidence, tests.test_ow_orchestrator (+4 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """Overwatcher — legacy package, mostly retired.
 
 Only the architecture_executor subpackage remains (used by pipeline_v2

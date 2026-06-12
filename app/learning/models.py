@@ -1,4 +1,8 @@
 # FILE: app/learning/models.py
+# Purpose: Data model for the learning / course-content subsystem.
+# Called-by: app.learning, main
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """
 Data model for the learning / course-content subsystem.
 

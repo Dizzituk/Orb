@@ -1,4 +1,8 @@
 # FILE: app/translation/contextual_intent.py
+# Purpose: Contextual Intent Router.
+# Called-by: app.translation.translator
+# Depends-on: app.translation.schemas
+# Last-renovated: 2026-06-11
 """
 Contextual Intent Router.
 

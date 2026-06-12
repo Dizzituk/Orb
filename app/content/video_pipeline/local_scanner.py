@@ -1,4 +1,8 @@
 # FILE: app/content/video_pipeline/local_scanner.py
+# Purpose: Local Asset Scanner — indexes stock footage from the local file system.
+# Called-by: app.content.video_pipeline.router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Local Asset Scanner — indexes stock footage from the local file system.
 

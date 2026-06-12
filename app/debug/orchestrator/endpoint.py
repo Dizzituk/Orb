@@ -1,4 +1,8 @@
 # FILE: app/debug/orchestrator/endpoint.py
+# Purpose: FastAPI endpoint for the Debug Orchestrator.
+# Called-by: main
+# Depends-on: app.auth, app.auth.middleware, app.debug.orchestrator.activity_store, app.debug.orchestrator.loop_controller (+2 more)
+# Last-renovated: 2026-06-11
 """
 FastAPI endpoint for the Debug Orchestrator.
 

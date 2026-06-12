@@ -1,3 +1,7 @@
+# Purpose: Tests for architecture search.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.astra_memory.preference_models, app.db, app.rag.models, app.rag.retrieval.arch_search
+# Last-renovated: 2026-06-11
 # tests/test_rag_arch_search.py
 """Tests for architecture search."""
 

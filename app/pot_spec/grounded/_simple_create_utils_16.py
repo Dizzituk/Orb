@@ -1,3 +1,7 @@
+# Purpose: simple create utils 16
+# Called-by: app.pot_spec.grounded._simple_create_utils_15, app.pot_spec.grounded._simple_create_utils_17, app.pot_spec.grounded.simple_create
+# Depends-on: app.pot_spec.grounded._sbx_fs, app.pot_spec.grounded._simple_create_utils_15, app.pot_spec.grounded._simple_create_utils_17
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
 import os

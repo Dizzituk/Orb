@@ -1,4 +1,8 @@
 # FILE: app/llm/image_type_classifier.py
+# Purpose: Image request classifier — determines which rendering pipeline to use.
+# Called-by: app.llm.image_router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Image request classifier — determines which rendering pipeline to use.
 

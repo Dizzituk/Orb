@@ -1,4 +1,8 @@
 # FILE: app/memory/working_set.py
+# Purpose: Project working set — per-session, per-project cache of files the
+# Called-by: app.bridge.capability_layer, app.debug._working_set_hook, app.llm.routing.prompt_builders, app.llm.stream_router (+2 more)
+# Depends-on: app.memory._working_set_persistence
+# Last-renovated: 2026-06-11
 """
 Project working set — per-session, per-project cache of files the
 conversation has actually touched.

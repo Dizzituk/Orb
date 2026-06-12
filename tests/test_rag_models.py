@@ -1,4 +1,8 @@
 # FILE: tests/test_rag_models.py
+# Purpose: Tests for RAG models.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.db, app.rag.models
+# Last-renovated: 2026-06-11
 """
 Tests for RAG models.
 

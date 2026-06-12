@@ -1,4 +1,8 @@
 # FILE: app/debug/file_upload_router.py
+# Purpose: File Upload Router — accept files for debug assistant analysis.
+# Called-by: main
+# Depends-on: app.auth, app.auth.middleware, app.db, app.debug.screen_capture (+1 more)
+# Last-renovated: 2026-06-11
 """
 File Upload Router — accept files for debug assistant analysis.
 

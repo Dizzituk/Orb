@@ -1,4 +1,8 @@
 # FILE: app/web_automation/schemas.py
+# Purpose: Pydantic schemas for the Web Automation REST surface.
+# Called-by: app.web_automation.router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Pydantic schemas for the Web Automation REST surface.
 """

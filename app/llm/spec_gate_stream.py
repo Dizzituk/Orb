@@ -1,4 +1,8 @@
 # FILE: app/llm/spec_gate_stream.py
+# Purpose: Spec Gate streaming handler for ASTRA command flow.
+# Called-by: app.llm.routing.handler_registry, tests.test_spec_gate_grounded
+# Depends-on: app, app.builds.pipeline_bridge, app.llm._sg_stream_persist, app.llm._spec_gate_stream_utils_2 (+9 more)
+# Last-renovated: 2026-06-11
 """
 Spec Gate streaming handler for ASTRA command flow.
 
@@ -12,7 +16,6 @@ v2.0: Original implementation with Weaver spec validation.
 
 from __future__ import annotations
 
-import json
 import logging
 import asyncio
 from typing import Optional, Any, AsyncGenerator, Dict
@@ -40,7 +43,6 @@ except Exception as e:
     logger.warning("[spec_gate_stream] spec_gate_v2 not available: %s", e)
 
 # Import Spec Gate Grounded (Contract v1)
-import os
 
 try:
     from app.pot_spec.spec_gate_grounded import run_spec_gate_grounded

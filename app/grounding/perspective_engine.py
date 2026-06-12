@@ -1,4 +1,8 @@
 # FILE: app/grounding/perspective_engine.py
+# Purpose: Balanced Perspective Engine for the Grounded Intelligence System.
+# Called-by: app.grounding.grounding_gate, app.grounding.perspective_formatter, app.grounding.perspective_prompts
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Balanced Perspective Engine for the Grounded Intelligence System.
 

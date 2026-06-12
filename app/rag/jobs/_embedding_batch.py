@@ -1,4 +1,8 @@
 # FILE: app/rag/jobs/_embedding_batch.py
+# Purpose: Embedding batch processing: embed + retry logic.
+# Called-by: app.rag.jobs.embedding_job
+# Depends-on: app.embeddings.service, app.llm.clients, app.rag.jobs._embedding_job_utils_6, app.rag.jobs._embedding_job_utils_7 (+2 more)
+# Last-renovated: 2026-06-11
 """
 Embedding batch processing: embed + retry logic.
 

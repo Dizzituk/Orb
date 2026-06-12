@@ -1,4 +1,8 @@
 # FILE: app/lifestyle/models.py
+# Purpose: SQLAlchemy models for the Lifestyle Engine.
+# Called-by: app.db, app.lifestyle.burn, app.lifestyle.coaching, app.lifestyle.daily_view (+11 more)
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """
 SQLAlchemy models for the Lifestyle Engine.
 
@@ -77,6 +81,10 @@ class WorkoutSession(Base):
     title = Column(String, nullable=True)  # e.g. "Morning stretch", "Bantham session"
     notes = Column(Text, nullable=True)
     calories_burned = Column(Float, nullable=True)  # estimated
+    # --- Heart-rate session stats (2026-06-11, energy engine) ---
+    avg_hr = Column(Integer, nullable=True)      # mean bpm across the session
+    max_hr = Column(Integer, nullable=True)      # peak bpm
+    hr_zones_json = Column(Text, nullable=True)  # JSON minutes per zone {"z1".."z5"}
     # Surf-specific fields
     surf_location = Column(String, nullable=True)
     surf_conditions = Column(String, nullable=True)  # e.g. "3ft, offshore, clean"
@@ -147,6 +155,7 @@ class DailySummary(Base):
     steps = Column(Integer, nullable=True)          # daily step count
     floors = Column(Integer, nullable=True)         # floors/flights climbed
     active_calories = Column(Float, nullable=True)  # active kcal burned
+    total_calories_burned = Column(Float, nullable=True)  # Garmin total kcal (incl. its own resting est.)
     resting_hr = Column(Integer, nullable=True)     # resting heart rate (bpm)
     sleep_minutes = Column(Integer, nullable=True)  # total sleep minutes for the day
 

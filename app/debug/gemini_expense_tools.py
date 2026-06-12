@@ -1,4 +1,8 @@
 # FILE: app/debug/gemini_expense_tools.py
+# Purpose: Expense logging chat tool: "Astra, I've spent 120 on fuel today" -> one
+# Called-by: app.llm.chat_tool_loop
+# Depends-on: app.db, app.finance.services.expense_service
+# Last-renovated: 2026-06-11
 """
 Expense logging chat tool: "Astra, I've spent 120 on fuel today" -> one
 finance_transactions row, instantly, with the day filled in.

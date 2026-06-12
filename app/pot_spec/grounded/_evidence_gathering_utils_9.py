@@ -1,3 +1,7 @@
+# Purpose: evidence gathering utils 9
+# Called-by: app.pot_spec.grounded._evidence_gathering_utils_10, app.pot_spec.grounded._evidence_gathering_utils_11, app.pot_spec.grounded.evidence_gathering
+# Depends-on: app.sandbox_fs
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
 import os

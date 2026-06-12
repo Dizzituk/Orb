@@ -1,4 +1,8 @@
 # FILE: app/content/video_pipeline/prompts.py
+# Purpose: Prompt templates for the video pipeline.
+# Called-by: app.content.video_pipeline.script_analyzer, app.content.video_pipeline.style_resolver
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Prompt templates for the video pipeline.
 

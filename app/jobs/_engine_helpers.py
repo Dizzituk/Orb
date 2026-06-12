@@ -1,4 +1,8 @@
 # FILE: app/jobs/_engine_helpers.py
+# Purpose: Job engine helper functions.
+# Called-by: app.jobs.engine
+# Depends-on: app.artefacts.service, app.jobs.models, app.jobs.schemas, app.llm.stream_utils
+# Last-renovated: 2026-06-11
 """
 Job engine helper functions.
 

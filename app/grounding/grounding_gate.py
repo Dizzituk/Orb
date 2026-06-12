@@ -1,4 +1,8 @@
 # FILE: app/grounding/grounding_gate.py
+# Purpose: Grounding Gate — Core orchestrator for the Grounded Intelligence System.
+# Called-by: app.grounding.chat_integration
+# Depends-on: app.grounding.freshness_policy, app.grounding.perspective_engine, app.grounding.perspective_formatter, app.grounding.perspective_prompts (+4 more)
+# Last-renovated: 2026-06-11
 """
 Grounding Gate — Core orchestrator for the Grounded Intelligence System.
 

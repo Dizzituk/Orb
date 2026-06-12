@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/bvl/emulator_bridge.py
+# Purpose: Emulator Bridge — ADB abstraction layer for BVL.
+# Called-by: app.pipeline_v2.bvl.bvl_orchestrator, app.pipeline_v2.bvl.failure_classifier, app.pipeline_v2.bvl.preflight, app.pipeline_v2.bvl.tier1_sanity (+3 more)
+# Depends-on: app.pipeline_v2.sandbox_tools
+# Last-renovated: 2026-06-11
 """
 Emulator Bridge — ADB abstraction layer for BVL.
 

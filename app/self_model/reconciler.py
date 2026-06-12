@@ -1,4 +1,8 @@
 # FILE: app/self_model/reconciler.py
+# Purpose: Read-side reconciler for the self-model stores.
+# Called-by: app.self_model.proposal_review_router
+# Depends-on: app.self_model.canonical_schema, app.self_model.identity
+# Last-renovated: 2026-06-11
 """
 Read-side reconciler for the self-model stores.
 

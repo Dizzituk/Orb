@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/js_scanner.py
+# Purpose: JavaScript/TypeScript scanner — regex-based symbol extraction.
+# Called-by: app.orchestrator.codebase_scanner
+# Depends-on: app.orchestrator.codebase_scanner_models
+# Last-renovated: 2026-06-11
 """
 JavaScript/TypeScript scanner — regex-based symbol extraction.
 

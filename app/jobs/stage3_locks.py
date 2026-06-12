@@ -1,4 +1,8 @@
 # FILE: app/jobs/stage3_locks.py
+# Purpose: Stage 3 spec-hash locks (refuse-on-mismatch).
+# Called-by: app.jobs.engine, app.llm.pipeline._high_stakes_prompt_build, tests.test_stage3_locks
+# Depends-on: app.pot_spec.ledger, app.pot_spec.service
+# Last-renovated: 2026-06-11
 """Stage 3 spec-hash locks (refuse-on-mismatch).
 
 Isolated helpers for:

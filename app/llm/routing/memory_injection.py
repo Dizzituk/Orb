@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/memory_injection.py
+# Purpose: Memory Context Injection for LLM Routing
+# Called-by: app.llm.routing.envelope
+# Depends-on: app.astra_memory, app.astra_memory.confidence_config, app.astra_memory.topic_tagger, app.lifestyle.nudges (+1 more)
+# Last-renovated: 2026-06-12
 """
 Memory Context Injection for LLM Routing
 
@@ -284,6 +288,20 @@ def build_memory_context(
             )
     except Exception as _nudge_exc:
         logger.debug(f"[memory_injection] nudge injection skipped: {_nudge_exc}")
+
+    # ── ASTRA Sentinel (2026-06-12): active security alert — weave the top
+    # unacknowledged alert into context once (cooldown handled inside
+    # get_alert_for_injection, same nudges pattern as above).
+    try:
+        from app.sentinel.alerts import get_alert_for_injection
+        _sec_alert = get_alert_for_injection()
+        if _sec_alert:
+            facts_text = (facts_text + "\n\n" if facts_text else "") + (
+                "[ACTIVE SECURITY ALERT — tell Taz about this proactively and plainly, "
+                "without scaremongering; he can review/act in the Security tab]: " + _sec_alert
+            )
+    except Exception as _sentinel_exc:
+        logger.debug(f"[memory_injection] sentinel alert injection skipped: {_sentinel_exc}")
 
     # ── Job 1b (2026-06-10): pending identity confirmations — surface queued
     # arbiter proposals conversationally (max once per 6h per process) so

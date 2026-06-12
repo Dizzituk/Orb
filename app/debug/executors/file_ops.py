@@ -1,4 +1,8 @@
 # FILE: app/debug/executors/file_ops.py
+# Purpose: File operation executors: move_file, create_folder, move_files_batch.
+# Called-by: app.debug.executors, app.debug.executors.styled_files
+# Depends-on: app.debug.executors._paths, app.drive.file_utils, app.drive.manifest_scanner
+# Last-renovated: 2026-06-11
 """
 File operation executors: move_file, create_folder, move_files_batch.
 

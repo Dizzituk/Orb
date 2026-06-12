@@ -1,4 +1,8 @@
 # FILE: app/content/style_analyser.py
+# Purpose: Style analysis pipeline — sends style references to Gemini for analysis.
+# Called-by: app.content.style_router
+# Depends-on: app.content, app.content.project_models, app.content.style_service, app.llm.clients (+1 more)
+# Last-renovated: 2026-06-11
 """
 Style analysis pipeline — sends style references to Gemini for analysis.
 Uses existing app/llm/gemini_vision.py and app/llm/clients.py.

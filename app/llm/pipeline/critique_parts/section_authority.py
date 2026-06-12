@@ -1,4 +1,8 @@
 # FILE: app/llm/pipeline/critique_parts/section_authority.py
+# Purpose: Block 5c: SECTION AUTHORITY VALIDATION (v1.9 - CRITIQUE DEADLOCK FIX)
+# Called-by: app.llm.pipeline.critique
+# Depends-on: app.llm.pipeline.critique_schemas
+# Last-renovated: 2026-06-11
 """Block 5c: SECTION AUTHORITY VALIDATION (v1.9 - CRITIQUE DEADLOCK FIX)"""
 
 import logging

@@ -1,4 +1,8 @@
 # FILE: app/finance/services/work_folder_logger.py
+# Purpose: Deterministic folder logger for end-of-day delivery screenshots.
+# Called-by: app.debug.gemini_finance_tools, app.finance.services.work_upload_logger
+# Depends-on: app.db, app.drive.file_utils, app.finance.models_workday, app.llm.gemini_vision (+1 more)
+# Last-renovated: 2026-06-11
 """
 Deterministic folder logger for end-of-day delivery screenshots.
 

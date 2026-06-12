@@ -1,4 +1,8 @@
 # FILE: app/builds/messages.py
+# Purpose: Per-project pipeline message log.
+# Called-by: app.builds.router, app.builds.stage_hooks, main
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """
 Per-project pipeline message log.
 

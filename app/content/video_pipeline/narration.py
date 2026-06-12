@@ -1,4 +1,8 @@
 # FILE: app/content/video_pipeline/narration.py
+# Purpose: Narration Generator — TTS audio for b-roll segments.
+# Called-by: app.content.video_pipeline.orchestrator
+# Depends-on: app.content.video_pipeline.models, app.db, app.settings.service
+# Last-renovated: 2026-06-11
 """
 Narration Generator — TTS audio for b-roll segments.
 

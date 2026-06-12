@@ -1,4 +1,8 @@
 # FILE: app/capabilities/__init__.py
+# Purpose: ASTRA Global Capability Layer Module
+# Called-by: app.llm.context, app.llm.routing.handler_registry
+# Depends-on: app.capabilities.injector, app.capabilities.loader
+# Last-renovated: 2026-06-11
 """
 ASTRA Global Capability Layer Module
 

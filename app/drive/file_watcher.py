@@ -1,4 +1,8 @@
 # FILE: app/drive/file_watcher.py
+# Purpose: Live filesystem watcher — keeps drive_file_manifest in sync.
+# Called-by: main
+# Depends-on: app.db, app.drive.file_utils, app.drive.manifest_models, app.drive.manifest_rescan (+1 more)
+# Last-renovated: 2026-06-11
 """
 Live filesystem watcher — keeps drive_file_manifest in sync.
 

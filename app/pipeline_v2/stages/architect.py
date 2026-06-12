@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/stages/architect.py
+# Purpose: Stage 3 — The Architect.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.agentic_pipeline, app.agentic_pipeline.loop_controller, app.agentic_pipeline.segment_printer, app.orchestrator (+3 more)
+# Last-renovated: 2026-06-11
 """
 Stage 3 — The Architect.
 

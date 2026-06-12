@@ -23,7 +23,7 @@ import logging
 from typing import List
 
 from fastapi import APIRouter, HTTPException, Depends, Request
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -343,10 +343,18 @@ async def bridge_chat(
     # reply (with markers) so history reload can re-emit the same chips.
     display_reply, attachments = _process_artifacts(reply)
 
+    # Phone-action directives ([[astra:...]] markers — see directives.py):
+    # stripped from the visible reply, forwarded for the app to execute.
+    from .directives import extract_directives, strip_directives
+    directives = extract_directives(display_reply)
+    if directives:
+        display_reply = strip_directives(display_reply)
+
     return BridgeChatResponse(
         reply=display_reply, project_id=project.id,
         project_name=project.name, domain=_detected_domain,
         attachments=attachments,
+        directives=directives,
     )
 
 
@@ -360,7 +368,22 @@ async def bridge_chat_and_speak(
     from app.memory.service import create_message
     from app.memory.schemas import MessageCreate
     from app.memory._service_utils_2 import list_messages
-    from urllib.parse import quote as url_quote
+
+    from . import tts_cache
+    from .chat_speak_stream import build_audio_response, replay_cached_reply
+
+    # Idempotent retry: a key we've already answered re-serves the original
+    # reply (text headers + cached audio) — no second LLM run, no duplicate
+    # user/assistant rows, no replay-ghost. Checked BEFORE any side effects.
+    idempotency_key = request.headers.get("X-Idempotency-Key")
+    if idempotency_key:
+        replayed_id = tts_cache.idem_get(idempotency_key)
+        if replayed_id is not None:
+            replayed = replay_cached_reply(replayed_id, db, _process_artifacts)
+            if replayed is not None:
+                logger.info("[bridge] chat-and-speak idempotent replay (key=%s -> msg %s)",
+                            idempotency_key[:12], replayed_id)
+                return replayed
 
     project = _resolve_or_create_project(req, db)
     # Phase 3: scan for identity facts (DOB, birthplace, location, etc.)
@@ -373,7 +396,6 @@ async def bridge_chat_and_speak(
     from app.bridge.identity_hook import capture_fragment_from_bridge
     capture_fragment_from_bridge(req.message, project_id=project.id)
 
-    idempotency_key = request.headers.get("X-Idempotency-Key")
     history_before_save = list_messages(db, project.id, limit=100)
     existing_user_message = next(
         (
@@ -420,7 +442,6 @@ async def bridge_chat_and_speak(
     )
 
     from app.bridge.capability_layer import run_astra_chat
-    from app.bridge.chat_and_speak import _synthesise_sentence, _split_into_sentences
 
     if is_unsupported_on_bridge(resolved_intent):
         full_text = get_unsupported_message(resolved_intent)
@@ -464,6 +485,11 @@ async def bridge_chat_and_speak(
         content=full_text, provider=provider, model=model,
     ))
 
+    # Map the client's idempotency key to this reply so a retried request
+    # (OkHttp resend after connection loss) replays instead of re-running.
+    if idempotency_key:
+        tts_cache.idem_put(idempotency_key, assistant_message.id)
+
     # v2026-06-10: session + summary tracking (see bridge_chat above).
     try:
         from app.memory.integration import record_session_activity
@@ -483,26 +509,23 @@ async def bridge_chat_and_speak(
     display_text, attachments = _process_artifacts(full_text)
     attachments_payload = json.dumps([a.model_dump() for a in attachments])
 
-    async def generate_audio():
-        sentences = _split_into_sentences(display_text)
-        for sentence in sentences:
-            try:
-                mp3_bytes = await _synthesise_sentence(sentence)
-                yield mp3_bytes
-            except Exception as e:
-                logger.error("[bridge] TTS failed for sentence: %s", e)
+    # Phone-action directives ([[astra:...]] — see directives.py): stripped
+    # before the text reaches the screen or the voice, sent via X-Directives.
+    from .directives import extract_directives, strip_directives, directives_payload
+    directives = extract_directives(display_text)
+    if directives:
+        display_text = strip_directives(display_text)
 
-    return StreamingResponse(
-        generate_audio(),
-        media_type="audio/mpeg",
-        headers={
-            "X-Project-Id": str(project_id),
-            "X-Project-Name": url_quote(project_name),
-            "X-Full-Text": url_quote(display_text[:8000]),
-            "X-Message-Id": str(assistant_message.id),
-            "X-Artifacts": url_quote(attachments_payload),
-            "Transfer-Encoding": "chunked",
-        },
+    # Stream sentence-MP3s to the phone while teeing them into the
+    # per-message tts_cache; survives client disconnects (see
+    # chat_speak_stream.build_audio_response for the full contract).
+    return build_audio_response(
+        message_id=assistant_message.id,
+        display_text=display_text,
+        project_id=project_id,
+        project_name=project_name,
+        attachments_payload=attachments_payload,
+        directives_json=directives_payload(directives),
     )
 
 

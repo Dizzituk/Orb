@@ -1,4 +1,8 @@
 # FILE: app/content/production/edit_engine.py
+# Purpose: Edit Engine — Deterministic video assembly via FFmpeg (Spec Section 7.4).
+# Called-by: app.content.production.format_converter, app.content.production.shorts_creator, app.content.production_router, app.content.video_pipeline.edl_builder (+1 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Edit Engine — Deterministic video assembly via FFmpeg (Spec Section 7.4).
 

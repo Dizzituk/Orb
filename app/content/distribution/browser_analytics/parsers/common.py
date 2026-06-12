@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/browser_analytics/parsers/common.py
+# Purpose: Shared helpers for parsing DOM-AX snapshot elements.
+# Called-by: app.content.distribution.browser_analytics.parsers.meta, app.content.distribution.browser_analytics.parsers.tiktok, app.content.distribution.browser_analytics.tests.test_scrape
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Shared helpers for parsing DOM-AX snapshot elements.
 

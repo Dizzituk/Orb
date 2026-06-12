@@ -1,4 +1,8 @@
 # FILE: app/content/video_pipeline/__init__.py
+# Purpose: Script-to-Video Production Pipeline.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Script-to-Video Production Pipeline.
 

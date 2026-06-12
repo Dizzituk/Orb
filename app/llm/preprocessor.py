@@ -1,4 +1,8 @@
 # FILE: app/llm/preprocessor.py
+# Purpose: Content Preprocessor for Orb Routing Pipeline.
+# Called-by: app.llm
+# Depends-on: app.llm.file_classifier
+# Last-renovated: 2026-06-11
 """
 Content Preprocessor for Orb Routing Pipeline.
 

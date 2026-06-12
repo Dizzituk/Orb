@@ -1,4 +1,8 @@
 # FILE: app/llm/legacy_triggers.py
+# Purpose: Legacy trigger detection for stream router.
+# Called-by: app.llm.routing._cd_dispatch_table, app.llm.routing.chat_routing
+# Depends-on: app.introspection.chat_integration, app.llm.local_tools.archmap_helpers, app.sandbox
+# Last-renovated: 2026-06-11
 """
 Legacy trigger detection for stream router.
 

@@ -1,4 +1,8 @@
 # FILE: app/memory/domains/architecture.py
+# Purpose: Architecture domain store.
+# Called-by: app.memory.domains, app.memory.startup
+# Depends-on: app.db, app.memory.schemas_unified, app.rag.lifecycle, app.rag.models
+# Last-renovated: 2026-06-11
 """
 Architecture domain store.
 

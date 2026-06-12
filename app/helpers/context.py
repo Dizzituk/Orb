@@ -1,4 +1,8 @@
 # FILE: app/helpers/context.py
+# Purpose: Context building helpers for LLM endpoints.
+# Called-by: app.endpoints._chat_media_processors, app.endpoints.chat, app.endpoints.chat_attachments, app.helpers
+# Depends-on: app.memory, app.memory.models, app.memory.service
+# Last-renovated: 2026-06-11
 """
 Context building helpers for LLM endpoints.
 

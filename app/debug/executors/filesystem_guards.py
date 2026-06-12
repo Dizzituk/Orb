@@ -1,4 +1,8 @@
 # FILE: app/debug/executors/filesystem_guards.py
+# Purpose: Filesystem guards: pre-write and post-write validation for ASTRA's tool loop.
+# Called-by: app.debug.executors.filesystem
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Filesystem guards: pre-write and post-write validation for ASTRA's tool loop.
 

@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/browser_analytics/strategies.py
+# Purpose: Per-platform acquisition strategies.
+# Called-by: app.content.distribution.browser_analytics.scrape, app.content.distribution.browser_analytics.tests.test_scrape
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Per-platform acquisition strategies.
 

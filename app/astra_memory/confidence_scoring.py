@@ -1,4 +1,8 @@
 # FILE: app/astra_memory/confidence_scoring.py
+# Purpose: ASTRA Memory Confidence Scoring
+# Called-by: app.astra_memory, app.astra_memory.decay_job, app.astra_memory.learning, app.astra_memory.preference_service (+5 more)
+# Depends-on: app.astra_memory.confidence_config, app.astra_memory.preference_models
+# Last-renovated: 2026-06-11
 """
 ASTRA Memory Confidence Scoring
 

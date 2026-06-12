@@ -1,4 +1,8 @@
 # FILE: app/investments/models.py
+# Purpose: SQLAlchemy models for portfolio snapshot storage.
+# Called-by: app.db, app.investments.service, app.llm.routing.domain_context, app.llm.routing.ui_context_data (+1 more)
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """
 SQLAlchemy models for portfolio snapshot storage.
 

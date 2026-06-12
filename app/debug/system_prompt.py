@@ -1,4 +1,8 @@
 # FILE: app/debug/system_prompt.py
+# Purpose: System prompt for the ASTRA Debug Assistant.
+# Called-by: app.debug.debug_chat
+# Depends-on: app.core_principles, app.pipeline_v2.target_registry
+# Last-renovated: 2026-06-11
 """
 System prompt for the ASTRA Debug Assistant.
 

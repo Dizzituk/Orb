@@ -1,4 +1,8 @@
 # FILE: app/memory/conversation_models.py
+# Purpose: SQLAlchemy ORM models for the Conversational Memory Layer.
+# Called-by: app.db, app.memory.conversation_service, app.memory.knowledge_extractor, app.memory.session_lifecycle (+4 more)
+# Depends-on: app.crypto, app.db
+# Last-renovated: 2026-06-11
 """
 SQLAlchemy ORM models for the Conversational Memory Layer.
 

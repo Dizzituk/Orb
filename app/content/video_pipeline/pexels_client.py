@@ -1,4 +1,8 @@
 # FILE: app/content/video_pipeline/pexels_client.py
+# Purpose: Pexels API client for free stock video search.
+# Called-by: app.content.video_pipeline.asset_resolver
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Pexels API client for free stock video search.
 

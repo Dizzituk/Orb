@@ -1,4 +1,8 @@
 # FILE: config/model_ranks.py
+# Purpose: Model capability rank system - Single source of truth.
+# Called-by: config
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """Model capability rank system - Single source of truth.
 
 Spec v2.3 §3.1.1: Capability ranks MUST be derived from a configuration

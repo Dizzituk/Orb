@@ -1,4 +1,8 @@
 # FILE: app/optimize/code_learner.py
+# Purpose: Code Learner — captures before/after code snapshots and extracts
+# Called-by: app.optimize.orchestrator, app.optimize.proposer, app.optimize.router
+# Depends-on: app.providers.registry
+# Last-renovated: 2026-06-11
 """
 Code Learner — captures before/after code snapshots and extracts
 structural lessons from successful optimisations.

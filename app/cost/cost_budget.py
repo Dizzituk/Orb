@@ -1,4 +1,8 @@
 # FILE: app/overwatcher/cost_budget.py
+# Purpose: Daily and monthly budget enforcement for ASTRA.
+# Called-by: app.cost.cost_recorder, app.debug.context_assembler, app.endpoints.cost_dashboard
+# Depends-on: app.cost.cost_ledger
+# Last-renovated: 2026-06-11
 """
 Daily and monthly budget enforcement for ASTRA.
 

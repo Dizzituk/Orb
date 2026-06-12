@@ -1,4 +1,8 @@
 # FILE: app/content/video_pipeline/thumbnail.py
+# Purpose: AI Thumbnail Generator — GPT Image background + Pillow text overlay.
+# Called-by: app.content.video_pipeline.orchestrator
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 AI Thumbnail Generator — GPT Image background + Pillow text overlay.
 

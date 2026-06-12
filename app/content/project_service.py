@@ -1,4 +1,8 @@
 # FILE: app/content/project_service.py
+# Purpose: Content project service — CRUD for projects + content counts.
+# Called-by: app.content.project_router
+# Depends-on: app.content.project_models, app.content.project_schemas
+# Last-renovated: 2026-06-11
 """
 Content project service — CRUD for projects + content counts.
 """

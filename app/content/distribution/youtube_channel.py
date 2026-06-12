@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/youtube_channel.py
+# Purpose: YouTube Channel Analytics.
+# Called-by: app.content.distribution.youtube_router, app.content.distribution.youtube_sync
+# Depends-on: app.content.distribution.youtube_auth
+# Last-renovated: 2026-06-11
 """
 YouTube Channel Analytics.
 

@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/agentic_builder.py
+# Purpose: ASTRA v2.2 Agentic Builder — one model, one loop, job done.
+# Called-by: app.optimize.executor, app.pipeline_v2.bvl.retry_loop, app.pipeline_v2.orchestrator
+# Depends-on: app.core_principles, app.llm.stage_models, app.pipeline_v2.build_targets, app.pipeline_v2.builder_prompts (+7 more)
+# Last-renovated: 2026-06-11
 """
 ASTRA v2.2 Agentic Builder — one model, one loop, job done.
 

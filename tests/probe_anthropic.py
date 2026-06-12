@@ -1,3 +1,7 @@
+# Purpose: Minimal probe: what does the Anthropic API actually say? One tiny call
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """Minimal probe: what does the Anthropic API actually say? One tiny call
 per variant, full exception text printed."""
 import sys, os, asyncio

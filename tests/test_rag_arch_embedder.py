@@ -1,3 +1,7 @@
+# Purpose: Tests for architecture embedder.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.db, app.rag.embeddings.arch_embedder, app.rag.models
+# Last-renovated: 2026-06-11
 # tests/test_rag_arch_embedder.py
 """Tests for architecture embedder."""
 

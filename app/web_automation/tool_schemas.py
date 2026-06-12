@@ -1,4 +1,8 @@
 # FILE: app/web_automation/tool_schemas.py
+# Purpose: JSONSchema for ASTRA LLM-callable web-automation tools.
+# Called-by: app.web_automation.register
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 JSONSchema for ASTRA LLM-callable web-automation tools.
 

@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/refactor_scanner.py
+# Purpose: Refactor Scanner — Deterministic file selection for the refactor loop.
+# Called-by: app.orchestrator.refactor_loop, app.orchestrator.refactor_stream
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Refactor Scanner — Deterministic file selection for the refactor loop.
 

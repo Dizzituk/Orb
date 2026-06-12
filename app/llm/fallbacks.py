@@ -1,4 +1,8 @@
 # FILE: app/llm/fallbacks.py
+# Purpose: Fallback Handler for Orb Routing Pipeline.
+# Called-by: app.llm, app.llm.routing.core, app.llm.routing.video_code_debug, tests.test_llm_fallbacks
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Fallback Handler for Orb Routing Pipeline.
 

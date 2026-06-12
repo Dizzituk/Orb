@@ -1,3 +1,7 @@
+# Purpose: codebase report utils 4
+# Called-by: app.llm.local_tools.zobie.streams._codebase_report_utils_5, app.llm.local_tools.zobie.streams.codebase_report
+# Depends-on: app.llm.audit_logger, app.llm.local_tools.zobie.sse, app.llm.local_tools.zobie.streams._codebase_report_structural, app.llm.local_tools.zobie.streams._codebase_report_utils_2 (+2 more)
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import asyncio
 import json

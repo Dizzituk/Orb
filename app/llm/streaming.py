@@ -1,4 +1,8 @@
 # FILE: app/llm/streaming.py
+# Purpose: Orb Streaming LLM Module
+# Called-by: app.bridge.capability_layer, app.llm._streaming_utils_2, app.llm._streaming_utils_3, app.llm._weaver_stream_utils_14 (+12 more)
+# Depends-on: app.llm._streaming_utils_2, app.llm._streaming_utils_3
+# Last-renovated: 2026-06-11
 """
 Orb Streaming LLM Module
 
@@ -40,10 +44,8 @@ Some newer OpenAI chat models (e.g. gpt-5.*) reject `max_tokens` and require
 from __future__ import annotations
 
 import os
-import json
 import logging
 from typing import AsyncGenerator, Dict, List, Optional, Any
-import re
 from app.llm._streaming_utils_2 import DEFAULT_MODEL_ENV, ROUTE_MODEL_ENV, _env_model, _openai_text_nonstream, _should_retry_stream_error, get_available_streaming_provider, get_available_streaming_providers, get_default_provider
 from app.llm._streaming_utils_3 import _int_env, _openai_needs_max_completion_tokens, _provider_key, call_llm_text, stream_anthropic, stream_gemini, stream_llm
 

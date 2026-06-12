@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/scheduler.py
+# Purpose: Publishing Scheduler (Spec Section 9.4).
+# Called-by: app.content.distribution.publisher, app.content.distribution.youtube_router, app.content.distribution_router
+# Depends-on: app.content.distribution.posting_time_learner, app.content.models
+# Last-renovated: 2026-06-11
 """
 Publishing Scheduler (Spec Section 9.4).
 

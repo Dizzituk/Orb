@@ -1,4 +1,8 @@
 # FILE: tests/test_astra_memory.py
+# Purpose: Tests for ASTRA Memory System (AstraJob 5).
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.astra_memory.models, app.db
+# Last-renovated: 2026-06-11
 """
 Tests for ASTRA Memory System (AstraJob 5).
 """

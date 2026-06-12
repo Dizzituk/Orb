@@ -1,4 +1,8 @@
 # FILE: app/translation/tier1_classifier.py
+# Purpose: Tier 1: Lightweight LLM classifier (GPT-5 mini).
+# Called-by: app.translation, app.translation.translator
+# Depends-on: app.providers.registry, app.translation.intents, app.translation.schemas
+# Last-renovated: 2026-06-11
 """
 Tier 1: Lightweight LLM classifier (GPT-5 mini).
 Used only when Tier 0 rules are ambiguous or don't match.

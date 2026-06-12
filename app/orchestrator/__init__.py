@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/__init__.py
+# Purpose: Orchestrator package — segment loop execution for pipeline segmentation.
+# Called-by: app.agentic_pipeline.pipeline, app.orchestrator.codebase_scanner, app.orchestrator.cohesion_check, app.orchestrator.final_checkout (+4 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Orchestrator package — segment loop execution for pipeline segmentation.
 

@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/codebase_scanner_models.py
+# Purpose: Data models for the enhanced codebase scanner.
+# Called-by: app.llm.local_tools.zobie.streams._codebase_report_structural, app.orchestrator._codebase_scanner_health, app.orchestrator._codebase_scanner_utils_3, app.orchestrator._deterministic_architecture_utils_2 (+4 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Data models for the enhanced codebase scanner.
 

@@ -1,4 +1,8 @@
 # FILE: app/llm/chart_inline_extractor.py
+# Purpose: Extract chart data directly from user-provided inline data.
+# Called-by: app.llm.image_router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Extract chart data directly from user-provided inline data.
 

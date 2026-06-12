@@ -1,4 +1,8 @@
 # FILE: app/debug/orchestrator/subagent_runner.py
+# Purpose: Subagent runner — executes a single SubagentBrief against an LLM tool loop.
+# Called-by: app.debug.orchestrator.loop_controller
+# Depends-on: app.debug.action_executor, app.debug.orchestrator.schemas, app.debug.tool_definitions
+# Last-renovated: 2026-06-11
 """
 Subagent runner — executes a single SubagentBrief against an LLM tool loop.
 

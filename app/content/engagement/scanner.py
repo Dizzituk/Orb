@@ -1,4 +1,8 @@
 # FILE: app/content/engagement/scanner.py
+# Purpose: Comment Scanner.
+# Called-by: app.content.engagement.router
+# Depends-on: app.content.distribution.facebook, app.content.distribution.tiktok, app.content.distribution.youtube, app.content.engagement.classifier (+3 more)
+# Last-renovated: 2026-06-11
 """
 Comment Scanner.
 

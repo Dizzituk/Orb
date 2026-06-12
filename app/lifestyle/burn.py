@@ -1,4 +1,8 @@
 # FILE: app/lifestyle/burn.py
+# Purpose: Daily-burn signal for the metabolic engine.
+# Called-by: app.lifestyle.service
+# Depends-on: app.lifestyle.models
+# Last-renovated: 2026-06-11
 """
 Daily-burn signal for the metabolic engine.
 

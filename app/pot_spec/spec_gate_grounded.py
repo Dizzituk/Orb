@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/spec_gate_grounded.py
+# Purpose: SpecGate Contract v1 - Grounded POT Spec Builder
+# Called-by: app.llm.critical_pipeline.config, app.llm.spec_gate_stream, app.pot_spec, tests.test_scan_security_v121 (+1 more)
+# Depends-on: app.pot_spec.grounded
+# Last-renovated: 2026-06-11
 """
 SpecGate Contract v1 - Grounded POT Spec Builder
 

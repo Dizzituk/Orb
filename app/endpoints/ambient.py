@@ -1,4 +1,8 @@
 # FILE: app/endpoints/ambient.py
+# Purpose: Ambient invocation endpoints.
+# Called-by: main
+# Depends-on: app.auth, app.invocation
+# Last-renovated: 2026-06-11
 """
 Ambient invocation endpoints.
 

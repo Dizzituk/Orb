@@ -1,4 +1,8 @@
 # FILE: tests/test_pot_spec.py
+# Purpose: test pot spec
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.db, app.pot_spec.models, app.pot_spec.service
+# Last-renovated: 2026-06-11
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker

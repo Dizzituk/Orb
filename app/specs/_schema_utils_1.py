@@ -1,3 +1,7 @@
+# Purpose: schema utils 1
+# Called-by: app.specs._schema_utils
+# Depends-on: app.specs._schema_utils, app.specs.schema
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 from app.specs._schema_utils import SpecValidationResult
 from dataclasses import asdict, dataclass, field

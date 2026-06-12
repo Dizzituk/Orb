@@ -1,4 +1,8 @@
 # FILE: app/memory/domains/tier_content.py
+# Purpose: Curated content for architecture memory Tiers 1 and 2.
+# Called-by: app.memory.seed_tiers
+# Depends-on: app.db, app.memory.rag_entries_model
+# Last-renovated: 2026-06-11
 """
 Curated content for architecture memory Tiers 1 and 2.
 

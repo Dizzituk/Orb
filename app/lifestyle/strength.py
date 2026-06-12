@@ -1,4 +1,8 @@
 # FILE: app/lifestyle/strength.py
+# Purpose: Strength / resistance-training layer for the Lifestyle Engine.
+# Called-by: app.lifestyle.service, app.tools.strength_tools
+# Depends-on: app.lifestyle.models, app.lifestyle.schemas
+# Last-renovated: 2026-06-11
 """
 Strength / resistance-training layer for the Lifestyle Engine.
 

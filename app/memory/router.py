@@ -1,4 +1,8 @@
 # FILE: app/memory/router.py
+# Purpose: MemoryRouter — single entry point for all memory operations.
+# Called-by: app.intelligent_memory.retrieval_router, app.llm.routing.chat_codebase_reader, app.memory.integration, app.memory.startup (+1 more)
+# Depends-on: app.memory.schemas_unified
+# Last-renovated: 2026-06-11
 """
 MemoryRouter — single entry point for all memory operations.
 

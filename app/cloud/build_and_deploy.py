@@ -1,4 +1,8 @@
 # FILE: app/cloud/build_and_deploy.py
+# Purpose: Build Android APKs and deploy to Proton Drive.
+# Called-by: app.cloud.router, app.llm.stream_router
+# Depends-on: app.cloud.rclone_service, app.pipeline_v2.target_registry
+# Last-renovated: 2026-06-11
 """
 Build Android APKs and deploy to Proton Drive.
 
@@ -15,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import shutil
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 

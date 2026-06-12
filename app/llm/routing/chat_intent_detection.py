@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/chat_intent_detection.py
+# Purpose: Intent detection patterns and functions for chat routing.
+# Called-by: app.bridge.capability_layer, app.llm.image_router, app.llm.routing.chat_model_selection, app.llm.routing.chat_routing
+# Depends-on: app.memory, app.memory.service
+# Last-renovated: 2026-06-11
 """
 Intent detection patterns and functions for chat routing.
 

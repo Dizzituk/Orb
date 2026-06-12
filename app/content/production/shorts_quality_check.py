@@ -1,4 +1,8 @@
 # FILE: app/content/production/shorts_quality_check.py
+# Purpose: Shorts Quality Checker — AI-powered QA using Gemini 3.1 Pro Preview.
+# Called-by: app.content.production_router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Shorts Quality Checker — AI-powered QA using Gemini 3.1 Pro Preview.
 

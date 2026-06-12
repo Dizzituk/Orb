@@ -1,4 +1,8 @@
 # FILE: app/drive/manifest_rescan.py
+# Purpose: On-demand manifest rescan helpers.
+# Called-by: app.debug.executors.user_files, app.drive.disk_search, app.drive.file_watcher
+# Depends-on: app.db, app.drive.file_utils, app.drive.manifest_models, app.drive.manifest_scanner
+# Last-renovated: 2026-06-11
 """
 On-demand manifest rescan helpers.
 

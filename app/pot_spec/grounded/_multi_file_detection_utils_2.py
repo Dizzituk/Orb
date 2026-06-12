@@ -1,3 +1,7 @@
+# Purpose: multi file detection utils 2
+# Called-by: app.pot_spec.grounded.multi_file_detection
+# Depends-on: app.pot_spec.grounded.file_discovery, app.pot_spec.grounded.multi_file_detection, app.pot_spec.grounded.refactor_classifier, app.pot_spec.grounded.refactor_formatter (+3 more)
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
 import re

@@ -1,4 +1,8 @@
 # FILE: app/self_model/journal.py
+# Purpose: Evolution Journal
+# Called-by: app.self_model, app.self_model.capability_map, app.self_model.chat_integration, app.self_model.hooks (+2 more)
+# Depends-on: app.self_model.models
+# Last-renovated: 2026-06-11
 """
 Evolution Journal
 

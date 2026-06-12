@@ -1,4 +1,8 @@
 # FILE: app/content/engagement/router.py
+# Purpose: Engagement Management API endpoints.
+# Called-by: main
+# Depends-on: app.auth, app.content.engagement.dispatcher, app.content.engagement.models, app.content.engagement.scanner (+1 more)
+# Last-renovated: 2026-06-11
 """
 Engagement Management API endpoints.
 

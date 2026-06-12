@@ -1,4 +1,8 @@
 # FILE: tests/test_stream_router.py
+# Purpose: Tests for app/llm/stream_router.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.llm, app.llm.local_tools.archmap_helpers, app.llm.stream_router
+# Last-renovated: 2026-06-11
 """
 Tests for app/llm/stream_router.py
 Core streaming router - routes messages to appropriate handlers.

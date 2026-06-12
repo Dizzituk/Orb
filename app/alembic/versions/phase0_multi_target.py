@@ -1,3 +1,7 @@
+# Purpose: Phase 0: multi-target awareness on build_projects.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """Phase 0: multi-target awareness on build_projects.
 
 Adds target_ids (JSON, list of target_id strings) and target_group_id

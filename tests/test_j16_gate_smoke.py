@@ -1,3 +1,7 @@
+# Purpose: test j16 gate smoke
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.builds.stage_hooks, app.pipeline_v2.llm_compat
+# Last-renovated: 2026-06-11
 import sys, os
 os.chdir("D:/Orb"); sys.path.insert(0, "D:/Orb")
 from app.builds.stage_hooks import _spec_output_blocks_advance

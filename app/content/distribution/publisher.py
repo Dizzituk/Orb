@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/publisher.py
+# Purpose: Unified Publisher (Spec Section 9).
+# Called-by: app.content.distribution.youtube_router, app.content.distribution_router
+# Depends-on: app.content.distribution.facebook, app.content.distribution.instagram, app.content.distribution.scheduler, app.content.distribution.tiktok (+3 more)
+# Last-renovated: 2026-06-11
 """
 Unified Publisher (Spec Section 9).
 

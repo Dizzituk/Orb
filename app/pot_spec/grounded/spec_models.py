@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/spec_models.py
+# Purpose: SpecGate Data Models (v2.0)
+# Called-by: app.pot_spec.grounded, app.pot_spec.grounded._multi_file_detection_utils_2, app.pot_spec.grounded.completeness_checker, app.pot_spec.grounded.domain_detection (+8 more)
+# Depends-on: app.pot_spec.grounded._spec_models_utils_2
+# Last-renovated: 2026-06-11
 """
 SpecGate Data Models (v2.0)
 

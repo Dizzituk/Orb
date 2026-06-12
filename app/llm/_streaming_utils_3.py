@@ -1,3 +1,7 @@
+# Purpose: streaming utils 3
+# Called-by: app.endpoints._video_code_tools, app.llm.chat_tool_loop, app.llm.streaming, app.memory.document_knowledge_promoter (+2 more)
+# Depends-on: app.llm._streaming_utils_2, app.llm.streaming, app.llm.streaming_ollama
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import json
 import logging

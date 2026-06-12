@@ -1,4 +1,8 @@
 # FILE: app/web_automation/memory/__init__.py
+# Purpose: Per-platform flow memory for ASTRA.
+# Called-by: app.debug.executors.flow_actions
+# Depends-on: app.web_automation.memory.diagnostics, app.web_automation.memory.models, app.web_automation.memory.runner, app.web_automation.memory.store
+# Last-renovated: 2026-06-11
 """
 Per-platform flow memory for ASTRA.
 

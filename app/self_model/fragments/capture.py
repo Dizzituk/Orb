@@ -1,4 +1,8 @@
 # FILE: app/self_model/fragments/capture.py
+# Purpose: Capture pipeline — user message → fragment.
+# Called-by: app.bridge.identity_hook, app.memory.integration
+# Depends-on: app.embeddings.gemini_provider, app.self_model.fragments.classifier, app.self_model.fragments.cluster, app.self_model.fragments.models (+1 more)
+# Last-renovated: 2026-06-11
 """
 Capture pipeline — user message → fragment.
 

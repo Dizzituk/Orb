@@ -1,4 +1,8 @@
 # FILE: tests/test_firewall.py
+# Purpose: Tests for firewall middleware - CRITICAL SAFETY TESTS.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.security.firewall
+# Last-renovated: 2026-06-11
 """Tests for firewall middleware - CRITICAL SAFETY TESTS."""
 
 import sys

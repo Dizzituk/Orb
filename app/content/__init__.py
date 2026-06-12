@@ -1,4 +1,8 @@
 # FILE: app/content/__init__.py
+# Purpose: ASTRA Content Creation Pipeline
+# Called-by: app.content.item_router, app.content.project_router, app.content.router, app.content.style_analyser (+2 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 ASTRA Content Creation Pipeline
 

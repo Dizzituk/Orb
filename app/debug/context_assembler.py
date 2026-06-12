@@ -1,4 +1,8 @@
 # FILE: app/debug/context_assembler.py
+# Purpose: Context Assembler: Gathers ASTRA pipeline state for the debug LLM prompt.
+# Called-by: app.debug.debug_chat
+# Depends-on: app.cost.cost_budget, app.llm.routing.handler_registry, app.llm.spec_flow_state, app.llm.stage_trace
+# Last-renovated: 2026-06-11
 """
 Context Assembler: Gathers ASTRA pipeline state for the debug LLM prompt.
 

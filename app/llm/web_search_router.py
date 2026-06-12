@@ -1,4 +1,8 @@
 # FILE: app/llm/web_search_router.py
+# Purpose: FastAPI router for local-only web search.
+# Called-by: main
+# Depends-on: app.auth, app.llm.web_search
+# Last-renovated: 2026-06-11
 """
 FastAPI router for local-only web search.
 

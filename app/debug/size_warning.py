@@ -1,4 +1,8 @@
 # FILE: app/debug/size_warning.py
+# Purpose: Universal file size warning for tool results.
+# Called-by: app.debug.executors.filesystem, app.debug.executors.user_files
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Universal file size warning for tool results.
 

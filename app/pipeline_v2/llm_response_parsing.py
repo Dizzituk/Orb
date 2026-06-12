@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/llm_response_parsing.py
+# Purpose: Response parsing for the Agentic Builder tool loop.
+# Called-by: app.pipeline_v2.llm_tools
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Response parsing for the Agentic Builder tool loop.
 

@@ -1,4 +1,8 @@
 # FILE: tests/test_auth_middleware.py
+# Purpose: Tests for app/auth/middleware.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.auth, app.auth.middleware
+# Last-renovated: 2026-06-11
 """
 Tests for app/auth/middleware.py
 Auth middleware - JWT validation and user context.

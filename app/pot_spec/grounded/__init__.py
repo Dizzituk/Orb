@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/__init__.py
+# Purpose: SpecGate Grounded Modules Package (v1.25)
+# Called-by: app.pot_spec.spec_gate_grounded, tests.test_multi_file_operation
+# Depends-on: app.pot_spec.grounded.domain_detection, app.pot_spec.grounded.evidence_gathering, app.pot_spec.grounded.file_discovery, app.pot_spec.grounded.job_classification (+6 more)
+# Last-renovated: 2026-06-11
 # v1.27 (2026-01-28): Added MultiFileOperation for Level 3 multi-file operations
 # v1.26 (2026-01-28): Added file_discovery module for multi-file operations
 """

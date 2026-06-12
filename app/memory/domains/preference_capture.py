@@ -1,4 +1,8 @@
 # FILE: app/memory/domains/preference_capture.py
+# Purpose: Preference capture channels.
+# Called-by: app.memory.domains, app.memory.integration
+# Depends-on: app.astra_memory.preference_models, app.astra_memory.preference_service, app.db, app.memory.domains.preference_registry
+# Last-renovated: 2026-06-11
 """
 Preference capture channels.
 

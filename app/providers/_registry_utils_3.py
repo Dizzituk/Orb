@@ -1,3 +1,7 @@
+# Purpose: registry utils 3
+# Called-by: app.investments.chat_router, app.providers._registry_utils_4, app.providers.registry, app.rag.answerer
+# Depends-on: app.cost.cost_recorder, app.llm.prompt_tiers, app.providers.registry
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, List, Optional, Tuple

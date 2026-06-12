@@ -1,4 +1,8 @@
 # FILE: app/self_model/fragments/weights.py
+# Purpose: Weight decay + current effective weight computation.
+# Called-by: app.self_model.fragments.injection, app.self_model.fragments.router, app.self_model.fragments.surfacing
+# Depends-on: app.self_model.fragments.models
+# Last-renovated: 2026-06-11
 """
 Weight decay + current effective weight computation.
 

@@ -1,4 +1,8 @@
 # FILE: app/web_automation/memory/store.py
+# Purpose: Filesystem persistence for flow definitions.
+# Called-by: app.web_automation.memory
+# Depends-on: app.web_automation.memory.models
+# Last-renovated: 2026-06-11
 """
 Filesystem persistence for flow definitions.
 
@@ -20,7 +24,6 @@ so a single file is the full record.
 """
 from __future__ import annotations
 
-import json
 import logging
 import re
 from datetime import datetime, timezone

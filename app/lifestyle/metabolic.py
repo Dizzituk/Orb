@@ -1,4 +1,8 @@
 # FILE: app/lifestyle/metabolic.py
+# Purpose: Metabolic maths for the Lifestyle Engine — BMR, daily burn (TDEE), and
+# Called-by: app.lifestyle.service
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Metabolic maths for the Lifestyle Engine — BMR, daily burn (TDEE), and
 sustainable calorie / protein targets.

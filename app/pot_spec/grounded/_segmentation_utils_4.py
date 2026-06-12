@@ -1,3 +1,7 @@
+# Purpose: segmentation utils 4
+# Called-by: app.pot_spec.grounded.segmentation
+# Depends-on: app.pipeline_v2.target_registry, app.pot_spec.grounded._manifest_builder, app.pot_spec.grounded._segment_schemas_utils_1, app.pot_spec.grounded._segmentation_utils_2 (+4 more)
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
 from .file_verifier import verify_segment_files

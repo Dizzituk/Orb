@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/_spec_runner_result.py
+# Purpose: Spec runner Step 5: Result assembly.
+# Called-by: app.pot_spec.grounded.spec_runner
+# Depends-on: app.llm.pipeline.evidence_loop, app.pot_spec.grounded._spec_runner_utils_11, app.pot_spec.grounded._spec_runner_utils_12, app.pot_spec.grounded._spec_runner_utils_13 (+2 more)
+# Last-renovated: 2026-06-11
 """
 Spec runner Step 5: Result assembly.
 

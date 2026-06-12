@@ -1,3 +1,7 @@
+# Purpose: Debug the dependency scanner sandbox walk.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.memory.domains.dependency_scanner, app.sandbox_walk
+# Last-renovated: 2026-06-11
 """Debug the dependency scanner sandbox walk."""
 from app.sandbox_walk import sandbox_walk
 

@@ -1,4 +1,8 @@
 # FILE: app/cloud/router.py
+# Purpose: Cloud API endpoints — Proton Drive via rclone.
+# Called-by: main
+# Depends-on: app.auth, app.cloud.build_and_deploy, app.cloud.gdrive_auth, app.cloud.gdrive_service (+1 more)
+# Last-renovated: 2026-06-11
 """
 Cloud API endpoints — Proton Drive via rclone.
 

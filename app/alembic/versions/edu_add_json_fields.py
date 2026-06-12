@@ -1,3 +1,7 @@
+# Purpose: edu add json fields
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 from alembic import op
 import sqlalchemy as sa
 

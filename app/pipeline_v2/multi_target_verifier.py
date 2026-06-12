@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/multi_target_verifier.py
+# Purpose: Multi-Target Build Verifier (Phase 3 Job 10)
+# Called-by: app.orchestrator.segment_loop
+# Depends-on: app.pipeline_v2.integration_runner, app.pipeline_v2.sandbox_tools, app.pipeline_v2.target_registry, app.pot_spec.grounded.contract_verifier
+# Last-renovated: 2026-06-11
 """
 Multi-Target Build Verifier (Phase 3 Job 10)
 

@@ -1,4 +1,8 @@
 # FILE: app/logging_config.py
+# Purpose: Centralized logging configuration for ASTRA.
+# Called-by: main
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Centralized logging configuration for ASTRA.
 

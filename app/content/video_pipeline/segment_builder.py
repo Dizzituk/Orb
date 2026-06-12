@@ -1,4 +1,8 @@
 # FILE: app/content/video_pipeline/segment_builder.py
+# Purpose: Segment Builder — Gemini-driven clip selection and arrangement.
+# Called-by: app.content.video_pipeline.orchestrator
+# Depends-on: app.content.video_pipeline.models
+# Last-renovated: 2026-06-11
 """
 Segment Builder — Gemini-driven clip selection and arrangement.
 
@@ -17,7 +21,6 @@ those selections and assembles them mechanically.
 
 Model: Gemini 3.1 Pro (multimodal — accepts images + text).
 """
-import base64
 import json
 import logging
 import os

@@ -1,4 +1,8 @@
 # FILE: app/content/seed.py
+# Purpose: Seed data for the Content Creation Pipeline.
+# Called-by: main
+# Depends-on: app.content.models, app.content.service
+# Last-renovated: 2026-06-11
 """
 Seed data for the Content Creation Pipeline.
 

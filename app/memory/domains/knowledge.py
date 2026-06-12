@@ -1,4 +1,8 @@
 # FILE: app/memory/domains/knowledge.py
+# Purpose: Domain Knowledge store (Spec Section 4.6).
+# Called-by: app.memory.domains, app.memory.startup
+# Depends-on: app.db, app.memory.rag_entries_model, app.memory.schemas_unified
+# Last-renovated: 2026-06-11
 """
 Domain Knowledge store (Spec Section 4.6).
 

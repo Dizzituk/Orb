@@ -1,4 +1,8 @@
 # FILE: app/project_registry/service.py
+# Purpose: Service layer for the ASTRA Project Registry.
+# Called-by: app.llm.routing._cd_project_registry, app.project_registry, app.project_registry.api_router, app.project_registry.scanner (+2 more)
+# Depends-on: app.project_registry.models
+# Last-renovated: 2026-06-11
 """
 Service layer for the ASTRA Project Registry.
 

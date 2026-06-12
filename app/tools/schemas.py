@@ -1,4 +1,8 @@
 # FILE: app/tools/schemas.py
+# Purpose: Tool schemas (v1) for Orb local tools.
+# Called-by: app.tools.lifestyle_tools, app.tools.registry, app.tools.strength_tools
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Tool schemas (v1) for Orb local tools.
 

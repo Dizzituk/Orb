@@ -1,4 +1,8 @@
 # FILE: app/rag/_answerer_memory_context.py
+# Purpose: Memory context builder for RAG queries.
+# Called-by: app.rag.answerer
+# Depends-on: app.memory.router
+# Last-renovated: 2026-06-11
 """
 Memory context builder for RAG queries.
 

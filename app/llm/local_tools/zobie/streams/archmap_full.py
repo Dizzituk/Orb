@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/streams/archmap_full.py
+# Purpose: CREATE ARCHITECTURE MAP - FULL (ALL CAPS) stream generator.
+# Called-by: app.llm.local_tools.zobie.streams
+# Depends-on: app.db, app.llm.audit_logger, app.llm.local_tools.archmap_helpers, app.llm.local_tools.zobie.config (+12 more)
+# Last-renovated: 2026-06-11
 """CREATE ARCHITECTURE MAP - FULL (ALL CAPS) stream generator.
 
 Scan + out folder + map generation.
@@ -12,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
@@ -307,7 +310,9 @@ async def generate_full_architecture_map_stream(
     
     rag_scan_id = None
     try:
-        rag_scan_id = signatures_to_db(db, contents_data, CODE_SCAN_ROOTS[0])
+        rag_scan_id = signatures_to_db(
+            db, contents_data, CODE_SCAN_ROOTS[0], source="host",
+        )
         if rag_scan_id:
             from app.rag.models import ArchCodeChunk
             chunk_count = db.query(ArchCodeChunk).filter(

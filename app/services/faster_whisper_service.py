@@ -1,3 +1,7 @@
+# Purpose: faster-whisper implementation of TranscriptionService.
+# Called-by: app.routers.audio_stream, app.routers.transcribe, app.voice_ambient.session
+# Depends-on: app.services.model_manager, app.services.transcription_service
+# Last-renovated: 2026-06-11
 """
 faster-whisper implementation of TranscriptionService.
 

@@ -1,4 +1,8 @@
 # FILE: tests/test_translation_layer.py
+# Purpose: Comprehensive tests for ASTRA Translation Layer.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.translation, app.translation.tier0_rules
+# Last-renovated: 2026-06-11
 """
 Comprehensive tests for ASTRA Translation Layer.
 

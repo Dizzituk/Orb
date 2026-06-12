@@ -1,4 +1,8 @@
 # FILE: app/self_model/identity_format.py
+# Purpose: Format the Tier 1 identity store into a system-prompt block.
+# Called-by: app.llm.routing.prompt_builders, app.self_model.identity_router
+# Depends-on: app.self_model.identity
+# Last-renovated: 2026-06-11
 """
 Format the Tier 1 identity store into a system-prompt block.
 

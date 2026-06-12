@@ -1,3 +1,7 @@
+# Purpose: qa processing utils 8
+# Called-by: app.pot_spec.grounded.qa_processing
+# Depends-on: app.pot_spec.grounded._qa_processing_utils_6, app.pot_spec.grounded._qa_processing_utils_7
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
 import re

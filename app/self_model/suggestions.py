@@ -1,4 +1,8 @@
-﻿from __future__ import annotations
+# Purpose: suggestions
+# Called-by: app.self_model, app.self_model.chat_integration, app.self_model.observer, app.self_model.router
+# Depends-on: app.self_model.models
+# Last-renovated: 2026-06-11
+from __future__ import annotations
 
 import json
 import logging

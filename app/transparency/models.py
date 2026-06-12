@@ -1,4 +1,8 @@
 # FILE: app/transparency/models.py
+# Purpose: SQLAlchemy models for Pipeline Transparency system.
+# Called-by: app.builds.service, app.db, app.transparency.collector, app.transparency.corrections (+1 more)
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """
 SQLAlchemy models for Pipeline Transparency system.
 

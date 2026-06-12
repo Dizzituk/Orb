@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/segment_loop_stream.py
+# Purpose: SSE streaming handler for segmented job execution.
+# Called-by: app.llm.routing.handler_registry
+# Depends-on: app.llm.spec_flow_state, app.llm.stage_models, app.orchestrator.segment_loop, app.orchestrator.segment_state (+2 more)
+# Last-renovated: 2026-06-11
 """
 SSE streaming handler for segmented job execution.
 

@@ -1,4 +1,8 @@
 # FILE: app/builds/models.py
+# Purpose: Build project DB models.
+# Called-by: app.builds.pipeline_bridge, app.builds.service, app.llm.routing.domain_context, app.orchestrator.segment_loop (+3 more)
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """
 Build project DB models.
 

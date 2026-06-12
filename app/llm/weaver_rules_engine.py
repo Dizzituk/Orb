@@ -1,4 +1,8 @@
 # FILE: app/llm/weaver_rules_engine.py
+# Purpose: Weaver Classification Rules Engine — Job 8.
+# Called-by: app.llm._weaver_stream_modes, app.llm.weaver_rules_inject
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Weaver Classification Rules Engine — Job 8.
 

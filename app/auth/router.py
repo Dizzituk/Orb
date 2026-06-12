@@ -1,3 +1,7 @@
+# Purpose: Authentication API endpoints for password-based auth.
+# Called-by: app.auth, main
+# Depends-on: app.auth, app.auth.config, app.auth.middleware
+# Last-renovated: 2026-06-11
 # app/auth/router.py
 """
 Authentication API endpoints for password-based auth.

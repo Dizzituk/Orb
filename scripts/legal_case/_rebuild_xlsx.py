@@ -1,4 +1,8 @@
 # FILE: scripts/legal_case/_rebuild_xlsx.py
+# Purpose: Rebuild a clean, styled delivery log workbook from the original
+# Called-by: scripts.legal_case.legal_case_rebuild
+# Depends-on: app.styling.themes, app.styling.xlsx_builder
+# Last-renovated: 2026-06-11
 """
 Rebuild a clean, styled delivery log workbook from the original
 spreadsheet data plus the reconciliation mapping.

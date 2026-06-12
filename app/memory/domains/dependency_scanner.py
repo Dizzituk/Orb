@@ -1,4 +1,8 @@
 # FILE: app/memory/domains/dependency_scanner.py
+# Purpose: Tier 3 — Dependency Graph.
+# Called-by: app.memory.seed_tiers, tests.debug_dep, tests.debug_scan2, tests.full_scan_test
+# Depends-on: app.db, app.memory.rag_entries_model, app.sandbox_walk
+# Last-renovated: 2026-06-11
 """
 Tier 3 — Dependency Graph.
 

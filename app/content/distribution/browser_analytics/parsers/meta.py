@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/browser_analytics/parsers/meta.py
+# Purpose: Meta Business Suite (Facebook + Instagram combined) insights parser.
+# Called-by: app.content.distribution.browser_analytics.parsers, app.content.distribution.browser_analytics.tests.test_scrape
+# Depends-on: app.content.distribution.browser_analytics.parsers.common
+# Last-renovated: 2026-06-11
 """
 Meta Business Suite (Facebook + Instagram combined) insights parser.
 

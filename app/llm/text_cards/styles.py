@@ -1,4 +1,8 @@
 # FILE: app/llm/text_cards/styles.py
+# Purpose: Style presets for text card rendering.
+# Called-by: app.llm.text_cards.renderer
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Style presets for text card rendering.
 

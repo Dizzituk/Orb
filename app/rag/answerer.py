@@ -1,4 +1,8 @@
 # FILE: app/rag/answerer.py
+# Purpose: Grounded Q&A engine for architecture queries.
+# Called-by: app.llm.rag_stream, app.rag.router
+# Depends-on: app.embeddings.service, app.providers._registry_utils_3, app.rag._answerer_memory_context, app.rag._answerer_model_selection (+4 more)
+# Last-renovated: 2026-06-11
 """
 Grounded Q&A engine for architecture queries.
 
@@ -13,7 +17,6 @@ v1.0 (2026-01): Initial implementation
 
 import asyncio
 import logging
-import os
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 

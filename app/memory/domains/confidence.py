@@ -1,4 +1,8 @@
 # FILE: app/memory/domains/confidence.py
+# Purpose: Confidence Score domain store (Spec Section 4.5).
+# Called-by: app.memory.domains, app.memory.domains.confidence_learning, app.memory.startup
+# Depends-on: app.db, app.memory.confidence_model, app.memory.schemas_unified
+# Last-renovated: 2026-06-11
 """
 Confidence Score domain store (Spec Section 4.5).
 

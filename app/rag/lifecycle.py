@@ -1,4 +1,8 @@
 # FILE: app/rag/lifecycle.py
+# Purpose: RAG Lifecycle Manager.
+# Called-by: app.memory.commands.purge, app.memory.domains.architecture, app.memory.lifecycle_hook
+# Depends-on: app.memory.architecture_models, app.rag.models
+# Last-renovated: 2026-06-11
 """
 RAG Lifecycle Manager.
 

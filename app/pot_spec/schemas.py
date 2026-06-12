@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/schemas.py
+# Purpose: PoT Spec Schemas - Point-of-Truth Specification Models
+# Called-by: app.pot_spec, app.pot_spec.service
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 PoT Spec Schemas - Point-of-Truth Specification Models
 

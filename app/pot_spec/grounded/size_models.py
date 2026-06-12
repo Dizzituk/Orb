@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/size_models.py
+# Purpose: Size Analyzer — Shared data models and constants.
+# Called-by: app.orchestrator.final_checkout, app.orchestrator.phase_checkout, app.pot_spec.grounded.python_parser, app.pot_spec.grounded.size_analyzer (+2 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Size Analyzer — Shared data models and constants.
 

@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/spec_gate_persistence.py
+# Purpose: Spec Gate v2 - Persistence Layer (v2.3.2)
+# Called-by: app.llm._sg_stream_persist, app.orchestrator.segment_loop_stream, app.orchestrator.segment_state, app.pot_spec._spec_gate_persistence_utils_2 (+3 more)
+# Depends-on: app.pot_spec._spec_gate_persistence_utils_2, app.specs, app.specs.schema, app.specs.service
+# Last-renovated: 2026-06-11
 """
 Spec Gate v2 - Persistence Layer (v2.3.2)
 
@@ -27,7 +31,6 @@ v2.3 (2026-01-30): CRITICAL FIX - Persist multi-target read fields
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os

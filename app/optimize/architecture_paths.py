@@ -1,3 +1,7 @@
+# Purpose: architecture paths
+# Called-by: app.optimize.decomposer
+# Depends-on: app.optimize.target_registry
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 
 from pathlib import Path

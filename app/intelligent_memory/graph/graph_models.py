@@ -1,4 +1,8 @@
 # FILE: app/intelligent_memory/graph/graph_models.py
+# Purpose: Knowledge Graph entity and relationship type definitions.
+# Called-by: app.intelligent_memory.graph, app.intelligent_memory.graph.knowledge_graph
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Knowledge Graph entity and relationship type definitions.
 

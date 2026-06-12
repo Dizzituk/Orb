@@ -1,3 +1,7 @@
+# Purpose: Tests for scan root configuration.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.rag.config.scan_roots
+# Last-renovated: 2026-06-11
 # tests/test_rag_scan_roots.py
 """Tests for scan root configuration."""
 

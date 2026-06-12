@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/spec_runner.py
+# Purpose: SpecGate v4.0 - Direct Spec Builder
+# Called-by: app.pot_spec.grounded.spec_generation
+# Depends-on: app.builds.models, app.pipeline_v2.target_registry, app.pot_spec.evidence_collector, app.pot_spec.grounded._greenfield_spec_builder (+16 more)
+# Last-renovated: 2026-06-11
 """
 SpecGate v4.0 - Direct Spec Builder
 

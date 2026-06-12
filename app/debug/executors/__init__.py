@@ -1,4 +1,8 @@
 # FILE: app/debug/executors/__init__.py
+# Purpose: Executor package: groups the action_executor's tool handlers by concern.
+# Called-by: app.debug.action_executor
+# Depends-on: app.debug.executors.emulator, app.debug.executors.file_ops, app.debug.executors.filesystem, app.debug.executors.flow_actions (+5 more)
+# Last-renovated: 2026-06-11
 """
 Executor package: groups the action_executor's tool handlers by concern.
 

@@ -1,4 +1,8 @@
 # FILE: app/self_model/contradiction_detector.py
+# Purpose: Detect when a proposed identity-store write contradicts an existing
+# Called-by: app.self_model.write_arbiter
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Detect when a proposed identity-store write contradicts an existing
 high-confidence value, and decide whether to require human confirmation.

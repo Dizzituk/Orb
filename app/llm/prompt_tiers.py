@@ -1,4 +1,8 @@
 # FILE: app/llm/prompt_tiers.py
+# Purpose: Tiered system prompts for cost optimisation.
+# Called-by: app.providers._registry_utils_3
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Tiered system prompts for cost optimisation.
 

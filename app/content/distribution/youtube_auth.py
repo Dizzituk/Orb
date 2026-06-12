@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/youtube_auth.py
+# Purpose: YouTube OAuth2 — in-app flow for Electron desktop.
+# Called-by: app.content.distribution.youtube, app.content.distribution.youtube_channel, app.content.distribution.youtube_router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 YouTube OAuth2 — in-app flow for Electron desktop.
 
@@ -17,7 +21,6 @@ Port 8090 chosen to avoid conflict with Drive OAuth (8089).
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import threading

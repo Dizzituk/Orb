@@ -1,4 +1,8 @@
 # FILE: app/project_registry/wake_word.py
+# Purpose: Wake word detection and intent classification for natural language commands.
+# Called-by: app.translation.translator
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Wake word detection and intent classification for natural language commands.
 

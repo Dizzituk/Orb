@@ -1,3 +1,7 @@
+# Purpose: router
+# Called-by: main
+# Depends-on: app.auth, app.db, app.education, app.education.schemas (+1 more)
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 
 from typing import List

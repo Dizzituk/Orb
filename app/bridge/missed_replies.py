@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.memory._service_utils_2 import list_messages
 
+from . import tts_cache
 from .schemas import require_bridge_auth
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,9 @@ class MissedReplyOut(BaseModel):
     content: str
     created_at: str
     has_audio: bool
+    # Set when complete cached audio exists on the PC — the phone fetches it
+    # via this auth-gated path instead of re-synthesising the reply.
+    audio_url: str | None = None
 
 
 @router.get("/missed-replies", response_model=List[MissedReplyOut])
@@ -37,6 +41,10 @@ async def get_missed_replies(
             content=message.content,
             created_at=message.created_at.isoformat() if message.created_at else "",
             has_audio=bool(getattr(message, "content", "").strip()),
+            audio_url=(
+                f"/bridge/tts/audio/{message.id}"
+                if tts_cache.has_audio(message.id) else None
+            ),
         )
         for message in messages
         if message.id > since_id and message.role == "assistant"

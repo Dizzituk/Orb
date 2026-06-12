@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/spec_gate_parsers.py
+# Purpose: Spec Gate v2 - Parsing and Extraction
+# Called-by: app.pot_spec._spec_gate_parsers_utils_2, app.pot_spec.spec_gate_v2
+# Depends-on: app.pot_spec._spec_gate_parsers_utils_2, app.pot_spec.spec_gate_types
+# Last-renovated: 2026-06-11
 """
 Spec Gate v2 - Parsing and Extraction
 
@@ -13,7 +17,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 

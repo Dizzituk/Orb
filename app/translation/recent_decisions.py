@@ -1,4 +1,8 @@
 # FILE: app/translation/recent_decisions.py
+# Purpose: Recent classifier decisions store.
+# Called-by: app.llm.routing.prompt_builders, app.llm.routing.reject_intent_handler, app.llm.stream_router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Recent classifier decisions store.
 

@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/job_classification.py
+# Purpose: Job Kind Classifier (v1.9, v1.10, v1.18, v1.19)
+# Called-by: app.pot_spec.grounded
+# Depends-on: app.pot_spec.grounded.domain_detection, app.pot_spec.grounded.spec_models
+# Last-renovated: 2026-06-11
 """
 Job Kind Classifier (v1.9, v1.10, v1.18, v1.19)
 

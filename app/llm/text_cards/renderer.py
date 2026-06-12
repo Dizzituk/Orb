@@ -1,4 +1,8 @@
 # FILE: app/llm/text_cards/renderer.py
+# Purpose: Pillow-based text card renderer.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.llm, app.llm.image_output_dir, app.llm.text_cards.styles
+# Last-renovated: 2026-06-11
 """
 Pillow-based text card renderer.
 
@@ -24,7 +28,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional

@@ -1,3 +1,7 @@
+# Purpose: Tests for directory summary generation.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.db, app.rag.indexing.directory_summary, app.rag.models
+# Last-renovated: 2026-06-11
 # tests/test_rag_directory_summary.py
 """Tests for directory summary generation."""
 

@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/_prompt_blocks.py
+# Purpose: Prompt string blocks for stream routing.
+# Called-by: app.llm.routing.prompt_builders
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Prompt string blocks for stream routing.
 

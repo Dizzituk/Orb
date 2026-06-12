@@ -1,4 +1,8 @@
 # FILE: app/memory/commands/purge.py
+# Purpose: Purge quarantine command handler.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.db, app.memory.architecture_models, app.memory.rag_entries_model, app.rag.lifecycle (+1 more)
+# Last-renovated: 2026-06-11
 """
 Purge quarantine command handler.
 

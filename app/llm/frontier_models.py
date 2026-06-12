@@ -1,4 +1,8 @@
 # FILE: app/llm/frontier_models.py
+# Purpose: Frontier Model Aliases — single source of truth for "latest good model".
+# Called-by: app.llm.stage_models, app.pipeline_v2.config
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Frontier Model Aliases — single source of truth for "latest good model".
 
@@ -199,6 +203,19 @@ def get_reasoning_for_stage(stage: str) -> Optional[Dict[str, str]]:
     if not stage:
         return _DEFAULT_REASONING
     stage_upper = stage.upper().replace("-", "_").replace(" ", "_")
+    # v1.3 (2026-06-11): per-stage env override, e.g. SPEC_GATE_REASONING_EFFORT=xhigh.
+    # Valid: low | medium | high | xhigh | max. Use none/off to disable reasoning
+    # for the stage. Invalid values are ignored with a warning (table default wins).
+    _env_effort = os.getenv(f"{stage_upper}_REASONING_EFFORT", "").strip().lower()
+    if _env_effort:
+        if _env_effort in ("none", "off", "0", "disabled"):
+            return None
+        if _env_effort in ("low", "medium", "high", "xhigh", "max"):
+            return {"effort": _env_effort}
+        logger.warning(
+            "[frontier_models] Ignoring invalid %s_REASONING_EFFORT=%r",
+            stage_upper, _env_effort,
+        )
     if stage_upper in STAGE_REASONING:
         return STAGE_REASONING[stage_upper]
     return _DEFAULT_REASONING

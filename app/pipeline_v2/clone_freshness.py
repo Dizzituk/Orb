@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/clone_freshness.py
+# Purpose: Clone freshness gate (2026-06-10, proving-run session).
+# Called-by: app.orchestrator.segment_loop, app.pipeline_v2.verifier_agent.agent, tests.test_clone_freshness_smoke
+# Depends-on: app.pipeline_v2.sandbox_tools
+# Last-renovated: 2026-06-11
 """
 Clone freshness gate (2026-06-10, proving-run session).
 

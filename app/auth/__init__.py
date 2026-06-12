@@ -1,3 +1,7 @@
+# Purpose: Authentication module for Orb.
+# Called-by: app.astra_memory.router, app.auth.middleware, app.auth.router, app.bridge.router (+41 more)
+# Depends-on: app.auth.config, app.auth.middleware, app.auth.router
+# Last-renovated: 2026-06-11
 # app/auth/__init__.py
 """
 Authentication module for Orb.

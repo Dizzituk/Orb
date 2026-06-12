@@ -1,4 +1,8 @@
 # FILE: tests/test_llm_clients.py
+# Purpose: Tests for app/llm/clients.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.jobs.schemas, app.llm, app.llm.clients
+# Last-renovated: 2026-06-11
 """
 Tests for app/llm/clients.py
 LLM API client wrappers - provider availability, envelope building, embeddings.

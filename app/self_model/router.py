@@ -1,4 +1,8 @@
 # FILE: app/self_model/router.py
+# Purpose: Self-Model API Router
+# Called-by: main
+# Depends-on: app.self_model.capability_map, app.self_model.journal, app.self_model.models, app.self_model.observer (+2 more)
+# Last-renovated: 2026-06-11
 """
 Self-Model API Router
 

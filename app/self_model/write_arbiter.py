@@ -1,4 +1,8 @@
 # FILE: app/self_model/write_arbiter.py
+# Purpose: Write arbiter — single chokepoint for all proposed Tier 1 identity writes.
+# Called-by: app.debug.executors.memory_tools, app.self_model.hooks, app.self_model.identity_capture, app.self_model.proposal_review_router
+# Depends-on: app.self_model.canonical_schema, app.self_model.contradiction_detector, app.self_model.identity, app.self_model.proposed_facts
+# Last-renovated: 2026-06-11
 """
 Write arbiter — single chokepoint for all proposed Tier 1 identity writes.
 

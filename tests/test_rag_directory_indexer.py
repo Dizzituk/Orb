@@ -1,3 +1,7 @@
+# Purpose: Tests for directory indexer.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.db, app.rag.indexing.directory_indexer, app.rag.models
+# Last-renovated: 2026-06-11
 # tests/test_rag_directory_indexer.py
 """Tests for directory indexer."""
 

@@ -1,4 +1,8 @@
 # FILE: app/llm/critical_pipeline/artifact_binding.py
+# Purpose: Artifact binding extraction and prompt building.
+# Called-by: app.llm.critical_pipeline._stream_handler_utils, app.llm.critical_pipeline.prompt_builder, app.llm.critical_pipeline.stream_handler
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Artifact binding extraction and prompt building.
 

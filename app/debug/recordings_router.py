@@ -1,4 +1,8 @@
 # FILE: app/debug/recordings_router.py
+# Purpose: Recordings Router — upload screen recordings and prepare for Gemini analysis.
+# Called-by: main
+# Depends-on: app.auth, app.auth.middleware, app.debug.screen_capture
+# Last-renovated: 2026-06-11
 """
 Recordings Router — upload screen recordings and prepare for Gemini analysis.
 

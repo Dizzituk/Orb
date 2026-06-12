@@ -1,4 +1,8 @@
 # FILE: app/investments/__init__.py
+# Purpose: Investments module — portfolio dashboard data layer.
+# Called-by: app.db, app.investments.router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Investments module — portfolio dashboard data layer.
 

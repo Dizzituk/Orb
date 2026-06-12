@@ -1,4 +1,8 @@
 # FILE: app/content/schemas.py
+# Purpose: Pydantic schemas for Content Pipeline API validation.
+# Called-by: app.content.router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Pydantic schemas for Content Pipeline API validation.
 

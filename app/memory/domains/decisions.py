@@ -1,4 +1,8 @@
 # FILE: app/memory/domains/decisions.py
+# Purpose: Tier 4 — Design Decisions Log.
+# Called-by: app.memory.domains, app.memory.seed_tiers, app.memory.startup
+# Depends-on: app.db, app.memory.rag_entries_model
+# Last-renovated: 2026-06-11
 """
 Tier 4 — Design Decisions Log.
 

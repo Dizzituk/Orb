@@ -1,4 +1,8 @@
 # FILE: app/transparency/matcher.py
+# Purpose: CorrectionMatcher — queries relevant past corrections during pipeline runs.
+# Called-by: app.debug.feedback
+# Depends-on: app.transparency.corrections, app.transparency.schemas
+# Last-renovated: 2026-06-11
 """
 CorrectionMatcher — queries relevant past corrections during pipeline runs.
 

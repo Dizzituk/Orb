@@ -1,4 +1,8 @@
 # FILE: app/content/service.py
+# Purpose: Content Pipeline Service — Core business logic.
+# Called-by: app.content.distribution.publisher, app.content.production.cutaway_gen, app.content.production.draft_writer, app.content.production.format_converter (+3 more)
+# Depends-on: app.content.models
+# Last-renovated: 2026-06-11
 """
 Content Pipeline Service — Core business logic.
 

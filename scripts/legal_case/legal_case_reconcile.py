@@ -1,4 +1,8 @@
 # FILE: scripts/legal_case/legal_case_reconcile.py
+# Purpose: Legal case reconciliation.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: scripts.legal_case._bootstrap
+# Last-renovated: 2026-06-11
 """
 Legal case reconciliation.
 

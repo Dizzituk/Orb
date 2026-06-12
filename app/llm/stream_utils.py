@@ -1,4 +1,8 @@
-﻿# FILE: app/llm/stream_utils.py
+# FILE: app/llm/stream_utils.py
+# Purpose: Stream utilities - helper functions for stream_router.py
+# Called-by: app.jobs._engine_helpers, app.jobs.engine, app.llm.high_stakes_stream, app.llm.routing.chat_routing (+2 more)
+# Depends-on: app.auth.middleware, app.embeddings, app.embeddings.service, app.llm.schemas (+3 more)
+# Last-renovated: 2026-06-11
 """
 Stream utilities - helper functions for stream_router.py
 

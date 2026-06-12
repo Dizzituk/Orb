@@ -1,4 +1,8 @@
 # FILE: app/investments/cache.py
+# Purpose: Simple in-memory TTL cache for rate-limit protection.
+# Called-by: app.investments.service
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Simple in-memory TTL cache for rate-limit protection.
 

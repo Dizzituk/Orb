@@ -1,4 +1,8 @@
 # FILE: tests/test_multi_file_operation.py
+# Purpose: Tests for MultiFileOperation dataclass and GroundedPOTSpec multi-file support.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.pot_spec, app.pot_spec.grounded, app.pot_spec.grounded.spec_generation, app.pot_spec.grounded.spec_models
+# Last-renovated: 2026-06-11
 """Tests for MultiFileOperation dataclass and GroundedPOTSpec multi-file support.
 
 Tests the Level 3 multi-file operation models added in spec_models.py v1.20.

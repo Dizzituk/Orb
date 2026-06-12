@@ -1,4 +1,8 @@
 # FILE: app/debug/__init__.py
+# Purpose: Debug Assistant Module
+# Called-by: app.debug.orchestrator.behaviour_verifier, app.debug.web_tool_definitions
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Debug Assistant Module
 

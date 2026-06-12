@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/spec_review/prompt.py
+# Purpose: Prompt templates for the always-on spec reviewer.
+# Called-by: app.pipeline_v2.spec_review.reviewer
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Prompt templates for the always-on spec reviewer.
 

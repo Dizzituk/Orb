@@ -1,4 +1,8 @@
 # FILE: tests/test_job_classifier.py
+# Purpose: Tests for app/llm/job_classifier.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.llm, app.llm.job_classifier
+# Last-renovated: 2026-06-11
 """
 Tests for app/llm/job_classifier.py
 Job classification - classifies incoming requests.

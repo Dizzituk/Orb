@@ -1,4 +1,8 @@
 # FILE: app/debug/_working_set_hook.py
+# Purpose: Auto-registration of tool-touched files into the project working set.
+# Called-by: app.debug.action_executor
+# Depends-on: app.memory, app.memory.working_set
+# Last-renovated: 2026-06-11
 """
 Auto-registration of tool-touched files into the project working set.
 

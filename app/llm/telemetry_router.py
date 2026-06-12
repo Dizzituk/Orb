@@ -1,4 +1,8 @@
 # FILE: app/llm/telemetry_router.py
+# Purpose: telemetry router
+# Called-by: main
+# Depends-on: app.auth, app.llm.audit_logger
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 
 from typing import Any, Dict, List

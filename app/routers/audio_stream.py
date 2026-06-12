@@ -1,3 +1,7 @@
+# Purpose: WebSocket router for continuous wake-word detection and streaming transcription.
+# Called-by: main
+# Depends-on: app.services.faster_whisper_service, app.services.model_manager, app.services.wake_word_service
+# Last-renovated: 2026-06-11
 """
 WebSocket router for continuous wake-word detection and streaming transcription.
 

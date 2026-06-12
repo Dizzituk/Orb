@@ -1,3 +1,7 @@
+# Purpose: Scan root configuration for RAG memory system.
+# Called-by: app.rag.config, app.rag.utils.canonical_paths, tests.test_rag_scan_roots
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Scan root configuration for RAG memory system.
 

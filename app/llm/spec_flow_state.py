@@ -1,4 +1,8 @@
 # FILE: app/llm/spec_flow_state.py
+# Purpose: Spec Flow State Management for ASTRA Command Flow.
+# Called-by: app.debug.context_assembler, app.debug.executors.emulator, app.llm._spec_flow_state_utils_6, app.llm._spec_flow_state_utils_7 (+8 more)
+# Depends-on: app.llm._spec_flow_state_utils_6, app.llm._spec_flow_state_utils_7, app.llm._spec_flow_state_utils_8
+# Last-renovated: 2026-06-11
 """
 Spec Flow State Management for ASTRA Command Flow.
 

@@ -1,3 +1,7 @@
+# Purpose: high stakes utils
+# Called-by: app.llm.pipeline._high_stakes_helpers, app.llm.pipeline._high_stakes_pipelines, app.llm.pipeline.high_stakes
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import hashlib
 import logging

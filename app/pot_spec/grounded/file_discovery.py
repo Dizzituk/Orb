@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/file_discovery.py
+# Purpose: File Discovery System (v2.4)
+# Called-by: app.pot_spec.grounded, app.pot_spec.grounded._multi_file_detection_utils_2, app.pot_spec.grounded.multi_file_detection
+# Depends-on: app.pot_spec.grounded._fd_models, app.pot_spec.grounded._fd_powershell
+# Last-renovated: 2026-06-11
 """File Discovery System (v2.4)
 
 v2.4 (2026-02-24): Refactored — models/config to _fd_models.py, PS commands to _fd_powershell.py

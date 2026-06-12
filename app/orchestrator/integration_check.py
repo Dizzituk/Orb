@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/integration_check.py
+# Purpose: Cross-Segment Integration Check (Phase 3).
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.orchestrator, app.orchestrator.segment_state, app.pot_spec.grounded.segment_schemas
+# Last-renovated: 2026-06-11
 """
 Cross-Segment Integration Check (Phase 3).
 
@@ -30,10 +34,7 @@ v1.0 (2026-02-08): Initial implementation
 
 from __future__ import annotations
 
-import json
 import logging
-import os
-import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple

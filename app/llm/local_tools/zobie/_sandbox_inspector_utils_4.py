@@ -1,3 +1,7 @@
+# Purpose: sandbox inspector utils 4
+# Called-by: app.llm.local_tools.zobie._sandbox_inspector_utils_5, app.llm.local_tools.zobie.sandbox_inspector
+# Depends-on: app.llm.local_tools.zobie.sandbox_client
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import os
 from .sandbox_client import call_fs_contents, call_fs_tree

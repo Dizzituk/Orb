@@ -1,3 +1,7 @@
+# Purpose: RAG database models.
+# Called-by: app.db, app.llm.local_tools.zobie.rag_helpers, app.llm.local_tools.zobie.streams.archmap_full, app.llm.local_tools.zobie.streams.scan_sandbox (+29 more)
+# Depends-on: app.db, app.memory.architecture_models
+# Last-renovated: 2026-06-11
 """
 RAG database models.
 
@@ -260,9 +264,22 @@ class RAGIndexRun(Base):
 # =============================================================================
 
 class SourceType:
-    """Source types for embeddings (extends existing)."""
+    """Source types for embeddings (extends existing).
+
+    ARCH_CHUNK must match what the writer stores. The embedding writer
+    (app/rag/jobs/_embedding_batch.py) and reindex job have always written
+    source_type="arch_code_chunk"; this constant previously said
+    "arch_chunk", so every reader filtering through it (arch_search,
+    context_assembler) matched zero rows. Fixed 2026-06-12.
+    """
     ARCH_DIRECTORY = "arch_directory"
-    ARCH_CHUNK = "arch_chunk"
+    ARCH_CHUNK = "arch_code_chunk"
+
+
+class ScanSource:
+    """Provenance of an architecture scan (host repo tree vs sandbox clone)."""
+    HOST = "host"
+    SANDBOX = "sandbox"
 
 
 class ChunkType:
@@ -279,11 +296,16 @@ class ChunkType:
 class ArchScanRun(Base):
     """Track RAG architecture scan runs."""
     __tablename__ = "arch_scan_runs"
-    
+
     id = Column(Integer, primary_key=True)
     started_at = Column(DateTime, default=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
     status = Column(String(20), default="running")  # running, complete, failed
+
+    # Provenance: "host" (D:\ repo tree) or "sandbox" (ZOBIE-ORB clone).
+    # Retrieval uses this for staleness labelling — sandbox-sourced context
+    # must be framed as a snapshot when the sandbox is unreachable.
+    source = Column(String(20), default="host", nullable=False, index=True)
     
     signatures_file = Column(String(500))
     index_file = Column(String(500))
@@ -392,6 +414,10 @@ class ArchCodeChunk(Base):
     
     # Role in package (init, core, models, validators, utils, constants, etc.)
     package_role = Column(String(50), nullable=True)
+
+    # Provenance, denormalised from the owning ArchScanRun so retrieval can
+    # label staleness without a join (see ArchScanRun.source).
+    source = Column(String(20), default="host", nullable=False)
     
     __table_args__ = (
         Index("ix_archchunk_scan_file", "scan_id", "file_path"),

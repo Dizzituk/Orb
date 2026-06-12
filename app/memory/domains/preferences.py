@@ -1,4 +1,8 @@
 # FILE: app/memory/domains/preferences.py
+# Purpose: Preference domain store.
+# Called-by: app.memory.domains, app.memory.startup
+# Depends-on: app.astra_memory.preference_models, app.astra_memory.preference_service, app.db, app.memory.domains.preference_registry (+1 more)
+# Last-renovated: 2026-06-11
 """
 Preference domain store.
 

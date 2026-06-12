@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/host_fs_scanner.py
+# Purpose: Host Filesystem Scanner - v10.0 sandbox-only.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.sandbox.client, app.sandbox_fs
+# Last-renovated: 2026-06-11
 r"""
 Host Filesystem Scanner - v10.0 sandbox-only.
 

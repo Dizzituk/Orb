@@ -1,4 +1,8 @@
 # FILE: app/self_model/identity_router.py
+# Purpose: Identity store FastAPI endpoints.
+# Called-by: main
+# Depends-on: app.self_model.identity, app.self_model.identity_format
+# Last-renovated: 2026-06-11
 """
 Identity store FastAPI endpoints.
 

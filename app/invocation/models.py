@@ -1,4 +1,8 @@
 # FILE: app/invocation/models.py
+# Purpose: Invocation models - Pydantic schemas for the ambient invocation pipeline.
+# Called-by: app.invocation, app.invocation.classifier, app.invocation.router, app.invocation.tier_gate
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Invocation models - Pydantic schemas for the ambient invocation pipeline.
 

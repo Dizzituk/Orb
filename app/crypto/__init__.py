@@ -1,3 +1,7 @@
+# Purpose: Encryption module for Orb.
+# Called-by: app.astra_memory.pyramid_generator, app.astra_memory.router, app.embeddings.models, app.jobs.models (+10 more)
+# Depends-on: app.crypto.encryption, app.crypto.types
+# Last-renovated: 2026-06-11
 # app/crypto/__init__.py
 """
 Encryption module for Orb.

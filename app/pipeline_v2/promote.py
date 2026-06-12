@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/promote.py
+# Purpose: JOB 15 (2026-06-10) - Promote step: verified sandbox self-build -> live Orb.
+# Called-by: app.builds.router, tests.test_j15_promote_smoke
+# Depends-on: app.pipeline_v2.sandbox_tools
+# Last-renovated: 2026-06-11
 """
 JOB 15 (2026-06-10) - Promote step: verified sandbox self-build -> live Orb.
 

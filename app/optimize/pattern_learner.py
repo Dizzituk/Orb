@@ -1,4 +1,8 @@
 # FILE: app/optimize/pattern_learner.py
+# Purpose: Pattern Learner — codifies successful optimisations into reusable rules.
+# Called-by: app.optimize.orchestrator, app.optimize.router
+# Depends-on: app.intelligent_memory.graph
+# Last-renovated: 2026-06-11
 """
 Pattern Learner — codifies successful optimisations into reusable rules.
 
@@ -19,7 +23,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path

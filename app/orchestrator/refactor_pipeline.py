@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/refactor_pipeline.py
+# Purpose: Deterministic Refactor Pipeline — the routing and orchestration layer.
+# Called-by: app.pot_spec.grounded._spec_runner_deterministic_refactor
+# Depends-on: app.orchestrator.codebase_scanner, app.orchestrator.codebase_scanner_models, app.orchestrator.deterministic_architecture, app.orchestrator.refactor_segmenter (+2 more)
+# Last-renovated: 2026-06-11
 """
 Deterministic Refactor Pipeline — the routing and orchestration layer.
 

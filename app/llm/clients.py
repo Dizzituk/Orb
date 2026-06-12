@@ -1,4 +1,8 @@
 # FILE: app/llm/clients.py
+# Purpose: LLM Client Helpers (Phase 4, Unified Provider Path)
+# Called-by: app.astra_memory.semantic_candidates, app.content.style_analyser, app.education.llm_scraper, app.helpers.llm_utils (+5 more)
+# Depends-on: app.embeddings.gemini_provider, app.jobs.schemas, app.providers.registry
+# Last-renovated: 2026-06-11
 """
 LLM Client Helpers (Phase 4, Unified Provider Path)
 

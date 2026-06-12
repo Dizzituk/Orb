@@ -1,4 +1,8 @@
 # FILE: app/transparency/corrections.py
+# Purpose: CorrectionStore — CRUD operations for user corrections.
+# Called-by: app.debug.feedback, app.transparency.matcher, app.transparency.router
+# Depends-on: app.db, app.transparency.models, app.transparency.schemas
+# Last-renovated: 2026-06-11
 """
 CorrectionStore — CRUD operations for user corrections.
 

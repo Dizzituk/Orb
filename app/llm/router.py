@@ -1,4 +1,8 @@
 # FILE: app/llm/router.py
+# Purpose: Public LLM routing API.
+# Called-by: app.llm, app.llm.high_stakes_stream, app.styling.structurer, tests.test_llm_router
+# Depends-on: app.llm.routing.core
+# Last-renovated: 2026-06-11
 """Public LLM routing API.
 
 This module is intentionally small. The implementation lives in:

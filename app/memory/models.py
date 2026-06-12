@@ -1,3 +1,7 @@
+# Purpose: SQLAlchemy ORM models for Orb memory system.
+# Called-by: app.astra_memory._retrieval_utils, app.astra_memory.indexer, app.astra_memory.learning, app.astra_memory.pyramid_generator (+16 more)
+# Depends-on: app.crypto, app.db
+# Last-renovated: 2026-06-11
 # app/memory/models.py
 """
 SQLAlchemy ORM models for Orb memory system.

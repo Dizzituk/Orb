@@ -1,4 +1,8 @@
 # FILE: app/lifestyle/nudges.py
+# Purpose: Proactive daily nudges — Job 5 of the memory roadmap (2026-06-10).
+# Called-by: app.lifestyle.scheduler, app.llm.routing.memory_injection
+# Depends-on: app.db, app.lifestyle.models
+# Last-renovated: 2026-06-11
 """
 Proactive daily nudges — Job 5 of the memory roadmap (2026-06-10).
 
@@ -86,6 +90,36 @@ def _staple_suggestion(db) -> Optional[str]:
 # Rules
 # =============================================================================
 
+def _completeness_question(db, hour: float) -> Optional[str]:
+    """Energy-engine evidence gathering (2026-06-11): ONE question max,
+    evenings only — the colleague noticing the day's biggest data gap.
+    Priority: missing work-day debrief, then a stale watch sync. Rides the
+    normal nudge channel so it reaches chat via the same injection path."""
+    if hour < 17.0:
+        return None
+    try:
+        from datetime import date as _date
+        from app.lifestyle.energy import get_day_effort, _work_day_info
+        from app.lifestyle.models import DailySummary
+        today = _date.today()
+        work = _work_day_info(db, today)
+        if work and get_day_effort(today) is None:
+            parcels = work.get("parcels") or 0
+            if parcels:
+                return (f"{parcels} drops today — how heavy was the round, much bulk on? "
+                        "One word (light, normal, heavy, very heavy) and the day's burn "
+                        "gets priced properly.")
+            return ("How was the round today — light, normal, heavy or very heavy? "
+                    "One word and the day's burn gets priced properly.")
+        row = db.query(DailySummary).filter(DailySummary.date == today).first()
+        if row is None or not row.steps:
+            return ("The watch hasn't synced today, so steps and heart rate are blank — "
+                    "worth opening AstraBridge for a quick sync when you get a minute.")
+    except Exception as exc:
+        logger.debug("[nudges] completeness check skipped: %s", exc)
+    return None
+
+
 def evaluate_nudges(db, now: Optional[datetime] = None) -> List[str]:
     now_local = (now or datetime.now()).astimezone()
     hour = now_local.hour + now_local.minute / 60.0
@@ -137,6 +171,12 @@ def evaluate_nudges(db, now: Optional[datetime] = None) -> List[str]:
             f"Sugar's at {totals['sugar_g']:.0f}g today against your {sugar_limit:.0f}g limit — "
             f"one to watch for the rest of the day."
         )
+
+    # 0. Evidence-gathering question (one max) — leads the queue because an
+    # answered question sharpens every other number for the day.
+    q = _completeness_question(db, hour)
+    if q:
+        nudges.insert(0, q)
 
     return nudges[:2]
 

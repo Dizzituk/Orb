@@ -1,4 +1,8 @@
 # FILE: app/debug/project_router.py
+# Purpose: FastAPI router for Debug Project CRUD.
+# Called-by: main
+# Depends-on: app.debug.project_service
+# Last-renovated: 2026-06-11
 """
 FastAPI router for Debug Project CRUD.
 

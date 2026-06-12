@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/_simple_create_review.py
+# Purpose: SpecGate CREATE self-review pass.
+# Called-by: app.pot_spec.grounded._simple_create_utils_17
+# Depends-on: app.pot_spec.grounded.simple_create
+# Last-renovated: 2026-06-11
 """
 SpecGate CREATE self-review pass.
 
@@ -23,6 +27,7 @@ Single responsibility: the review prompt + the review-and-verify orchestration.
 from __future__ import annotations
 
 import logging
+from app.pot_spec.grounded._stage_reasoning import spec_gate_reasoning, spec_gate_timeout_seconds
 from typing import Any, Callable, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -170,10 +175,10 @@ async def run_spec_self_review(
             model_id=model_id,
             messages=[{"role": "user", "content": review_prompt}],
             system_prompt=CREATE_ANALYSIS_SYSTEM_PROMPT,
-            temperature=1.0,
-            max_tokens=16384,
-            timeout_seconds=300,
-            reasoning={"effort": "high"},
+            temperature=1.0,  # stripped by registry when the model requires it
+            max_tokens=16384,  # floored upward by registry per effort level
+            timeout_seconds=spec_gate_timeout_seconds(),
+            reasoning=spec_gate_reasoning(),  # v2.8: env-overridable (SPEC_GATE_REASONING_EFFORT)
         )
     except Exception as exc:
         logger.warning("[SPEC_GATE_REVIEW] review call failed, keeping original draft: %s", exc)

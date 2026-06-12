@@ -1,4 +1,8 @@
 # FILE: tests/test_job_router.py
+# Purpose: Tests for app/jobs/router.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app, app.jobs.router
+# Last-renovated: 2026-06-11
 """
 Tests for app/jobs/router.py
 Job API router - FastAPI endpoints for job management.

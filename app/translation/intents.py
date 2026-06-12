@@ -1,4 +1,8 @@
 # FILE: app/translation/intents.py
+# Purpose: Canonical intent definitions for ASTRA Translation Layer.
+# Called-by: app.translation, app.translation._intents_utils_2, app.translation.feedback, app.translation.gates (+3 more)
+# Depends-on: app.translation._intents_conversational, app.translation._intents_domains, app.translation._intents_infrastructure, app.translation._intents_operations (+2 more)
+# Last-renovated: 2026-06-11
 """
 Canonical intent definitions for ASTRA Translation Layer.
 This is the CLOSED SET of allowed intents. No free-form execution.

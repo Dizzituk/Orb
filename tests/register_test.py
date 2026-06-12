@@ -1,4 +1,8 @@
 # FILE: tests/register_test.py
+# Purpose: Test Registry Helper
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Test Registry Helper
 ====================

@@ -1,5 +1,13 @@
+# Purpose: file classifier utils 2
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.llm.file_classifier
+# Last-renovated: 2026-06-11
 from __future__ import annotations
-from typing import Any, List, Optional
+from typing import Any, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:  # C4 fix (2026-06-11): annotation-only; runtime uses the
+    # deferred in-function imports below (avoids a circular import).
+    from app.llm.file_classifier import ClassificationResult, ClassifiedFile, FileType
 
 
 VIDEO_EXTENSIONS = {

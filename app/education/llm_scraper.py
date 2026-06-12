@@ -1,3 +1,7 @@
+# Purpose: llm scraper
+# Called-by: app.education.service
+# Depends-on: app.education.scraper, app.education.scraper_schemas, app.llm.clients
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 
 import json

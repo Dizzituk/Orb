@@ -1,4 +1,8 @@
 # FILE: app/llm/_weaver_substantive_filter.py
+# Purpose: v4.3: Substantive assistant content detector for Weaver.
+# Called-by: app.llm._weaver_stream_prepare
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 v4.3: Substantive assistant content detector for Weaver.
 

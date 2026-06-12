@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/stages/builder.py
+# Purpose: Stage 4 — The Builder.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.agentic_pipeline, app.agentic_pipeline.loop_controller, app.overwatcher.architecture_executor, app.pipeline_v2 (+4 more)
+# Last-renovated: 2026-06-11
 """
 Stage 4 — The Builder.
 

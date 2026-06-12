@@ -1,4 +1,8 @@
 # FILE: app/cloud/rclone_service.py
+# Purpose: Cloud storage service via rclone.
+# Called-by: app.cloud.build_and_deploy, app.cloud.router, app.debug.executors.user_files
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Cloud storage service via rclone.
 

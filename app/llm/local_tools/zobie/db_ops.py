@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/db_ops.py
+# Purpose: Database operations for zobie tools.
+# Called-by: app.llm.local_tools.zobie, app.llm.local_tools.zobie.streams._fs_query_utils_3, app.llm.local_tools.zobie.streams.archmap_db, app.llm.local_tools.zobie.streams.archmap_full (+4 more)
+# Depends-on: app.memory.architecture_models
+# Last-renovated: 2026-06-11
 """Database operations for zobie tools.
 
 Extracted from zobie_tools.py for modularity.
@@ -9,7 +13,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 

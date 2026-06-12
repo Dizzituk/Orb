@@ -1,4 +1,8 @@
 # FILE: app/llm/image_extractor.py
+# Purpose: Image prompt extractor + SSE stream wrapper.
+# Called-by: app.llm.routing.chat_routing
+# Depends-on: app.llm.image_gen, app.llm.image_prompt_log
+# Last-renovated: 2026-06-11
 """
 Image prompt extractor + SSE stream wrapper.
 

@@ -1,4 +1,8 @@
 # FILE: app/llm/pipeline/critique.py
+# Purpose: Critique pipeline for high-stakes jobs — Orchestrator Façade.
+# Called-by: app.llm.pipeline._high_stakes_pipelines, app.llm.pipeline.high_stakes, app.llm.pipeline.revision, app.llm.routing.core (+1 more)
+# Depends-on: app.jobs.schemas, app.llm.pipeline._critique_legacy, app.llm.pipeline.critique_parts.blocker_filtering, app.llm.pipeline.critique_parts.deterministic_verdict (+13 more)
+# Last-renovated: 2026-06-11
 """Critique pipeline for high-stakes jobs — Orchestrator Façade.
 
 Block 5 of the PoT (Proof of Thought) system.
@@ -16,10 +20,7 @@ See critique_parts/ for individual check implementations:
 
 from __future__ import annotations
 
-import json
 import logging
-import os
-import textwrap
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4

@@ -1,4 +1,8 @@
 # FILE: app/project_registry/api_router.py
+# Purpose: FastAPI router for the Project Registry API.
+# Called-by: main
+# Depends-on: app.auth.middleware, app.db, app.project_registry, app.project_registry.confidence_tracker (+1 more)
+# Last-renovated: 2026-06-11
 """
 FastAPI router for the Project Registry API.
 

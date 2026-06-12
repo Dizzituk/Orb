@@ -1,4 +1,8 @@
 # FILE: app/lifestyle/daily_view.py
+# Purpose: Per-day read views for the Overview and Activity tabs.
+# Called-by: app.lifestyle.router
+# Depends-on: app.lifestyle, app.lifestyle.models, app.lifestyle.schemas, app.lifestyle.service
+# Last-renovated: 2026-06-11
 """
 Per-day read views for the Overview and Activity tabs.
 

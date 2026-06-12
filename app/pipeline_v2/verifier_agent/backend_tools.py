@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/verifier_agent/backend_tools.py
+# Purpose: PROVING RUN (2026-06-10) - Backend driving tools for the agentic verifier.
+# Called-by: app.pipeline_v2.verifier_agent.agent, tests.test_selfbuild_verifier_smoke
+# Depends-on: app.pipeline_v2.sandbox_tools
+# Last-renovated: 2026-06-11
 """
 PROVING RUN (2026-06-10) - Backend driving tools for the agentic verifier.
 
@@ -22,7 +26,6 @@ falsely failing. Never put the real master key anywhere near this module.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Any, Dict, List
 

@@ -1,4 +1,8 @@
 # FILE: app/content/scout_prompts.py
+# Purpose: Prompt templates for the Content Scout AI layer.
+# Called-by: app.content.scout
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Prompt templates for the Content Scout AI layer.
 

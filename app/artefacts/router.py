@@ -1,4 +1,8 @@
 # FILE: app/artefacts/router.py
+# Purpose: Phase 4 Artefacts Router - HTTP API Endpoints
+# Called-by: main
+# Depends-on: app.artefacts.service, app.db, app.jobs.models
+# Last-renovated: 2026-06-11
 """
 Phase 4 Artefacts Router - HTTP API Endpoints
 

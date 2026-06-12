@@ -1,4 +1,8 @@
 # FILE: app/transparency/router.py
+# Purpose: FastAPI router for Pipeline Transparency & User Feedback.
+# Called-by: main
+# Depends-on: app.auth, app.db, app.self_model.hooks, app.transparency.collector (+2 more)
+# Last-renovated: 2026-06-11
 """
 FastAPI router for Pipeline Transparency & User Feedback.
 

@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/youtube_sync.py
+# Purpose: YouTube Channel Sync.
+# Called-by: app.content.distribution.youtube_router
+# Depends-on: app.content.distribution.youtube_channel, app.content.models
+# Last-renovated: 2026-06-11
 """
 YouTube Channel Sync.
 

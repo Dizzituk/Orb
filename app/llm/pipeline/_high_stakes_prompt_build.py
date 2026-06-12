@@ -1,4 +1,8 @@
 # FILE: app/llm/pipeline/_high_stakes_prompt_build.py
+# Purpose: High-stakes pipeline: Draft message building.
+# Called-by: app.llm.pipeline.high_stakes
+# Depends-on: app.jobs.stage3_locks, app.llm.critical_pipeline.foundation_templates, app.llm.pipeline.evidence_contract_prompt
+# Last-renovated: 2026-06-11
 """
 High-stakes pipeline: Draft message building.
 
@@ -10,7 +14,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)

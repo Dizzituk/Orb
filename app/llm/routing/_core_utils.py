@@ -1,3 +1,7 @@
+# Purpose: core utils
+# Called-by: app.llm.routing.core
+# Depends-on: app.llm.job_classifier, app.llm.schemas
+# Last-renovated: 2026-06-11
 import inspect
 import os
 from app.llm.job_classifier import get_model_config, is_claude_allowed, is_claude_forbidden

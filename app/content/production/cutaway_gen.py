@@ -1,4 +1,8 @@
 # FILE: app/content/production/cutaway_gen.py
+# Purpose: Cutaway Concept Generator — AI-powered (Spec Section 7.1).
+# Called-by: app.content.production_router
+# Depends-on: app.content.models, app.content.scout, app.content.service
+# Last-renovated: 2026-06-11
 """
 Cutaway Concept Generator — AI-powered (Spec Section 7.1).
 

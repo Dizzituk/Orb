@@ -1,4 +1,8 @@
 # FILE: app/memory/_working_set_bootstrap.py
+# Purpose: Reference-driven bootstrap for the working set.
+# Called-by: app.bridge.capability_layer, app.llm.stream_router
+# Depends-on: app.memory, app.memory.working_set
+# Last-renovated: 2026-06-11
 """
 Reference-driven bootstrap for the working set.
 

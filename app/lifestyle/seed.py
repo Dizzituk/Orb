@@ -1,4 +1,8 @@
 # FILE: app/lifestyle/seed.py
+# Purpose: Seed default lifestyle data on startup.
+# Called-by: main
+# Depends-on: app.lifestyle.models
+# Last-renovated: 2026-06-11
 """
 Seed default lifestyle data on startup.
 

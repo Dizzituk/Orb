@@ -1,4 +1,8 @@
 # FILE: app/intelligent_memory/asset_index.py
+# Purpose: Asset Index — tracks every piece of content ASTRA has created,
+# Called-by: app.intelligent_memory.extraction, app.intelligent_memory.retrieval_router
+# Depends-on: app.intelligent_memory.graph
+# Last-renovated: 2026-06-11
 """
 Asset Index — tracks every piece of content ASTRA has created,
 downloaded, processed, or been given.

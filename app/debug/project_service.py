@@ -1,4 +1,8 @@
 # FILE: app/debug/project_service.py
+# Purpose: Debug Project Service — CRUD operations for debug projects.
+# Called-by: app.debug.debug_chat, app.debug.orchestrator.endpoint, app.debug.project_router, app.pipeline_v2.orchestrator
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Debug Project Service — CRUD operations for debug projects.
 
@@ -9,7 +13,6 @@ v1.0 (2026-03-07): Initial implementation for debug workspace.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time

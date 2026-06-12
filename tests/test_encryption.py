@@ -1,4 +1,8 @@
 # FILE: tests/test_encryption.py
+# Purpose: Tests for app/crypto/encryption.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.crypto, app.crypto.encryption
+# Last-renovated: 2026-06-11
 """
 Tests for app/crypto/encryption.py
 Data encryption - encrypts sensitive data at rest.

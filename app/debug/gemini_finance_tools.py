@@ -1,4 +1,8 @@
 # FILE: app/debug/gemini_finance_tools.py
+# Purpose: Work-day (delivery ledger) tool declarations and executors for the Gemini
+# Called-by: app.debug.gemini_tool_loop, app.llm.chat_tool_loop
+# Depends-on: app.finance.services.work_folder_logger, app.finance.services.work_upload_logger, app.tools.finance_tools
+# Last-renovated: 2026-06-11
 """
 Work-day (delivery ledger) tool declarations and executors for the Gemini
 multimodal tool loop (app.debug.gemini_tool_loop).

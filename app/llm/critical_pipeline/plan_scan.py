@@ -1,4 +1,8 @@
 # FILE: app/llm/critical_pipeline/plan_scan.py
+# Purpose: Scan-only plan generation.
+# Called-by: app.llm.critical_pipeline._stream_handler_utils, app.llm.critical_pipeline.stream_handler
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Scan-only plan generation.
 

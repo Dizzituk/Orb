@@ -1,4 +1,8 @@
 # FILE: app/shared_context/project_session.py
+# Purpose: Lightweight session state for project-aware pipeline routing.
+# Called-by: app.builds.pipeline_bridge, app.llm._stream_router_utils, app.llm.project_scoping_stream, app.llm.spec_gate_stream (+3 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Lightweight session state for project-aware pipeline routing.
 

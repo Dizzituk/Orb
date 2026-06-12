@@ -1,4 +1,8 @@
 # FILE: app/content/models.py
+# Purpose: Content Memory Database Models (Spec Section 5)
+# Called-by: app.content.distribution.analytics, app.content.distribution.posting_time_learner, app.content.distribution.publisher, app.content.distribution.scheduler (+16 more)
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """
 Content Memory Database Models (Spec Section 5)
 

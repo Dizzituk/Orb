@@ -1,4 +1,8 @@
 # FILE: app/capabilities/injector.py
+# Purpose: ASTRA Capability Layer Injector
+# Called-by: app.capabilities, tests.test_capabilities
+# Depends-on: app.capabilities.loader, app.llm.context
+# Last-renovated: 2026-06-11
 """
 ASTRA Capability Layer Injector
 

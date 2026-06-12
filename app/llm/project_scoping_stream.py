@@ -1,4 +1,8 @@
 # FILE: app/llm/project_scoping_stream.py
+# Purpose: Project Scoping Conversation Handler.
+# Called-by: app.llm._stream_router_utils, app.llm.routing._cd_dispatch_table
+# Depends-on: app.llm.routing.chat_routing, app.llm.streaming, app.memory, app.memory.schemas (+4 more)
+# Last-renovated: 2026-06-11
 """
 Project Scoping Conversation Handler.
 

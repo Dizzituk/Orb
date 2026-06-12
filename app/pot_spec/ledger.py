@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/ledger.py
+# Purpose: Append-only ledger for deterministic replay.
+# Called-by: app.jobs.engine, app.jobs.stage3_locks, app.llm.pipeline._high_stakes_helpers, app.llm.pipeline.critique (+4 more)
+# Depends-on: app.pot_spec.ledger_core, app.pot_spec.ledger_overwatcher, app.pot_spec.ledger_pipeline
+# Last-renovated: 2026-06-11
 """Append-only ledger for deterministic replay.
 
 Each event is a single JSON object written as one line (ndjson).

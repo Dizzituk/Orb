@@ -1,4 +1,8 @@
 # FILE: app/translation/confidence_graduation.py
+# Purpose: Confidence Graduation Engine.
+# Called-by: main
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Confidence Graduation Engine.
 

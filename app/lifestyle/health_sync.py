@@ -1,4 +1,8 @@
 # FILE: app/lifestyle/health_sync.py
+# Purpose: Health Connect ingest — files batches of wearable data (Garmin via Health
+# Called-by: app.bridge.dashboards
+# Depends-on: app.db, app.lifestyle.models, app.lifestyle.service
+# Last-renovated: 2026-06-11
 """
 Health Connect ingest — files batches of wearable data (Garmin via Health
 Connect, relayed by AstraBridge) into the lifestyle store.
@@ -61,8 +65,14 @@ def ensure_health_schema() -> None:
         "steps": "INTEGER",
         "floors": "INTEGER",
         "active_calories": "FLOAT",
+        "total_calories_burned": "FLOAT",
         "resting_hr": "INTEGER",
         "sleep_minutes": "INTEGER",
+    }
+    workout_cols = {
+        "avg_hr": "INTEGER",
+        "max_hr": "INTEGER",
+        "hr_zones_json": "TEXT",
     }
     try:
         inspector = inspect(engine)
@@ -76,6 +86,16 @@ def ensure_health_schema() -> None:
                         ))
                         conn.commit()
                         logger.info("[health_sync] added lifestyle_daily_summaries.%s", name)
+        if "lifestyle_workout_sessions" in inspector.get_table_names():
+            existing_w = {c["name"] for c in inspector.get_columns("lifestyle_workout_sessions")}
+            with engine.connect() as conn:
+                for name, sqltype in workout_cols.items():
+                    if name not in existing_w:
+                        conn.execute(text(
+                            f"ALTER TABLE lifestyle_workout_sessions ADD COLUMN {name} {sqltype}"
+                        ))
+                        conn.commit()
+                        logger.info("[health_sync] added lifestyle_workout_sessions.%s", name)
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("[health_sync] daily-summary migration skipped: %s", exc)
 
@@ -198,6 +218,9 @@ def ingest_health_batch(
                 activity_type=str(wo.get("activity_type") or "workout").strip().lower(),
                 title=wo.get("title"),
                 calories_burned=wo.get("calories_burned"),
+                avg_hr=int(wo["avg_hr"]) if wo.get("avg_hr") else None,
+                max_hr=int(wo["max_hr"]) if wo.get("max_hr") else None,
+                hr_zones_json=wo.get("hr_zones") or None,
                 notes=notes,
                 source=str(wo.get("source") or "garmin"),
             )
@@ -227,6 +250,8 @@ def ingest_health_batch(
                 row.floors = int(d["floors"])
             if d.get("active_calories") is not None:
                 row.active_calories = float(d["active_calories"])
+            if d.get("total_calories") is not None:
+                row.total_calories_burned = float(d["total_calories"])
             if d.get("resting_hr") is not None:
                 row.resting_hr = int(d["resting_hr"])
             if d.get("sleep_minutes") is not None:

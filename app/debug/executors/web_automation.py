@@ -1,4 +1,8 @@
 # FILE: app/debug/executors/web_automation.py
+# Purpose: Chat-callable executors for web browsing.
+# Called-by: app.debug.executors
+# Depends-on: app.web_automation.tool_handlers
+# Last-renovated: 2026-06-11
 """
 Chat-callable executors for web browsing.
 

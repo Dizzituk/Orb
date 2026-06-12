@@ -1,4 +1,8 @@
 # FILE: app/content/production/format_converter.py
+# Purpose: Multi-Format Output Converter (Spec Section 9.2).
+# Called-by: app.content.production_router
+# Depends-on: app.content.models, app.content.production.draft_writer, app.content.production.edit_engine, app.content.production.static_gen (+1 more)
+# Last-renovated: 2026-06-11
 """
 Multi-Format Output Converter (Spec Section 9.2).
 

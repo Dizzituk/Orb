@@ -1,4 +1,8 @@
 # FILE: app/memory/startup.py
+# Purpose: Memory system initialisation.
+# Called-by: app.db
+# Depends-on: app.astra_memory.decay_job, app.memory.domains.architecture, app.memory.domains.confidence, app.memory.domains.context (+8 more)
+# Last-renovated: 2026-06-11
 """
 Memory system initialisation.
 

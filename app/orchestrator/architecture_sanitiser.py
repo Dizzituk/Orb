@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/architecture_sanitiser.py
+# Purpose: Architecture Sanitiser — Deterministic post-generation cleanup.
+# Called-by: app.llm.pipeline._high_stakes_pipelines
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Architecture Sanitiser — Deterministic post-generation cleanup.
 

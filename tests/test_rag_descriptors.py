@@ -1,3 +1,7 @@
+# Purpose: Tests for descriptor generator.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.db, app.rag.descriptors.descriptor_gen, app.rag.models
+# Last-renovated: 2026-06-11
 # tests/test_rag_descriptors.py
 """Tests for descriptor generator."""
 

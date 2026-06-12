@@ -1,4 +1,8 @@
 # FILE: app/endpoints/_video_code_tools.py
+# Purpose: Video + Code Tools pipeline.
+# Called-by: app.endpoints.chat_attachments
+# Depends-on: app.db, app.endpoints.chat_attachments, app.llm._streaming_utils_3, app.llm.chat_tool_loop (+4 more)
+# Last-renovated: 2026-06-11
 """
 Video + Code Tools pipeline.
 

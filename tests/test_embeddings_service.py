@@ -1,4 +1,8 @@
 # FILE: tests/test_embeddings_service.py
+# Purpose: Tests for app/embeddings/service.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.embeddings, app.embeddings.service
+# Last-renovated: 2026-06-11
 """
 Tests for app/embeddings/service.py
 Vector embeddings - generates and manages embeddings.

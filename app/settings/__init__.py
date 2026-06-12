@@ -1,4 +1,8 @@
 # FILE: app/settings/__init__.py
+# Purpose: ASTRA Settings Module.
+# Called-by: app.db
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 ASTRA Settings Module.
 

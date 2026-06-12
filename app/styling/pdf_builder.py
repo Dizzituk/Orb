@@ -1,4 +1,8 @@
 # FILE: app/styling/pdf_builder.py
+# Purpose: Build styled PDFs from a structured content list using ReportLab Platypus.
+# Called-by: app.debug.executors.styled_files
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Build styled PDFs from a structured content list using ReportLab Platypus.
 

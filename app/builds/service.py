@@ -1,4 +1,8 @@
 # FILE: app/builds/service.py
+# Purpose: Build project service — CRUD + pipeline stage management.
+# Called-by: app.builds.pipeline_bridge, app.builds.router, app.builds.stage_hooks, app.pipeline_v2.orchestrator (+1 more)
+# Depends-on: app.builds.models, app.builds.schemas, app.db, app.transparency.models
+# Last-renovated: 2026-06-11
 """
 Build project service — CRUD + pipeline stage management.
 """

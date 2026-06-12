@@ -1,4 +1,8 @@
 # FILE: app/endpoints/chat_attachments.py
+# Purpose: Chat with attachments endpoint - handles file uploads with chat.
+# Called-by: app.endpoints, app.endpoints._chat_media_processors, app.endpoints._video_code_tools
+# Depends-on: app.auth, app.auth.middleware, app.db, app.embeddings (+18 more)
+# Last-renovated: 2026-06-11
 """
 Chat with attachments endpoint - handles file uploads with chat.
 
@@ -14,8 +18,6 @@ v0.13.5: Document content injection
 """
 
 import os
-import json
-import time
 from pathlib import Path
 from uuid import uuid4
 from typing import Optional, List

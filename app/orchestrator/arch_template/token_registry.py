@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/arch_template/token_registry.py
+# Purpose: Design Token Registry — extracts CSS variables from the codebase.
+# Called-by: app.llm.critical_pipeline.stream_handler, app.orchestrator.arch_template.token_cache
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Design Token Registry — extracts CSS variables from the codebase.
 

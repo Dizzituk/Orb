@@ -1,3 +1,7 @@
+# Purpose: Architecture search.
+# Called-by: app.endpoints._video_code_tools, app.llm.routing.chat_codebase_reader, app.rag.retrieval, app.rag.retrieval.context_assembler (+2 more)
+# Depends-on: app.astra_memory.preference_models, app.astra_memory.retrieval, app.embeddings.service, app.rag.models
+# Last-renovated: 2026-06-11
 """
 Architecture search.
 

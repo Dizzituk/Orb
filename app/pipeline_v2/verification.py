@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/verification.py
+# Purpose: ASTRA v2.1 Visual Verification — cheap model with eyes.
+# Called-by: app.pipeline_v2.orchestrator
+# Depends-on: app.pipeline_v2.config, app.pipeline_v2.llm_caller, app.pipeline_v2.models, app.pipeline_v2.screenshot
+# Last-renovated: 2026-06-11
 """
 ASTRA v2.1 Visual Verification — cheap model with eyes.
 

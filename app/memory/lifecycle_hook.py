@@ -1,4 +1,8 @@
 # FILE: app/memory/lifecycle_hook.py
+# Purpose: Post-refactor lifecycle hook.
+# Called-by: app.orchestrator.refactor_loop
+# Depends-on: app.memory.rag_entries_model, app.rag.lifecycle
+# Last-renovated: 2026-06-11
 """
 Post-refactor lifecycle hook.
 

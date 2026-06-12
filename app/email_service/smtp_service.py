@@ -1,4 +1,8 @@
 # FILE: app/email_service/smtp_service.py
+# Purpose: Proton Mail SMTP service — sends email via Proton Bridge.
+# Called-by: app.email_service.router
+# Depends-on: app.settings.service
+# Last-renovated: 2026-06-11
 """
 Proton Mail SMTP service — sends email via Proton Bridge.
 

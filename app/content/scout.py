@@ -1,4 +1,8 @@
 # FILE: app/content/scout.py
+# Purpose: Content Scout — AI-powered conversation analysis (Spec Section 4).
+# Called-by: app.content.production.cutaway_gen, app.content.production.draft_writer, app.content.scout_router
+# Depends-on: app.content.models, app.content.scout_prompts, app.content.service, app.providers.registry
+# Last-renovated: 2026-06-11
 """
 Content Scout — AI-powered conversation analysis (Spec Section 4).
 

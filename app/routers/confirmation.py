@@ -1,4 +1,8 @@
 # FILE: app/routers/confirmation.py
+# Purpose: REST endpoint for processing user confirmation gate responses.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.auth, app.db, app.llm.routing.confirmation_gate
+# Last-renovated: 2026-06-11
 """
 REST endpoint for processing user confirmation gate responses.
 

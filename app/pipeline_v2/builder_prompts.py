@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/builder_prompts.py
+# Purpose: Dynamic builder prompts per language/framework.
+# Called-by: app.pipeline_v2.agentic_builder
+# Depends-on: app.core_principles, app.pipeline_v2.build_targets, app.pipeline_v2.models
+# Last-renovated: 2026-06-11
 """
 Dynamic builder prompts per language/framework.
 

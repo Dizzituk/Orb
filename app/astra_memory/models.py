@@ -1,4 +1,8 @@
 # FILE: app/astra_memory/models.py
+# Purpose: ASTRA Memory System - SQLAlchemy Models (Job 5)
+# Called-by: app.astra_memory, app.astra_memory._service_utils, app.astra_memory.indexer, app.astra_memory.service (+4 more)
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """
 ASTRA Memory System - SQLAlchemy Models (Job 5)
 

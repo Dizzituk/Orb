@@ -1,3 +1,7 @@
+# Purpose: builder
+# Called-by: app.shared_context, app.shared_context.router
+# Depends-on: app.embeddings.service, app.shared_context.schemas
+# Last-renovated: 2026-06-11
 from typing import List, Optional, Tuple
 from sqlalchemy.orm import Session
 

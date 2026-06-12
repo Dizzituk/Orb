@@ -1,4 +1,8 @@
 # FILE: app/llm/critical_pipeline/_segment_prompt_builder.py
+# Purpose: Build segment-scoped prompt injection for architecture generation.
+# Called-by: app.llm.critical_pipeline.stream_handler
+# Depends-on: app.pot_spec.pattern_cache, app.sandbox_fs
+# Last-renovated: 2026-06-11
 """
 Build segment-scoped prompt injection for architecture generation.
 

@@ -1,4 +1,8 @@
 # FILE: app/memory/ingest/classifier.py
+# Purpose: Item classifier (Spec Section 9.2, Stage 3).
+# Called-by: app.memory.ingest, app.memory.ingest.pipeline
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Item classifier (Spec Section 9.2, Stage 3).
 

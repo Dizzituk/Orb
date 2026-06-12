@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/content_classifier.py
+# Purpose: Content Classifier for Sandbox File Discovery.
+# Called-by: app.llm.local_tools.zobie._sandbox_inspector_utils_5, app.llm.local_tools.zobie.sandbox_inspector
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Content Classifier for Sandbox File Discovery.
 

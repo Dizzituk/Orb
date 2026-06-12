@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/analytics.py
+# Purpose: Analytics Feedback Loop (Spec Section 9.3).
+# Called-by: app.content.distribution_router
+# Depends-on: app.content.distribution.facebook, app.content.distribution.instagram, app.content.distribution.tiktok, app.content.distribution.youtube (+1 more)
+# Last-renovated: 2026-06-11
 """
 Analytics Feedback Loop (Spec Section 9.3).
 

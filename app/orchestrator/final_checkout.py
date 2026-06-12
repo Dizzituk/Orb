@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/final_checkout.py
+# Purpose: Final Project Checkout — Stage 10 (Autonomous Closer).
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.db, app.experience, app.experience.context, app.experience.distillation (+2 more)
+# Last-renovated: 2026-06-11
 """
 Final Project Checkout — Stage 10 (Autonomous Closer).
 
@@ -41,8 +45,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional

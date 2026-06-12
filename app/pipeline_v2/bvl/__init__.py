@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/bvl/__init__.py
+# Purpose: Behavioral Verification Layer (BVL).
+# Called-by: app.pipeline_v2.verifier_agent.perception_tools
+# Depends-on: app.pipeline_v2.bvl.bvl_models
+# Last-renovated: 2026-06-11
 """
 Behavioral Verification Layer (BVL).
 

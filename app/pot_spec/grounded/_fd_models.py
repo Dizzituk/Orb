@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/_fd_models.py
+# Purpose: File Discovery — data models and configuration constants.
+# Called-by: app.pot_spec.grounded._fd_powershell, app.pot_spec.grounded.file_discovery
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 File Discovery — data models and configuration constants.
 

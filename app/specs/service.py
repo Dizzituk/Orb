@@ -1,11 +1,14 @@
 # FILE: app/specs/service.py
+# Purpose: Service layer for ASTRA Spec operations.
+# Called-by: app.llm._sg_stream_persist, app.llm._spec_gate_stream_utils_2, app.llm.critical_pipeline.config, app.llm.routing.handler_registry (+4 more)
+# Depends-on: app.specs.models, app.specs.schema
+# Last-renovated: 2026-06-11
 """
 Service layer for ASTRA Spec operations.
 
 Provides CRUD operations for specs, plus helper functions for the Weaver.
 """
 from __future__ import annotations
-import json
 import uuid
 from datetime import datetime, timezone
 from typing import Optional, List, Tuple

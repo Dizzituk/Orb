@@ -1,4 +1,8 @@
 # FILE: app/voice/tts_server.py
+# Purpose: Google Cloud TTS microservice — FastAPI on port 8001.
+# Called-by: scripts.legal_case._bootstrap
+# Depends-on: app.crypto, app.db, app.settings.service
+# Last-renovated: 2026-06-11
 """
 Google Cloud TTS microservice — FastAPI on port 8001.
 

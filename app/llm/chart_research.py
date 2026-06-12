@@ -1,4 +1,8 @@
 # FILE: app/llm/chart_research.py
+# Purpose: Research pipeline for data-driven chart generation.
+# Called-by: app.llm.image_router
+# Depends-on: app.llm.web_search
+# Last-renovated: 2026-06-11
 """
 Research pipeline for data-driven chart generation.
 

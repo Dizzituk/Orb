@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/streams/latest_reports.py
+# Purpose: LATEST REPORT stream generators.
+# Called-by: app.llm.local_tools.zobie.streams
+# Depends-on: app.llm.audit_logger, app.llm.local_tools.latest_report_resolver, app.llm.local_tools.zobie.sse
+# Last-renovated: 2026-06-11
 """
 LATEST REPORT stream generators.
 

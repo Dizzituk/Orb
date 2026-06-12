@@ -1,4 +1,8 @@
 # FILE: app/memory/ingest/parsers.py
+# Purpose: Format-specific document parsers (Spec Section 9.2, Stage 1).
+# Called-by: app.memory.ingest, app.memory.ingest.pipeline
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Format-specific document parsers (Spec Section 9.2, Stage 1).
 
@@ -21,7 +25,6 @@ Usage:
 """
 
 import csv
-import io
 import json
 import logging
 import re

@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/reject_intent_handler.py
+# Purpose: Reject-intent endpoint handler.
+# Called-by: app.llm.stream_router
+# Depends-on: app.translation.confirmation_log, app.translation.recent_decisions, app.translation.schemas
+# Last-renovated: 2026-06-11
 """
 Reject-intent endpoint handler.
 

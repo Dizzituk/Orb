@@ -1,4 +1,8 @@
 # FILE: app/drive/manifest_models.py
+# Purpose: Drive file manifest — SQLAlchemy model for boot-time filesystem awareness.
+# Called-by: app.debug.executors.user_files, app.drive.boot_scan, app.drive.content_indexer, app.drive.file_watcher (+2 more)
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """
 Drive file manifest — SQLAlchemy model for boot-time filesystem awareness.
 

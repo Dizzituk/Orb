@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/text_helpers.py
+# Purpose: Text Extraction Helpers for SpecGate
+# Called-by: app.pot_spec.grounded.grounding_engine, app.pot_spec.grounded.spec_generation
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Text Extraction Helpers for SpecGate
 

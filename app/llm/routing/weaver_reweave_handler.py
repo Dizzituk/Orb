@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/weaver_reweave_handler.py
+# Purpose: Weaver auto-reweave routing handler.
+# Called-by: app.llm.stream_router
+# Depends-on: app.builds.stage_hooks, app.llm._stream_router_utils, app.llm.routing.command_dispatch, app.llm.routing.handler_registry (+1 more)
+# Last-renovated: 2026-06-11
 """
 Weaver auto-reweave routing handler.
 

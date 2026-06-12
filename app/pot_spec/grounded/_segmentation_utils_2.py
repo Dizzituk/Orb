@@ -1,3 +1,7 @@
+# Purpose: segmentation utils 2
+# Called-by: app.pot_spec.grounded._segmentation_utils_3, app.pot_spec.grounded._segmentation_utils_4, app.pot_spec.grounded.segmentation
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import os
 from typing import List, Optional

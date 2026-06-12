@@ -1,4 +1,8 @@
 # FILE: app/llm/translation_routing.py
+# Purpose: Translation layer routing helpers for stream router.
+# Called-by: app.bridge.llm_helpers, app.bridge.router, app.llm._stream_router_utils, app.llm.routing._cd_dispatch_table (+4 more)
+# Depends-on: app.llm.local_tools.archmap_helpers, app.llm.stage_models, app.translation
+# Last-renovated: 2026-06-11
 """
 Translation layer routing helpers for stream router.
 

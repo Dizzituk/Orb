@@ -1,4 +1,8 @@
 # FILE: app/builds/schemas.py
+# Purpose: Pydantic schemas for build project endpoints.
+# Called-by: app.builds.pipeline_bridge, app.builds.router, app.builds.service
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Pydantic schemas for build project endpoints.
 """

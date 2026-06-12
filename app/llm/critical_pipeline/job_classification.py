@@ -1,4 +1,8 @@
 # FILE: app/llm/critical_pipeline/job_classification.py
+# Purpose: Job type classification for Critical Pipeline routing.
+# Called-by: app.llm.critical_pipeline, app.llm.critical_pipeline._stream_handler_utils, app.llm.critical_pipeline._stream_handler_utils_1, app.llm.critical_pipeline.stream_handler
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Job type classification for Critical Pipeline routing.
 
@@ -7,7 +11,6 @@ based on SpecGate's pre-classification or keyword-based fallback heuristics.
 """
 
 import logging
-import os
 from typing import Dict, Any
 
 logger = logging.getLogger(__name__)

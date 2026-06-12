@@ -1,4 +1,8 @@
 # FILE: app/content/video_pipeline/router.py
+# Purpose: FastAPI endpoints for the Script-to-Video Pipeline.
+# Called-by: main
+# Depends-on: app.auth, app.content.video_pipeline.heygen_client, app.content.video_pipeline.local_scanner, app.content.video_pipeline.models (+3 more)
+# Last-renovated: 2026-06-11
 """
 FastAPI endpoints for the Script-to-Video Pipeline.
 

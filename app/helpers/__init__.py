@@ -1,4 +1,8 @@
 # FILE: app/helpers/__init__.py
+# Purpose: Helper utilities for Orb endpoints.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.helpers.context, app.helpers.llm_utils
+# Last-renovated: 2026-06-11
 """Helper utilities for Orb endpoints."""
 
 from .context import (

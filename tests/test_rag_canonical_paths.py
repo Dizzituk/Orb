@@ -1,3 +1,7 @@
+# Purpose: Tests for canonical path utilities.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.rag.utils.canonical_paths
+# Last-renovated: 2026-06-11
 # tests/test_rag_canonical_paths.py
 """Tests for canonical path utilities."""
 

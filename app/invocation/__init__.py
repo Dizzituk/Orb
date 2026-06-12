@@ -1,4 +1,8 @@
 # FILE: app/invocation/__init__.py
+# Purpose: Ambient invocation pipeline.
+# Called-by: app.endpoints.ambient
+# Depends-on: app.invocation.classifier, app.invocation.models, app.invocation.router, app.invocation.tier_gate
+# Last-renovated: 2026-06-11
 """Ambient invocation pipeline.
 
 Thin layer that turns a user trigger (wake word, hotkey, tray click)

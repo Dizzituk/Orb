@@ -1,4 +1,8 @@
 # FILE: app/project_registry/__init__.py
+# Purpose: ASTRA Project Registry — multi-project architecture awareness.
+# Called-by: app.db, app.llm.routing._cd_project_registry, app.project_registry.api_router, app.project_registry.scanner (+2 more)
+# Depends-on: app.project_registry.models, app.project_registry.service
+# Last-renovated: 2026-06-11
 """
 ASTRA Project Registry — multi-project architecture awareness.
 

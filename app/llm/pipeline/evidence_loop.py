@@ -1,4 +1,8 @@
 # FILE: app/llm/pipeline/evidence_loop.py
+# Purpose: Evidence loop utilities for the Evidence-or-Request Contract.
+# Called-by: app.llm.pipeline._evidence_loop_utils_3, app.llm.pipeline.critique, app.llm.pipeline.high_stakes, app.pot_spec.grounded._simple_create_evidence (+1 more)
+# Depends-on: app.llm.pipeline._evidence_loop_utils_2, app.llm.pipeline._evidence_loop_utils_3, app.pot_spec.evidence_collector
+# Last-renovated: 2026-06-11
 """
 Evidence loop utilities for the Evidence-or-Request Contract.
 
@@ -24,7 +28,6 @@ validating output structure (CRITICAL_CLAIMS terminal invariant), tool dispatch
 with stage-level allowlisting.
 """
 
-import re
 import yaml
 import logging
 from dataclasses import dataclass, field

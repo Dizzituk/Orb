@@ -1,4 +1,8 @@
 # FILE: app/llm/pipeline/_high_stakes_helpers.py
+# Purpose: High-stakes pipeline helper functions.
+# Called-by: app.llm.pipeline._high_stakes_pipelines, app.llm.pipeline.high_stakes
+# Depends-on: app.artefacts.service, app.llm.audit_logger, app.llm.pipeline._high_stakes_utils, app.llm.schemas (+3 more)
+# Last-renovated: 2026-06-11
 """
 High-stakes pipeline helper functions.
 
@@ -7,7 +11,6 @@ environment context, and architecture artifact storage.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os

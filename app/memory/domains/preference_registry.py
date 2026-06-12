@@ -1,4 +1,8 @@
 # FILE: app/memory/domains/preference_registry.py
+# Purpose: Preference domain registry.
+# Called-by: app.memory.domains, app.memory.domains.preference_capture, app.memory.domains.preferences
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Preference domain registry.
 

@@ -1,4 +1,8 @@
 # FILE: app/transparency/io_tracker.py
+# Purpose: IOTracker — context-variable-based IO operation tracker.
+# Called-by: app.builds.stage_hooks, app.sandbox.client, app.sandbox_fs
+# Depends-on: app.transparency.io_events
+# Last-renovated: 2026-06-11
 """
 IOTracker — context-variable-based IO operation tracker.
 

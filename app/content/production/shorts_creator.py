@@ -1,4 +1,8 @@
 # FILE: app/content/production/shorts_creator.py
+# Purpose: Shorts Creator — AI-powered short-form video extraction.
+# Called-by: app.content.production_router
+# Depends-on: app.content.production.edit_engine, app.content.production.silence_snap
+# Last-renovated: 2026-06-11
 """
 Shorts Creator — AI-powered short-form video extraction.
 
@@ -16,7 +20,6 @@ Flow:
 import os
 import json
 import logging
-import uuid
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass

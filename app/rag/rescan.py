@@ -1,4 +1,8 @@
 # FILE: app/rag/rescan.py
+# Purpose: Incremental RAG Rescan.
+# Called-by: app.orchestrator.refactor_loop
+# Depends-on: app.memory.architecture_models, app.rag.models, app.sandbox_fs
+# Last-renovated: 2026-06-11
 """
 Incremental RAG Rescan.
 

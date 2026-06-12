@@ -1,4 +1,8 @@
 # FILE: app/memory/ingest/pipeline.py
+# Purpose: Document ingestion pipeline (Spec Section 9.2, Job 7A).
+# Called-by: app.memory.ingest
+# Depends-on: app.db, app.memory.ingest, app.memory.ingest.classifier, app.memory.ingest.parsers (+1 more)
+# Last-renovated: 2026-06-11
 """
 Document ingestion pipeline (Spec Section 9.2, Job 7A).
 

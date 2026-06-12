@@ -1,4 +1,8 @@
 # FILE: tests/test_overwatcher_governance_strikes.py
+# Purpose: Tests for app/overwatcher governance and strike logic
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Tests for app/overwatcher governance and strike logic
 Global Governance Policy - ErrorSignature, SpecHoleSignature, Strike State

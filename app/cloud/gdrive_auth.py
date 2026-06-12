@@ -1,4 +1,8 @@
 # FILE: app/cloud/gdrive_auth.py
+# Purpose: Google Drive OAuth2 authentication flow.
+# Called-by: app.cloud.router
+# Depends-on: app.db, app.settings.service
+# Last-renovated: 2026-06-11
 """
 Google Drive OAuth2 authentication flow.
 
@@ -12,7 +16,6 @@ v1.0 (2026-03-14): Initial — one-time OAuth flow for Drive file access.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 from pathlib import Path

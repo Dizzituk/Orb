@@ -1,4 +1,8 @@
 # FILE: app/tools/finance_tools.py
+# Purpose: Work-day finance tools — delivery-ledger capability for the LLM (v8.0).
+# Called-by: app.debug.gemini_finance_tools, app.finance.services.work_folder_logger, app.finance.services.work_upload_logger, app.tools.registry
+# Depends-on: app.db, app.finance.services, app.finance.services.work_day_service, app.tools.finance_tool_schemas (+1 more)
+# Last-renovated: 2026-06-11
 """
 Work-day finance tools — delivery-ledger capability for the LLM (v8.0).
 

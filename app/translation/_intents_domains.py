@@ -1,4 +1,8 @@
 # FILE: app/translation/_intents_domains.py
+# Purpose: Domain intent definitions for ASTRA's unified cross-domain routing.
+# Called-by: app.translation.intents
+# Depends-on: app.translation.schemas
+# Last-renovated: 2026-06-11
 """
 Domain intent definitions for ASTRA's unified cross-domain routing.
 

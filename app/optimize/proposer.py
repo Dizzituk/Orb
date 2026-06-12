@@ -1,4 +1,8 @@
 # FILE: app/optimize/proposer.py
+# Purpose: Phase C: Proposer.
+# Called-by: app.optimize.orchestrator
+# Depends-on: app.optimize.code_learner, app.optimize.config, app.optimize.models
+# Last-renovated: 2026-06-11
 """
 Phase C: Proposer.
 

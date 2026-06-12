@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/envelope.py
+# Purpose: JobEnvelope construction helpers.
+# Called-by: app.llm.routing.core
+# Depends-on: app.db, app.jobs.schemas, app.llm.pipeline.high_stakes, app.llm.routing.job_routing (+2 more)
+# Last-renovated: 2026-06-11
 """JobEnvelope construction helpers.
 
 Extracted from app.llm.routing.core to keep the core router smaller and easier to sanity-check.

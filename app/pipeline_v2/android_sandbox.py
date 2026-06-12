@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/android_sandbox.py
+# Purpose: Android Build Folder Sandboxing.
+# Called-by: app.pipeline_v2.llm_tools, app.pipeline_v2.sandbox_tools
+# Depends-on: app.pipeline_v2.build_targets
+# Last-renovated: 2026-06-11
 """
 Android Build Folder Sandboxing.
 

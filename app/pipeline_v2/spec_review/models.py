@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/spec_review/models.py
+# Purpose: Data models for the always-on spec reviewer.
+# Called-by: app.pipeline_v2.spec_review, app.pipeline_v2.spec_review.parser, app.pipeline_v2.spec_review.reviewer
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Data models for the always-on spec reviewer.
 

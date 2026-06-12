@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/__init__.py
+# Purpose: Routing subpackage for ASTRA stream routing.
+# Called-by: tests.test_job_routing, tests.test_routing_core
+# Depends-on: app.llm.routing.core, app.llm.routing.rag_fallback
+# Last-renovated: 2026-06-11
 """
 Routing subpackage for ASTRA stream routing.
 

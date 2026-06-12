@@ -1,12 +1,15 @@
 # FILE: tests/test_specs.py
+# Purpose: Tests for ASTRA Specs module.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.specs
+# Last-renovated: 2026-06-11
 """
 Tests for ASTRA Specs module.
 
 Tests cover:
-1. Git utils (commit hash retrieval)
-2. Spec schema (creation, validation, serialization)
-3. Spec service (CRUD operations)
-4. Weaver context gathering
+1. Spec schema (creation, validation, serialization)
+2. Spec service (CRUD operations)
+3. Weaver context gathering
 """
 from __future__ import annotations
 import pytest
@@ -17,15 +20,6 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from app.git_utils import (
-    get_current_commit,
-    get_current_branch,
-    get_commit_short,
-    is_git_repo,
-    GitError,
-    GitResult,
-)
 
 from app.specs import (
     SPEC_SCHEMA_VERSION,
@@ -45,67 +39,8 @@ from app.specs import (
 )
 
 
-# =============================================================================
-# GIT UTILS TESTS
-# =============================================================================
-
-class TestGitUtils:
-    """Tests for git utility functions."""
-    
-    def test_get_current_commit_in_repo(self):
-        """Should return commit hash when in a git repo."""
-        # Assuming tests run from D:\Orb which is a git repo
-        result = get_current_commit()
-        
-        # Either succeeds (in git repo) or fails gracefully (not in repo)
-        assert isinstance(result, GitResult)
-        if result.success:
-            assert result.value is not None
-            assert len(result.value) == 40  # Full SHA
-            assert result.error is None
-        else:
-            assert result.error in (GitError.NO_GIT_REPO, GitError.GIT_NOT_INSTALLED)
-    
-    def test_get_current_commit_invalid_path(self):
-        """Should return NO_GIT_REPO for non-existent path."""
-        result = get_current_commit(repo_path="/nonexistent/path/that/does/not/exist")
-        assert not result.success
-        assert result.error == GitError.NO_GIT_REPO
-    
-    def test_get_current_commit_invalid_branch(self):
-        """Should return INVALID_BRANCH for non-existent branch."""
-        result = get_current_commit(branch="this-branch-definitely-does-not-exist-12345")
-        if result.success:
-            # Might succeed if we're not in a git repo (returns NO_GIT_REPO instead)
-            pass
-        else:
-            assert result.error in (GitError.INVALID_BRANCH, GitError.NO_GIT_REPO, GitError.GIT_NOT_INSTALLED)
-    
-    def test_get_commit_short(self):
-        """Should truncate commit hash."""
-        full_hash = "abc123def456789012345678901234567890abcd"
-        assert get_commit_short(full_hash) == "abc123d"
-        assert get_commit_short(full_hash, length=12) == "abc123def456"
-    
-    def test_get_commit_short_empty(self):
-        """Should handle empty string."""
-        assert get_commit_short("") == ""
-        assert get_commit_short(None) == ""
-    
-    def test_is_git_repo(self):
-        """Should return boolean."""
-        result = is_git_repo()
-        assert isinstance(result, bool)
-    
-    def test_get_current_branch(self):
-        """Should return branch name or detached indicator."""
-        result = get_current_branch()
-        assert isinstance(result, GitResult)
-        if result.success:
-            assert result.value is not None
-            # Either a branch name or "(detached)"
-            assert len(result.value) > 0
-
+# (TestGitUtils removed in Phase 3, 2026-06-11: app.git_utils quarantined as dead -
+#  no live code imported it. Snapshot: QUARANTINE\_snapshots\20260611_111551\test_specs.py)
 
 # =============================================================================
 # SPEC SCHEMA TESTS

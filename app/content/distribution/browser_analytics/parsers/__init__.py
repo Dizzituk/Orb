@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/browser_analytics/parsers/__init__.py
+# Purpose: Per-platform parsers that extract channel-level metrics from a
+# Called-by: app.content.distribution.browser_analytics.router, app.content.distribution.browser_analytics.scrape, app.content.distribution.browser_analytics.tests.test_scrape
+# Depends-on: app.content.distribution.browser_analytics.parsers.meta, app.content.distribution.browser_analytics.parsers.tiktok
+# Last-renovated: 2026-06-11
 """
 Per-platform parsers that extract channel-level metrics from a
 DOM accessibility tree snapshot.

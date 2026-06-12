@@ -1,4 +1,8 @@
 # FILE: app/invocation/classifier.py
+# Purpose: Intent Classifier - deterministic pattern matching for ambient invocations.
+# Called-by: app.invocation, app.invocation.router, app.invocation.tier_gate
+# Depends-on: app.invocation.models
+# Last-renovated: 2026-06-11
 """
 Intent Classifier - deterministic pattern matching for ambient invocations.
 

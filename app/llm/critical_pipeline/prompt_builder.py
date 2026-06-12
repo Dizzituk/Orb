@@ -1,4 +1,8 @@
 # FILE: app/llm/critical_pipeline/prompt_builder.py
+# Purpose: Architecture system-prompt construction for Critical Pipeline.
+# Called-by: app.llm.critical_pipeline.stream_handler
+# Depends-on: app.core_principles, app.llm.critical_pipeline.artifact_binding, app.pot_spec.governance_rules
+# Last-renovated: 2026-06-11
 """
 Architecture system-prompt construction for Critical Pipeline.
 

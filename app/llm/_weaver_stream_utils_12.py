@@ -1,3 +1,7 @@
+# Purpose: weaver stream utils 12
+# Called-by: app.llm._weaver_stream_modes, app.llm._weaver_stream_prepare, app.llm._weaver_stream_utils_15, app.llm.weaver_stream
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import json
 import os

@@ -1,4 +1,8 @@
 # FILE: app/content/item_service.py
+# Purpose: Content item service — upload source material, list items.
+# Called-by: app.content.item_router
+# Depends-on: app.content.project_models
+# Last-renovated: 2026-06-11
 """
 Content item service — upload source material, list items.
 """

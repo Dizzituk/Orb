@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/facebook.py
+# Purpose: Facebook Graph API Integration (Spec Section 9.1).
+# Called-by: app.content.distribution.analytics, app.content.distribution.publisher, app.content.distribution_router, app.content.engagement.dispatcher (+1 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Facebook Graph API Integration (Spec Section 9.1).
 

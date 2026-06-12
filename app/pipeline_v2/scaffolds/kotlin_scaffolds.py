@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/scaffolds/kotlin_scaffolds.py
+# Purpose: Kotlin Scaffold Templates for Android/Jetpack Compose projects.
+# Called-by: app.pipeline_v2.scaffold_engine
+# Depends-on: app.pipeline_v2.build_targets
+# Last-renovated: 2026-06-11
 """
 Kotlin Scaffold Templates for Android/Jetpack Compose projects.
 

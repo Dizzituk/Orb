@@ -1,4 +1,8 @@
 # FILE: app/llm/pipeline/critique_parts/evidence_resolution.py
+# Purpose: Block 5d: EVIDENCE RESOLUTION CHECK (v2.0 - Evidence-or-Request Contract)
+# Called-by: app.llm.pipeline.critique
+# Depends-on: app.llm.pipeline.critique_schemas
+# Last-renovated: 2026-06-11
 """Block 5d: EVIDENCE RESOLUTION CHECK (v2.0 - Evidence-or-Request Contract)"""
 
 import logging

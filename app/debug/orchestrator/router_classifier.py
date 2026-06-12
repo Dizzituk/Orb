@@ -1,4 +1,8 @@
 # FILE: app/debug/orchestrator/router_classifier.py
+# Purpose: Classifier that routes an incoming debug chat message to either:
+# Called-by: app.debug.debug_chat
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Classifier that routes an incoming debug chat message to either:
   - "chat"       -> the existing debug chat tool loop

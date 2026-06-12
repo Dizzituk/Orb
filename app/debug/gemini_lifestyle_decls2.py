@@ -1,4 +1,8 @@
 # FILE: app/debug/gemini_lifestyle_decls2.py
+# Purpose: Overflow lifestyle tool declarations (strength + meal-prep), split out of
+# Called-by: app.debug.gemini_lifestyle_decls
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Overflow lifestyle tool declarations (strength + meal-prep), split out of
 gemini_lifestyle_decls.py to keep each file under the size ceiling.
@@ -230,5 +234,49 @@ LIFESTYLE_TOOL_DECLARATIONS_MORE: List[Dict[str, Any]] = [
                 },
             },
         },
+    },
+    # ── Energy engine (2026-06-11) ── executors in gemini_energy_tools.py ──
+    {
+        "name": "set_day_effort",
+        "description": (
+            "Records ONLY how physically heavy the day felt (for calorie-burn "
+            "estimation). effort is light | normal | heavy | very_heavy. "
+            "THIS TOOL LOGS NO WORK DATA. Never use it for end-of-day logging: "
+            "miles, odometer, parcels, collections, pay, earnings, fuel or "
+            "expenses MUST be logged with finish_work_day / log_expense / "
+            "reconcile_work_day — call those FIRST, then optionally this if the "
+            "user also described effort or bulk."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "effort": {
+                    "type": "string",
+                    "description": "light | normal | heavy | very_heavy (or a natural synonym like easy, busy, brutal).",
+                },
+                "date": {
+                    "type": "string",
+                    "description": "Optional day being described, YYYY-MM-DD. Defaults to today.",
+                },
+                "notes": {
+                    "type": "string",
+                    "description": "Optional short note, e.g. '4 heavy parcels, rest light'.",
+                },
+            },
+            "required": ["effort"],
+        },
+    },
+    {
+        "name": "get_energy_today",
+        "description": (
+            "Today's energy picture from the context-aware engine: best-evidence "
+            "burn estimate (Garmin active kcal, or steps priced by work-day "
+            "context, or logged sessions), the dynamic intake target derived "
+            "from the weekly deficit ledger, and the week's running balance. "
+            "Use for 'how many calories have I burnt / can I eat today', "
+            "'how's my week going'. For BMR/TDEE plan numbers use "
+            "get_metabolic_summary instead."
+        ),
+        "parameters": {"type": "object", "properties": {}},
     },
 ]

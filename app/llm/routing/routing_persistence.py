@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/routing_persistence.py
+# Purpose: Routing Decision Persistence (Job 3)
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.astra_memory.models, app.astra_memory.service, app.cost.cost_guard, app.overwatcher
+# Last-renovated: 2026-06-11
 """
 Routing Decision Persistence (Job 3)
 

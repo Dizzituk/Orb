@@ -1,4 +1,8 @@
 # FILE: app/astra_memory/preference_service.py
+# Purpose: ASTRA Memory Preference Service
+# Called-by: app.astra_memory, app.astra_memory.learning, app.astra_memory.router, app.debug.executors.memory_tools (+8 more)
+# Depends-on: app.astra_memory.confidence_config, app.astra_memory.confidence_scoring, app.astra_memory.preference_models
+# Last-renovated: 2026-06-11
 """
 ASTRA Memory Preference Service
 

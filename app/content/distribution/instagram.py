@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/instagram.py
+# Purpose: Instagram Graph API Integration (Spec Section 9.1).
+# Called-by: app.content.distribution.analytics, app.content.distribution.publisher, app.content.distribution_router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Instagram Graph API Integration (Spec Section 9.1).
 

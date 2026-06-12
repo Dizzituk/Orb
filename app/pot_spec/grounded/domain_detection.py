@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/domain_detection.py
+# Purpose: Domain Detection and Decision Fork System (v1.2, v1.10, v1.12, v1.18)
+# Called-by: app.pot_spec.grounded, app.pot_spec.grounded.job_classification, app.pot_spec.grounded.question_generator, app.pot_spec.grounded.sandbox_discovery (+2 more)
+# Depends-on: app.pot_spec.grounded.spec_models
+# Last-renovated: 2026-06-11
 """
 Domain Detection and Decision Fork System (v1.2, v1.10, v1.12, v1.18)
 
@@ -16,7 +20,6 @@ v1.18 (2026-01): Added scan_only domain for filesystem scans
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any, Dict, List, Tuple
 
 from .spec_models import (

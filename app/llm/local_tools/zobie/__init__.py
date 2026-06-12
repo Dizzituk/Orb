@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/__init__.py
+# Purpose: Zobie tools subpackage - internal modules for architecture scanning.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.llm.local_tools.zobie.config, app.llm.local_tools.zobie.db_ops, app.llm.local_tools.zobie.filter_utils, app.llm.local_tools.zobie.rag_helpers (+3 more)
+# Last-renovated: 2026-06-11
 """Zobie tools subpackage - internal modules for architecture scanning."""
 
 from .config import (

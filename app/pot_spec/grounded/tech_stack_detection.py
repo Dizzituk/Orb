@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/tech_stack_detection.py
+# Purpose: Tech Stack Detection and Anchoring (v1.11)
+# Called-by: app.pot_spec.grounded
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Tech Stack Detection and Anchoring (v1.11)
 

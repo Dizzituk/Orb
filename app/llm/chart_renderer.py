@@ -1,4 +1,8 @@
 # FILE: app/llm/chart_renderer.py
+# Purpose: Deterministic chart rendering via Plotly → PNG.
+# Called-by: app.llm.image_router
+# Depends-on: app.llm.image_output_dir
+# Last-renovated: 2026-06-11
 """
 Deterministic chart rendering via Plotly → PNG.
 
@@ -16,7 +20,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional

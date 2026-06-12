@@ -1,4 +1,8 @@
 # FILE: app/styling/structurer.py
+# Purpose: Skill-guided structuring pass for styled file creators.
+# Called-by: app.debug.executors.styled_files
+# Depends-on: app.llm.router, app.llm.schemas
+# Last-renovated: 2026-06-11
 """
 Skill-guided structuring pass for styled file creators.
 

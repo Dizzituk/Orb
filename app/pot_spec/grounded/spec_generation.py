@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/spec_generation.py
+# Purpose: SpecGate Grounded POT Spec Builder - Facade Module
+# Called-by: app.pot_spec.grounded, tests.test_multi_file_operation
+# Depends-on: app.pot_spec.grounded.completeness_checker, app.pot_spec.grounded.grounding_engine, app.pot_spec.grounded.markdown_builder, app.pot_spec.grounded.multi_file_detection (+5 more)
+# Last-renovated: 2026-06-11
 """
 SpecGate Grounded POT Spec Builder - Facade Module
 

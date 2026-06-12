@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/browser_analytics/router.py
+# Purpose: FastAPI routes for browser-scraped analytics.
+# Called-by: app.content.distribution.browser_analytics, app.content.distribution.browser_analytics.tests.test_scrape, main
+# Depends-on: app.auth, app.content.distribution.browser_analytics.models, app.content.distribution.browser_analytics.parsers, app.content.distribution.browser_analytics.recon (+3 more)
+# Last-renovated: 2026-06-11
 """
 FastAPI routes for browser-scraped analytics.
 

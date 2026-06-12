@@ -1,4 +1,8 @@
 # FILE: app/drive/boot_scan.py
+# Purpose: Boot-time filesystem scan orchestrator.
+# Called-by: main
+# Depends-on: app.db, app.drive.content_indexer, app.drive.manifest_models, app.drive.manifest_scanner
+# Last-renovated: 2026-06-11
 """
 Boot-time filesystem scan orchestrator.
 

@@ -1,4 +1,8 @@
 # FILE: app/rag/jobs/_embedding_priority.py
+# Purpose: Embedding priority classification patterns and chunk grouping.
+# Called-by: app.rag.jobs.embedding_job
+# Depends-on: app.rag.jobs._embedding_job_utils_7, app.rag.jobs._embedding_job_utils_8, app.rag.models
+# Last-renovated: 2026-06-11
 """
 Embedding priority classification patterns and chunk grouping.
 

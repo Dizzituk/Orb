@@ -1,3 +1,7 @@
+# Purpose: refactor classifier utils 8
+# Called-by: app.pot_spec.grounded.refactor_classifier
+# Depends-on: app.pot_spec.grounded._refactor_classifier_utils_7, app.pot_spec.grounded.refactor_classifier, app.pot_spec.grounded.refactor_schemas
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
 import re

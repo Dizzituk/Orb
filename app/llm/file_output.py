@@ -1,4 +1,8 @@
 # FILE: app/llm/file_output.py
+# Purpose: File Output Service — saves generated content to disk during chat.
+# Called-by: app.llm.html_extractor, app.llm.stream_handlers
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 File Output Service — saves generated content to disk during chat.
 

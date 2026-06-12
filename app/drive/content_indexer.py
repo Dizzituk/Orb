@@ -1,4 +1,8 @@
 # FILE: app/drive/content_indexer.py
+# Purpose: Content indexer — Tier 2 of the boot scan.
+# Called-by: app.drive.boot_scan
+# Depends-on: app.drive.manifest_models, app.embeddings, app.embeddings.service, app.llm.file_analyzer (+6 more)
+# Last-renovated: 2026-06-11
 """
 Content indexer — Tier 2 of the boot scan.
 

@@ -1,3 +1,7 @@
+# Purpose: Architecture embedder.
+# Called-by: app.rag.embeddings, app.rag.pipeline, tests.test_rag_arch_embedder
+# Depends-on: app.embeddings.service, app.rag.models
+# Last-renovated: 2026-06-11
 """
 Architecture embedder.
 

@@ -1,4 +1,8 @@
 # FILE: app/rag/_answerer_text_search.py
+# Purpose: On-demand full-text search across the codebase for RAG queries.
+# Called-by: app.rag.answerer
+# Depends-on: app.db, app.memory.architecture_models
+# Last-renovated: 2026-06-11
 """
 On-demand full-text search across the codebase for RAG queries.
 

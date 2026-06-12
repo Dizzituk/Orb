@@ -1,4 +1,8 @@
 # FILE: app/translation/rule_suppression.py
+# Purpose: Per-rule suppression based on user rejection feedback.
+# Called-by: app.translation.translator
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Per-rule suppression based on user rejection feedback.
 

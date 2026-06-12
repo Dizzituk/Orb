@@ -1,4 +1,8 @@
 # FILE: app/llm/critical_pipeline/preflight.py
+# Purpose: Pre-Flight Deterministic Enrichment for Architecture Prompt.
+# Called-by: app.llm.critical_pipeline.stream_handler
+# Depends-on: app.sandbox_fs
+# Last-renovated: 2026-06-11
 """
 Pre-Flight Deterministic Enrichment for Architecture Prompt.
 

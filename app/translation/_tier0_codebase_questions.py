@@ -1,4 +1,8 @@
 # FILE: app/translation/_tier0_codebase_questions.py
+# Purpose: Tier 0: RAG codebase question detection.
+# Called-by: app.translation.modes, app.translation.tier0_rules
+# Depends-on: app.translation.schemas, app.translation.tier0_rules
+# Last-renovated: 2026-06-11
 """
 Tier 0: RAG codebase question detection.
 

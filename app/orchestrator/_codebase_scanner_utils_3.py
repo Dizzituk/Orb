@@ -1,3 +1,7 @@
+# Purpose: codebase scanner utils 3
+# Called-by: app.orchestrator.codebase_scanner
+# Depends-on: app.orchestrator._codebase_scanner_utils_2, app.orchestrator.codebase_scanner_models
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import os
 import re

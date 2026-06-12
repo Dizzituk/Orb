@@ -1,3 +1,7 @@
+# Purpose: stream handler utils 1
+# Called-by: app.llm.critical_pipeline.stream_handler
+# Depends-on: app.llm.critical_pipeline._stream_handler_utils, app.llm.critical_pipeline.config, app.llm.critical_pipeline.job_classification, app.llm.critical_pipeline.needle_model_selector (+1 more)
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import json
 import logging

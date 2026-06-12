@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/verifier_agent/agent.py
+# Purpose: JOB 11 (2026-06-10) - The Claude agentic verifier: final checkout that tests
+# Called-by: app.orchestrator.segment_loop, tests.test_selfbuild_verifier_smoke
+# Depends-on: app.pipeline_v2.clone_freshness, app.pipeline_v2.config, app.pipeline_v2.final_verdict, app.pipeline_v2.llm_tool_defs (+4 more)
+# Last-renovated: 2026-06-11
 """
 JOB 11 (2026-06-10) - The Claude agentic verifier: final checkout that tests
 like a human and fixes surgically.

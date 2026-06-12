@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/rag_fallback.py
+# Purpose: RAG fallback detection for architecture/codebase queries.
+# Called-by: app.llm.routing, app.llm.routing.chat_routing
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 RAG fallback detection for architecture/codebase queries.
 

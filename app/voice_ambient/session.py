@@ -1,4 +1,8 @@
 # FILE: app/voice_ambient/session.py
+# Purpose: Ambient voice session over WebSocket.
+# Called-by: app.voice_ambient, app.voice_ambient.router
+# Depends-on: app.services.faster_whisper_service, app.voice_ambient.keyword_spotter
+# Last-renovated: 2026-06-11
 """
 Ambient voice session over WebSocket.
 

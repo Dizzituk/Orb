@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/streams/update_arch.py
+# Purpose: UPDATE ARCHITECTURE stream generator (scope="code") - DB only.
+# Called-by: app.llm.local_tools.zobie.streams, app.llm.local_tools.zobie.streams.archmap_db
+# Depends-on: app.llm.audit_logger, app.llm.local_tools.zobie.config, app.llm.local_tools.zobie.db_ops, app.llm.local_tools.zobie.sandbox_client (+4 more)
+# Last-renovated: 2026-06-11
 """UPDATE ARCHITECTURE stream generator (scope="code") - DB only.
 
 Extracted from zobie_tools.py for modularity.

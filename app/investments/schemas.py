@@ -1,4 +1,8 @@
 # FILE: app/investments/schemas.py
+# Purpose: Pydantic schemas for investments API request/response shapes.
+# Called-by: app.investments.router, app.investments.service
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Pydantic schemas for investments API request/response shapes.
 """

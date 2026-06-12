@@ -1,3 +1,7 @@
+# Purpose: spec runner utils 14
+# Called-by: app.pot_spec.grounded._spec_runner_result
+# Depends-on: app.pot_spec.grounded._sbx_fs, app.pot_spec.grounded._spec_runner_utils_13
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
 import os

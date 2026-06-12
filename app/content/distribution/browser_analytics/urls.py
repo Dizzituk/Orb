@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/browser_analytics/urls.py
+# Purpose: Best-guess insights URLs per platform. Editable without touching code
+# Called-by: app.content.distribution.browser_analytics.recon, app.content.distribution.browser_analytics.router, app.content.distribution.browser_analytics.tests.test_scrape
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Best-guess insights URLs per platform. Editable without touching code
 elsewhere — if a platform moves its analytics page, change it here.

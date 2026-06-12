@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/browser_analytics/scrape.py
+# Purpose: Phase 2 orchestrator — multi-attempt data capture and DB write.
+# Called-by: app.content.distribution.browser_analytics.router, app.content.distribution.browser_analytics.tests.test_scrape
+# Depends-on: app.content.distribution.browser_analytics.acquire, app.content.distribution.browser_analytics.models, app.content.distribution.browser_analytics.parsers, app.content.distribution.browser_analytics.strategies (+2 more)
+# Last-renovated: 2026-06-11
 """
 Phase 2 orchestrator — multi-attempt data capture and DB write.
 

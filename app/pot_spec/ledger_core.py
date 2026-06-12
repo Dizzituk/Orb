@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/ledger_core.py
+# Purpose: Core ledger operations - base module with no internal imports.
+# Called-by: app.astra_memory._service_utils, app.astra_memory.service, app.pot_spec.ledger, app.pot_spec.ledger_overwatcher (+1 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """Core ledger operations - base module with no internal imports.
 
 This file exists to avoid circular imports between ledger modules.

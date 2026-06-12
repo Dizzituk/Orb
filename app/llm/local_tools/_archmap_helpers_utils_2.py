@@ -1,3 +1,7 @@
+# Purpose: archmap helpers utils 2
+# Called-by: app.llm.local_tools.archmap_helpers
+# Depends-on: app.llm.local_tools.archmap_helpers
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import os
 from pathlib import Path

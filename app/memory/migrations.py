@@ -1,4 +1,8 @@
 # FILE: app/memory/migrations.py
+# Purpose: Schema migrations for the memory module.
+# Called-by: app.db, app.memory.startup
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """
 Schema migrations for the memory module.
 

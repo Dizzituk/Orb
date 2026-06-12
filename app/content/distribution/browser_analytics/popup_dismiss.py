@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/browser_analytics/popup_dismiss.py
+# Purpose: Best-effort popup dismissal. Each platform puts a cookie banner,
+# Called-by: app.content.distribution.browser_analytics.acquire, app.content.distribution.browser_analytics.recon
+# Depends-on: app.web_automation, app.web_automation.bridge
+# Last-renovated: 2026-06-11
 """
 Best-effort popup dismissal. Each platform puts a cookie banner,
 "Customize your experience" dialog, or tutorial overlay on first load.

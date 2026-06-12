@@ -1,4 +1,8 @@
 # FILE: app/content/video_pipeline/script_analyzer.py
+# Purpose: Script Analyzer — breaks a script into structured scene segments.
+# Called-by: app.content.video_pipeline.orchestrator
+# Depends-on: app.content.video_pipeline.models, app.content.video_pipeline.prompts
+# Last-renovated: 2026-06-11
 """
 Script Analyzer — breaks a script into structured scene segments.
 

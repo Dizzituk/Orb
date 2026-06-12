@@ -1,4 +1,8 @@
 # FILE: app/self_model/proposed_facts.py
+# Purpose: Staging store for proposed identity-store writes.
+# Called-by: app.llm.routing.memory_injection, app.self_model.proposal_review_router, app.self_model.write_arbiter
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Staging store for proposed identity-store writes.
 

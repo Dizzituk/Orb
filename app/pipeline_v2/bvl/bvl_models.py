@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/bvl/bvl_models.py
+# Purpose: BVL Data Models — structured types for the Behavioral Verification Layer.
+# Called-by: app.pipeline_v2.bvl, app.pipeline_v2.bvl.bvl_orchestrator, app.pipeline_v2.bvl.failure_classifier, app.pipeline_v2.bvl.retry_loop (+4 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 BVL Data Models — structured types for the Behavioral Verification Layer.
 
@@ -11,7 +15,6 @@ v1.0 (2026-03-10): Initial implementation per ASTRA-SPEC-BVL-001.
 """
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional

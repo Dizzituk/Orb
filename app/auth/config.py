@@ -1,3 +1,7 @@
+# Purpose: Authentication configuration and password management.
+# Called-by: app.auth, app.auth.middleware, app.auth.router, app.bridge.router (+3 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 # app/auth/config.py
 """
 Authentication configuration and password management.

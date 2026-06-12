@@ -1,3 +1,7 @@
+# Purpose: spec gate persistence utils 2
+# Called-by: app.pot_spec.spec_gate_persistence
+# Depends-on: app.pot_spec.spec_gate_persistence, app.specs, app.specs.schema, app.specs.service
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import hashlib
 import json

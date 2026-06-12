@@ -1,4 +1,8 @@
 # FILE: app/translation/feedback.py
+# Purpose: Feedback logging and rule promotion for ASTRA Translation Layer.
+# Called-by: app.translation, app.translation.translator
+# Depends-on: app.memory.integration, app.translation.intents, app.translation.phrase_cache, app.translation.schemas
+# Last-renovated: 2026-06-11
 """
 Feedback logging and rule promotion for ASTRA Translation Layer.
 

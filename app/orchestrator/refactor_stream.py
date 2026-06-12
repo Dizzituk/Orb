@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/refactor_stream.py
+# Purpose: Refactor Stream Handler — SSE stream for the refactor loop.
+# Called-by: app.llm.routing.handler_registry
+# Depends-on: app.orchestrator.refactor_loop, app.orchestrator.refactor_scanner
+# Last-renovated: 2026-06-11
 """
 Refactor Stream Handler — SSE stream for the refactor loop.
 

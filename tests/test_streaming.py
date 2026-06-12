@@ -1,4 +1,8 @@
 # FILE: tests/test_streaming.py
+# Purpose: Tests for app/llm/streaming.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.llm, app.llm.streaming
+# Last-renovated: 2026-06-11
 """
 Tests for app/llm/streaming.py
 SSE streaming - Server-Sent Events for LLM responses.

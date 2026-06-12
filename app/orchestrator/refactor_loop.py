@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/refactor_loop.py
+# Purpose: Refactor Loop — The scan-do-rescan orchestrator.
+# Called-by: app.orchestrator.refactor_stream
+# Depends-on: app.db, app.memory.lifecycle_hook, app.orchestrator.refactor_scanner, app.orchestrator.surgical_extractor (+2 more)
+# Last-renovated: 2026-06-11
 """
 Refactor Loop — The scan-do-rescan orchestrator.
 
@@ -24,7 +28,6 @@ Usage:
 
 import logging
 import os
-import shutil
 import subprocess
 import time
 import uuid

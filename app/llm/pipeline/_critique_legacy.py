@@ -1,4 +1,8 @@
 # FILE: app/llm/pipeline/_critique_legacy.py
+# Purpose: Legacy critique pipeline helpers.
+# Called-by: app.llm.pipeline.critique
+# Depends-on: app.jobs.schemas, app.llm.pipeline.critique_parts.model_config, app.llm.schemas, app.providers.registry
+# Last-renovated: 2026-06-11
 """
 Legacy critique pipeline helpers.
 

@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/tool_commentary.py
+# Purpose: Tool Commentary Renderer (Stage 2).
+# Called-by: app.llm.local_tools.zobie.streams.fs_query
+# Depends-on: app.llm.stage_models, app.providers.registry
+# Last-renovated: 2026-06-11
 """Tool Commentary Renderer (Stage 2).
 
 Wires deterministic tool outputs into lightweight chat layer (Gemini 2.0 Flash)

@@ -1,4 +1,8 @@
 # FILE: app/debug/executors/flow_actions.py
+# Purpose: Chat tool executors for the flow memory system.
+# Called-by: app.debug.executors
+# Depends-on: app.debug.action_executor, app.web_automation.memory
+# Last-renovated: 2026-06-11
 """
 Chat tool executors for the flow memory system.
 

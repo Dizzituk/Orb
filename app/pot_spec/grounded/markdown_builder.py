@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/markdown_builder.py
+# Purpose: POT Spec Markdown Builder for SpecGate
+# Called-by: app.pot_spec.grounded.spec_generation
+# Depends-on: app.pot_spec.grounded.spec_models
+# Last-renovated: 2026-06-11
 """
 POT Spec Markdown Builder for SpecGate
 

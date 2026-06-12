@@ -1,4 +1,8 @@
 # FILE: app/artefacts/service.py
+# Purpose: Phase 4 Artefact Store Service
+# Called-by: app.artefacts.router, app.jobs._engine_helpers, app.jobs.engine, app.llm.pipeline._high_stakes_helpers (+1 more)
+# Depends-on: app.jobs.models, app.jobs.schemas
+# Last-renovated: 2026-06-11
 """
 Phase 4 Artefact Store Service
 

@@ -1,4 +1,8 @@
 # FILE: scripts/legal_case/_rebuild_docx.py
+# Purpose: Rebuild the narrative evidence document with structured headings,
+# Called-by: scripts.legal_case.legal_case_rebuild
+# Depends-on: app.styling.docx_builder, app.styling.themes, scripts.legal_case._exhibit_index, scripts.legal_case._narrative_parser
+# Last-renovated: 2026-06-11
 """
 Rebuild the narrative evidence document with structured headings,
 astra_minimal styling, and an appended exhibit index table.

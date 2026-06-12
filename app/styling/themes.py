@@ -1,4 +1,8 @@
 # FILE: app/styling/themes.py
+# Purpose: Shared theme presets for all styled file creators (docx, pdf, xlsx, html).
+# Called-by: app.debug.executors.styled_files, scripts.legal_case._rebuild_docx, scripts.legal_case._rebuild_xlsx
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Shared theme presets for all styled file creators (docx, pdf, xlsx, html).
 

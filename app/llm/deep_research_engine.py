@@ -1,4 +1,8 @@
 # FILE: app/llm/deep_research_engine.py
+# Purpose: Deep Research Engine — Iterative multi-search research for user queries.
+# Called-by: app.llm.deep_research_stream
+# Depends-on: app.llm.web_search, app.providers.registry, app.tools.registry, app.tools.source_classifier
+# Last-renovated: 2026-06-11
 """
 Deep Research Engine — Iterative multi-search research for user queries.
 

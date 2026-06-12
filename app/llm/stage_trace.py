@@ -1,4 +1,8 @@
 # FILE: app/llm/stage_trace.py
+# Purpose: Stage Trace - Centralized tracing for ASTRA command execution.
+# Called-by: app.debug.context_assembler, app.debug.executors.emulator, app.llm.high_stakes_stream, app.llm.routing.handler_registry
+# Depends-on: app.pot_spec.ledger, app.pot_spec.service
+# Last-renovated: 2026-06-11
 """
 Stage Trace - Centralized tracing for ASTRA command execution.
 
@@ -20,7 +24,6 @@ Usage:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time

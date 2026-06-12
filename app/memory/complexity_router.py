@@ -1,4 +1,8 @@
 # FILE: app/memory/complexity_router.py
+# Purpose: Complexity-aware model routing (Spec Section 10, Job 6B).
+# Called-by: app.memory.integration
+# Depends-on: app.memory.complexity
+# Last-renovated: 2026-06-11
 """
 Complexity-aware model routing (Spec Section 10, Job 6B).
 

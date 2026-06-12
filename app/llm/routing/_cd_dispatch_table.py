@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/_cd_dispatch_table.py
+# Purpose: Command dispatch table — maps CanonicalIntent to stream handler configs.
+# Called-by: app.llm.routing.command_dispatch
+# Depends-on: app.llm.legacy_triggers, app.llm.project_scoping_stream, app.llm.routing._cd_project_registry, app.llm.translation_routing
+# Last-renovated: 2026-06-11
 """
 Command dispatch table — maps CanonicalIntent to stream handler configs.
 

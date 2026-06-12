@@ -62,6 +62,9 @@ class BridgeChatResponse(BaseModel):
     # Downloadable artifacts (generated images, etc.). Empty for most
     # turns; populated when the assistant produced files this turn.
     attachments: list[BridgeArtifactRef] = []
+    # Phone-action directives parsed from [[astra:...]] reply markers
+    # (app/bridge/directives.py) — e.g. {"name": "sync_health", "arg": "48"}.
+    directives: list[dict] = []
 
 
 class BridgeProjectOut(BaseModel):

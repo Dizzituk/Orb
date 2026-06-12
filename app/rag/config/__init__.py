@@ -1,3 +1,7 @@
+# Purpose: RAG configuration.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.rag.config.scan_roots
+# Last-renovated: 2026-06-11
 """RAG configuration."""
 from .scan_roots import (
     INDEX_ROOTS,

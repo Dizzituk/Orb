@@ -1,4 +1,8 @@
 # FILE: app/astra_memory/retrieval.py
+# Purpose: ASTRA Memory Retrieval Layer
+# Called-by: app.astra_memory, app.astra_memory.indexer, app.astra_memory.router, app.astra_memory.semantic_candidates (+4 more)
+# Depends-on: app.astra_memory._retrieval_utils, app.astra_memory.confidence_config, app.astra_memory.preference_models, app.astra_memory.semantic_candidates
+# Last-renovated: 2026-06-11
 """
 ASTRA Memory Retrieval Layer
 

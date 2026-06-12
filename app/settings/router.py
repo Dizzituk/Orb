@@ -1,4 +1,8 @@
 # FILE: app/settings/router.py
+# Purpose: Settings API Router.
+# Called-by: main
+# Depends-on: app.auth, app.crypto, app.db, app.settings.service
+# Last-renovated: 2026-06-11
 """
 Settings API Router.
 

@@ -1,4 +1,8 @@
 # FILE: app/project_registry/seed.py
+# Purpose: Seed the project registry with known projects.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.db, app.project_registry, app.project_registry.service
+# Last-renovated: 2026-06-11
 """
 Seed the project registry with known projects.
 

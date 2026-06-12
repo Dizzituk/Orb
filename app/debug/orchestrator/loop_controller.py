@@ -1,4 +1,8 @@
 # FILE: app/debug/orchestrator/loop_controller.py
+# Purpose: Loop controller — the outer investigate -> plan -> execute -> verify loop.
+# Called-by: app.debug.orchestrator.chat_stream_bridge, app.debug.orchestrator.endpoint
+# Depends-on: app.debug.orchestrator.behaviour_verifier, app.debug.orchestrator.decomposer, app.debug.orchestrator.planner, app.debug.orchestrator.schemas (+1 more)
+# Last-renovated: 2026-06-11
 """
 Loop controller — the outer investigate -> plan -> execute -> verify loop.
 
@@ -15,7 +19,6 @@ v1.0 (2026-04-13): Initial implementation.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import time

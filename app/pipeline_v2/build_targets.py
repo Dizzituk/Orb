@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/build_targets.py
+# Purpose: ASTRA Build Target Profiles.
+# Called-by: app.llm.project_scoping_stream, app.pipeline_v2.agentic_builder, app.pipeline_v2.android_sandbox, app.pipeline_v2.builder_prompts (+18 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 ASTRA Build Target Profiles.
 

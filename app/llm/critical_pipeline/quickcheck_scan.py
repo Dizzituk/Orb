@@ -1,4 +1,8 @@
 # FILE: app/llm/critical_pipeline/quickcheck_scan.py
+# Purpose: Scan-only quickcheck — fast deterministic validation (NO LLM calls).
+# Called-by: app.llm.critical_pipeline, app.llm.critical_pipeline._stream_handler_utils, app.llm.critical_pipeline.stream_handler
+# Depends-on: app.llm.critical_pipeline.config
+# Last-renovated: 2026-06-11
 """
 Scan-only quickcheck — fast deterministic validation (NO LLM calls).
 

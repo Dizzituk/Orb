@@ -1,4 +1,8 @@
 # FILE: app/lifestyle/service.py
+# Purpose: Core service layer for the Lifestyle Engine.
+# Called-by: app.bridge.dashboards, app.lifestyle.daily_view, app.lifestyle.health_sync, app.lifestyle.nutrition_copy (+5 more)
+# Depends-on: app.lifestyle, app.lifestyle.burn, app.lifestyle.coaching, app.lifestyle.history (+4 more)
+# Last-renovated: 2026-06-11
 """
 Core service layer for the Lifestyle Engine.
 
@@ -467,6 +471,25 @@ def get_dashboard_summary(db: Session) -> DashboardSummary:
     # Today's nutrition
     today_nutr = get_daily_nutrition(db)
 
+    # Energy engine unification (2026-06-11): one calorie truth everywhere.
+    # The intake ring's target becomes the dynamic daily target (today's burn
+    # minus the week-aware deficit share) so the ring, the Energy card and
+    # chat all say the same number, and the movement tile falls back to the
+    # engine's activity estimate when the watch sends no calories. Guarded:
+    # any failure leaves the old plan-based behaviour untouched.
+    _dyn_target = None
+    _engine_activity = None
+    try:
+        from app.lifestyle.energy import estimate_day_energy
+        from app.lifestyle.energy_ledger import compute_today_target
+        _est = estimate_day_energy(db)
+        if _est.get("activity_kcal"):
+            _engine_activity = int(round(_est["activity_kcal"]))
+        _dyn_target = (compute_today_target(db) or {}).get("target_calories")
+    except Exception:  # pragma: no cover - dashboard must never 500 over this
+        _dyn_target = None
+        _engine_activity = None
+
     # Activity streak
     streak = _calculate_streak(db)
 
@@ -511,7 +534,7 @@ def get_dashboard_summary(db: Session) -> DashboardSummary:
         today_carbs_g=today_nutr.total_carbs_g,
         today_fat_g=today_nutr.total_fat_g,
         today_sugar_g=today_nutr.total_sugar_g,
-        calories_target=m_cal or 2200,
+        calories_target=_dyn_target or m_cal or 2200,
         protein_target=m_pro or 180,
         carbs_target=m_carb,
         fat_target=m_fat,
@@ -522,7 +545,11 @@ def get_dashboard_summary(db: Session) -> DashboardSummary:
         last_activity_type=last_session.activity_type if last_session else None,
         today_steps=today_row.steps if today_row else None,
         today_floors=today_row.floors if today_row else None,
-        today_active_calories=today_row.active_calories if today_row else None,
+        today_active_calories=(
+            today_row.active_calories
+            if today_row and today_row.active_calories
+            else _engine_activity
+        ),
     )
 
 

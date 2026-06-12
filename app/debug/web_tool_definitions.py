@@ -1,4 +1,8 @@
 # FILE: app/debug/web_tool_definitions.py
+# Purpose: Chat-facing tool definitions for web browsing.
+# Called-by: app.debug.tool_definitions
+# Depends-on: app.debug
+# Last-renovated: 2026-06-11
 """
 Chat-facing tool definitions for web browsing.
 

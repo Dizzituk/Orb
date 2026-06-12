@@ -1,4 +1,8 @@
 # FILE: app/memory/service.py
+# Purpose: Memory service layer for Orb.
+# Called-by: app.bridge.capability_layer, app.bridge.router, app.builds.pipeline_bridge, app.builds.stage_hooks (+39 more)
+# Depends-on: app.embeddings, app.embeddings.models, app.jobs.models, app.memory (+4 more)
+# Last-renovated: 2026-06-11
 """
 Memory service layer for Orb.
 

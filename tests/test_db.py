@@ -1,4 +1,8 @@
 # FILE: tests/test_db.py
+# Purpose: Tests for app/db.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.db, app.memory.models, app.pot_spec.models
+# Last-renovated: 2026-06-11
 """
 Tests for app/db.py
 Database core functionality - connection, session management, migrations.

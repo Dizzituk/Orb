@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/tiktok.py
+# Purpose: TikTok Content Posting API Integration (Spec Section 9.1).
+# Called-by: app.content.distribution.analytics, app.content.distribution.publisher, app.content.distribution_router, app.content.engagement.scanner
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 TikTok Content Posting API Integration (Spec Section 9.1).
 

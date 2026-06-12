@@ -1,3 +1,7 @@
+# Purpose: fs query utils 2
+# Called-by: app.llm.local_tools.zobie.streams._fs_query_utils_3, app.llm.local_tools.zobie.streams.fs_query
+# Depends-on: app.llm.audit_logger, app.llm.local_tools.zobie.config, app.llm.local_tools.zobie.fs_write_ops, app.llm.local_tools.zobie.sse (+1 more)
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import asyncio
 import logging

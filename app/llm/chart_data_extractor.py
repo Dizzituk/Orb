@@ -1,4 +1,8 @@
 # FILE: app/llm/chart_data_extractor.py
+# Purpose: LLM-powered data extraction for chart rendering.
+# Called-by: app.llm.image_router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 LLM-powered data extraction for chart rendering.
 

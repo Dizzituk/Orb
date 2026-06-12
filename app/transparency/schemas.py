@@ -1,4 +1,8 @@
 # FILE: app/transparency/schemas.py
+# Purpose: Data structures for the Pipeline Transparency system.
+# Called-by: app.debug.feedback, app.transparency.collector, app.transparency.corrections, app.transparency.matcher (+1 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Data structures for the Pipeline Transparency system.
 

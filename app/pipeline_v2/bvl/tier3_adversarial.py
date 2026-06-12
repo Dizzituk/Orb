@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/bvl/tier3_adversarial.py
+# Purpose: Tier 3 — Adversarial Gate.
+# Called-by: app.pipeline_v2.bvl.bvl_orchestrator
+# Depends-on: app.pipeline_v2.build_targets, app.pipeline_v2.bvl.bvl_models, app.pipeline_v2.bvl.emulator_bridge
+# Last-renovated: 2026-06-11
 """
 Tier 3 — Adversarial Gate.
 

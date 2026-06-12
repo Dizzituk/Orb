@@ -1,4 +1,8 @@
 # FILE: app/lifestyle/habit_learner.py
+# Purpose: Nightly eating-habit learner — Job 4 of the memory roadmap (2026-06-10).
+# Called-by: app.lifestyle.scheduler
+# Depends-on: app.astra_memory.preference_models, app.astra_memory.preference_service, app.astra_memory.retrieval, app.db (+1 more)
+# Last-renovated: 2026-06-11
 """
 Nightly eating-habit learner — Job 4 of the memory roadmap (2026-06-10).
 

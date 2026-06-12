@@ -1,4 +1,8 @@
 # FILE: app/debug/action_executor.py
+# Purpose: Action Executor: Translates LLM tool calls into real operations.
+# Called-by: app.debug.executors.flow_actions, app.debug.orchestrator.behaviour_verifier, app.debug.orchestrator.subagent_runner, app.llm.chat_tool_loop
+# Depends-on: app.debug._working_set_hook, app.debug.executors, app.debug.executors._paths, app.debug.gemini_lifestyle_tools
+# Last-renovated: 2026-06-11
 """
 Action Executor: Translates LLM tool calls into real operations.
 
@@ -208,6 +212,19 @@ try:
     TOOL_HANDLERS.update(LIFESTYLE_TOOL_EXECUTORS)
 except Exception as _life_err:  # pragma: no cover - defensive
     logger.warning("[action_executor] lifestyle tools not wired: %s", _life_err)
+
+# Work-day + expense logging by voice in ordinary chat (2026-06-11): the
+# Health-panel conversation confidently claimed "Logged" while having no
+# finance tools available to call — pure confabulation. Same universality
+# argument as lifestyle above: the user closes his delivery shift and logs
+# fuel by voice in whatever chat is open, so every model needs these.
+try:
+    from app.debug.gemini_finance_tools import FINANCE_TOOL_EXECUTORS
+    from app.debug.gemini_expense_tools import EXPENSE_TOOL_EXECUTORS
+    TOOL_HANDLERS.update(FINANCE_TOOL_EXECUTORS)
+    TOOL_HANDLERS.update(EXPENSE_TOOL_EXECUTORS)
+except Exception as _fin_err:  # pragma: no cover - defensive
+    logger.warning("[action_executor] work/expense tools not wired: %s", _fin_err)
 
 
 async def execute_tool(tool_name: str, params: Dict[str, Any]) -> str:

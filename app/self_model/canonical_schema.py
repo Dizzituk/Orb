@@ -1,4 +1,8 @@
 # FILE: app/self_model/canonical_schema.py
+# Purpose: Canonical schema for Tier 1 identity fields.
+# Called-by: app.self_model.reconciler, app.self_model.write_arbiter
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Canonical schema for Tier 1 identity fields.
 

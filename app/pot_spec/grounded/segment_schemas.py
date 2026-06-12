@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/segment_schemas.py
+# Purpose: Pipeline Segmentation Data Models (v1.0)
+# Called-by: app.orchestrator._segment_loop_utils, app.orchestrator.integration_check, app.orchestrator.phase_checkout, app.orchestrator.segment_loop (+10 more)
+# Depends-on: app.pot_spec.grounded._segment_schemas_utils_1
+# Last-renovated: 2026-06-11
 """
 Pipeline Segmentation Data Models (v1.0)
 
@@ -31,7 +35,6 @@ v1.0 (2026-02-08): Initial implementation — Phase 1 of Pipeline Segmentation
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from dataclasses import dataclass, field

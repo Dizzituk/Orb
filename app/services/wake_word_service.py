@@ -1,3 +1,7 @@
+# Purpose: Wake-word detection and Voice Activity Detection (VAD) service.
+# Called-by: app.routers.audio_stream
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Wake-word detection and Voice Activity Detection (VAD) service.
 

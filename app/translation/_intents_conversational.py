@@ -1,4 +1,8 @@
 # FILE: app/translation/_intents_conversational.py
+# Purpose: Intent definitions: Conversational domain.
+# Called-by: app.translation.intents
+# Depends-on: app.translation.schemas
+# Last-renovated: 2026-06-11
 """
 Intent definitions: Conversational domain.
 Chat, web search, deep research, memory ingest, memory store.

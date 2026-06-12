@@ -1,4 +1,8 @@
 # FILE: app/llm/deep_research_stream.py
+# Purpose: SSE stream handler for deep research.
+# Called-by: app.llm.routing.handler_registry
+# Depends-on: app.llm.deep_research_engine
+# Last-renovated: 2026-06-11
 """
 SSE stream handler for deep research.
 

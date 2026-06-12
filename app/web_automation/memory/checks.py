@@ -1,4 +1,8 @@
 # FILE: app/web_automation/memory/checks.py
+# Purpose: Check evaluators — the verification layer that turns "I clicked something"
+# Called-by: app.web_automation.memory.runner
+# Depends-on: app.web_automation.memory.models
+# Last-renovated: 2026-06-11
 """
 Check evaluators — the verification layer that turns "I clicked something"
 into "the page is now in the expected state."

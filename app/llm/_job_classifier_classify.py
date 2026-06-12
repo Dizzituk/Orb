@@ -1,4 +1,8 @@
 # FILE: app/llm/_job_classifier_classify.py
+# Purpose: Core classification logic for job routing.
+# Called-by: app.llm.job_classifier
+# Depends-on: app.llm.job_classifier, app.llm.schemas
+# Last-renovated: 2026-06-11
 """
 Core classification logic for job routing.
 
@@ -10,7 +14,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .schemas import (

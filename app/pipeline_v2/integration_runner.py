@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/integration_runner.py
+# Purpose: Cross-Repo Integration Test Runner (Phase 3 Job 11)
+# Called-by: app.pipeline_v2.multi_target_verifier
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Cross-Repo Integration Test Runner (Phase 3 Job 11)
 

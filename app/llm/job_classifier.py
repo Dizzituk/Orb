@@ -1,4 +1,8 @@
 # FILE: app/llm/job_classifier.py
+# Purpose: Job classification for LLM routing.
+# Called-by: app.endpoints.chat_attachments, app.llm._job_classifier_classify, app.llm._job_classifier_utils, app.llm.pipeline.high_stakes (+5 more)
+# Depends-on: app.llm._job_classifier_classify, app.llm._job_classifier_utils, app.llm.file_classifier, app.llm.schemas
+# Last-renovated: 2026-06-11
 """
 Job classification for LLM routing.
 

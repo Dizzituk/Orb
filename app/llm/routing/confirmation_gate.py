@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/confirmation_gate.py
+# Purpose: User Confirmation Gate — Yes/No safety gate for costly routing decisions.
+# Called-by: app.llm.routing.chat_model_selection, app.llm.stream_router, app.routers.confirmation
+# Depends-on: app.db, app.project_registry.confidence_tracker
+# Last-renovated: 2026-06-11
 """
 User Confirmation Gate — Yes/No safety gate for costly routing decisions.
 

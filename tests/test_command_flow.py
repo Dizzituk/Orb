@@ -1,4 +1,8 @@
 # FILE: tests/test_command_flow.py
+# Purpose: Tests for ASTRA Command Flow wiring.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.translation, app.translation.tier0_rules
+# Last-renovated: 2026-06-11
 """
 Tests for ASTRA Command Flow wiring.
 

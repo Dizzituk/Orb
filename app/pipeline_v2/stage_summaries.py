@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/stage_summaries.py
+# Purpose: ASTRA v2.2 Stage Summaries — Layer 2 of Piece 5 (context threading).
+# Called-by: app.pipeline_v2.context_assembler, app.pipeline_v2.orchestrator
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 ASTRA v2.2 Stage Summaries — Layer 2 of Piece 5 (context threading).
 

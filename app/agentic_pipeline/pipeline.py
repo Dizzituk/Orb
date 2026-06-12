@@ -1,4 +1,8 @@
 # FILE: app/agentic_pipeline/pipeline.py
+# Purpose: Agentic Pipeline Orchestrator — Top-Level Entry Point.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.agentic_pipeline, app.agentic_pipeline.loop_controller, app.agentic_pipeline.segment_printer, app.orchestrator (+3 more)
+# Last-renovated: 2026-06-11
 """
 Agentic Pipeline Orchestrator — Top-Level Entry Point.
 

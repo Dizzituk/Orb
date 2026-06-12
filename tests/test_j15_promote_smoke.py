@@ -1,3 +1,7 @@
+# Purpose: test j15 promote smoke
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.pipeline_v2.promote
+# Last-renovated: 2026-06-11
 import sys, os, asyncio
 os.chdir("D:/Orb"); sys.path.insert(0, "D:/Orb")
 from app.pipeline_v2.promote import _is_allowed, _host_abs, _manifest_paths_for_job, build_promote_plan

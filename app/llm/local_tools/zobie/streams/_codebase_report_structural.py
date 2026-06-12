@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/streams/_codebase_report_structural.py
+# Purpose: Structural analysis integration for codebase reports.
+# Called-by: app.llm.local_tools.zobie.streams._codebase_report_utils_4
+# Depends-on: app.orchestrator.codebase_scanner, app.orchestrator.codebase_scanner_models
+# Last-renovated: 2026-06-11
 """
 Structural analysis integration for codebase reports.
 

@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/size_decomposition.py
+# Purpose: Size Analyzer — Decomposition Suggestion Engine.
+# Called-by: app.pot_spec.grounded.size_analyzer
+# Depends-on: app.pot_spec.grounded.size_models
+# Last-renovated: 2026-06-11
 """
 Size Analyzer — Decomposition Suggestion Engine.
 

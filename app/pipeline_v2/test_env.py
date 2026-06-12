@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/test_env.py
+# Purpose: JOB 5 (2026-06-10) - Per-build-target test environment manifest.
+# Called-by: app.pipeline_v2.bvl.failure_classifier, app.pipeline_v2.bvl.preflight, app.pipeline_v2.checkout, app.pipeline_v2.verifier_agent.perception_tools (+1 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 JOB 5 (2026-06-10) - Per-build-target test environment manifest.
 

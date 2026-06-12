@@ -1,3 +1,7 @@
+# Purpose: test phase1 verdict smoke
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.pipeline_v2.final_verdict, app.pipeline_v2.spec_review.context
+# Last-renovated: 2026-06-11
 import sys, asyncio
 sys.path.insert(0, "D:/Orb")
 

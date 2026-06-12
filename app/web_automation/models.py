@@ -1,4 +1,8 @@
 # FILE: app/web_automation/models.py
+# Purpose: Web Automation ORM models.
+# Called-by: app.web_automation.action_queue, app.web_automation.bridge, app.web_automation.router, app.web_automation.session_registry (+2 more)
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """
 Web Automation ORM models.
 

@@ -1,3 +1,7 @@
+# Purpose: Test suite for ASTRA Global Governance Policy
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Test suite for ASTRA Global Governance Policy
 Spec Version: 1.0

@@ -1,6 +1,9 @@
+# Purpose: file analyzer utils 2
+# Called-by: app.llm.file_analyzer
+# Depends-on: app.llm.file_analyzer
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import io
-import json
 import logging
 import re
 from typing import Any, Callable, Dict, Optional, Tuple

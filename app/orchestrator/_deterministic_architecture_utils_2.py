@@ -1,3 +1,7 @@
+# Purpose: deterministic architecture utils 2
+# Called-by: app.orchestrator.deterministic_architecture
+# Depends-on: app.orchestrator.codebase_scanner_models, app.orchestrator.deterministic_architecture, app.orchestrator.refactor_segmenter_models
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
 import os

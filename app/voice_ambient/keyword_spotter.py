@@ -1,4 +1,8 @@
 # FILE: app/voice_ambient/keyword_spotter.py
+# Purpose: Whisper-based keyword spotter for ambient wake detection.
+# Called-by: app.voice_ambient, app.voice_ambient.session
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Whisper-based keyword spotter for ambient wake detection.
 

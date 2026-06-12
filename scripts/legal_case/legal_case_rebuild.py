@@ -1,4 +1,8 @@
 # FILE: scripts/legal_case/legal_case_rebuild.py
+# Purpose: Legal case artefact rebuilder — orchestration entry point.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: scripts.legal_case._bootstrap, scripts.legal_case._rebuild_docx, scripts.legal_case._rebuild_xlsx
+# Last-renovated: 2026-06-11
 """
 Legal case artefact rebuilder — orchestration entry point.
 

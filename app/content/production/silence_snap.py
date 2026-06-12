@@ -1,4 +1,8 @@
 # FILE: app/content/production/silence_snap.py
+# Purpose: Silence Snap — find clean cut points in audio.
+# Called-by: app.content.production.shorts_creator
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Silence Snap — find clean cut points in audio.
 

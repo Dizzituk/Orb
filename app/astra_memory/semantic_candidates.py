@@ -1,4 +1,8 @@
 # FILE: app/astra_memory/semantic_candidates.py
+# Purpose: Semantic candidate augmentation for hot-index retrieval.
+# Called-by: app.astra_memory.retrieval
+# Depends-on: app.astra_memory.preference_models, app.astra_memory.retrieval, app.llm.clients
+# Last-renovated: 2026-06-11
 """
 Semantic candidate augmentation for hot-index retrieval.
 

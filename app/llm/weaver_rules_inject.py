@@ -1,4 +1,8 @@
 # FILE: app/llm/weaver_rules_inject.py
+# Purpose: Weaver Rules Injection — formats pre-classified items for the Weaver prompt.
+# Called-by: app.llm._weaver_stream_modes
+# Depends-on: app.llm.weaver_rules_engine
+# Last-renovated: 2026-06-11
 """
 Weaver Rules Injection — formats pre-classified items for the Weaver prompt.
 

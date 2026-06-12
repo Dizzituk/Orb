@@ -1,4 +1,8 @@
 # FILE: app/content/video_pipeline/fal_client.py
+# Purpose: fal.ai unified API client for AI video generation.
+# Called-by: app.content.video_pipeline.asset_resolver
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 fal.ai unified API client for AI video generation.
 

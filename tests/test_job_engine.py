@@ -1,4 +1,8 @@
 # FILE: tests/test_job_engine.py
+# Purpose: Tests for app/jobs/engine.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app, app.jobs.engine, app.jobs.schemas
+# Last-renovated: 2026-06-11
 """
 Tests for app/jobs/engine.py
 Phase 4 Job Engine - routing helpers and envelope conversion.

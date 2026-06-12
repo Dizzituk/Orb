@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/evidence_ledger.py
+# Purpose: Evidence Ledger — Living evidence document for ASTRA pipeline jobs.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Evidence Ledger — Living evidence document for ASTRA pipeline jobs.
 

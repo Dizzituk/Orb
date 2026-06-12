@@ -1,4 +1,8 @@
 # FILE: config/__init__.py
+# Purpose: Configuration package for Orb/ASTRA.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: config.model_ranks
+# Last-renovated: 2026-06-11
 """Configuration package for Orb/ASTRA.
 
 Contains:

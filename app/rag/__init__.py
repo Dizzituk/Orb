@@ -1,3 +1,7 @@
+# Purpose: ASTRA RAG System - Retrieval-Augmented Generation for codebase understanding.
+# Called-by: app.db
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 ASTRA RAG System - Retrieval-Augmented Generation for codebase understanding.
 

@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/bvl/cross_model_diagnostic.py
+# Purpose: Cross-Model Diagnostic — Opus reviews what GPT-5.4 built.
+# Called-by: app.pipeline_v2.bvl.retry_loop
+# Depends-on: app.llm.stage_models, app.pipeline_v2.build_targets, app.pipeline_v2.llm_caller, app.pipeline_v2.sandbox_tools
+# Last-renovated: 2026-06-11
 """
 Cross-Model Diagnostic — Opus reviews what GPT-5.4 built.
 

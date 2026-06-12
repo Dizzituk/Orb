@@ -1,4 +1,8 @@
 # FILE: app/content/project_router.py
+# Purpose: Content project router — CRUD for content hub projects.
+# Called-by: main
+# Depends-on: app.auth, app.content, app.content.project_schemas, app.content.project_service (+1 more)
+# Last-renovated: 2026-06-11
 """
 Content project router — CRUD for content hub projects.
 Prefix: /content/projects

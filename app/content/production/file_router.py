@@ -1,4 +1,8 @@
 # FILE: app/content/production/file_router.py
+# Purpose: Content file serving — video/image preview for Electron.
+# Called-by: main
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Content file serving — video/image preview for Electron.
 
@@ -6,7 +10,6 @@ Supports HTTP Range requests for video seeking.
 No auth dependency — localhost-only, safe for desktop app.
 """
 import os
-import stat
 import logging
 from typing import Optional
 

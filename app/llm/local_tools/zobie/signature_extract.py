@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/signature_extract.py
+# Purpose: Signature extraction for RAG pipeline.
+# Called-by: app.llm.local_tools.zobie, app.llm.local_tools.zobie.rag_helpers
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """Signature extraction for RAG pipeline.
 
 Extracted from zobie_tools.py for modularity.
@@ -7,7 +11,6 @@ No logic changes - exact same extraction behavior.
 
 from __future__ import annotations
 
-import os
 import re
 from typing import Any, Dict, List, Optional
 

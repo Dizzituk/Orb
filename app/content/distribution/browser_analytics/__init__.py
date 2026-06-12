@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/browser_analytics/__init__.py
+# Purpose: Browser-scraped analytics — reads insights pages from the logged-in
+# Called-by: app.content.distribution.browser_analytics.tests.test_scrape, main
+# Depends-on: app.content.distribution.browser_analytics.router
+# Last-renovated: 2026-06-11
 """
 Browser-scraped analytics — reads insights pages from the logged-in
 WebContentsView sessions that ASTRA drives. Complements (and can

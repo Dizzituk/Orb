@@ -1,4 +1,8 @@
 # FILE: app/embeddings/schemas.py
+# Purpose: Pydantic schemas for embedding endpoints.
+# Called-by: app.embeddings, app.embeddings.router, app.embeddings.service
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Pydantic schemas for embedding endpoints.
 """

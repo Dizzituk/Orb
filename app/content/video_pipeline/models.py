@@ -1,4 +1,8 @@
 # FILE: app/content/video_pipeline/models.py
+# Purpose: Pydantic models for the Script-to-Video Pipeline.
+# Called-by: app.content.video_pipeline.asset_resolver, app.content.video_pipeline.clip_analyzer, app.content.video_pipeline.clip_verifier, app.content.video_pipeline.director (+7 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Pydantic models for the Script-to-Video Pipeline.
 

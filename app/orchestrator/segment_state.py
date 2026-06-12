@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/segment_state.py
+# Purpose: Segment execution state tracking and persistence.
+# Called-by: app.orchestrator._segment_loop_utils, app.orchestrator.integration_check, app.orchestrator.segment_loop, app.orchestrator.segment_loop_stream
+# Depends-on: app.pot_spec.grounded.segment_schemas, app.pot_spec.spec_gate_persistence
+# Last-renovated: 2026-06-11
 """
 Segment execution state tracking and persistence.
 

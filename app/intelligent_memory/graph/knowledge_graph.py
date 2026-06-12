@@ -1,4 +1,8 @@
 # FILE: app/intelligent_memory/graph/knowledge_graph.py
+# Purpose: Layer 2 — Knowledge Graph.
+# Called-by: app.intelligent_memory.graph
+# Depends-on: app.intelligent_memory.graph.graph_models
+# Last-renovated: 2026-06-11
 """
 Layer 2 — Knowledge Graph.
 

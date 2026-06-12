@@ -1,4 +1,8 @@
 # FILE: app/llm/image_prompt_synth.py
+# Purpose: Context-aware image prompt synthesis.
+# Called-by: app.llm.image_router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Context-aware image prompt synthesis.
 

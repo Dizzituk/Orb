@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/_greenfield_spec_builder.py
+# Purpose: Greenfield Spec Builder — generates a full project architecture spec
+# Called-by: app.pot_spec.grounded.spec_runner
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Greenfield Spec Builder — generates a full project architecture spec
 for new external projects (Android apps, web apps, etc.).

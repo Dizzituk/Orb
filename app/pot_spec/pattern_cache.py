@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/pattern_cache.py
+# Purpose: SpecGate Pattern Cache — Job 9.
+# Called-by: app.llm.critical_pipeline._segment_prompt_builder, app.pot_spec.grounded.evidence_gathering
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 SpecGate Pattern Cache — Job 9.
 

@@ -1,4 +1,8 @@
 # FILE: app/llm/weaver_stream_core.py
+# Purpose: Weaver Stream Core - Prompt building and response parsing for ASTRA Weaver.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app, app.llm, app.memory, app.memory.service (+1 more)
+# Last-renovated: 2026-06-11
 """
 Weaver Stream Core - Prompt building and response parsing for ASTRA Weaver.
 

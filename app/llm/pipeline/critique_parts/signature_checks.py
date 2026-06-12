@@ -1,4 +1,8 @@
 # FILE: app/llm/pipeline/critique_parts/signature_checks.py
+# Purpose: Deterministic Critique — Function Signature Matching.
+# Called-by: app.llm.pipeline.critique_parts.deterministic_verdict
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Deterministic Critique — Function Signature Matching.
 

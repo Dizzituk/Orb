@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/chat_codebase_reader.py
+# Purpose: Read-only codebase access for trusted models in standard chat.
+# Called-by: app.bridge.capability_layer, app.llm.routing.chat_routing
+# Depends-on: app.memory.router, app.rag.retrieval.arch_search, app.sandbox.client
+# Last-renovated: 2026-06-11
 """
 Read-only codebase access for trusted models in standard chat.
 
@@ -91,7 +95,9 @@ def _find_relevant_paths(
         from app.rag.retrieval.arch_search import search_architecture
         response = search_architecture(db, query=message, top_k=limit + 4)
         for result in response.results:
-            p = result.path.replace("\\", "/")
+            # ArchSearchResult carries canonical_path (".path" never existed —
+            # this strategy silently AttributeError'd until 2026-06-12)
+            p = (result.canonical_path or "").replace("\\", "/")
             if p and p not in paths:
                 paths.append(p)
     except Exception as e:

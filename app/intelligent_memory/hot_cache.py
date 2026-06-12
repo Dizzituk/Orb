@@ -1,4 +1,8 @@
 # FILE: app/intelligent_memory/hot_cache.py
+# Purpose: Layer 1 — Hot Cache.
+# Called-by: app.intelligent_memory, app.intelligent_memory.extraction, app.intelligent_memory.retrieval_router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Layer 1 — Hot Cache.
 
@@ -26,7 +30,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional

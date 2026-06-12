@@ -1,4 +1,8 @@
 # FILE: app/translation/__init__.py
+# Purpose: ASTRA Translation Layer
+# Called-by: app.bridge.router, app.llm.stream_handlers, app.llm.translation_routing, tests.test_command_flow (+2 more)
+# Depends-on: app.translation.feedback, app.translation.gates, app.translation.intents, app.translation.modes (+5 more)
+# Last-renovated: 2026-06-11
 """
 ASTRA Translation Layer
 

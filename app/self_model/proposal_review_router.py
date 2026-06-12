@@ -1,4 +1,8 @@
 # FILE: app/self_model/proposal_review_router.py
+# Purpose: HTTP API for reviewing proposed identity-store writes.
+# Called-by: main
+# Depends-on: app.self_model.proposed_facts, app.self_model.reconciler, app.self_model.write_arbiter
+# Last-renovated: 2026-06-11
 """
 HTTP API for reviewing proposed identity-store writes.
 

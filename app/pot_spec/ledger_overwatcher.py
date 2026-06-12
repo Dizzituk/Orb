@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/ledger_overwatcher.py
+# Purpose: Ledger events for Blocks 7-12 (Overwatcher Implementation Loop).
+# Called-by: app.pot_spec.ledger
+# Depends-on: app.pot_spec.ledger_core
+# Last-renovated: 2026-06-11
 """Ledger events for Blocks 7-12 (Overwatcher Implementation Loop).
 
 Block 7: Chunk planning

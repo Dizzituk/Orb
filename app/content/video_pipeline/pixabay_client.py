@@ -1,4 +1,8 @@
 # FILE: app/content/video_pipeline/pixabay_client.py
+# Purpose: Pixabay API client for free stock video search.
+# Called-by: app.content.video_pipeline.asset_resolver
+# Depends-on: app.db, app.settings.service
+# Last-renovated: 2026-06-11
 """
 Pixabay API client for free stock video search.
 

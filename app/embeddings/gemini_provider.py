@@ -1,4 +1,8 @@
 # FILE: app/embeddings/gemini_provider.py
+# Purpose: Gemini Embedding 2 provider.
+# Called-by: app.embeddings, app.embeddings.service, app.llm.clients, app.self_model.fragments.capture (+1 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Gemini Embedding 2 provider.
 

@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/models.py
+# Purpose: PoT Spec database model.
+# Called-by: app.db, app.pot_spec.service, tests.test_db, tests.test_pot_spec
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """PoT Spec database model.
 
 Block 1 requires:

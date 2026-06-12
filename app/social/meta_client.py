@@ -1,4 +1,8 @@
 # FILE: app/social/meta_client.py
+# Purpose: Meta (Facebook) Graph API client.
+# Called-by: app.social.meta_post
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Meta (Facebook) Graph API client.
 

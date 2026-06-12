@@ -1,4 +1,8 @@
 # FILE: app/grounding/perspective_formatter.py
+# Purpose: Perspective Formatter for the Grounded Intelligence System.
+# Called-by: app.grounding.grounding_gate
+# Depends-on: app.grounding.perspective_engine
+# Last-renovated: 2026-06-11
 """
 Perspective Formatter for the Grounded Intelligence System.
 
@@ -14,7 +18,6 @@ v1.0 (2026-03): Initial implementation.
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, field
 from typing import List, Optional
 from urllib.parse import urlparse

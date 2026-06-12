@@ -1,3 +1,7 @@
+# Purpose: End-to-end tests for the browser_analytics module.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.content.distribution.browser_analytics, app.content.distribution.browser_analytics.models, app.content.distribution.browser_analytics.parsers, app.content.distribution.browser_analytics.parsers.common (+7 more)
+# Last-renovated: 2026-06-11
 """
 End-to-end tests for the browser_analytics module.
 

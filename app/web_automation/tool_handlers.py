@@ -1,4 +1,8 @@
 # FILE: app/web_automation/tool_handlers.py
+# Purpose: Tool handlers for ASTRA's LLM to invoke web-automation primitives.
+# Called-by: app.debug.executors.web_automation, app.web_automation.register
+# Depends-on: app.db, app.llm.gemini_vision, app.web_automation, app.web_automation.bridge (+2 more)
+# Last-renovated: 2026-06-11
 """
 Tool handlers for ASTRA's LLM to invoke web-automation primitives.
 

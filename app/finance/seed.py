@@ -1,4 +1,8 @@
 # FILE: app/finance/seed.py
+# Purpose: Seed data for the finance module.
+# Called-by: main
+# Depends-on: app.finance.models
+# Last-renovated: 2026-06-11
 """
 Seed data for the finance module.
 Pre-configured expense categories for a self-employed delivery driver.

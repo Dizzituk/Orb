@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/rag_helpers.py
+# Purpose: RAG-related helpers for generating INDEX and SIGNATURES JSON, and CODEBASE.md.
+# Called-by: app.llm.local_tools.zobie, app.llm.local_tools.zobie.streams.archmap_full, app.llm.local_tools.zobie.streams.scan_sandbox
+# Depends-on: app.llm.local_tools.zobie.signature_extract, app.rag.jobs.embedding_job, app.rag.models
+# Last-renovated: 2026-06-11
 """RAG-related helpers for generating INDEX and SIGNATURES JSON, and CODEBASE.md.
 
 Extracted from zobie_tools.py for modularity.
@@ -7,7 +11,6 @@ No logic changes - exact same generation behavior.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -226,6 +229,7 @@ def signatures_to_db(
     db,
     contents_data: List[Dict[str, Any]],
     base_root: str,
+    source: str = "host",
 ) -> Optional[int]:
     """
     Extract code signatures from file contents and write to arch_code_chunks DB.
@@ -233,14 +237,18 @@ def signatures_to_db(
     Creates an ArchScanRun record, extracts Python/JS signatures from each file,
     and creates ArchCodeChunk entries for RAG retrieval.
 
-    Clean-slate: deletes previous ArchScanRun/ArchCodeChunk entries before writing.
-    This avoids stale/orphaned chunks from renamed or deleted files.
+    Clean-slate PER SOURCE: deletes previous ArchScanRun/ArchCodeChunk entries
+    of the SAME source before writing. This avoids stale/orphaned chunks from
+    renamed or deleted files, while letting host and sandbox snapshots coexist
+    (2026-06-12: previously a sandbox scan wiped the host scan and vice versa).
 
     Args:
         db: SQLAlchemy Session
         contents_data: List of file content dicts from Phase 2
                        (each has 'path', 'content', optional 'error')
         base_root: Base path for the scan (e.g. 'D:\\Orb')
+        source: Scan provenance — "host" or "sandbox" (ScanSource constants).
+                Stamped on the run and every chunk for staleness labelling.
 
     Returns:
         rag_scan_id (int) on success, None on failure
@@ -254,21 +262,42 @@ def signatures_to_db(
 
     try:
         # ==================================================================
-        # Clean slate: delete previous scan runs and their chunks
+        # Clean slate (same-source only): delete previous runs + chunks
         # ==================================================================
-        old_runs = db.query(ArchScanRun).all()
+        old_runs = db.query(ArchScanRun).filter(
+            ArchScanRun.source == source
+        ).all()
         if old_runs:
             old_ids = [r.id for r in old_runs]
+            old_chunk_ids = [
+                row[0] for row in db.query(ArchCodeChunk.id).filter(
+                    ArchCodeChunk.scan_id.in_(old_ids)
+                ).all()
+            ]
             # Delete chunks first (FK constraint)
             deleted_chunks = db.query(ArchCodeChunk).filter(
                 ArchCodeChunk.scan_id.in_(old_ids)
             ).delete(synchronize_session="fetch")
+            # Their embeddings are clean-slated too — otherwise stale vectors
+            # keep matching and resolve to deleted chunk ids.
+            deleted_embeddings = 0
+            try:
+                from app.embeddings.models import Embedding
+                if old_chunk_ids:
+                    # Chunked IN() to stay under SQLite's variable limit
+                    for i in range(0, len(old_chunk_ids), 500):
+                        deleted_embeddings += db.query(Embedding).filter(
+                            Embedding.source_type == "arch_code_chunk",
+                            Embedding.source_id.in_(old_chunk_ids[i:i + 500]),
+                        ).delete(synchronize_session="fetch")
+            except Exception:
+                pass
             for run in old_runs:
                 db.delete(run)
             db.flush()
             logger.info(
-                f"[signatures_to_db] Cleaned {len(old_runs)} old scan run(s), "
-                f"{deleted_chunks} old chunks"
+                f"[signatures_to_db] Cleaned {len(old_runs)} old {source} scan run(s), "
+                f"{deleted_chunks} old chunks, {deleted_embeddings} old embeddings"
             )
 
         # ==================================================================
@@ -278,6 +307,7 @@ def signatures_to_db(
             status="running",
             signatures_file="",
             index_file="",
+            source=source,
         )
         db.add(rag_scan_run)
         db.flush()  # Get the ID
@@ -347,6 +377,7 @@ def signatures_to_db(
                     ),
                     embedded=False,
                     content_hash=None,  # Computed below
+                    source=source,
                 )
 
                 # Compute content_hash (deterministic — no scan_id/timestamps)

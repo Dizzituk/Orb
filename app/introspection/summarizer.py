@@ -1,4 +1,8 @@
 # FILE: app/introspection/summarizer.py
+# Purpose: Log Summarizer - LLM-based log explanation.
+# Called-by: app.introspection, app.introspection.chat_integration, app.introspection.router
+# Depends-on: app.introspection.schemas, app.providers.registry
+# Last-renovated: 2026-06-11
 """
 Log Summarizer - LLM-based log explanation.
 

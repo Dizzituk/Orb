@@ -1,4 +1,8 @@
 # FILE: app/content/engagement/classifier.py
+# Purpose: Comment Sentiment Classifier.
+# Called-by: app.content.engagement.scanner
+# Depends-on: app.llm
+# Last-renovated: 2026-06-11
 """
 Comment Sentiment Classifier.
 

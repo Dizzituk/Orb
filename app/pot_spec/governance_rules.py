@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/governance_rules.py
+# Purpose: Pipeline Governance Rules — Non-Negotiable Build Constraints.
+# Called-by: app.llm.critical_pipeline.prompt_builder, app.pot_spec.grounded.simple_create
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Pipeline Governance Rules — Non-Negotiable Build Constraints.
 

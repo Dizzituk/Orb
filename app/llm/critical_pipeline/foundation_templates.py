@@ -1,4 +1,8 @@
 # FILE: app/llm/critical_pipeline/foundation_templates.py
+# Purpose: Foundation Templates — Pre-Validated Architectural Patterns.
+# Called-by: app.llm.critical_pipeline._foundation_templates_utils_2, app.llm.pipeline._high_stakes_prompt_build
+# Depends-on: app.llm.critical_pipeline._foundation_templates_utils_2
+# Last-renovated: 2026-06-11
 """
 Foundation Templates — Pre-Validated Architectural Patterns.
 
@@ -27,7 +31,6 @@ v1.0 (2026-02-10): Initial implementation — Phase 4B.
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 from app.llm.critical_pipeline._foundation_templates_utils_2 import FOUNDATION_TEMPLATES_BUILD_ID, FoundationTemplate, MatchedTemplates, _register, match_templates

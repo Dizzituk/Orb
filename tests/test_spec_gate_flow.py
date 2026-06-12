@@ -1,4 +1,8 @@
 # FILE: tests/test_spec_gate_flow.py
+# Purpose: Tests for ASTRA Spec Gate flow intents.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.translation
+# Last-renovated: 2026-06-11
 """
 Tests for ASTRA Spec Gate flow intents.
 

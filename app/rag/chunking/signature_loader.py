@@ -1,3 +1,7 @@
+# Purpose: Signature loader.
+# Called-by: app.rag.chunking, app.rag.pipeline, tests.test_rag_signature_loader
+# Depends-on: app.rag.models, app.rag.utils.canonical_paths
+# Last-renovated: 2026-06-11
 """
 Signature loader.
 

@@ -1,4 +1,8 @@
 # FILE: app/debug/orchestrator/decomposer.py
+# Purpose: Decomposer — converts a free-text bug list into a list of scoped SubagentBriefs.
+# Called-by: app.debug.orchestrator.loop_controller
+# Depends-on: app.debug.orchestrator.schemas, app.pipeline_v2.target_registry
+# Last-renovated: 2026-06-11
 """
 Decomposer — converts a free-text bug list into a list of scoped SubagentBriefs.
 

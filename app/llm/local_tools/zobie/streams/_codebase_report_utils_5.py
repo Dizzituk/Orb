@@ -1,3 +1,7 @@
+# Purpose: codebase report utils 5
+# Called-by: app.llm.local_tools.zobie.streams.codebase_report
+# Depends-on: app.llm.local_tools.zobie.streams._codebase_report_utils_3, app.llm.local_tools.zobie.streams._codebase_report_utils_4
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 from app.llm.local_tools.zobie.streams._codebase_report_utils_3 import TOP_N_LARGEST
 from app.llm.local_tools.zobie.streams._codebase_report_utils_4 import FILE_LINES_WARN, TOP_N_LONGEST, _categorize_by_lines, _categorize_by_size

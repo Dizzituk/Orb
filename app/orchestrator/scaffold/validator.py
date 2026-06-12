@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/scaffold/validator.py
+# Purpose: Scaffold Validator.
+# Called-by: app.orchestrator.scaffold.integration
+# Depends-on: app.orchestrator.scaffold
+# Last-renovated: 2026-06-11
 """
 Scaffold Validator.
 

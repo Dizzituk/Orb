@@ -1,4 +1,8 @@
 # FILE: app/content/production/draft_writer.py
+# Purpose: Draft Writer — AI-powered text content (Spec Section 7.2).
+# Called-by: app.content.production.format_converter, app.content.production_router
+# Depends-on: app.content.models, app.content.scout, app.content.service, app.providers.registry
+# Last-renovated: 2026-06-11
 """
 Draft Writer — AI-powered text content (Spec Section 7.2).
 

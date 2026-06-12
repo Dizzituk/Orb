@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/youtube_router.py
+# Purpose: YouTube-specific API endpoints.
+# Called-by: main
+# Depends-on: app.auth, app.content.distribution.algorithm_strategy, app.content.distribution.publisher, app.content.distribution.scheduler (+7 more)
+# Last-renovated: 2026-06-11
 """
 YouTube-specific API endpoints.
 

@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/llm_tool_defs.py
+# Purpose: Tool schema definitions for the agentic loops (OpenAI function format).
+# Called-by: app.pipeline_v2.llm_tools, app.pipeline_v2.verifier_agent.agent, tests.test_j8_live_anthropic_loop, tests.test_phase3_tools_smoke
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Tool schema definitions for the agentic loops (OpenAI function format).
 

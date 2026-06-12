@@ -1,4 +1,8 @@
 # FILE: app/debug/orchestrator/planner.py
+# Purpose: Planner — converts investigation reports into an ordered DebugPlan.
+# Called-by: app.debug.orchestrator.loop_controller
+# Depends-on: app.debug.orchestrator.schemas
+# Last-renovated: 2026-06-11
 """
 Planner — converts investigation reports into an ordered DebugPlan.
 

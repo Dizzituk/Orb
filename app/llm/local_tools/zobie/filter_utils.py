@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/filter_utils.py
+# Purpose: Scan result filtering utilities.
+# Called-by: app.llm.local_tools.zobie, app.llm.local_tools.zobie.streams.scan_sandbox
+# Depends-on: app.llm.local_tools.zobie.config
+# Last-renovated: 2026-06-11
 """Scan result filtering utilities.
 
 Extracted from zobie_tools.py for modularity.

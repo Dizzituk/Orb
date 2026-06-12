@@ -1,4 +1,8 @@
 # FILE: app/llm/pipeline/critique_parts/inventory_checks.py
+# Purpose: Deterministic Critique — File Inventory, Classification & Import Checks.
+# Called-by: app.llm.pipeline.critique_parts.deterministic_verdict
+# Depends-on: app.sandbox_fs
+# Last-renovated: 2026-06-11
 """
 Deterministic Critique — File Inventory, Classification & Import Checks.
 

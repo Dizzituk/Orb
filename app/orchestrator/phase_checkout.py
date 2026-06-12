@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/phase_checkout.py
+# Purpose: Phase Checkout -- Stage 9 Verification Orchestrator.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.agentic_pipeline, app.llm, app.orchestrator, app.pot_spec.grounded.segment_schemas (+3 more)
+# Last-renovated: 2026-06-11
 """
 Phase Checkout -- Stage 9 Verification Orchestrator.
 

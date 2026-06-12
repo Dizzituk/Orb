@@ -1,3 +1,7 @@
+# Purpose: router
+# Called-by: main
+# Depends-on: app.optimize.code_learner, app.optimize.loop_router, app.optimize.models, app.optimize.orchestrator (+2 more)
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 
 import logging

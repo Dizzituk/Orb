@@ -1,4 +1,8 @@
 # FILE: app/llm/image_output_dir.py
+# Purpose: Resolve the output directory for generated images.
+# Called-by: app.bridge.artifacts, app.llm.astra_filesystem_block, app.llm.chart_renderer, app.llm.image_gen (+3 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Resolve the output directory for generated images.
 

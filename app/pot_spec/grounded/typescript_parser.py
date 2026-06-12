@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/typescript_parser.py
+# Purpose: Size Analyzer — TypeScript/JS Structure Parser.
+# Called-by: app.pot_spec.grounded.size_analyzer
+# Depends-on: app.pot_spec.grounded.size_models
+# Last-renovated: 2026-06-11
 """
 Size Analyzer — TypeScript/JS Structure Parser.
 

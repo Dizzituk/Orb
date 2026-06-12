@@ -1,4 +1,8 @@
 # FILE: app/llm/token_budgeting.py
+# Purpose: Token Budget Management for Orb Routing Pipeline.
+# Called-by: app.llm, app.llm.routing.core, tests.test_token_budgeting
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Token Budget Management for Orb Routing Pipeline.
 

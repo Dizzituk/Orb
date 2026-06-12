@@ -1,3 +1,7 @@
+# Purpose: Tests for context assembler.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.astra_memory.preference_models, app.db, app.rag.models, app.rag.retrieval.arch_search (+1 more)
+# Last-renovated: 2026-06-11
 # tests/test_rag_context_assembler.py
 """Tests for context assembler."""
 

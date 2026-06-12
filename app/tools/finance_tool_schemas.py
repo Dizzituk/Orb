@@ -1,4 +1,8 @@
 # FILE: app/tools/finance_tool_schemas.py
+# Purpose: JSON-Schemas for the work-day finance tools (v8.0).
+# Called-by: app.tools.finance_tools
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 JSON-Schemas for the work-day finance tools (v8.0).
 

@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/_spec_runner_deterministic_refactor.py
+# Purpose: v6.1: Deterministic refactor detection and manifest generation.
+# Called-by: app.pot_spec.grounded._spec_runner_segmentation
+# Depends-on: app.orchestrator.refactor_pipeline, app.pot_spec.grounded._sbx_fs, app.pot_spec.grounded._spec_runner_utils_11, app.pot_spec.grounded.segment_schemas
+# Last-renovated: 2026-06-11
 """
 v6.1: Deterministic refactor detection and manifest generation.
 

@@ -1,4 +1,8 @@
 # FILE: app/grounding/perspective_prompts.py
+# Purpose: Enhanced system prompts for balanced perspective responses.
+# Called-by: app.grounding.grounding_gate
+# Depends-on: app.grounding.perspective_engine
+# Last-renovated: 2026-06-11
 """
 Enhanced system prompts for balanced perspective responses.
 

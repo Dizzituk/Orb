@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/sandbox_discovery.py
+# Purpose: Sandbox Discovery and Output Mode Detection (v1.42)
+# Called-by: app.pot_spec.grounded, app.pot_spec.grounded._sandbox_discovery_utils_10, app.pot_spec.grounded._sandbox_discovery_utils_11, app.pot_spec.grounded._sandbox_discovery_utils_8 (+5 more)
+# Depends-on: app.pot_spec.grounded._sandbox_discovery_utils_10, app.pot_spec.grounded._sandbox_discovery_utils_11, app.pot_spec.grounded._sandbox_discovery_utils_8, app.pot_spec.grounded._sandbox_discovery_utils_9 (+1 more)
+# Last-renovated: 2026-06-11
 r"""
 Sandbox Discovery and Output Mode Detection (v1.42)
 

@@ -1,3 +1,7 @@
+# Purpose: SQLAlchemy custom types for encrypted columns.
+# Called-by: app.crypto
+# Depends-on: app.crypto.encryption
+# Last-renovated: 2026-06-11
 # app/crypto/types.py
 """
 SQLAlchemy custom types for encrypted columns.

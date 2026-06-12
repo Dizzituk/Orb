@@ -1,3 +1,7 @@
+# Purpose: evidence loop utils 2
+# Called-by: app.llm.pipeline._evidence_loop_utils_3, app.llm.pipeline.evidence_loop
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import re
 from dataclasses import dataclass, field

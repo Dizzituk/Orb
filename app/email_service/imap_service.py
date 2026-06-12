@@ -1,4 +1,8 @@
 # FILE: app/email_service/imap_service.py
+# Purpose: Proton Mail IMAP service — reads email via Proton Bridge.
+# Called-by: app.email_service.router
+# Depends-on: app.settings.service
+# Last-renovated: 2026-06-11
 """
 Proton Mail IMAP service — reads email via Proton Bridge.
 

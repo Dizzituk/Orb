@@ -1,3 +1,7 @@
+# Purpose: segment schemas utils 1
+# Called-by: app.pot_spec.grounded._manifest_builder, app.pot_spec.grounded._segmentation_utils_4, app.pot_spec.grounded.segment_schemas
+# Depends-on: app.pot_spec.grounded.segment_schemas
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import json
 import logging

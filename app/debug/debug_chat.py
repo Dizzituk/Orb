@@ -1,4 +1,8 @@
 # FILE: app/debug/debug_chat.py
+# Purpose: Debug Chat Endpoint: SSE streaming endpoint for the Debug Assistant.
+# Called-by: app.llm.stream_router, main
+# Depends-on: app.auth, app.auth.middleware, app.cost.cost_recorder, app.debug.context_assembler (+16 more)
+# Last-renovated: 2026-06-11
 """
 Debug Chat Endpoint: SSE streaming endpoint for the Debug Assistant.
 

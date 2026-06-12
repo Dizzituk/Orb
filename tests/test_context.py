@@ -1,4 +1,8 @@
 # FILE: tests/test_context.py
+# Purpose: Tests for app/llm/context.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.llm, app.llm.context
+# Last-renovated: 2026-06-11
 """
 Tests for app/llm/context.py
 Context utilities for LLM calls - datetime and system context.

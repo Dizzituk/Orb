@@ -1,4 +1,8 @@
 # FILE: app/social/meta_post.py
+# Purpose: High-level Meta posting orchestration.
+# Called-by: app.debug.executors.social_actions
+# Depends-on: app.social.meta_client
+# Last-renovated: 2026-06-11
 """
 High-level Meta posting orchestration.
 

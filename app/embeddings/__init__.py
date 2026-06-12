@@ -1,4 +1,8 @@
 # FILE: app/embeddings/__init__.py
+# Purpose: Semantic search module for Orb (Gemini Embedding 2).
+# Called-by: app.db, app.drive.content_indexer, app.embeddings.router, app.endpoints.chat (+5 more)
+# Depends-on: app.embeddings.gemini_provider, app.embeddings.models, app.embeddings.schemas, app.embeddings.service
+# Last-renovated: 2026-06-11
 """
 Semantic search module for Orb (Gemini Embedding 2).
 Provides text + multimodal embedding generation, storage, and vector similarity search.

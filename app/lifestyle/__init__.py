@@ -1,4 +1,8 @@
 # FILE: app/lifestyle/__init__.py
+# Purpose: Lifestyle Engine — personalised health, fitness, nutrition & surf tracking.
+# Called-by: app.bridge.dashboards, app.db, app.lifestyle.daily_view, app.lifestyle.product_router (+2 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Lifestyle Engine — personalised health, fitness, nutrition & surf tracking.
 

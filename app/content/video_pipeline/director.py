@@ -1,4 +1,8 @@
 # FILE: app/content/video_pipeline/director.py
+# Purpose: Director Layer — creative intelligence for the video pipeline.
+# Called-by: app.content.video_pipeline.orchestrator
+# Depends-on: app.content.video_pipeline.models
+# Last-renovated: 2026-06-11
 """
 Director Layer — creative intelligence for the video pipeline.
 

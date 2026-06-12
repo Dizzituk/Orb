@@ -1,4 +1,8 @@
 # FILE: app/project_registry/staleness.py
+# Purpose: Proactive staleness detection for registered projects.
+# Called-by: app.project_registry.chat_injection
+# Depends-on: app.project_registry, app.project_registry.models, app.project_registry.service
+# Last-renovated: 2026-06-11
 """
 Proactive staleness detection for registered projects.
 

@@ -1,4 +1,8 @@
 # FILE: app/memory/summary_trigger.py
+# Purpose: Determines when a conversation summary should be generated.
+# Called-by: app.memory.integration, tests.test_conversation_memory
+# Depends-on: app.memory.conversation_models, app.memory.conversation_service, app.memory.models
+# Last-renovated: 2026-06-11
 """
 Determines when a conversation summary should be generated.
 

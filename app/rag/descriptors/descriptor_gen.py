@@ -1,3 +1,7 @@
+# Purpose: Descriptor generator.
+# Called-by: app.rag.descriptors, app.rag.pipeline, app.rag.reindex, tests.test_rag_descriptors
+# Depends-on: app.rag.models
+# Last-renovated: 2026-06-11
 """
 Descriptor generator.
 

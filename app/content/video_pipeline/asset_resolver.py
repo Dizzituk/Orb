@@ -1,4 +1,8 @@
 # FILE: app/content/video_pipeline/asset_resolver.py
+# Purpose: Tiered Asset Resolver — cascading footage sourcing for each segment.
+# Called-by: app.content.video_pipeline.orchestrator
+# Depends-on: app.content.video_pipeline.asset_library, app.content.video_pipeline.clip_analyzer, app.content.video_pipeline.fal_client, app.content.video_pipeline.heygen_client (+3 more)
+# Last-renovated: 2026-06-11
 """
 Tiered Asset Resolver — cascading footage sourcing for each segment.
 

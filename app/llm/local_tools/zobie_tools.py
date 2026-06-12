@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie_tools.py
+# Purpose: Streaming local-tool generators for architecture commands.
+# Called-by: app.llm.routing.handler_registry, tests.test_architecture_commands
+# Depends-on: app.llm.local_tools.zobie.streams
+# Last-renovated: 2026-06-11
 """Streaming local-tool generators for architecture commands.
 
 Thin orchestrator - implementation in zobie/ subpackage.

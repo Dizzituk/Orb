@@ -1,4 +1,8 @@
 # FILE: app/llm/astra_filesystem_block.py
+# Purpose: ASTRA filesystem facts — static knowledge block injected into chat context.
+# Called-by: app.llm.routing.prompt_builders
+# Depends-on: app.llm.image_output_dir
+# Last-renovated: 2026-06-11
 """
 ASTRA filesystem facts — static knowledge block injected into chat context.
 

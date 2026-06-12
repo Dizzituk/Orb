@@ -1,4 +1,8 @@
 # FILE: app/finance/utils/tax_year.py
+# Purpose: Canonical UK tax year helpers.
+# Called-by: app.finance.services.expense_service, app.finance.services.work_day_service, app.finance.work_router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Canonical UK tax year helpers.
 

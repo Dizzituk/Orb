@@ -1,3 +1,7 @@
+# Purpose: briefing config
+# Called-by: app.briefing.briefing_audio, app.briefing.briefing_collector, app.briefing.briefing_router, app.briefing.briefing_scheduler (+1 more)
+# Depends-on: app.briefing.news_profiles
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 
 import json

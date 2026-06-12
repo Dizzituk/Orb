@@ -1,4 +1,8 @@
 # FILE: app/specs/__init__.py
+# Purpose: ASTRA Specs Module
+# Called-by: app.db, app.llm._sg_stream_persist, app.llm._spec_gate_stream_utils_2, app.pot_spec._spec_gate_persistence_utils_2 (+2 more)
+# Depends-on: app.specs.models, app.specs.schema, app.specs.service
+# Last-renovated: 2026-06-11
 """
 ASTRA Specs Module
 

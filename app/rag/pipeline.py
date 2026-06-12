@@ -1,3 +1,7 @@
+# Purpose: RAG pipeline orchestrator.
+# Called-by: app.llm.rag_stream, app.rag.router, scripts.run_rag_pipeline, tests.test_rag_pipeline
+# Depends-on: app.rag.chunking.signature_loader, app.rag.descriptors.descriptor_gen, app.rag.embeddings.arch_embedder, app.rag.indexing.directory_indexer (+2 more)
+# Last-renovated: 2026-06-11
 """
 RAG pipeline orchestrator.
 

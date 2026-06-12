@@ -1,4 +1,8 @@
 # FILE: app/embeddings/service.py
+# Purpose: Core embedding service: generation, storage, and search.
+# Called-by: app.content.video_pipeline.asset_library, app.drive.content_indexer, app.embeddings, app.embeddings.router (+13 more)
+# Depends-on: app.embeddings.gemini_provider, app.embeddings.models, app.embeddings.schemas, app.memory (+1 more)
+# Last-renovated: 2026-06-11
 """
 Core embedding service: generation, storage, and search.
 """

@@ -1,4 +1,8 @@
 # FILE: app/debug/model_router.py
+# Purpose: Model Router: Routes debug queries to the appropriate LLM based on complexity.
+# Called-by: app.debug.debug_chat
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Model Router: Routes debug queries to the appropriate LLM based on complexity.
 

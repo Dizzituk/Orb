@@ -1,3 +1,7 @@
+# Purpose: Directory summary generator.
+# Called-by: app.rag.indexing, app.rag.pipeline, tests.test_rag_directory_summary
+# Depends-on: app.rag.models
+# Last-renovated: 2026-06-11
 """
 Directory summary generator.
 

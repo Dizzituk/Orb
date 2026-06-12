@@ -1,3 +1,7 @@
+# Purpose: Tests for signature loader.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.db, app.rag.chunking.signature_loader, app.rag.models
+# Last-renovated: 2026-06-11
 # tests/test_rag_signature_loader.py
 """Tests for signature loader."""
 

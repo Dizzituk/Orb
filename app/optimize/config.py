@@ -1,4 +1,8 @@
 # FILE: app/optimize/config.py
+# Purpose: Optimize Tab configuration.
+# Called-by: app.optimize.decomposer, app.optimize.profiler, app.optimize.proposer
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Optimize Tab configuration.
 

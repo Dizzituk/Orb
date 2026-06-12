@@ -1,4 +1,8 @@
 # FILE: app/lifestyle/fitness.py
+# Purpose: Fitness planning engine.
+# Called-by: app.lifestyle.router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Fitness planning engine.
 
@@ -15,7 +19,6 @@ All plans are personalised for Taz's profile:
 - Sugar addiction management
 - Goal: optimise bodyboarding performance, maintain strength
 """
-import json
 import logging
 from typing import List, Dict
 

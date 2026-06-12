@@ -1,4 +1,8 @@
 # FILE: app/web_automation/action_queue.py
+# Purpose: Per-session in-memory action queue with asyncio Futures for result delivery.
+# Called-by: app.web_automation.bridge, app.web_automation.router
+# Depends-on: app.db, app.web_automation.models
+# Last-renovated: 2026-06-11
 """
 Per-session in-memory action queue with asyncio Futures for result delivery.
 

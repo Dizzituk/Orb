@@ -1,4 +1,8 @@
 # FILE: app/experience/user_memory.py
+# Purpose: User Memory Integration — Layer 3 of the Unified Memory System.
+# Called-by: app.llm.critical_pipeline.stream_handler, app.llm.weaver_stream
+# Depends-on: app.astra_memory.learning, app.astra_memory.preference_models, app.astra_memory.retrieval
+# Last-renovated: 2026-06-11
 """
 User Memory Integration — Layer 3 of the Unified Memory System.
 

@@ -1,4 +1,8 @@
 # FILE: app/investments/chat_service.py
+# Purpose: Investment-aware chat context injection.
+# Called-by: app.investments.chat_router
+# Depends-on: app.investments.news_service, app.investments.service
+# Last-renovated: 2026-06-11
 """
 Investment-aware chat context injection.
 

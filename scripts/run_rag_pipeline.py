@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Purpose: Run RAG indexing pipeline.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.crypto, app.db, app.rag.pipeline
+# Last-renovated: 2026-06-11
 """
 Run RAG indexing pipeline.
 

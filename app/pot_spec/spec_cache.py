@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/spec_cache.py
+# Purpose: v2.2: Spec similarity cache — avoid regenerating specs for similar tasks.
+# Called-by: app.endpoints.cost_dashboard, app.pot_spec.grounded._spec_runner_result
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 v2.2: Spec similarity cache — avoid regenerating specs for similar tasks.
 

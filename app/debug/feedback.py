@@ -1,4 +1,8 @@
 # FILE: app/debug/feedback.py
+# Purpose: Debug session feedback — lets the user correct ASTRA's debug reasoning.
+# Called-by: app.debug.debug_chat, main
+# Depends-on: app.transparency.corrections, app.transparency.matcher, app.transparency.schemas
+# Last-renovated: 2026-06-11
 """
 Debug session feedback — lets the user correct ASTRA's debug reasoning.
 

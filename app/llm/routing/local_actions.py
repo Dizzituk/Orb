@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/local_actions.py
+# Purpose: Prompt-triggered local actions for the router.
+# Called-by: app.llm.routing.core
+# Depends-on: app.llm, app.llm.local_tools.arch_query, app.llm.local_tools.archmap_helpers, app.llm.schemas
+# Last-renovated: 2026-06-11
 """Prompt-triggered local actions for the router.
 
 Contains:

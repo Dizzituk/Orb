@@ -1,3 +1,7 @@
+# Purpose: Directory index builder.
+# Called-by: app.rag.indexing, app.rag.pipeline, tests.test_rag_directory_indexer
+# Depends-on: app.rag.models, app.rag.utils.canonical_paths
+# Last-renovated: 2026-06-11
 """
 Directory index builder.
 

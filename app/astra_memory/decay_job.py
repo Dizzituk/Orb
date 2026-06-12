@@ -1,4 +1,8 @@
 # FILE: app/astra_memory/decay_job.py
+# Purpose: Periodic Confidence Decay Job for ASTRA Memory System.
+# Called-by: app.astra_memory, app.astra_memory.router, app.memory.startup, main (+1 more)
+# Depends-on: app.astra_memory.confidence_config, app.astra_memory.confidence_scoring, app.astra_memory.preference_models, app.db
+# Last-renovated: 2026-06-11
 """
 Periodic Confidence Decay Job for ASTRA Memory System.
 

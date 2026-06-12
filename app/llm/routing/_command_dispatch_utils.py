@@ -1,3 +1,7 @@
+# Purpose: command dispatch utils
+# Called-by: app.llm.routing.command_dispatch
+# Depends-on: app.llm.routing.handler_registry
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import json
 import logging

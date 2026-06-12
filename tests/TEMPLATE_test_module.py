@@ -1,4 +1,8 @@
 # FILE: tests/test_{{MODULE_NAME}}.py
+# Purpose: Tests for {{MODULE_PATH}}
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """
 Tests for {{MODULE_PATH}}
 {{DESCRIPTION}}

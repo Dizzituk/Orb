@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/fs_path_utils.py
+# Purpose: Filesystem path utilities for the filesystem query system.
+# Called-by: app.llm.local_tools.zobie._fs_command_parser_utils_2, app.llm.local_tools.zobie._fs_live_ops_utils_1, app.llm.local_tools.zobie._fs_write_ops_utils_2, app.llm.local_tools.zobie.fs_command_parser (+4 more)
+# Depends-on: app.llm.local_tools.zobie.config
+# Last-renovated: 2026-06-11
 """Filesystem path utilities for the filesystem query system.
 
 This module handles:

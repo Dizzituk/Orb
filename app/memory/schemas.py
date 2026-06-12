@@ -1,4 +1,8 @@
 # FILE: app/memory/schemas.py
+# Purpose: Memory module Pydantic schemas.
+# Called-by: app.bridge.router, app.debug.debug_chat, app.drive.content_indexer, app.endpoints._chat_media_processors (+29 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Memory module Pydantic schemas.
 

@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/job_routing.py
+# Purpose: Routing helpers extracted from app.llm.router.
+# Called-by: app.llm.routing.core, app.llm.routing.envelope, tests.test_job_routing
+# Depends-on: app.jobs.schemas, app.llm.job_classifier, app.llm.schemas
+# Last-renovated: 2026-06-11
 """Routing helpers extracted from app.llm.router.
 
 Goal: keep app.llm.router focused on orchestration while preserving behaviour.

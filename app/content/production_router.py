@@ -1,4 +1,8 @@
 # FILE: app/content/production_router.py
+# Purpose: Production Engine API endpoints.
+# Called-by: main
+# Depends-on: app.auth, app.auth.config, app.content.models, app.content.production.cutaway_gen (+9 more)
+# Last-renovated: 2026-06-11
 """
 Production Engine API endpoints.
 

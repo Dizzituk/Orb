@@ -1,4 +1,8 @@
 # FILE: app/translation/modes.py
+# Purpose: Mode classification for ASTRA Translation Layer.
+# Called-by: app.bridge.router, app.llm.stream_router, app.translation, app.translation.integration (+1 more)
+# Depends-on: app.translation._tier0_codebase_questions, app.translation.schemas
+# Last-renovated: 2026-06-11
 """
 Mode classification for ASTRA Translation Layer.
 Every message must first be classified into Chat, Command-Capable, or Feedback.

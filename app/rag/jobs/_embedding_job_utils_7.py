@@ -1,3 +1,7 @@
+# Purpose: embedding job utils 7
+# Called-by: app.rag.jobs._embedding_batch, app.rag.jobs._embedding_priority, app.rag.jobs.embedding_job
+# Depends-on: app.rag.jobs._embedding_job_utils_6, app.rag.jobs.embedding_job, app.rag.models
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import hashlib
 import logging

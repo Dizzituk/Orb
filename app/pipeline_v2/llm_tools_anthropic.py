@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/llm_tools_anthropic.py
+# Purpose: JOB 8 (2026-06-10) - Anthropic tool-use loop adapter.
+# Called-by: app.pipeline_v2.llm_tools, app.pipeline_v2.verifier_agent.agent, tests.test_j8_live_anthropic_loop, tests.test_phase3_tools_smoke
+# Depends-on: app.pipeline_v2.llm_tools
+# Last-renovated: 2026-06-11
 """
 JOB 8 (2026-06-10) - Anthropic tool-use loop adapter.
 

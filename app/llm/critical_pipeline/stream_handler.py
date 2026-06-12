@@ -1,4 +1,8 @@
 # FILE: app/llm/critical_pipeline/stream_handler.py
+# Purpose: Main SSE stream handler for Critical Pipeline execution.
+# Called-by: app.llm.critical_pipeline, app.llm.critical_pipeline._stream_handler_utils, app.llm.critical_pipeline._stream_handler_utils_1
+# Depends-on: app.experience.context, app.experience.retrieval, app.experience.user_memory, app.llm.critical_pipeline._segment_prompt_builder (+16 more)
+# Last-renovated: 2026-06-11
 """
 Main SSE stream handler for Critical Pipeline execution.
 

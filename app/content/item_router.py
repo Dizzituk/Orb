@@ -1,4 +1,8 @@
 # FILE: app/content/item_router.py
+# Purpose: Content item router — upload source material, list items.
+# Called-by: main
+# Depends-on: app.auth, app.content, app.content.item_service, app.content.project_schemas (+1 more)
+# Last-renovated: 2026-06-11
 """
 Content item router — upload source material, list items.
 Prefix: /content

@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/scan_operations.py
+# Purpose: Scan Operations Security and Parameter Extraction (v1.19, v1.21)
+# Called-by: app.pot_spec.grounded
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Scan Operations Security and Parameter Extraction (v1.19, v1.21)
 

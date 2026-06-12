@@ -1,3 +1,7 @@
+# Purpose: embedding job utils
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.rag.jobs.embedding_job
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import os
 from pathlib import Path

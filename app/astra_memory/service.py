@@ -1,4 +1,8 @@
 # FILE: app/astra_memory/service.py
+# Purpose: ASTRA Memory Service (Job 5)
+# Called-by: app.astra_memory, app.astra_memory._service_utils, app.llm.routing.routing_persistence
+# Depends-on: app.astra_memory._service_utils, app.astra_memory.models, app.pot_spec.ledger_core
+# Last-renovated: 2026-06-11
 """
 ASTRA Memory Service (Job 5)
 
@@ -15,7 +19,6 @@ This service handles:
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 from datetime import datetime, timezone

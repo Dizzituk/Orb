@@ -1,3 +1,7 @@
+# Purpose: embedding job utils 8
+# Called-by: app.rag.jobs._embedding_priority, app.rag.jobs.embedding_job
+# Depends-on: app.rag.jobs.embedding_job
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 from enum import Enum
 _current_status = None  # Lazy init — see get_embedding_status()

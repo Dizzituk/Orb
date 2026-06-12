@@ -1,3 +1,7 @@
+# Purpose: test phase2 env smoke
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.pipeline_v2.bvl.failure_classifier, app.pipeline_v2.test_env
+# Last-renovated: 2026-06-11
 import sys, asyncio
 sys.path.insert(0, "D:/Orb")
 

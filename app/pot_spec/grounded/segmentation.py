@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/segmentation.py
+# Purpose: Pipeline Segmentation Engine (v1.0)
+# Called-by: app.pot_spec.grounded._manifest_builder, app.pot_spec.grounded._segmentation_utils_3, app.pot_spec.grounded._segmentation_utils_4, app.pot_spec.grounded._spec_runner_segmentation
+# Depends-on: app.pot_spec.grounded._manifest_builder, app.pot_spec.grounded._segmentation_utils_2, app.pot_spec.grounded._segmentation_utils_3, app.pot_spec.grounded._segmentation_utils_4 (+2 more)
+# Last-renovated: 2026-06-11
 """
 Pipeline Segmentation Engine (v1.0)
 

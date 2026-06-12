@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/ledger_format.py
+# Purpose: ASTRA v2.2 Decision Ledger — prompt formatting.
+# Called-by: app.pipeline_v2.context_assembler
+# Depends-on: app.pipeline_v2.ledger
+# Last-renovated: 2026-06-11
 """
 ASTRA v2.2 Decision Ledger — prompt formatting.
 

@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/screenshot.py
+# Purpose: Screenshot capture for visual verification.
+# Called-by: app.pipeline_v2.checkout, app.pipeline_v2.verification
+# Depends-on: app.pipeline_v2.sandbox_tools
+# Last-renovated: 2026-06-11
 """
 Screenshot capture for visual verification.
 
@@ -10,7 +14,6 @@ v1.0 (2026-03-07): Initial implementation for ASTRA v2.1.
 """
 from __future__ import annotations
 
-import base64
 import logging
 from typing import Optional, Tuple
 

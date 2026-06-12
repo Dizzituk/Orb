@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/evidence_collector.py
+# Purpose: Evidence Collector for SpecGate Contract v1.
+# Called-by: app.llm.critical_pipeline.config, app.llm.pipeline._evidence_loop_utils_3, app.llm.pipeline.evidence_loop, app.llm.pipeline.high_stakes (+6 more)
+# Depends-on: app.llm.local_tools.arch_query, app.llm.local_tools.latest_report_resolver, app.llm.local_tools.zobie.fs_live_ops, app.pot_spec._evidence_collector_utils_1
+# Last-renovated: 2026-06-11
 """
 Evidence Collector for SpecGate Contract v1.
 
@@ -22,7 +26,6 @@ v1.0 (2026-01): Initial implementation for SpecGate Contract v1
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path

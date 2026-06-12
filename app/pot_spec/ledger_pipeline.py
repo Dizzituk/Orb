@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/ledger_pipeline.py
+# Purpose: Ledger events for Blocks 1-6 (Design Loop).
+# Called-by: app.pot_spec.ledger
+# Depends-on: app.pot_spec.ledger_core
+# Last-renovated: 2026-06-11
 """Ledger events for Blocks 1-6 (Design Loop).
 
 Block 1: Job creation

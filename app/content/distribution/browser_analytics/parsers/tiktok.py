@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/browser_analytics/parsers/tiktok.py
+# Purpose: TikTok Studio analytics parser.
+# Called-by: app.content.distribution.browser_analytics.parsers, app.content.distribution.browser_analytics.tests.test_scrape
+# Depends-on: app.content.distribution.browser_analytics.parsers.common
+# Last-renovated: 2026-06-11
 """
 TikTok Studio analytics parser.
 

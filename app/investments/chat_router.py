@@ -1,4 +1,8 @@
 # FILE: app/investments/chat_router.py
+# Purpose: Investments chat endpoint.
+# Called-by: main
+# Depends-on: app.auth, app.db, app.investments.chat_service, app.providers._registry_utils_3 (+1 more)
+# Last-renovated: 2026-06-11
 """
 Investments chat endpoint.
 

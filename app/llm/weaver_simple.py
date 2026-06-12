@@ -1,4 +1,8 @@
 # FILE: app/llm/weaver_simple.py
+# Purpose: Simple Weaver - Text organizer for ASTRA.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.llm.clients, app.llm.stage_models
+# Last-renovated: 2026-06-11
 r"""
 Simple Weaver - Text organizer for ASTRA.
 

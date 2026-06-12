@@ -1,3 +1,7 @@
+# Purpose: fs command parser utils 2
+# Called-by: app.llm.local_tools.zobie.fs_command_parser
+# Depends-on: app.llm.local_tools.zobie.config, app.llm.local_tools.zobie.fs_command_parser, app.llm.local_tools.zobie.fs_path_utils
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import os
 import re

@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/config.py
+# Purpose: Configuration constants and exclusion patterns for zobie tools.
+# Called-by: app.llm.local_tools.zobie, app.llm.local_tools.zobie._fs_command_parser_utils_2, app.llm.local_tools.zobie._fs_live_ops_utils_1, app.llm.local_tools.zobie.filter_utils (+14 more)
+# Depends-on: app.llm.local_tools.archmap_helpers
+# Last-renovated: 2026-06-11
 """Configuration constants and exclusion patterns for zobie tools.
 
 Extracted from zobie_tools.py - no logic changes.

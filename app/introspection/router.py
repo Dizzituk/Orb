@@ -1,4 +1,8 @@
 # FILE: app/introspection/router.py
+# Purpose: Introspection Router - Read-Only Log Query Endpoints
+# Called-by: main
+# Depends-on: app.db, app.introspection.schemas, app.introspection.service, app.introspection.summarizer
+# Last-renovated: 2026-06-11
 """
 Introspection Router - Read-Only Log Query Endpoints
 

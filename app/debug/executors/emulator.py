@@ -1,4 +1,8 @@
 # FILE: app/debug/executors/emulator.py
+# Purpose: Thin wrappers around external systems:
+# Called-by: app.debug.executors
+# Depends-on: app.debug.adb_tools, app.llm.routing.handler_registry, app.llm.spec_flow_state, app.llm.stage_trace
+# Last-renovated: 2026-06-11
 """
 Thin wrappers around external systems:
   - ADB / Android emulator (screenshot, tap, type, key, build, install)

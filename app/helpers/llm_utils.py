@@ -1,4 +1,8 @@
 # FILE: app/helpers/llm_utils.py
+# Purpose: LLM utility functions for Orb endpoints.
+# Called-by: app.endpoints.chat, app.endpoints.chat_attachments, app.endpoints.direct_llm, app.helpers
+# Depends-on: app.auth.middleware, app.llm, app.llm.clients
+# Last-renovated: 2026-06-11
 """
 LLM utility functions for Orb endpoints.
 

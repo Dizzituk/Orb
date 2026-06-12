@@ -1,4 +1,8 @@
 # FILE: app/translation/tier0_rules.py
+# Purpose: Tier 0: Pure rule-based intent classification (no LLM calls).
+# Called-by: app.project_registry.tier0_checks, app.translation, app.translation._tier0_codebase_questions, app.translation._tier0_filesystem (+4 more)
+# Depends-on: app.project_registry.tier0_checks, app.translation._tier0_codebase_questions, app.translation._tier0_filesystem, app.translation._tier0_memory_ingest (+6 more)
+# Last-renovated: 2026-06-11
 """
 Tier 0: Pure rule-based intent classification (no LLM calls).
 

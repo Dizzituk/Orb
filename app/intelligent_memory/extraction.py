@@ -1,4 +1,8 @@
 # FILE: app/intelligent_memory/extraction.py
+# Purpose: Knowledge Extraction Pipeline — processes conversations into
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.intelligent_memory.asset_index, app.intelligent_memory.graph, app.intelligent_memory.hot_cache, app.pipeline_v2.llm_caller
+# Last-renovated: 2026-06-11
 """
 Knowledge Extraction Pipeline — processes conversations into
 structured memory entries across all three layers.

@@ -1,4 +1,8 @@
 # FILE: tests/test_critique_schemas.py
+# Purpose: Unit tests for critique schemas (Block 5).
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.llm.pipeline.critique_schemas
+# Last-renovated: 2026-06-11
 """Unit tests for critique schemas (Block 5)."""
 
 import json

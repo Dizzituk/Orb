@@ -1,4 +1,8 @@
 # FILE: app/optimize/loop_router.py
+# Purpose: Router for recursive optimisation loop.
+# Called-by: app.optimize.router
+# Depends-on: app.optimize.orchestrator, app.optimize.self_test, app.optimize.trust_gate
+# Last-renovated: 2026-06-11
 """
 Router for recursive optimisation loop.
 

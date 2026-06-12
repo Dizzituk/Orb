@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/contract_verifier.py
+# Purpose: Cross-Segment Contract Verifier (Phase 1 Job 7)
+# Called-by: app.pipeline_v2.multi_target_verifier, app.pot_spec.grounded._manifest_builder
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Cross-Segment Contract Verifier (Phase 1 Job 7)
 

@@ -1,3 +1,7 @@
+# Purpose: Context assembler.
+# Called-by: app.rag.retrieval, tests.test_rag_context_assembler
+# Depends-on: app.rag.models, app.rag.retrieval.arch_search
+# Last-renovated: 2026-06-11
 """
 Context assembler.
 

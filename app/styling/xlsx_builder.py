@@ -1,4 +1,8 @@
 # FILE: app/styling/xlsx_builder.py
+# Purpose: Build styled Excel workbooks from a structured sheet list.
+# Called-by: app.debug.executors.styled_files, scripts.legal_case._rebuild_xlsx
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Build styled Excel workbooks from a structured sheet list.
 

@@ -1,4 +1,8 @@
 # FILE: app/capabilities/loader.py
+# Purpose: ASTRA Capability Layer Loader
+# Called-by: app.capabilities, app.capabilities.injector, tests.test_capabilities
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 ASTRA Capability Layer Loader
 

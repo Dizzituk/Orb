@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/ledger.py
+# Purpose: ASTRA v2.2 Decision Ledger.
+# Called-by: app.pipeline_v2.context_assembler, app.pipeline_v2.ledger_format, app.pipeline_v2.ledger_seed, app.pipeline_v2.orchestrator
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 ASTRA v2.2 Decision Ledger.
 

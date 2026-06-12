@@ -1,3 +1,7 @@
+# Purpose: Field-level encryption using Fernet (symmetric encryption).
+# Called-by: app.crypto, app.crypto.types, tests.test_encryption, tests.test_j8_live_anthropic_loop
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 # app/crypto/encryption.py
 """
 Field-level encryption using Fernet (symmetric encryption).
@@ -10,8 +14,6 @@ Legacy PBKDF2 key derivation is retained only for migration purposes.
 
 import os
 import base64
-import hashlib
-import json
 import sys
 from pathlib import Path
 from typing import Optional

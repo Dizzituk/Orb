@@ -1,4 +1,8 @@
 # FILE: app/lifestyle/schemas.py
+# Purpose: Pydantic schemas for the Lifestyle API request/response shapes.
+# Called-by: app.bridge.dashboards, app.lifestyle.coaching, app.lifestyle.daily_view, app.lifestyle.router (+2 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Pydantic schemas for the Lifestyle API request/response shapes.
 Mirrors the pattern in app/investments/schemas.py.

@@ -1,4 +1,8 @@
 # FILE: app/content/distribution_router.py
+# Purpose: Distribution & Analytics API endpoints.
+# Called-by: main
+# Depends-on: app.auth, app.content.distribution.analytics, app.content.distribution.facebook, app.content.distribution.instagram (+7 more)
+# Last-renovated: 2026-06-11
 """
 Distribution & Analytics API endpoints.
 

@@ -1,3 +1,7 @@
+# Purpose: Transcription service interface and data models for voice-to-text.
+# Called-by: app.services.faster_whisper_service
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Transcription service interface and data models for voice-to-text.
 """

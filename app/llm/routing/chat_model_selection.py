@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/chat_model_selection.py
+# Purpose: Model selection logic for chat routing.
+# Called-by: app.bridge.capability_layer, app.llm.routing.chat_routing
+# Depends-on: app.llm.routing.chat_intent_detection, app.llm.routing.cognitive_escalation, app.llm.routing.confirmation_gate, app.llm.streaming (+3 more)
+# Last-renovated: 2026-06-11
 """
 Model selection logic for chat routing.
 

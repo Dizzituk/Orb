@@ -1,4 +1,8 @@
 # FILE: app/llm/_xlsx_extractor.py
+# Purpose: Text extraction from Excel spreadsheets (.xlsx, .xls).
+# Called-by: app.llm.file_analyzer
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Text extraction from Excel spreadsheets (.xlsx, .xls).
 

@@ -1,4 +1,8 @@
 # FILE: scripts/legal_case/_narrative_parser.py
+# Purpose: Parse the existing narrative document content (plain-text form) into
+# Called-by: scripts.legal_case._rebuild_docx
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Parse the existing narrative document content (plain-text form) into
 structured blocks that ASTRA's docx builder can render.

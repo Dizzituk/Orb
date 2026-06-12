@@ -1,4 +1,8 @@
 # FILE: app/investments/trading212_client.py
+# Purpose: Async HTTP client for the Trading 212 API.
+# Called-by: app.investments.service
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Async HTTP client for the Trading 212 API.
 

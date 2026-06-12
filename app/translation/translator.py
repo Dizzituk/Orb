@@ -1,4 +1,8 @@
 # FILE: app/translation/translator.py
+# Purpose: Main Translation Layer coordinator for ASTRA.
+# Called-by: app.translation, app.translation.integration
+# Depends-on: app.project_registry.wake_word, app.translation.contextual_intent, app.translation.feedback, app.translation.gates (+7 more)
+# Last-renovated: 2026-06-11
 """
 Main Translation Layer coordinator for ASTRA.
 Converts "Tazish" (natural language) into canonical intents with safety gates.

@@ -1,4 +1,8 @@
 # FILE: app/investments/coinmarketcap_client.py
+# Purpose: Async HTTP client for the CoinMarketCap API (free tier).
+# Called-by: app.investments.router, app.investments.service
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Async HTTP client for the CoinMarketCap API (free tier).
 

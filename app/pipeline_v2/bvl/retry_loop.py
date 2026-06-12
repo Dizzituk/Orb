@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/bvl/retry_loop.py
+# Purpose: BVL Retry Loop — surgical fix attempts when a tier fails.
+# Called-by: app.pipeline_v2.bvl.bvl_orchestrator
+# Depends-on: app.pipeline_v2.agentic_builder, app.pipeline_v2.build_targets, app.pipeline_v2.bvl.bvl_models, app.pipeline_v2.bvl.cross_model_diagnostic (+3 more)
+# Last-renovated: 2026-06-11
 """
 BVL Retry Loop — surgical fix attempts when a tier fails.
 
@@ -18,7 +22,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 from app.pipeline_v2.bvl.bvl_models import (

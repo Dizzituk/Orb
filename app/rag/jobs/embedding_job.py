@@ -1,4 +1,8 @@
 # FILE: app/rag/jobs/embedding_job.py
+# Purpose: Background embedding job with incremental + priority support.
+# Called-by: app.llm.embedding_stream, app.llm.local_tools.zobie.rag_helpers, app.llm.local_tools.zobie.streams.archmap_full, app.llm.local_tools.zobie.streams.scan_sandbox (+6 more)
+# Depends-on: app.rag.jobs._embedding_batch, app.rag.jobs._embedding_job_utils_6, app.rag.jobs._embedding_job_utils_7, app.rag.jobs._embedding_job_utils_8 (+1 more)
+# Last-renovated: 2026-06-11
 """
 Background embedding job with incremental + priority support.
 

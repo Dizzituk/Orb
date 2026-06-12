@@ -1,4 +1,8 @@
 # FILE: app/introspection/schemas.py
+# Purpose: Schemas for log introspection feature.
+# Called-by: app.introspection, app.introspection.chat_integration, app.introspection.router, app.introspection.service (+1 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Schemas for log introspection feature.
 

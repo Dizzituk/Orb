@@ -1,8 +1,23 @@
+# Purpose: refactor schemas utils 1
+# Called-by: app.pot_spec.grounded.refactor_schemas
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:  # C4 fix (2026-06-11): annotation-only; the parent imports
+    # this module at its top, so a runtime back-import would be circular.
+    from app.pot_spec.grounded.refactor_schemas import (
+        ChangeDecision,
+        ClassifiedMatchV3,
+        ExpansionFailureReason,
+        MatchBucket,
+        RefactorPlan,
+        RiskLevel,
+    )
 
 
 @dataclass
@@ -243,6 +258,8 @@ class RefactorPlanV3:
     
     def has_critical_changes(self) -> bool:
         """Check if any CHANGE decisions are on CRITICAL risk items."""
+        # C4 fix: deferred import — parent is fully loaded by call time.
+        from app.pot_spec.grounded.refactor_schemas import ChangeDecision, RiskLevel
         for m in self.classified_matches:
             if m.decision == ChangeDecision.CHANGE and m.risk_level == RiskLevel.CRITICAL:
                 return True
@@ -298,6 +315,8 @@ class RefactorPlanV3:
     
     def to_v2(self) -> RefactorPlan:
         """Convert to v2 RefactorPlan for backward compatibility."""
+        # C4 fix: deferred import — parent is fully loaded by call time.
+        from app.pot_spec.grounded.refactor_schemas import RefactorPlan
         return RefactorPlan(
             search_term=self.search_term,
             replace_term=self.replace_term,

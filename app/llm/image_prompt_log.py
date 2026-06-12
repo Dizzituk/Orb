@@ -1,4 +1,8 @@
 # FILE: app/llm/image_prompt_log.py
+# Purpose: Persistent log of synthesised image prompts.
+# Called-by: app.llm.image_extractor, app.llm.image_router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Persistent log of synthesised image prompts.
 

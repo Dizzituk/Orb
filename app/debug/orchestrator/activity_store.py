@@ -1,4 +1,8 @@
 # FILE: app/debug/orchestrator/activity_store.py
+# Purpose: Activity log for Debug Projects.
+# Called-by: app.debug.debug_chat, app.debug.orchestrator.chat_stream_bridge, app.debug.orchestrator.endpoint
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Activity log for Debug Projects.
 

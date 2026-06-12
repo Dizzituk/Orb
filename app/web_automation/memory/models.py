@@ -1,4 +1,8 @@
 # FILE: app/web_automation/memory/models.py
+# Purpose: Pydantic data shapes for the flow memory system.
+# Called-by: app.web_automation.memory, app.web_automation.memory.checks, app.web_automation.memory.diagnostics, app.web_automation.memory.runner (+1 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Pydantic data shapes for the flow memory system.
 

@@ -1,4 +1,8 @@
 # FILE: app/llm/pipeline/critique_parts/spec_compliance.py
+# Purpose: Block 5: DETERMINISTIC Spec-Compliance Check (v1.3+ / v2.2)
+# Called-by: app.llm.pipeline.critique
+# Depends-on: app.llm.pipeline.critique_parts._spec_compliance_utils_2, app.llm.pipeline.critique_schemas
+# Last-renovated: 2026-06-11
 """Block 5: DETERMINISTIC Spec-Compliance Check (v1.3+ / v2.2)
 
 Platform detection, stack mismatch, scope inflation, and all related helpers.

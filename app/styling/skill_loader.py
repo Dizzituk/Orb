@@ -1,4 +1,8 @@
 # FILE: app/styling/skill_loader.py
+# Purpose: Skill resolver for styled file creators.
+# Called-by: app.debug.executors.styled_files
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Skill resolver for styled file creators.
 

@@ -1,4 +1,8 @@
 # FILE: app/grounding/__init__.py
+# Purpose: Grounded Intelligence System — Package Init.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Grounded Intelligence System — Package Init.
 

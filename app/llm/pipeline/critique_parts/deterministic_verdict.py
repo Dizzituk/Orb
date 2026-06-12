@@ -1,4 +1,8 @@
 # FILE: app/llm/pipeline/critique_parts/deterministic_verdict.py
+# Purpose: Deterministic Verdict Engine — Orchestrates all deterministic checks.
+# Called-by: app.llm.pipeline.critique
+# Depends-on: app.llm.pipeline.critique_parts.coverage_checks, app.llm.pipeline.critique_parts.inventory_checks, app.llm.pipeline.critique_parts.ordering_checks, app.llm.pipeline.critique_parts.prohibition_checks (+3 more)
+# Last-renovated: 2026-06-11
 """
 Deterministic Verdict Engine — Orchestrates all deterministic checks.
 
@@ -16,7 +20,6 @@ verification migration.
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional

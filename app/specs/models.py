@@ -1,4 +1,8 @@
 # FILE: app/specs/models.py
+# Purpose: SQLAlchemy ORM models for ASTRA Spec storage.
+# Called-by: app.db, app.memory.service, app.specs, app.specs.service
+# Depends-on: app.crypto, app.db
+# Last-renovated: 2026-06-11
 """
 SQLAlchemy ORM models for ASTRA Spec storage.
 

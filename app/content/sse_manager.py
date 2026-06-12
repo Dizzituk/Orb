@@ -1,4 +1,8 @@
 # FILE: app/content/sse_manager.py
+# Purpose: Content SSE manager — per-project event streams.
+# Called-by: app.content.stream_router, app.content.style_router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Content SSE manager — per-project event streams.
 Follows existing streaming patterns from app/llm/streaming.py.

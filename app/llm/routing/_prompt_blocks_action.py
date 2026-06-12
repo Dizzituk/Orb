@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/_prompt_blocks_action.py
+# Purpose: Bias-to-action prompt block for stream routing.
+# Called-by: app.llm.routing.prompt_builders
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Bias-to-action prompt block for stream routing.
 

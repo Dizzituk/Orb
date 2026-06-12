@@ -1,4 +1,8 @@
 # FILE: app/memory/summary_generator.py
+# Purpose: Generates and updates conversation summaries using a cheap/fast LLM.
+# Called-by: app.memory.integration, tests.test_conversation_memory
+# Depends-on: app.llm._streaming_utils_3, app.memory.conversation_models, app.memory.conversation_schemas, app.memory.conversation_service (+1 more)
+# Last-renovated: 2026-06-11
 """
 Generates and updates conversation summaries using a cheap/fast LLM.
 

@@ -1,4 +1,8 @@
 # FILE: app/content/style_service.py
+# Purpose: Style reference service — upload, list, analysis lifecycle.
+# Called-by: app.content.style_analyser, app.content.style_router
+# Depends-on: app.content.project_models
+# Last-renovated: 2026-06-11
 """
 Style reference service — upload, list, analysis lifecycle.
 """

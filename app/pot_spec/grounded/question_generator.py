@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/question_generator.py
+# Purpose: Question Generator for SpecGate
+# Called-by: app.pot_spec.grounded.spec_generation
+# Depends-on: app.pot_spec.evidence_collector, app.pot_spec.grounded.domain_detection, app.pot_spec.grounded.spec_models, app.pot_spec.grounded.step_derivation
+# Last-renovated: 2026-06-11
 """
 Question Generator for SpecGate
 

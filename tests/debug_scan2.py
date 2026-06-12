@@ -1,3 +1,7 @@
+# Purpose: debug scan2
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.memory.domains.dependency_scanner
+# Last-renovated: 2026-06-11
 from app.memory.domains.dependency_scanner import _iter_python_files_with_content, _extract_imports_from_source, _make_relative
 
 root = r"D:\Orb"

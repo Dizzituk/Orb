@@ -1,4 +1,8 @@
 # FILE: app/grounding/source_attribution.py
+# Purpose: Source Attribution for the Grounded Intelligence System.
+# Called-by: app.grounding.grounding_gate
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Source Attribution for the Grounded Intelligence System.
 

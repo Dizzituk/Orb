@@ -1,4 +1,8 @@
 # FILE: app/content/video_pipeline/heygen_client.py
+# Purpose: HeyGen API client for AI avatar video generation.
+# Called-by: app.content.video_pipeline.asset_resolver, app.content.video_pipeline.router
+# Depends-on: app.db, app.settings.service
+# Last-renovated: 2026-06-11
 """
 HeyGen API client for AI avatar video generation.
 

@@ -1,4 +1,8 @@
 # FILE: app/db.py
+# Purpose: Database configuration and session management.
+# Called-by: app.artefacts.router, app.astra_memory.decay_job, app.astra_memory.indexer, app.astra_memory.models (+154 more)
+# Depends-on: app, app.astra_memory, app.astra_memory.models, app.astra_memory.preference_models (+34 more)
+# Last-renovated: 2026-06-12
 """
 Database configuration and session management.
 
@@ -155,6 +159,12 @@ def init_db():
     from app.project_registry import models as project_registry_models  # noqa: F401
     from app.project_registry import confidence_tracker  # noqa: F401
 
+    # v12.0: Import Sentinel models (network security monitor, Phase 1)
+    from app.sentinel import models as sentinel_models  # noqa: F401
+
+    # v13.0: Import Vehicle models (OBD2 van health & mileage)
+    from app.vehicle import models as vehicle_models  # noqa: F401
+
     # v4.0: create_all with checkfirst=True (default) handles tables.
     # SQLite may raise OperationalError for pre-existing indexes.
     # We catch and log these rather than crashing startup.
@@ -231,6 +241,11 @@ def _migrate_arch_code_chunks_schema():
         ("embedding_model", "TEXT", None),
         ("embedded_at", "DATETIME", None),
         ("embedded_content_hash", "TEXT", None),
+        # v2.5 (2026-06-12): scan provenance for staleness labelling.
+        # Existing rows predate sandbox-scoped scans and came from the host
+        # tree (the 2026-06-09 run contains orb-desktop chunks, which the
+        # sandbox clone does not hold), so 'host' is the correct backfill.
+        ("source", "TEXT", "'host'"),
     ]
     
     # Add missing columns
@@ -257,6 +272,20 @@ def _migrate_arch_code_chunks_schema():
         print(f"[db_migrate] arch_code_chunks schema updated: added {added_columns}")
     else:
         logger.debug("[db_migrate] arch_code_chunks schema is up to date")
+
+    # arch_scan_runs.source (same provenance field at the run level)
+    if "arch_scan_runs" in inspector.get_table_names():
+        run_columns = {col["name"] for col in inspector.get_columns("arch_scan_runs")}
+        if "source" not in run_columns:
+            with engine.connect() as conn:
+                try:
+                    conn.execute(text(
+                        "ALTER TABLE arch_scan_runs ADD COLUMN source TEXT DEFAULT 'host'"
+                    ))
+                    conn.commit()
+                    logger.info("[db_migrate] Added column: arch_scan_runs.source")
+                except Exception as e:
+                    logger.warning(f"[db_migrate] Failed to add arch_scan_runs.source: {e}")
 
 
 def ensure_embedding_schema():

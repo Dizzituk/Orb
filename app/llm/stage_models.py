@@ -1,4 +1,8 @@
 # FILE: app/llm/stage_models.py
+# Purpose: Centralized stage-based model configuration.
+# Called-by: app.llm._spec_gate_stream_utils_2, app.llm.critical_pipeline.config, app.llm.critical_pipeline.needle_model_selector, app.llm.local_tools.zobie.streams.archmap_full (+13 more)
+# Depends-on: app.llm.frontier_models
+# Last-renovated: 2026-06-11
 """
 Centralized stage-based model configuration.
 

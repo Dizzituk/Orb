@@ -1,4 +1,8 @@
 # FILE: tests/test_provider_registry.py
+# Purpose: Tests for app/providers/registry.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app, app.providers.registry
+# Last-renovated: 2026-06-11
 """
 Tests for app/providers/registry.py
 Provider registry - manages LLM provider configurations.

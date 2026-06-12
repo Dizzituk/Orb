@@ -1,4 +1,8 @@
 # FILE: tests/test_memory_service.py
+# Purpose: Tests for app/memory/service.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.db, app.memory, app.memory.service
+# Last-renovated: 2026-06-11
 """
 Tests for app/memory/service.py
 Memory persistence - stores and retrieves conversation memory.

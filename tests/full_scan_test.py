@@ -1,3 +1,7 @@
+# Purpose: Test full scan_imports via sandbox.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.memory.domains.dependency_scanner
+# Last-renovated: 2026-06-11
 """Test full scan_imports via sandbox."""
 from app.memory.domains.dependency_scanner import scan_imports, summarise_graph
 import time

@@ -1,3 +1,7 @@
+# Purpose: codebase report utils 3
+# Called-by: app.llm.local_tools.zobie.streams._codebase_report_utils_4, app.llm.local_tools.zobie.streams._codebase_report_utils_5, app.llm.local_tools.zobie.streams.codebase_report
+# Depends-on: app.llm.local_tools.zobie.streams._codebase_report_utils_2, app.llm.local_tools.zobie.streams.codebase_report
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import json
 import logging

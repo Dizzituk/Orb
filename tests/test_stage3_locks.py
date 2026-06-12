@@ -1,4 +1,8 @@
 # FILE: tests/test_stage3_locks.py
+# Purpose: Unit tests for Stage 3 spec-hash locks.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.jobs.stage3_locks
+# Last-renovated: 2026-06-11
 """Unit tests for Stage 3 spec-hash locks.
 
 Tests verify:

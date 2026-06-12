@@ -1,3 +1,7 @@
+# Purpose: scraper schemas
+# Called-by: app.education.llm_scraper
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional

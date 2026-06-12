@@ -1,4 +1,8 @@
 # FILE: app/debug/orchestrator/chat_stream_bridge.py
+# Purpose: Bridge that runs the Debug Orchestrator and emits its events as SSE bytes in
+# Called-by: app.debug.debug_chat
+# Depends-on: app.debug.orchestrator.activity_store, app.debug.orchestrator.loop_controller, app.debug.orchestrator.schemas
+# Last-renovated: 2026-06-11
 """
 Bridge that runs the Debug Orchestrator and emits its events as SSE bytes in
 the same shape that `stream_debug_locked` already uses, so the existing Chat

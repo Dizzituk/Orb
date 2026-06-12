@@ -1,4 +1,8 @@
 # FILE: tests/test_canonical.py
+# Purpose: Tests for canonical JSON and hash computation.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.pot_spec.canonical
+# Last-renovated: 2026-06-11
 """Tests for canonical JSON and hash computation."""
 
 import pytest

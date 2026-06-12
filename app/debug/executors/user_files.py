@@ -1,4 +1,8 @@
 # FILE: app/debug/executors/user_files.py
+# Purpose: User file executors: search/read/write user-personal folders, manifest
+# Called-by: app.debug.executors
+# Depends-on: app.cloud.rclone_service, app.db, app.debug.executors._paths, app.debug.size_warning (+8 more)
+# Last-renovated: 2026-06-11
 """
 User file executors: search/read/write user-personal folders, manifest
 maintenance, vision (image reading), web search, cloud storage.

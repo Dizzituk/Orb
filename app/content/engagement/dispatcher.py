@@ -1,4 +1,8 @@
 # FILE: app/content/engagement/dispatcher.py
+# Purpose: Response Dispatcher.
+# Called-by: app.content.engagement.router
+# Depends-on: app.content.distribution.facebook, app.content.distribution.youtube, app.content.engagement.models, app.content.engagement.responder
+# Last-renovated: 2026-06-11
 """
 Response Dispatcher.
 

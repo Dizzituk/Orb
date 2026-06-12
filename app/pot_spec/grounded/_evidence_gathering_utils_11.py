@@ -1,6 +1,9 @@
+# Purpose: evidence gathering utils 11
+# Called-by: app.pot_spec.grounded.evidence_gathering
+# Depends-on: app.pot_spec.grounded._evidence_gathering_utils_9, app.pot_spec.grounded.evidence_gathering, app.sandbox_fs
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
-import os
 from app.pot_spec.grounded._evidence_gathering_utils_9 import USER_SCAN_ROOTS, scan_root_for_file
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple

@@ -1,4 +1,8 @@
 # FILE: app/rag/_answerer_structured_context.py
+# Purpose: Structured codebase context for RAG queries.
+# Called-by: app.rag.answerer
+# Depends-on: app.db, app.memory.rag_entries_model
+# Last-renovated: 2026-06-11
 """
 Structured codebase context for RAG queries.
 

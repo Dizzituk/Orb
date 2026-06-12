@@ -1,3 +1,7 @@
+# Purpose: Boot Recovery — Snapshot, smart repair, and hard revert for optimisation passes.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.pipeline_v2.llm_compat
+# Last-renovated: 2026-06-11
 """
 Boot Recovery — Snapshot, smart repair, and hard revert for optimisation passes.
 
@@ -17,7 +21,6 @@ v1.0 (2026-03-27): Initial implementation.
 from __future__ import annotations
 
 import logging
-import time
 from typing import Any, Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)

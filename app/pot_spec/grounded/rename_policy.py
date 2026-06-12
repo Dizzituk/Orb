@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/rename_policy.py
+# Purpose: Rename Policy Engine (v1.0)
+# Called-by: app.pot_spec.grounded._multi_file_detection_utils_2, app.pot_spec.grounded._rename_policy_utils_2, app.pot_spec.grounded.multi_file_detection
+# Depends-on: app.pot_spec.grounded._rename_policy_utils_2
+# Last-renovated: 2026-06-11
 """
 Rename Policy Engine (v1.0)
 
@@ -33,7 +37,6 @@ Version: v1.0 (2026-02-01)
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple

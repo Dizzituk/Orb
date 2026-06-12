@@ -1,4 +1,8 @@
 # FILE: app/llm/critical_pipeline/__init__.py
+# Purpose: Critical Pipeline package — refactored from critical_pipeline_stream.py (v3.0).
+# Called-by: app.llm.critical_pipeline_stream
+# Depends-on: app.llm.critical_pipeline.evidence, app.llm.critical_pipeline.job_classification, app.llm.critical_pipeline.quickcheck_micro, app.llm.critical_pipeline.quickcheck_scan (+1 more)
+# Last-renovated: 2026-06-11
 """
 Critical Pipeline package — refactored from critical_pipeline_stream.py (v3.0).
 

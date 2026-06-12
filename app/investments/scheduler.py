@@ -1,4 +1,8 @@
 # FILE: app/investments/scheduler.py
+# Purpose: APScheduler jobs for automated portfolio snapshots.
+# Called-by: main
+# Depends-on: app.db, app.investments.service
+# Last-renovated: 2026-06-11
 """
 APScheduler jobs for automated portfolio snapshots.
 
@@ -9,7 +13,6 @@ Runs:
 Registers with FastAPI lifespan for clean start/stop.
 """
 import logging
-import asyncio
 from contextlib import asynccontextmanager
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler

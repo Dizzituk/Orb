@@ -1,3 +1,7 @@
+# Purpose: foundation templates utils 2
+# Called-by: app.llm.critical_pipeline.foundation_templates
+# Depends-on: app.llm.critical_pipeline.foundation_templates
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
 from dataclasses import dataclass, field

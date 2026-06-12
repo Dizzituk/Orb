@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/ledger_seed.py
+# Purpose: ASTRA v2.2 Decision Ledger — seeding helpers.
+# Called-by: app.pipeline_v2.orchestrator
+# Depends-on: app.pipeline_v2.ledger
+# Last-renovated: 2026-06-11
 """
 ASTRA v2.2 Decision Ledger — seeding helpers.
 

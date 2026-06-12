@@ -1,3 +1,7 @@
+# Purpose: fs live ops utils 1
+# Called-by: app.llm.local_tools.zobie.fs_live_ops
+# Depends-on: app.llm.local_tools.zobie.config, app.llm.local_tools.zobie.fs_live_ops, app.llm.local_tools.zobie.fs_path_utils, app.llm.local_tools.zobie.sandbox_client
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import os
 import sys

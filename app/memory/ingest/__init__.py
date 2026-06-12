@@ -1,4 +1,8 @@
 # FILE: app/memory/ingest/__init__.py
+# Purpose: Document ingestion pipeline package (Spec Section 9).
+# Called-by: app.memory.ingest.pipeline
+# Depends-on: app.memory.ingest.classifier, app.memory.ingest.parsers, app.memory.ingest.pipeline
+# Last-renovated: 2026-06-11
 """
 Document ingestion pipeline package (Spec Section 9).
 

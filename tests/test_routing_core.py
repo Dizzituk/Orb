@@ -1,4 +1,8 @@
 # FILE: tests/test_routing_core.py
+# Purpose: Tests for app/llm/routing/core.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.llm.routing, app.llm.routing.core
+# Last-renovated: 2026-06-11
 """
 Tests for app/llm/routing/core.py
 Core routing logic - model selection and dispatch.

@@ -1,4 +1,8 @@
 # FILE: app/debug/orchestrator/__init__.py
+# Purpose: ASTRA Debug Orchestrator.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.debug.orchestrator.schemas
+# Last-renovated: 2026-06-11
 """
 ASTRA Debug Orchestrator.
 

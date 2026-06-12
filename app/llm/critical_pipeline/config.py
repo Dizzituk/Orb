@@ -1,4 +1,8 @@
 # FILE: app/llm/critical_pipeline/config.py
+# Purpose: Critical Pipeline configuration: imports, feature flags, and model resolution.
+# Called-by: app.llm.critical_pipeline._stream_handler_utils_1, app.llm.critical_pipeline.evidence, app.llm.critical_pipeline.quickcheck_scan, app.llm.critical_pipeline.stream_handler
+# Depends-on: app.jobs.schemas, app.llm.audit_logger, app.llm.local_tools.latest_report_resolver, app.llm.pipeline.critique_schemas (+10 more)
+# Last-renovated: 2026-06-11
 """
 Critical Pipeline configuration: imports, feature flags, and model resolution.
 

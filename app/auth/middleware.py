@@ -1,3 +1,7 @@
+# Purpose: FastAPI authentication middleware using session tokens.
+# Called-by: app.auth, app.auth.router, app.debug.debug_chat, app.debug.file_upload_router (+12 more)
+# Depends-on: app.auth, app.auth.config
+# Last-renovated: 2026-06-11
 # app/auth/middleware.py
 """
 FastAPI authentication middleware using session tokens.

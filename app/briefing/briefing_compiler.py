@@ -1,3 +1,7 @@
+# Purpose: briefing compiler
+# Called-by: app.briefing.briefing_audio, app.briefing.briefing_scheduler
+# Depends-on: app.briefing.briefing_collector, app.briefing.news_profiles
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 
 import logging
@@ -116,6 +120,8 @@ def compile_briefing(collection: BriefingCollection, frequency: str = "daily", p
 
         briefing.sections.append(section)
 
+    _append_vehicle_section(briefing, text_parts)
+
     if briefing.astra_alerts:
         text_parts.append("## ASTRA-Relevant Alerts")
         text_parts.extend(f"- {alert}" for alert in briefing.astra_alerts)
@@ -130,6 +136,30 @@ def compile_briefing(collection: BriefingCollection, frequency: str = "daily", p
         profile, len(briefing.sections), briefing.total_items,
     )
     return briefing
+
+
+def _append_vehicle_section(briefing: CompiledBriefing, text_parts: list[str]) -> None:
+    """Van & Vehicle warnings (maintenance lead times, wear, DTCs) from the
+    vehicle module — added 2026-06-12. Quiet days add nothing; failures are
+    swallowed so the news briefing never breaks on vehicle data."""
+    try:
+        from app.vehicle.briefing_section import SECTION_NAME, build_vehicle_briefing_items
+        items = build_vehicle_briefing_items()
+    except Exception as exc:
+        logger.warning("[briefing_compiler] vehicle section skipped: %s", exc)
+        return
+    if not items:
+        return
+    section = BriefingSection(topic_name=SECTION_NAME, topic_key="vehicle")
+    briefing.audio_script.append(AudioSegment(text="Now to the van.", voice_role="headlines", pause_after_ms=800))
+    text_parts.append(f"## {SECTION_NAME}")
+    for it in items:
+        section.items.append(BriefingItem(headline=it["headline"], summary=it["summary"], topic_key="vehicle"))
+        briefing.audio_script.append(AudioSegment(text=it["summary"], voice_role="analysis", pause_after_ms=600))
+        text_parts.append(f"- **{it['headline']}**")
+        text_parts.append(f"  {it['summary']}")
+        text_parts.append("")
+    briefing.sections.append(section)
 
 
 __all__ = [

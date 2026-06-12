@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/bvl/failure_classifier.py
+# Purpose: JOB 7 (2026-06-10) - Environment-vs-code classification for tier failures.
+# Called-by: app.pipeline_v2.bvl.retry_loop, tests.test_phase2_env_smoke
+# Depends-on: app.pipeline_v2.build_targets, app.pipeline_v2.bvl.bvl_models, app.pipeline_v2.bvl.emulator_bridge, app.pipeline_v2.test_env
+# Last-renovated: 2026-06-11
 """
 JOB 7 (2026-06-10) - Environment-vs-code classification for tier failures.
 

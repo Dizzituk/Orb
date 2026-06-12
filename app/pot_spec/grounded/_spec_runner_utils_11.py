@@ -1,3 +1,7 @@
+# Purpose: spec runner utils 11
+# Called-by: app.pot_spec.grounded._spec_runner_deterministic_refactor, app.pot_spec.grounded._spec_runner_result, app.pot_spec.grounded._spec_runner_segmentation, app.pot_spec.grounded._spec_runner_utils_12 (+2 more)
+# Depends-on: app.pot_spec.grounded._spec_runner_utils_10, app.pot_spec.spec_gate_persistence
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import os
 import re

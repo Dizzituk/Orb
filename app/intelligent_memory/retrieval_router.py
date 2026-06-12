@@ -1,4 +1,8 @@
 # FILE: app/intelligent_memory/retrieval_router.py
+# Purpose: Retrieval Router — three-layer cascading query engine.
+# Called-by: app.intelligent_memory
+# Depends-on: app.intelligent_memory.asset_index, app.intelligent_memory.graph, app.intelligent_memory.hot_cache, app.memory.router
+# Last-renovated: 2026-06-11
 """
 Retrieval Router — three-layer cascading query engine.
 

@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/core.py
+# Purpose: Core routing implementation (moved from app/llm/router.py).
+# Called-by: app.invocation.router, app.llm.router, app.llm.routing, tests.test_routing_core
+# Depends-on: app.jobs.schemas, app.llm.audit_logger, app.llm.fallbacks, app.llm.file_classifier (+14 more)
+# Last-renovated: 2026-06-11
 """Core routing implementation (moved from app/llm/router.py).
 
 This file intentionally preserves the existing behavior.
@@ -52,9 +56,6 @@ ZOBIE MAP LOCAL ACTION:
 import os
 import logging
 import asyncio
-import inspect
-import json
-import re
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote

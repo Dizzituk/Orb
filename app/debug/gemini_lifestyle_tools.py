@@ -1,4 +1,8 @@
 # FILE: app/debug/gemini_lifestyle_tools.py
+# Purpose: Lifestyle tool declarations and executors for the Gemini multimodal
+# Called-by: app.debug.action_executor, app.debug.gemini_tool_loop, app.debug.tool_definitions
+# Depends-on: app.debug.gemini_lifestyle_decls, app.tools.lifestyle_nutrition_tools, app.tools.lifestyle_tools
+# Last-renovated: 2026-06-11
 """
 Lifestyle tool declarations and executors for the Gemini multimodal
 tool loop (app.debug.gemini_tool_loop).
@@ -588,6 +592,11 @@ LIFESTYLE_TOOL_EXECUTORS = {
     "get_weight_trend": _exec_get_weight_trend,
     "get_recent_workouts": _exec_get_recent_workouts,
 }
+
+# Energy engine (2026-06-11): executors live in gemini_energy_tools.py to
+# respect this file's size ceiling; registered here so the loop finds them.
+from app.debug.gemini_energy_tools import ENERGY_TOOL_EXECUTORS as _energy_execs
+LIFESTYLE_TOOL_EXECUTORS.update(_energy_execs)
 
 
 def summarise_lifestyle_call(name: str, args: dict) -> str:

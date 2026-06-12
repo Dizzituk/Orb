@@ -1,4 +1,8 @@
 # FILE: app/overwatcher/cost_pricing.py
+# Purpose: Model pricing table for ASTRA cost tracking.
+# Called-by: app.cost.cost_recorder
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Model pricing table for ASTRA cost tracking.
 

@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/browser_analytics/acquire.py
+# Purpose: Low-level snapshot acquisition for a single URL attempt.
+# Called-by: app.content.distribution.browser_analytics.scrape
+# Depends-on: app.content.distribution.browser_analytics.popup_dismiss, app.web_automation, app.web_automation.bridge
+# Last-renovated: 2026-06-11
 """
 Low-level snapshot acquisition for a single URL attempt.
 

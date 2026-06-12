@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/surgical_extractor.py
+# Purpose: Surgical Extractor — Deterministic symbol extraction from monolith files.
+# Called-by: app.orchestrator.refactor_loop
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Surgical Extractor — Deterministic symbol extraction from monolith files.
 

@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/streams/__init__.py
+# Purpose: Stream generators for zobie tools.
+# Called-by: app.llm.local_tools.zobie_tools
+# Depends-on: app.llm.local_tools.zobie.streams.archmap_db, app.llm.local_tools.zobie.streams.archmap_full, app.llm.local_tools.zobie.streams.batch_ops, app.llm.local_tools.zobie.streams.codebase_report (+5 more)
+# Last-renovated: 2026-06-11
 """Stream generators for zobie tools.
 
 Re-exports all stream generator functions.

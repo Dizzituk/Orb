@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/prompt_builders.py
+# Purpose: System prompt and message builders for stream routing.
+# Called-by: app.bridge.capability_layer, app.endpoints.chat_attachments, app.llm.routing.chat_routing, app.llm.routing.image_chat_routing
+# Depends-on: app.core_principles, app.llm.astra_filesystem_block, app.llm.context, app.llm.routing._prompt_blocks (+12 more)
+# Last-renovated: 2026-06-11
 """
 System prompt and message builders for stream routing.
 

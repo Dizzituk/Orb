@@ -1,4 +1,8 @@
 # FILE: scripts/start_full_sandbox_orb.py
+# Purpose: Start full Orb (backend + frontend) in Windows Sandbox with visible windows.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.sandbox.client
+# Last-renovated: 2026-06-11
 """Start full Orb (backend + frontend) in Windows Sandbox with visible windows."""
 
 import sys

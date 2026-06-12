@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/spec_gate_types.py
+# Purpose: Spec Gate v2 - Types and Constants
+# Called-by: app.pot_spec.grounded.spec_runner, app.pot_spec.spec_gate_parsers, app.pot_spec.spec_gate_v2, tests.test_spec_gate_grounded
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Spec Gate v2 - Types and Constants
 

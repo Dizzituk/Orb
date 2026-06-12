@@ -1,4 +1,8 @@
 # FILE: app/llm/task_extractor.py
+# Purpose: Task Extractor for Orb Routing Pipeline.
+# Called-by: app.llm
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Task Extractor for Orb Routing Pipeline.
 

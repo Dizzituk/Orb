@@ -1,4 +1,8 @@
 # FILE: app/lifestyle/nutrition.py
+# Purpose: Nutrition estimation engine.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Nutrition estimation engine.
 
@@ -12,7 +16,6 @@ Future (phone bridge phase):
 - Barcode scanning via Open Food Facts API
 - Photo-based meal recognition via Gemini Vision
 """
-import json
 import logging
 from typing import Optional, Dict
 

@@ -1,4 +1,8 @@
 # FILE: app/web_automation/bridge.py
+# Purpose: Public Python bridge for web automation.
+# Called-by: app.content.distribution.browser_analytics.acquire, app.content.distribution.browser_analytics.popup_dismiss, app.content.distribution.browser_analytics.recon, app.web_automation (+2 more)
+# Depends-on: app.db, app.web_automation, app.web_automation.action_queue, app.web_automation.models (+1 more)
+# Last-renovated: 2026-06-11
 """
 Public Python bridge for web automation.
 

@@ -1,4 +1,8 @@
 # FILE: app/core_principles.py
+# Purpose: ASTRA Core Engineering Principles.
+# Called-by: app.debug.system_prompt, app.llm.critical_pipeline.prompt_builder, app.llm.routing.prompt_builders, app.pipeline_v2.agentic_builder (+1 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 ASTRA Core Engineering Principles.
 

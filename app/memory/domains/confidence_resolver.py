@@ -1,4 +1,8 @@
 # FILE: app/memory/domains/confidence_resolver.py
+# Purpose: Confidence response resolver (Spec Section 5.3).
+# Called-by: app.memory.domains
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Confidence response resolver (Spec Section 5.3).
 

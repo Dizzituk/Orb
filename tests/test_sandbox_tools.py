@@ -1,4 +1,8 @@
 # FILE: tests/test_sandbox_tools.py
+# Purpose: Tests for sandbox tools and intent detection.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.sandbox.manager, app.sandbox.tools
+# Last-renovated: 2026-06-11
 """Tests for sandbox tools and intent detection."""
 
 import sys

@@ -1,4 +1,8 @@
 # FILE: tests/test_llm_policy.py
+# Purpose: Tests for app/llm/policy.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.llm, app.llm.policy
+# Last-renovated: 2026-06-11
 """
 Tests for app/llm/policy.py
 Model selection policy - rules for choosing models.

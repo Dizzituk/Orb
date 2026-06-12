@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/chat_routing.py
+# Purpose: Chat and normal routing handlers for stream routing.
+# Called-by: app.endpoints.chat_attachments, app.llm._stream_router_utils, app.llm.project_scoping_stream, app.llm.stream_router
+# Depends-on: app.debug.tool_definitions, app.grounding.chat_integration, app.llm.chat_tool_loop, app.llm.file_analyzer (+16 more)
+# Last-renovated: 2026-06-11
 """
 Chat and normal routing handlers for stream routing.
 

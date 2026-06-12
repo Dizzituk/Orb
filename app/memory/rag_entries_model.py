@@ -1,4 +1,8 @@
 # FILE: app/memory/rag_entries_model.py
+# Purpose: SQLAlchemy model for the rag_entries table.
+# Called-by: app.content.video_pipeline.asset_library, app.db, app.memory.commands.purge, app.memory.domains.context (+9 more)
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """
 SQLAlchemy model for the rag_entries table.
 

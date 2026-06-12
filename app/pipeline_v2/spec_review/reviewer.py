@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/spec_review/reviewer.py
+# Purpose: Always-on Spec Reviewer — the main entry point.
+# Called-by: app.pipeline_v2.spec_review
+# Depends-on: app.llm.stage_models, app.pipeline_v2.build_targets, app.pipeline_v2.models, app.pipeline_v2.spec_review.context (+4 more)
+# Last-renovated: 2026-06-11
 """
 Always-on Spec Reviewer — the main entry point.
 

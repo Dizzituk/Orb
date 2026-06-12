@@ -1,4 +1,8 @@
 # FILE: app/translation/_tier0_filesystem.py
+# Purpose: Tier 0 filesystem, multi-file, refactor, and chat pattern rules.
+# Called-by: app.translation.tier0_rules
+# Depends-on: app.translation.schemas, app.translation.tier0_rules
+# Last-renovated: 2026-06-11
 """
 Tier 0 filesystem, multi-file, refactor, and chat pattern rules.
 

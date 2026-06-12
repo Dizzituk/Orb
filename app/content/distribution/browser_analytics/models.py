@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/browser_analytics/models.py
+# Purpose: Channel-level analytics — aggregated stats for a whole account/page,
+# Called-by: app.content.distribution.browser_analytics.router, app.content.distribution.browser_analytics.scrape, app.content.distribution.browser_analytics.tests.test_scrape, main
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """
 Channel-level analytics — aggregated stats for a whole account/page,
 separate from per-post metrics.

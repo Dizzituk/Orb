@@ -1,3 +1,7 @@
+# Purpose: segment loop utils
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.orchestrator.segment_state, app.pipeline_v2.checks, app.pot_spec.grounded.segment_schemas
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
 import os

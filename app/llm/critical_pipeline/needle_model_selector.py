@@ -1,4 +1,8 @@
 # FILE: app/llm/critical_pipeline/needle_model_selector.py
+# Purpose: Needle-Based Model Selection — Dynamic model routing per segment.
+# Called-by: app.llm.critical_pipeline._stream_handler_utils_1
+# Depends-on: app.llm.stage_models
+# Last-renovated: 2026-06-11
 """
 Needle-Based Model Selection — Dynamic model routing per segment.
 
@@ -23,7 +27,6 @@ v1.0 (2026-02-10): Initial implementation — Phase 3C.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)

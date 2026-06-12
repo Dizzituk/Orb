@@ -1,4 +1,8 @@
 # FILE: app/intelligent_memory/__init__.py
+# Purpose: Intelligent Memory Architecture.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.intelligent_memory.hot_cache, app.intelligent_memory.retrieval_router
+# Last-renovated: 2026-06-11
 """
 Intelligent Memory Architecture.
 

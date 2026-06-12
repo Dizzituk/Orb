@@ -1,4 +1,8 @@
 # FILE: app/memory/seed_tiers.py
+# Purpose: Master seeder for architecture memory tiers.
+# Called-by: app.memory.startup
+# Depends-on: app.memory.domains.decisions, app.memory.domains.dependency_scanner, app.memory.domains.package_summariser, app.memory.domains.tier_content
+# Last-renovated: 2026-06-11
 """
 Master seeder for architecture memory tiers.
 

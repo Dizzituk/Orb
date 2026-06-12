@@ -1,3 +1,7 @@
+# Purpose: self test
+# Called-by: app.optimize.loop_router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 
 import logging

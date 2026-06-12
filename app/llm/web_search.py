@@ -1,4 +1,8 @@
 # FILE: app/llm/web_search.py
+# Purpose: Web search orchestration for Orb.
+# Called-by: app.bridge.router, app.briefing.briefing_collector, app.grounding.grounding_gate, app.llm.chart_research (+4 more)
+# Depends-on: app.providers.registry, app.tools.registry, app.tools.source_classifier
+# Last-renovated: 2026-06-11
 """
 Web search orchestration for Orb.
 

@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/latest_report_resolver.py
+# Purpose: Latest Architecture + Codebase Report Resolver (Read-Only)
+# Called-by: app.llm.critical_pipeline.config, app.llm.local_tools.zobie.streams.latest_reports, app.pot_spec.evidence_collector
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 r"""
 Latest Architecture + Codebase Report Resolver (Read-Only)
 
@@ -21,7 +25,6 @@ v1.1 (2026-01): Added fallback directory for codebase report resolution
 """
 from __future__ import annotations
 
-import os
 import glob
 import logging
 from pathlib import Path

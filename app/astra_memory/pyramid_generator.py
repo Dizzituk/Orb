@@ -1,4 +1,8 @@
 # FILE: app/astra_memory/pyramid_generator.py
+# Purpose: Summary Pyramid Generator for ASTRA Memory System.
+# Called-by: app.astra_memory, app.astra_memory.router
+# Depends-on: app.astra_memory.preference_models, app.crypto, app.memory.models
+# Last-renovated: 2026-06-11
 """
 Summary Pyramid Generator for ASTRA Memory System.
 

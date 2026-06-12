@@ -1,4 +1,8 @@
 # FILE: app/tools/registry.py
+# Purpose: Local tool registry for Orb.
+# Called-by: app.debug.executors.user_files, app.investments.news_service, app.llm.deep_research_engine, app.llm.web_search (+6 more)
+# Depends-on: app.db, app.llm.audit_logger, app.settings.service, app.tools.executor (+4 more)
+# Last-renovated: 2026-06-12
 """
 Local tool registry for Orb.
 
@@ -472,6 +476,25 @@ def _register_defaults() -> None:
         register_finance_tools()
     except Exception as exc:
         logger.exception("[registry] finance tools registration failed: %s", exc)
+
+    # ASTRA Sentinel security tools - added 2026-06-12 (Phase 1).
+    # Network status / recent connections / alerts / explain-alert /
+    # request_block_remote_address (PROPOSES only - ask-first is absolute,
+    # never executes) / trust_process. Self-contained in app/sentinel/tools.py.
+    try:
+        from app.sentinel.tools import register_sentinel_tools
+        register_sentinel_tools()
+    except Exception as exc:
+        logger.exception("[registry] sentinel tools registration failed: %s", exc)
+
+    # Vehicle tools (2026-06-12): calibrate the van's virtual odometer, set
+    # maintenance dates, log fitted components, read status, classify trips.
+    # Self-contained in app/tools/vehicle_tools.py (OBD2 van module).
+    try:
+        from app.tools.vehicle_tools import register_vehicle_tools
+        register_vehicle_tools()
+    except Exception as exc:
+        logger.exception("[registry] vehicle tools registration failed: %s", exc)
 
 
 _register_defaults()

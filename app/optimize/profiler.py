@@ -1,4 +1,8 @@
 # FILE: app/optimize/profiler.py
+# Purpose: Phase B: Profiler.
+# Called-by: app.optimize.executor, app.optimize.orchestrator
+# Depends-on: app.optimize.config, app.optimize.models, app.sandbox_walk
+# Last-renovated: 2026-06-11
 """
 Phase B: Profiler.
 
@@ -19,7 +23,6 @@ from __future__ import annotations
 
 import ast
 import logging
-import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path

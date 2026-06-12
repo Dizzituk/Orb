@@ -1,4 +1,8 @@
 # FILE: app/memory/domains/confidence_learning.py
+# Purpose: Confidence learning loop (Spec Section 5.5).
+# Called-by: app.memory.domains, app.memory.integration
+# Depends-on: app.memory.domains.confidence
+# Last-renovated: 2026-06-11
 """
 Confidence learning loop (Spec Section 5.5).
 

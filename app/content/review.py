@@ -1,4 +1,8 @@
 # FILE: app/content/review.py
+# Purpose: End-of-Day Review Service (Spec Section 6).
+# Called-by: app.content.scout_router
+# Depends-on: app.content.models
+# Last-renovated: 2026-06-11
 """
 End-of-Day Review Service (Spec Section 6).
 

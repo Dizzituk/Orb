@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/multi_file_detection.py
+# Purpose: Multi-File Operation Detection for SpecGate
+# Called-by: app.pot_spec.grounded._multi_file_detection_utils_2, app.pot_spec.grounded.spec_generation, app.pot_spec.grounded.spec_runner
+# Depends-on: app.pot_spec.grounded._multi_file_detection_utils_2, app.pot_spec.grounded.file_discovery, app.pot_spec.grounded.refactor_classifier, app.pot_spec.grounded.refactor_formatter (+5 more)
+# Last-renovated: 2026-06-11
 """
 Multi-File Operation Detection for SpecGate
 

@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/sse.py
+# Purpose: SSE (Server-Sent Events) helper functions for zobie tools.
+# Called-by: app.llm.local_tools.zobie, app.llm.local_tools.zobie.streams._codebase_report_utils_4, app.llm.local_tools.zobie.streams._fs_query_utils_2, app.llm.local_tools.zobie.streams._fs_query_utils_3 (+9 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """SSE (Server-Sent Events) helper functions for zobie tools.
 
 Extracted from zobie_tools.py for modularity.

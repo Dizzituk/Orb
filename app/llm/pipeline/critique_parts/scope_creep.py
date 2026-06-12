@@ -1,4 +1,8 @@
 # FILE: app/llm/pipeline/critique_parts/scope_creep.py
+# Purpose: Block 5e: SCOPE CREEP DETECTION (v2.1 - Endpoint/Feature Drift)
+# Called-by: app.llm.pipeline.critique
+# Depends-on: app.llm.pipeline.critique_schemas
+# Last-renovated: 2026-06-11
 """Block 5e: SCOPE CREEP DETECTION (v2.1 - Endpoint/Feature Drift)"""
 
 import logging

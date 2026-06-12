@@ -1,4 +1,8 @@
 # FILE: app/providers/registry.py
+# Purpose: Phase 4 Provider Registry
+# Called-by: app.content.production.draft_writer, app.content.scout, app.debug.debug_chat, app.introspection.summarizer (+24 more)
+# Depends-on: app.providers._registry_utils_2, app.providers._registry_utils_3, app.providers._registry_utils_4, app.tools.registry
+# Last-renovated: 2026-06-11
 """
 Phase 4 Provider Registry
 
@@ -29,7 +33,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional, Dict, List, Tuple
@@ -435,9 +438,17 @@ class ProviderRegistry:
     ) -> LlmCallResult:
         import anthropic
 
+        from app.providers._registry_anthropic_shapes import (
+            shape_anthropic_create_kwargs,
+            is_refusal,
+            extract_refusal_detail,
+            get_refusal_fallback_model,
+        )
+
         client = anthropic.AsyncAnthropic(api_key=api_key, timeout=timeout_seconds)
 
         tool_iters = 0
+        refusal_retried = False
         final_system, user_assistant_messages = _normalize_messages_for_anthropic(messages, system_prompt)
         tools_param = _build_anthropic_tools(tool_defs) if tool_defs else None  # leave as None unless real tools exist
 
@@ -453,47 +464,40 @@ class ProviderRegistry:
                 temperature=temperature,
                 max_tokens=min(max_tokens, 128000),
             )
-            # v2.3 (2026-04-18): Updated for Claude Opus 4.7 API.
-            # Opus 4.7 REJECTS the old {'type': 'enabled', 'budget_tokens': N} shape.
-            # New shape: thinking={'type': 'adaptive'} + output_config={'effort': <level>}.
-            # Opus 4.6 and Sonnet 4.6 also accept the new shape (budget_tokens deprecated).
-            # Opus 4.7 also REJECTS non-default temperature/top_p/top_k — so when thinking
-            # is enabled, we remove temperature entirely from the request.
-            #
-            # NOTE: anthropic-python 0.75.x doesn't yet expose output_config as a
-            # top-level kwarg, so we route it via extra_body which the SDK forwards
-            # verbatim into the HTTP request body. Remove this indirection once
-            # the SDK ships native support.
-            if reasoning and isinstance(reasoning, dict):
-                _effort = str(reasoning.get("effort", "")).lower()
-                if _effort in ("low", "medium", "high", "xhigh", "max"):
-                    create_kwargs["thinking"] = {"type": "adaptive"}
-                    create_kwargs["extra_body"] = {
-                        "output_config": {"effort": _effort},
-                    }
-                    # Temperature MUST be omitted (not set to 1.0) on Opus 4.7.
-                    # Also safe to omit on 4.6 — default temperature is fine.
-                    create_kwargs.pop("temperature", None)
-                    # Give thinking + visible output adequate headroom.
-                    # Docs recommend 64k as a reasonable default for xhigh/max.
-                    _min_max_tokens = {
-                        "low": 8192,
-                        "medium": 16000,
-                        "high": 32000,
-                        "xhigh": 64000,
-                        "max": 64000,
-                    }.get(_effort, 16000)
-                    if create_kwargs.get("max_tokens", 0) < _min_max_tokens:
-                        create_kwargs["max_tokens"] = min(_min_max_tokens, 128000)
-                    logger.info(
-                        "[registry] v2.3 Anthropic adaptive thinking: effort=%s, max_tokens=%d",
-                        _effort, create_kwargs["max_tokens"],
-                    )
+            # v2.4 (2026-06-11): per-model-family request shaping moved to
+            # _registry_anthropic_shapes (Fable/Mythos always-thinking family
+            # vs Opus 4.6+ adaptive-thinking shape). Handles effort routing
+            # via extra_body.output_config, sampling-param stripping, and
+            # max_tokens floors. See that module's docstring for the rules.
+            shape_anthropic_create_kwargs(create_kwargs, model_id, reasoning)
             # Anthropic expects 'tools' to be a proper list; do not pass None.
             if tools_param is not None and isinstance(tools_param, list) and len(tools_param) > 0:
                 create_kwargs["tools"] = tools_param
 
             resp = await client.messages.create(**create_kwargs)
+
+            # v2.4 (2026-06-11): Fable 5 blocking classifiers return
+            # stop_reason "refusal" with HTTP 200 — a primary response path,
+            # not an exception. Retry ONCE on the configured fallback model
+            # (ANTHROPIC_REFUSAL_FALLBACK_MODEL), then surface a clean error.
+            if is_refusal(resp):
+                detail = extract_refusal_detail(resp)
+                fallback = get_refusal_fallback_model(model_id)
+                if fallback and not refusal_retried:
+                    logger.warning(
+                        "[registry] Anthropic %s — model=%s; retrying once on fallback=%s",
+                        detail, model_id, fallback,
+                    )
+                    model_id = fallback
+                    refusal_retried = True
+                    continue
+                return LlmCallResult(
+                    status=LlmCallStatus.ERROR,
+                    provider_id="anthropic",
+                    model_id=model_id,
+                    error_message=f"anthropic_{detail}",
+                    raw_response=_safe_json(resp.model_dump() if hasattr(resp, "model_dump") else {}),
+                )
 
             content_blocks = resp.content or []
             tool_uses = [b for b in content_blocks if getattr(b, "type", None) == "tool_use"]

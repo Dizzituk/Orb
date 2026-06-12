@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/sandbox_tools.py
+# Purpose: Sandbox Tools — clean interface for pipeline stages to interact with the sandbox.
+# Called-by: app.agentic_pipeline.segment_printer, app.pipeline_v2.bvl.cross_model_diagnostic, app.pipeline_v2.bvl.emulator_bridge, app.pipeline_v2.bvl.tier1_sanity (+16 more)
+# Depends-on: app.pipeline_v2.android_sandbox, app.pipeline_v2.build_targets, app.pipeline_v2.config
+# Last-renovated: 2026-06-11
 """
 Sandbox Tools — clean interface for pipeline stages to interact with the sandbox.
 
@@ -12,7 +16,6 @@ v2.2 (2026-03-10): Profile-aware path resolution. All functions accept an
 """
 from __future__ import annotations
 
-import base64
 import logging
 from typing import Optional, TYPE_CHECKING
 
@@ -383,7 +386,6 @@ async def _host_run_shell(cmd: str, timeout_sec: int = 30) -> dict:
     must execute on the host PC, not in the Windows Sandbox.
     """
     import asyncio
-    import subprocess
     try:
         proc = await asyncio.wait_for(
             asyncio.create_subprocess_exec(

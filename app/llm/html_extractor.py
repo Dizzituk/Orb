@@ -1,4 +1,8 @@
 # FILE: app/llm/html_extractor.py
+# Purpose: Extract and save HTML/code files from LLM chat responses.
+# Called-by: app.llm.stream_handlers
+# Depends-on: app.llm.file_output
+# Last-renovated: 2026-06-11
 """
 Extract and save HTML/code files from LLM chat responses.
 
@@ -11,7 +15,6 @@ v2.5 (2026-03-09): Initial implementation.
 """
 from __future__ import annotations
 
-import json
 import logging
 import re
 from datetime import datetime, timezone

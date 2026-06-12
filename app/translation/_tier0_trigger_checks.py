@@ -1,4 +1,8 @@
 # FILE: app/translation/_tier0_trigger_checks.py
+# Purpose: Tier 0 special-case trigger check functions.
+# Called-by: app.translation.tier0_rules
+# Depends-on: app.translation.schemas, app.translation.tier0_rules
+# Last-renovated: 2026-06-11
 """
 Tier 0 special-case trigger check functions.
 Each function checks a specific command domain and returns Tier0RuleResult.

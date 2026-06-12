@@ -1,4 +1,8 @@
 # FILE: app/content/engagement/responder.py
+# Purpose: Template-Based Auto-Response Engine.
+# Called-by: app.content.engagement.dispatcher, app.content.engagement.scanner
+# Depends-on: app.content.engagement.models
+# Last-renovated: 2026-06-11
 """
 Template-Based Auto-Response Engine.
 

@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/evidence_gathering.py
+# Purpose: Evidence-First Filesystem Validation (v2.1)
+# Called-by: app.llm.critical_pipeline.config, app.llm.pipeline._evidence_loop_utils_3, app.pot_spec.grounded, app.pot_spec.grounded._evidence_gathering_utils_10 (+3 more)
+# Depends-on: app.llm.local_tools.zobie.config, app.pot_spec.grounded._evidence_gathering_utils_10, app.pot_spec.grounded._evidence_gathering_utils_11, app.pot_spec.grounded._evidence_gathering_utils_8 (+4 more)
+# Last-renovated: 2026-06-11
 """
 Evidence-First Filesystem Validation (v2.1)
 
@@ -69,7 +73,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum

@@ -1,4 +1,8 @@
 # FILE: app/memory/integration.py
+# Purpose: Memory system integration hooks.
+# Called-by: app.bridge.router, app.llm.routing.core, app.llm.routing.prompt_builders, app.llm.stream_router (+1 more)
+# Depends-on: app.db, app.memory.complexity_router, app.memory.conversation_service, app.memory.domains.confidence_learning (+9 more)
+# Last-renovated: 2026-06-11
 """
 Memory system integration hooks.
 

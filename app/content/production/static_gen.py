@@ -1,4 +1,8 @@
 # FILE: app/content/production/static_gen.py
+# Purpose: Static Content Generator (Spec Section 7.5).
+# Called-by: app.content.production.format_converter, app.content.production_router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Static Content Generator (Spec Section 7.5).
 
@@ -9,7 +13,6 @@ Produces non-video content formats using deterministic templates:
 
 All template-driven — AI provides content, rendering is deterministic.
 """
-import json
 import logging
 import os
 from pathlib import Path

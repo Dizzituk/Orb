@@ -1,4 +1,8 @@
 # FILE: app/self_model/fragments/classifier.py
+# Purpose: Lightweight signal-type and claim-type classification.
+# Called-by: app.self_model.fragments.capture
+# Depends-on: app.self_model.fragments.models
+# Last-renovated: 2026-06-11
 """
 Lightweight signal-type and claim-type classification.
 

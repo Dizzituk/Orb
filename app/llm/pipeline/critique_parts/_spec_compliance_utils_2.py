@@ -1,3 +1,7 @@
+# Purpose: spec compliance utils 2
+# Called-by: app.llm.pipeline.critique_parts.spec_compliance
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import re
 

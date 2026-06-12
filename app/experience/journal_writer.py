@@ -1,4 +1,8 @@
 # FILE: app/experience/journal_writer.py
+# Purpose: Build Journal writer — append-only NDJSON journal per job.
+# Called-by: app.experience, app.experience.context, app.experience.distillation
+# Depends-on: app.experience.schemas
+# Last-renovated: 2026-06-11
 """
 Build Journal writer — append-only NDJSON journal per job.
 

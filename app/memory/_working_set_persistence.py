@@ -1,4 +1,8 @@
 # FILE: app/memory/_working_set_persistence.py
+# Purpose: Disk persistence for the project working set.
+# Called-by: app.memory.working_set
+# Depends-on: app.memory.working_set
+# Last-renovated: 2026-06-11
 """
 Disk persistence for the project working set.
 

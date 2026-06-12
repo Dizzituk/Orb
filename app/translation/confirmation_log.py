@@ -1,4 +1,8 @@
 # FILE: app/translation/confirmation_log.py
+# Purpose: Confirmation Event Logger.
+# Called-by: app.llm.routing.reject_intent_handler, app.translation.gates
+# Depends-on: app.translation.schemas
+# Last-renovated: 2026-06-11
 """
 Confirmation Event Logger.
 

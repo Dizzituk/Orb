@@ -1,4 +1,8 @@
 # FILE: app/learning/__init__.py
+# Purpose: Course content scraping + RAG ingestion for Coursera (and future platforms).
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.learning.models
+# Last-renovated: 2026-06-11
 """
 Course content scraping + RAG ingestion for Coursera (and future platforms).
 

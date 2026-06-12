@@ -1,4 +1,8 @@
 # FILE: app/llm/pipeline/deterministic_critique.py
+# Purpose: Deterministic pre-critique gate — zero LLM cost.
+# Called-by: app.llm.pipeline.critique
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Deterministic pre-critique gate — zero LLM cost.
 

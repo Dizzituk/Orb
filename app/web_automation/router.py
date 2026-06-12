@@ -1,4 +1,8 @@
 # FILE: app/web_automation/router.py
+# Purpose: FastAPI router for the Web Automation module.
+# Called-by: app.web_automation, main
+# Depends-on: app.auth, app.db, app.web_automation, app.web_automation.action_queue (+4 more)
+# Last-renovated: 2026-06-11
 """
 FastAPI router for the Web Automation module.
 

@@ -1,3 +1,7 @@
+# Purpose: stream handler utils
+# Called-by: app.llm.critical_pipeline._stream_handler_utils_1, app.llm.critical_pipeline.stream_handler
+# Depends-on: app.llm.critical_pipeline.artifact_binding, app.llm.critical_pipeline.evidence, app.llm.critical_pipeline.job_classification, app.llm.critical_pipeline.plan_micro (+4 more)
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import os
 from app.llm.critical_pipeline.artifact_binding import extract_artifact_bindings

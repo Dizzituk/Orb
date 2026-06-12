@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/__init__.py
+# Purpose: PoT Spec (Point-of-Truth Spec) package.
+# Called-by: app.db, app.pot_spec.spec_gate_v2, tests.test_multi_file_operation
+# Depends-on: app.pot_spec.evidence_collector, app.pot_spec.schemas, app.pot_spec.service, app.pot_spec.spec_gate (+1 more)
+# Last-renovated: 2026-06-11
 """PoT Spec (Point-of-Truth Spec) package.
 
 Block 1 delivers:

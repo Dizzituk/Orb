@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/deterministic_architecture.py
+# Purpose: Deterministic Architecture Generator.
+# Called-by: app.orchestrator._deterministic_architecture_utils_2, app.orchestrator.refactor_pipeline
+# Depends-on: app.orchestrator._deterministic_architecture_utils_2, app.orchestrator.codebase_scanner_models, app.orchestrator.refactor_segmenter_models
+# Last-renovated: 2026-06-11
 """
 Deterministic Architecture Generator.
 
@@ -15,7 +19,6 @@ BUILD_ID: 2026-02-20-v1.0-deterministic-architecture-generator
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from datetime import datetime, timezone

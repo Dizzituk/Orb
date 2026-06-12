@@ -1,4 +1,8 @@
 # FILE: app/debug/adb_tools.py
+# Purpose: ADB Test Harness for ASTRA Debug Agent.
+# Called-by: app.debug.executors.emulator, app.debug.orchestrator.behaviour_verifier
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 ADB Test Harness for ASTRA Debug Agent.
 
@@ -264,8 +268,7 @@ async def gradle_install(project_root: Optional[str] = None, apk_path: Optional[
     success = "BUILD SUCCESSFUL" in output
     if apk_path:
         install_result = await install_apk(apk_path, project_root=project_root, package_name=package_name, activity_name=activity_name)
-        return f"{'BUILD SUCCESSFUL' if success else 'BUILD FAILED'}\n\n{summary}\n\nINSTALL RESULT:
-{install_result}"
+        return f"{'BUILD SUCCESSFUL' if success else 'BUILD FAILED'}\n\n{summary}\n\nINSTALL RESULT:\n{install_result}"
     return f"{'BUILD + INSTALL SUCCESSFUL' if success else 'BUILD/INSTALL FAILED'}\n\n{summary}"
 
 

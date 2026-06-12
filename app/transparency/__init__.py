@@ -1,4 +1,8 @@
 # FILE: app/transparency/__init__.py
+# Purpose: Pipeline Transparency & User Feedback System.
+# Called-by: app.db
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Pipeline Transparency & User Feedback System.
 

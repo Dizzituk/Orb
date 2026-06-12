@@ -1,4 +1,8 @@
 # FILE: app/memory/architecture_models.py
+# Purpose: SQLAlchemy ORM models for Architecture Scan storage.
+# Called-by: app.db, app.llm.local_tools.zobie.db_ops, app.memory.commands.purge, app.rag._answerer_text_search (+3 more)
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """
 SQLAlchemy ORM models for Architecture Scan storage.
 

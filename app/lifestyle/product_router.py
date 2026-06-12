@@ -1,4 +1,8 @@
 # FILE: app/lifestyle/product_router.py
+# Purpose: HTTP API for the personal food product library — Job 4 (2026-06-10).
+# Called-by: main
+# Depends-on: app.db, app.lifestyle, app.lifestyle.product_models, app.lifestyle.product_service
+# Last-renovated: 2026-06-11
 """
 HTTP API for the personal food product library — Job 4 (2026-06-10).
 

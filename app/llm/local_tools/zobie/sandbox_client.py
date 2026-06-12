@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/sandbox_client.py
+# Purpose: Sandbox controller HTTP client functions.
+# Called-by: app.llm.local_tools.zobie, app.llm.local_tools.zobie._fs_live_ops_utils_1, app.llm.local_tools.zobie._fs_write_ops_utils_2, app.llm.local_tools.zobie._sandbox_inspector_utils (+9 more)
+# Depends-on: app.llm.local_tools.zobie.config
+# Last-renovated: 2026-06-11
 """Sandbox controller HTTP client functions.
 
 Extracted from zobie_tools.py for modularity.

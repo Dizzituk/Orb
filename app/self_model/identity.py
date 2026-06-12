@@ -1,4 +1,8 @@
 # FILE: app/self_model/identity.py
+# Purpose: Tier 1 Identity Store — durable, structured, always-injected.
+# Called-by: app.debug.executors.memory_tools, app.self_model.hooks, app.self_model.identity_capture, app.self_model.identity_format (+3 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Tier 1 Identity Store — durable, structured, always-injected.
 

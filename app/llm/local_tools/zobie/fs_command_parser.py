@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/fs_command_parser.py
+# Purpose: Command parsing for filesystem queries and writes.
+# Called-by: app.llm.local_tools.zobie._fs_command_parser_utils_2, app.llm.local_tools.zobie.streams._fs_query_utils_3, app.llm.local_tools.zobie.streams.fs_query
+# Depends-on: app.llm.local_tools.zobie._fs_command_parser_utils_2, app.llm.local_tools.zobie.config, app.llm.local_tools.zobie.fs_path_utils
+# Last-renovated: 2026-06-11
 """Command parsing for filesystem queries and writes.
 
 This module handles parsing of both:
@@ -19,9 +23,7 @@ v5.2 (2026-01): Extracted from fs_query.py for modularity
 
 from __future__ import annotations
 
-import os
 import re
-import sys
 from typing import Dict, List, Optional, Tuple
 
 from .config import KNOWN_FOLDER_PATHS

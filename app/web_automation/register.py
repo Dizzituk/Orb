@@ -1,4 +1,8 @@
 # FILE: app/web_automation/register.py
+# Purpose: Register web-automation tools with the central tool registry.
+# Called-by: app.web_automation
+# Depends-on: app.tools.registry, app.web_automation.tool_handlers, app.web_automation.tool_schemas
+# Last-renovated: 2026-06-11
 """
 Register web-automation tools with the central tool registry.
 

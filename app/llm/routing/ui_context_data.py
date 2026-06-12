@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/ui_context_data.py
+# Purpose: Lightweight data fetchers for UI context injection.
+# Called-by: app.llm.routing.chat_routing
+# Depends-on: app.investments.models
+# Last-renovated: 2026-06-11
 """
 Lightweight data fetchers for UI context injection.
 

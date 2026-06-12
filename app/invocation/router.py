@@ -1,4 +1,8 @@
 # FILE: app/invocation/router.py
+# Purpose: Invocation Router - thin orchestrator.
+# Called-by: app.invocation
+# Depends-on: app.db, app.invocation.classifier, app.invocation.models, app.invocation.tier_gate (+5 more)
+# Last-renovated: 2026-06-11
 """
 Invocation Router - thin orchestrator.
 

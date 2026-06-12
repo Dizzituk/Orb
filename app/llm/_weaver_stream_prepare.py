@@ -1,4 +1,8 @@
 # FILE: app/llm/_weaver_stream_prepare.py
+# Purpose: Weaver stream: Steps 1-4 message gathering, dedup, and state loading.
+# Called-by: app.llm.weaver_stream
+# Depends-on: app.llm._weaver_stream_utils_12, app.llm._weaver_stream_utils_13, app.llm._weaver_stream_utils_14, app.llm._weaver_stream_utils_15 (+3 more)
+# Last-renovated: 2026-06-11
 """
 Weaver stream: Steps 1-4 message gathering, dedup, and state loading.
 

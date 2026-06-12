@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/write_integrity.py
+# Purpose: Write Integrity Checker — validates file content survives the write path.
+# Called-by: app.pipeline_v2.llm_tools
+# Depends-on: app.pipeline_v2.sandbox_tools
+# Last-renovated: 2026-06-11
 """
 Write Integrity Checker — validates file content survives the write path.
 

@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/cognitive_escalation.py
+# Purpose: Cognitive escalation cue detection.
+# Called-by: app.llm.routing.chat_model_selection
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Cognitive escalation cue detection.
 

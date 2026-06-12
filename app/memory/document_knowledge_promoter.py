@@ -1,4 +1,8 @@
 # FILE: app/memory/document_knowledge_promoter.py
+# Purpose: Document Knowledge Promoter — extract durable facts from uploaded
+# Called-by: app.drive.content_indexer, app.endpoints.chat_attachments, app.memory.upload_knowledge_hook
+# Depends-on: app.astra_memory.confidence_scoring, app.astra_memory.preference_models, app.astra_memory.preference_service, app.llm._streaming_utils_3
+# Last-renovated: 2026-06-11
 """
 Document Knowledge Promoter — extract durable facts from uploaded
 documents and promote them into ASTRA's permanent memory.

@@ -1,4 +1,8 @@
 # FILE: app/translation/_intents_infrastructure.py
+# Purpose: Intent definitions: Infrastructure domain.
+# Called-by: app.translation.intents
+# Depends-on: app.translation.schemas
+# Last-renovated: 2026-06-11
 """
 Intent definitions: Infrastructure domain.
 Architecture, sandbox, spec gate, high-stakes pipeline, overwatcher, feedback.

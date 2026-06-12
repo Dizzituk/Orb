@@ -1,4 +1,8 @@
 # FILE: app/debug/executors/memory_tools.py
+# Purpose: Memory tool executors for the chat LLM.
+# Called-by: app.debug.executors
+# Depends-on: app.astra_memory.confidence_scoring, app.astra_memory.preference_models, app.astra_memory.preference_service, app.db (+2 more)
+# Last-renovated: 2026-06-11
 """
 Memory tool executors for the chat LLM.
 

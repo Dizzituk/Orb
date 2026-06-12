@@ -1,3 +1,7 @@
+# Purpose: retrieval utils
+# Called-by: app.astra_memory.retrieval
+# Depends-on: app.astra_memory.confidence_config, app.astra_memory.preference_models, app.memory.models
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
 from app.astra_memory.confidence_config import get_config

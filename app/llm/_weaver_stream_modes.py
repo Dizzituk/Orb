@@ -1,4 +1,8 @@
 # FILE: app/llm/_weaver_stream_modes.py
+# Purpose: Weaver stream: mode-specific prompt building.
+# Called-by: app.llm.weaver_stream
+# Depends-on: app.llm._weaver_prompts, app.llm._weaver_stream_utils_12, app.llm._weaver_stream_utils_16, app.llm.weaver_rules_engine (+1 more)
+# Last-renovated: 2026-06-11
 """
 Weaver stream: mode-specific prompt building.
 
@@ -80,7 +84,6 @@ def _build_update_prompt(
     prefs_context: str,
     exec_context: str,
 ) -> Tuple[str, str, str]:
-    import asyncio
     # Handle compaction for long update message lists
     new_ramble = _format_ramble(new_user_messages)
     previous_output = checkpoint["last_output"] if checkpoint else ""

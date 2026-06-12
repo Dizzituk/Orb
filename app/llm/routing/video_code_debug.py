@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/video_code_debug.py
+# Purpose: Video+Code debug pipeline.
+# Called-by: app.llm.routing.core
+# Depends-on: app.jobs.schemas, app.llm.fallbacks, app.llm.gemini_vision, app.llm.job_classifier (+2 more)
+# Last-renovated: 2026-06-11
 """Video+Code debug pipeline.
 
 Extracted from app.llm.routing.core to keep the core router smaller and easier to sanity-check.

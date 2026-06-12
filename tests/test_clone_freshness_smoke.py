@@ -1,3 +1,7 @@
+# Purpose: test clone freshness smoke
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.pipeline_v2, app.pipeline_v2.clone_freshness
+# Last-renovated: 2026-06-11
 import sys, os, asyncio
 os.chdir("D:/Orb"); sys.path.insert(0, "D:/Orb")
 from app.pipeline_v2 import clone_freshness as cf

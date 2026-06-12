@@ -1,4 +1,8 @@
 # FILE: app/drive/router.py
+# Purpose: ASTRA Drive — FastAPI router for local file system operations.
+# Called-by: main
+# Depends-on: app.drive.file_routing, app.drive.file_utils, app.drive.thumbnail, app.llm.file_analyzer
+# Last-renovated: 2026-06-11
 """
 ASTRA Drive — FastAPI router for local file system operations.
 

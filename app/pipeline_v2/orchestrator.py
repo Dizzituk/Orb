@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/orchestrator.py
+# Purpose: ASTRA v2.2 Orchestrator.
+# Called-by: app.orchestrator.segment_loop, app.pipeline_v2.agentic_builder, app.pipeline_v2.final_verdict
+# Depends-on: app.builds.models, app.builds.pipeline_bridge, app.builds.service, app.db (+16 more)
+# Last-renovated: 2026-06-11
 """
 ASTRA v2.2 Orchestrator.
 

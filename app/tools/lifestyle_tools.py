@@ -1,4 +1,8 @@
 # FILE: app/tools/lifestyle_tools.py
+# Purpose: Lifestyle tool handlers — health coaching capability for the LLM.
+# Called-by: app.debug.gemini_lifestyle_tools, app.tools.lifestyle_history_tools, app.tools.lifestyle_nutrition_tools, app.tools.lifestyle_strength_tools (+1 more)
+# Depends-on: app.db, app.lifestyle.models, app.lifestyle.service, app.tools.lifestyle_history_tools (+4 more)
+# Last-renovated: 2026-06-11
 """
 Lifestyle tool handlers — health coaching capability for the LLM.
 

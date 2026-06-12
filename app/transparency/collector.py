@@ -1,4 +1,8 @@
 # FILE: app/transparency/collector.py
+# Purpose: ReasoningCollector — central hub for emitting reasoning events.
+# Called-by: app.builds.stage_hooks, app.transparency.router
+# Depends-on: app.db, app.transparency.io_events, app.transparency.models, app.transparency.schemas
+# Last-renovated: 2026-06-11
 """
 ReasoningCollector — central hub for emitting reasoning events.
 

@@ -1,4 +1,8 @@
 # FILE: app/llm/pipeline/critique_parts/grounding_validation.py
+# Purpose: Block 5b: SPEC-REF GROUNDING VALIDATION (v1.7 - HALLUCINATION DEFENSE)
+# Called-by: app.llm.pipeline.critique
+# Depends-on: app.llm.pipeline.critique_schemas
+# Last-renovated: 2026-06-11
 """Block 5b: SPEC-REF GROUNDING VALIDATION (v1.7 - HALLUCINATION DEFENSE)"""
 
 import json

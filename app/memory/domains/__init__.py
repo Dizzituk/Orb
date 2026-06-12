@@ -1,4 +1,8 @@
 # FILE: app/memory/domains/__init__.py
+# Purpose: Memory domain stores package.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.memory.domains.architecture, app.memory.domains.confidence, app.memory.domains.confidence_learning, app.memory.domains.confidence_resolver (+7 more)
+# Last-renovated: 2026-06-11
 """
 Memory domain stores package.
 

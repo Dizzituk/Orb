@@ -1,4 +1,8 @@
 # FILE: tests/test_introspection_service.py
+# Purpose: Tests for app/introspection/service.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.introspection, app.introspection.service
+# Last-renovated: 2026-06-11
 """
 Tests for app/introspection/service.py
 Log introspection - queries and analyzes system logs.

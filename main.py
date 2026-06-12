@@ -1,3 +1,7 @@
+# Purpose: Orb Backend - FastAPI Application
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.artefacts.router, app.astra_memory.decay_job, app.astra_memory.indexer, app.astra_memory.router (+94 more)
+# Last-renovated: 2026-06-12
 """
 Orb Backend - FastAPI Application
 Version: 0.17.0
@@ -78,6 +82,7 @@ import app.learning.models  # noqa: F401 — register Course* tables with Base
 from app.settings.router import router as settings_router
 from app.transparency.router import router as transparency_router
 import app.transparency.models  # noqa: F401 — register Transparency tables with Base
+import app.vehicle.models  # noqa: F401 — register Vehicle (OBD2 van) tables with Base
 
 # Import refactored endpoints
 from app.endpoints import router as endpoints_router
@@ -353,6 +358,29 @@ def on_startup():
     else:
         print("[startup] Decay scheduler: [SKIP] ASTRA_DECAY_SCHEDULER_ENABLED=false")
 
+    # Lifestyle scheduler — Jobs 4+5 memory roadmap (2026-06-10): nudge
+    # checkpoints (13:30/19:15 local) + nightly habit learning (02:40).
+    try:
+        from app.lifestyle.scheduler import start_lifestyle_scheduler_background
+        if start_lifestyle_scheduler_background(loop=_loop):
+            print("[startup] Lifestyle scheduler: [OK] nudges + nightly habit learning")
+        else:
+            print("[startup] Lifestyle scheduler: [WARN] not started (disabled, running, or no loop)")
+    except Exception as e:
+        print(f"[startup] Lifestyle scheduler: [WARN] {e}")
+
+    # ASTRA Sentinel Phase 1 (2026-06-12): network security monitor — collect
+    # every 30s from the elevated agent (127.0.0.1:8771), daily retention prune
+    # + baseline maintenance. Degrades to agent_offline if the agent is down.
+    try:
+        from app.sentinel.scheduler import start_sentinel_scheduler_background
+        if start_sentinel_scheduler_background(loop=_loop):
+            print("[startup] Sentinel scheduler: [OK] 30s collect + daily prune")
+        else:
+            print("[startup] Sentinel scheduler: [WARN] not started (disabled, running, or no loop)")
+    except Exception as e:
+        print(f"[startup] Sentinel scheduler: [WARN] {e}")
+
     # v3.0: Take a fresh investments snapshot on startup if stale/missing
     try:
         from app.db import SessionLocal
@@ -491,8 +519,37 @@ from app.investments.chat_router import router as investments_chat_router
 app.include_router(investments_chat_router)
 from app.finance.work_router import router as finance_work_router
 app.include_router(finance_work_router)
+
+# Vehicle module (OBD2 van health & mileage, 2026-06-12)
+try:
+    from app.vehicle.router import router as vehicle_router
+    app.include_router(vehicle_router)
+    print("[startup] Vehicle: [OK] registered")
+except Exception as _vehicle_err:
+    print(f"[startup] Vehicle: [WARN] {_vehicle_err}")
 from app.lifestyle.router import router as lifestyle_router
 app.include_router(lifestyle_router)
+# Personal food product library — Job 4 memory roadmap (2026-06-10)
+try:
+    from app.lifestyle.product_router import router as lifestyle_products_router
+    app.include_router(lifestyle_products_router)
+    print("[startup] Lifestyle products: [OK] registered")
+except Exception as e:
+    print(f"[startup] Lifestyle products: [WARN] {e}")
+# Nutrition day-copy — voice-first diary reuse (2026-06-11)
+try:
+    from app.lifestyle.nutrition_copy import router as nutrition_copy_router
+    app.include_router(nutrition_copy_router)
+    print("[startup] Nutrition copy-day: [OK] registered")
+except Exception as e:
+    print(f"[startup] Nutrition copy-day: [WARN] {e}")
+# Energy engine — context-aware burn + weekly ledger (2026-06-11)
+try:
+    from app.lifestyle.energy_router import router as energy_router
+    app.include_router(energy_router)
+    print("[startup] Energy engine: [OK] registered")
+except Exception as e:
+    print(f"[startup] Energy engine: [WARN] {e}")
 # ASTRA Drive — local file system management
 try:
     from app.drive.router import router as astra_drive_router
@@ -687,11 +744,39 @@ try:
     app.include_router(bridge_dashboards_router)
     from app.bridge.tts_proxy import router as bridge_tts_router
     app.include_router(bridge_tts_router)
+    from app.bridge.log_uploads import router as bridge_logs_router
+    app.include_router(bridge_logs_router)
     from app.bridge.missed_replies import router as bridge_missed_replies_router
     app.include_router(bridge_missed_replies_router)
-    print("[startup] Bridge API: [OK] registered (+ TTS proxy, + missed-replies)")
+    from app.bridge.tts_audio import router as bridge_tts_audio_router
+    app.include_router(bridge_tts_audio_router)
+    from app.bridge.vehicle import router as bridge_vehicle_router
+    app.include_router(bridge_vehicle_router)
+    print("[startup] Bridge API: [OK] registered (+ TTS proxy, + missed-replies, + tts-audio cache, + vehicle)")
 except ImportError as _bridge_err:
     print(f"[startup] Bridge API: [WARN] {_bridge_err}")
+
+# ASTRA Sentinel (network security monitor, Phase 1 2026-06-12)
+try:
+    from app.sentinel.router import router as sentinel_router
+    from app.sentinel.router import debug_router as sentinel_debug_router
+    app.include_router(sentinel_router)
+    app.include_router(sentinel_debug_router)
+    from app.bridge.sentinel_alerts import router as bridge_sentinel_alerts_router
+    app.include_router(bridge_sentinel_alerts_router)
+    print("[startup] Sentinel: [OK] registered (+ localhost debug inject, + bridge alerts feed)")
+except Exception as _sentinel_err:
+    print(f"[startup] Sentinel: [WARN] {_sentinel_err}")
+
+# ASTRA Room — scene director (2026-06-12): LLM-composed SceneDocs pushed to the
+# Unity renderer over /scene/ws; compose is Bearer-auth'd, renderer endpoints
+# are local-trusted (see app/scene_director/router.py header).
+try:
+    from app.scene_director.router import router as scene_director_router
+    app.include_router(scene_director_router)
+    print("[startup] Scene Director (ASTRA Room): [OK] registered")
+except Exception as _scene_err:
+    print(f"[startup] Scene Director: [WARN] {_scene_err}")
 
 try:
     from app.cloud.router import router as cloud_router

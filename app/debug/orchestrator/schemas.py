@@ -1,4 +1,8 @@
 # FILE: app/debug/orchestrator/schemas.py
+# Purpose: Orchestrator schemas — typed contracts for every hand-off between phases.
+# Called-by: app.debug.orchestrator, app.debug.orchestrator.behaviour_verifier, app.debug.orchestrator.chat_stream_bridge, app.debug.orchestrator.decomposer (+4 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Orchestrator schemas — typed contracts for every hand-off between phases.
 

@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/service.py
+# Purpose: PoT Spec service - spec creation, persistence, and verification.
+# Called-by: app.introspection.service, app.jobs.engine, app.jobs.stage3_locks, app.llm.pipeline._high_stakes_helpers (+5 more)
+# Depends-on: app.pot_spec.errors, app.pot_spec.ledger, app.pot_spec.models, app.pot_spec.schemas
+# Last-renovated: 2026-06-11
 """
 PoT Spec service - spec creation, persistence, and verification.
 

@@ -1,4 +1,8 @@
 # FILE: app/memory/conversation_service.py
+# Purpose: Service layer for the Conversational Memory Layer.
+# Called-by: app.memory.integration, app.memory.knowledge_extractor, app.memory.session_lifecycle, app.memory.summary_generator (+3 more)
+# Depends-on: app.memory.conversation_models, app.memory.conversation_schemas
+# Last-renovated: 2026-06-11
 """
 Service layer for the Conversational Memory Layer.
 

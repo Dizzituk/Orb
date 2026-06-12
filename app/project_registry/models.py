@@ -1,4 +1,8 @@
 # FILE: app/project_registry/models.py
+# Purpose: SQLAlchemy models for the ASTRA Project Registry.
+# Called-by: app.db, app.project_registry, app.project_registry.scanner, app.project_registry.service (+1 more)
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """
 SQLAlchemy models for the ASTRA Project Registry.
 

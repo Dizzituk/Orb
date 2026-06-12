@@ -1,4 +1,8 @@
 # FILE: app/self_model/hooks.py
+# Purpose: Observer Hooks — Integration Points
+# Called-by: app.grounding.grounding_gate, app.llm.stream_handlers, app.memory.knowledge_extractor, app.transparency.router
+# Depends-on: app.self_model.chat_integration, app.self_model.identity, app.self_model.journal, app.self_model.models (+3 more)
+# Last-renovated: 2026-06-11
 """
 Observer Hooks — Integration Points
 

@@ -1,4 +1,8 @@
 # FILE: app/memory/memory_router.py
+# Purpose: MemoryRouter — Programmatic interface to the unified memory system.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.db, app.memory, app.memory.rag_entries_model, app.memory.schemas_unified (+1 more)
+# Last-renovated: 2026-06-11
 # DEPRECATED: Use app/memory/router.py instead.
 # This file is kept for reference only. The protocol-based MemoryRouter
 # in router.py with domain store registration replaced this implementation.

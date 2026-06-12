@@ -1,3 +1,7 @@
+# Purpose: briefing collector
+# Called-by: app.briefing.briefing_compiler, app.briefing.briefing_scheduler
+# Depends-on: app.briefing.briefing_config, app.llm.web_search
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 
 import asyncio

@@ -1,4 +1,8 @@
 # FILE: app/llm/pipeline/critique_parts/blocker_filtering.py
+# Purpose: Block 5: Blocker Filtering (v1.2) - only approved blocker types can block.
+# Called-by: app.llm.pipeline.critique
+# Depends-on: app.llm.pipeline.critique_schemas
+# Last-renovated: 2026-06-11
 """Block 5: Blocker Filtering (v1.2) - only approved blocker types can block."""
 
 import logging

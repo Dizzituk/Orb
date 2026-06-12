@@ -1,4 +1,8 @@
 # FILE: tests/test_llm_router.py
+# Purpose: Tests for app/llm/router.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.llm, app.llm.router
+# Last-renovated: 2026-06-11
 """
 Tests for app/llm/router.py
 LLM routing API - thin wrapper that re-exports from routing/core.py

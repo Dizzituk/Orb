@@ -1,4 +1,8 @@
 # FILE: app/memory/router.py
+# Purpose: api router
+# Called-by: main
+# Depends-on: app.auth, app.db, app.memory, app.memory.schemas (+1 more)
+# Last-renovated: 2026-06-11
 from typing import List, Optional
 from pathlib import Path
 from uuid import uuid4

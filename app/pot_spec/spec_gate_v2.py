@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/spec_gate_v2.py
+# Purpose: Spec Gate v2 - Main Entrypoint
+# Called-by: app.llm.spec_gate_stream
+# Depends-on: app.pot_spec, app.pot_spec.spec_gate_parsers, app.pot_spec.spec_gate_persistence, app.pot_spec.spec_gate_types
+# Last-renovated: 2026-06-11
 """
 Spec Gate v2 - Main Entrypoint
 

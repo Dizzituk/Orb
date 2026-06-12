@@ -1,4 +1,8 @@
 # FILE: app/experience/distillation.py
+# Purpose: Post-Job Distillation — Journal → Experience Patterns.
+# Called-by: app.orchestrator.final_checkout
+# Depends-on: app.experience.experience_store, app.experience.journal_writer, app.experience.models, app.experience.schemas
+# Last-renovated: 2026-06-11
 """
 Post-Job Distillation — Journal → Experience Patterns.
 

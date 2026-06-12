@@ -1,4 +1,8 @@
 # FILE: app/web_automation/__init__.py
+# Purpose: Web Automation module.
+# Called-by: app.content.distribution.browser_analytics.acquire, app.content.distribution.browser_analytics.popup_dismiss, app.content.distribution.browser_analytics.recon, app.content.distribution.browser_analytics.scrape (+5 more)
+# Depends-on: app.web_automation.bridge, app.web_automation.register, app.web_automation.router, app.web_automation.seed
+# Last-renovated: 2026-06-11
 """
 Web Automation module.
 

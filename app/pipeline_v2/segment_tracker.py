@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/segment_tracker.py
+# Purpose: Reactive Per-Segment Tracking (Phase 4 Job 12)
+# Called-by: app.pipeline_v2.agentic_builder
+# Depends-on: app.pipeline_v2.llm_tools
+# Last-renovated: 2026-06-11
 """
 Reactive Per-Segment Tracking (Phase 4 Job 12)
 

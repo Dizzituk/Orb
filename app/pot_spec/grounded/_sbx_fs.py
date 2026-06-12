@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/_sbx_fs.py
+# Purpose: v11.0: Sandbox filesystem helpers with intelligent routing.
+# Called-by: app.pot_spec.grounded._simple_create_utils_12, app.pot_spec.grounded._simple_create_utils_13, app.pot_spec.grounded._simple_create_utils_14, app.pot_spec.grounded._simple_create_utils_15 (+9 more)
+# Depends-on: app.sandbox_fs
+# Last-renovated: 2026-06-11
 """
 v11.0: Sandbox filesystem helpers with intelligent routing.
 

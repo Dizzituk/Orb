@@ -1,4 +1,8 @@
 # FILE: app/astra_memory/learning.py
+# Purpose: Preference Learning Module for ASTRA Memory System.
+# Called-by: app.astra_memory, app.astra_memory.router, app.experience.user_memory, tests.test_preference_learning
+# Depends-on: app.astra_memory.confidence_scoring, app.astra_memory.preference_models, app.astra_memory.preference_service, app.memory.models
+# Last-renovated: 2026-06-11
 """
 Preference Learning Module for ASTRA Memory System.
 
@@ -13,7 +17,6 @@ Spec §6: Preference learning from approvals
 from __future__ import annotations
 
 import logging
-import json
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 

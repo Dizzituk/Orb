@@ -1,3 +1,7 @@
+# Purpose: spec flow state utils 8
+# Called-by: app.llm.spec_flow_state
+# Depends-on: app.llm.spec_flow_state
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 from typing import Any, Dict, Optional, Set
 

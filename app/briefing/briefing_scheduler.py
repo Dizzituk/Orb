@@ -1,3 +1,7 @@
+# Purpose: briefing scheduler
+# Called-by: app.briefing.briefing_router, main
+# Depends-on: app.briefing.briefing_audio, app.briefing.briefing_collector, app.briefing.briefing_compiler, app.briefing.briefing_config
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 
 import asyncio

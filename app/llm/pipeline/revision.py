@@ -1,4 +1,8 @@
 # FILE: app/llm/pipeline/revision.py
+# Purpose: Revision pipeline for high-stakes jobs.
+# Called-by: app.llm.pipeline._high_stakes_pipelines, app.llm.pipeline._revision_helpers, app.llm.pipeline.high_stakes
+# Depends-on: app.jobs.schemas, app.llm.pipeline._revision_helpers, app.llm.pipeline.critique, app.llm.pipeline.critique_schemas (+5 more)
+# Last-renovated: 2026-06-11
 """Revision pipeline for high-stakes jobs.
 
 Block 6 of the PoT (Proof of Thought) system:

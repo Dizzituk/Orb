@@ -1,4 +1,8 @@
 # FILE: app/memory/domains/context.py
+# Purpose: Conversation Context domain store (Spec Section 4.4).
+# Called-by: app.memory.domains, app.memory.integration, app.memory.startup
+# Depends-on: app.db, app.memory.rag_entries_model, app.memory.schemas_unified
+# Last-renovated: 2026-06-11
 """
 Conversation Context domain store (Spec Section 4.4).
 

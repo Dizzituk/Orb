@@ -1,3 +1,7 @@
+# Purpose: service
+# Called-by: app.education.router
+# Depends-on: app.education.llm_scraper, app.education.models, app.education.schemas, app.education.scraper
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 
 import asyncio

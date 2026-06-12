@@ -1,4 +1,8 @@
 # FILE: app/transparency/io_events.py
+# Purpose: IO Event dataclasses for the Pipeline Transparency system.
+# Called-by: app.transparency.collector, app.transparency.io_tracker
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 IO Event dataclasses for the Pipeline Transparency system.
 

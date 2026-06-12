@@ -1,4 +1,8 @@
 # FILE: app/astra_memory/__init__.py
+# Purpose: ASTRA Memory System (Job 5) - v2.0
+# Called-by: app.astra_memory.router, app.db, app.llm.routing.memory_injection
+# Depends-on: app.astra_memory.confidence_config, app.astra_memory.confidence_scoring, app.astra_memory.decay_job, app.astra_memory.learning (+6 more)
+# Last-renovated: 2026-06-11
 """
 ASTRA Memory System (Job 5) - v2.0
 

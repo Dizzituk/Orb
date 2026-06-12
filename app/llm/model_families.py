@@ -1,4 +1,8 @@
 # FILE: app/llm/model_families.py
+# Purpose: Single source of truth for "which model is the current one in family X".
+# Called-by: app.debug.gemini_tool_loop, app.llm.routing.image_chat_routing
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Single source of truth for "which model is the current one in family X".
 

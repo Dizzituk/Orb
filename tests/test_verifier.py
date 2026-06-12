@@ -1,4 +1,8 @@
 # FILE: tests/test_verifier.py
+# Purpose: Tests for app/overwatcher/verifier.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.overwatcher
+# Last-renovated: 2026-06-11
 """
 Tests for app/overwatcher/verifier.py
 Output verification - verifies LLM outputs meet requirements.

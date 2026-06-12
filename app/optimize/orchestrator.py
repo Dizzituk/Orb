@@ -1,3 +1,7 @@
+# Purpose: Optimizer Orchestrator — Single-pass and recursive loop modes.
+# Called-by: app.optimize.loop_router, app.optimize.router
+# Depends-on: app.optimize.code_learner, app.optimize.decomposer, app.optimize.executor, app.optimize.models (+4 more)
+# Last-renovated: 2026-06-11
 """
 Optimizer Orchestrator — Single-pass and recursive loop modes.
 

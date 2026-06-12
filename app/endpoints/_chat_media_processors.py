@@ -1,4 +1,8 @@
 # FILE: app/endpoints/_chat_media_processors.py
+# Purpose: Media processing helpers for chat_attachments endpoint.
+# Called-by: app.endpoints.chat_attachments
+# Depends-on: app.endpoints.chat_attachments, app.helpers.context, app.llm, app.llm.file_analyzer (+5 more)
+# Last-renovated: 2026-06-11
 """
 Media processing helpers for chat_attachments endpoint.
 
@@ -9,7 +13,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from pathlib import Path
 from typing import List, Optional
 

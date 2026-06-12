@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/smart_segmentation.py
+# Purpose: Smart Segmentation — Concept-Aware Segment Generation.
+# Called-by: app.pot_spec.grounded._spec_runner_segmentation
+# Depends-on: app.llm.stage_models, app.providers.registry
+# Last-renovated: 2026-06-11
 """
 Smart Segmentation — Concept-Aware Segment Generation.
 
@@ -30,7 +34,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 

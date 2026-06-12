@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/scaffold/integration.py
+# Purpose: Scaffold Engine Pipeline Integration.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.orchestrator.scaffold, app.orchestrator.scaffold.validator
+# Last-renovated: 2026-06-11
 """
 Scaffold Engine Pipeline Integration.
 

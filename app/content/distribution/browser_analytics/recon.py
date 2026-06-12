@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/browser_analytics/recon.py
+# Purpose: Reconnaissance — Phase 1 of the browser-analytics build.
+# Called-by: app.content.distribution.browser_analytics.router
+# Depends-on: app.content.distribution.browser_analytics.popup_dismiss, app.content.distribution.browser_analytics.urls, app.web_automation, app.web_automation.bridge (+1 more)
+# Last-renovated: 2026-06-11
 """
 Reconnaissance — Phase 1 of the browser-analytics build.
 
@@ -20,7 +24,6 @@ Usage (after backend restart):
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any

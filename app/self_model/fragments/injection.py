@@ -1,4 +1,8 @@
 # FILE: app/self_model/fragments/injection.py
+# Purpose: Build the prompt-injection block for HOT themes.
+# Called-by: app.llm.routing.prompt_builders, app.self_model.fragments.router
+# Depends-on: app.self_model.fragments.models, app.self_model.fragments.store, app.self_model.fragments.weights
+# Last-renovated: 2026-06-11
 """
 Build the prompt-injection block for HOT themes.
 

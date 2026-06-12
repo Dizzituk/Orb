@@ -1,3 +1,7 @@
+# Purpose: Grounding helpers for build_grounded_create_spec (v2.3–v2.6).
+# Called-by: app.pot_spec.grounded._simple_create_utils_17
+# Depends-on: app.pot_spec.grounded._dependency_presence
+# Last-renovated: 2026-06-11
 """
 Grounding helpers for build_grounded_create_spec (v2.3–v2.6).
 =============================================================

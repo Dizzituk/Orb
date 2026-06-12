@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/bvl/tier1_sanity.py
+# Purpose: Tier 1 — Sanity Gate.
+# Called-by: app.pipeline_v2.bvl.bvl_orchestrator
+# Depends-on: app.pipeline_v2.build_targets, app.pipeline_v2.bvl.bvl_models, app.pipeline_v2.bvl.emulator_bridge, app.pipeline_v2.sandbox_tools (+1 more)
+# Last-renovated: 2026-06-11
 """
 Tier 1 — Sanity Gate.
 

@@ -1,4 +1,8 @@
 # FILE: app/memory/complexity.py
+# Purpose: Query Complexity Classifier (Spec Section 10, Job 6A).
+# Called-by: app.bridge.capability_layer, app.bridge.llm_helpers, app.llm.routing.chat_model_selection, app.llm.routing.chat_routing (+2 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Query Complexity Classifier (Spec Section 10, Job 6A).
 

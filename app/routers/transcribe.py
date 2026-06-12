@@ -1,3 +1,7 @@
+# Purpose: FastAPI router for voice transcription endpoints.
+# Called-by: main
+# Depends-on: app.services.faster_whisper_service, app.services.model_manager
+# Last-renovated: 2026-06-11
 """
 FastAPI router for voice transcription endpoints.
 

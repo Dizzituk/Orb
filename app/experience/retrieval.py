@@ -1,4 +1,8 @@
 # FILE: app/experience/retrieval.py
+# Purpose: Two-stage retrieval for the Experience Database.
+# Called-by: app.llm.critical_pipeline.stream_handler
+# Depends-on: app.embeddings.models, app.embeddings.service, app.experience.experience_store, app.experience.models
+# Last-renovated: 2026-06-11
 """
 Two-stage retrieval for the Experience Database.
 

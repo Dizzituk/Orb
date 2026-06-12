@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/streams/codebase_report.py
+# Purpose: CODEBASE REPORT stream generator.
+# Called-by: app.llm.local_tools.zobie.streams, app.llm.local_tools.zobie.streams._codebase_report_utils_2, app.llm.local_tools.zobie.streams._codebase_report_utils_3, app.llm.local_tools.zobie.streams._codebase_report_utils_4
+# Depends-on: app.llm.audit_logger, app.llm.local_tools.zobie.sse, app.llm.local_tools.zobie.streams._codebase_report_utils_2, app.llm.local_tools.zobie.streams._codebase_report_utils_3 (+2 more)
+# Last-renovated: 2026-06-11
 """CODEBASE REPORT stream generator.
 
 Manual, read-only hygiene/bloat/drift report for D:\\Orb + D:\\orb-desktop.
@@ -13,11 +17,7 @@ v1.0 (2026-01): Initial implementation
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
-import os
-import re
 from datetime import datetime
 from pathlib import Path
 from typing import (

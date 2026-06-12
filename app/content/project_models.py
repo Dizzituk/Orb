@@ -1,4 +1,8 @@
 # FILE: app/content/project_models.py
+# Purpose: Content Hub project models.
+# Called-by: app.content.item_service, app.content.production_router, app.content.project_service, app.content.style_analyser (+3 more)
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """
 Content Hub project models.
 Adds project grouping and style reference tracking

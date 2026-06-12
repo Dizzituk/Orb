@@ -1,4 +1,8 @@
 # FILE: app/voice_ambient/persistence.py
+# Purpose: Persist ambient voice turns to the chat messages DB so they appear in
+# Called-by: app.invocation.router
+# Depends-on: app.memory, app.memory.conversation_models, app.memory.schemas, app.memory.service
+# Last-renovated: 2026-06-11
 """
 Persist ambient voice turns to the chat messages DB so they appear in
 the user's chat history and survive backend restart.

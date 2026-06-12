@@ -1,4 +1,8 @@
 # FILE: app/introspection/__init__.py
+# Purpose: Log Introspection Feature (Read-Only)
+# Called-by: tests.test_introspection_service
+# Depends-on: app.introspection.chat_integration, app.introspection.schemas, app.introspection.service, app.introspection.summarizer
+# Last-renovated: 2026-06-11
 """
 Log Introspection Feature (Read-Only)
 

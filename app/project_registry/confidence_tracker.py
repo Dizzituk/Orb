@@ -1,4 +1,8 @@
 # FILE: app/project_registry/confidence_tracker.py
+# Purpose: Confidence tracking for command intent classification.
+# Called-by: app.db, app.llm.routing.confirmation_gate, app.project_registry.api_router
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 """
 Confidence tracking for command intent classification.
 
@@ -11,7 +15,6 @@ v1.0 (2026-03): Initial implementation.
 """
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime
 from typing import Optional

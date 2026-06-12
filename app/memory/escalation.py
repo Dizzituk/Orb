@@ -1,4 +1,8 @@
 # FILE: app/memory/escalation.py
+# Purpose: Model escalation pathway (Spec Section 10, Job 6C).
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Model escalation pathway (Spec Section 10, Job 6C).
 

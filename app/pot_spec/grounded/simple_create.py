@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/simple_create.py
+# Purpose: SpecGate CREATE Path - LLM-Grounded Feature Spec Builder
+# Called-by: app.pot_spec.grounded._simple_create_review, app.pot_spec.grounded._simple_create_utils_17, app.pot_spec.grounded.spec_runner
+# Depends-on: app.pot_spec.governance_rules, app.pot_spec.grounded._simple_create_evidence, app.pot_spec.grounded._simple_create_utils_12, app.pot_spec.grounded._simple_create_utils_13 (+4 more)
+# Last-renovated: 2026-06-11
 """
 SpecGate CREATE Path - LLM-Grounded Feature Spec Builder
 
@@ -20,7 +24,6 @@ Evidence fulfilment loop is in _simple_create_evidence.py.
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 

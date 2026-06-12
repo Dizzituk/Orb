@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/__init__.py
+# Purpose: ASTRA v2 Pipeline.
+# Called-by: app.pipeline_v2.llm_tools, app.pipeline_v2.spec_review.context, app.pipeline_v2.stages.builder, tests.test_clone_freshness_smoke (+2 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 ASTRA v2 Pipeline.
 

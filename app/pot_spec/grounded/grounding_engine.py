@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/grounding_engine.py
+# Purpose: Grounding Engine for SpecGate
+# Called-by: app.pot_spec.grounded.spec_generation
+# Depends-on: app.pot_spec.evidence_collector, app.pot_spec.grounded.spec_models, app.pot_spec.grounded.text_helpers
+# Last-renovated: 2026-06-11
 """
 Grounding Engine for SpecGate
 

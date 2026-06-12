@@ -1,4 +1,8 @@
 # FILE: app/web_automation/action_types.py
+# Purpose: Primitive action type constants + tiny typed constructors.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Primitive action type constants + tiny typed constructors.
 

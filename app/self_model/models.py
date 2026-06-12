@@ -1,4 +1,8 @@
 # FILE: app/self_model/models.py
+# Purpose: Data models for the Self-Model & Evolution Layer.
+# Called-by: app.self_model.capability_map, app.self_model.hooks, app.self_model.journal, app.self_model.observer (+3 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Data models for the Self-Model & Evolution Layer.
 

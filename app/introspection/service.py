@@ -1,4 +1,8 @@
 # FILE: app/introspection/service.py
+# Purpose: Log Query Service - Read-Only Introspection
+# Called-by: app.introspection, app.introspection.chat_integration, app.introspection.router, tests.test_introspection_service
+# Depends-on: app.introspection.schemas, app.jobs.models, app.jobs.schemas, app.pot_spec.service
+# Last-renovated: 2026-06-11
 """
 Log Query Service - Read-Only Introspection
 

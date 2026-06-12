@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/segment_loop.py
+# Purpose: Core orchestrator — routes to ASTRA v2.2 Pipeline.
+# Called-by: app.orchestrator.segment_loop_stream
+# Depends-on: app.builds.models, app.builds.pipeline_bridge, app.db, app.orchestrator.segment_state (+9 more)
+# Last-renovated: 2026-06-11
 """
 Core orchestrator — routes to ASTRA v2.2 Pipeline.
 

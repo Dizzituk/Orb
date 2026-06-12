@@ -1,3 +1,7 @@
+# Purpose: segmentation utils 3
+# Called-by: app.pot_spec.grounded._manifest_builder, app.pot_spec.grounded._segmentation_utils_4, app.pot_spec.grounded._spec_runner_segmentation, app.pot_spec.grounded.segmentation
+# Depends-on: app.pot_spec.grounded._segmentation_utils_2, app.pot_spec.grounded.segment_schemas, app.pot_spec.grounded.segmentation
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
 import os

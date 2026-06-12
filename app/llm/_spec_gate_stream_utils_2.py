@@ -1,3 +1,7 @@
+# Purpose: spec gate stream utils 2
+# Called-by: app.llm.spec_gate_stream
+# Depends-on: app.llm.spec_flow_state, app.llm.stage_models, app.specs, app.specs.service
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import json
 import logging

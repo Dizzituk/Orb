@@ -1,3 +1,7 @@
+# Purpose: target registry
+# Called-by: app.optimize.architecture_paths, app.optimize.decomposer, app.optimize.orchestrator, app.optimize.router (+1 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 
 from dataclasses import dataclass, field

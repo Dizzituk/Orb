@@ -1,3 +1,7 @@
+# Purpose: sandbox inspector utils
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.llm.local_tools.zobie.sandbox_client
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import os
 from .sandbox_client import call_fs_contents, call_fs_tree

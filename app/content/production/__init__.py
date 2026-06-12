@@ -1,4 +1,8 @@
 # FILE: app/content/production/__init__.py
+# Purpose: Content Production Engine (Spec Section 7).
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Content Production Engine (Spec Section 7).
 

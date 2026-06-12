@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/refactor_segmenter.py
+# Purpose: Deterministic Refactor Segmenter.
+# Called-by: app.orchestrator.refactor_pipeline
+# Depends-on: app.orchestrator._refactor_segmenter_utils_2, app.orchestrator._refactor_segmenter_utils_3, app.orchestrator._refactor_segmenter_utils_4, app.orchestrator.refactor_segmenter_models
+# Last-renovated: 2026-06-11
 """
 Deterministic Refactor Segmenter.
 
@@ -17,10 +21,8 @@ BUILD_ID: 2026-02-20-v1.0-deterministic-refactor-segmenter
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.orchestrator.refactor_segmenter_models import (

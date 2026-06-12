@@ -1,4 +1,8 @@
 # FILE: app/astra_memory/topic_tagger.py
+# Purpose: Topic + entity tagger for HotIndex content.
+# Called-by: app.astra_memory.indexer, app.llm.routing.memory_injection
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Topic + entity tagger for HotIndex content.
 

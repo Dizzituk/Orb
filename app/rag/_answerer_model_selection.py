@@ -1,4 +1,8 @@
 # FILE: app/rag/_answerer_model_selection.py
+# Purpose: Complexity-aware model selection for RAG queries.
+# Called-by: app.rag.answerer
+# Depends-on: app.memory.complexity
+# Last-renovated: 2026-06-11
 """
 Complexity-aware model selection for RAG queries.
 

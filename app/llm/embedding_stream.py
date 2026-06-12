@@ -1,4 +1,8 @@
 # FILE: app/llm/embedding_stream.py
+# Purpose: Streaming handlers for embedding commands.
+# Called-by: app.llm.routing.handler_registry
+# Depends-on: app.db, app.llm.audit_logger, app.rag.jobs.embedding_job
+# Last-renovated: 2026-06-11
 """
 Streaming handlers for embedding commands.
 
@@ -10,7 +14,6 @@ v1.1 (2026-01): Added schema migration check, better error handling
 v1.0 (2026-01): Initial implementation
 """
 
-import asyncio
 import json
 import logging
 from typing import AsyncGenerator, Optional

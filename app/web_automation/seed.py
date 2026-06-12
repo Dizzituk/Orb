@@ -1,4 +1,8 @@
 # FILE: app/web_automation/seed.py
+# Purpose: Seed the default set of web-automation sessions.
+# Called-by: app.web_automation
+# Depends-on: app.web_automation, app.web_automation.session_registry
+# Last-renovated: 2026-06-11
 """
 Seed the default set of web-automation sessions.
 

@@ -1,4 +1,8 @@
 # FILE: app/llm/streaming_ollama.py
+# Purpose: Ollama local LLM streaming provider.
+# Called-by: app.llm._streaming_utils_3
+# Depends-on: app.llm.streaming
+# Last-renovated: 2026-06-11
 """
 Ollama local LLM streaming provider.
 

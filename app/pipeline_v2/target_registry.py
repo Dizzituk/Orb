@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/target_registry.py
+# Purpose: Build Target Registry.
+# Called-by: app.builds.pipeline_bridge, app.cloud.build_and_deploy, app.debug.debug_chat, app.debug.orchestrator.decomposer (+15 more)
+# Depends-on: app.pipeline_v2.build_targets
+# Last-renovated: 2026-06-11
 """
 Build Target Registry.
 

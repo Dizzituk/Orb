@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/__init__.py
+# Purpose: Content Distribution Layer (Spec Section 9).
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Content Distribution Layer (Spec Section 9).
 

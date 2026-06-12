@@ -1,4 +1,8 @@
 # FILE: app/embeddings/models.py
+# Purpose: SQLAlchemy model for embedding storage.
+# Called-by: app.db, app.embeddings, app.embeddings.router, app.embeddings.service (+4 more)
+# Depends-on: app.crypto, app.db
+# Last-renovated: 2026-06-11
 """
 SQLAlchemy model for embedding storage.
 """

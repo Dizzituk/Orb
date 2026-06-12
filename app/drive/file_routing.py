@@ -1,4 +1,8 @@
 # FILE: app/drive/file_routing.py
+# Purpose: File-type-aware model routing for ASTRA Drive actions.
+# Called-by: app.drive.router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 File-type-aware model routing for ASTRA Drive actions.
 

@@ -1,4 +1,8 @@
 # FILE: app/llm/__init__.py
+# Purpose: LLM module exports.
+# Called-by: app.content.engagement.classifier, app.endpoints._chat_media_processors, app.endpoints.chat, app.endpoints.chat_attachments (+16 more)
+# Depends-on: app.llm.audit_logger, app.llm.clients, app.llm.fallbacks, app.llm.file_analyzer (+9 more)
+# Last-renovated: 2026-06-11
 """
 LLM module exports.
 

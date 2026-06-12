@@ -1,4 +1,8 @@
 # FILE: app/content/video_pipeline/style_resolver.py
+# Purpose: Style Resolver — loads and blends style profiles.
+# Called-by: app.content.video_pipeline.orchestrator, app.content.video_pipeline.router, main
+# Depends-on: app.content.video_pipeline.models, app.content.video_pipeline.prompts, app.db
+# Last-renovated: 2026-06-11
 """
 Style Resolver — loads and blends style profiles.
 

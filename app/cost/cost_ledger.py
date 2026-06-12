@@ -1,4 +1,8 @@
 # FILE: app/overwatcher/cost_ledger.py
+# Purpose: Persistent cost ledger for ASTRA.
+# Called-by: app.cost.cost_budget, app.cost.cost_recorder, app.endpoints.cost_dashboard
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Persistent cost ledger for ASTRA.
 

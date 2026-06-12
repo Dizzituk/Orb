@@ -1,4 +1,8 @@
 # FILE: app/web_automation/memory/runner.py
+# Purpose: Flow runner — executes a Flow step-by-step with halt-on-first-failure
+# Called-by: app.web_automation.memory
+# Depends-on: app.web_automation.memory.checks, app.web_automation.memory.diagnostics, app.web_automation.memory.models
+# Last-renovated: 2026-06-11
 """
 Flow runner — executes a Flow step-by-step with halt-on-first-failure
 semantics and structured per-step results.

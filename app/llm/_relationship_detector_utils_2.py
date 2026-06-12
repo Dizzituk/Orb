@@ -1,8 +1,16 @@
+# Purpose: relationship detector utils 2
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.llm.relationship_detector
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:  # C4 fix (2026-06-11): annotation-only import; no runtime
+    # dependency, so no circular import with the parent module.
+    from app.llm.relationship_detector import RelationshipResult
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 MAX_SUMMARY_CHARS = 600

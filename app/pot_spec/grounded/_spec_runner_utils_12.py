@@ -1,3 +1,7 @@
+# Purpose: spec runner utils 12
+# Called-by: app.pot_spec.grounded._spec_runner_result, app.pot_spec.grounded._spec_runner_segmentation, app.pot_spec.grounded.spec_runner
+# Depends-on: app.pipeline_v2.target_registry, app.pot_spec.grounded._manifest_builder, app.pot_spec.grounded._simple_create_utils_17, app.pot_spec.grounded._spec_runner_utils_10 (+4 more)
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
 import os

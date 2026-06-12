@@ -1,3 +1,7 @@
+# Purpose: embedding job utils 6
+# Called-by: app.rag.jobs._embedding_batch, app.rag.jobs._embedding_job_utils_7, app.rag.jobs.embedding_job
+# Depends-on: app.rag.jobs.embedding_job
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import os
 from pathlib import Path

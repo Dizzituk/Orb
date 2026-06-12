@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/_codebase_scanner_health.py
+# Purpose: Smart health checks for the codebase scanner.
+# Called-by: app.orchestrator.codebase_scanner
+# Depends-on: app.orchestrator.codebase_scanner_models
+# Last-renovated: 2026-06-11
 """
 Smart health checks for the codebase scanner.
 

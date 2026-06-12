@@ -1,4 +1,8 @@
 # FILE: app/finance/models.py
+# Purpose: SQLAlchemy models for the ASTRA finance module.
+# Called-by: app.db, app.finance.seed, app.finance.work_router
+# Depends-on: app.db, app.finance, app.finance.models_workday
+# Last-renovated: 2026-06-11
 """
 SQLAlchemy models for the ASTRA finance module.
 
@@ -86,7 +90,12 @@ class Transaction(Base):
     route_info = Column(String(200), nullable=True)
 
     # Credit card payment linkage
-    linked_card_id = Column(Integer, ForeignKey("finance_credit_cards.id"), nullable=True)
+    # C1 fix (2026-06-11): finance_credit_cards has no model anywhere in the
+    # repo and no table even in the live DB — the ForeignKey was a dangling
+    # reference that made create_all() raise NoReferencedTableError on any
+    # fresh database (renovation bug C1). Column kept for data compatibility;
+    # the constraint is dropped. Reinstate properly if the card feature returns.
+    linked_card_id = Column(Integer, nullable=True)
 
     # Tax tracking
     tax_year = Column(String(7), nullable=False)

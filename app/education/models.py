@@ -1,3 +1,7 @@
+# Purpose: models
+# Called-by: app.education.service, app.llm.routing.domain_context, main
+# Depends-on: app.db
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 
 import enum

@@ -1,4 +1,8 @@
 # FILE: app/security/firewall.py
+# Purpose: Firewall Middleware: Block requests from untrusted sources.
+# Called-by: app.security, tests.test_firewall
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """Firewall Middleware: Block requests from untrusted sources.
 
 CRITICAL SAFETY FEATURE: Prevents Zombie/Sandbox Orb from communicating

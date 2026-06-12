@@ -1,4 +1,8 @@
 # FILE: app/content/router.py
+# Purpose: Content Pipeline API Router.
+# Called-by: main
+# Depends-on: app.auth, app.content, app.content.models, app.content.schemas (+2 more)
+# Last-renovated: 2026-06-11
 """
 Content Pipeline API Router.
 

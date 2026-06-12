@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/refactor_formatter.py
+# Purpose: SpecGate v2.0 - Refactor Output Formatter
+# Called-by: app.pot_spec.grounded._multi_file_detection_utils_2, app.pot_spec.grounded.multi_file_detection
+# Depends-on: app.pot_spec.grounded.refactor_schemas
+# Last-renovated: 2026-06-11
 """
 SpecGate v2.0 - Refactor Output Formatter
 

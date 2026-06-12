@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/scaffolds/templates.py
+# Purpose: Scaffold Templates — pre-built code skeletons for common patterns.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Scaffold Templates — pre-built code skeletons for common patterns.
 
@@ -12,7 +16,6 @@ v1.0 (2026-03-01): Templates for view, grid, detail, data, css patterns.
 from __future__ import annotations
 
 import logging
-import os
 import re
 from typing import Any, Dict, List, Optional
 

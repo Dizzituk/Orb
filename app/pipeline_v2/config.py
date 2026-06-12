@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/config.py
+# Purpose: ASTRA v2.2 Pipeline Configuration.
+# Called-by: app.orchestrator.segment_loop, app.pipeline_v2.agentic_builder, app.pipeline_v2.bvl.tier2_test_generator, app.pipeline_v2.checkout (+7 more)
+# Depends-on: app.llm.frontier_models
+# Last-renovated: 2026-06-11
 """
 ASTRA v2.2 Pipeline Configuration.
 

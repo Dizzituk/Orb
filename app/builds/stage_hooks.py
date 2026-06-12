@@ -1,4 +1,8 @@
 # FILE: app/builds/stage_hooks.py
+# Purpose: Stage Lifecycle Hooks — wraps pipeline stream handlers to report
+# Called-by: app.llm.routing.command_dispatch, app.llm.routing.weaver_reweave_handler, tests.test_j16_gate_smoke
+# Depends-on: app.builds, app.builds.messages, app.builds.pipeline_bridge, app.builds.service (+4 more)
+# Last-renovated: 2026-06-11
 """
 Stage Lifecycle Hooks — wraps pipeline stream handlers to report
 build project stage transitions and log output to per-project messages.

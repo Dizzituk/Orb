@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/streams/zobie_legacy.py
+# Purpose: Legacy zobie map stream generator.
+# Called-by: app.llm.local_tools.zobie.streams
+# Depends-on: app.llm.audit_logger, app.llm.local_tools.archmap_helpers, app.llm.local_tools.zobie.config, app.llm.local_tools.zobie.sse (+3 more)
+# Last-renovated: 2026-06-11
 """Legacy zobie map stream generator.
 
 Extracted from zobie_tools.py for modularity.

@@ -1,4 +1,8 @@
 # FILE: app/self_model/fragments/store.py
+# Purpose: Fragment store — append-only JSON-backed persistence.
+# Called-by: app.self_model.fragments.capture, app.self_model.fragments.cluster, app.self_model.fragments.injection, app.self_model.fragments.router (+1 more)
+# Depends-on: app.self_model.fragments.models
+# Last-renovated: 2026-06-11
 """
 Fragment store — append-only JSON-backed persistence.
 

@@ -1,4 +1,8 @@
 # FILE: app/experience/__init__.py
+# Purpose: ASTRA Experience Database — Unified Memory System Layer 1.
+# Called-by: app.db, app.orchestrator.final_checkout
+# Depends-on: app.experience.journal_writer, app.experience.schemas
+# Last-renovated: 2026-06-11
 """
 ASTRA Experience Database — Unified Memory System Layer 1.
 

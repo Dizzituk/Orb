@@ -1,3 +1,7 @@
+# Purpose: schema utils 2
+# Called-by: app.specs._schema_utils_3, app.specs.schema
+# Depends-on: app.specs.schema
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from enum import Enum

@@ -1,4 +1,8 @@
 # FILE: app/lifestyle/coaching.py
+# Purpose: Coaching layer for the Lifestyle Engine: food preferences (soft / evolving /
+# Called-by: app.lifestyle.service
+# Depends-on: app.lifestyle.models, app.lifestyle.schemas
+# Last-renovated: 2026-06-11
 """
 Coaching layer for the Lifestyle Engine: food preferences (soft / evolving /
 tiered memory) and the single written meal plan.

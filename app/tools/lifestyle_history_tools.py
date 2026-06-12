@@ -1,4 +1,8 @@
 # FILE: app/tools/lifestyle_history_tools.py
+# Purpose: Health-history tool handler — gives Astra a range-based read of the whole daily
+# Called-by: app.tools.lifestyle_tools
+# Depends-on: app.lifestyle.service, app.tools.lifestyle_tools
+# Last-renovated: 2026-06-11
 """
 Health-history tool handler — gives Astra a range-based read of the whole daily
 health series for long-arc trend analysis (steps / floors / calories / resting

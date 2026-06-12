@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/models.py
+# Purpose: ASTRA v2.1 Pipeline Data Models.
+# Called-by: app.optimize.executor, app.pipeline_v2.agentic_builder, app.pipeline_v2.builder_prompts, app.pipeline_v2.bvl.bvl_orchestrator (+9 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 ASTRA v2.1 Pipeline Data Models.
 

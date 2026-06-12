@@ -1,4 +1,8 @@
 # FILE: app/settings/service.py
+# Purpose: API Key Settings Service.
+# Called-by: app.cloud.gdrive_auth, app.content.video_pipeline.heygen_client, app.content.video_pipeline.narration, app.content.video_pipeline.pixabay_client (+10 more)
+# Depends-on: app.settings.models
+# Last-renovated: 2026-06-11
 """
 API Key Settings Service.
 

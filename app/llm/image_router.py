@@ -1,4 +1,8 @@
 # FILE: app/llm/image_router.py
+# Purpose: Image generation endpoint + SSE stream handler.
+# Called-by: app.bridge.capability_layer, app.llm.routing.handler_registry, main
+# Depends-on: app.auth.middleware, app.db, app.llm.chart_data_extractor, app.llm.chart_inline_extractor (+12 more)
+# Last-renovated: 2026-06-11
 # NOTE: Plotly chart rendering requires: pip install plotly kaleido
 """
 Image generation endpoint + SSE stream handler.

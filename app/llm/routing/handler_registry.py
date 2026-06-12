@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/handler_registry.py
+# Purpose: Centralized handler imports and availability flags for stream routing.
+# Called-by: app.debug.context_assembler, app.debug.executors.emulator, app.llm._stream_router_utils, app.llm.routing._command_dispatch_utils (+5 more)
+# Depends-on: app.capabilities, app.introspection.chat_integration, app.llm.critical_pipeline_stream, app.llm.deep_research_stream (+16 more)
+# Last-renovated: 2026-06-11
 """
 Centralized handler imports and availability flags for stream routing.
 

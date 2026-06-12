@@ -1,4 +1,8 @@
 # FILE: tests/test_planner.py
+# Purpose: Tests for app/overwatcher/planner.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.overwatcher
+# Last-renovated: 2026-06-11
 """
 Tests for app/overwatcher/planner.py
 Execution planning - creates execution plans from specs.

@@ -1,4 +1,8 @@
 # FILE: app/agentic_pipeline/segment_printer.py
+# Purpose: Segment Printer — Tiered 3D Printer Pipeline.
+# Called-by: app.agentic_pipeline.pipeline, app.pipeline_v2.stages.architect
+# Depends-on: app.agentic_pipeline, app.agentic_pipeline.loop_controller, app.overwatcher.architecture_executor, app.pipeline_v2.sandbox_tools
+# Last-renovated: 2026-06-11
 """
 Segment Printer — Tiered 3D Printer Pipeline.
 

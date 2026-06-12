@@ -1,3 +1,7 @@
+# Purpose: router
+# Called-by: main
+# Depends-on: app.auth, app.auth.middleware, app.db, app.shared_context.builder (+1 more)
+# Last-renovated: 2026-06-11
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from pydantic import BaseModel

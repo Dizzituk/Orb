@@ -1,3 +1,7 @@
+# Purpose: audit logger utils
+# Called-by: app.llm.audit_logger
+# Depends-on: app.llm.audit_logger
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
 import os

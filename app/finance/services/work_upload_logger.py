@@ -1,4 +1,8 @@
 # FILE: app/finance/services/work_upload_logger.py
+# Purpose: Deterministic logger for delivery screenshots uploaded from the phone.
+# Called-by: app.debug.gemini_finance_tools
+# Depends-on: app.bridge.uploads_store, app.finance.services.work_folder_logger, app.tools.finance_tools
+# Last-renovated: 2026-06-11
 """
 Deterministic logger for delivery screenshots uploaded from the phone.
 

@@ -1,4 +1,8 @@
 # FILE: app/debug/orchestrator/behaviour_verifier.py
+# Purpose: Behaviour verifier — executes scripted user-facing scenarios.
+# Called-by: app.debug.orchestrator.loop_controller
+# Depends-on: app.debug, app.debug.action_executor, app.debug.adb_tools, app.debug.orchestrator.schemas
+# Last-renovated: 2026-06-11
 """
 Behaviour verifier — executes scripted user-facing scenarios.
 

@@ -1,4 +1,8 @@
 # FILE: app/email_service/router.py
+# Purpose: Email API endpoints — Proton Mail via Proton Bridge (IMAP/SMTP).
+# Called-by: main
+# Depends-on: app.auth, app.email_service.imap_service, app.email_service.smtp_service
+# Last-renovated: 2026-06-11
 """
 Email API endpoints — Proton Mail via Proton Bridge (IMAP/SMTP).
 

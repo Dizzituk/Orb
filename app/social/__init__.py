@@ -1,4 +1,8 @@
 # FILE: app/social/__init__.py
+# Purpose: ASTRA social media APIs.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 ASTRA social media APIs.
 

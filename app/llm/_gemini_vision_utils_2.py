@@ -1,3 +1,7 @@
+# Purpose: gemini vision utils 2
+# Called-by: app.llm._gemini_vision_utils_3, app.llm.gemini_vision
+# Depends-on: app.llm.gemini_vision
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import base64
 from typing import Optional

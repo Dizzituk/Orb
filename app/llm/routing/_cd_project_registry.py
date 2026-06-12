@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/_cd_project_registry.py
+# Purpose: Dispatch table extension for Project Registry commands.
+# Called-by: app.llm.routing._cd_dispatch_table
+# Depends-on: app.db, app.llm.translation_routing, app.project_registry, app.project_registry.service
+# Last-renovated: 2026-06-11
 """
 Dispatch table extension for Project Registry commands.
 

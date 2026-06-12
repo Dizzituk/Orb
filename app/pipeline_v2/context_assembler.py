@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/context_assembler.py
+# Purpose: ASTRA v2.2 Context Assembler — Layer 3 of Piece 5 (context threading).
+# Called-by: app.pipeline_v2.agentic_builder
+# Depends-on: app.pipeline_v2.ledger, app.pipeline_v2.ledger_format, app.pipeline_v2.stage_summaries
+# Last-renovated: 2026-06-11
 """
 ASTRA v2.2 Context Assembler — Layer 3 of Piece 5 (context threading).
 

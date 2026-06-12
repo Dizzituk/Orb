@@ -1,4 +1,8 @@
 # FILE: app/translation/integration.py
+# Purpose: Integration helpers for the Translation Layer.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.translation.modes, app.translation.schemas, app.translation.translator
+# Last-renovated: 2026-06-11
 """
 Integration helpers for the Translation Layer.
 Shows how to integrate with existing stream_router.py

@@ -1,3 +1,7 @@
+# Purpose: spec models utils 2
+# Called-by: app.pot_spec.grounded.spec_models
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum

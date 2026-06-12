@@ -1,4 +1,8 @@
 # FILE: tests/test_job_schemas.py
+# Purpose: Tests for app/jobs/schemas.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app, app.jobs.schemas
+# Last-renovated: 2026-06-11
 """
 Tests for app/jobs/schemas.py
 Phase 4 Job System schemas, enums, and validation.

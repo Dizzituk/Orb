@@ -1,3 +1,7 @@
+# Purpose: evidence collector utils 1
+# Called-by: app.pot_spec.evidence_collector
+# Depends-on: app.pot_spec.evidence_collector
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
 import re

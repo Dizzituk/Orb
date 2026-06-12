@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/scaffolds/__init__.py
+# Purpose: Component Scaffold Templates — Job 6.
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Component Scaffold Templates — Job 6.
 

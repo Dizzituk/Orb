@@ -1,4 +1,8 @@
 # FILE: app/translation/phrase_cache.py
+# Purpose: Phrase → Intent cache for ASTRA Translation Layer.
+# Called-by: app.translation, app.translation.feedback, app.translation.translator
+# Depends-on: app.translation.schemas
+# Last-renovated: 2026-06-11
 """
 Phrase → Intent cache for ASTRA Translation Layer.
 Supports learning shortcuts from usage so more messages stay on Tier 0.

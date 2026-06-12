@@ -1,3 +1,7 @@
+# Purpose: Canonical path utilities.
+# Called-by: app.rag.chunking.signature_loader, app.rag.indexing.directory_indexer, app.rag.utils, tests.test_rag_canonical_paths
+# Depends-on: app.rag.config.scan_roots
+# Last-renovated: 2026-06-11
 """
 Canonical path utilities.
 

@@ -1,4 +1,8 @@
 # FILE: app/debug/executors/_paths.py
+# Purpose: Path helpers and constants shared across all executor modules.
+# Called-by: app.debug.action_executor, app.debug.executors.file_ops, app.debug.executors.filesystem, app.debug.executors.user_files
+# Depends-on: app.sandbox.manager
+# Last-renovated: 2026-06-11
 """
 Path helpers and constants shared across all executor modules.
 

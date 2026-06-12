@@ -1,3 +1,7 @@
+# Purpose: stream handler utils 2
+# Called-by: app.llm.critical_pipeline.stream_handler
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import json
 

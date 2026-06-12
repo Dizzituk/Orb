@@ -1,4 +1,8 @@
 # FILE: app/memory/upload_knowledge_hook.py
+# Purpose: Universal upload knowledge hook.
+# Called-by: app.debug.file_upload_router, app.drive.content_indexer
+# Depends-on: app.embeddings, app.embeddings.service, app.llm.file_analyzer, app.memory (+4 more)
+# Last-renovated: 2026-06-11
 """
 Universal upload knowledge hook.
 
@@ -15,7 +19,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session as DbSession

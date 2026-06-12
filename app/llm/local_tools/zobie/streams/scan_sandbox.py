@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/streams/scan_sandbox.py
+# Purpose: SCAN SANDBOX stream generator (scope="sandbox") - DB + RAG chunks + embeddings.
+# Called-by: app.llm.local_tools.zobie.streams
+# Depends-on: app.db, app.llm.audit_logger, app.llm.local_tools.zobie.config, app.llm.local_tools.zobie.db_ops (+9 more)
+# Last-renovated: 2026-06-11
 """SCAN SANDBOX stream generator (scope="sandbox") - DB + RAG chunks + embeddings.
 
 Extracted from zobie_tools.py for modularity.
@@ -302,7 +306,9 @@ async def generate_sandbox_structure_scan_stream(
     
     if contents_data:
         try:
-            rag_scan_id = signatures_to_db(db, contents_data, SANDBOX_SCAN_ROOTS[0])
+            rag_scan_id = signatures_to_db(
+                db, contents_data, SANDBOX_SCAN_ROOTS[0], source="sandbox",
+            )
             if rag_scan_id:
                 from app.rag.models import ArchCodeChunk
                 chunks_created = db.query(ArchCodeChunk).filter(

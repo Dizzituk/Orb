@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/arch_template/engine.py
+# Purpose: Architecture Template Engine — main entry point.
+# Called-by: app.agentic_pipeline.pipeline, app.llm.critical_pipeline.stream_handler, app.pipeline_v2.stages.architect
+# Depends-on: app.orchestrator.arch_template.sections, app.orchestrator.cross_segment_interfaces
+# Last-renovated: 2026-06-11
 """
 Architecture Template Engine — main entry point.
 
@@ -24,7 +28,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 from typing import Any, Dict, List, Optional
 
 from .sections import (

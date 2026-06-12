@@ -1,4 +1,8 @@
 # FILE: app/drive/thumbnail.py
+# Purpose: Thumbnail generation for image files.
+# Called-by: app.drive.router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Thumbnail generation for image files.
 Creates small base64-encoded previews for the Drive UI.

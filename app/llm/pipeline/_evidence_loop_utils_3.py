@@ -1,3 +1,7 @@
+# Purpose: evidence loop utils 3
+# Called-by: app.llm.pipeline.evidence_loop
+# Depends-on: app.db, app.embeddings.service, app.llm.local_tools.arch_query, app.llm.local_tools.zobie.sandbox_inspector (+4 more)
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
 import re

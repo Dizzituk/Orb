@@ -1,4 +1,8 @@
 # FILE: app/content/distribution/youtube.py
+# Purpose: YouTube Data API v3 Integration (Spec Section 9.1).
+# Called-by: app.content.distribution.analytics, app.content.distribution.publisher, app.content.distribution_router, app.content.engagement.dispatcher (+1 more)
+# Depends-on: app.content.distribution.youtube_auth
+# Last-renovated: 2026-06-11
 """
 YouTube Data API v3 Integration (Spec Section 9.1).
 

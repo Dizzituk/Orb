@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/streams/fs_query.py
+# Purpose: FILESYSTEM QUERY stream generator (v5.7 - Stage 2 Commentary Fixes).
+# Called-by: app.llm.local_tools.zobie.streams, app.llm.local_tools.zobie.streams._fs_query_utils_2, app.llm.local_tools.zobie.streams._fs_query_utils_3
+# Depends-on: app.llm.audit_logger, app.llm.local_tools.zobie.config, app.llm.local_tools.zobie.db_ops, app.llm.local_tools.zobie.fs_command_parser (+10 more)
+# Last-renovated: 2026-06-11
 """FILESYSTEM QUERY stream generator (v5.7 - Stage 2 Commentary Fixes).
 
 Answers filesystem listing/find/read queries AND write operations using:
@@ -45,7 +49,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import sys
 from typing import AsyncGenerator, Optional
 
 from sqlalchemy import func

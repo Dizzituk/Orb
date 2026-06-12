@@ -1,4 +1,8 @@
 # FILE: app/finance/services/expense_service.py
+# Purpose: Expense logging service.
+# Called-by: app.debug.gemini_expense_tools
+# Depends-on: app.finance.utils.tax_year
+# Last-renovated: 2026-06-11
 """
 Expense logging service.
 

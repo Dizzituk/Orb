@@ -1,4 +1,8 @@
 # FILE: app/styling/docx_builder.py
+# Purpose: Build styled Word documents from a structured content list.
+# Called-by: app.debug.executors.styled_files, scripts.legal_case._rebuild_docx
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Build styled Word documents from a structured content list.
 

@@ -1,3 +1,7 @@
+# Purpose: job classifier utils
+# Called-by: app.llm.job_classifier
+# Depends-on: app.llm.job_classifier, app.llm.schemas
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 from .schemas import JobType, Provider, RoutingConfig, RoutingDecision
 from typing import Tuple

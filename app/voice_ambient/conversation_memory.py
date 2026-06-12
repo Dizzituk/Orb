@@ -1,4 +1,8 @@
 # FILE: app/voice_ambient/conversation_memory.py
+# Purpose: In-memory conversation history for ambient voice sessions.
+# Called-by: app.invocation.router
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 In-memory conversation history for ambient voice sessions.
 

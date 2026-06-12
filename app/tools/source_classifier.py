@@ -1,4 +1,8 @@
 # FILE: app/tools/source_classifier.py
+# Purpose: Source diversity & credibility tagging for web search results.
+# Called-by: app.llm.deep_research_engine, app.llm.web_search
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Source diversity & credibility tagging for web search results.
 
@@ -22,7 +26,6 @@ v2.1 (2026-02): Initial implementation.
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urlparse

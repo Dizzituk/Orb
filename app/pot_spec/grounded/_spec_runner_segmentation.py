@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/_spec_runner_segmentation.py
+# Purpose: Spec runner Step 4b: Segmentation check and manifest generation.
+# Called-by: app.pot_spec.grounded.spec_runner
+# Depends-on: app.pot_spec.grounded._sbx_fs, app.pot_spec.grounded._segmentation_utils_3, app.pot_spec.grounded._spec_runner_deterministic_refactor, app.pot_spec.grounded._spec_runner_utils_11 (+6 more)
+# Last-renovated: 2026-06-11
 """
 Spec runner Step 4b: Segmentation check and manifest generation.
 

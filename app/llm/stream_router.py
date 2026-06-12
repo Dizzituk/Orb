@@ -1,4 +1,8 @@
 # FILE: app/llm/stream_router.py
+# Purpose: Streaming endpoints for real-time LLM responses.
+# Called-by: main, tests.test_stream_router
+# Depends-on: app.auth, app.auth.middleware, app.cloud.build_and_deploy, app.db (+24 more)
+# Last-renovated: 2026-06-11
 """
 Streaming endpoints for real-time LLM responses.
 Uses Server-Sent Events (SSE).
@@ -38,7 +42,6 @@ v4.1 (2026-01): CRITICAL FIX - CHAT mode returns early, bypasses job classificat
 v4.0 (2026-01): ASTRA Translation Layer integration - prevents misfires
 """
 
-import json
 import logging
 from typing import Optional
 
@@ -612,6 +615,14 @@ async def stream_chat(
                         _quick_reply = try_quick_nutrition_command(req.message, db)
                     except Exception as _qn_err:
                         logger.warning("[stream_router] lifestyle quick-command failed: %s", _qn_err)
+                    if _quick_reply is None:
+                        # Energy debrief (2026-06-11): "heavy day today" etc. —
+                        # deterministic, logs effort + reprices the day's burn.
+                        try:
+                            from app.lifestyle.energy import try_quick_debrief
+                            _quick_reply = try_quick_debrief(db, req.message)
+                        except Exception as _qd_err:
+                            logger.warning("[stream_router] energy debrief failed: %s", _qd_err)
                     if _quick_reply:
                         after_user_message(
                             req.message,

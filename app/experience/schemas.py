@@ -1,4 +1,8 @@
 # FILE: app/experience/schemas.py
+# Purpose: Data structures for the Experience Database.
+# Called-by: app.experience, app.experience.distillation, app.experience.journal_writer
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Data structures for the Experience Database.
 

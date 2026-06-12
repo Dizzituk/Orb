@@ -1,4 +1,8 @@
 # FILE: app/pot_spec/grounded/needle_classifier.py
+# Purpose: Needle Classifier — Cognitive Load Estimator for Specifications.
+# Called-by: app.pot_spec.grounded._spec_runner_segmentation
+# Depends-on: app.llm.stage_models, app.providers.registry
+# Last-renovated: 2026-06-11
 """
 Needle Classifier — Cognitive Load Estimator for Specifications.
 
@@ -37,7 +41,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, Optional

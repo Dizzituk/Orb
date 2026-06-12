@@ -1,4 +1,8 @@
 # FILE: app/llm/_sg_stream_persist.py
+# Purpose: Spec Gate stream — persistence helpers.
+# Called-by: app.llm.spec_gate_stream
+# Depends-on: app.pot_spec.spec_gate_persistence, app.specs, app.specs.service
+# Last-renovated: 2026-06-11
 """
 Spec Gate stream — persistence helpers.
 

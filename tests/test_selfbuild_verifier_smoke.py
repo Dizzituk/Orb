@@ -1,3 +1,7 @@
+# Purpose: test selfbuild verifier smoke
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.pipeline_v2.sandbox_tools, app.pipeline_v2.verifier_agent, app.pipeline_v2.verifier_agent.agent, app.pipeline_v2.verifier_agent.backend_tools
+# Last-renovated: 2026-06-11
 import sys, os, asyncio
 os.chdir("D:/Orb"); sys.path.insert(0, "D:/Orb")
 from app.pipeline_v2.verifier_agent import backend_tools as bt

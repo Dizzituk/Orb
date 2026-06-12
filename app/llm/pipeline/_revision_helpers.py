@@ -1,4 +1,8 @@
 # FILE: app/llm/pipeline/_revision_helpers.py
+# Purpose: Revision pipeline helpers.
+# Called-by: app.llm.pipeline.revision
+# Depends-on: app.jobs.schemas, app.llm.pipeline.revision, app.llm.schemas, app.providers.registry
+# Last-renovated: 2026-06-11
 """
 Revision pipeline helpers.
 
@@ -7,10 +11,8 @@ Opus revision caller, and job type mapping.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
-import textwrap
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 

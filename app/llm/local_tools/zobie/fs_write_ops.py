@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/fs_write_ops.py
+# Purpose: Stage 1 deterministic file write operations for sandbox filesystem.
+# Called-by: app.llm.local_tools.zobie._fs_write_ops_utils_2, app.llm.local_tools.zobie.streams._fs_query_utils_2, app.llm.local_tools.zobie.streams._fs_query_utils_3, app.llm.local_tools.zobie.streams.fs_query
+# Depends-on: app.llm.local_tools.zobie._fs_write_ops_utils_2, app.llm.local_tools.zobie.config, app.llm.local_tools.zobie.fs_live_ops, app.llm.local_tools.zobie.fs_path_utils (+1 more)
+# Last-renovated: 2026-06-11
 """Stage 1 deterministic file write operations for sandbox filesystem.
 
 This module handles surgical file edits via the sandbox controller:

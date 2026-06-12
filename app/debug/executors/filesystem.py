@@ -1,4 +1,8 @@
 # FILE: app/debug/executors/filesystem.py
+# Purpose: Filesystem executors: read, write, edit, list, search, run_command.
+# Called-by: app.debug.executors
+# Depends-on: app.debug.executors._paths, app.debug.executors.filesystem_guards, app.debug.size_warning
+# Last-renovated: 2026-06-11
 """
 Filesystem executors: read, write, edit, list, search, run_command.
 

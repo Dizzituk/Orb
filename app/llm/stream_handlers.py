@@ -1,4 +1,8 @@
 # FILE: app/llm/stream_handlers.py
+# Purpose: SSE stream generator functions for stream router.
+# Called-by: app.endpoints.chat_attachments, app.llm.routing.handler_registry
+# Depends-on: app.introspection.chat_integration, app.llm.audit_logger, app.llm.chat_tool_loop, app.llm.file_output (+8 more)
+# Last-renovated: 2026-06-11
 """
 SSE stream generator functions for stream router.
 

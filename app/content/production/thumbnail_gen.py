@@ -1,4 +1,8 @@
 # FILE: app/content/production/thumbnail_gen.py
+# Purpose: Thumbnail Generator — extract frame + overlay title text.
+# Called-by: app.content.production_router, app.content.video_pipeline.orchestrator
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Thumbnail Generator — extract frame + overlay title text.
 

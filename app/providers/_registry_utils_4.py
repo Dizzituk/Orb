@@ -1,3 +1,7 @@
+# Purpose: registry utils 4
+# Called-by: app.investments.chat_router, app.providers.registry
+# Depends-on: app.providers._registry_utils_3, app.providers.registry
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 from app.providers._registry_utils_3 import LlmUsage
 from dataclasses import dataclass, field

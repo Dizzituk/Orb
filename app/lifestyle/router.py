@@ -1,4 +1,8 @@
 # FILE: app/lifestyle/router.py
+# Purpose: FastAPI router for the Lifestyle Engine.
+# Called-by: main
+# Depends-on: app.auth, app.db, app.lifestyle, app.lifestyle.daily_view (+3 more)
+# Last-renovated: 2026-06-11
 """
 FastAPI router for the Lifestyle Engine.
 

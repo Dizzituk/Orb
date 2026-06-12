@@ -1,4 +1,8 @@
 # FILE: app/voice_ambient/router.py
+# Purpose: FastAPI router for the ambient voice WebSocket.
+# Called-by: app.voice_ambient, main
+# Depends-on: app.voice_ambient.session
+# Last-renovated: 2026-06-11
 """
 FastAPI router for the ambient voice WebSocket.
 

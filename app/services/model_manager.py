@@ -1,3 +1,7 @@
+# Purpose: Model manager for Whisper models with GPU detection and lazy loading.
+# Called-by: app.routers.audio_stream, app.routers.transcribe, app.services.faster_whisper_service
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Model manager for Whisper models with GPU detection and lazy loading.
 
@@ -7,7 +11,6 @@ falls back to environment variables or sensible defaults.
 import configparser
 import gc
 import logging
-import os
 import threading
 from pathlib import Path
 from typing import Optional, Dict, Any

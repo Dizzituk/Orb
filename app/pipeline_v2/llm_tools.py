@@ -1,4 +1,8 @@
 # FILE: app/pipeline_v2/llm_tools.py
+# Purpose: LLM Tool-Calling Loop for the Agentic Builder.
+# Called-by: app.pipeline_v2.agentic_builder, app.pipeline_v2.llm_compat, app.pipeline_v2.llm_tools_anthropic, app.pipeline_v2.segment_tracker (+1 more)
+# Depends-on: app.pipeline_v2, app.pipeline_v2.android_sandbox, app.pipeline_v2.llm_caller, app.pipeline_v2.llm_response_parsing (+6 more)
+# Last-renovated: 2026-06-11
 """
 LLM Tool-Calling Loop for the Agentic Builder.
 
@@ -24,7 +28,6 @@ v1.4 (2026-06-09): Tools+reasoning now routes through the Responses API
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 from typing import Any, Callable, Dict, List, Optional, Tuple

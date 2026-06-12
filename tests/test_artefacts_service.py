@@ -1,4 +1,8 @@
 # FILE: tests/test_artefacts_service.py
+# Purpose: Tests for app/artefacts/service.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app, app.artefacts.service
+# Last-renovated: 2026-06-11
 """
 Tests for app/artefacts/service.py
 Artifact storage - manages job artifacts and outputs.

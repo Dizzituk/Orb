@@ -1,4 +1,8 @@
 # FILE: app/llm/gemini_vision.py
+# Purpose: Vision client for image and video analysis.
+# Called-by: app.bridge.attachment_describe, app.content.style_analyser, app.debug.executors.user_files, app.endpoints._chat_media_processors (+11 more)
+# Depends-on: app.llm._gemini_vision_utils_2, app.llm._gemini_vision_utils_3
+# Last-renovated: 2026-06-11
 """
 Vision client for image and video analysis.
 Supports Google Gemini and OpenAI GPT-4 Vision with automatic fallback.
@@ -35,9 +39,7 @@ v0.12.6:
 - Automatic fallback when Gemini fails (rate limit, quota, errors)
 """
 import os
-import base64
 import json
-import time
 from pathlib import Path
 from typing import Optional, Union
 from dotenv import load_dotenv

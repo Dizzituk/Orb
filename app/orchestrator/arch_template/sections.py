@@ -1,4 +1,8 @@
 # FILE: app/orchestrator/arch_template/sections.py
+# Purpose: Architecture Template Section Generators.
+# Called-by: app.orchestrator.arch_template.engine
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Architecture Template Section Generators.
 

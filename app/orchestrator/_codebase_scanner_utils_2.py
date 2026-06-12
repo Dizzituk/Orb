@@ -1,3 +1,7 @@
+# Purpose: codebase scanner utils 2
+# Called-by: app.orchestrator._codebase_scanner_utils_3, app.orchestrator.codebase_scanner
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import ast
 import hashlib

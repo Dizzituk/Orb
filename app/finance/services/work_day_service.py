@@ -1,4 +1,8 @@
 # FILE: app/finance/services/work_day_service.py
+# Purpose: Work-day ledger service (v8.0 rebuild).
+# Called-by: app.tools.finance_tools
+# Depends-on: app.finance.models_workday, app.finance.utils.tax_year
+# Last-renovated: 2026-06-11
 """
 Work-day ledger service (v8.0 rebuild).
 

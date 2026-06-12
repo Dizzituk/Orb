@@ -1,4 +1,8 @@
 # FILE: tests/test_ow_orchestrator.py
+# Purpose: Tests for app/overwatcher/orchestrator.py
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: app.overwatcher
+# Last-renovated: 2026-06-11
 """
 Tests for app/overwatcher/orchestrator.py
 Pipeline orchestration - coordinates multi-stage execution.

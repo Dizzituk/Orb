@@ -1,4 +1,8 @@
 # FILE: app/content/production/captions.py
+# Purpose: Caption Generation and Burning (Spec Section 7.4).
+# Called-by: no static importers found (dynamic/registry use possible)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Caption Generation and Burning (Spec Section 7.4).
 
@@ -11,7 +15,6 @@ Deterministic caption system:
 """
 import logging
 import os
-import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass

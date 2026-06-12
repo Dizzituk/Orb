@@ -1,4 +1,8 @@
 # FILE: app/memory/realtime_fact_capture.py
+# Purpose: Real-time biographical fact capture from conversation.
+# Called-by: app.memory.integration
+# Depends-on: app.astra_memory.confidence_scoring, app.astra_memory.preference_models, app.astra_memory.preference_service
+# Last-renovated: 2026-06-11
 """
 Real-time biographical fact capture from conversation.
 

@@ -1,4 +1,8 @@
 # FILE: app/grounding/chat_integration.py
+# Purpose: Integration layer for wiring the Grounding Gate into chat routing.
+# Called-by: app.bridge.capability_layer, app.llm.routing.chat_routing
+# Depends-on: app.grounding.grounding_gate
+# Last-renovated: 2026-06-11
 """
 Integration layer for wiring the Grounding Gate into chat routing.
 

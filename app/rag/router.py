@@ -1,3 +1,7 @@
+# Purpose: FastAPI endpoints for RAG system.
+# Called-by: main
+# Depends-on: app.db, app.embeddings.models, app.rag.answerer, app.rag.models (+1 more)
+# Last-renovated: 2026-06-11
 """
 FastAPI endpoints for RAG system.
 

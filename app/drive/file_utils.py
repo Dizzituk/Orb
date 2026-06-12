@@ -1,4 +1,8 @@
 # FILE: app/drive/file_utils.py
+# Purpose: Utility functions for local file operations.
+# Called-by: app.debug.executors.file_ops, app.debug.executors.user_files, app.drive.disk_search, app.drive.file_watcher (+4 more)
+# Depends-on: stdlib/third-party only
+# Last-renovated: 2026-06-11
 """
 Utility functions for local file operations.
 Handles path resolution, file metadata, thumbnails, and safety checks.

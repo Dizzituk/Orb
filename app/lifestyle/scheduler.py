@@ -1,4 +1,8 @@
 # FILE: app/lifestyle/scheduler.py
+# Purpose: Lifestyle background scheduler — Jobs 4+5 of the memory roadmap (2026-06-10).
+# Called-by: main
+# Depends-on: app.lifestyle.habit_learner, app.lifestyle.nudges
+# Last-renovated: 2026-06-11
 """
 Lifestyle background scheduler — Jobs 4+5 of the memory roadmap (2026-06-10).
 

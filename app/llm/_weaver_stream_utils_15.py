@@ -1,3 +1,7 @@
+# Purpose: weaver stream utils 15
+# Called-by: app.llm._weaver_stream_prepare, app.llm._weaver_stream_utils_10, app.llm._weaver_stream_utils_14, app.llm._weaver_stream_utils_16 (+1 more)
+# Depends-on: app.llm._weaver_stream_utils_10, app.llm._weaver_stream_utils_12, app.llm._weaver_stream_utils_13, app.llm._weaver_stream_utils_14 (+2 more)
+# Last-renovated: 2026-06-11
 from __future__ import annotations
 import logging
 import re

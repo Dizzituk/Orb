@@ -1,4 +1,8 @@
 # FILE: app/llm/local_tools/zobie/sandbox_inspector.py
+# Purpose: Shared Sandbox Inspection Capability for Evidence Stages.
+# Called-by: app.llm.local_tools.zobie._sandbox_inspector_utils_5, app.llm.pipeline._evidence_loop_utils_3
+# Depends-on: app.llm.local_tools.zobie._sandbox_inspector_utils_4, app.llm.local_tools.zobie._sandbox_inspector_utils_5, app.llm.local_tools.zobie.content_classifier, app.llm.local_tools.zobie.sandbox_client
+# Last-renovated: 2026-06-11
 """
 Shared Sandbox Inspection Capability for Evidence Stages.
 

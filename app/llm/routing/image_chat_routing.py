@@ -1,4 +1,8 @@
 # FILE: app/llm/routing/image_chat_routing.py
+# Purpose: Image-bearing chat turn router for the desktop /stream/chat endpoint.
+# Called-by: app.llm.stream_router
+# Depends-on: app.debug.gemini_tool_loop, app.llm.model_families, app.llm.routing.prompt_builders, app.memory.service
+# Last-renovated: 2026-06-11
 """
 Image-bearing chat turn router for the desktop /stream/chat endpoint.
 

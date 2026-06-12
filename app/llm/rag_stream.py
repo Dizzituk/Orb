@@ -1,3 +1,7 @@
+# Purpose: RAG Query stream handler.
+# Called-by: app.llm.routing.handler_registry
+# Depends-on: app.rag.answerer, app.rag.models, app.rag.pipeline
+# Last-renovated: 2026-06-11
 """
 RAG Query stream handler.
 

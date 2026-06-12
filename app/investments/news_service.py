@@ -1,4 +1,8 @@
 # FILE: app/investments/news_service.py
+# Purpose: Per-holding news via ASTRA's existing Brave Search integration.
+# Called-by: app.investments.chat_service, app.investments.router
+# Depends-on: app.tools.registry
+# Last-renovated: 2026-06-11
 """
 Per-holding news via ASTRA's existing Brave Search integration.
 
