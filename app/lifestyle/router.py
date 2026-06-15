@@ -13,7 +13,7 @@ import logging
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -22,7 +22,7 @@ from app.lifestyle import service
 from app.lifestyle.fitness import get_stretch_routine, get_gym_programme, get_all_routines
 from app.lifestyle.schemas import (
     WeightEntryIn, WeightEntryOut, WeightTrend,
-    NutritionLogIn, NutritionLogOut, DailyNutrition,
+    NutritionLogIn, NutritionLogOut, NutritionLogUpdate, DailyNutrition,
     WorkoutSessionIn, WorkoutSessionOut,
     GoalIn, GoalOut,
     DashboardSummary, DashboardHistory,
@@ -126,6 +126,17 @@ def delete_nutrition(log_id: int, db: Session = Depends(get_db)):
     """Delete a nutrition log entry by id, then recompute that day's totals."""
     ok = service.delete_nutrition(db, log_id)
     return {"ok": ok, "deleted_id": log_id if ok else None}
+
+
+@router.put("/nutrition/{log_id}", response_model=NutritionLogOut)
+def update_nutrition(log_id: int, body: NutritionLogUpdate, db: Session = Depends(get_db)):
+    """Edit a logged food item — adjust the portion (quantity_g re-scales macros
+    from the stored per-100g basis where known) or override any macro directly."""
+    from app.lifestyle.nutrition_edit import update_nutrition as _do_update
+    out = _do_update(db, log_id, body)
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"Nutrition log {log_id} not found")
+    return out
 
 
 @router.post("/nutrition/prep-split")

@@ -2,7 +2,7 @@
 # Purpose: Model selection logic for chat routing.
 # Called-by: app.bridge.capability_layer, app.llm.routing.chat_routing
 # Depends-on: app.llm.routing.chat_intent_detection, app.llm.routing.cognitive_escalation, app.llm.routing.confirmation_gate, app.llm.streaming (+3 more)
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-06-12
 """
 Model selection logic for chat routing.
 
@@ -387,12 +387,22 @@ def _select_by_complexity(
         set_sticky_model(req.project_id, provider, model)
         return *ensure_provider_available(provider, model), extras
 
+    # Momentum (Job 6, 2026-06-12): complexity-driven escalations no longer
+    # latch set_sticky_model() — that pinned the session at the top tier
+    # after ONE architectural question. Instead each turn records a decaying
+    # momentum score; casual turns during high momentum hold the elevated
+    # model for a bounded lag, then the session settles back to cheap.
+    from app.llm.routing import tier_momentum
+
     # ── TIER 4: Architecture — large-scale design ──
     if _arch_hits >= 2 or (_arch_hits >= 1 and _reasoning_hits >= 2):
         provider = os.getenv("ARCHITECT_PROVIDER", "anthropic")
         model = os.getenv("ARCHITECT_MODEL", "claude-opus-4-6")
         print(f"[MODEL_SELECT] TIER 4 (architecture): arch={_arch_hits}, reasoning={_reasoning_hits} -> {provider}/{model}")
-        set_sticky_model(req.project_id, provider, model)
+        tier_momentum.record_turn(
+            req.project_id, "architect", provider, model,
+            reason=f"arch_hits={_arch_hits}, reasoning_hits={_reasoning_hits}",
+        )
 
         if not _skip_confirm:
             confirm_gen = _try_confirmation_gate(complexity, req)
@@ -410,7 +420,10 @@ def _select_by_complexity(
         provider = os.getenv("REASONING_PROVIDER") or fp
         model = os.getenv("REASONING_MODEL") or fm
         print(f"[MODEL_SELECT] TIER 2 (reasoning+tools): explore={_explore_hits}, reasoning={_reasoning_hits} -> {provider}/{model}")
-        set_sticky_model(req.project_id, provider, model)
+        tier_momentum.record_turn(
+            req.project_id, "reasoning", provider, model,
+            reason=f"deep tier, reasoning_hits={_reasoning_hits}",
+        )
         return *ensure_provider_available(provider, model), extras
 
     # ── TIER 1: Exploration only ──
@@ -418,6 +431,10 @@ def _select_by_complexity(
         provider = os.getenv("CHAT_PROVIDER", "openai")
         model = os.getenv("CHAT_MODEL", "gpt-5.4-mini")
         print(f"[MODEL_SELECT] TIER 1 (exploration): explore={_explore_hits}, arch={_arch_hits} -> {provider}/{model}")
+        tier_momentum.record_turn(
+            req.project_id, "explore", provider, model,
+            reason=f"explore_hits={_explore_hits}",
+        )
         return *ensure_provider_available(provider, model), extras
 
     # ── TIER 2: Pure reasoning (no exploration keywords) ──
@@ -426,7 +443,10 @@ def _select_by_complexity(
         provider = os.getenv("REASONING_PROVIDER") or fp
         model = os.getenv("REASONING_MODEL") or fm
         print(f"[MODEL_SELECT] TIER 2 (reasoning): reasoning={_reasoning_hits} -> {provider}/{model}")
-        set_sticky_model(req.project_id, provider, model)
+        tier_momentum.record_turn(
+            req.project_id, "reasoning", provider, model,
+            reason=f"reasoning tier, reasoning_hits={_reasoning_hits}",
+        )
         return *ensure_provider_available(provider, model), extras
 
     # ── Explicit model requests ──
@@ -444,10 +464,27 @@ def _select_by_complexity(
         set_sticky_model(req.project_id, provider, model)
         return *ensure_provider_available(provider, model), extras
 
-    # ── TIER 1: Default — lightweight chat ──
+    # ── TIER 1: Default — lightweight chat (with momentum hold) ──
+    held = tier_momentum.momentum_hold(req.project_id)
+    if held:
+        provider, model, _momentum = held
+        print(
+            f"[MODEL_SELECT] TIER HOLD (momentum {_momentum:.2f} >= "
+            f"{tier_momentum.HOLD_THRESHOLD}): casual turn keeps {provider}/{model}"
+        )
+        tier_momentum.record_turn(
+            req.project_id, "casual", provider, model,
+            reason=f"momentum hold ({_momentum:.2f}), decaying",
+        )
+        return *ensure_provider_available(provider, model), extras
+
     provider = _chat_provider
     model = _chat_model
     print(f"[MODEL_SELECT] TIER 1 (default {complexity.tier}): {provider}/{model}")
+    tier_momentum.record_turn(
+        req.project_id, "casual", provider, model,
+        reason=f"default tier ({complexity.tier})",
+    )
     return *ensure_provider_available(provider, model), extras
 
 

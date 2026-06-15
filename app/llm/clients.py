@@ -214,7 +214,7 @@ def _llm_call_and_unpack(
                 model_id,
                 result.error_message,
             )
-            usage["error"] = result.error_code or "error"
+            usage["error"] = result.status.value
             return result.error_message or "", usage
 
         return result.content or "", usage
@@ -302,7 +302,7 @@ async def _llm_call_and_unpack_async(
             model_id,
             result.error_message,
         )
-        usage["error"] = result.error_code or "error"
+        usage["error"] = result.status.value
         return result.error_message or "", usage
 
     return result.content or "", usage

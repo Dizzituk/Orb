@@ -25,22 +25,34 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-# Import memory system (with fallback if not available)
-try:
-    from app.astra_memory import (
-        classify_intent_depth,
-        retrieve_for_query,
-        get_applicable_preferences,
-        get_preference_value,
-        IntentDepth,
-        RetrievalResult,
-        PreferenceRecord,
-    )
-    from app.astra_memory.confidence_config import get_config
-    MEMORY_AVAILABLE = True
-except ImportError:
-    MEMORY_AVAILABLE = False
-    logger.warning("[memory_injection] ASTRA memory system not available")
+# Lazy memory-system import (2026-06-12). app.astra_memory's own import
+# cascade reaches back into this module via app.llm.routing, so a module-
+# level `from app.astra_memory import ...` here hits the partially-
+# initialised package and latched MEMORY_AVAILABLE=False for the whole
+# process whenever astra_memory happened to be imported first — silently
+# killing ALL memory injection. Resolve the API at call time instead.
+MEMORY_AVAILABLE = True  # kept for envelope's gate; resolution is lazy
+
+_MEMORY_API: Optional[Dict[str, Any]] = None
+
+
+def _memory_api() -> Dict[str, Any]:
+    """Resolve the astra_memory API on first use (post-init, cycle-safe)."""
+    global _MEMORY_API
+    if _MEMORY_API is None:
+        from app.astra_memory import (
+            classify_intent_depth,
+            retrieve_for_query,
+            get_applicable_preferences,
+            IntentDepth,
+        )
+        _MEMORY_API = {
+            "classify_intent_depth": classify_intent_depth,
+            "retrieve_for_query": retrieve_for_query,
+            "get_applicable_preferences": get_applicable_preferences,
+            "IntentDepth": IntentDepth,
+        }
+    return _MEMORY_API
 
 
 @dataclass
@@ -52,24 +64,30 @@ class MemoryContext:
     token_estimate: int
     preferences_applied: List[str]
     records_retrieved: int
-    
+    # Job 2 (2026-06-12): repo-scan chunks for code/architecture queries,
+    # already carrying their staleness header (see rag.retrieval.chat_injection)
+    repo_context: str = ""
+
     def is_empty(self) -> bool:
         """Check if there's anything to inject."""
-        return not self.preferences_text and not self.facts_text
-    
+        return not self.preferences_text and not self.facts_text and not self.repo_context
+
     def format_for_system_prompt(self) -> str:
         """Format memory context for system prompt injection."""
         if self.is_empty():
             return ""
-        
+
         parts = []
-        
+
         if self.preferences_text:
             parts.append(f"<user_preferences>\n{self.preferences_text}\n</user_preferences>")
-        
+
         if self.facts_text:
             parts.append(f"<memory_context>\n{self.facts_text}\n</memory_context>")
-        
+
+        if self.repo_context:
+            parts.append(f"<codebase_memory>\n{self.repo_context}\n</codebase_memory>")
+
         return "\n\n".join(parts)
 
 
@@ -177,7 +195,10 @@ def build_memory_context(
     Returns:
         MemoryContext with formatted text ready for injection
     """
-    if not MEMORY_AVAILABLE:
+    try:
+        api = _memory_api()
+    except Exception as _api_exc:
+        logger.warning("[memory_injection] ASTRA memory system not available: %s", _api_exc)
         return MemoryContext(
             depth="unavailable",
             preferences_text="",
@@ -186,13 +207,15 @@ def build_memory_context(
             preferences_applied=[],
             records_retrieved=0,
         )
-    
+
+    IntentDepth = api["IntentDepth"]
+
     # Extract user message for depth classification
     user_message = _extract_user_message_text(messages)
-    
+
     # Classify intent depth
-    depth = classify_intent_depth(user_message)
-    
+    depth = api["classify_intent_depth"](user_message)
+
     # D0: No memory at all
     if depth == IntentDepth.D0:
         return MemoryContext(
@@ -209,11 +232,11 @@ def build_memory_context(
     preferences_applied = []
     try:
         # Get preferences for this component
-        prefs = get_applicable_preferences(db, component)
-        
+        prefs = api["get_applicable_preferences"](db, component)
+
         # Also get preferences for "all" and the specific job type
         if job_type:
-            job_prefs = get_applicable_preferences(db, job_type)
+            job_prefs = api["get_applicable_preferences"](db, job_type)
             prefs.extend(job_prefs)
         
         # Deduplicate by key
@@ -232,7 +255,9 @@ def build_memory_context(
     # Retrieve facts based on depth
     facts_text = ""
     records_retrieved = 0
-    
+    query_tags = None
+    query_entities = None
+
     if depth != IntentDepth.D0:
         try:
             # Phase 9 (2026-05-13): extract tags/entities from the user
@@ -262,7 +287,7 @@ def build_memory_context(
                 query_tags = None
                 query_entities = None
 
-            result = retrieve_for_query(
+            result = api["retrieve_for_query"](
                 db=db,
                 user_message=user_message,
                 query_tags=query_tags,
@@ -276,6 +301,18 @@ def build_memory_context(
         except Exception as e:
             logger.warning(f"[memory_injection] Failed to retrieve facts: {e}")
     
+    # ── Job 2 (2026-06-12): repo-scan retrieval — when the question is about
+    # ASTRA's own code/architecture, surface arch-scan chunks with an honest
+    # staleness header (host vs sandbox snapshot; offline marker when the
+    # sandbox is unreachable). Gated so everyday chat is never polluted.
+    repo_context = ""
+    if depth != IntentDepth.D0:
+        try:
+            from app.rag.retrieval.chat_injection import build_repo_context
+            repo_context = build_repo_context(db, user_message, query_tags)
+        except Exception as _repo_exc:
+            logger.debug(f"[memory_injection] repo context skipped: {_repo_exc}")
+
     # ── Job 5 (2026-06-10): daily coach nudge — if the lifestyle scheduler has
     # produced an active nudge, weave it into context once (cooldown handled
     # inside get_nudge_for_injection so it doesn't repeat every message).
@@ -326,9 +363,9 @@ def build_memory_context(
         logger.debug(f"[memory_injection] proposal injection skipped: {_prop_exc}")
 
     # Estimate tokens (rough: 4 chars per token)
-    total_text = preferences_text + facts_text
+    total_text = preferences_text + facts_text + repo_context
     token_estimate = len(total_text) // 4
-    
+
     return MemoryContext(
         depth=depth.value,
         preferences_text=preferences_text,
@@ -336,6 +373,7 @@ def build_memory_context(
         token_estimate=token_estimate,
         preferences_applied=preferences_applied,
         records_retrieved=records_retrieved,
+        repo_context=repo_context,
     )
 
 

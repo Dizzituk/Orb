@@ -2,17 +2,18 @@
 # Purpose: Memory service layer for Orb.
 # Called-by: app.bridge.capability_layer, app.bridge.router, app.builds.pipeline_bridge, app.builds.stage_hooks (+39 more)
 # Depends-on: app.embeddings, app.embeddings.models, app.jobs.models, app.memory (+4 more)
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-06-14 (after_id forward paging + updated_at touch on message write)
 """
 Memory service layer for Orb.
 
 v0.12.4: Fixed create_message() to properly save provider, model, and reasoning fields.
          Fixed get_message_history() to return actual provider/model/reasoning values.
 """
+from datetime import datetime
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from app.memory import models, schemas
-from app.memory._service_utils_2 import create_project, get_document_content_by_file_id, get_file_by_name, get_latest_document_content, get_project_by_name, list_files, list_messages, list_projects
+from app.memory._service_utils_2 import create_project, get_document_content_by_file_id, get_file_by_name, get_latest_document_content, get_messages_after, get_project_by_name, list_files, list_messages, list_projects
 
 
 # ============== PROJECT ==============
@@ -429,11 +430,40 @@ def create_message(db: Session, data: schemas.MessageCreate) -> models.Message:
         session_id=data.session_id,  # v10.0: ConversationSession link
     )
     db.add(msg)
+
+    # v2026-06-14 (live-sync): touch the parent project's updated_at in this
+    # same commit so recency sorting reflects real activity. Inserting a
+    # message never modified the project row, so its onupdate=utcnow never
+    # fired and chat activity (from any surface) failed to float a chat to
+    # the top of "recent". Naive UTC, matching the model + frontend relativeTime.
+    # Same transaction by design (spec: recency must reflect this write atomically).
+    # The lookup + assignment are guarded so they can't break message creation; the
+    # assignment then rides the message's own commit below. A fresh naive-UTC value
+    # on a plain non-null DateTime column has no constraint to violate, so it adds
+    # no realistic failure mode to that commit.
+    try:
+        parent = db.query(models.Project).filter(
+            models.Project.id == data.project_id
+        ).first()
+        if parent is not None:
+            parent.updated_at = datetime.utcnow()
+    except Exception as e:
+        print(f"[memory.service] updated_at touch failed for project {data.project_id}: {e}")
+
     db.commit()
     db.refresh(msg)
     
     _index_message_if_enabled(db, msg)
-    
+
+    # CONV-MEMORY-002: index this message into the within-conversation spine
+    # for live recall of scrolled-out history. Failure-proof — never break
+    # message creation. The tagger it uses is local keyword matching (~1ms).
+    try:
+        from app.memory.spine_service import record_message_spine
+        record_message_spine(db, msg)
+    except Exception as e:
+        print(f"[memory.service] Spine index failed for message {msg.id}: {e}")
+
     return msg
 
 
@@ -460,14 +490,23 @@ def get_message_history(
     project_id: int,
     limit: int = 50,
     before_id: Optional[int] = None,
+    after_id: Optional[int] = None,
 ) -> schemas.MessageHistoryResponse:
     """
     Get paginated message history for a project.
     
     v0.12.4: Now returns actual provider, model, and reasoning values.
+    v2026-06-14 (live-sync): added after_id forward paging (messages newer
+        than after_id, ascending). before_id and after_id are mutually
+        exclusive — the router rejects requests that supply both. When
+        after_id is given we delegate to get_messages_after and the existing
+        before_id/latest behaviour below is untouched.
     """
     limit = max(1, min(limit, 200))
-    
+
+    if after_id is not None:
+        return get_messages_after(db, project_id, after_id, limit)
+
     query = db.query(models.Message).filter(models.Message.project_id == project_id)
     
     if before_id is not None:

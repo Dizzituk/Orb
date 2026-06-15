@@ -64,6 +64,78 @@ DEFAULT_SESSIONS: List[Tuple[str, str, str, str, str]] = [
         "about:blank",
         "Manage the ASTRA UK website — posts, pages, media. User sets the real landing URL via PATCH.",
     ),
+    # ── Finance & tax (2026-06-14) ──────────────────────────────────────
+    # Each gets its own persistent partition so the login survives restarts.
+    # ASTRA EXPLAINS and ASSISTS on these — it never files a return, pays a
+    # bill, or moves money; the user authorises every submission/payment.
+    (
+        "quickbooks",
+        "QuickBooks",
+        "persist:quickbooks",
+        "https://app.qbo.intuit.com/",
+        "Intuit QuickBooks Online — bookkeeping, invoices, expenses, VAT and the "
+        "figures behind a Self Assessment return. Help read balances and reports, "
+        "reconcile transactions, and explain accounting entries. ASTRA assists and "
+        "explains; it never files or pays on the user's behalf.",
+    ),
+    (
+        "hmrc",
+        "HMRC — Tax & Self Assessment",
+        "persist:hmrc",
+        "https://www.gov.uk/log-in-file-self-assessment-tax-return",
+        "UK Government / HMRC online services for Self Assessment tax returns. When "
+        "the user is working through a return and gets stuck, explain what a section, "
+        "question or field means in plain English and sense-check figures against "
+        "QuickBooks. ASTRA explains and assists only — the user submits the return "
+        "and authorises any payment themselves.",
+    ),
+    # ── Display manager + desktop media (2026-06-12) ────────────────────
+    # All media windows share ONE persistent partition (persist:media) so a
+    # single login per site survives restarts regardless of which screen a
+    # window opens on.
+    (
+        "displays",
+        "Display Manager (control)",
+        "persist:media",
+        "about:blank",
+        "Control session for the desktop display manager. Carries the viewless "
+        "displays_list/open/close/move/windows/save_alias actions; it never "
+        "opens a page of its own.",
+    ),
+    (
+        "soundcloud",
+        "SoundCloud (media)",
+        "persist:media",
+        "https://soundcloud.com/feed",
+        "Logged-in SoundCloud feed for desktop playback on named displays. "
+        "Windows open via the display manager and register under this session "
+        "for click/key control.",
+    ),
+    (
+        "mixcloud",
+        "Mixcloud (media)",
+        "persist:media",
+        "https://www.mixcloud.com/",
+        "Logged-in Mixcloud for desktop playback on named displays.",
+    ),
+    (
+        "youtube_watch",
+        "YouTube (watch)",
+        "persist:media",
+        "https://www.youtube.com/",
+        "YouTube VIEWING windows on named displays (distinct from "
+        "youtube_studio). Search itself uses the Data API; playback windows "
+        "register under this session for play/pause key control.",
+    ),
+    (
+        "streaming",
+        "Streaming services (movie night)",
+        "persist:media",
+        "about:blank",
+        "Netflix / Prime / Disney+ / iPlayer windows for movie night. Landing "
+        "URL is per-film; windows open via the display manager and register "
+        "under this session for profile-click and play control.",
+    ),
 ]
 
 

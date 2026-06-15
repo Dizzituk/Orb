@@ -152,6 +152,7 @@ async def ensure_tts_audio(
         from .chat_and_speak import _split_into_sentences, _synthesise_sentence
         sentences = _split_into_sentences(text)
         writer = tts_cache.open_writer(message_id)
+        writer.start_header()  # placeholder duration header (2026-06-13)
         try:
             for sentence in sentences:
                 writer.add_chunk(await _synthesise_sentence(sentence))

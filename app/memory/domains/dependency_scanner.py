@@ -225,6 +225,18 @@ def store_dependency_graph(
         f"{stats['total_edges']} edges"
     )
 
+    # 2026-06-14 guard: a 0-module result means the scan source (sandbox)
+    # returned nothing — e.g. the Windows Sandbox is down. Do NOT clobber an
+    # existing good IMPORT_GRAPH.json / rag_entries graph with an empty one.
+    # The full archmap (CREATE ARCHITECTURE MAP) now writes a host-derived
+    # graph; this boot-time seeder must not blank it when the sandbox is empty.
+    if stats.get("total_modules", 0) == 0:
+        logger.warning(
+            "[dependency_scanner] Empty graph (0 modules) — preserving existing "
+            "IMPORT_GRAPH.json and rag_entries; skipping write."
+        )
+        return 0
+
     # Save to disk (host .architecture dir — read-only reference)
     if save_to_disk:
         disk_path = os.path.join(root_dir, ".architecture", "IMPORT_GRAPH.json")

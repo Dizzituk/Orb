@@ -106,3 +106,128 @@ async def copy_nutrition_day_handler(input_data: dict, context: Optional[dict]) 
         logger.exception("[lifestyle_tools] copy_nutrition_day failed")
         return {"ok": False, "error": str(exc)}
     return result
+
+
+def _resolve_and_log_sync(name, brand, barcode, url, grams, meal_type, do_log) -> dict:
+    """Sync resolve + log, run in a worker thread (the network calls and the
+    per-host rate-limit sleep are blocking). Owns its OWN DB session so nothing
+    crosses the event-loop/worker-thread boundary."""
+    from app.lifestyle.product_service import resolve_nutrition, record_product_use
+    from app.lifestyle.product_models import FoodProduct
+    with _db_session() as db:
+        res = resolve_nutrition(db, name=name, brand=brand, barcode=barcode, grams=grams, url=url)
+        if not res.get("found"):
+            return {"ok": False, "found": False, "ask_user": True, "message": res.get("message")}
+        logged = None
+        if do_log:
+            product = (
+                db.query(FoodProduct).filter(FoodProduct.id == res["food_product_id"]).first()
+            )
+            if product is not None:
+                row = record_product_use(
+                    db, product, grams=grams, meal_type=meal_type,
+                    source=res["source"], is_estimate=res["is_estimate"],
+                    confidence=res["confidence"], estimate_note=res.get("estimate_note"),
+                )
+                logged = _to_dict(row)
+        return {
+            "ok": True, "found": True, "exact": res["exact"], "source": res["source"],
+            "confidence": res["confidence"], "is_estimate": res["is_estimate"],
+            "estimate_note": res.get("estimate_note"), "display_name": res["display_name"],
+            "quantity_g": res["quantity_g"], "macros": res["scaled"],
+            "micros": res.get("micros"), "logged": logged,
+        }
+
+
+async def resolve_nutrition_handler(input_data: dict, context: Optional[dict]) -> dict:
+    """Look up ONE food's nutrition online (the exact→similar→ask ladder) and,
+    when a portion is known, log it as one row carrying its source, confidence,
+    quantity and micronutrients. Use this for branded / ready-made items
+    (e.g. 'Aldi Chicken, Tomato & Basil Topped Pasta') instead of guessing.
+
+    Args: name OR barcode (one required); optional brand, grams (portion),
+    url (a retailer product page you found via web_search), meal_type,
+    log (default true — set false to just look up without logging).
+    """
+    name = str(input_data.get("name") or "").strip() or None
+    brand = str(input_data.get("brand") or "").strip() or None
+    barcode = str(input_data.get("barcode") or "").strip() or None
+    url = str(input_data.get("url") or "").strip() or None
+    meal_type = str(input_data.get("meal_type") or "meal").strip() or "meal"
+    do_log = input_data.get("log", True) is not False
+    try:
+        grams = float(input_data.get("grams")) if input_data.get("grams") is not None else None
+    except (TypeError, ValueError):
+        grams = None
+
+    if not (name or barcode):
+        return {"ok": False, "error": "Give a food name or a barcode to resolve."}
+
+    try:
+        import asyncio
+        return await asyncio.to_thread(
+            _resolve_and_log_sync, name, brand, barcode, url, grams, meal_type, do_log,
+        )
+    except Exception as exc:
+        logger.exception("[lifestyle_tools] resolve_nutrition failed")
+        return {"ok": False, "error": str(exc)}
+
+
+async def save_recipe_handler(input_data: dict, context: Optional[dict]) -> dict:
+    """Remember a recipe / meal the user cooks repeatedly — its ingredients and
+    typical volumes — so it can be logged later in one shot by name.
+
+    Args: name, ingredients (list of {name, grams, calories?, protein_g?,
+    carbs_g?, fat_g?, sugar_g?}); optional meal_type, notes.
+    """
+    name = str(input_data.get("name") or "").strip()
+    ingredients = input_data.get("ingredients")
+    if not name or not isinstance(ingredients, list) or not ingredients:
+        return {"ok": False, "error": "Give the recipe a name and a list of ingredients."}
+    meal_type = str(input_data.get("meal_type") or "meal").strip() or "meal"
+    notes = str(input_data.get("notes") or "").strip() or None
+    try:
+        from app.lifestyle.recipe_service import save_recipe, recipe_to_dict
+        with _db_session() as db:
+            r = save_recipe(db, name=name, ingredients=ingredients, meal_type=meal_type, notes=notes)
+            return {"ok": True, "recipe": recipe_to_dict(r)}
+    except Exception as exc:
+        logger.exception("[lifestyle_tools] save_recipe failed")
+        return {"ok": False, "error": str(exc)}
+
+
+async def log_recipe_handler(input_data: dict, context: Optional[dict]) -> dict:
+    """Log a previously-saved recipe in one go — expands it into one row per
+    ingredient at the saved volumes ('found it before, same items, done').
+
+    Args: name (the recipe) OR ingredient_names (match by ingredients); optional
+    meal_type, on_date (YYYY-MM-DD).
+    """
+    name = str(input_data.get("name") or "").strip() or None
+    ingredient_names = input_data.get("ingredient_names")
+    if isinstance(ingredient_names, str):
+        ingredient_names = [ingredient_names]
+    meal_type = str(input_data.get("meal_type") or "").strip() or None
+    on_date = _parse_iso_date(input_data.get("on_date"))
+    if not name and not ingredient_names:
+        return {"ok": False, "error": "Give the recipe name (or its ingredients) to log."}
+    try:
+        from app.lifestyle.recipe_service import find_recipe, expand_recipe_to_logs
+        with _db_session() as db:
+            recipe = find_recipe(db, name=name, ingredient_names=ingredient_names)
+            if recipe is None:
+                return {
+                    "ok": False, "found": False,
+                    "message": (
+                        f"No saved recipe matches '{name or ingredient_names}'. Save it "
+                        "first with save_recipe, or log the items individually."
+                    ),
+                }
+            rows = expand_recipe_to_logs(db, recipe, meal_type=meal_type, on_date=on_date)
+            return {
+                "ok": True, "found": True, "recipe": recipe.name,
+                "logged": len(rows), "items": [_to_dict(x) for x in rows],
+            }
+    except Exception as exc:
+        logger.exception("[lifestyle_tools] log_recipe failed")
+        return {"ok": False, "error": str(exc)}

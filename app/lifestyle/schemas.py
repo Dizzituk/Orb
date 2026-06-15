@@ -73,6 +73,37 @@ class NutritionLogOut(BaseModel):
     is_estimate: bool = True
     confidence: float = 0.6
     source: str = "text"
+    # Food overhaul Phase 2: per-item quantity + re-scalable basis + provenance
+    quantity_g: Optional[float] = None
+    per_100g: Optional[dict] = None        # parsed per-100g basis
+    micros: Optional[dict] = None          # parsed absolute micronutrients (Phase 3)
+    food_product_id: Optional[int] = None
+    estimate_note: Optional[str] = None
+
+
+class NutritionLogUpdate(BaseModel):
+    """Partial edit of a logged food item — only provided fields change.
+
+    Edit a portion by sending `quantity_g` (macros re-scale from the stored
+    per-100g basis when one exists), or override any macro directly (a manual
+    override marks the row verified). `per_100g`/`micros` set/replace the basis.
+    """
+    description: Optional[str] = None
+    meal_type: Optional[str] = None
+    calories: Optional[float] = None
+    protein_g: Optional[float] = None
+    carbs_g: Optional[float] = None
+    fat_g: Optional[float] = None
+    fibre_g: Optional[float] = None
+    sugar_g: Optional[float] = None
+    quantity_g: Optional[float] = None
+    per_100g: Optional[dict] = None
+    micros: Optional[dict] = None
+    food_product_id: Optional[int] = None
+    estimate_note: Optional[str] = None
+    is_estimate: Optional[bool] = None
+    confidence: Optional[float] = None
+    source: Optional[str] = None
 
 
 class DailyNutrition(BaseModel):

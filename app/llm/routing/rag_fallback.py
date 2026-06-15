@@ -88,6 +88,14 @@ _NATURAL_CODEBASE_PATTERNS: List[re.Pattern] = [
     re.compile(r"^[Ww]hat\s+happens\s+(?:when|if)\s+.+", re.IGNORECASE),
     re.compile(r"^[Ww]here\s+(?:does|do|is|are)\s+.+", re.IGNORECASE),
     re.compile(r"^[Ww]hich\s+(?:files?|modules?|functions?|classes?|components?)\s+.+", re.IGNORECASE),
+    # v2026-06-14: feature/data questions ("what data does the chat window have",
+    # "what does the finance panel show", "what's in the sidebar"). These rarely
+    # contain a guard keyword, so they don't fire is_architecture_query on their
+    # own — but they make needs_llm_codebase_check() True so the LLM safety-net
+    # adjudicates (and they route directly when a guard keyword IS present).
+    re.compile(r"^[Ww]hat\s+(?:data|info|information|fields?|columns?|state|content|settings?)\s+(?:does|do|is|are|can)\s+.+", re.IGNORECASE),
+    re.compile(r"^[Ww]hat\s+does?\s+(?:the\s+)?(?:\w+\s+){0,4}(?:show|display|contain|store|hold|track|keep|have)\b", re.IGNORECASE),
+    re.compile(r"^[Ww]hat(?:'s| is)\s+(?:in|stored\s+in|inside|kept\s+in)\s+(?:the\s+)?.+", re.IGNORECASE),
 ]
 
 # Guard keywords — must contain at least one for natural patterns to fire.
@@ -162,6 +170,78 @@ def is_architecture_query(message: str) -> bool:
     return False
 
 
+# =========================================================================
+# LLM SAFETY-NET GATE (v2026-06-14)
+# =========================================================================
+# DELIBERATELY NARROWER than _NATURAL_CODEBASE_PATTERNS. The LLM safety-net
+# pays a real (blocking) model round-trip per fire, so the gate must not match
+# everyday questions. Adversarial review found the broad shapes ("tell me about
+# X", "explain X", bare "how does X work") fired on ~85% of ordinary chat. These
+# shapes are anchored on "the/your/its/our <feature>" — the way feature/UI
+# questions are actually phrased ("how does THE finance panel work", "what data
+# does THE chat window have") — which excludes general-knowledge questions
+# ("how does a mortgage work", "how does photosynthesis work", "tell me about
+# the Roman Empire") that use a different article or none.
+_LLM_NET_PATTERNS: List[re.Pattern] = [
+    re.compile(
+        r"^[Hh]ow\s+(?:does|do|did)\s+(?:the|your|its|our)\s+(?:\w+\s+){0,4}"
+        r"(?:works?|function|functions?|operate|run|behave|flow)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^[Ww]hat\s+does?\s+(?:the|your|its|our)\s+(?:\w+\s+){0,4}"
+        r"(?:do|does|handle|manage|control|process|route|show|display|contain|"
+        r"store|hold|track|keep|have|return)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^[Ww]hat\s+(?:data|info|information|fields?|columns?|state|content|settings?)\s+"
+        r"(?:does|do|is|are|can)\s+(?:the|your|its|our)\s+.+",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^[Ww]hat(?:'s| is)\s+(?:in|stored\s+in|inside|kept\s+in)\s+(?:the|your)\s+.+",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^[Ww]hich\s+(?:files?|modules?|functions?|classes?|components?|tables?|"
+        r"endpoints?|handlers?)\s+.+",
+        re.IGNORECASE,
+    ),
+]
+
+
+def needs_llm_codebase_check(message: str) -> bool:
+    """
+    True when a message LOOKS like an ASTRA feature/data question (matches a
+    narrow, "the <feature>"-anchored shape) but lacks a guard keyword — so
+    is_architecture_query() declined it and it fell to plain chat.
+
+    These are the ONLY messages worth paying for the LLM safety-net
+    (codebase_intent_llm.is_codebase_question_llm). The pattern set is kept
+    deliberately tight (see _LLM_NET_PATTERNS) so general-knowledge questions and
+    small talk never trigger the model call.
+
+    Returns False for explicit command prefixes and for messages already caught
+    by the high-precision patterns (those route via is_architecture_query).
+    """
+    text = (message or "").strip()
+    if not text or _COMMAND_PREFIX_PATTERN.match(text):
+        return False
+
+    # High-precision patterns already route deterministically — no LLM needed.
+    for pattern in _ARCHITECTURE_QUERY_PATTERNS:
+        if pattern.match(text):
+            return False
+
+    # Narrow feature-shape match WITHOUT a guard keyword → candidate for the net.
+    for pattern in _LLM_NET_PATTERNS:
+        if pattern.match(text):
+            return not _has_guard_keyword(text)
+
+    return False
+
+
 def get_pattern_count() -> int:
     """Get the number of architecture query patterns (for testing)."""
     return len(_ARCHITECTURE_QUERY_PATTERNS)
@@ -169,5 +249,6 @@ def get_pattern_count() -> int:
 
 __all__ = [
     "is_architecture_query",
+    "needs_llm_codebase_check",
     "get_pattern_count",
 ]

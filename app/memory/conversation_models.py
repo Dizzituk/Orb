@@ -151,3 +151,58 @@ class ConversationSummary(Base):
         "ConversationSession",
         back_populates="summaries",
     )
+
+
+# =========================================================================
+# ConversationSpine
+# =========================================================================
+
+class ConversationSpine(Base):
+    """
+    Lightweight per-message index for within-conversation recall.
+
+    One row per stored Message. Holds only routing/topic metadata — NO message
+    text (recall fetches the real encrypted Message by id), so the spine never
+    duplicates Security-Level-4 content. Tags/entities are plaintext (like the
+    astra_hot_index) so retrieval is a cheap project-scoped LIKE.
+
+    Written synchronously by app.memory.spine_service.record_message_spine at
+    the create_message chokepoint; the tagger it uses is pure keyword matching
+    (~1ms), so this adds no meaningful latency to the chat path.
+
+    Part of CONV-MEMORY-002: within-conversation spine (Build Request B).
+    """
+    __tablename__ = "conversation_spine"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(
+        Integer,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    session_id = Column(
+        Integer,
+        ForeignKey("conversation_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    message_id = Column(
+        Integer,
+        ForeignKey("messages.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+
+    # Not encrypted (metadata): "user" | "assistant"
+    role = Column(String(20), nullable=False)
+
+    # Plaintext JSON arrays — topic tags + named entities from topic_tagger.
+    # Mirrors astra_hot_index.tags so a project-scoped LIKE is the whole search.
+    tags = Column(Text, nullable=True)
+    entities = Column(Text, nullable=True)
+
+    created_at = Column(
+        DateTime, default=datetime.utcnow, nullable=False, index=True,
+    )

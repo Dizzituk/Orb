@@ -89,8 +89,20 @@ def get_universal_tools() -> List[dict]:
     _work_names = {"start_work_day", "finish_work_day", "reconcile_work_day",
                    "get_work_day", "set_personal_mileage"}
     work_decls = [d for d in FINANCE_TOOL_DECLARATIONS if d.get("name") in _work_names]
+    # Editor-pane tools (2026-06-12): the user chats to WHATEVER model sits
+    # next to the open Univer document, so every model must be able to see /
+    # read / edit / save it — otherwise it asks for an upload while the file
+    # is on screen. Declarations come from the central registry via the
+    # chat bridge; execution routes there too (see chat_tool_loop).
+    try:
+        from app.tools.chat_bridge import (
+            get_registry_chat_declarations, EDITOR_TOOL_NAMES,
+        )
+        editor_decls = get_registry_chat_declarations(only_names=EDITOR_TOOL_NAMES)
+    except Exception:
+        editor_decls = []
     return ([WEB_SEARCH_TOOL] + get_memory_tools() + LIFESTYLE_TOOL_DECLARATIONS
-            + work_decls + EXPENSE_TOOL_DECLARATIONS)
+            + work_decls + EXPENSE_TOOL_DECLARATIONS + editor_decls)
 
 
 def get_phase1_tools() -> List[dict]:

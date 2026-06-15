@@ -2,7 +2,7 @@
 # Purpose: ASTRA Memory Hot Index Population
 # Called-by: app.astra_memory.router, main
 # Depends-on: app.astra_memory.models, app.astra_memory.preference_models, app.astra_memory.retrieval, app.astra_memory.topic_tagger (+2 more)
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-06-12
 """
 ASTRA Memory Hot Index Population
 
@@ -210,6 +210,42 @@ def index_notes(db: Session, project_id: Optional[int] = None) -> int:
 
 
 # =============================================================================
+# DOCUMENT INDEXING (Job 3, 2026-06-12)
+# =============================================================================
+
+def index_documents(db: Session, project_id: Optional[int] = None) -> int:
+    """Index DocumentContent records to the hot index.
+
+    Documents (including enriched images/audio) were previously invisible
+    to conversational retrieval: 526 'file' embeddings existed but zero
+    'document' hot rows, so both the keyword channel and the semantic
+    channel dropped them. Delegates to enrichment.hot_index_document so
+    the record key (file_id) stays consistent everywhere.
+    """
+    from app.memory.models import DocumentContent, File
+    from app.memory.enrichment.media_enricher import hot_index_document
+
+    query = db.query(DocumentContent)
+    if project_id:
+        query = query.filter(DocumentContent.project_id == project_id)
+
+    count = 0
+    for doc in query.all():
+        try:
+            path = None
+            file_rec = db.query(File).filter(File.id == doc.file_id).first()
+            if file_rec:
+                path = file_rec.path
+            if hot_index_document(db, doc, doc.summary, path):
+                count += 1
+        except Exception as e:
+            logger.warning(f"[indexer] Document {doc.id} failed: {e}")
+
+    logger.info(f"[indexer] Indexed {count} documents")
+    return count
+
+
+# =============================================================================
 # JOB INDEXING
 # =============================================================================
 
@@ -288,10 +324,19 @@ def index_global_prefs(db: Session) -> int:
 # MAIN INDEXER
 # =============================================================================
 
-def run_full_index(db: Optional[Session] = None) -> Dict[str, int]:
+def run_full_index(
+    db: Optional[Session] = None,
+    cleanup_first: bool = False,
+) -> Dict[str, int]:
     """
     Run full indexing of all available data.
-    
+
+    cleanup_first: accepted for the /index endpoint, which has passed it
+    since v1 (the missing parameter made that endpoint 500 on every call —
+    fixed 2026-06-12). Upserts already refresh every record in place;
+    stale-row removal is the decay job's responsibility, so True adds
+    nothing beyond the refresh today.
+
     Returns dict of counts by type.
     """
     close_db = False
@@ -304,6 +349,7 @@ def run_full_index(db: Optional[Session] = None) -> Dict[str, int]:
             "projects": index_projects(db),
             "notes": index_notes(db),
             "messages": index_messages(db),
+            "documents": index_documents(db),
             "jobs": index_jobs(db),
             "global_prefs": index_global_prefs(db),
         }

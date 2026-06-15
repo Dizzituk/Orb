@@ -201,6 +201,99 @@ LIFESTYLE_TOOL_DECLARATIONS_MORE: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "resolve_nutrition",
+        "description": (
+            "Look up a branded / ready-made food's nutrition ONLINE and log it, "
+            "instead of guessing macros. USE THIS for packaged or restaurant "
+            "items — e.g. 'Aldi Chicken, Tomato & Basil Topped Pasta', a ready "
+            "meal, a protein bar, a named takeaway. It runs a ladder: your local "
+            "product library → Open Food Facts (barcode or name) → a retailer "
+            "product page you pass in `url` → a SIMILAR same-type item (flagged "
+            "as an estimate) → and only if nothing fits does it ask you to get "
+            "the macros. It logs ONE row with the right portion, source and "
+            "micronutrients.\n"
+            "\n"
+            "Give `name` (and `brand` if known) or a `barcode`. Add `grams` for "
+            "the portion. If you've web_searched and found the exact product "
+            "page, pass its `url` so it can scrape the panel. For a multi-item "
+            "meal call this once PER branded item. Set log=false to only look up "
+            "without logging. If it returns found=false, ask the user."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Food/product name, e.g. 'Chicken, Tomato & Basil Topped Pasta'."},
+                "brand": {"type": "string", "description": "Brand/retailer if known, e.g. 'Aldi'."},
+                "barcode": {"type": "string", "description": "Barcode digits if you have them (e.g. read off a photo)."},
+                "grams": {"type": "number", "description": "Portion in grams (the amount eaten)."},
+                "url": {"type": "string", "description": "A retailer product-page URL you found via web_search, to scrape the nutrition panel."},
+                "meal_type": {"type": "string", "description": "snack | breakfast | lunch | dinner | meal (default)."},
+                "log": {"type": "boolean", "description": "Whether to log it (default true)."},
+            },
+        },
+    },
+    {
+        "name": "save_recipe",
+        "description": (
+            "Remember a meal/dish the user cooks repeatedly, with its ingredients "
+            "and typical volumes, so it can be logged later in one shot. USE THIS "
+            "when the user describes or photographs the ingredients of a dish they "
+            "make often — e.g. 'save this as my beef chilli', 'this is my usual "
+            "overnight oats'. Pass a name and the ingredient list (each with grams "
+            "and, where you know them, its macros). Later, log_recipe expands it "
+            "into one row per ingredient automatically."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Recipe name, e.g. 'Beef chilli'."},
+                "ingredients": {
+                    "type": "array",
+                    "description": "One object per ingredient.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "Ingredient, e.g. '500g beef mince'."},
+                            "grams": {"type": "number", "description": "Typical amount in grams."},
+                            "calories": {"type": "number"},
+                            "protein_g": {"type": "number"},
+                            "carbs_g": {"type": "number"},
+                            "fat_g": {"type": "number"},
+                            "sugar_g": {"type": "number"},
+                        },
+                    },
+                },
+                "meal_type": {"type": "string", "description": "snack | breakfast | lunch | dinner | meal (default)."},
+                "notes": {"type": "string"},
+            },
+            "required": ["name", "ingredients"],
+        },
+    },
+    {
+        "name": "log_recipe",
+        "description": (
+            "Log a previously-saved recipe in one go — it expands into one row "
+            "per ingredient at the saved volumes. USE THIS when the user says "
+            "they're eating a dish you've saved before — e.g. 'log my beef "
+            "chilli', 'had my usual overnight oats', or after photographing the "
+            "same ingredients again. Match by `name`, or pass `ingredient_names` "
+            "to find the recipe by its ingredients. If nothing matches, save it "
+            "first with save_recipe."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The saved recipe's name."},
+                "ingredient_names": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "Detected ingredient names, to match a recipe by its ingredients.",
+                },
+                "meal_type": {"type": "string", "description": "Override meal type; defaults to the recipe's."},
+                "on_date": {"type": "string", "description": "Optional day YYYY-MM-DD; defaults to today."},
+            },
+        },
+    },
+    {
         "name": "get_health_history",
         "description": (
             "Read the full daily health series over a date RANGE for long-arc "

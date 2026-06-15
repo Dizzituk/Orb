@@ -58,29 +58,49 @@ def _load_index_stats() -> dict:
         with open(idx_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        files = data.get("scanned_files", [])
+        # Two on-disk INDEX formats are supported (2026-06-14 fix):
+        #   RAG format → {"scanned_files": [{path, lines, bytes, language}]}
+        #               (written as INDEX_<ts>.json by a full scan)
+        #   Legacy     → {"files": [{path, size_bytes, ext, ...}]}
+        #               (written as INDEX.json by the same scan)
+        # Previously only "scanned_files"/"bytes"/"language" were read, so when
+        # only the legacy INDEX.json was present the overview was always empty.
+        files = data.get("scanned_files") or data.get("files") or []
         if not files:
             return {}
 
-        total_lines = sum(f.get("lines", 0) for f in files)
-        total_bytes = sum(f.get("bytes", 0) for f in files)
+        def _bytes(f: dict) -> int:
+            return f.get("bytes") or f.get("size_bytes") or 0
+
+        def _lines(f: dict) -> int:
+            return f.get("lines", 0) or 0
+
+        def _lang(f: dict) -> str:
+            lang = (f.get("language") or "").strip()
+            if lang:
+                return lang
+            # Legacy index has no language — fall back to the file extension.
+            return (f.get("ext") or "").lstrip(".").lower()
+
+        total_lines = sum(_lines(f) for f in files)
+        total_bytes = sum(_bytes(f) for f in files)
 
         # Language breakdown
         lang_counter = Counter()
         for f in files:
-            lang = f.get("language", "").strip()
+            lang = _lang(f)
             if lang:
                 lang_counter[lang] += 1
 
         # Top 10 biggest files by bytes
-        by_size = sorted(files, key=lambda x: x.get("bytes", 0), reverse=True)
+        by_size = sorted(files, key=_bytes, reverse=True)
         biggest = []
         for f in by_size[:10]:
             path = f.get("path", "")
             # Make path relative
             rel = path.replace("D:\\Orb\\", "").replace("D:/Orb/", "")
-            size_kb = f.get("bytes", 0) / 1024
-            biggest.append(f"{rel} ({size_kb:.1f}KB, {f.get('lines', 0)} lines)")
+            size_kb = _bytes(f) / 1024
+            biggest.append(f"{rel} ({size_kb:.1f}KB, {_lines(f)} lines)")
 
         return {
             "total_files": len(files),

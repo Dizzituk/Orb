@@ -2,7 +2,7 @@
 # Purpose: Read-only codebase access for trusted models in standard chat.
 # Called-by: app.bridge.capability_layer, app.llm.routing.chat_routing
 # Depends-on: app.memory.router, app.rag.retrieval.arch_search, app.sandbox.client
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-06-12
 """
 Read-only codebase access for trusted models in standard chat.
 

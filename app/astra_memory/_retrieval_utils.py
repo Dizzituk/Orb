@@ -1,7 +1,7 @@
 # Purpose: retrieval utils
 # Called-by: app.astra_memory.retrieval
 # Depends-on: app.astra_memory.confidence_config, app.astra_memory.preference_models, app.memory.models
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-06-12
 from __future__ import annotations
 import logging
 from app.astra_memory.confidence_config import get_config
@@ -66,14 +66,32 @@ def _fetch_cold_note(db: Session, record_id: str) -> Optional[str]:
     return None
 
 def _fetch_cold_document(db: Session, record_id: str) -> Optional[str]:
-    """Fetch full document content from DocumentContent table."""
+    """Fetch full document content from DocumentContent table.
+
+    record_id is the FILE id (the key the embeddings table and the hot
+    index use for documents, 2026-06-12); falls back to DocumentContent.id
+    for any legacy references. Includes the file path so ASTRA can say
+    "we have a document about this — here it is".
+    """
     try:
-        from app.memory.models import DocumentContent
-        doc = db.query(DocumentContent).filter(DocumentContent.id == int(record_id)).first()
+        from app.memory.models import DocumentContent, File
+        doc = db.query(DocumentContent).filter(
+            DocumentContent.file_id == int(record_id)
+        ).first()
+        if not doc:
+            doc = db.query(DocumentContent).filter(
+                DocumentContent.id == int(record_id)
+            ).first()
         if doc:
             parts = []
             if doc.filename:
                 parts.append(f"# Document: {doc.filename}")
+            try:
+                file_rec = db.query(File).filter(File.id == doc.file_id).first()
+                if file_rec and file_rec.path:
+                    parts.append(f"Path: {file_rec.path}")
+            except Exception:
+                pass
             if doc.summary and not doc.summary.startswith('ENC:'):
                 parts.append(f"\n## Summary\n{doc.summary}")
             if doc.raw_text and not doc.raw_text.startswith('ENC:'):
@@ -87,6 +105,16 @@ def _fetch_cold_document(db: Session, record_id: str) -> Optional[str]:
     except Exception as e:
         logger.warning(f"Cold fetch document {record_id} failed: {e}")
     return None
+
+def _fetch_cold_manifest(db: Session, record_id: str) -> Optional[str]:
+    """Fetch the capability manifest from its cold file (Job 4, 2026-06-12)."""
+    try:
+        from app.self_model.capability_manifest import read_manifest
+        return read_manifest()
+    except Exception as e:
+        logger.warning(f"Cold fetch manifest failed: {e}")
+    return None
+
 
 def _fetch_cold_project(db: Session, record_id: str) -> Optional[str]:
     """Fetch project details."""

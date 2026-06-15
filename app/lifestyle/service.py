@@ -596,6 +596,17 @@ def _weight_to_out(entry: WeightEntry) -> WeightEntryOut:
     )
 
 
+def _safe_json(s):
+    """Parse a JSON text column to a dict, or None. Never raises."""
+    if not s:
+        return None
+    try:
+        import json
+        return json.loads(s)
+    except Exception:
+        return None
+
+
 def _nutrition_to_out(entry: NutritionLog) -> NutritionLogOut:
     return NutritionLogOut(
         id=entry.id,
@@ -611,6 +622,11 @@ def _nutrition_to_out(entry: NutritionLog) -> NutritionLogOut:
         is_estimate=entry.is_estimate,
         confidence=entry.confidence or 0.6,
         source=entry.source or "text",
+        quantity_g=entry.quantity_g,
+        per_100g=_safe_json(entry.per_100g_json),
+        micros=_safe_json(entry.micros_json),
+        food_product_id=entry.food_product_id,
+        estimate_note=entry.estimate_note,
     )
 
 

@@ -2,7 +2,7 @@
 # Purpose: Content indexer — Tier 2 of the boot scan.
 # Called-by: app.drive.boot_scan
 # Depends-on: app.drive.manifest_models, app.embeddings, app.embeddings.service, app.llm.file_analyzer (+6 more)
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-06-12
 """
 Content indexer — Tier 2 of the boot scan.
 
@@ -34,6 +34,11 @@ logger = logging.getLogger(__name__)
 
 # File classes that get content-indexed (text extraction + embeddings)
 INDEXABLE_CLASSES = {"document"}
+
+# Media classes that get ENRICHED (description + metadata, Job 3 2026-06-12):
+# images → vision caption, audio → ID3 metadata. Video deliberately deferred
+# (no adequate cheap describer; manifest-only until a cataloguer exists).
+ENRICHABLE_CLASSES = {"image", "audio"}
 
 # Max file size for content indexing (5MB — skip huge files)
 MAX_INDEX_SIZE = 5 * 1024 * 1024
@@ -225,6 +230,16 @@ def run_content_indexing(db: DbSession) -> IndexReport:
 
     db.commit()
 
+    # ── Media enrichment pass (Job 3, 2026-06-12) ────────────────────
+    # Images get vision captions, audio gets ID3 metadata; both land in
+    # the document pipeline (DocumentContent + hot index + embeddings)
+    # so they are conversationally retrievable. Failure-proof: a file
+    # that can't be enriched stays unindexed and is retried next boot.
+    try:
+        _enrich_media_files(db, report)
+    except Exception as media_exc:
+        logger.warning("[content_indexer] Media enrichment pass failed: %s", media_exc)
+
     elapsed = int((time.monotonic() - start) * 1000)
     report.duration_ms = elapsed
 
@@ -237,3 +252,58 @@ def run_content_indexing(db: DbSession) -> IndexReport:
     )
 
     return report
+
+
+def _enrich_media_files(db: DbSession, report: IndexReport, limit: int = 200) -> None:
+    """Enrich unindexed image/audio manifest entries (bounded per boot)."""
+    from app.memory.enrichment import (
+        enrich_image, enrich_music, store_media_document, llm_keys_available,
+    )
+
+    candidates = (
+        db.query(DriveFileManifest)
+        .filter(
+            DriveFileManifest.file_class.in_(ENRICHABLE_CLASSES),
+            DriveFileManifest.content_indexed == False,  # noqa: E712
+            DriveFileManifest.size_bytes < MAX_INDEX_SIZE * 10,
+        )
+        .order_by(DriveFileManifest.size_bytes.asc())
+        .limit(limit)
+        .all()
+    )
+    if not candidates:
+        return
+
+    enriched = 0
+    for rec in candidates:
+        try:
+            if rec.file_class == "audio":
+                info = enrich_music(rec.path)
+            else:
+                if not llm_keys_available():
+                    continue  # vision needs a key; retried next boot
+                info = enrich_image(rec.path)
+                if not info.get("enriched"):
+                    report.files_errored += 1
+                    continue
+
+            file_id = store_media_document(
+                db, path=rec.path, filename=rec.filename,
+                kind=rec.file_class, description=info["description"],
+                tags=info.get("tags"),
+            )
+            if file_id:
+                rec.content_indexed = True
+                rec.indexed_at = datetime.utcnow()
+                enriched += 1
+            else:
+                report.files_errored += 1
+        except Exception as exc:
+            report.files_errored += 1
+            logger.debug("[content_indexer] enrichment failed for %s: %s",
+                         rec.filename, exc)
+
+    db.commit()
+    report.files_indexed += enriched
+    if enriched:
+        logger.info("[content_indexer] Enriched %d media file(s)", enriched)

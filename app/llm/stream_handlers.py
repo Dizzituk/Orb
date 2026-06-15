@@ -2,7 +2,7 @@
 # Purpose: SSE stream generator functions for stream router.
 # Called-by: app.endpoints.chat_attachments, app.llm.routing.handler_registry
 # Depends-on: app.introspection.chat_integration, app.llm.audit_logger, app.llm.chat_tool_loop, app.llm.file_output (+8 more)
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-06-14 (generate_sse_stream: optional user_message_id, ids on done event)
 """
 SSE stream generator functions for stream router.
 
@@ -49,8 +49,20 @@ async def generate_sse_stream(
     trace: Optional["RoutingTrace"] = None,
     enable_reasoning: bool = False,
     tools: Optional[List[dict]] = None,
+    user_message_id: Optional[int] = None,
 ):
-    """Generate SSE stream for normal LLM chat."""
+    """Generate SSE stream for normal LLM chat.
+
+    v2026-06-14 (live-sync): accepts an optional ``user_message_id``. When the
+    caller has already persisted the user turn (handle_chat_mode does, via
+    _persist_user_message), it passes that id here so we DON'T write a second,
+    redundant user row (the historical double-persist) and instead report the
+    caller's id. The ``done`` event now carries user_message_id +
+    assistant_message_id so the desktop can tag its optimistic bubbles with the
+    real server ids (lets the live poller dedupe its own turn while still
+    surfacing a voice/phone turn that interleaved during the stream).
+    Callers that pass nothing keep the old behaviour (we persist the user row).
+    """
     # v1.1: Debug logging
     print(f"[SSE_STREAM] Starting: provider={provider}, model={model}, messages={len(messages)}")
     
@@ -152,11 +164,16 @@ async def generate_sse_stream(
             print(f"[SSE_STREAM] File extraction failed (non-fatal): {extract_err}")
             logger.warning("[stream] File extraction failed: %s", extract_err)
 
-        # Save to memory
-        memory_service.create_message(db, memory_schemas.MessageCreate(
-            project_id=project_id, role="user", content=message, provider=provider
-        ))
-        memory_service.create_message(db, memory_schemas.MessageCreate(
+        # Save to memory.
+        # v2026-06-14: only persist the user row when the caller didn't already
+        # (user_message_id is None). When provided, reuse the caller's row id and
+        # skip the redundant write — fixes the chat-path double-persist.
+        if user_message_id is None:
+            _user_msg = memory_service.create_message(db, memory_schemas.MessageCreate(
+                project_id=project_id, role="user", content=message, provider=provider
+            ))
+            user_message_id = _user_msg.id
+        _assistant_msg = memory_service.create_message(db, memory_schemas.MessageCreate(
             project_id=project_id, role="assistant", content=full_response,
             provider=provider, model=model
         ))
@@ -169,6 +186,8 @@ async def generate_sse_stream(
             "provider": provider,
             "model": model,
             "total_length": len(full_response),
+            "user_message_id": user_message_id,
+            "assistant_message_id": _assistant_msg.id,
         }) + "\n\n"
         
 

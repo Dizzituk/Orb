@@ -2,7 +2,7 @@
 # Purpose: RAG-related helpers for generating INDEX and SIGNATURES JSON, and CODEBASE.md.
 # Called-by: app.llm.local_tools.zobie, app.llm.local_tools.zobie.streams.archmap_full, app.llm.local_tools.zobie.streams.scan_sandbox
 # Depends-on: app.llm.local_tools.zobie.signature_extract, app.rag.jobs.embedding_job, app.rag.models
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-06-12
 """RAG-related helpers for generating INDEX and SIGNATURES JSON, and CODEBASE.md.
 
 Extracted from zobie_tools.py for modularity.
@@ -11,6 +11,7 @@ No logic changes - exact same generation behavior.
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import os
@@ -219,6 +220,121 @@ def generate_codebase_md(
             lines.append("")
     
     return "\n".join(lines)
+
+
+# =============================================================================
+# IMPORT GRAPH (host-derived — written by CREATE ARCHITECTURE MAP)
+# =============================================================================
+
+def _import_graph_relpath(abs_path: str, repo_root: str) -> str:
+    """Relative, forward-slash path of abs_path under repo_root."""
+    rp = abs_path.replace("/", "\\")
+    rr = repo_root.replace("/", "\\").rstrip("\\")
+    if rp.lower().startswith((rr + "\\").lower()):
+        return rp[len(rr) + 1:].replace("\\", "/")
+    return rp.replace("\\", "/")
+
+
+def _import_graph_is_internal_utils(rel_path: str) -> bool:
+    """Internal `_*_utils*.py` split files are noise in a dependency graph."""
+    filename = rel_path.rsplit("/", 1)[-1] if "/" in rel_path else rel_path
+    return filename.startswith("_") and "_utils" in filename
+
+
+def generate_import_graph(
+    contents_data: List[Dict[str, Any]],
+    repo_root: str,
+) -> Dict[str, Any]:
+    """
+    Build an `app.*` import dependency graph from already-fetched HOST file
+    contents (no sandbox dependency).
+
+    Mirrors the schema written by app.memory.domains.dependency_scanner so the
+    same readers (RAG structured context, optimizer) consume it unchanged:
+        {"generated_at", "source": "host", "stats": {...}, "graph": {...}}
+
+    Only Python files under repo_root are considered; only intra-repo `app.*`
+    imports that resolve to a scanned file become edges.
+    """
+    # 1) Map dotted module name -> relative file path for all .py files.
+    module_map: Dict[str, str] = {}
+    py_files: List[tuple] = []  # (rel_path, raw_source)
+
+    for info in contents_data:
+        path = info.get("path", "")
+        content = info.get("content", "")
+        if not path or not content or info.get("error"):
+            continue
+        if os.path.splitext(path)[1].lower() != ".py":
+            continue
+
+        rel = _import_graph_relpath(path, repo_root)
+        if not rel.endswith(".py"):
+            continue
+
+        parts = rel.split("/")
+        if parts[-1] == "__init__.py":
+            mod_parts = parts[:-1]
+        else:
+            mod_parts = parts[:-1] + [parts[-1][:-3]]
+        dotted = ".".join(mod_parts)
+        if dotted:
+            module_map[dotted] = rel
+
+        py_files.append((rel, strip_line_numbers(content)))
+
+    # 2) Parse imports per file and resolve to scanned files.
+    graph: Dict[str, List[str]] = {}
+    for rel_path, source in py_files:
+        try:
+            tree = ast.parse(source)
+        except (SyntaxError, ValueError):
+            continue
+
+        imports: List[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith("app."):
+                        imports.append(alias.name)
+            elif isinstance(node, ast.ImportFrom):
+                if node.module and node.module.startswith("app."):
+                    imports.append(node.module)
+
+        resolved = []
+        for imp in imports:
+            target = module_map.get(imp)
+            if target and target != rel_path and not _import_graph_is_internal_utils(target):
+                resolved.append(target)
+
+        if resolved:
+            graph[rel_path] = sorted(set(resolved))
+
+    # 3) Summary stats (same shape as dependency_scanner.summarise_graph).
+    all_targets: set = set()
+    dep_counts: Dict[str, int] = {}
+    for targets in graph.values():
+        all_targets.update(targets)
+        for t in targets:
+            dep_counts[t] = dep_counts.get(t, 0) + 1
+
+    top_deps = sorted(dep_counts.items(), key=lambda x: x[1], reverse=True)[:20]
+    most_imports = sorted(graph.items(), key=lambda x: len(x[1]), reverse=True)[:20]
+
+    stats = {
+        "total_modules": len(graph),
+        "total_edges": sum(len(v) for v in graph.values()),
+        "unique_targets": len(all_targets),
+        "most_depended_on": [{"module": m, "dependents": c} for m, c in top_deps],
+        "most_dependencies": [{"module": m, "count": len(deps)} for m, deps in most_imports],
+    }
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": "host",
+        "stats": stats,
+        "graph": graph,
+    }
 
 
 # =============================================================================

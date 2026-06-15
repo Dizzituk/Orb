@@ -148,6 +148,8 @@ def init_db():
 
     # v8.0: Import Lifestyle Engine models (weight, nutrition, workouts, goals)
     from app.lifestyle import models as lifestyle_models  # noqa: F401
+    # Food overhaul Phase 6: saved-recipe tables
+    from app.lifestyle import recipe_models as lifestyle_recipe_models  # noqa: F401
 
     # v9.0: Import Pipeline Transparency models (reasoning events, user corrections)
     from app.transparency import models as transparency_models  # noqa: F401
@@ -190,6 +192,12 @@ def init_db():
 
     # v11.0: Run pipeline logging overhaul migrations
     _migrate_pipeline_logging_schema()
+
+    # Food overhaul Phase 2: per-item edit/quantity/micros columns on nutrition logs
+    _migrate_nutrition_schema()
+
+    # Food overhaul Phase 3: per-100g micronutrients on the product library
+    _migrate_product_schema()
 
     # v4.1: Register domain stores with the MemoryRouter singleton
     from app.memory.startup import init_memory_system
@@ -393,6 +401,86 @@ def _migrate_pipeline_logging_schema():
                     log.warning("[db_migrate] Failed to add %s: %s", col_name, e)
         else:
             log.debug("[db_migrate] build_projects.%s already exists", col_name)
+
+
+# =============================================================================
+# SCHEMA MIGRATIONS (Food overhaul Phase 2 — per-item edit / quantity / micros)
+# =============================================================================
+
+def _migrate_nutrition_schema():
+    """Add the per-item edit columns to lifestyle_nutrition_logs.
+
+    Food-module overhaul Phase 2. All columns are nullable and stored macros
+    stay ABSOLUTE, so the daily-summary func.sum() aggregation is untouched.
+    Safe to call multiple times (idempotent).
+    """
+    import logging
+    from sqlalchemy import inspect, text
+
+    log = logging.getLogger(__name__)
+
+    inspector = inspect(engine)
+    if "lifestyle_nutrition_logs" not in inspector.get_table_names():
+        log.debug("[db_migrate] lifestyle_nutrition_logs table doesn't exist yet, skipping")
+        return
+
+    existing = {col["name"] for col in inspector.get_columns("lifestyle_nutrition_logs")}
+
+    columns_to_add = [
+        ("quantity_g", "FLOAT"),
+        ("per_100g_json", "TEXT"),
+        ("micros_json", "TEXT"),
+        ("food_product_id", "INTEGER"),
+        ("estimate_note", "TEXT"),
+    ]
+
+    for col_name, col_type in columns_to_add:
+        if col_name not in existing:
+            with engine.connect() as conn:
+                try:
+                    conn.execute(text(
+                        f"ALTER TABLE lifestyle_nutrition_logs ADD COLUMN {col_name} {col_type}"
+                    ))
+                    conn.commit()
+                    log.info("[db_migrate] Added lifestyle_nutrition_logs.%s column", col_name)
+                    print(f"[db_migrate] Added lifestyle_nutrition_logs.{col_name} column")
+                except Exception as e:
+                    log.warning("[db_migrate] Failed to add %s: %s", col_name, e)
+        else:
+            log.debug("[db_migrate] lifestyle_nutrition_logs.%s already exists", col_name)
+
+
+def _migrate_product_schema():
+    """Add micros_json (per-100g micronutrients) to lifestyle_food_products.
+
+    Food-module overhaul Phase 3. The product table is lazy-created
+    (ensure_product_table), so this only runs when it already exists; a fresh
+    table is created with the column by create_all. Idempotent.
+    """
+    import logging
+    from sqlalchemy import inspect, text
+
+    log = logging.getLogger(__name__)
+
+    inspector = inspect(engine)
+    if "lifestyle_food_products" not in inspector.get_table_names():
+        log.debug("[db_migrate] lifestyle_food_products table doesn't exist yet, skipping")
+        return
+
+    existing = {col["name"] for col in inspector.get_columns("lifestyle_food_products")}
+    if "micros_json" not in existing:
+        with engine.connect() as conn:
+            try:
+                conn.execute(text(
+                    "ALTER TABLE lifestyle_food_products ADD COLUMN micros_json TEXT"
+                ))
+                conn.commit()
+                log.info("[db_migrate] Added lifestyle_food_products.micros_json column")
+                print("[db_migrate] Added lifestyle_food_products.micros_json column")
+            except Exception as e:
+                log.warning("[db_migrate] Failed to add micros_json: %s", e)
+    else:
+        log.debug("[db_migrate] lifestyle_food_products.micros_json already exists")
 
 
 

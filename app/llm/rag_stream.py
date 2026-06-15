@@ -27,19 +27,57 @@ logger = logging.getLogger(__name__)
 DEFAULT_SCAN_DIR = os.getenv("ZOBIE_OUTPUT_DIR", r"D:\Orb\.architecture")
 
 
+def _persist_rag_turn(
+    db: Session,
+    project_id: int,
+    message: str,
+    answer: str,
+    model: str = "rag_answerer",
+    persist_user: bool = False,
+) -> None:
+    """Persist the RAG turn to chat history (assistant always; user when the
+    caller hasn't already saved it). Without this, RAG answers were absent from
+    history so follow-up questions lost context. Non-fatal."""
+    try:
+        from app.memory import service as memory_service
+        from app.memory import schemas as memory_schemas
+        if persist_user:
+            memory_service.create_message(db, memory_schemas.MessageCreate(
+                project_id=project_id, role="user", content=message, provider="local",
+            ))
+        if answer:
+            memory_service.create_message(db, memory_schemas.MessageCreate(
+                project_id=project_id, role="assistant", content=answer,
+                provider="local", model=model,
+            ))
+    except Exception as e:
+        logger.warning("[rag_stream] Failed to persist RAG turn (non-fatal): %s", e)
+
+
 async def generate_rag_query_stream(
     project_id: int,
     message: str,
     db: Session,
     trace=None,
+    persist_user: bool = False,
 ) -> AsyncGenerator[str, None]:
     """
     Stream RAG codebase query response.
-    
+
     Handles two cases:
     1. "index the architecture" - triggers indexing
     2. Question - searches and answers
+
+    persist_user: when True, also save the user turn to history (callers on the
+    normal-routing path don't persist it themselves; the chat-mode and command
+    paths already do, so they leave this False).
     """
+    # Persist the user turn up-front when the caller hasn't already (normal-
+    # routing path). Done here so EVERY branch — including the index-command
+    # early returns — records it; assistant turns are saved per-branch below.
+    if persist_user:
+        _persist_rag_turn(db, project_id, message, answer="", persist_user=True)
+
     msg_lower = message.lower().strip()
     
     # Check for index command
@@ -133,19 +171,24 @@ async def generate_rag_query_stream(
     # Check if we have any indexed chunks
     chunk_count = db.query(ArchCodeChunk).count()
     if chunk_count == 0:
+        _no_index_msg = (
+            "⚠️ **No codebase index found**\n\n"
+            "To use RAG search, first run:\n"
+            "1. `Astra, command: CREATE ARCHITECTURE MAP` - scans and extracts signatures\n"
+            "2. `index the architecture` - creates embeddings for search\n\n"
+            "Then you can ask questions like:\n"
+            "- `search codebase: what functions handle streaming?`\n"
+            "- `In the codebase, where is job routing implemented?`"
+        )
         yield "data: " + json.dumps({
             'type': 'token',
-            'content': (
-                "⚠️ **No codebase index found**\n\n"
-                "To use RAG search, first run:\n"
-                "1. `Astra, command: CREATE ARCHITECTURE MAP` - scans and extracts signatures\n"
-                "2. `index the architecture` - creates embeddings for search\n\n"
-                "Then you can ask questions like:\n"
-                "- `search codebase: what functions handle streaming?`\n"
-                "- `In the codebase, where is job routing implemented?`"
-            )
+            'content': _no_index_msg,
         }) + "\n\n"
-        
+
+        # User turn already saved at function top (when persist_user); assistant only.
+        _persist_rag_turn(db, project_id, message, _no_index_msg,
+                          model="rag_query", persist_user=False)
+
         yield "data: " + json.dumps({
             'type': 'done',
             'provider': 'local',
@@ -162,15 +205,19 @@ async def generate_rag_query_stream(
     }) + "\n\n"
     
     # Search and answer
+    full_answer = ""      # accumulated for history persistence
+    answer_model = "rag_answerer"
     try:
         result = await ask_architecture_async(db=db, question=question, project_id=str(project_id))
-        
+        answer_model = result.model_used or "rag_answerer"
+
         # Stream the answer
+        full_answer += result.answer or ""
         yield "data: " + json.dumps({
             'type': 'token',
             'content': result.answer
         }) + "\n\n"
-        
+
         # Add sources if any (deduplicated)
         if result.sources:
             # Deduplicate by (file, name, line) keeping first occurrence
@@ -181,26 +228,33 @@ async def generate_rag_query_stream(
                 if key not in seen:
                     seen.add(key)
                     unique_sources.append(src)
-            
+
             sources_text = "\n\n---\n**Sources** (searched " + str(result.chunks_searched) + " chunks):\n"
             for src in unique_sources[:5]:  # Limit to 5 after dedup
                 sources_text += f"- `{src.get('file', '?')}` → `{src.get('name', '?')}` ({src.get('type', '?')}, line {src.get('line', '?')})\n"
-            
+
+            full_answer += sources_text
             yield "data: " + json.dumps({
                 'type': 'token',
                 'content': sources_text
             }) + "\n\n"
-        
+
     except Exception as e:
         logger.error(f"RAG query failed: {e}")
+        full_answer = f"❌ **Query failed:** {str(e)}"
         yield "data: " + json.dumps({
             'type': 'token',
-            'content': f"❌ **Query failed:** {str(e)}"
+            'content': full_answer
         }) + "\n\n"
-    
+
+    # Persist the assistant answer so RAG answers join chat history. The user
+    # turn was already saved at function top (when persist_user) or by the caller.
+    _persist_rag_turn(db, project_id, message, full_answer,
+                      model=answer_model, persist_user=False)
+
     yield "data: " + json.dumps({
         'type': 'done',
-        'provider': result.model_used if 'result' in dir() else 'local',
+        'provider': answer_model,
         'model': 'rag_query',
     }) + "\n\n"
 

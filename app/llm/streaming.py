@@ -2,7 +2,7 @@
 # Purpose: Orb Streaming LLM Module
 # Called-by: app.bridge.capability_layer, app.llm._streaming_utils_2, app.llm._streaming_utils_3, app.llm._weaver_stream_utils_14 (+12 more)
 # Depends-on: app.llm._streaming_utils_2, app.llm._streaming_utils_3
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-06-14 (cap OpenAI tools at 128 to prevent array_above_max_length 400)
 """
 Orb Streaming LLM Module
 
@@ -243,6 +243,18 @@ async def stream_openai(
                         "parameters": t.get("input_schema", t.get("parameters", {})),
                     },
                 })
+            # v2026-06-14 (hotfix): OpenAI hard-limits the tools array to 128.
+            # Sending more 400s the ENTIRE request ("array_above_max_length"),
+            # which silently kills chat (no tokens, no reply). Cap defensively so a
+            # growing tool registry can never break the OpenAI path. Other providers
+            # (Anthropic/Gemini) have their own limits and are untouched. The proper
+            # fix is curating the tool set below 128 / prioritising per-context
+            # — flagged for follow-up; this keeps chat working meanwhile.
+            _OPENAI_MAX_TOOLS = 128
+            if len(openai_tools) > _OPENAI_MAX_TOOLS:
+                _dropped = [t["function"]["name"] for t in openai_tools[_OPENAI_MAX_TOOLS:]]
+                print(f"[STREAM_OPENAI] Tools {len(openai_tools)} > {_OPENAI_MAX_TOOLS} max — capping; dropped: {_dropped}")
+                openai_tools = openai_tools[:_OPENAI_MAX_TOOLS]
             create_kwargs["tools"] = openai_tools
 
         # Override max_tokens if explicitly provided

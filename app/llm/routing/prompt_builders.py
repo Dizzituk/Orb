@@ -570,6 +570,28 @@ def build_full_context(
     except Exception as _sm_err:
         print(f"[CONTEXT] Self-model injection failed: {_sm_err}")
 
+    # v19 (2026-06-14): Dynamic capability manifest — scan-derived self-knowledge,
+    # including the architecture subsystem list from CREATE ARCHITECTURE MAP.
+    # The manifest hot row is otherwise only reachable via the envelope/memory
+    # path (synthesize_envelope_from_task → build_memory_context → retrieve_for_query),
+    # which the STREAMING chat path does NOT use — so "what are you / what can you
+    # do / tell me about yourself" in normal chat never saw it. Gate on the
+    # identity_capability topic tag so it loads only for self/identity questions
+    # (the manifest is ~12KB — never inject it on every turn).
+    try:
+        from app.astra_memory.topic_tagger import extract_tags as _self_tags
+        if "identity_capability" in (_self_tags(message) or []):
+            from app.self_model.capability_manifest import read_manifest
+            _manifest = read_manifest()
+            if _manifest:
+                full_context += (
+                    "\n\n## ASTRA SELF-KNOWLEDGE (live capability manifest)\n"
+                    + _manifest
+                )
+                print(f"[CONTEXT] Capability manifest injected ({len(_manifest)} chars)")
+    except Exception as _man_err:
+        print(f"[CONTEXT] Capability manifest injection failed: {_man_err}")
+
     # v17 (2026-04-25): ASTRA filesystem facts — always-on knowledge of where
     # generated outputs live on disk. Stops the agent wasting tool calls
     # searching for files that a previous turn produced (see image_output_dir.py).

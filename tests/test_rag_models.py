@@ -449,7 +449,10 @@ from app.rag.models import (
 class TestSourceType:
     def test_arch_types(self):
         assert SourceType.ARCH_DIRECTORY == "arch_directory"
-        assert SourceType.ARCH_CHUNK == "arch_chunk"
+        # 2026-06-12: must match what the embedding writer actually stores
+        # ("arch_code_chunk"); the old "arch_chunk" value made every reader
+        # filter match zero rows. See test_repo_chat_retrieval.py.
+        assert SourceType.ARCH_CHUNK == "arch_code_chunk"
 
 
 class TestChunkType:

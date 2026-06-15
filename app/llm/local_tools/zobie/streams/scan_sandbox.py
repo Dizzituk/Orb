@@ -2,7 +2,7 @@
 # Purpose: SCAN SANDBOX stream generator (scope="sandbox") - DB + RAG chunks + embeddings.
 # Called-by: app.llm.local_tools.zobie.streams
 # Depends-on: app.db, app.llm.audit_logger, app.llm.local_tools.zobie.config, app.llm.local_tools.zobie.db_ops (+9 more)
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-06-12
 """SCAN SANDBOX stream generator (scope="sandbox") - DB + RAG chunks + embeddings.
 
 Extracted from zobie_tools.py for modularity.

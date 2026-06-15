@@ -148,6 +148,21 @@ def chat(
     history_dicts = [{"role": msg.role, "content": msg.content} for msg in history]
     messages = history_dicts + [{"role": "user", "content": req.message}]
 
+    # CONV-MEMORY-002: within-conversation memory spine. Pull earlier messages
+    # on this topic that have scrolled out of the 50-message window back into
+    # context, plus the rolling conversation summary as a backstop. The /chat
+    # path injected neither before. Failure-proof — never break the reply.
+    try:
+        from app.memory.spine_service import build_within_conversation_context
+        window_ids = [msg.id for msg in history]
+        within_conv = build_within_conversation_context(
+            db, req.project_id, req.message, window_ids,
+        )
+        if within_conv:
+            full_context = (full_context + "\n\n" if full_context else "") + within_conv
+    except Exception as e:
+        print(f"[chat] within-conversation context skipped: {e}")
+
     jt = classify_job_type(req.message, req.job_type)
     print(f"[chat] Job type: {jt.value}")
 

@@ -229,15 +229,37 @@ def detect_image_gen_intent(message: str) -> bool:
 # v10.6 (2026-06-10): added redesign/restyle/rework/resend, "send it
 # again", and wrong-image phrasings -- "Redesign it please and send it
 # again" previously matched nothing and routed to plain chat.
-_IMAGE_REFINE_PATTERNS = re.compile(
-    r"(?:change|modify|adjust|tweak|fix|redo|redesign|restyle|rework|recreate|regenerate|redraw|remake|re-?send|again\s+but|same\s+but|less\s+\w+|more\s+\w+|make\s+it|try\s+again|send\s+(?:it|that)\s+(?:to\s+me\s+)?again|another\s+(?:version|image|one|picture|photo|chart|graph|graphic|illustration|visual|infographic|diagram)|do\s+(?:that|this|it)\s+again|not\s+(?:quite|right)|(?:isn|wasn)'?t\s+the\s+(?:image|picture|one)|wrong\s+(?:image|picture|quote|text|colou?rs?)|too\s+\w+)",
+# v10.7 (2026-06-13): split STRONG (explicit re-make verbs / wrong-image
+# phrasings -- match anywhere) from WEAK (bare comparatives "more \w+" /
+# "less \w+" / "too \w+", "make it", generic edit verbs); weak phrasings
+# only count on SHORT messages. Why: once last_assistant_was_image() was
+# repaired on 2026-06-10, the unanchored comparatives started matching
+# mid-sentence in ordinary conversation ("...a little bit more politically
+# strong...") and routed CHAT_ONLY turns into image generation for up to
+# 8 messages after any image -- the 2026-06-12 road bug (phantom second
+# image). Real refinements are short imperatives; long rambles are chat.
+_IMAGE_REFINE_STRONG = re.compile(
+    r"(?:redesign|restyle|rework|recreate|regenerate|redraw|remake|re-?send"
+    r"|send\s+(?:it|that)\s+(?:to\s+me\s+)?again"
+    r"|another\s+(?:version|image|one|picture|photo|chart|graph|graphic|illustration|visual|infographic|diagram)"
+    r"|do\s+(?:that|this|it)\s+again|try\s+again"
+    r"|(?:isn|wasn)'?t\s+the\s+(?:image|picture|one)"
+    r"|wrong\s+(?:image|picture|quote|text|colou?rs?))",
     re.IGNORECASE,
 )
+_IMAGE_REFINE_WEAK = re.compile(
+    r"(?:change|modify|adjust|tweak|fix|redo|again\s+but|same\s+but"
+    r"|less\s+\w+|more\s+\w+|too\s+\w+|make\s+it|not\s+(?:quite|right))",
+    re.IGNORECASE,
+)
+_REFINE_WEAK_MAX_CHARS = 80
 
 
 def detect_image_refinement(message: str) -> bool:
     """Check if the user is asking to refine a previous image."""
-    return bool(_IMAGE_REFINE_PATTERNS.search(message))
+    if _IMAGE_REFINE_STRONG.search(message):
+        return True
+    return len(message) <= _REFINE_WEAK_MAX_CHARS and bool(_IMAGE_REFINE_WEAK.search(message))
 
 
 # Markers written by image_router into assistant messages on successful

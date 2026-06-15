@@ -270,6 +270,20 @@ def on_startup():
         _db.close()
     except Exception as e:
         print(f"[startup] ASTRA memory indexing skipped: {e}")
+
+    # Capability manifest (2026-06-12): regenerate the self-description when
+    # the registry hash changed (tools/handlers/models), so "what are you?"
+    # always retrieves a current answer.
+    try:
+        from app.self_model.capability_manifest import regenerate_if_stale
+        from app.db import SessionLocal
+        _mdb = SessionLocal()
+        _regen = regenerate_if_stale(_mdb)
+        print(f"[startup] Capability manifest: "
+              f"{'regenerated' if _regen else '[OK] up to date'}")
+        _mdb.close()
+    except Exception as e:
+        print(f"[startup] Capability manifest skipped: {e}")
     try:
         from app.settings.service import sync_all_to_env
         from app.db import SessionLocal
@@ -777,6 +791,36 @@ try:
     print("[startup] Scene Director (ASTRA Room): [OK] registered")
 except Exception as _scene_err:
     print(f"[startup] Scene Director: [WARN] {_scene_err}")
+
+# Documents — Univer editor pane seam (2026-06-12): file ⇄ snapshot conversion
+# (xlsx/docx/csv/md) + the editor action channel that lets chat tools read and
+# edit whatever is open in the desktop's command-centre Editor tab.
+try:
+    from app.documents import router as documents_router
+    app.include_router(documents_router)
+    print("[startup] Documents (editor pane): [OK] registered")
+except Exception as _documents_err:
+    print(f"[startup] Documents: [WARN] {_documents_err}")
+
+# ASTRA presence (2026-06-13, Room v2): in-memory orb-state broadcast so the Room
+# orb (and any surface) can reflect ASTRA's live state — WS /astra/ws + POST
+# /astra/state. Local-trusted like the Room's /scene/* endpoints.
+try:
+    from app.astra_presence.router import router as astra_presence_router
+    app.include_router(astra_presence_router)
+    print("[startup] ASTRA Presence: [OK] registered")
+except Exception as _presence_err:
+    print(f"[startup] ASTRA Presence: [WARN] {_presence_err}")
+
+# ASTRA Room voice (2026-06-13, Room v2): local-trusted POST /scene/ask — text in,
+# ASTRA's spoken reply out (audio/mpeg + X-Full-Text). Reuses the bridge chat brain
+# (run_astra_chat) + TTS helpers without bridge auth (see scene_director/voice.py).
+try:
+    from app.scene_director.voice import router as scene_voice_router
+    app.include_router(scene_voice_router)
+    print("[startup] Scene Voice (Room /ask): [OK] registered")
+except Exception as _scene_voice_err:
+    print(f"[startup] Scene Voice: [WARN] {_scene_voice_err}")
 
 try:
     from app.cloud.router import router as cloud_router

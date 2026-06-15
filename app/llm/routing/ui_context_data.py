@@ -101,3 +101,36 @@ def fetch_tab_data(job_type: str, db: Session) -> Optional[str]:
 
     # Future: accounts, content, etc.
     return None
+
+
+def fetch_editor_state_block() -> Optional[str]:
+    """Live editor-pane state for prompt injection (2026-06-12).
+
+    When a document is open in the desktop Univer pane, returns a short
+    block telling the model WHAT is open and WHICH tools act on it, so
+    'can you see what I'm looking at' resolves to the open file instead
+    of a request to upload. In-memory read — no round trip to the pane.
+    Returns None when nothing is open (zero cost, zero noise).
+    """
+    try:
+        from app.documents import editor_actions
+        state = editor_actions.editor_state()
+        if not state.get("open"):
+            return None
+        kind = "spreadsheet" if state.get("kind") == "sheet" else "document"
+        name = state.get("name") or "a file"
+        return (
+            "## EDITOR PANE (live)\n"
+            f"The user has {name} open in the desktop editor pane right now — "
+            f"a {kind} at {state.get('path')}.\n"
+            "When they say 'this file', 'this document', 'this spreadsheet', or "
+            "'what I'm looking at', they mean THIS open file. You can see and "
+            "edit it through tools: read_document (documents) or "
+            "read_sheet_range / list_sheet_names (spreadsheets) to read; "
+            "edit_document_text or set_sheet_range to change it; save_document "
+            "to save. Never ask the user to upload or paste it — read it with "
+            "the tools."
+        )
+    except Exception as e:
+        logger.debug(f"[ui_context_data] editor state fetch failed: {e}")
+        return None

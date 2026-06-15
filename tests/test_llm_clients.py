@@ -257,5 +257,95 @@ class TestErrorHandling:
             )
 
 
+class TestProviderUnavailablePath:
+    """Provider-unavailable / error path returns a clean (content, usage) tuple.
+
+    Regression: _llm_call_and_unpack(_async) used to read a non-existent
+    `result.error_code`, raising AttributeError instead of honouring the
+    documented (content, usage_with_error) contract when a provider is
+    unavailable (e.g. no API key). The error code now comes from the real
+    LlmCallStatus enum on the result.
+    """
+
+    def _unavailable_result(self):
+        from app.providers._registry_utils_4 import (
+            LlmCallResult,
+            LlmCallStatus,
+        )
+
+        return LlmCallResult(
+            status=LlmCallStatus.PROVIDER_UNAVAILABLE,
+            provider_id="anthropic",
+            model_id="claude-opus-4-8",
+            error_message="Provider unavailable: anthropic",
+        )
+
+    def test_async_unpack_returns_clean_error_tuple(self):
+        """Async path: no exception, error code from status, message as content."""
+        from app.llm import clients
+
+        async def _fake_llm_call(**kwargs):
+            return self._unavailable_result()
+
+        with patch.object(clients, "registry_llm_call", _fake_llm_call):
+            content, usage = asyncio.run(
+                clients.async_call_anthropic(
+                    "system",
+                    [{"role": "user", "content": "hi"}],
+                    model="claude-opus-4-8",
+                )
+            )
+
+        assert content == "Provider unavailable: anthropic"
+        assert usage["error"] == "provider_unavailable"
+        assert usage["total_tokens"] == 0
+        assert usage["cost_usd"] == 0.0
+
+    def test_sync_unpack_returns_clean_error_tuple(self):
+        """Sync wrapper: same clean-error contract, no AttributeError."""
+        from app.llm import clients
+
+        async def _fake_llm_call(**kwargs):
+            return self._unavailable_result()
+
+        with patch.object(clients, "registry_llm_call", _fake_llm_call):
+            content, usage = clients.call_anthropic(
+                "system",
+                [{"role": "user", "content": "hi"}],
+                model="claude-opus-4-8",
+            )
+
+        assert content == "Provider unavailable: anthropic"
+        assert usage["error"] == "provider_unavailable"
+
+    def test_generic_error_status_propagates_code(self):
+        """A non-unavailable error status still yields its own code, not 'error'."""
+        from app.llm import clients
+        from app.providers._registry_utils_4 import (
+            LlmCallResult,
+            LlmCallStatus,
+        )
+
+        async def _fake_llm_call(**kwargs):
+            return LlmCallResult(
+                status=LlmCallStatus.INVALID_REQUEST,
+                provider_id="anthropic",
+                model_id="claude-opus-4-8",
+                error_message="Unknown provider: anthropic",
+            )
+
+        with patch.object(clients, "registry_llm_call", _fake_llm_call):
+            content, usage = asyncio.run(
+                clients.async_call_anthropic(
+                    "system",
+                    [{"role": "user", "content": "hi"}],
+                    model="claude-opus-4-8",
+                )
+            )
+
+        assert content == "Unknown provider: anthropic"
+        assert usage["error"] == "invalid_request"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

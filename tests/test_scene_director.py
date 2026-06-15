@@ -4,7 +4,10 @@
 #          compose endpoint + websocket handshake with the director mocked.
 # Called-by: pytest
 # Depends-on: app.scene_director.*
-# Last-renovated: 2026-06-12
+# Last-renovated: 2026-06-13
+#
+# v3: catalogue-driven — real prefab ids are resolved from the live catalogue at load,
+# so the suite is robust to introspection changing the catalogue contents.
 from __future__ import annotations
 
 import asyncio
@@ -26,15 +29,20 @@ from app.scene_director.schemas import (
 )
 from app.scene_director.state import scene_state
 
+# Real ids from the live catalogue (introspected). Deterministic pick.
+_ENV_ID = sorted(asset_catalog.known_ids("environment"))[0]
+_ACTOR_ID = ("person_male_casual_01" if "person_male_casual_01" in asset_catalog.known_ids("actor")
+             else sorted(asset_catalog.known_ids("actor"))[0])
+_SKY_ID = "day_clear" if "day_clear" in asset_catalog.known_ids("skybox") else sorted(asset_catalog.known_ids("skybox"))[0]
+
 
 def _make_doc(**overrides) -> SceneDoc:
     base = dict(
         title="Test scene",
         intent="a man walks down a city street",
-        skybox=SkyboxSpec(kind="preset", id="day_clear"),
-        environment=[PropSpec(prop_id="road_a", prefab_id="street_straight_01",
-                              position=(0.0, 0.0, 0.0))],
-        actors=[ActorSpec(actor_id="walker", prefab_id="person_male_casual_01",
+        skybox=SkyboxSpec(kind="preset", id=_SKY_ID),
+        environment=[PropSpec(prop_id="road_a", prefab_id=_ENV_ID, position=(0.0, 0.0, 0.0))],
+        actors=[ActorSpec(actor_id="walker", prefab_id=_ACTOR_ID,
                           spawn=(-8.0, 0.0, 2.0), waypoints=[(28.0, 0.0, 2.0)])],
         timeline=[
             TimelineEvent(at_seconds=0.0, action="narrate", text="Here is a street."),
@@ -93,18 +101,18 @@ def test_actor_rejects_unknown_animation():
 
 def test_catalog_loads_with_all_three_kinds():
     cat = asset_catalog.load_catalog()
-    assert cat["entries"], "starter catalogue must not be empty"
+    assert cat["entries"], "catalogue must not be empty"
     assert asset_catalog.known_ids("environment")
     assert asset_catalog.known_ids("actor")
     assert asset_catalog.known_ids("skybox")
 
 
 def test_catalog_get_and_prompt_block():
-    entry = asset_catalog.get("street_straight_01")
+    entry = asset_catalog.get(_ENV_ID)
     assert entry and entry["kind"] == "environment"
     assert asset_catalog.get("no_such_prefab") is None
     block = asset_catalog.as_prompt_block()
-    assert "street_straight_01" in block and "day_clear" in block
+    assert _ENV_ID in block and _SKY_ID in block
 
 
 # ── sanitise: the catalogue boundary ─────────────────────────────────────────
@@ -112,12 +120,11 @@ def test_catalog_get_and_prompt_block():
 def test_sanitise_strips_unknown_ids_into_warnings():
     doc = _make_doc(
         environment=[
-            PropSpec(prop_id="road_a", prefab_id="street_straight_01"),
+            PropSpec(prop_id="road_a", prefab_id=_ENV_ID),
             PropSpec(prop_id="ufo", prefab_id="flying_saucer_99"),
         ],
         actors=[
-            ActorSpec(actor_id="walker", prefab_id="person_male_casual_01",
-                      waypoints=[(1.0, 0.0, 0.0)]),
+            ActorSpec(actor_id="walker", prefab_id=_ACTOR_ID, waypoints=[(1.0, 0.0, 0.0)]),
             ActorSpec(actor_id="ghost", prefab_id="spectre_01", waypoints=[(0.0, 0.0, 0.0)]),
         ],
         timeline=[
@@ -149,10 +156,10 @@ def test_sanitise_generated_skybox_coerced_to_preset():
 def test_sanitise_strips_duplicates_and_pins_waypointless():
     doc = _make_doc(
         environment=[
-            PropSpec(prop_id="road_a", prefab_id="street_straight_01"),
-            PropSpec(prop_id="road_a", prefab_id="street_straight_01"),
+            PropSpec(prop_id="road_a", prefab_id=_ENV_ID),
+            PropSpec(prop_id="road_a", prefab_id=_ENV_ID),
         ],
-        actors=[ActorSpec(actor_id="walker", prefab_id="person_male_casual_01",
+        actors=[ActorSpec(actor_id="walker", prefab_id=_ACTOR_ID,
                           spawn=(3.0, 0.0, 4.0), waypoints=[])],
     )
     warnings: list[str] = []
@@ -249,9 +256,9 @@ async def test_director_accepts_valid_reply_and_enforces_server_fields(monkeypat
         "scene_id": "model-must-not-control-this",
         "title": "Composed street",
         "skybox": {"kind": "preset", "id": "dusk"},
-        "environment": [{"prop_id": "road_a", "prefab_id": "street_straight_01",
+        "environment": [{"prop_id": "road_a", "prefab_id": _ENV_ID,
                          "position": [0, 0, 0], "rotation_y": 0, "scale": 1.0}],
-        "actors": [{"actor_id": "walker", "prefab_id": "person_male_casual_01",
+        "actors": [{"actor_id": "walker", "prefab_id": _ACTOR_ID,
                     "spawn": [-8, 0, 2], "waypoints": [[28, 0, 2]],
                     "animation": "walk", "speed_mps": 1.2, "loop": False}],
         "timeline": [{"at_seconds": 0, "action": "narrate", "text": "A street at dusk."},
@@ -271,9 +278,10 @@ async def test_director_accepts_valid_reply_and_enforces_server_fields(monkeypat
 # ── router: compose endpoint + websocket handshake (director mocked) ─────────
 
 def test_compose_endpoint_stores_and_returns_scene(client, monkeypatch):
+    monkeypatch.setenv("SCENE_CRITIC_ENABLED", "false")  # focus on router store+return
     canned = ComposeResponse(scene=_make_doc(), warnings=["catalogue guess"])
 
-    async def fake_compose(intent: str):
+    async def fake_compose(intent, **kwargs):
         assert intent == "a man walks down a city street"
         return canned
     monkeypatch.setattr(director, "compose_scene", fake_compose)
@@ -298,7 +306,7 @@ def test_catalog_endpoint_serves_entries(client):
     resp = client.get("/scene/catalog")
     assert resp.status_code == 200
     ids = {e["prefab_id"] for e in resp.json()["entries"]}
-    assert "street_straight_01" in ids
+    assert _ENV_ID in ids
 
 
 def test_compose_rejects_empty_intent(client):
@@ -306,14 +314,14 @@ def test_compose_rejects_empty_intent(client):
 
 
 def test_websocket_receives_push_on_recompose(client, monkeypatch):
+    monkeypatch.setenv("SCENE_CRITIC_ENABLED", "false")
     canned = ComposeResponse(scene=_make_doc(), warnings=[])
 
-    async def fake_compose(intent: str):
+    async def fake_compose(intent, **kwargs):
         return canned
     monkeypatch.setattr(director, "compose_scene", fake_compose)
 
     with client.websocket_connect("/scene/ws") as ws:
-        # no scene yet → no initial frame; compose while connected → push arrives
         resp = client.post("/scene/compose", json={"intent": "street please"})
         assert resp.status_code == 200
         msg = ws.receive_json()

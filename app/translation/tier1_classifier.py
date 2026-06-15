@@ -111,16 +111,21 @@ class LightweightLLMClient:
         messages: List[Dict[str, str]],
         max_tokens: int = 100,
         temperature: float = 0.0,
+        timeout_seconds: int = 30,
     ) -> str:
         """
         Make an async LLM call.
-        
+
         Returns the content string from the response.
+
+        v1.2 (2026-06-14): forward max_tokens/temperature/timeout_seconds to the
+        registry — they were previously accepted but silently dropped, so callers
+        fell back to registry defaults (2048 tokens / temp 0.2 / 180s timeout).
         """
         if not self._registry_available or self._llm_call is None:
             logger.warning("[LightweightLLMClient] Registry unavailable, returning empty")
             return '{"intent": "CHAT_ONLY", "confidence": 0.5, "reasoning": "LLM unavailable"}'
-        
+
         try:
             # Determine provider from model name
             provider = "openai"  # Default to OpenAI for lightweight models
@@ -128,12 +133,15 @@ class LightweightLLMClient:
                 provider = "anthropic"
             elif "gemini" in model.lower():
                 provider = "google"
-            
+
             # Make the call
             result = await self._llm_call(
                 provider_id=provider,
                 model_id=model,
                 messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                timeout_seconds=timeout_seconds,
             )
             
             # Extract content from result

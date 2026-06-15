@@ -49,8 +49,26 @@ class NarrateBody(BaseModel):
 @router.post("/compose", response_model=ComposeResponse,
              dependencies=[Depends(require_auth)])
 async def compose(body: ComposeRequest) -> ComposeResponse:
-    """Compose a SceneDoc from intent, store it as current, push to renderers."""
-    result = await director.compose_scene(body.intent)
+    """Compose a SceneDoc from intent, run the scene critic to enrich/fix it (v3),
+    store it as current, push to renderers."""
+    # v3: optional research rail (gate -> facts) before composing.
+    fact_pack = None
+    try:
+        from app.scene_director.research import maybe_research
+        fact_pack = await maybe_research(body.intent, era=body.era)
+    except Exception as _research_err:  # research is best-effort; never blocks compose
+        logger.debug("[scene] research skipped: %s", _research_err)
+
+    result = await director.compose_scene(body.intent, era=body.era, fact_pack=fact_pack)
+
+    # v3: the scene critic interrogates the draft and revises it (bounded passes).
+    try:
+        from app.scene_director import critic
+        result.scene = await critic.critique_and_revise(
+            result.scene, body.intent, result.warnings, era=body.era)
+    except Exception as _critic_err:
+        logger.warning("[scene] critic skipped: %s", _critic_err)
+
     scene_state.set_scene(result.scene)
     return result
 

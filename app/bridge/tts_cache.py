@@ -97,6 +97,108 @@ def touch(message_id: int) -> None:
             _save_json(_MANIFEST, manifest)
 
 
+# ── VBR (Xing) duration header ──────────────────────────────────────────
+# Chatterbox sentence-MP3s are MPEG2 Layer3, 24 kHz mono, VBR — and the
+# encoder's priming frame is 8 kbps. The concatenated per-message file has
+# no Xing header, so any player that falls back to constant-bitrate
+# duration estimation from the FIRST frame (ExoPlayer's Mp3Extractor does)
+# reports size/8kbps ≈ 7x the real length. That one defect caused the
+# 2026-06-12 road bugs: ~15-min duration marker on a ~2-min reply with a
+# phantom dead-air tail, AND playback jumping back near the start when the
+# phone swaps from the growing stream to the final file (seekTo() maps the
+# position through the same wrong seek map).
+#
+# Fix (2026-06-13): every NEW stream/cache file begins with a fixed-size
+# placeholder Xing frame — a valid, silent MPEG2-L3 mono frame — written
+# IDENTICALLY to the live HTTP stream and the .part file so byte offsets
+# stay aligned for HTTP Range resume. finalize() patches the real frame
+# count / byte total / seek TOC into the on-disk copy IN PLACE (offsets
+# never shift). The phone re-fetches the first 192 bytes after completion
+# to adopt the patched header before its seekable swap.
+
+_XING_FRAME_LEN = 192                    # MPEG2 L3 @ 64 kbps, 24 kHz: 72000*64/24000
+_XING_HEADER4 = b"\xff\xf3\x84\xc4"      # MPEG2, Layer3, 64 kbps, 24 kHz, mono
+_XING_TAG_OFFSET = 13                    # 4 header + 9 side-info bytes (MPEG2 mono)
+_BITRATES_V2L3 = (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0)
+_SAMPLERATES_V2 = (22050, 24000, 16000)
+
+
+def xing_placeholder() -> bytes:
+    """A silent MPEG2-L3 frame carrying an all-zero-field Xing tag.
+
+    Parsers that understand Xing skip it (zero flags = no usable fields →
+    they fall back to today's behaviour); ones that don't decode ~24 ms of
+    silence. Either way it is inert until finalize() patches real values in.
+    """
+    frame = bytearray(_XING_FRAME_LEN)
+    frame[0:4] = _XING_HEADER4
+    frame[_XING_TAG_OFFSET:_XING_TAG_OFFSET + 4] = b"Xing"
+    return bytes(frame)
+
+
+def _walk_frames(data: bytes, start: int):
+    """Yield (offset, frame_len, duration_s) for MPEG2-L3 frames in data."""
+    i, n = start, len(data)
+    while i + 4 <= n:
+        if data[i] == 0xFF and data[i + 1] in (0xF2, 0xF3):  # sync + MPEG2 + L3
+            b2 = data[i + 2]
+            br = _BITRATES_V2L3[(b2 >> 4) & 0xF]
+            sr_idx = (b2 >> 2) & 3
+            if br and sr_idx != 3:
+                sr = _SAMPLERATES_V2[sr_idx]
+                flen = (72000 * br) // sr + ((b2 >> 1) & 1)
+                if flen > 4 and i + flen <= n:
+                    yield i, flen, 576.0 / sr
+                    i += flen
+                    continue
+        i += 1
+
+
+def patch_xing_header(path: Path) -> bool:
+    """Write real totals + seek TOC into the placeholder frame, in place.
+
+    No-op (False) for files that don't begin with our placeholder — old
+    cache entries keep their old behaviour. Never moves bytes: HTTP Range
+    offsets handed out during streaming stay valid.
+    """
+    import struct
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return False
+    if len(data) <= _XING_FRAME_LEN or not data.startswith(_XING_HEADER4):
+        return False
+    if data[_XING_TAG_OFFSET:_XING_TAG_OFFSET + 4] != b"Xing":
+        return False
+    frames = list(_walk_frames(data, _XING_FRAME_LEN))
+    if not frames:
+        return False
+    total_bytes = len(data)
+    cumulative = []                      # (start_time_s, byte_offset) per frame
+    elapsed = 0.0
+    for off, _flen, dur in frames:
+        cumulative.append((elapsed, off))
+        elapsed += dur
+    toc = bytearray(100)
+    fi = 0
+    for pct in range(100):               # single forward pass, both sorted
+        target = elapsed * (pct / 100.0)
+        while fi < len(cumulative) - 1 and cumulative[fi + 1][0] <= target:
+            fi += 1
+        toc[pct] = min(255, (cumulative[fi][1] * 256) // total_bytes)
+    payload = (
+        b"Xing"
+        + struct.pack(">I", 0x0007)      # FRAMES | BYTES | TOC
+        + struct.pack(">I", len(frames))
+        + struct.pack(">I", total_bytes)
+        + bytes(toc)
+    )
+    with open(path, "r+b") as fh:
+        fh.seek(_XING_TAG_OFFSET)
+        fh.write(payload)
+    return True
+
+
 # ── Writer (tee target for the streaming synthesis loop) ───────────────
 
 class TtsCacheWriter:
@@ -112,7 +214,26 @@ class TtsCacheWriter:
         self._bytes = 0
         self._closed = False
         _ensure_dir()
-        self._fh = open(self._path, "ab")  # append: continue an earlier partial
+        # "wb" not "ab" (2026-06-13): a fresh writer must own the file from
+        # byte 0 — appending onto an orphaned .part from a crashed attempt
+        # produced a file that no longer matched the bytes streamed to the
+        # phone, corrupting Range resume. Disconnect continuation reuses
+        # THIS instance's handle, so nothing legitimate appended cross-instance.
+        self._fh = open(self._path, "wb")
+
+    def start_header(self) -> bytes:
+        """Write the placeholder Xing frame at byte 0 of a fresh file.
+
+        Returns the header bytes so streaming callers can yield the SAME
+        bytes into the live HTTP response (file and stream must stay
+        byte-identical for Range resume); b"" if anything is already written.
+        """
+        if self._closed or self._bytes:
+            return b""
+        hdr = xing_placeholder()
+        self._fh.write(hdr)
+        self._bytes += len(hdr)
+        return hdr
 
     def add_chunk(self, chunk: bytes) -> None:
         if self._closed or not chunk:
@@ -124,6 +245,13 @@ class TtsCacheWriter:
         if self._closed:
             return get_cached_path(self.message_id)
         self._close_fh()
+        # Patch the real duration/seek data into the placeholder header
+        # (2026-06-13) BEFORE promotion, so every reader of the final file
+        # sees a truthful Xing frame. See module comment above.
+        try:
+            patch_xing_header(self._path)
+        except Exception as e:
+            logger.warning("[tts_cache] xing patch failed for %s: %s", self.message_id, e)
         final = final_path(self.message_id)
         try:
             os.replace(self._path, final)

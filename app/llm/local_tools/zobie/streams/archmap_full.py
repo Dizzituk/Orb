@@ -2,7 +2,7 @@
 # Purpose: CREATE ARCHITECTURE MAP - FULL (ALL CAPS) stream generator.
 # Called-by: app.llm.local_tools.zobie.streams
 # Depends-on: app.db, app.llm.audit_logger, app.llm.local_tools.archmap_helpers, app.llm.local_tools.zobie.config (+12 more)
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-06-12
 """CREATE ARCHITECTURE MAP - FULL (ALL CAPS) stream generator.
 
 Scan + out folder + map generation.
@@ -59,6 +59,7 @@ from ..rag_helpers import (
     generate_signatures_json,
     generate_index_for_rag,
     generate_codebase_md,
+    generate_import_graph,
     signatures_to_db,
 )
 
@@ -268,7 +269,22 @@ async def generate_full_architecture_map_stream(
             f.write(codebase_content)
         codebase_size_mb = len(codebase_content.encode("utf-8")) / 1024 / 1024
         yield sse_token(f"   Saved: {FULL_CODEBASE_OUTPUT_FILE} ({codebase_size_mb:.2f}MB)\n")
-        
+
+        # Save IMPORT_GRAPH.json (host-derived dependency graph). The boot-time
+        # seeder reads this from the sandbox and blanks it when the sandbox is
+        # down; generating it here from the host scan keeps it real and current
+        # for the RAG structured context + optimizer.
+        import_graph_path = output_dir / "IMPORT_GRAPH.json"
+        import_graph_data = generate_import_graph(contents_data, CODE_SCAN_ROOTS[0])
+        with open(import_graph_path, "w", encoding="utf-8") as f:
+            json.dump(import_graph_data, f, indent=2)
+        _ig_stats = import_graph_data.get("stats", {})
+        yield sse_token(
+            f"   Saved: IMPORT_GRAPH.json "
+            f"({_ig_stats.get('total_modules', 0)} modules, "
+            f"{_ig_stats.get('total_edges', 0)} edges)\n"
+        )
+
     except Exception as e:
         logger.exception(f"[full_archmap] Save failed: {e}")
         yield sse_error(f"Failed to save: {e}")
@@ -483,11 +499,33 @@ async def generate_full_architecture_map_stream(
         yield sse_token(f"\n⚠️ Opus failed: {e}\n")
         if map_content:
             yield sse_token(f"   💾 Partial content preserved on disk ({len(map_content)} chars)\n")
-    
+
+    # ===========================================================================
+    # Phase 6: Refresh ASTRA's self-knowledge from this scan
+    # ===========================================================================
+    # Regenerate the capability manifest so "tell me about yourself / what are
+    # your abilities" reflects the architecture just scanned — the manifest now
+    # reads the latest INDEX for its subsystem breakdown. force=True bypasses
+    # the registry hash (which tracks tools/handlers/models, not the codebase).
+    # Called synchronously (not in an executor) so the live db session stays
+    # single-threaded. Non-fatal: a failure never breaks the scan.
+    yield sse_token("\n🧠 Phase 6: Updating self-knowledge (capability manifest)...\n")
+    self_knowledge_refreshed = False
+    try:
+        from app.self_model.capability_manifest import regenerate_if_stale
+        self_knowledge_refreshed = bool(regenerate_if_stale(db, force=True))
+        if self_knowledge_refreshed:
+            yield sse_token("   ✅ Capability manifest regenerated from this scan\n")
+        else:
+            yield sse_token("   ⚠️ Capability manifest not regenerated (see logs)\n")
+    except Exception as sk_err:
+        logger.warning(f"[full_archmap] Self-knowledge refresh failed (non-fatal): {sk_err}")
+        yield sse_token(f"   ⚠️ Self-knowledge refresh failed (non-fatal): {sk_err}\n")
+
     # ===========================================================================
     # Done
     # ===========================================================================
-    
+
     # Record in memory
     try:
         memory_service.create_message(
@@ -513,16 +551,18 @@ async def generate_full_architecture_map_stream(
     
     # Build embedding status for summary
     embedding_status_str = "🔗 Embeddings: queued (background)" if embedding_queued else "🔗 Embeddings: not queued"
-    
+    self_knowledge_str = "🧠 Self-knowledge: refreshed" if self_knowledge_refreshed else "🧠 Self-knowledge: not refreshed"
+
     summary = (
         f"\n✅ Architecture scan complete.\n"
         f"📂 Output: {output_dir}\n"
         f"📊 Files: {len(files_data)} ({files_with_content} with content)\n"
         f"📝 Lines: {total_lines:,}\n"
         f"📦 Size: {total_bytes / 1024 / 1024:.2f}MB\n"
-        f"🗺️ Outputs: INDEX.json, INDEX_{timestamp_str}.json, SIGNATURES_{timestamp_str}.json, {FULL_CODEBASE_OUTPUT_FILE}, {FULL_ARCHMAP_OUTPUT_FILE}\n"
+        f"🗺️ Outputs: INDEX.json, INDEX_{timestamp_str}.json, SIGNATURES_{timestamp_str}.json, IMPORT_GRAPH.json, {FULL_CODEBASE_OUTPUT_FILE}, {FULL_ARCHMAP_OUTPUT_FILE}\n"
         f"💾 DB scan_id: {scan_id}\n"
         f"{embedding_status_str}\n"
+        f"{self_knowledge_str}\n"
         f"⏱️ Duration: {duration_ms}ms\n"
     )
     yield sse_token(summary)

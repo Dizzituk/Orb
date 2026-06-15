@@ -62,7 +62,13 @@ class NutritionLog(Base):
     sugar_g = Column(Float, nullable=True)  # tracked separately for sugar addiction management
     is_estimate = Column(Boolean, default=True)  # True = AI-estimated, False = verified/scanned
     confidence = Column(Float, default=0.6)  # 0.0-1.0 how confident the estimate is
-    source = Column(String, default="text")  # text | barcode | photo_ocr | voice
+    source = Column(String, default="text")  # text | barcode | photo_ocr | voice | off_search | similar_estimate | web_estimate
+    # --- Food overhaul Phase 2: per-item quantity + re-scalable basis (all nullable, additive) ---
+    quantity_g = Column(Float, nullable=True)        # portion in grams/ml; source of truth for re-scaling on edit
+    per_100g_json = Column(Text, nullable=True)      # JSON per-100g basis {calories,protein_g,...[,micros:{...}]}
+    micros_json = Column(Text, nullable=True)        # JSON absolute micronutrients for this row (Phase 3 fills)
+    food_product_id = Column(Integer, nullable=True) # soft ref to lifestyle_food_products (no FK: product table is lazy-created)
+    estimate_note = Column(Text, nullable=True)      # provenance, e.g. 'est. from Sainsbury basil & tomato pasta, 400g'
 
 
 # ═══════════════════════════════════════════

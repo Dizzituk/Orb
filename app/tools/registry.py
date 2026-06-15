@@ -146,6 +146,12 @@ def list_tools() -> list[dict]:
     return out
 
 
+def list_tool_definitions() -> list[ToolDefinition]:
+    """All registered ToolDefinitions (read-only view for adapters, e.g.
+    app.tools.chat_bridge exposing registry tools to the chat tool loop)."""
+    return [_TOOL_DEFS[key] for key in sorted(_TOOL_DEFS.keys())]
+
+
 # -------------------------
 # Handlers
 # -------------------------
@@ -375,11 +381,55 @@ async def weather_handler(input_data: dict, context: Optional[dict]) -> dict:
 
 
 # -------------------------
+# Capability gating seam (2026-06-12)
+# -------------------------
+# Future family profiles will need per-session tool gating (a restricted
+# client must not reach every tool). This is the single dispatch chokepoint,
+# so the seam lives here: a policy callable consulted before every execution.
+# Default = allow-all; nothing changes for the single-user system. A future
+# profile layer swaps the policy via set_tool_policy() — no dispatch rewrite.
+
+ToolPolicy = Callable[[str, str, Optional[dict]], bool]
+
+
+def _allow_all_policy(tool_name: str, tool_version: str, context: Optional[dict]) -> bool:
+    return True
+
+
+_TOOL_POLICY: ToolPolicy = _allow_all_policy
+
+
+def set_tool_policy(policy: Optional[ToolPolicy]) -> None:
+    """Install a capability policy (None restores allow-all)."""
+    global _TOOL_POLICY
+    _TOOL_POLICY = policy or _allow_all_policy
+
+
+def get_tool_policy() -> ToolPolicy:
+    return _TOOL_POLICY
+
+
+# -------------------------
 # Execution API
 # -------------------------
 
 async def execute_tool_async(tool_name: str, tool_version: str, input_data: dict, context: Optional[dict] = None) -> ToolResponse:
     tool = get_tool(tool_name, tool_version)
+
+    try:
+        allowed = _TOOL_POLICY(tool_name, tool_version, context)
+    except Exception as policy_exc:
+        logger.warning("[tools] policy check failed open for %s: %s", tool_name, policy_exc)
+        allowed = True
+    if not allowed:
+        logger.info("[tools] policy DENIED %s:%s", tool_name, tool_version)
+        return ToolResponse(
+            ok=False,
+            tool_name=tool_name,
+            tool_version=tool_version,
+            error_message="tool blocked by capability policy for this session",
+        )
+
     resp = await get_tool_executor().run_tool(
         tool_name=tool.name,
         tool_version=tool.version,
@@ -495,6 +545,55 @@ def _register_defaults() -> None:
         register_vehicle_tools()
     except Exception as exc:
         logger.exception("[registry] vehicle tools registration failed: %s", exc)
+
+    # Display tools (2026-06-12): named-display media windows ("put it on
+    # the bed screen"). Self-contained in app/tools/display_tools.py.
+    try:
+        from app.tools.display_tools import register_display_tools
+        register_display_tools()
+    except Exception as exc:
+        logger.exception("[registry] display tools registration failed: %s", exc)
+
+    # Podcast tools (2026-06-12): discovery (PodcastIndex/iTunes), RSS
+    # subscriptions, desktop playback. Self-contained in podcast_tools.py.
+    try:
+        from app.tools.podcast_tools import register_podcast_tools
+        register_podcast_tools()
+    except Exception as exc:
+        logger.exception("[registry] podcast tools registration failed: %s", exc)
+
+    # Email tools (2026-06-12): provider-agnostic read/search + the
+    # draft-confirm-send loop (never auto-send). app/email owns providers
+    # (gmail | proton adapter over app/email_service).
+    try:
+        from app.tools.email_tools import register_email_tools
+        register_email_tools()
+    except Exception as exc:
+        logger.exception("[registry] email tools registration failed: %s", exc)
+
+    # Stream/media tools (2026-06-12): SoundCloud/Mixcloud desktop playback
+    # via display windows + YouTube voice search. app/media owns the flows.
+    try:
+        from app.tools.stream_tools import register_stream_tools
+        register_stream_tools()
+    except Exception as exc:
+        logger.exception("[registry] stream tools registration failed: %s", exc)
+
+    # Movie-night tools (2026-06-12): TMDB narrowing + GB providers + bed-
+    # screen dispatch. app/media/movie_night owns the flow.
+    try:
+        from app.tools.movie_tools import register_movie_tools
+        register_movie_tools()
+    except Exception as exc:
+        logger.exception("[registry] movie tools registration failed: %s", exc)
+
+    # Document/editor tools (2026-06-12): read + edit whatever is open in
+    # the desktop Univer editor pane. app/documents owns the action channel.
+    try:
+        from app.tools.document_tools import register_document_tools
+        register_document_tools()
+    except Exception as exc:
+        logger.exception("[registry] document tools registration failed: %s", exc)
 
 
 _register_defaults()

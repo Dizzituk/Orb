@@ -2,7 +2,7 @@
 # Purpose: api router
 # Called-by: main
 # Depends-on: app.auth, app.db, app.memory, app.memory.schemas (+1 more)
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-06-14 (GET /memory/messages after_id param + before/after 422)
 from typing import List, Optional
 from pathlib import Path
 from uuid import uuid4
@@ -304,18 +304,27 @@ def get_message_history(
     project_id: int = Query(..., description="Project ID to get messages for"),
     limit: int = Query(50, ge=1, le=200, description="Maximum messages to return"),
     before_id: Optional[int] = Query(None, description="Return messages older than this ID"),
+    after_id: Optional[int] = Query(None, description="Return messages newer than this ID"),
     db: Session = Depends(get_db),
 ):
     """
     Get paginated message history for a project.
     Returns messages in chronological order (oldest first) for display.
-    Use before_id to paginate backwards through history.
+    Use before_id to paginate backwards through history; use after_id to fetch
+    messages newer than a known ID (the desktop live-message poller). before_id
+    and after_id are mutually exclusive — supplying both is a 422.
     """
+    if before_id is not None and after_id is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="before_id and after_id are mutually exclusive",
+        )
+
     project = service.get_project(db, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    
-    return service.get_message_history(db, project_id, limit, before_id)
+
+    return service.get_message_history(db, project_id, limit, before_id, after_id)
 
 
 @router.get("/projects/{project_id}/messages", response_model=List[schemas.MessageOut])

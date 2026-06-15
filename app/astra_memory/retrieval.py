@@ -2,7 +2,7 @@
 # Purpose: ASTRA Memory Retrieval Layer
 # Called-by: app.astra_memory, app.astra_memory.indexer, app.astra_memory.router, app.astra_memory.semantic_candidates (+4 more)
 # Depends-on: app.astra_memory._retrieval_utils, app.astra_memory.confidence_config, app.astra_memory.preference_models, app.astra_memory.semantic_candidates
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-06-12
 """
 ASTRA Memory Retrieval Layer
 
@@ -35,7 +35,7 @@ from app.astra_memory.preference_models import (
     PreferenceRecord,
     RecordStatus,
 )
-from app.astra_memory._retrieval_utils import DEPTH_KEYWORDS, _fetch_cold_document, _fetch_cold_message, _fetch_cold_note, _fetch_cold_project, get_applicable_preferences, get_highest_confidence_preference, should_apply_preference
+from app.astra_memory._retrieval_utils import DEPTH_KEYWORDS, _fetch_cold_document, _fetch_cold_manifest, _fetch_cold_message, _fetch_cold_note, _fetch_cold_project, get_applicable_preferences, get_highest_confidence_preference, should_apply_preference
 
 logger = logging.getLogger(__name__)
 
@@ -201,9 +201,16 @@ def stage1_candidate_selection(
         fetch_multiplier = 4
     else:
         fetch_multiplier = 2
-    
+
     candidates = []
-    
+
+    # 2026-06-12: the over-fetch previously had NO ordering, so SQLite
+    # returned rows in table order — on a 2,000+ row index the newest
+    # records never even entered the scoring pool for untagged queries
+    # (anything added late was invisible). Recency-desc matches the
+    # scoring model (priority + recency) and keeps fresh records reachable.
+    query = query.order_by(HotIndex.updated_at.desc())
+
     for hot in query.limit(max_candidates * fetch_multiplier).all():  # Over-fetch for scoring
         # Calculate relevance score
         score = hot.retrieval_priority
@@ -272,6 +279,7 @@ def _fetch_cold_storage(
         "document": _fetch_cold_document,
         "document_content": _fetch_cold_document,
         "project": _fetch_cold_project,
+        "manifest": _fetch_cold_manifest,
     }
     
     fetcher = fetch_map.get(record_type)

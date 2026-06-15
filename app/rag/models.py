@@ -1,7 +1,7 @@
 # Purpose: RAG database models.
 # Called-by: app.db, app.llm.local_tools.zobie.rag_helpers, app.llm.local_tools.zobie.streams.archmap_full, app.llm.local_tools.zobie.streams.scan_sandbox (+29 more)
 # Depends-on: app.db, app.memory.architecture_models
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-06-12
 """
 RAG database models.
 

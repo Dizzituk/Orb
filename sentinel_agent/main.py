@@ -40,6 +40,22 @@ _STARTED_AT = datetime.now(timezone.utc).isoformat()
 logger = logging.getLogger("sentinel_agent")
 
 
+def _bind_headless_streams() -> None:
+    """Under pythonw.exe (the Scheduled Task launcher) there is no console, so
+    sys.stdout/sys.stderr are None. uvicorn touches them during startup (isatty
+    checks / stream handlers) and the process dies with exit code 1 before file
+    logging exists. Bind them to a stdio log so headless launch survives.
+    Found during commissioning 2026-06-12 (task LastTaskResult=1, empty log)."""
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    stream = open(DATA_DIR / "agent_stdio.log", "a", encoding="utf-8", buffering=1)
+    if sys.stdout is None:
+        sys.stdout = stream
+    if sys.stderr is None:
+        sys.stderr = stream
+
+
 def _setup_logging() -> None:
     """Warnings+ to data\\sentinel\\agent.log and stderr. The secret is never logged."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -150,6 +166,7 @@ def get_rules() -> dict:
 
 def main() -> None:
     global SECRET
+    _bind_headless_streams()
     _setup_logging()
     SECRET = _load_or_create_secret()
     import uvicorn

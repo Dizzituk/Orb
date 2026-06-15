@@ -3,8 +3,9 @@
 Shared capability layer for bridge chat.
 
 This module provides:
-- `run_astra_chat()`    — collect full response (for /bridge/chat)
-- `stream_astra_chat()` — yield text tokens as they arrive (for /bridge/chat-and-speak)
+- `run_astra_chat()`    — collect full response (used by /bridge/chat AND
+  /bridge/chat-and-speak, which then pipes the collected reply to TTS)
+- `stream_astra_chat()` — token-streaming variant (currently unused/reserved)
 
 Both use the same intelligence path the desktop uses:
   Model selection → context → grounding gate → tool injection → tool loop
@@ -24,6 +25,54 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# CODEBASE-QUESTION DETECTION (phone/voice parity with desktop RAG, 2026-06-14)
+# =============================================================================
+
+async def _detect_codebase_question(
+    message: str, translation_result: Any, db: Session
+) -> Optional[str]:
+    """Return the question if it's about ASTRA's OWN code/features (so the phone
+    answers from the RAG index, like the desktop does), else None.
+
+    Mirrors the desktop chain: Tier-0 RAG intent → deterministic regex+guard →
+    LLM safety-net. Identity/capability questions ("what are your abilities") are
+    excluded — those are answered in normal chat via the capability manifest.
+    All failures are non-fatal (→ None → normal chat).
+    """
+    # Tier-0 already resolved it to a codebase query.
+    try:
+        intent = (
+            translation_result.resolved_intent.value
+            if translation_result and getattr(translation_result, "resolved_intent", None)
+            else None
+        )
+        if intent == "RAG_CODEBASE_QUERY":
+            return message
+    except Exception:
+        pass
+
+    try:
+        from app.llm.routing.rag_fallback import (
+            is_architecture_query, needs_llm_codebase_check,
+        )
+        if is_architecture_query(message):
+            return message
+        if needs_llm_codebase_check(message):
+            try:
+                from app.astra_memory.topic_tagger import extract_tags
+                if "identity_capability" in (extract_tags(message) or []):
+                    return None
+            except Exception:
+                pass
+            from app.llm.routing.codebase_intent_llm import is_codebase_question_llm_async
+            if await is_codebase_question_llm_async(message):
+                return message
+    except Exception as e:
+        logger.warning("[bridge] codebase-question detection failed (non-fatal): %s", e)
+    return None
+
+
+# =============================================================================
 # PUBLIC API
 # =============================================================================
 
@@ -38,6 +87,7 @@ async def run_astra_chat(
     web_search_context: str = "",
     search_executed: bool = False,
     search_succeeded: bool = False,
+    raw_message: Optional[str] = None,
 ) -> dict:
     """Run the full ASTRA capability layer and return collected results.
 
@@ -48,7 +98,32 @@ async def run_astra_chat(
         message, project_id, history, db, source,
         domain_context, translation_result,
         web_search_context, search_executed, search_succeeded,
+        raw_message=raw_message,
     )
+
+    # RAG route — codebase/feature question: answer from the architecture index
+    # (parity with the desktop RAG path). Returns plain text for the phone.
+    if prep.get("rag_route"):
+        from app.rag.answerer import ask_architecture_async
+        try:
+            ans = await ask_architecture_async(
+                db=db, question=prep["rag_question"], project_id=str(project_id),
+            )
+            reply = ans.answer or "I couldn't find anything about that in my codebase index."
+            return {
+                "reply": reply,
+                "provider": "rag",
+                "model": ans.model_used or "rag_answerer",
+                "tools_used": ["rag_codebase"],
+            }
+        except Exception as e:
+            logger.error("[%s] RAG route failed: %s", source, e)
+            return {
+                "reply": "I tried to search my own codebase but the lookup failed. Try again in a moment.",
+                "provider": "rag",
+                "model": "rag_answerer-failed",
+                "tools_used": ["rag_codebase"],
+            }
 
     # Image route — bypass the LLM call and run the same image-gen
     # pipeline the desktop uses (classification, refinement detection,
@@ -149,6 +224,7 @@ async def stream_astra_chat(
     web_search_context: str = "",
     search_executed: bool = False,
     search_succeeded: bool = False,
+    raw_message: Optional[str] = None,
 ) -> AsyncGenerator[dict, None]:
     """Stream text tokens from the full ASTRA capability layer.
 
@@ -166,7 +242,23 @@ async def stream_astra_chat(
         message, project_id, history, db, source,
         domain_context, translation_result,
         web_search_context, search_executed, search_succeeded,
+        raw_message=raw_message,
     )
+
+    if prep.get("rag_route"):
+        from app.rag.answerer import ask_architecture_async
+        yield {"type": "metadata", "provider": "rag", "model": "rag_answerer"}
+        try:
+            ans = await ask_architecture_async(
+                db=db, question=prep["rag_question"], project_id=str(project_id),
+            )
+            text = ans.answer or "I couldn't find anything about that in my codebase index."
+        except Exception as e:
+            logger.error("[%s] RAG route failed: %s", source, e)
+            text = "I tried to search my own codebase but the lookup failed. Try again in a moment."
+        yield {"type": "token", "text": text}
+        yield {"type": "done", "full_text": text, "provider": "rag", "model": "rag_answerer"}
+        return
 
     if prep.get("image_route"):
         yield {"type": "token", "text": "Image generation is available on the desktop app."}
@@ -232,6 +324,7 @@ async def _prepare_astra_chat(
     web_search_context: str,
     search_executed: bool,
     search_succeeded: bool,
+    raw_message: Optional[str] = None,
 ) -> dict:
     """Prepare everything needed for an ASTRA chat call.
 
@@ -271,6 +364,19 @@ async def _prepare_astra_chat(
         )
     except Exception:
         pass
+
+    # ── 0. Codebase-question short-circuit (phone/voice parity with desktop) ──
+    # If the user is asking about ASTRA's own code/features, answer from the RAG
+    # index rather than the generic chat brain. run_/stream_astra_chat handle the
+    # rag_route by calling ask_architecture_async — the bridge returns text, not
+    # an SSE stream, so we can't reuse the desktop generate_rag_query_stream.
+    # Detect on the RAW user message: the augmented `message` may be prefixed
+    # with an attachment description ("[Image attached: ...]") which defeats the
+    # start-anchored detection regexes.
+    _rag_q = await _detect_codebase_question(raw_message or message, translation_result, db)
+    if _rag_q is not None:
+        print(f"[{source}] RAG route: codebase question → architecture index")
+        return {"rag_route": True, "rag_question": _rag_q}
 
     # ── 1. Build context ──
     full_context = build_full_context(db, project_id, message, use_semantic_search=True)

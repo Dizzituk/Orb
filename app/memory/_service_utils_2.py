@@ -1,7 +1,7 @@
 # Purpose: service utils 2
 # Called-by: app.bridge.missed_replies, app.bridge.router, app.memory.service
 # Depends-on: app.memory, app.memory.models, app.memory.schemas
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-06-14 (added get_messages_after for live-sync forward paging)
 from __future__ import annotations
 from app.memory import models, schemas
 from sqlalchemy.orm import Session
@@ -64,6 +64,46 @@ def list_messages(db: Session, project_id: int, limit: int = 100) -> List[models
         .all()
     )
     return list(reversed(rows))
+
+def get_messages_after(
+    db: Session, project_id: int, after_id: int, limit: int = 50
+) -> schemas.MessageHistoryResponse:
+    """Forward message paging: messages strictly newer than ``after_id``.
+
+    Returns up to ``limit`` messages with id > after_id in ascending
+    (chronological) id order. Backs the desktop live-message poller
+    (GET /memory/messages?after_id=...). The poller only consumes the
+    ``messages`` list; has_older/oldest_id are populated for shape parity
+    with the backward-paging response but carry no meaning on this path.
+    """
+    limit = max(1, min(limit, 200))
+    rows = (
+        db.query(models.Message)
+        .filter(models.Message.project_id == project_id)
+        .filter(models.Message.id > after_id)
+        .order_by(models.Message.id.asc())
+        .limit(limit)
+        .all()
+    )
+    items = [
+        schemas.MessageHistoryItem(
+            id=m.id,
+            project_id=m.project_id,
+            role=m.role,
+            content=m.content,
+            provider=m.provider,
+            model=m.model,
+            reasoning=m.reasoning,
+            created_at=m.created_at,
+        )
+        for m in rows
+    ]
+    return schemas.MessageHistoryResponse(
+        messages=items,
+        has_older=False,
+        oldest_id=items[0].id if items else None,
+    )
+
 
 def get_document_content_by_file_id(
     db: Session, file_id: int

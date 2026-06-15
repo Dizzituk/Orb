@@ -121,6 +121,17 @@ def get_chat_tools(tier: str = TOOL_TIER_READ) -> List[Dict]:
         tools.extend(_to_anthropic_tool_format(t) for t in EXPENSE_TOOL_DECLARATIONS)
     except Exception as exc:
         logger.warning("[chat_tool_loop] expense tools unavailable: %s", exc)
+    # Central-registry tools (2026-06-12): the Session-7 families (documents/
+    # editor, podcasts, email, streams, movie night, displays) plus sentinel/
+    # vehicle register in app.tools.registry, which this loop never read.
+    # Without this merge the chat model has no editor access and answers
+    # "upload it here" while the document sits open in the pane.
+    try:
+        from app.tools.chat_bridge import get_registry_chat_declarations
+        _existing = {t.get("name") for t in tools}
+        tools.extend(get_registry_chat_declarations(exclude_names=_existing))
+    except Exception as exc:
+        logger.warning("[chat_tool_loop] registry tools unavailable: %s", exc)
     return tools
 
 
@@ -142,6 +153,24 @@ async def execute_chat_tool(name: str, params: Dict) -> str:
     except Exception as exc:
         logger.error("[chat_tool_loop] expense tool %s failed: %s", name, exc)
         return f"Tool error: {exc}"
+    # Central-registry tools (documents/editor, podcasts, email, streams,
+    # movies, displays, ...). action_executor keeps precedence for every
+    # name it owns; only names it does NOT know are tried against the
+    # registry, so read_file/web_search/etc. behave exactly as before.
+    try:
+        from app.debug.action_executor import TOOL_HANDLERS as _AE_HANDLERS
+    except Exception:
+        _AE_HANDLERS = {}
+    if name not in _AE_HANDLERS:
+        try:
+            from app.tools.chat_bridge import (
+                is_registry_chat_tool, execute_registry_chat_tool,
+            )
+            if is_registry_chat_tool(name):
+                return await execute_registry_chat_tool(name, params or {})
+        except Exception as exc:
+            logger.error("[chat_tool_loop] registry tool %s failed: %s", name, exc)
+            return f"Tool error: {exc}"
     from app.debug.action_executor import execute_tool
     try:
         result = await execute_tool(name, params)

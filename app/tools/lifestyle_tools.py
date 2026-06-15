@@ -183,6 +183,14 @@ async def log_nutrition_handler(input_data: dict, context: Optional[dict]) -> di
             "error": "description is required",
         }
 
+    # Bug 6 itemisation gate: a single description that clearly names 2+ distinct
+    # foods must be logged one row PER food via items[] (the same writer
+    # prep_split uses), not bunched into a merged entry. Reject so the model
+    # re-issues itemised — mirroring the macro hard-rule below.
+    from app.lifestyle.itemisation import looks_multi_food, multi_food_rejection
+    if looks_multi_food(description):
+        return multi_food_rejection(description)
+
     meal_type = str(input_data.get("meal_type") or "meal").strip() or "meal"
 
     def _opt_float(key):

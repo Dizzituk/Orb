@@ -59,6 +59,12 @@ class BridgeChatResponse(BaseModel):
     project_id: int
     project_name: str
     domain: Optional[str] = None
+    # DB id of the assistant message this reply was stored as. The phone
+    # advances its missed-reply cursor and durable played-registry from this
+    # so a text/muted reply it already received is never re-spoken by the
+    # reconnect recovery (the voice path already gets the id via X-Message-Id).
+    # Optional so an older phone build / non-message gate paths stay valid.
+    message_id: Optional[int] = None
     # Downloadable artifacts (generated images, etc.). Empty for most
     # turns; populated when the assistant produced files this turn.
     attachments: list[BridgeArtifactRef] = []

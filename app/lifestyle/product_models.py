@@ -43,6 +43,9 @@ class FoodProduct(Base):
     fat_g = Column(Float, nullable=True)
     fibre_g = Column(Float, nullable=True)
     sugar_g = Column(Float, nullable=True)
+    # Food overhaul Phase 3: per-100g headline micronutrients + labels, JSON
+    # e.g. {"saturated_fat_g":2.1,"salt_g":0.8,"sodium_g":0.32,"nutri_score":"b","nova_group":4}
+    micros_json = Column(Text, nullable=True)
 
     serving_size_g = Column(Float, nullable=True)
     serving_description = Column(String, nullable=True)      # e.g. "1 pot (150g)"

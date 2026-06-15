@@ -2,7 +2,7 @@
 # Purpose: Topic + entity tagger for HotIndex content.
 # Called-by: app.astra_memory.indexer, app.llm.routing.memory_injection
 # Depends-on: stdlib/third-party only
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-06-12
 """
 Topic + entity tagger for HotIndex content.
 
@@ -49,6 +49,20 @@ from typing import List, Set
 # before shipping.
 
 _TOPIC_KEYWORDS = {
+    # ASTRA self-knowledge (Job 4, 2026-06-12): identity/capability questions
+    # must surface the capability manifest. Query-shaped phrases AND the
+    # manifest record share this tag, so query↔record matching works through
+    # the normal stage-1 tag filter.
+    "identity_capability": {
+        "what are you", "who are you", "what can you do",
+        "what are you capable of", "your capabilities", "your capability",
+        "how are you different", "what makes you different",
+        "tell me about yourself", "describe yourself",
+        "capability manifest", "self description", "self-description",
+        "what kind of ai", "what sort of ai", "are you chatgpt",
+        "compared to chatgpt", "compared to other ai",
+        "other ai apps", "other assistants", "stock assistant",
+    },
     # Investing / markets / specific instruments Taz holds.
     # Keep keywords unambiguous: avoid common English words that overload
     # (share/stake/position/hold/yield mean different things outside

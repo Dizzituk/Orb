@@ -2,7 +2,7 @@
 # Purpose: Universal upload knowledge hook.
 # Called-by: app.debug.file_upload_router, app.drive.content_indexer
 # Depends-on: app.embeddings, app.embeddings.service, app.llm.file_analyzer, app.memory (+4 more)
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-06-12
 """
 Universal upload knowledge hook.
 
@@ -167,6 +167,46 @@ async def process_uploaded_file(
         result["errors"].append(f"extraction: {e}")
 
     if not raw_text:
+        # ── Media branch (Job 3, 2026-06-12): images and audio carry no
+        # extractable text — enrich instead (vision caption / ID3 metadata)
+        # and store via the document pipeline so they're retrievable.
+        try:
+            mt = (mime_type or "").lower()
+            name_lower = (original_name or "").lower()
+            is_image = mt.startswith("image/") or name_lower.endswith(
+                (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
+            )
+            is_audio = mt.startswith("audio/") or name_lower.endswith(
+                (".mp3", ".wav", ".flac", ".m4a", ".ogg")
+            )
+            if is_image or is_audio:
+                from app.memory.enrichment import (
+                    enrich_image, enrich_music, store_media_document,
+                )
+                info = (
+                    enrich_music(file_path) if is_audio
+                    else enrich_image(file_path, mime_type=mime_type or None)
+                )
+                file_id = store_media_document(
+                    db, path=file_path, filename=original_name,
+                    kind="audio" if is_audio else "image",
+                    description=info["description"],
+                    tags=info.get("tags"),
+                    project_id=project_id,
+                )
+                if file_id:
+                    result["indexed"] = True
+                    result["extracted"] = bool(info.get("enriched"))
+                    logger.info(
+                        "[upload_hook] Media enriched: %s → file_id=%s",
+                        original_name, file_id,
+                    )
+        except Exception as media_exc:
+            logger.warning(
+                "[upload_hook] Media enrichment failed for %s: %s",
+                original_name, media_exc,
+            )
+            result["errors"].append(f"media_enrichment: {media_exc}")
         return result
 
     # ── Step 2: Deduplication check ──────────────────────────────

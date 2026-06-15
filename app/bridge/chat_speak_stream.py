@@ -87,6 +87,12 @@ def build_audio_response(
 
     async def generate_audio():
         try:
+            # Placeholder duration header (2026-06-13): the same 192 bytes go
+            # to the live stream AND the cache file so Range offsets stay
+            # aligned; finalize() patches real totals into the disk copy.
+            header = writer.start_header()
+            if header:
+                yield header
             while state["idx"] < len(sentences):
                 sentence = sentences[state["idx"]]
                 try:
@@ -123,7 +129,7 @@ def build_audio_response(
     )
 
 
-def replay_cached_reply(message_id: int, db: Session, process_artifacts) -> StreamingResponse | None:
+async def replay_cached_reply(message_id: int, db: Session, process_artifacts) -> StreamingResponse | None:
     """Re-serve a previously generated reply for a retried idempotency key.
 
     Returns None when the message no longer exists (caller falls through to
@@ -135,6 +141,16 @@ def replay_cached_reply(message_id: int, db: Session, process_artifacts) -> Stre
     msg = db.query(Message).filter(Message.id == int(message_id)).first()
     if msg is None or msg.role != "assistant":
         return None
+
+    # A disconnect-continuation may still be synthesising this very reply
+    # (2026-06-13): wait briefly for it to finalize instead of opening a
+    # second writer on the same .part (which would truncate it mid-write —
+    # sentences synthesise in ~1-2 s each, so the wait is short in practice).
+    if tts_cache.get_cached_path(message_id) is None and tts_cache.is_pending(message_id):
+        for _ in range(24):
+            await asyncio.sleep(0.5)
+            if tts_cache.get_cached_path(message_id) is not None:
+                break
 
     from app.memory.models import Project
     project = db.query(Project).filter(Project.id == msg.project_id).first()

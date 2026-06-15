@@ -2,7 +2,7 @@
 # Purpose: Chat and normal routing handlers for stream routing.
 # Called-by: app.endpoints.chat_attachments, app.llm._stream_router_utils, app.llm.project_scoping_stream, app.llm.stream_router
 # Depends-on: app.debug.tool_definitions, app.grounding.chat_integration, app.llm.chat_tool_loop, app.llm.file_analyzer (+16 more)
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-06-14 (pass persisted user id into generate_sse_stream; fixes chat-path double-persist)
 """
 Chat and normal routing handlers for stream routing.
 
@@ -106,6 +106,57 @@ logger = logging.getLogger(__name__)
 # CHAT MODE HANDLER
 # =============================================================================
 
+def _rag_llm_safety_net(req: Any, db: Session, trace: Any, persist_user: bool = False):
+    """LLM safety-net for codebase/feature questions that miss Tier-0 routing.
+
+    Codebase questions whose feature/UI words aren't in the guard list (e.g.
+    "what data does the chat window have", "how does the finance panel work")
+    are classified as plain chat by Tier-0 and never reach RAG. Rather than
+    broaden the brittle regex (false positives like "book me a table"), this
+    fires ONLY for natural-shape questions without a guard keyword
+    (needs_llm_codebase_check) and asks a lightweight model whether the question
+    is about ASTRA's own code/features. If yes → RAG stream; else None (→ chat).
+    Fail-closed and non-fatal: any failure returns None and chat proceeds.
+
+    Returns a StreamingResponse to short-circuit into RAG, or None.
+    """
+    if not _RAG_STREAM_AVAILABLE:
+        return None
+    # Never hijack an in-flight job continuation (e.g. a spec-clarification reply
+    # that happens to look like a feature question).
+    if getattr(req, "continue_job_id", None):
+        return None
+    try:
+        from app.llm.routing.rag_fallback import needs_llm_codebase_check
+        if not needs_llm_codebase_check(req.message):
+            return None
+        # Identity/capability questions ("tell me about yourself", "what are
+        # your abilities") are answered in chat via the capability manifest
+        # (build_full_context). They match the broad "tell me about X" shape, so
+        # exclude them here — they must NOT be diverted into code RAG.
+        try:
+            from app.astra_memory.topic_tagger import extract_tags
+            if "identity_capability" in (extract_tags(req.message) or []):
+                return None
+        except Exception:
+            pass
+        from app.llm.routing.codebase_intent_llm import is_codebase_question_llm
+        if not is_codebase_question_llm(req.message):
+            return None
+        print("[RAG_SAFETY_NET] LLM classified message as a codebase question → RAG")
+        return StreamingResponse(
+            generate_rag_query_stream(
+                project_id=req.project_id, message=req.message, db=db, trace=trace,
+                persist_user=persist_user,
+            ),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+    except Exception as e:
+        print(f"[RAG_SAFETY_NET] failed (non-fatal): {e}")
+        return None
+
+
 def handle_chat_mode(
     req: Any,
     project: Any,
@@ -120,7 +171,14 @@ def handle_chat_mode(
     print(f"[CHAT_MODE] Handling chat for project={req.project_id}, message={req.message[:50]}...")
 
     # ── 1. Persist user message ──
-    _persist_user_message(req, db)
+    _user_message_id = _persist_user_message(req, db)
+
+    # ── 1b. RAG safety-net: reroute codebase/feature questions that missed
+    # Tier-0 (e.g. "what data does the chat window have"). Placed AFTER
+    # persistence so the user turn is always saved, even when we divert to RAG.
+    _rag_net = _rag_llm_safety_net(req, db, trace)
+    if _rag_net is not None:
+        return _rag_net
 
     # ── 2. Build base context ──
     full_context = build_full_context(db, req.project_id, req.message, req.use_semantic_search)
@@ -220,6 +278,9 @@ def handle_chat_mode(
         trace=trace,
         enable_reasoning=req.enable_reasoning,
         tools=_chat_tools,
+        # v2026-06-14: hand over the already-persisted user row so the stream
+        # doesn't write a duplicate, and reports its id in the done event.
+        user_message_id=_user_message_id,
     )
 
     # v16.0: Wrap stream with image dispatcher when image intent was detected.
@@ -252,16 +313,24 @@ def handle_normal_routing(
 ) -> StreamingResponse:
     """Handle normal job-type routing with RAG fallback."""
 
-    # RAG fallback for architecture queries
+    # RAG fallback for architecture queries (deterministic regex + guard).
+    # persist_user=True: the normal-routing path doesn't persist the user turn
+    # itself, so the RAG stream must save both turns.
     if _RAG_STREAM_AVAILABLE and is_architecture_query(req.message):
         print(f"[NORMAL_ROUTING] RAG fallback: detected architecture query")
         return StreamingResponse(
             generate_rag_query_stream(
                 project_id=req.project_id, message=req.message, db=db, trace=trace,
+                persist_user=True,
             ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    # LLM safety-net for natural-shape codebase questions without a guard keyword.
+    _rag_net = _rag_llm_safety_net(req, db, trace, persist_user=True)
+    if _rag_net is not None:
+        return _rag_net
 
     full_context = build_full_context(db, req.project_id, req.message, req.use_semantic_search)
 
@@ -428,11 +497,17 @@ def _resolve_message_with_documents(req: Any) -> str:
     return user_content
 
 
-def _persist_user_message(req: Any, db: Session) -> None:
-    """Persist the user's message before any routing decisions."""
+def _persist_user_message(req: Any, db: Session) -> Optional[int]:
+    """Persist the user's message before any routing decisions.
+
+    v2026-06-14 (live-sync): returns the new message id so handle_chat_mode can
+    hand it to generate_sse_stream, which then SKIPS its own (historically
+    redundant) user-row write. Returns None on failure — the stream then falls
+    back to persisting the user row itself, preserving the old behaviour.
+    """
     try:
         from app.memory import schemas as _mem_schemas
-        memory_service.create_message(
+        msg = memory_service.create_message(
             db,
             _mem_schemas.MessageCreate(
                 project_id=req.project_id,
@@ -445,8 +520,10 @@ def _persist_user_message(req: Any, db: Session) -> None:
                 provider="system",
             ),
         )
+        return msg.id
     except Exception as e:
         print(f"[CHAT_MODE] Failed to persist user message: {e}")
+        return None
 
 
 def _process_file_uploads(req: Any, full_context: str) -> tuple[list, bool, bool, str]:
@@ -561,7 +638,17 @@ def _build_chat_messages(req: Any, db: Session) -> list:
 
 
 def _inject_tab_data(ui_ctx: Any, full_context: str, db: Session) -> str:
-    """Inject live tab data (e.g. portfolio positions) into context."""
+    """Inject live tab data (e.g. portfolio positions) + editor-pane state."""
+    # Editor pane (2026-06-12): unconditional — the user may be on any tab
+    # while a document sits open in the editor pane next to the chat.
+    try:
+        from app.llm.routing.ui_context_data import fetch_editor_state_block
+        _editor_block = fetch_editor_state_block()
+        if _editor_block:
+            full_context += f"\n\n{_editor_block}"
+            print(f"[CHAT_MODE] Editor state injected: {len(_editor_block)} chars")
+    except Exception as e:
+        print(f"[CHAT_MODE] Editor state injection failed: {e}")
     if not (ui_ctx and getattr(ui_ctx, 'job_type', None)):
         return full_context
     try:

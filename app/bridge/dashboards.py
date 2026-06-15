@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.lifestyle.schemas import NutritionLogIn
+from app.lifestyle.schemas import NutritionLogIn, NutritionLogUpdate
 from .schemas import (
     require_bridge_auth,
     HealthIngestRequest,
@@ -159,6 +159,23 @@ async def bridge_health_nutrition_delete(
     from app.lifestyle import service as lifestyle_service
     ok = lifestyle_service.delete_nutrition(db, log_id)
     return {"ok": ok, "deleted_id": log_id if ok else None}
+
+
+@router.put("/health/nutrition/{log_id}")
+async def bridge_health_nutrition_update(
+    log_id: int,
+    body: NutritionLogUpdate,
+    db: Session = Depends(get_db),
+    _auth: bool = Depends(require_bridge_auth),
+):
+    """Edit a food item from the phone — change the portion (re-scales macros
+    from the per-100g basis where known) or override macros directly."""
+    from app.lifestyle.nutrition_edit import update_nutrition
+    out = update_nutrition(db, log_id, body)
+    if out is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"Nutrition log {log_id} not found")
+    return out
 
 
 @router.post("/health/ingest", response_model=HealthIngestResponse)

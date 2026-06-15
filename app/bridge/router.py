@@ -253,6 +253,23 @@ async def bridge_chat(
         for m in history if m.role in ("user", "assistant")
     ]
 
+    # Build-command parity (Phase 1): "build the apk" and its "yes"/"no" voice
+    # confirmation are handled here, before translation, so the phone triggers
+    # the same host build flow the desktop uses. The build runs async; the
+    # completion is delivered (and spoken) via the /bridge/missed-replies poller.
+    from app.bridge.build_actions import maybe_handle_build_turn
+    build_turn = maybe_handle_build_turn(req.message, project.id, db)
+    if build_turn is not None:
+        bt_message = create_message(db, MessageCreate(
+            project_id=project.id, role="assistant",
+            content=build_turn.reply, provider="bridge", model=build_turn.model,
+        ))
+        return BridgeChatResponse(
+            reply=build_turn.reply, project_id=project.id,
+            project_name=project.name, domain="",
+            message_id=bt_message.id,
+        )
+
     domain_context, translation_result, domain_info = _run_translation(req.message, db)
 
     from app.bridge.capability_honesty import (
@@ -268,13 +285,14 @@ async def bridge_chat(
     if is_unsupported_on_bridge(resolved_intent):
         reply = get_unsupported_message(resolved_intent)
         logger.info("[bridge] Blocked unsupported intent: %s", resolved_intent)
-        create_message(db, MessageCreate(
+        gate_message = create_message(db, MessageCreate(
             project_id=project.id, role="assistant",
             content=reply, provider="bridge", model="capability-gate",
         ))
         return BridgeChatResponse(
             reply=reply, project_id=project.id, project_name=project.name,
             domain=domain_info.get("domain", "") if domain_info else "",
+            message_id=gate_message.id,
         )
 
     web_search_context, search_executed, search_succeeded, early_reply = (
@@ -283,13 +301,14 @@ async def bridge_chat(
 
     if early_reply:
         from app.memory.service import create_message as _cm
-        _cm(db, MessageCreate(
+        early_message = _cm(db, MessageCreate(
             project_id=project.id, role="assistant",
             content=early_reply, provider="bridge", model="search-gate",
         ))
         return BridgeChatResponse(
             reply=early_reply, project_id=project.id, project_name=project.name,
             domain=domain_info.get("domain", "") if domain_info else "",
+            message_id=early_message.id,
         )
 
     from app.bridge.capability_layer import run_astra_chat
@@ -311,13 +330,14 @@ async def bridge_chat(
         web_search_context=web_search_context,
         search_executed=search_executed,
         search_succeeded=search_succeeded,
+        raw_message=req.message,
     )
 
     reply = result["reply"]
     provider = result["provider"]
     model = result["model"]
 
-    create_message(db, MessageCreate(
+    assistant_message = create_message(db, MessageCreate(
         project_id=project.id, role="assistant",
         content=reply, provider=provider, model=model,
     ))
@@ -355,6 +375,7 @@ async def bridge_chat(
         project_name=project.name, domain=_detected_domain,
         attachments=attachments,
         directives=directives,
+        message_id=assistant_message.id,
     )
 
 
@@ -379,7 +400,9 @@ async def bridge_chat_and_speak(
     if idempotency_key:
         replayed_id = tts_cache.idem_get(idempotency_key)
         if replayed_id is not None:
-            replayed = replay_cached_reply(replayed_id, db, _process_artifacts)
+            # await (2026-06-13): replay now waits out an in-flight
+            # disconnect-continuation instead of double-writing its .part.
+            replayed = await replay_cached_reply(replayed_id, db, _process_artifacts)
             if replayed is not None:
                 logger.info("[bridge] chat-and-speak idempotent replay (key=%s -> msg %s)",
                             idempotency_key[:12], replayed_id)
@@ -416,6 +439,27 @@ async def bridge_chat_and_speak(
         {"role": m.role, "content": m.content}
         for m in history if m.role in ("user", "assistant")
     ]
+
+    # Build-command parity (Phase 1): handle "build the apk" + voice confirmation
+    # here, before translation, so the phone triggers the same host build flow as
+    # the desktop. The build runs async; completion arrives via /missed-replies.
+    # The acknowledgement is spoken via the normal sentence-TTS streaming path.
+    from app.bridge.build_actions import maybe_handle_build_turn
+    build_turn = maybe_handle_build_turn(req.message, project.id, db)
+    if build_turn is not None:
+        bt_msg = create_message(db, MessageCreate(
+            project_id=project.id, role="assistant",
+            content=build_turn.reply, provider="bridge", model=build_turn.model,
+        ))
+        if idempotency_key:
+            tts_cache.idem_put(idempotency_key, bt_msg.id)
+        return build_audio_response(
+            message_id=bt_msg.id,
+            display_text=build_turn.reply,
+            project_id=project.id,
+            project_name=project.name,
+            attachments_payload="[]",
+        )
 
     from app.bridge.capability_honesty import (
         is_unsupported_on_bridge, get_unsupported_message,
@@ -472,6 +516,7 @@ async def bridge_chat_and_speak(
             web_search_context=web_search_context,
             search_executed=search_executed,
             search_succeeded=search_succeeded,
+            raw_message=req.message,
         )
         full_text = result["reply"]
         provider = result["provider"]

@@ -566,6 +566,28 @@ async def _exec_copy_nutrition_day(args: dict) -> str:
     )
 
 
+async def _exec_resolve_nutrition(args: dict) -> str:
+    from app.tools.lifestyle_nutrition_tools import resolve_nutrition_handler
+    r = await resolve_nutrition_handler(args, context=None)
+    if not r.get("found"):
+        return r.get("message") or f"ERROR: {r.get('error', 'not found')}"
+    m = r.get("macros") or {}
+    bits = []
+    if m.get("calories") is not None:
+        bits.append(f"{m['calories']:.0f} kcal")
+    for label, key in (("P", "protein_g"), ("C", "carbs_g"), ("F", "fat_g"), ("S", "sugar_g")):
+        v = m.get(key)
+        if v is not None:
+            bits.append(f"{label}={v:.0f}g")
+    tag = "exact" if r.get("exact") else "~estimate"
+    note = f" — {r['estimate_note']}" if r.get("estimate_note") else ""
+    logged = " (logged)" if r.get("logged") else ""
+    q = r.get("quantity_g")
+    qs = f" {q:.0f}g" if isinstance(q, (int, float)) else ""
+    return (f"{r.get('display_name')}{qs} [{tag}, {r.get('source')}]: "
+            f"{', '.join(bits)}{note}{logged}")
+
+
 LIFESTYLE_TOOL_EXECUTORS = {
     "log_nutrition": _exec_log_nutrition,
     "delete_nutrition": _exec_delete_nutrition,
@@ -582,6 +604,7 @@ LIFESTYLE_TOOL_EXECUTORS = {
     "get_workout_log": _exec_get_workout_log,
     "prep_split": _exec_prep_split,
     "copy_nutrition_day": _exec_copy_nutrition_day,
+    "resolve_nutrition": _exec_resolve_nutrition,
     "get_health_history": _exec_get_health_history,
     "log_workout": _exec_log_workout,
     "log_weight": _exec_log_weight,
@@ -597,6 +620,10 @@ LIFESTYLE_TOOL_EXECUTORS = {
 # respect this file's size ceiling; registered here so the loop finds them.
 from app.debug.gemini_energy_tools import ENERGY_TOOL_EXECUTORS as _energy_execs
 LIFESTYLE_TOOL_EXECUTORS.update(_energy_execs)
+
+# Saved-recipe executors (Phase 6) live in gemini_recipe_tools.py (size ceiling).
+from app.debug.gemini_recipe_tools import RECIPE_TOOL_EXECUTORS as _recipe_execs
+LIFESTYLE_TOOL_EXECUTORS.update(_recipe_execs)
 
 
 def summarise_lifestyle_call(name: str, args: dict) -> str:
@@ -634,6 +661,12 @@ def summarise_lifestyle_call(name: str, args: dict) -> str:
             f"Copying {args.get('source_date', 'yesterday')}'s food to "
             f"{args.get('target_date', 'today')}"
         )
+    if name == "resolve_nutrition":
+        return f"Looking up {args.get('name') or args.get('barcode') or 'food'} online"
+    if name == "save_recipe":
+        return f"Saving recipe: {args.get('name', '')[:40]}"
+    if name == "log_recipe":
+        return f"Logging recipe: {args.get('name') or 'saved meal'}"
     if name == "get_health_history":
         return "Reading health history"
     if name == "log_workout":

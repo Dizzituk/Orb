@@ -46,35 +46,42 @@ def embed_batch(
         raise
 
     try:
-        from app.embeddings.service import store_embedding, embedding_exists
+        from app.embeddings.service import store_embedding
+        from app.embeddings.models import Embedding
     except ImportError as e:
         logger.error("[embedding_job] Failed to import store_embedding: %s", e)
         raise
 
-    # Prefilter: skip chunks that already have embeddings
-    chunks_to_embed = []
+    # 2026-06-14 fix: do NOT skip by Embedding.source_id == chunk.id.
+    # ArchCodeChunk primary keys are recycled across scans (signatures_to_db
+    # clean-slates and re-inserts), so an id-based "already exists" check
+    # produced mass false-positive skips (observed 8977/9102) that were then
+    # marked embedded=True — sticky and silent, leaving semantic search empty.
+    # The priority gate (get_chunks_by_priority) has already filtered `chunks`
+    # to those that genuinely need (re)embedding by content_hash, so embed all
+    # of them. To stay idempotent against any stale row left at a recycled id,
+    # bulk-delete pre-existing arch embeddings for these ids first.
+    chunks_to_embed = list(chunks)
     skipped_existing = 0
     now = datetime.utcnow()
 
-    for chunk in chunks:
-        if embedding_exists(db=db, project_id=0, source_type="arch_code_chunk", source_id=chunk.id):
-            chunk.embedded = True
-            chunk.embedding_model = EMBEDDING_MODEL
-            chunk.embedded_at = now
-            chunk.embedded_content_hash = chunk.content_hash
-            skipped_existing += 1
-            if hasattr(status, 'skipped_chunks'):
-                status.skipped_chunks += 1
-        else:
-            chunks_to_embed.append(chunk)
-
-    if skipped_existing > 0:
-        logger.info("[embedding_job] Skipped %d chunks (already exist)", skipped_existing)
+    stale_ids = [c.id for c in chunks_to_embed if c.id is not None]
+    if stale_ids:
+        try:
+            for i in range(0, len(stale_ids), 500):
+                db.query(Embedding).filter(
+                    Embedding.project_id == 0,
+                    Embedding.source_type == "arch_code_chunk",
+                    Embedding.source_id.in_(stale_ids[i:i + 500]),
+                ).delete(synchronize_session=False)
+            db.flush()
+        except Exception as e:
+            logger.warning("[embedding_job] Pre-embed cleanup failed (non-fatal): %s", e)
 
     if not chunks_to_embed:
-        logger.info("[embedding_job] All %d chunks already embedded", len(chunks))
+        logger.info("[embedding_job] No chunks to embed in this batch")
         db.commit()
-        return len(chunks)
+        return 0
 
     # Build embeddable texts
     texts = []
