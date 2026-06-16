@@ -700,7 +700,18 @@ def _extract_full_text(response) -> str:
 
 
 def _convert_schema(schema: dict) -> dict:
-    """Convert a JSON schema dict to genai.protos.Schema kwargs."""
+    """Convert a JSON-Schema dict into kwargs for genai.protos.Schema.
+
+    Recursive on purpose. Gemini's GenerateContentRequest REQUIRES that an
+    ARRAY-typed schema carry its `items` element schema, and that nested
+    OBJECT-typed schemas carry their own `properties`/`required`. The previous
+    version copied only `type` + `description` one level deep, so every tool
+    with an array parameter (log_nutrition.items, log_exercise.sets,
+    save_recipe.ingredients, log_recipe.ingredient_names) reached Gemini with a
+    type=ARRAY schema and no `items`, and the whole request was rejected with
+    400 "...parameters.properties[x].items: missing field" — which surfaced to
+    the user as a generic "Gemini API call failed" on every image turn.
+    """
     import google.generativeai as genai
 
     type_map = {
@@ -712,19 +723,27 @@ def _convert_schema(schema: dict) -> dict:
         "object": 6,
     }
 
-    result = {}
-    if "type" in schema:
-        result["type"] = type_map.get(schema["type"], 6)
+    schema_type = schema.get("type", "object")
+    result: dict = {"type": type_map.get(schema_type, 6)}
 
+    if schema.get("description"):
+        result["description"] = schema["description"]
+
+    # Object: recurse into each property so nested objects keep their shape.
     if "properties" in schema:
-        result["properties"] = {}
-        for prop_name, prop_schema in schema["properties"].items():
-            result["properties"][prop_name] = genai.protos.Schema(
-                type=type_map.get(prop_schema.get("type", "string"), 1),
-                description=prop_schema.get("description", ""),
-            )
+        result["properties"] = {
+            prop_name: genai.protos.Schema(**_convert_schema(prop_schema))
+            for prop_name, prop_schema in schema["properties"].items()
+        }
 
-    if "required" in schema:
-        result["required"] = schema["required"]
+    if schema.get("required"):
+        result["required"] = list(schema["required"])
+
+    # Array: recurse into the element schema. Gemini rejects an array with no
+    # `items`, so default to a string element if a declaration omitted it.
+    if schema_type == "array":
+        result["items"] = genai.protos.Schema(
+            **_convert_schema(schema.get("items") or {"type": "string"})
+        )
 
     return result

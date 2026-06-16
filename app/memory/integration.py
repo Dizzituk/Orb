@@ -2,7 +2,7 @@
 # Purpose: Memory system integration hooks.
 # Called-by: app.bridge.router, app.llm.routing.core, app.llm.routing.prompt_builders, app.llm.stream_router (+1 more)
 # Depends-on: app.db, app.memory.complexity_router, app.memory.conversation_service, app.memory.domains.confidence_learning (+9 more)
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-06-15 (Job 1: orphan backfill now claims spine rows into the session too)
 """
 Memory system integration hooks.
 
@@ -305,6 +305,10 @@ def _backfill_orphan_messages(
 
     Only backfills recent messages (last 20) to avoid claiming ancient
     history into a new session.
+
+    The matching conversation-spine rows are claimed into the session in the
+    same scope, so the per-message topic index stays attached to its session
+    for within-session recall (Job 1 — the ledger).
     """
     try:
         from app.memory.models import Message
@@ -321,9 +325,25 @@ def _backfill_orphan_messages(
         )
 
         if orphans:
+            orphan_ids = [msg.id for msg in orphans]
             for msg in orphans:
                 msg.session_id = session_id
             db.commit()
+
+            # Keep the conversation spine in lockstep with its messages. Each
+            # spine row (the per-message topic index backing within-session
+            # recall) was written at create_message time with session_id=NULL,
+            # and nothing else reconciles it. Claim the matching spine rows
+            # into the same session as their messages — identical scope to the
+            # message claim above — so recall can be scoped by session.
+            try:
+                from app.memory.spine_service import attach_spine_to_session
+                attach_spine_to_session(db, orphan_ids, session_id)
+            except Exception as _spine_err:
+                logger.debug(
+                    "[integration] Spine session attach skipped: %s", _spine_err,
+                )
+
             logger.debug(
                 "[integration] Backfilled %d orphan messages into session %d",
                 len(orphans), session_id,

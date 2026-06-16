@@ -87,6 +87,14 @@ _PERSONAL_SIGNALS = {
     r"\b(?:nothing\s+crazy|simple\s+(?:app|tool|page))\b",
     r"\b(?:what\s+(?:do\s+you|can\s+you)\s+think\s+about)\b",
     r"\b(?:back\s+at\s+base|on\s+the\s+road|out\s+doing\s+deliveries)\b",
+    # Food / nutrition logging — personal diary statements, never claims needing a
+    # web search; the lifestyle domain handles them. (live 2026-06-15: "...food
+    # that I've eaten today..." was mis-classified CLAIMS on the temporal word
+    # "today" and fired two Brave web_searches before logging the meal.)
+    r"\bi(?:'ve)?\s+(?:ate|eaten|had)\b",
+    r"\bwhat\s+i\s+(?:ate|had|(?:'ve\s+)?eaten)\b",
+    r"\b(?:log|logged|logging)\s+(?:it|this|that|everything|my|the|them)\b",
+    r"\b(?:for|as)\s+(?:breakfast|lunch|dinner|tea|supper|a\s+snack|pudding)\b",
 }
 
 # Keywords that strongly indicate CLAIMS (grounding required)

@@ -247,14 +247,21 @@ def _write_to_astra_memory(
     db: DbSession,
     extractions: List[Dict[str, str]],
     session_id: int,
-) -> int:
+) -> List[Dict[str, Any]]:
     """
     Write extracted facts to ASTRA memory via preference service.
 
     Uses create_preference for new facts and append_preference_evidence
-    for existing ones (reinforcement). Returns count of items written.
+    for existing ones (reinforcement). On an EXACT-key conflict the new value
+    supersedes the old via update_preference_value (hard-rule and
+    established-confidence protection is enforced inside that helper).
+
+    Returns the finalised items actually touched, each a dict
+    {pref_id, key, value, category, changed}; the membrane encodes these for
+    retrieval. `changed` is True when the stored value was created or
+    overwritten (so it warrants re-embedding).
     """
-    written = 0
+    touched: List[Dict[str, Any]] = []
 
     try:
         from app.astra_memory.preference_service import create_preference
@@ -348,6 +355,37 @@ def _write_to_astra_memory(
                         "extraction_weight": weight,
                     },
                 )
+                # Conflict resolution: on an EXACT-key match whose stored value
+                # changed, let the new value supersede the old. Fuzzy matches
+                # are left as pure reinforcement (the match is only a guess at
+                # sameness, so we never overwrite the value on it).
+                prev_value = existing.preference_value
+                if existing.preference_key == pref_key and str(prev_value) != str(value):
+                    try:
+                        from app.astra_memory.preference_service import (
+                            update_preference_value,
+                        )
+                        update_preference_value(
+                            db,
+                            preference_key=existing.preference_key,
+                            new_value=value,
+                            is_explicit=False,
+                            context_pointer=context_ptr,
+                        )
+                        db.refresh(existing)
+                    except Exception as _ue:
+                        logger.debug(
+                            "[knowledge_ext] value update skipped for %s: %s",
+                            existing.preference_key, _ue,
+                        )
+                final_value = existing.preference_value
+                touched.append({
+                    "pref_id": existing.id,
+                    "key": key,
+                    "value": final_value,
+                    "category": category,
+                    "changed": str(final_value) != str(prev_value),
+                })
                 logger.debug(
                     "[knowledge_ext] Reinforced: %s (weight=%d)", existing.preference_key, weight,
                 )
@@ -363,7 +401,7 @@ def _write_to_astra_memory(
                     strength = PreferenceStrength.DEFAULT
                 else:
                     strength = PreferenceStrength.SOFT
-                create_preference(
+                _rec = create_preference(
                     db=db,
                     preference_key=pref_key,
                     preference_value=value,
@@ -372,12 +410,18 @@ def _write_to_astra_memory(
                     namespace=config["namespace"],
                     context_pointer=context_ptr,
                 )
+                if _rec is not None:
+                    touched.append({
+                        "pref_id": _rec.id,
+                        "key": key,
+                        "value": value,
+                        "category": category,
+                        "changed": True,
+                    })
                 logger.debug(
                     "[knowledge_ext] Created: %s = %s (weight=%d, strength=%s)",
                     pref_key, value[:60], weight, strength.value,
                 )
-
-            written += 1
 
             # Notify Self-Model of the new/reinforced fact
             try:
@@ -391,7 +435,81 @@ def _write_to_astra_memory(
                 "[knowledge_ext] Failed to write %s: %s", pref_key, e,
             )
 
-    return written
+    return touched
+
+
+# =========================================================================
+# Consolidation helpers (Job 3): transcript tail, encode, graph
+# =========================================================================
+
+def _load_unsummarised_tail(
+    db: DbSession,
+    session: ConversationSession,
+    latest_summary,
+    max_msgs: int = 6,
+    max_chars: int = 1500,
+) -> str:
+    """Return the few session turns added after the last rolling summary.
+
+    The summary fires every 5 messages, so a handful of trailing messages are
+    typically unsummarised at archive. Feeding them keeps the freshest turns in
+    scope for extraction and link detection. Best-effort — returns "".
+    """
+    try:
+        from app.memory.models import Message
+        through = getattr(latest_summary, "summarised_through_message_id", None) or 0
+        q = db.query(Message).filter(Message.session_id == session.id)
+        if through:
+            q = q.filter(Message.id > through)
+        msgs = q.order_by(Message.id.asc()).limit(max_msgs).all()
+        lines = []
+        for m in msgs:
+            content = (m.content or "").strip()
+            if content:
+                lines.append(f"{m.role}: {content}")
+        return "\n".join(lines)[:max_chars]
+    except Exception as exc:
+        logger.debug("[knowledge_ext] tail load failed: %s", exc)
+        return ""
+
+
+def _encode_touched(
+    db: DbSession,
+    session: ConversationSession,
+    touched: List[Dict[str, Any]],
+) -> None:
+    """Encode finalised items for retrieval (tag + embed). Best-effort."""
+    if not touched:
+        return
+    try:
+        from app.memory.consolidation_encode import encode_memory_item
+    except Exception as exc:
+        logger.debug("[knowledge_ext] encode module unavailable: %s", exc)
+        return
+    project_id = getattr(session, "project_id", None)
+    for item in touched:
+        try:
+            encode_memory_item(
+                db,
+                project_id=project_id,
+                pref_id=item["pref_id"],
+                key=item["key"],
+                value=item["value"],
+                reembed=bool(item.get("changed", True)),
+            )
+        except Exception as exc:
+            logger.debug(
+                "[knowledge_ext] encode failed for %s: %s", item.get("key"), exc,
+            )
+
+
+async def _consolidate_graph(consolidation_input: str, session_id: int) -> None:
+    """Capture cross-domain links into the knowledge graph. Best-effort."""
+    try:
+        from app.memory.consolidation_graph import detect_and_write_links
+        await detect_and_write_links(consolidation_input, session_id)
+    except Exception as exc:
+        logger.debug("[knowledge_ext] graph consolidation failed: %s", exc)
 
 
 # =========================================================================
@@ -416,6 +534,13 @@ async def extract_and_promote_async(
 
     summary_json = latest.summary_json
     summary_text = json.dumps(summary_json, indent=2)
+    # Job 3: also feed the handful of turns the rolling summary has not yet
+    # folded in (it fires every 5 messages, so a few trailing messages are
+    # unsummarised at archive). Used for BOTH fact extraction and link detection.
+    tail = _load_unsummarised_tail(db, session, latest)
+    consolidation_input = summary_text + (
+        f"\n\nRecent messages (not yet summarised):\n{tail}" if tail else ""
+    )
 
     provider, model = _get_extraction_model()
 
@@ -427,7 +552,7 @@ async def extract_and_promote_async(
             system_prompt=_EXTRACTION_SYSTEM_PROMPT,
             user_prompt=(
                 f"Extract durable knowledge from this conversation summary:\n\n"
-                f"{summary_text}"
+                f"{consolidation_input}"
             ),
             max_tokens=1500,
             timeout_seconds=30,
@@ -437,23 +562,28 @@ async def extract_and_promote_async(
             "[knowledge_ext] LLM extraction failed for session %d: %s",
             session.id, e,
         )
-        return False
+        raw = ""  # fact extraction failed, but graph consolidation is independent
 
     extractions = _parse_extractions(raw)
+    touched = _write_to_astra_memory(db, extractions, session.id) if extractions else []
+
+    # Job 3 task 4: encode finalised items so Job 4 retrieval can find them.
+    _encode_touched(db, session, touched)
+    # Job 3 task 3: capture the cross-domain links the user drew into the graph.
+    await _consolidate_graph(consolidation_input, session.id)
+
     if not extractions:
         logger.info(
             "[knowledge_ext] No extractable facts from session %d "
             "(safety net had nothing to add — live tool path likely handled them)",
             session.id,
         )
-        return False
-
-    written = _write_to_astra_memory(db, extractions, session.id)
-    logger.info(
-        "[knowledge_ext] Session %d: safety-net extracted %d facts, wrote %d to ASTRA",
-        session.id, len(extractions), written,
-    )
-    return written > 0
+    else:
+        logger.info(
+            "[knowledge_ext] Session %d: safety-net extracted %d facts, finalised %d",
+            session.id, len(extractions), len(touched),
+        )
+    return len(touched) > 0
 
 
 def extract_and_promote(
@@ -461,75 +591,24 @@ def extract_and_promote(
     session: ConversationSession,
 ) -> bool:
     """
-    Extract knowledge from a session's summary and write to ASTRA memory.
+    Synchronous wrapper around extract_and_promote_async.
 
-    Called by session_lifecycle.py when a session is archived.
-    Returns True if any extractions were written.
+    The async form is the single implementation (it also runs the Job 3
+    consolidation steps — encode + cross-domain graph). This wrapper exists for
+    sync callers/tooling; the live lifecycle scheduler calls the async form
+    directly. Returns True if any durable item was finalised.
     """
-    latest = get_latest_summary(db, session.id)
-    if not latest or not latest.summary_json:
-        logger.debug(
-            "[knowledge_ext] No summary for session %d — skipping",
-            session.id,
-        )
-        return False
-
-    summary_json = latest.summary_json
-    summary_text = json.dumps(summary_json, indent=2)
-
-    # Call LLM for extraction
-    provider, model = _get_extraction_model()
-
     import asyncio
 
-    async def _extract():
-        from app.llm._streaming_utils_3 import call_llm_text
-        return await call_llm_text(
-            provider=provider,
-            model=model,
-            system_prompt=_EXTRACTION_SYSTEM_PROMPT,
-            user_prompt=(
-                f"Extract durable knowledge from this conversation summary:\n\n"
-                f"{summary_text}"
-            ),
-            max_tokens=1500,
-            timeout_seconds=30,
-        )
-
     try:
-        # Run the async LLM call.
-        # We may be called from either a sync or async context:
-        #   - From lifecycle scheduler (async loop running but called from sync func)
-        #   - From a test or manual invocation (no loop)
-        try:
-            loop = asyncio.get_running_loop()
-            # We're inside a running loop — can't use run_until_complete.
-            # Create a task and use a thread to wait for it.
-            import concurrent.futures
-            future = asyncio.run_coroutine_threadsafe(_extract(), loop)
-            raw = future.result(timeout=45)
-        except RuntimeError:
-            # No running loop — create one
-            raw = asyncio.run(_extract())
-    except Exception as e:
-        logger.error(
-            "[knowledge_ext] LLM extraction failed for session %d: %s",
-            session.id, e,
-        )
-        return False
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
 
-    # Parse and write
-    extractions = _parse_extractions(raw)
-    if not extractions:
-        logger.info(
-            "[knowledge_ext] No extractable facts from session %d",
-            session.id,
+    if loop and loop.is_running():
+        # Inside a running loop — hand off to it and wait on a worker thread.
+        future = asyncio.run_coroutine_threadsafe(
+            extract_and_promote_async(db, session), loop,
         )
-        return False
-
-    written = _write_to_astra_memory(db, extractions, session.id)
-    logger.info(
-        "[knowledge_ext] Session %d: extracted %d facts, wrote %d to ASTRA",
-        session.id, len(extractions), written,
-    )
-    return written > 0
+        return future.result(timeout=90)
+    return asyncio.run(extract_and_promote_async(db, session))

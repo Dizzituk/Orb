@@ -131,3 +131,40 @@ class TestScrape:
     def test_jsonld_none_without_nutrition(self):
         html = '<html><script type="application/ld+json">{"@type":"Product","name":"X"}</script></html>'
         assert _from_json_ld(html) is None
+
+
+# =========================================================================
+# Resolve + log handler path — Bug A regression (live 2026-06-15)
+# =========================================================================
+
+class TestResolveAndLog:
+    """resolve_nutrition's log path logged the row via record_product_use (which
+    COMMITS) and then crashed converting the ORM row with _to_dict ->
+    'NutritionLog' object is not iterable. The committed-but-unreported row made
+    the model believe logging had failed and re-log it = duplicate diary rows.
+    The path must return `logged` as a plain dict, with no crash. The earlier
+    Phase-4 tests called resolve_nutrition() directly and never exercised this
+    conversion, which is why a green suite still shipped the bug."""
+
+    def test_resolve_and_log_returns_dict_not_crash(self, db):
+        from contextlib import contextmanager
+        import app.tools.lifestyle_nutrition_tools as lnt
+
+        _seed(db, display_name="Test Pork Loin", brand="Aldi",
+              calories=200, protein_g=25, carbs_g=0, fat_g=10)
+
+        @contextmanager
+        def _fake_session():
+            yield db
+
+        # _resolve_and_log_sync is the body the async handler runs via to_thread;
+        # call it directly (same thread) so the test is deterministic.
+        with patch.object(lnt, "_db_session", _fake_session):
+            res = lnt._resolve_and_log_sync(
+                "Test Pork Loin", "Aldi", None, None, 200.0, "meal", True,
+            )
+
+        assert res["ok"] is True and res["found"] is True
+        assert isinstance(res["logged"], dict)
+        assert res["logged"]["calories"] == 400.0  # 200 kcal/100g * 200g
+        assert res["logged"]["description"]  # round-tripped via _nutrition_to_out

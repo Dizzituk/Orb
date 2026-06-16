@@ -183,14 +183,6 @@ async def log_nutrition_handler(input_data: dict, context: Optional[dict]) -> di
             "error": "description is required",
         }
 
-    # Bug 6 itemisation gate: a single description that clearly names 2+ distinct
-    # foods must be logged one row PER food via items[] (the same writer
-    # prep_split uses), not bunched into a merged entry. Reject so the model
-    # re-issues itemised — mirroring the macro hard-rule below.
-    from app.lifestyle.itemisation import looks_multi_food, multi_food_rejection
-    if looks_multi_food(description):
-        return multi_food_rejection(description)
-
     meal_type = str(input_data.get("meal_type") or "meal").strip() or "meal"
 
     def _opt_float(key):
@@ -207,6 +199,24 @@ async def log_nutrition_handler(input_data: dict, context: Optional[dict]) -> di
     carbs_g = _opt_float("carbs_g")
     fat_g = _opt_float("fat_g")
     sugar_g = _opt_float("sugar_g")
+
+    # Bug 6 itemisation gate: a single description that clearly names 2+ distinct
+    # foods must be logged one row PER food via items[] (the same writer
+    # prep_split uses), not bunched into a merged entry. Reject so the model
+    # re-issues itemised — mirroring the macro hard-rule below.
+    #
+    # BUT only gate macro-LESS entries. A single description that already carries
+    # complete macros (calories+protein+carbs+fat) is the model committing to ONE
+    # item, so it is logged as-is: re-splitting it false-rejected real single foods
+    # whose text has descriptor commas (e.g. "Pork loin steaks, oven cooked, fat
+    # drained, 470 g" / "Green olives, pitted in brine, about 25") even though they
+    # arrived with full macros (live 2026-06-15). The gate's job is stopping
+    # macro-less merged blobs, so it stays in force whenever macros are absent.
+    _macros_complete = None not in (calories, protein_g, carbs_g, fat_g)
+    if not _macros_complete:
+        from app.lifestyle.itemisation import looks_multi_food, multi_food_rejection
+        if looks_multi_food(description):
+            return multi_food_rejection(description)
 
     # HARD RULE: never log a partial nutrition entry. Logging description-only
     # (or calories-only) and then re-logging to refine it is what creates
@@ -739,7 +749,9 @@ def register_lifestyle_tools() -> None:
             "text). meal_type defaults to 'meal'. Macro fields "
             "(calories, protein_g, carbs_g, fat_g, sugar_g) are "
             "optional — pass them when you know them, omit when you "
-            "don't and the entry is flagged as an estimate."
+            "don't and the entry is flagged as an estimate. Don't re-log "
+            "foods already in today's diary (check get_today_summary first) — "
+            "re-logging the same items creates duplicate rows."
         ),
         input_schema=TOOL_SCHEMAS["log_nutrition"]["input"],
         output_schema=TOOL_SCHEMAS["log_nutrition"]["output"],

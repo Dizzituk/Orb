@@ -43,6 +43,7 @@ from .cognitive_escalation import (
     detect_cognitive_escalation,
     is_small_model,
 )
+from ._capability_guard import is_capability_question
 
 logger = logging.getLogger(__name__)
 
@@ -277,10 +278,13 @@ def select_chat_model(
     # injects the marker instructions into the system prompt), but we ALSO
     # return a real frontier model — the chat LLM is now responsible for
     # writing the gpt-image-2 prompt itself, with full context in scope.
-    if detect_image_gen_intent(req.message) or (
-        detect_image_refinement(req.message)
-        and last_assistant_was_image(req.project_id, db)
-    ):
+    if (
+        detect_image_gen_intent(req.message)
+        or (
+            detect_image_refinement(req.message)
+            and last_assistant_was_image(req.project_id, db)
+        )
+    ) and not is_capability_question(req.message):
         fp, fm = _frontier()
         provider = os.getenv("IMAGE_CHAT_PROVIDER") or fp
         model = os.getenv("IMAGE_CHAT_MODEL") or fm

@@ -50,11 +50,19 @@ _PARENS_RE = re.compile(r"\([^)]*\)")
 def looks_multi_food(description: str) -> bool:
     """True when `description` clearly names 2+ distinct foods to itemise.
 
-    Conservative by design — see module docstring. Fires on:
+    HIGH PRECISION by design — see module docstring. Fires ONLY on:
       1. two or more quantity-led fragments (100g X, 250g Y, ...),
-      2. a semicolon list of 2+ segments,
-      3. a comma list of 3+ segments (a list, not an aside).
+      2. a semicolon list of 2+ segments.
     Parenthetical content is removed first so internal commas don't count.
+
+    Deliberately does NOT fire on a bare comma list ("a, b, c") with no
+    quantities. A single food routinely carries descriptor commas —
+    "Pork loin steaks, oven cooked, fat drained, 470 g",
+    "Green olives, pitted in brine, about 25" — and the old >=3-comma rule
+    false-rejected exactly these (live 2026-06-15), net-harming more than the
+    rare comma-only multi-food it caught. A comma-only meal with no quantities
+    is now an accepted false NEGATIVE: the strengthened tool description and the
+    items[] path push itemisation for those instead.
     """
     if not description:
         return False
@@ -69,13 +77,6 @@ def looks_multi_food(description: str) -> bool:
     # 2. Semicolon-delimited list of 2+ non-trivial segments.
     semis = [s for s in no_parens.split(";") if len(s.strip()) >= 3]
     if len(semis) >= 2:
-        return True
-
-    # 3. Comma-delimited list of 3+ non-trivial segments. The >=3 threshold
-    #    avoids firing on a single food with one descriptive comma
-    #    (e.g. "chicken, lean") or a product name with one comma.
-    commas = [s for s in no_parens.split(",") if len(s.strip()) >= 2]
-    if len(commas) >= 3:
         return True
 
     return False

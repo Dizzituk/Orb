@@ -205,3 +205,114 @@ class TestChokepoint:
         assert row.role == "user"
         assert "Leigh Day" in row.entities
         assert "legal" in row.tags
+
+
+# =========================================================================
+# Session attach (Job 1 — the ledger)
+# =========================================================================
+
+class TestSpineSessionAttach:
+    """Spine rows must end up attached to the same session as their messages.
+
+    Every live chat path stores the message (and so its spine row) with
+    session_id=NULL, because the session is only resolved by the post-message
+    hook. integration._backfill_orphan_messages claims the messages into the
+    session; these tests lock in that it now claims their spine rows too.
+    """
+
+    @staticmethod
+    def _make_session(db, project_id=1):
+        from app.memory.conversation_models import ConversationSession
+        s = ConversationSession(project_id=project_id, status="active")
+        db.add(s)
+        db.commit()
+        db.refresh(s)
+        return s
+
+    def test_chokepoint_spine_is_born_session_null(self, db):
+        # Documents the starting condition the backfill exists to fix.
+        from app.memory import service as memory_service, schemas
+        from app.memory.conversation_models import ConversationSpine
+
+        with patch("app.embeddings.auto_index_enabled", return_value=False):
+            msg = memory_service.create_message(db, schemas.MessageCreate(
+                project_id=1, role="user",
+                content="A thought about Anthropic and TAO", provider="local",
+            ))
+        spine = (
+            db.query(ConversationSpine)
+            .filter(ConversationSpine.message_id == msg.id)
+            .one()
+        )
+        assert spine.session_id is None
+
+    def test_attach_fills_nulls(self, db):
+        from app.memory import service as memory_service, schemas
+        from app.memory.spine_service import attach_spine_to_session
+        from app.memory.conversation_models import ConversationSpine
+
+        with patch("app.embeddings.auto_index_enabled", return_value=False):
+            msg = memory_service.create_message(db, schemas.MessageCreate(
+                project_id=1, role="user",
+                content="A thought about Anthropic and TAO", provider="local",
+            ))
+        session = self._make_session(db)
+
+        n = attach_spine_to_session(db, [msg.id], session.id)
+        assert n == 1
+        spine = (
+            db.query(ConversationSpine)
+            .filter(ConversationSpine.message_id == msg.id)
+            .one()
+        )
+        assert spine.session_id == session.id
+
+    def test_attach_does_not_move_existing_session(self, db):
+        from app.memory import service as memory_service, schemas
+        from app.memory.spine_service import attach_spine_to_session
+        from app.memory.conversation_models import ConversationSpine
+
+        with patch("app.embeddings.auto_index_enabled", return_value=False):
+            msg = memory_service.create_message(db, schemas.MessageCreate(
+                project_id=1, role="user",
+                content="Anthropic again", provider="local",
+            ))
+        s1 = self._make_session(db)
+        s2 = self._make_session(db)
+
+        assert attach_spine_to_session(db, [msg.id], s1.id) == 1
+        # Already attached to s1 — a later claim to s2 must NOT move it.
+        assert attach_spine_to_session(db, [msg.id], s2.id) == 0
+        spine = (
+            db.query(ConversationSpine)
+            .filter(ConversationSpine.message_id == msg.id)
+            .one()
+        )
+        assert spine.session_id == s1.id
+
+    def test_attach_empty_ids_is_noop(self, db):
+        from app.memory.spine_service import attach_spine_to_session
+        assert attach_spine_to_session(db, [], 1) == 0
+
+    def test_backfill_claims_message_and_spine(self, db):
+        from app.memory import service as memory_service, schemas
+        from app.memory.integration import _backfill_orphan_messages
+        from app.memory.conversation_models import ConversationSpine
+
+        with patch("app.embeddings.auto_index_enabled", return_value=False):
+            msg = memory_service.create_message(db, schemas.MessageCreate(
+                project_id=1, role="user",
+                content="Tell me about my Bittensor position", provider="local",
+            ))
+        session = self._make_session(db)
+
+        _backfill_orphan_messages(db, project_id=1, session_id=session.id)
+
+        db.refresh(msg)
+        assert msg.session_id == session.id
+        spine = (
+            db.query(ConversationSpine)
+            .filter(ConversationSpine.message_id == msg.id)
+            .one()
+        )
+        assert spine.session_id == session.id

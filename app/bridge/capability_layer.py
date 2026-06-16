@@ -88,8 +88,14 @@ async def run_astra_chat(
     search_executed: bool = False,
     search_succeeded: bool = False,
     raw_message: Optional[str] = None,
+    client_request_id: Optional[str] = None,
 ) -> dict:
     """Run the full ASTRA capability layer and return collected results.
+
+    `client_request_id` (optional) is the phone's X-Idempotency-Key, threaded
+    through so the per-turn image guard can dedupe a retried image request to
+    a single paid generation. When absent the guard falls back to a hash of
+    (project_id + message), so the text path is covered either way.
 
     Returns:
         {"reply": str, "provider": str, "model": str, "tools_used": list}
@@ -135,8 +141,21 @@ async def run_astra_chat(
     # so historical messages can re-emit the chip on reload.
     if prep.get("image_route"):
         from app.llm.image_router import generate_image_core
+        from app.llm.image_turn_guard import run_guarded_image
+        # Per-turn cost guard (J2): a slow image request delivered 3 times
+        # (phone retries on timeout) must bill ONE paid generation, not three.
+        # The guard caches the first artifact for a stable key (client id, else
+        # project+message hash) and replays it / joins an in-flight gen on
+        # repeats within the window. generate_image_core is wrapped as a
+        # zero-arg coroutine factory so the guard owns the single call.
         try:
-            result = await generate_image_core(project_id, message, db)
+            result = await run_guarded_image(
+                project_id=project_id,
+                message=message,
+                generator=lambda: generate_image_core(project_id, message, db),
+                client_request_id=client_request_id,
+                source=source,
+            )
         except Exception as e:
             logger.error("[%s] Image generation crashed: %s", source, e)
             result = None

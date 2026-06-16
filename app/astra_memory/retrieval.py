@@ -524,7 +524,18 @@ def retrieve_for_query(
 
     # Step 3: Apply cost ranking
     candidates = apply_cost_ranking(candidates, depth)
-    
+
+    # Job 4 (2026-06-15, task 1): confidence gate. Ranking SORTS candidates but
+    # never decides whether the tail is relevant ENOUGH to inject. Drop the
+    # low-confidence tail here — before expansion, so dropped candidates never
+    # cost a cold-storage fetch — so three sharp items beat twenty mushy ones.
+    # Relative + bounded, no API call: a uniformly-weak pool is left untouched.
+    try:
+        from app.astra_memory.rerank import apply_confidence_gate
+        candidates = apply_confidence_gate(candidates, depth)
+    except Exception as _gate_exc:
+        logger.debug(f"[retrieval] confidence gate skipped: {_gate_exc}")
+
     # Step 4: Stage 2 - Expand
     expanded = stage2_expand_candidates(db, candidates, depth)
 

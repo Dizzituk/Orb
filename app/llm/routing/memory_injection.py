@@ -2,7 +2,7 @@
 # Purpose: Memory Context Injection for LLM Routing
 # Called-by: app.llm.routing.envelope
 # Depends-on: app.astra_memory, app.astra_memory.confidence_config, app.astra_memory.topic_tagger, app.lifestyle.nudges (+1 more)
-# Last-renovated: 2026-06-12
+# Last-renovated: 2026-06-15 (Job 2: per-turn front-door block observability)
 """
 Memory Context Injection for LLM Routing
 
@@ -67,28 +67,44 @@ class MemoryContext:
     # Job 2 (2026-06-12): repo-scan chunks for code/architecture queries,
     # already carrying their staleness header (see rag.retrieval.chat_injection)
     repo_context: str = ""
+    # Job 0 (2026-06-15): conversation-level + legacy sources folded into the
+    # single front door so a fact surfaces once. Off for the envelope (no
+    # project_id), on for the project-aware paths via build_memory_block.
+    summary_text: str = ""
+    recall_text: str = ""
+    router_text: str = ""
+    # Job 4 (2026-06-15): bounded knowledge-graph walk — strong cross-domain
+    # links (e.g. "investments fund the Portugal move") that vectors can't
+    # represent. Opt-in (include_graph), so the envelope path is unchanged.
+    graph_text: str = ""
 
     def is_empty(self) -> bool:
         """Check if there's anything to inject."""
-        return not self.preferences_text and not self.facts_text and not self.repo_context
+        return not any((
+            self.preferences_text, self.facts_text, self.repo_context,
+            self.summary_text, self.recall_text, self.router_text,
+            self.graph_text,
+        ))
 
     def format_for_system_prompt(self) -> str:
-        """Format memory context for system prompt injection."""
+        """Format memory context for system prompt injection.
+
+        Job 0 (2026-06-15): assembly + cross-source de-dup live in
+        memory_injection_sources.assemble_block — the single place that
+        guarantees one fact appears at most once across all sources.
+        """
         if self.is_empty():
             return ""
-
-        parts = []
-
-        if self.preferences_text:
-            parts.append(f"<user_preferences>\n{self.preferences_text}\n</user_preferences>")
-
-        if self.facts_text:
-            parts.append(f"<memory_context>\n{self.facts_text}\n</memory_context>")
-
-        if self.repo_context:
-            parts.append(f"<codebase_memory>\n{self.repo_context}\n</codebase_memory>")
-
-        return "\n\n".join(parts)
+        from app.llm.routing.memory_injection_sources import assemble_block
+        return assemble_block(
+            preferences_text=self.preferences_text,
+            facts_text=self.facts_text,
+            graph_text=self.graph_text,
+            summary_text=self.summary_text,
+            recall_text=self.recall_text,
+            repo_context=self.repo_context,
+            router_text=self.router_text,
+        )
 
 
 def _extract_user_message_text(messages: List[Dict[str, Any]]) -> str:
@@ -182,16 +198,33 @@ def build_memory_context(
     messages: List[Dict[str, Any]],
     job_type: Optional[str] = None,
     component: str = "llm_router",
+    *,
+    project_id: Optional[int] = None,
+    window_message_ids: Optional[List[int]] = None,
+    include_conversation: bool = False,
+    include_router: bool = False,
+    include_graph: bool = False,
 ) -> MemoryContext:
     """
     Build memory context for injection.
-    
+
     Args:
         db: Database session
         messages: The conversation messages
         job_type: Optional job type for preference filtering
         component: Component name for preference scoping
-        
+        project_id: Project for the conversation-scoped sources (summary/recall).
+            The envelope path leaves this None (LLMTask carries no project_id),
+            so those sources stay off there — see MEMORY_MAP.md §2b.
+        window_message_ids: Live-window message ids to exclude from recall.
+            Loaded from project_id when omitted.
+        include_conversation: Add the rolling summary + within-conversation
+            recall (Job 0 front-door consolidation).
+        include_router: Add the legacy MemoryRouter keyword block.
+        include_graph: Add the bounded cross-domain graph walk (Job 4 task 2).
+            Opt-in and defaulted off so the envelope path is byte-for-byte
+            unchanged; the full front-door path (build_memory_block) turns it on.
+
     Returns:
         MemoryContext with formatted text ready for injection
     """
@@ -257,6 +290,7 @@ def build_memory_context(
     records_retrieved = 0
     query_tags = None
     query_entities = None
+    retrieved_records: List[Any] = []  # captured for the Job 4 graph walk
 
     if depth != IntentDepth.D0:
         try:
@@ -297,7 +331,8 @@ def build_memory_context(
             
             facts_text = _format_retrieved_records(result)
             records_retrieved = result.records_expanded
-            
+            retrieved_records = list(getattr(result, "records", []) or [])
+
         except Exception as e:
             logger.warning(f"[memory_injection] Failed to retrieve facts: {e}")
     
@@ -362,8 +397,45 @@ def build_memory_context(
     except Exception as _prop_exc:
         logger.debug(f"[memory_injection] proposal injection skipped: {_prop_exc}")
 
+    # ── Job 0 (2026-06-15): conversation-level + legacy sources, folded into
+    # the single front door behind the SAME D0-D4 gate (we only reach here for
+    # D1+). project_id is required for the project-scoped summary/recall, so
+    # the envelope path (no project_id) leaves them empty by construction.
+    summary_text = ""
+    recall_text = ""
+    router_text = ""
+    if project_id is not None and (include_conversation or include_router):
+        from app.llm.routing import memory_injection_sources as _src
+        win = window_message_ids
+        if win is None:
+            win = _src.recent_window_ids(db, project_id)
+        if include_conversation:
+            summary_text = _src.collect_summary(db, project_id)
+            recall_text = _src.collect_recall(db, project_id, user_message, win)
+        if include_router:
+            router_text = _src.collect_router(user_message, project_id)
+
+    # ── Job 4 (2026-06-15, task 2): bounded cross-domain graph walk. When the
+    # topics in play (query tags + the tags of the records just retrieved) sit
+    # on a strong consolidated edge, surface the connected node — one or two
+    # hops, strength-thresholded, small cap. This is the relationship channel
+    # ("investments fund the Portugal move") that the similarity channel can't
+    # represent. Behind the same D0-D4 gate (we only reach here for D1+);
+    # opt-in so the envelope path stays unchanged. The walk is in-process and
+    # cheap (no LLM, no embedding), so it is safe on the live voice path.
+    graph_text = ""
+    if include_graph:
+        try:
+            from app.llm.routing.graph_context import build_graph_context
+            graph_text = build_graph_context(query_tags, retrieved_records)
+        except Exception as _graph_exc:
+            logger.debug(f"[memory_injection] graph walk skipped: {_graph_exc}")
+
     # Estimate tokens (rough: 4 chars per token)
-    total_text = preferences_text + facts_text + repo_context
+    total_text = (
+        preferences_text + facts_text + repo_context
+        + summary_text + recall_text + router_text + graph_text
+    )
     token_estimate = len(total_text) // 4
 
     return MemoryContext(
@@ -374,6 +446,10 @@ def build_memory_context(
         preferences_applied=preferences_applied,
         records_retrieved=records_retrieved,
         repo_context=repo_context,
+        summary_text=summary_text,
+        recall_text=recall_text,
+        router_text=router_text,
+        graph_text=graph_text,
     )
 
 
@@ -409,9 +485,90 @@ def get_memory_injection_stats(memory_context: MemoryContext) -> Dict[str, Any]:
     }
 
 
+def build_memory_block(
+    db: Session,
+    *,
+    user_message: str,
+    project_id: Optional[int] = None,
+    window_message_ids: Optional[List[int]] = None,
+    job_type: Optional[str] = None,
+    component: str = "llm_router",
+    conversation_only: bool = False,
+) -> str:
+    """THE single memory front door (MEMORY_MAP.md §2).
+
+    Returns one de-duped memory block (or "") for the project-aware chat paths
+    to splice into their context. Every source sits behind the one D0-D4 gate.
+
+    Two callers:
+      - build_full_context (desktop streaming + phone): full block — semantic
+        facts + preferences + repo + nudges/sentinel/proposals + summary +
+        recall + MemoryRouter, all de-duped.
+      - endpoints/chat.py (/chat): conversation_only=True — summary + recall
+        only, because that path already gets the semantic core from the
+        envelope (build_memory_context) via call_llm; this avoids doubling it.
+
+    Failure-proof: any error returns "" so a chat turn never breaks on memory.
+    """
+    try:
+        if conversation_only:
+            # Apply the D0-D4 gate here (we don't go through build_memory_context
+            # on this path) so the silence-on-D0 rule still governs it.
+            try:
+                api = _memory_api()
+                depth = api["classify_intent_depth"](user_message or "")
+                if depth == api["IntentDepth"].D0:
+                    return ""
+            except Exception:
+                pass  # gate unavailable — proceed (sources are themselves safe)
+            if project_id is None:
+                return ""
+            from app.llm.routing import memory_injection_sources as _src
+            win = window_message_ids
+            if win is None:
+                win = _src.recent_window_ids(db, project_id)
+            summary_text = _src.collect_summary(db, project_id)
+            recall_text = _src.collect_recall(db, project_id, user_message, win)
+            block = _src.assemble_block(
+                summary_text=summary_text, recall_text=recall_text,
+            )
+            # Job 2 (task 3): make the voice-path lost-middle signature
+            # observable — recall=n summary=n block=0 on a long session = the bug.
+            _src.log_block_stats(
+                "conv", project_id, block,
+                summary=bool(summary_text), recall=bool(recall_text),
+            )
+            return block
+
+        ctx = build_memory_context(
+            db,
+            messages=[{"role": "user", "content": user_message or ""}],
+            job_type=job_type,
+            component=component,
+            project_id=project_id,
+            window_message_ids=window_message_ids,
+            include_conversation=True,
+            include_router=True,
+            include_graph=True,
+        )
+        block = ctx.format_for_system_prompt()
+        from app.llm.routing import memory_injection_sources as _src
+        _src.log_block_stats(
+            "full", project_id, block,
+            summary=bool(ctx.summary_text), recall=bool(ctx.recall_text),
+            facts=bool(ctx.facts_text), depth=ctx.depth,
+            graph=bool(ctx.graph_text),
+        )
+        return block
+    except Exception as exc:
+        logger.warning("[memory_injection] front door failed: %s", exc)
+        return ""
+
+
 __all__ = [
     "MemoryContext",
     "build_memory_context",
+    "build_memory_block",
     "inject_memory_into_system_prompt",
     "get_memory_injection_stats",
     "MEMORY_AVAILABLE",

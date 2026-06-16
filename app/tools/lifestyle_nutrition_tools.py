@@ -129,7 +129,14 @@ def _resolve_and_log_sync(name, brand, barcode, url, grams, meal_type, do_log) -
                     source=res["source"], is_estimate=res["is_estimate"],
                     confidence=res["confidence"], estimate_note=res.get("estimate_note"),
                 )
-                logged = _to_dict(row)
+                # record_product_use ALREADY committed `row` (an ORM NutritionLog).
+                # Convert via the same Pydantic mapper the service uses — NOT _to_dict,
+                # which would fall through to dict(<ORM row>) and raise
+                # "'NutritionLog' object is not iterable". That crash (live 2026-06-15)
+                # left the row committed but reported the tool as failed, so the model
+                # re-logged it = duplicate diary entries.
+                from app.lifestyle.service import _nutrition_to_out
+                logged = _nutrition_to_out(row).model_dump()
         return {
             "ok": True, "found": True, "exact": res["exact"], "source": res["source"],
             "confidence": res["confidence"], "is_estimate": res["is_estimate"],

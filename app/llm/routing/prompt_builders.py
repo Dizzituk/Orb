@@ -616,30 +616,23 @@ def build_full_context(
     except Exception as _fg_err:
         print(f"[CONTEXT] Learned-patterns injection failed: {_fg_err}")
 
-    # v5.4: RAG memory injection from unified memory router
+    # Job 0 (2026-06-15): the single memory front door (MEMORY_MAP.md §2).
+    # Replaces the two separate injections that used to live here (the
+    # MemoryRouter keyword block + the rolling conversation summary). The
+    # front door assembles preferences + semantic facts + repo +
+    # nudges/sentinel/proposals + conversation summary + within-conversation
+    # recall + MemoryRouter behind the ONE D0-D4 depth gate, de-duped so a
+    # fact surfaces at most once. The desktop-streaming and phone chat paths
+    # reach memory context ONLY through here.
     try:
-        from app.memory.integration import inject_memory_context
-        memory_ctx = inject_memory_context(
-            query=message,
-            project_id=str(project_id),
-            limit=10,
+        from app.llm.routing.memory_injection import build_memory_block
+        memory_block = build_memory_block(
+            db, user_message=message, project_id=project_id,
         )
-        if memory_ctx:
-            full_context += "\n\n" + memory_ctx
-    except Exception:
-        pass  # Non-fatal — memory system may not be initialised yet
-    
-    # v10.0: Conversation summary injection into system context.
-    # Injected here (not in build_messages) because Anthropic and Gemini
-    # strip role="system" from the message list. The system prompt is the
-    # one place all three providers reliably receive context.
-    try:
-        from app.memory.summary_injection import build_summary_context
-        summary_ctx = build_summary_context(db, project_id)
-        if summary_ctx:
-            full_context += "\n\n" + summary_ctx
-    except Exception:
-        pass  # Non-fatal
+        if memory_block:
+            full_context += "\n\n" + memory_block
+    except Exception as _mem_err:
+        print(f"[CONTEXT] Memory front door failed (non-fatal): {_mem_err}")
 
     # v18 (2026-05-01): Recent classifier-decision context.
     # When the translation layer fires a confirmation gate or auto-executes

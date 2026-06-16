@@ -252,9 +252,28 @@ async def stream_openai(
             # — flagged for follow-up; this keeps chat working meanwhile.
             _OPENAI_MAX_TOOLS = 128
             if len(openai_tools) > _OPENAI_MAX_TOOLS:
-                _dropped = [t["function"]["name"] for t in openai_tools[_OPENAI_MAX_TOOLS:]]
-                print(f"[STREAM_OPENAI] Tools {len(openai_tools)} > {_OPENAI_MAX_TOOLS} max — capping; dropped: {_dropped}")
-                openai_tools = openai_tools[:_OPENAI_MAX_TOOLS]
+                # Plain tail-truncation silently dropped tools the product can't
+                # afford to lose: the food-logging / recipe tools (save_recipe,
+                # log_recipe, get_health_history, ...) sit late in the assembled
+                # list, so they were the ones cut (live 2026-06-15) — leaving
+                # save_recipe/log_recipe unreachable on the OpenAI path. Move an
+                # essentials allowlist to the front so they always survive the cap;
+                # the dropped tail then comes from genuinely lower-priority tools.
+                # OpenAI ignores tool order, so this changes only WHICH tools are
+                # cut, never behaviour. (128 is OpenAI's hard array limit.)
+                _ESSENTIAL_TOOLS = {
+                    "log_nutrition", "resolve_nutrition", "save_recipe", "log_recipe",
+                    "get_recent_nutrition", "get_today_summary", "get_health_history",
+                    "log_weight", "log_workout", "log_exercise",
+                }
+                _essential = [t for t in openai_tools
+                              if t["function"]["name"] in _ESSENTIAL_TOOLS]
+                _rest = [t for t in openai_tools
+                         if t["function"]["name"] not in _ESSENTIAL_TOOLS]
+                _ordered = _essential + _rest
+                _dropped = [t["function"]["name"] for t in _ordered[_OPENAI_MAX_TOOLS:]]
+                print(f"[STREAM_OPENAI] Tools {len(openai_tools)} > {_OPENAI_MAX_TOOLS} max — capping; kept {len(_essential)} essential; dropped: {_dropped}")
+                openai_tools = _ordered[:_OPENAI_MAX_TOOLS]
             create_kwargs["tools"] = openai_tools
 
         # Override max_tokens if explicitly provided

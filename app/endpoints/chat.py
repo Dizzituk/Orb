@@ -148,15 +148,19 @@ def chat(
     history_dicts = [{"role": msg.role, "content": msg.content} for msg in history]
     messages = history_dicts + [{"role": "user", "content": req.message}]
 
-    # CONV-MEMORY-002: within-conversation memory spine. Pull earlier messages
-    # on this topic that have scrolled out of the 50-message window back into
-    # context, plus the rolling conversation summary as a backstop. The /chat
-    # path injected neither before. Failure-proof — never break the reply.
+    # Job 0 (2026-06-15): route /chat's conversation memory through the single
+    # memory front door (MEMORY_MAP.md §2) rather than calling spine_service
+    # directly. conversation_only=True → rolling summary + within-conversation
+    # recall only; the semantic core (preferences + semantic facts + nudges)
+    # still arrives via the envelope (build_memory_context) on the call_llm
+    # path below, so this avoids double-injecting it. The D0-D4 gate is applied
+    # inside the front door. Failure-proof — never break the reply.
     try:
-        from app.memory.spine_service import build_within_conversation_context
+        from app.llm.routing.memory_injection import build_memory_block
         window_ids = [msg.id for msg in history]
-        within_conv = build_within_conversation_context(
-            db, req.project_id, req.message, window_ids,
+        within_conv = build_memory_block(
+            db, user_message=req.message, project_id=req.project_id,
+            window_message_ids=window_ids, conversation_only=True,
         )
         if within_conv:
             full_context = (full_context + "\n\n" if full_context else "") + within_conv

@@ -44,14 +44,6 @@ class TestMultiFoodTrue:
     def test_two_quantities_joined_by_and(self):
         assert looks_multi_food("200g chicken and 150g rice") is True
 
-    def test_comma_list_without_quantities(self):
-        assert looks_multi_food(
-            "blueberries, strawberries, broccoli, greek yoghurt, pork loin"
-        ) is True
-
-    def test_three_item_plate(self):
-        assert looks_multi_food("eggs on toast, beans, bacon") is True
-
 
 # =========================================================================
 # Detector — single food (must return False; the false-positive traps)
@@ -67,6 +59,16 @@ class TestSingleFoodFalse:
     def test_single_food_one_descriptor_comma(self):
         assert looks_multi_food("chicken breast, grilled") is False
 
+    def test_pork_loin_descriptor_commas_with_trailing_qty(self):
+        # Live 2026-06-15: one quantity token + descriptor commas = ONE food.
+        assert looks_multi_food(
+            "Pork loin steaks, oven cooked, fat drained, 470 g"
+        ) is False
+
+    def test_green_olives_descriptor_commas_no_qty(self):
+        # Live 2026-06-15: descriptor commas, no quantity unit = ONE food.
+        assert looks_multi_food("Green olives, pitted in brine, about 25") is False
+
     def test_snickers_quantity_in_parens(self):
         assert looks_multi_food("Snickers bar (58.7g)") is False
 
@@ -79,6 +81,25 @@ class TestSingleFoodFalse:
     def test_empty_and_blank(self):
         assert looks_multi_food("") is False
         assert looks_multi_food("   ") is False
+
+
+# =========================================================================
+# Accepted false negatives (Bug-6 hotfix 2026-06-15)
+# =========================================================================
+
+class TestAcceptedFalseNegatives:
+    """Removing the >=3-comma signal was the only way to stop single foods with
+    descriptor commas being false-rejected. The cost: a bare comma list with NO
+    quantities is no longer flagged. That's the accepted trade — the strengthened
+    tool description and the items[] path push itemisation for these instead."""
+
+    def test_comma_list_without_quantities_now_single(self):
+        assert looks_multi_food(
+            "blueberries, strawberries, broccoli, greek yoghurt, pork loin"
+        ) is False
+
+    def test_three_item_plate_without_quantities_now_single(self):
+        assert looks_multi_food("eggs on toast, beans, bacon") is False
 
 
 # =========================================================================
@@ -118,3 +139,29 @@ class TestHandlerGate:
         assert r["ok"] is False
         assert r.get("needs_itemisation") is not True
         assert "needs" in r  # macro-completeness hard rule, not itemisation
+
+    def test_macro_complete_single_with_descriptor_commas_logs(self):
+        # Bug-6 hotfix 2026-06-15: a single description with descriptor commas BUT
+        # complete macros must SKIP the itemisation gate (the model committed to
+        # one item). Patch the service writer so no DB/network is touched.
+        from unittest.mock import patch
+        import app.lifestyle.service as svc
+        from app.tools.lifestyle_tools import log_nutrition_handler
+
+        class _FakeOut:
+            def model_dump(self):
+                return {
+                    "id": 7,
+                    "description": "Pork loin steaks, oven cooked, fat drained, 470 g",
+                    "calories": 847, "protein_g": 120, "carbs_g": 0,
+                    "fat_g": 39, "sugar_g": 0,
+                }
+
+        with patch.object(svc, "log_nutrition", return_value=_FakeOut()):
+            r = asyncio.run(log_nutrition_handler({
+                "description": "Pork loin steaks, oven cooked, fat drained, 470 g",
+                "calories": 847, "protein_g": 120, "carbs_g": 0, "fat_g": 39,
+            }, None))
+        assert r["ok"] is True
+        assert r.get("needs_itemisation") is not True
+        assert r["log_id"] == 7

@@ -2,7 +2,7 @@
 # Purpose: Within-conversation memory spine — per-message topic index + live recall.
 # Called-by: app.memory.service (write), app.endpoints.chat (recall/injection)
 # Depends-on: app.astra_memory.topic_tagger, app.memory.conversation_models, app.memory.models, app.memory.summary_injection
-# Last-renovated: 2026-06-13
+# Last-renovated: 2026-06-15 (Job 1: attach_spine_to_session keeps spine.session_id in lockstep with messages)
 """
 Within-conversation memory spine (Build Request B).
 
@@ -117,6 +117,49 @@ def record_message_spine(db: DbSession, message) -> None:
             db.rollback()
         except Exception:
             pass
+
+
+def attach_spine_to_session(
+    db: DbSession,
+    message_ids: Sequence[int],
+    session_id: int,
+) -> int:
+    """Claim already-written spine rows into a conversation session.
+
+    Spine rows are written at the create_message chokepoint (see
+    record_message_spine) carrying whatever session_id the Message had at that
+    moment -- which is NULL on every live chat path, because the session is
+    only resolved by the post-message hook AFTER the row is stored. The hook's
+    orphan claim (integration._backfill_orphan_messages) fills in the Message's
+    session_id but never the spine's, so without this the spine could not be
+    scoped by session. This reconciles the spine to match its messages once the
+    session is known. Only fills NULLs -- it never moves a row that already
+    belongs to a session. Returns the number of rows updated. Never raises.
+    """
+    if not message_ids:
+        return 0
+    from app.memory.conversation_models import ConversationSpine
+    try:
+        updated = (
+            db.query(ConversationSpine)
+            .filter(
+                ConversationSpine.message_id.in_(list(message_ids)),
+                ConversationSpine.session_id.is_(None),
+            )
+            .update(
+                {ConversationSpine.session_id: session_id},
+                synchronize_session=False,
+            )
+        )
+        db.commit()
+        return int(updated or 0)
+    except Exception as exc:
+        logger.debug("[spine] session attach failed: %s", exc)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return 0
 
 
 def search_spine(
@@ -253,6 +296,7 @@ def build_within_conversation_context(
 
 __all__ = [
     "record_message_spine",
+    "attach_spine_to_session",
     "search_spine",
     "build_conversation_recall",
     "build_within_conversation_context",

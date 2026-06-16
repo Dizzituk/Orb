@@ -47,6 +47,11 @@ _SOURCE_TO_RECORD_TYPE = {
     "message": "message",
     "note": "note",
     "file": "document",
+    # Job 3 (2026-06-15): consolidated conversation facts. The membrane writes
+    # both an embedding (source_type='memory') and a HotIndex row
+    # (record_type='memory') keyed by the same PreferenceRecord id, so the
+    # vector channel can resurface a durable fact the keyword channel missed.
+    "memory": "memory",
 }
 
 _MIN_SIM_DEFAULT = 0.55
