@@ -9,7 +9,7 @@
 # Depends-on: app.llm.workers.nat_worker.run_nat_job,
 #             app.self_model.write_arbiter.propose (canonical bio facts),
 #             app.astra_memory.preference_service.create_preference (everything else)
-# Last-renovated: 2026-06-19
+# Last-renovated: 2026-06-20
 """
 Importance extraction & save (background, post-reply, not latency-critical).
 
@@ -23,19 +23,38 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
-    "From this exchange, extract any durable facts worth remembering long-term "
-    "(preferences, biographical facts, decisions, commitments). "
+    "You extract DURABLE FACTS ABOUT THE USER from a chat exchange — the kind a "
+    "personal assistant should still know months from now.\n"
+    "INCLUDE only stable facts the USER stated about THEMSELVES: their identity and "
+    "circumstances, lasting preferences, and firm personal decisions or commitments "
+    "they actually made (e.g. 'is vegetarian', 'works night shifts as a delivery "
+    "driver', 'lives in <place>', 'decided to buy two RTX 3090s').\n"
+    "EXCLUDE everything else — when in doubt, leave it out. In particular do NOT "
+    "record: topics or subjects you merely discussed; the user's opinions about the "
+    "world, news, politics, economics or technology; anything the ASSISTANT said; "
+    "hypotheticals, predictions or general musings; one-off events with no lasting "
+    "relevance. A near-empty result is correct for a chat that was just conversation.\n"
     'Output JSON: a list of {"type","key","value"} objects, where type is one of '
-    '"preference","biographical","decision","commitment". '
-    "Reply ONLY with the JSON list, or [] if nothing durable. "
-    "Do NOT invent — only extract what the USER explicitly stated about themselves "
-    "or their wishes. If unsure, leave it out."
+    '"preference","biographical","decision","commitment", key is a short snake_case '
+    'name for the fact, and value is a crisp phrase (not a sentence). '
+    "Reply ONLY with the JSON list, or [] if nothing durable about the user was stated."
 )
+
+# Opinion / prediction / musing markers — a durable FACT about the user reads as a
+# crisp state ("vegetarian", "lives in X"), not a sentence carrying these. Used by
+# _is_durable_user_fact as a conservative guard against topic/opinion leakage.
+_OPINION_MARKERS = (
+    " should ", " would ", " ought ", " might ", " could ", " will ", " won't ",
+    " i think", " i believe", " i reckon", "likely", "in the future", "probably",
+    "concerned that", "believes that", "in my opinion", "the concept of",
+)
+_MAX_VALUE_CHARS = 120
 _MAX_FACTS = 10
 _MAX_INPUT_CHARS = 4000
 _BIO_TYPES = {"biographical", "identity", "bio", "personal_fact", "personal"}
@@ -116,11 +135,26 @@ async def extract_durable_facts(user_text: str, assistant_text: str) -> List[Dic
         return []
 
 
+def _is_durable_user_fact(key: str, value) -> bool:
+    """Conservative guard so the trail stores facts ABOUT THE USER, not subjects
+    that were merely discussed. Errs toward keeping — the strict prompt does the
+    main filtering; this just catches obvious essays/opinions. Tunable."""
+    v = str(value).strip()
+    if not v or len(v) > _MAX_VALUE_CHARS:   # an essay is a musing, not a fact
+        return False
+    low = " " + v.lower() + " "
+    if any(m in low for m in _OPINION_MARKERS):
+        return False
+    return True
+
+
 def _clean_facts(value) -> List[Dict[str, Any]]:
-    """Keep only well-formed {type,key,value} dicts, capped."""
+    """Keep only well-formed {type,key,value} dicts that read as durable facts
+    about the user; dedupe phrasing variants by canonical key; capped."""
     if not isinstance(value, list):
         return []
     out: List[Dict[str, Any]] = []
+    seen_keys = set()
     for item in value:
         if not isinstance(item, dict):
             continue
@@ -129,15 +163,27 @@ def _clean_facts(value) -> List[Dict[str, Any]]:
         if not key or val in (None, "", [], {}):
             continue
         ftype = str(item.get("type", "fact")).strip().lower() or "fact"
+        if not _is_durable_user_fact(key, val):
+            continue
+        canon = _pref_key(ftype, key)   # collapse "place_of_residence"/"placeofresidence"
+        if canon in seen_keys:
+            continue
+        seen_keys.add(canon)
         out.append({"type": ftype, "key": key, "value": val})
         if len(out) >= _MAX_FACTS:
             break
     return out
 
 
+def _canon(s: str) -> str:
+    """Lowercase + strip ALL separators so phrasing variants collapse to one key."""
+    return re.sub(r"[^a-z0-9]+", "", str(s or "").lower())
+
+
 def _pref_key(ftype: str, key: str) -> str:
-    raw = f"nat_importance:{ftype or 'fact'}:{key}".lower()
-    return "".join(c if (c.isalnum() or c in ":_-") else "_" for c in raw)
+    """Canonical, separator-free preference key so phrasing variants collapse to a
+    SINGLE preference (e.g. "place_of_residence" and "placeofresidence")."""
+    return f"nat_importance:{_canon(ftype) or 'fact'}:{_canon(key) or 'fact'}"
 
 
 def _save_facts(db, project_id, facts: List[Dict[str, Any]]) -> int:

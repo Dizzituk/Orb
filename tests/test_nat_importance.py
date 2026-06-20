@@ -21,7 +21,23 @@ def test_clean_facts_and_pref_key():
         "not a dict",                          # dropped
     ])
     assert [f["key"] for f in facts] == ["diet", "location"]
-    assert _pref_key("preference", "Diet Plan") == "nat_importance:preference:diet_plan"
+    # Canonical key collapses ALL separators so phrasing variants dedupe to one.
+    assert _pref_key("preference", "Diet Plan") == "nat_importance:preference:dietplan"
+    assert _pref_key("biographical", "place_of_residence") == \
+           _pref_key("biographical", "placeofresidence")
+
+
+def test_clean_facts_rejects_topics_and_dedupes():
+    """Over-extraction guard: opinions/musings dropped; key variants collapse."""
+    from app.memory.nat_jobs.importance import _clean_facts
+    facts = _clean_facts([
+        {"type": "biographical", "key": "place_of_residence", "value": "Cornwall"},
+        {"type": "biographical", "key": "placeofresidence", "value": "Cornwall"},  # dup
+        {"type": "decision", "key": "wealth", "value": "wealth should be redistributed"},  # opinion
+        {"type": "preference", "key": "automation", "value": "automation will replace jobs"},  # prediction
+        {"type": "preference", "key": "diet", "value": "vegetarian"},  # real, kept
+    ])
+    assert [f["key"] for f in facts] == ["place_of_residence", "diet"], facts
 
 
 def test_save_routing_tier1_vs_tier2(monkeypatch):
@@ -50,7 +66,7 @@ def test_save_routing_tier1_vs_tier2(monkeypatch):
     assert len(proposed) == 1 and proposed[0]["field_name"] == "current_location"
     assert proposed[0]["proposed_value"] == "Portugal"
     assert {p["preference_key"] for p in prefs} == {
-        "nat_importance:biographical:favourite_colour",
+        "nat_importance:biographical:favouritecolour",
         "nat_importance:preference:diet",
         "nat_importance:commitment:gym",
     }
@@ -108,5 +124,6 @@ def test_extract_durable_facts_via_nat():
 
 if __name__ == "__main__":
     test_clean_facts_and_pref_key()
+    test_clean_facts_rejects_topics_and_dedupes()
     test_extract_durable_facts_via_nat()
     print("nat importance basic tests passed (run routing test via pytest for monkeypatch)")

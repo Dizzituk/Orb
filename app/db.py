@@ -202,6 +202,31 @@ def init_db():
     # Food overhaul Phase 3: per-100g micronutrients on the product library
     _migrate_product_schema()
 
+    # API keys -> os.environ, BEFORE anything that reads them. The codebase
+    # self-knowledge seed in init_memory_system() (seed_all_tiers) embeds +
+    # classifies via Gemini, and GOOGLE_API_KEY now lives in the encrypted
+    # settings store (removed from .env 2026-04-14), not the environment. Without
+    # this overlay the seed runs key-less and every Gemini call fails
+    # ("GOOGLE_API_KEY not set"). Single chokepoint so ALL stored keys reach the
+    # env at startup (the TTS server already syncs at its own boot). Defensive:
+    # in a key-less / master-key-less context (e.g. a spawned subprocess) this
+    # must never break init_db.
+    try:
+        from app.settings.service import sync_all_to_env
+        _kdb = SessionLocal()
+        try:
+            _synced = sync_all_to_env(_kdb)
+            _db_logging.getLogger(__name__).info(
+                "[init_db] API key env-sync: %s key(s) overlaid onto os.environ",
+                _synced,
+            )
+        finally:
+            _kdb.close()
+    except Exception as _key_err:
+        _db_logging.getLogger(__name__).warning(
+            "[init_db] API key env-sync skipped: %s", _key_err
+        )
+
     # v4.1: Register domain stores with the MemoryRouter singleton
     from app.memory.startup import init_memory_system
     init_memory_system()

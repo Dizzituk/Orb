@@ -43,6 +43,9 @@ def test_is_recall_question():
         "give me a recap of everything we discussed",
         "remind me what we covered",
         "what have we been talking about",
+        "give me a rundown of everything we've spoken about today",
+        "catch me up",
+        "what have we spoken about",
     ]
     no = [
         "log my breakfast",
@@ -78,13 +81,43 @@ def test_coverage_block_from_trail():
     # recall question -> coverage with chronological, deduped topics
     block = build_coverage_block(db, 1, "what did we talk about?")
     assert block.startswith("[CONVERSATION_COVERAGE]"), block
-    assert "calorie tracking" in block and "weight loss" in block and "portugal move" in block
-    assert block.count("pasta") == 1  # deduped
-    assert block.index("calorie tracking") < block.index("portugal move")  # order preserved
+    topic_line = block.split("\n")[2]  # [marker], intro, topics enumeration
+    assert "calorie tracking" in topic_line and "weight loss" in topic_line \
+        and "portugal move" in topic_line
+    assert topic_line.count("pasta") == 1  # deduped in the enumeration
+    assert topic_line.index("calorie tracking") < topic_line.index("portugal move")  # order
+    # pasta appeared in 2 messages -> surfaces as a recurring standout thread
+    assert "Threads that came up most" in block
+    assert "pasta (2x)" in block
     # non-recall question -> empty (no token bloat)
     assert build_coverage_block(db, 1, "log my dinner") == ""
     # unknown project -> empty
     assert build_coverage_block(db, 999, "what did we talk about?") == ""
+
+
+def test_coverage_today_scope_with_null_session():
+    """The real-world shape: trail rows have NULL session_id (written before the
+    session attaches). A 'today' rundown must still scope correctly off the
+    trail's own created_at, and exclude earlier days."""
+    import datetime as _dt
+    db, MK = _scratch_session()
+    today = _dt.datetime.utcnow()
+    earlier = today - _dt.timedelta(days=2)
+    db.add(MK(project_id=1, session_id=None, message_id=20,
+              keywords=json.dumps(["old topic"]), created_at=earlier))
+    db.add(MK(project_id=1, session_id=None, message_id=22,
+              keywords=json.dumps(["gpu build", "rtx 3090"]), created_at=today))
+    db.add(MK(project_id=1, session_id=None, message_id=24,
+              keywords=json.dumps(["gpu build", "vram"]), created_at=today))
+    db.commit()
+
+    from app.memory.nat_jobs.coverage import build_coverage_block
+    block = build_coverage_block(db, 1, "give me a rundown of everything today")
+    assert block.startswith("[CONVERSATION_COVERAGE]"), block
+    assert "today" in block.split("\n")[1]            # scope label in the intro
+    assert "gpu build" in block and "rtx 3090" in block and "vram" in block
+    assert "old topic" not in block                   # earlier day excluded
+    assert "gpu build (2x)" in block                  # recurred across today's msgs
 
 
 def test_extract_keywords_fallback_when_nat_down():
@@ -108,5 +141,6 @@ if __name__ == "__main__":
     test_is_recall_question()
     test_keyword_clean()
     test_coverage_block_from_trail()
+    test_coverage_today_scope_with_null_session()
     test_extract_keywords_fallback_when_nat_down()
     print("nat keyword trail tests passed")

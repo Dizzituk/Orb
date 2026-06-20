@@ -63,18 +63,6 @@ from .text_helpers import (
     _extract_keywords,
 )
 
-# Multi-file detection
-from .multi_file_detection import (
-    MULTI_FILE_SCOPE_INDICATORS,
-    UNICODE_QUOTES,
-    _has_multi_file_scope,
-    _normalize_quotes,
-    _extract_search_and_replace_terms,
-    _detect_multi_file_intent,
-    _convert_discovery_to_raw_matches,
-    _build_multi_file_operation,
-)
-
 # Weaver parser
 from .weaver_parser import parse_weaver_intent
 
@@ -108,16 +96,6 @@ __all__ = [
     "_extract_paths_from_text",
     "_extract_keywords",
     
-    # Multi-file detection
-    "MULTI_FILE_SCOPE_INDICATORS",
-    "UNICODE_QUOTES",
-    "_has_multi_file_scope",
-    "_normalize_quotes",
-    "_extract_search_and_replace_terms",
-    "_detect_multi_file_intent",
-    "_convert_discovery_to_raw_matches",
-    "_build_multi_file_operation",
-    
     # Weaver parser
     "parse_weaver_intent",
     
@@ -147,7 +125,6 @@ def _verify_modules():
     """Verify all sub-modules are properly loaded."""
     modules = [
         ("text_helpers", _extract_paths_from_text),
-        ("multi_file_detection", _detect_multi_file_intent),
         ("weaver_parser", parse_weaver_intent),
         ("grounding_engine", ground_intent_with_evidence),
         ("question_generator", generate_grounded_questions),
@@ -169,6 +146,6 @@ def _verify_modules():
 # Run verification on import
 _modules_ok = _verify_modules()
 if _modules_ok:
-    logger.info("[spec_generation] All 9 sub-modules loaded successfully")
+    logger.info("[spec_generation] All 8 sub-modules loaded successfully")
 else:
     logger.error("[spec_generation] Some sub-modules failed to load!")

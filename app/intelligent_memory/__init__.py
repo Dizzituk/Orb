@@ -21,8 +21,6 @@ never touch the slow vector path.
 
 v1.0 (2026-03-10): Initial implementation per ASTRA-SPEC-MEM-001.
 """
-from app.intelligent_memory.hot_cache import HotCache, get_hot_cache
-from app.intelligent_memory.retrieval_router import RetrievalRouter, get_retrieval_router
 
 __all__ = [
     "HotCache",

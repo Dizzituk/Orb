@@ -113,12 +113,6 @@ def extract_file_targets(text: str) -> List[dict]:
     # v1.35: CRITICAL - Unquoted patterns REQUIRE quotes around filename now
     # v1.36: CRITICAL - Added reverse order: 'filename' on X: drive
     drive_patterns = [
-        # v1.38 TEMPORARILY DISABLED - testing for hang
-        # (r'the\s+(\w+(?:\.\w+)?)\s+file\s+(?:on|in|from)\s+(?:the\s+)?([A-Za-z]):\s*(?:drive)?', 'weaver_unquoted_before_drive'),
-        
-        # v1.38 TEMPORARILY DISABLED - testing for hang  
-        # (r'and\s+(\w+(?:\.\w+)?)\s+(?:on|in|from)\s+(?:the\s+)?([A-Za-z]):\s*(?:drive)?', 'weaver_unquoted_and_context'),
-        
         # v1.39 NEW: Quoted pattern WITHOUT colon requirement - "test2" file on D drive
         (r'["\']+(\w+(?:\.\w+)?)["\']\s+file\s+(?:on|in|from)\s+(?:the\s+)?([A-Za-z])\s+drive', 'weaver_quoted_no_colon'),
         
@@ -214,12 +208,6 @@ def extract_file_targets(text: str) -> List[dict]:
     # v1.34: Added Weaver patterns ("the Desktop 'test' file", "Desktop 'test' file")
     # v1.35: CRITICAL - Only use QUOTED patterns to avoid false positives
     location_patterns = [
-        # v1.38 TEMPORARILY DISABLED - testing for hang
-        # (r'the\s+(\w+(?:\.\w+)?)\s+file\s+(?:on|in|from)\s+(?:the\s+)?(Desktop|Documents)', 'weaver_unquoted_before_location'),
-        
-        # v1.38 TEMPORARILY DISABLED - testing for hang
-        # (r'and\s+(\w+(?:\.\w+)?)\s+(?:on|in|from)\s+(?:the\s+)?(Desktop|Documents)', 'weaver_unquoted_and_context_location'),
-        
         # v1.36 NEW: Reverse order - 'test' on Desktop (ACTUAL Weaver format!)
         (r"['\"](\w+(?:\.\w+)?)['\"]" + r"\s+(?:file\s+)?(?:on|in|from)\s+(?:the\s+)?(Desktop|Documents)", 'weaver_quoted_before_location_v2'),
         # v1.34: Weaver patterns WITH QUOTES (safe, high confidence)

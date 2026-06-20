@@ -49,7 +49,6 @@ from .spec_models import GroundedFact, FileTarget, GroundedPOTSpec
 from .domain_detection import detect_domains
 from .sandbox_discovery import extract_sandbox_hints
 from .evidence_gathering import gather_filesystem_evidence, sandbox_read_file
-from .multi_file_detection import _detect_multi_file_intent, _build_multi_file_operation
 from .weaver_parser import parse_weaver_intent, _is_placeholder_goal
 
 try:
@@ -247,44 +246,29 @@ async def run_spec_gate_grounded(
             else:
                 logger.info("[spec_runner] v11.0 Sandbox auto-started successfully")
                 print("[spec_runner] v11.0 Sandbox is now online — continuing with spec generation")
-        # v8.0: Multi-file refactor detection DISABLED.
-        # It repeatedly misclassifies CREATE/architecture jobs as refactors
-        # by inferring false search/replace terms from natural language
-        # (e.g. 'placeholder'->'real', 'Orb'->'project', 'frontend'->'backend').
-        # The CREATE spec path handles all job types correctly.
-        # TODO: Re-enable with stricter guards when actual refactor jobs are needed.
-        multi_file_meta = None
-
         # =============================================================
-        # STEP 3: Build spec (scan path or create path)
+        # STEP 3: Build spec (create path)
+        # v8.0: multi-file refactor SCAN path retired 2026-06-20 (Taz decision).
+        # multi_file_op stays None so STEP 4/5 (segmentation + result assembly) are unchanged.
         # =============================================================
         multi_file_op = None
         spot_markdown = None
         valid_paths = []
 
-        if multi_file_meta and multi_file_meta.get("is_multi_file"):
-            result = await _handle_multi_file_scan(
-                multi_file_meta, project_paths, weaver_job_text,
-                combined_text, provider_id, model_id, goal, round_n, constraints_hint,
-            )
-            if isinstance(result, SpecGateResult):
-                return result  # Early return (no matches / scan error)
-            multi_file_op, spot_markdown = result
-        else:
-            result = await _handle_create_path(
-                goal, weaver_job_text, user_intent, project_paths,
-                provider_id, model_id, round_n,
-                greenfield=_is_greenfield,
-                build_profile=_build_profile,
-            )
-            if isinstance(result, SpecGateResult):
-                return result  # Early return (no goal)
-            spot_markdown, valid_paths = result
+        result = await _handle_create_path(
+            goal, weaver_job_text, user_intent, project_paths,
+            provider_id, model_id, round_n,
+            greenfield=_is_greenfield,
+            build_profile=_build_profile,
+        )
+        if isinstance(result, SpecGateResult):
+            return result  # Early return (no goal)
+        spot_markdown, valid_paths = result
 
         # =============================================================
         # STEP 4: Segmentation check
         # =============================================================
-        _is_create_job = not (multi_file_meta and multi_file_meta.get("is_multi_file"))
+        _is_create_job = True  # multi-file scan path retired 2026-06-20; always the create path
         seg_manifest, needle_est, early_return = await run_segmentation_check(
             spot_markdown, combined_text, multi_file_op, job_id, goal, round_n,
             is_create_job=_is_create_job,
@@ -342,65 +326,6 @@ def _extract_goal(intent: Dict, weaver_job_text: str, user_intent: str) -> str:
     if user_intent:
         return user_intent[:200]
     return ""
-
-
-async def _handle_multi_file_scan(
-    multi_file_meta, project_paths, weaver_job_text,
-    combined_text, provider_id, model_id, goal, round_n, constraints_hint,
-):
-    """Handle multi-file scan path. Returns (multi_file_op, spot_markdown) or SpecGateResult."""
-    logger.info("[spec_runner] v4.0 Multi-file detected: %s", multi_file_meta.get("operation_type"))
-
-    multi_file_op = await _build_multi_file_operation(
-        operation_type=multi_file_meta.get("operation_type", "search"),
-        search_pattern=multi_file_meta.get("search_pattern", ""),
-        replacement_pattern=multi_file_meta.get("replacement_pattern", ""),
-        file_filter=multi_file_meta.get("file_filter"),
-        sandbox_client=None,
-        job_description=weaver_job_text or combined_text,
-        provider_id=provider_id,
-        model_id=model_id,
-        explicit_roots=project_paths if project_paths else None,
-        vision_context=constraints_hint.get("vision_context", "") if constraints_hint else "",
-    )
-
-    if multi_file_op.total_occurrences == 0 and not multi_file_op.error_message:
-        return SpecGateResult(
-            ready_for_pipeline=False,
-            open_questions=[
-                f"No matches found for '{multi_file_meta.get('search_pattern')}' in {project_paths}."
-            ],
-            spec_version=round_n,
-            validation_status="needs_clarification",
-        )
-
-    if multi_file_op.error_message:
-        return SpecGateResult(
-            ready_for_pipeline=False,
-            blocking_issues=[f"Scan error: {multi_file_op.error_message}"],
-            spec_version=round_n,
-            validation_status="blocked",
-        )
-
-    if _DIRECT_BUILDER_AVAILABLE and multi_file_op.raw_matches:
-        spot_markdown = build_direct_spec(
-            search_term=multi_file_op.search_pattern,
-            replace_term=multi_file_op.replacement_pattern,
-            raw_matches=multi_file_op.raw_matches,
-            goal=goal,
-            total_files=multi_file_op.total_files,
-        )
-    else:
-        spot_markdown = multi_file_op.classification_markdown
-        if not spot_markdown:
-            spot_markdown = (
-                f"# SPoT Spec — {multi_file_op.search_pattern} → {multi_file_op.replacement_pattern}\n\n"
-                f"## Goal\n{goal}\n\n"
-                f"## Evidence\nFound **{multi_file_op.total_occurrences}** in **{multi_file_op.total_files} files**\n\n"
-                f"## Acceptance\n- [ ] App boots\n- [ ] Changes applied\n"
-            )
-
-    return multi_file_op, spot_markdown
 
 
 async def _handle_create_path(

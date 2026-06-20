@@ -43,15 +43,6 @@ from .spec_gate_parsers import (
     extract_filename_from_text,
 )
 
-# v2.2: Auto-generate steps instead of asking user
-try:
-    from .step_generator import generate_steps_from_task, should_ask_for_steps
-    STEP_GENERATOR_AVAILABLE = True
-except ImportError:
-    STEP_GENERATOR_AVAILABLE = False
-    generate_steps_from_task = None
-    should_ask_for_steps = None
-
 
 def _auto_generate_steps(objective: str, outputs: list, content_verbatim: str, location: str) -> list:
     """
@@ -226,19 +217,11 @@ async def run_spec_gate_v2(
         # v2.2: AUTO-GENERATE STEPS if missing - NEVER ask user
         # The system figures out HOW, user specifies WHAT
         if not steps:
-            # Try external step_generator first (more sophisticated)
-            if STEP_GENERATOR_AVAILABLE and generate_steps_from_task:
-                steps = generate_steps_from_task(
-                    objective=objective,
-                    outputs=outputs,
-                    content_verbatim=cv,
-                    location=loc,
-                )
-            
-            # Fall back to built-in generator
-            if not steps:
-                steps = _auto_generate_steps(objective, outputs, cv, loc)
-            
+            # Auto-generate steps with the built-in generator.
+            # (external step_generator path retired 2026-06-20 - it never loaded;
+            #  the real module was app/capabilities/step_generator.py, now quarantined.)
+            steps = _auto_generate_steps(objective, outputs, cv, loc)
+
             if steps:
                 logger.info("[spec_gate_v2] Auto-generated %d steps (user not asked)", len(steps))
 
