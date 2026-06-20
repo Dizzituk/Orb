@@ -8,7 +8,6 @@ Evidence fulfilment loop for SpecGate CREATE path.
 
 Parses EVIDENCE_REQUEST blocks from LLM analysis, reads requested files
 from host filesystem, and re-prompts LLM with real evidence.
-from app.pot_spec.grounded._sbx_fs import _sbx_isfile, _sbx_isdir, _sbx_exists
 Extracted from simple_create.py.
 """
 from __future__ import annotations
@@ -28,6 +27,7 @@ from app.pot_spec.grounded._simple_create_utils_14 import (
     _host_list_directory,
 )
 from app.pot_spec.grounded._simple_create_utils_15 import _host_read_file
+from app.pot_spec.grounded._sbx_fs import _sbx_isfile, _sbx_isdir, _sbx_exists
 from app.pot_spec.grounded._stage_reasoning import spec_gate_reasoning, spec_gate_timeout_seconds
 
 logger = logging.getLogger(__name__)

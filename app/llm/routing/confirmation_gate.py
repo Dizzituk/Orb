@@ -232,7 +232,7 @@ def should_confirm_model_escalation(
             from app.db import get_db_session
             _adj_db = get_db_session()
             try:
-                adjustment = _get_conf_adj(_adj_db, intent, [])
+                adjustment = _get_conf_adj(_adj_db, f"{from_tier}_to_{to_tier}", [])
                 adjusted_confidence = min(1.0, max(0.0, confidence + adjustment))
             finally:
                 _adj_db.close()

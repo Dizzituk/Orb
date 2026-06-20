@@ -2,7 +2,7 @@
 # Purpose: Clone freshness gate (2026-06-10, proving-run session).
 # Called-by: app.orchestrator.segment_loop, app.pipeline_v2.verifier_agent.agent, tests.test_clone_freshness_smoke
 # Depends-on: app.pipeline_v2.sandbox_tools
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-06-17 (Job 03: + clone dependency-freshness check)
 """
 Clone freshness gate (2026-06-10, proving-run session).
 
@@ -18,6 +18,11 @@ single builder cycle runs, it proves the estate is COHERENT:
      truth; uncommitted host work means the clone cannot match it).
   2. HEADS MATCH - clone is on the same commit as the host.
   3. CLONE CLEAN - no leftover debris from prior runs in the clone tree.
+  4. DEPS FRESH   - (advisory) the clone's installed deps match its manifests
+     (node_modules vs package.json/lockfile; venv vs requirements.txt), so drift
+     like a missing @univerjs install is caught HERE, proactively, not at boot.
+     Advisory by default (surfaced, non-blocking). Set ASTRA_CLONE_DEPS_GATE=1 to
+     make staleness block the self-build; ASTRA_CLONE_DEPS_CHECK=0 to skip the probe.
 
 Why so strict: building on a stale clone wastes the whole run, and
 promoting from one ROLLS LIVE WORK BACKWARDS - promote diffs clone-vs-host
@@ -73,6 +78,8 @@ class RepoFreshness:
     clone_dirty: int = -1
     ok: bool = False
     reason: str = ""
+    deps_stale: int = -1     # -1 unchecked, 0 fresh, 1 stale
+    deps_reason: str = ""
 
 
 @dataclass
@@ -93,6 +100,8 @@ class FreshnessResult:
             )
             if not r.ok and r.reason:
                 lines.append(f"           -> {r.reason}")
+            if r.deps_stale == 1:
+                lines.append(f"           -> deps stale - install needed: {r.deps_reason}")
         lines.append(f"   VERDICT: {'FRESH - self-build may proceed' if self.ok else 'NOT COHERENT - self-build refused'}")
         if not self.ok:
             lines.append("   Fix: commit + push on the host, then on the VM:")
@@ -148,6 +157,72 @@ async def _clone_git(root: str) -> Tuple[str, int, str]:
     return head, dirty, ""
 
 
+# ---------------------------------------------------------------------------
+# Dependency freshness (advisory): is the clone's installed dep tree in step with
+# its manifests? node_modules vs package.json/lockfile; venv vs requirements.txt.
+# Ecosystem is auto-detected from which manifest exists, so no path/name hardcoding.
+# ---------------------------------------------------------------------------
+
+def _deps_check_enabled() -> bool:
+    return os.getenv("ASTRA_CLONE_DEPS_CHECK", "1").strip().lower() not in ("0", "false", "no", "")
+
+
+def _deps_gate_enabled() -> bool:
+    return os.getenv("ASTRA_CLONE_DEPS_GATE", "").strip().lower() in ("1", "true", "yes")
+
+
+_DEPS_PROBE_TEMPLATE = r"""
+$root='__ROOT__'
+$pkg = Join-Path $root 'package.json'
+$lock = Join-Path $root 'package-lock.json'
+$nm = Join-Path $root 'node_modules'
+$req = Join-Path $root 'requirements.txt'
+$venv = Join-Path $root '.venv'
+function NewestUtc($paths) { $t=$null; foreach ($p in $paths) { if (Test-Path -LiteralPath $p) { $w=(Get-Item -LiteralPath $p).LastWriteTimeUtc; if (-not $t -or $w -gt $t) { $t=$w } } }; return $t }
+if (Test-Path -LiteralPath $pkg) {
+  if (-not (Test-Path -LiteralPath $nm)) { 'DEPS_STALE node_modules missing (npm install needed)' }
+  else {
+    $marker = Join-Path $nm '.package-lock.json'
+    $inst = if (Test-Path -LiteralPath $marker) { (Get-Item -LiteralPath $marker).LastWriteTimeUtc } else { (Get-Item -LiteralPath $nm).LastWriteTimeUtc }
+    $man = NewestUtc @($pkg,$lock)
+    if ($man -and $man -gt $inst) { 'DEPS_STALE node_modules older than package.json/lockfile (npm install needed)' } else { 'DEPS_OK node' }
+  }
+} elseif (Test-Path -LiteralPath $req) {
+  if (-not (Test-Path -LiteralPath $venv)) { 'DEPS_OK python (no .venv to compare)' }
+  else {
+    $sp = Join-Path $venv 'Lib\site-packages'
+    $inst = if (Test-Path -LiteralPath $sp) { (Get-Item -LiteralPath $sp).LastWriteTimeUtc } else { (Get-Item -LiteralPath $venv).LastWriteTimeUtc }
+    $man = NewestUtc @($req)
+    if ($man -and $man -gt $inst) { 'DEPS_STALE requirements.txt newer than venv site-packages (pip install needed)' } else { 'DEPS_OK python' }
+  }
+} else { 'DEPS_NA no package.json or requirements.txt' }
+""".strip()
+
+
+def _deps_probe_ps(root: str) -> str:
+    return _DEPS_PROBE_TEMPLATE.replace("__ROOT__", root)
+
+
+async def _clone_deps(root: str) -> Tuple[int, str, str]:
+    """(stale_flag, reason, error) for dependency freshness in the clone.
+    stale_flag: -1 unknown/error, 0 fresh, 1 stale. Never raises."""
+    from app.pipeline_v2.sandbox_tools import run_shell
+    try:
+        res = await run_shell(_deps_probe_ps(root), timeout_sec=30, profile=None)
+    except Exception as exc:
+        return -1, "", f"deps probe failed: {exc}"[:200]
+    if not isinstance(res, dict):
+        return -1, "", "deps probe: no result (VM down?)"
+    out = (res.get("stdout") or "").strip()
+    line = next((l.strip() for l in out.splitlines() if l.strip().startswith("DEPS_")), "")
+    if not line:
+        err = (res.get("stderr") or "").strip()
+        return -1, "", (err or "deps probe: no DEPS_ marker in output")[:200]
+    if line.startswith("DEPS_STALE"):
+        return 1, line[len("DEPS_STALE"):].strip(" -"), ""
+    return 0, line, ""
+
+
 async def check_clone_freshness(profile: Any = None) -> FreshnessResult:
     """Run the gate. Never raises."""
     if os.getenv("ASTRA_SKIP_CLONE_FRESHNESS", "").strip().lower() in ("1", "true", "yes"):
@@ -185,6 +260,18 @@ async def check_clone_freshness(profile: Any = None) -> FreshnessResult:
             )
         else:
             repo.ok = True
+
+        # Dependency freshness (advisory by default): only meaningful when the clone is
+        # reachable. Surfaces drift like a missing @univerjs install proactively. Blocks
+        # the self-build only when ASTRA_CLONE_DEPS_GATE is set.
+        if _deps_check_enabled() and c_head and not c_err:
+            d_stale, d_reason, d_err = await _clone_deps(root)
+            repo.deps_stale = d_stale
+            repo.deps_reason = d_reason or d_err
+            if d_stale == 1 and _deps_gate_enabled():
+                repo.ok = False
+                if not repo.reason:
+                    repo.reason = f"deps stale - install needed: {d_reason}"
 
         if not repo.ok:
             result.ok = False

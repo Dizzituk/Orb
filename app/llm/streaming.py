@@ -2,7 +2,7 @@
 # Purpose: Orb Streaming LLM Module
 # Called-by: app.bridge.capability_layer, app.llm._streaming_utils_2, app.llm._streaming_utils_3, app.llm._weaver_stream_utils_14 (+12 more)
 # Depends-on: app.llm._streaming_utils_2, app.llm._streaming_utils_3
-# Last-renovated: 2026-06-14 (cap OpenAI tools at 128 to prevent array_above_max_length 400)
+# Last-renovated: 2026-06-18 (selfheal_sandbox_boot added to the 128-cap essentials allowlist; 2026-06-17 sandbox + spawn_agents; 2026-06-14 added the cap)
 """
 Orb Streaming LLM Module
 
@@ -262,9 +262,27 @@ async def stream_openai(
                 # OpenAI ignores tool order, so this changes only WHICH tools are
                 # cut, never behaviour. (128 is OpenAI's hard array limit.)
                 _ESSENTIAL_TOOLS = {
+                    # Food / recipe tools (the 2026-06-15 casualties — see above).
                     "log_nutrition", "resolve_nutrition", "save_recipe", "log_recipe",
                     "get_recent_nutrition", "get_today_summary", "get_health_history",
                     "log_weight", "log_workout", "log_exercise",
+                    # Debug-brain sandbox + delegation tools. Appended last in the
+                    # write tier, so the cap cut them (live 2026-06-17: 130 > 128
+                    # dropped check_sandbox_status + read_sandbox_boot), leaving the
+                    # sandbox self-heal loop with no read tool so the agent freelanced
+                    # run_command and misread controller :8765 for clone backend :8000.
+                    # Operative tools for "boot in the sandbox" — must survive the cap.
+                    # inspect_sandbox_boot (WI-3/WI-4) is the full visual loop (backend
+                    # readout + screenshot/OCR) and is appended last in the write tier,
+                    # so it would be a prime drop candidate — keep it essential too.
+                    "start_sandbox_clone", "stop_sandbox_clone", "check_sandbox_status",
+                    "read_sandbox_boot", "inspect_sandbox_boot", "spawn_agents",
+                    # selfheal_sandbox_boot (Job 03) is the ONE-CALL boot+wait+inspect+fix
+                    # loop and the PREFERRED tool for any "boot the sandbox" request. It is
+                    # appended last in the write tier, so the cap dropped it (live 2026-06-18:
+                    # 132 > 128 dropped selfheal_sandbox_boot) -- the model then never saw it
+                    # and freelanced bare start_sandbox_clone. It MUST survive the cap.
+                    "selfheal_sandbox_boot",
                 }
                 _essential = [t for t in openai_tools
                               if t["function"]["name"] in _ESSENTIAL_TOOLS]

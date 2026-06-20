@@ -29,6 +29,7 @@ v1.0 (2026-01): Initial implementation for Plateau 1 coverage
 
 import ast
 import json
+import logging
 import os
 import re
 import sys
@@ -37,6 +38,8 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Dict, List, Set, Any, Optional, Tuple
 from collections import defaultdict
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================

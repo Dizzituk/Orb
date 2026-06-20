@@ -74,6 +74,21 @@ def collect_recall(
         return ""
 
 
+def collect_coverage(db: Session, project_id: int, user_message: str) -> str:
+    """Conversation coverage block ([CONVERSATION_COVERAGE]) — Nat Job 1.
+
+    A cheap, non-decaying enumeration of every topic discussed this session,
+    read from the keyword trail. Only fires on a recall question ("what did we
+    talk about", "summarise our chat"); empty otherwise. Pairs with the lossy
+    summary: summary synthesises, coverage enumerates."""
+    try:
+        from app.memory.nat_jobs.coverage import build_coverage_block
+        return build_coverage_block(db, project_id, user_message) or ""
+    except Exception as exc:
+        logger.debug("[mem_sources] coverage skipped: %s", exc)
+        return ""
+
+
 def collect_router(user_message: str, project_id) -> str:
     """Legacy MemoryRouter keyword block ([MEMORY CONTEXT]).
 
@@ -165,6 +180,8 @@ def assemble_block(
     graph_text: str = "",
     summary_text: str = "",
     recall_text: str = "",
+    coverage_text: str = "",
+    enrichment_text: str = "",
     repo_context: str = "",
     router_text: str = "",
 ) -> str:
@@ -187,6 +204,11 @@ def assemble_block(
         (graph_text, "", ""),
         (summary_text, "", ""),
         (recall_text, "", ""),
+        # Nat Job 1 (coverage) + Job 2 (enrichment) — already carry their own
+        # [MARKER]s, so empty wrappers. Coverage sits with the conversation
+        # sources; enrichment (fetched real data) right after it.
+        (coverage_text, "", ""),
+        (enrichment_text, "", ""),
         (repo_context, "<codebase_memory>\n", "\n</codebase_memory>"),
         (router_text, "", ""),
     ]
@@ -249,6 +271,7 @@ __all__ = [
     "recent_window_ids",
     "collect_summary",
     "collect_recall",
+    "collect_coverage",
     "collect_router",
     "assemble_block",
     "log_block_stats",

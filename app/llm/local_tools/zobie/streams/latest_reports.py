@@ -125,7 +125,7 @@ async def generate_latest_architecture_map_stream(
         provider="local",
         model="latest_report_resolver",
         success=True,
-        extra={
+        meta={
             "filename": resolved.filename,
             "mtime": resolved.mtime.isoformat() if resolved.mtime else None,
             "size_bytes": resolved.size_bytes,
@@ -207,7 +207,7 @@ async def generate_latest_codebase_report_full_stream(
         provider="local",
         model="latest_report_resolver",
         success=True,
-        extra={
+        meta={
             "filename": resolved.filename,
             "mtime": resolved.mtime.isoformat() if resolved.mtime else None,
             "size_bytes": resolved.size_bytes,

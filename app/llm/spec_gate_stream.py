@@ -191,7 +191,7 @@ async def generate_spec_gate_stream(
             if not _profile:
                 try:
                     from app.pipeline_v2.target_registry import resolve_project_from_message
-                    _detected = resolve_project_from_message(combined_text)
+                    _detected = resolve_project_from_message(message)
                     if _detected:
                         _profile = _detected
                 except Exception:

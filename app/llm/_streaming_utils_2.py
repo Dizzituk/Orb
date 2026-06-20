@@ -14,6 +14,7 @@ DEFAULT_MODEL_ENV = {
     "openai": "OPENAI_DEFAULT_MODEL",
     "anthropic": "ANTHROPIC_DEFAULT_MODEL",
     "google": "GOOGLE_DEFAULT_MODEL",  # for gemini/google routes
+    "vllm_local": "NAT_MODEL",  # local vLLM worker "Nat"
 }
 
 ROUTE_MODEL_ENV = {
@@ -35,6 +36,14 @@ ROUTE_MODEL_ENV = {
         "budget": "GOOGLE_BUDGET_MODEL",
         "spec_gate": "GOOGLE_SPEC_GATE_MODEL",
     },
+    "vllm_local": {
+        # Nat is one worker; routes all resolve to NAT_MODEL unless a caller
+        # later wants tiered local models (env vars can be added then).
+        "default": "NAT_MODEL",
+        "high_stakes": "NAT_MODEL",
+        "budget": "NAT_MODEL",
+        "spec_gate": "NAT_MODEL",
+    },
 }
 
 def _env_model(var_name: str) -> Optional[str]:
@@ -52,12 +61,18 @@ def get_available_streaming_providers() -> Dict[str, bool]:
     ollama_url = os.getenv("OLLAMA_BASE_URL", "")
     ollama_available = bool(ollama_url)
 
+    # vLLM local worker "Nat" — available if a base URL is configured (no key).
+    vllm_url = os.getenv("VLLM_BASE_URL", "")
+    vllm_available = bool(vllm_url)
+
     result = {
         "openai": HAS_OPENAI and bool(os.getenv("OPENAI_API_KEY")),
         "anthropic": HAS_ANTHROPIC and bool(os.getenv("ANTHROPIC_API_KEY")),
         "google": HAS_GEMINI and bool(os.getenv("GOOGLE_API_KEY")),
         "ollama": ollama_available,
         "local": ollama_available,  # Alias for ollama
+        "vllm": vllm_available,
+        "vllm_local": vllm_available,
     }
     # v3.2 debug: log key lengths so we can diagnose sync issues
     _oai = os.getenv("OPENAI_API_KEY", "")

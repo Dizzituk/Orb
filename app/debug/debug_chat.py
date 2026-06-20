@@ -346,7 +346,7 @@ async def stream_debug_locked(
     message: str,
     panel_history: list,
     provider: str = "openai",
-    model: str = "gpt-5.4",
+    model: Optional[str] = None,
     debug_project_id: Optional[str] = None,
     video_file_uri: Optional[str] = None,
     video_mime_type: Optional[str] = None,
@@ -357,6 +357,7 @@ async def stream_debug_locked(
     file_upload_local_path: Optional[str] = None,
     file_upload_gemini_name: Optional[str] = None,
     documents: Optional[list] = None,
+    reasoning_dial: Optional[str] = None,
 ) -> AsyncGenerator[bytes, None]:
     """Stream handler for debug-locked sidebar chat.
 
@@ -599,7 +600,7 @@ async def stream_debug_locked(
         # ═══════════════════════════════════════════════════════════════
 
         # 3. Build system prompt
-        system_prompt = build_debug_system_prompt(context_block)
+        system_prompt = build_debug_system_prompt(context_block, reasoning_dial=reasoning_dial)
         system_prompt += (
             "\n\n## Debug Lock Mode — Claude Opus\n"
             "You are in DEBUG LOCK mode with FULL tool access.\n"
@@ -722,9 +723,10 @@ async def stream_debug_locked(
         except Exception as corr_err:
             logger.debug("[debug_locked] Corrections load failed: %s", corr_err)
 
-        # 5. Emit metadata — now Claude Opus, not Gemini
+        # 5. Emit metadata - Debug brain model from ENV (DEBUG_CHAT_MODEL -> OPENAI_DEFAULT_MODEL); no hardcode (spec section 3)
+        from app.debug.debug_model_config import get_debug_chat_model
         actual_provider = "openai"
-        actual_model = "gpt-5.4"
+        actual_model = (model or "").strip() or get_debug_chat_model()
         yield _sse({"type": "metadata", "provider": actual_provider, "model": actual_model})
 
         # 6. Get write-tier tools in Anthropic format
@@ -770,6 +772,13 @@ async def stream_debug_locked(
 
             elif chunk_type == "reasoning":
                 yield _sse({"type": "reasoning", "content": chunk.get("text", "")})
+
+            elif chunk_type == "narration" or chunk_type.startswith("subagent"):
+                # Phase-level narration (intent / reflection lines, debug-visibility
+                # spec) + sub-agent fan-out activity from spawn_agents (subagent_spawn /
+                # _start / _progress / _complete / _spawn_complete) -- forward verbatim
+                # so the frontend renders the plan lines + the live fan-out box.
+                yield _sse(chunk)
 
             elif chunk_type == "done":
                 # Extract usage if present

@@ -11,7 +11,7 @@ SPEC_RUNNER_BUILD_ID = "2026-02-14-v5.6-size-analyzer-integration"
 
 _ARCH_INDEX_DIR = os.getenv("ASTRA_ARCH_INDEX_DIR", os.path.join("D:\\", "Orb", ".architecture"))
 
-_ARCH_REPORT_DIR = os.getenv("ASTRA_ARCH_REPORT_DIR", os.path.join("D:\\", "Orb.architecture"))
+_ARCH_REPORT_DIR = os.getenv("ASTRA_ARCH_REPORT_DIR", os.path.join("D:\\", "Orb", ".architecture"))
 
 _PRODUCT_SYNONYMS_RAW = os.getenv("ASTRA_PRODUCT_SYNONYMS", "orb=astra")
 

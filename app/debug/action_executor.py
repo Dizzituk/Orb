@@ -120,6 +120,11 @@ from app.debug.executors._paths import (  # noqa: F401
     read_host_file as _read_host_file,
 )
 
+# WI-2 (2026-06-17, sandbox-visual-selfheal): host run_command is wrapped so every
+# command + its output is echoed into a persistent visible "ASTRA console" window.
+# The wrapper is transparent -- it returns exactly what execute_run_command returns.
+from app.debug.host_console import run_command_visible
+
 logger = logging.getLogger(__name__)
 
 
@@ -142,7 +147,7 @@ TOOL_HANDLERS = {
     # Write (sandbox or host depending on path)
     "write_file":          execute_write_file,
     "edit_file":           execute_edit_file,
-    "run_command":         execute_run_command,
+    "run_command":         run_command_visible,   # visible-console wrapper (WI-2)
     # ADB emulator tools
     "emulator_screenshot": execute_emulator_screenshot,
     "emulator_ui_dump":    execute_emulator_ui_dump,

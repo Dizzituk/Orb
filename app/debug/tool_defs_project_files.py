@@ -167,9 +167,12 @@ EDIT_FILE_TOOL = {
 RUN_COMMAND_TOOL = {
     "name": "run_command",
     "description": (
-        "Execute a PowerShell command in the sandbox. Returns stdout and stderr. "
-        "Use for running tests, checking process status, installing packages, etc. "
-        "SANDBOX ONLY — commands cannot affect the host."
+        "Run a READ-ONLY / diagnostic PowerShell command ON THE HOST (tests, compile "
+        "checks, ripgrep, list files, process status). Returns stdout and stderr. This does "
+        "NOT route to the sandbox. It will REFUSE to launch/boot anything (npm run, electron, "
+        "uvicorn, app boots) or mutate files inside a protected repo (D:/Orb, D:/orb-desktop). "
+        "To BOOT or RUN ASTRA use the sandbox clone; to CHANGE ASTRA's code use "
+        "edit_file/write_file (auto-routed to the sandbox)."
     ),
     "parameters": {
         "type": "object",

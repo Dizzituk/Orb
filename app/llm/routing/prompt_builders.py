@@ -505,6 +505,7 @@ def build_full_context(
     project_id: int,
     message: str,
     use_semantic_search: bool = True,
+    enrichment_text: str = "",
 ) -> str:
     """
     Build full context string from multiple sources.
@@ -624,10 +625,23 @@ def build_full_context(
     # recall + MemoryRouter behind the ONE D0-D4 depth gate, de-duped so a
     # fact surfaces at most once. The desktop-streaming and phone chat paths
     # reach memory context ONLY through here.
+    # Nat Job 2 (enrichment): a pre-reply semantic pass. Nat SUGGESTS what stored
+    # info to look up; the deterministic retriever fetches it (Nat never sees the
+    # data). Strictly time-boxed + circuit-breakered so it can't slow a reply; it
+    # rides INTO the de-duped front-door block via enrichment_text. If the caller
+    # already computed one, we use it; otherwise compute it here (bounded).
+    if not enrichment_text:
+        try:
+            from app.memory.nat_jobs.enrichment import build_enrichment_block_sync
+            enrichment_text = build_enrichment_block_sync(project_id, message)
+        except Exception as _enr_err:
+            print(f"[CONTEXT] Enrichment skipped (non-fatal): {_enr_err}")
+
     try:
         from app.llm.routing.memory_injection import build_memory_block
         memory_block = build_memory_block(
             db, user_message=message, project_id=project_id,
+            enrichment_text=enrichment_text,
         )
         if memory_block:
             full_context += "\n\n" + memory_block

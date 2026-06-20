@@ -619,6 +619,47 @@ async def set_goal_handler(input_data: dict, context: Optional[dict]) -> dict:
     }
 
 
+async def set_deficit_handler(input_data: dict, context: Optional[dict]) -> dict:
+    """Set (or clear) the user's daily calorie DEFICIT live. Overrides the
+    gentle/moderate/aggressive pace default and flows straight into today's
+    dynamic intake target -- no code edit. deficit_kcal=0/null clears it and
+    reverts to the pace default. Returns today's recomputed target."""
+    raw = input_data.get("deficit_kcal")
+    notes = input_data.get("notes")
+    notes = str(notes).strip() if notes else None
+    clear = raw is None or raw == "" or (isinstance(raw, (int, float)) and float(raw) <= 0)
+    try:
+        from app.lifestyle.service import set_goal
+        from app.lifestyle.energy_ledger import compute_today_target
+        from app.lifestyle.models import LifestyleGoal
+        with _db_session() as db:
+            if clear:
+                for g in (db.query(LifestyleGoal)
+                          .filter(LifestyleGoal.goal_type == "deficit",
+                                  LifestyleGoal.is_active == True).all()):
+                    g.is_active = False
+                db.commit()
+                deficit_val, source = None, "pace_default"
+            else:
+                deficit_val = max(0, min(int(round(float(raw))), 2000))
+                set_goal(db, goal_type="deficit", target_value=deficit_val,
+                         unit="kcal", notes=notes)
+                source = "custom"
+            try:
+                tgt = compute_today_target(db).get("target_calories")
+            except Exception:
+                tgt = None
+    except Exception as exc:
+        logger.exception("[lifestyle_tools] set_deficit failed")
+        return {"ok": False, "deficit_kcal": None, "error": str(exc)}
+    return {
+        "ok": True,
+        "deficit_kcal": deficit_val,
+        "today_target_calories": int(tgt) if tgt else None,
+        "source": source,
+    }
+
+
 async def set_profile_handler(input_data: dict, context: Optional[dict]) -> dict:
     """
     Create or update the user's body profile (height, sex, age/dob, activity
@@ -802,4 +843,22 @@ def register_lifestyle_tools() -> None:
         handler=set_goal_handler,
     ))
 
-    logger.info("[lifestyle_tools] registered 7 health coaching tools")
+    register_tool(ToolDefinition(
+        name="set_deficit",
+        version="v1",
+        description=(
+            "Set the user's daily calorie DEFICIT in kcal -- the live lever that "
+            "decides how hard their cut is. Use this when they want to change how "
+            "aggressive the cut is (e.g. 'make my deficit 300 instead of 550'). It "
+            "overrides the gentle/moderate/aggressive pace default and flows straight "
+            "into today's intake target, live, with no code change. Discuss the number "
+            "with them first (~300 is a gentle, sustainable cut that's easy to hold; "
+            "~550 moderate). Pass deficit_kcal=0 (or null) to clear it and fall back to "
+            "the pace default. Returns today's recomputed target so you can confirm it."
+        ),
+        input_schema=TOOL_SCHEMAS["set_deficit"]["input"],
+        output_schema=TOOL_SCHEMAS["set_deficit"]["output"],
+        handler=set_deficit_handler,
+    ))
+
+    logger.info("[lifestyle_tools] registered 8 health coaching tools")

@@ -66,3 +66,22 @@ def add_size_warning(content: str, path: str) -> str:
         f"{sep}\n\n"
     )
     return warning + content
+
+
+_BANNER_END = "=" * 60 + "\n\n"
+
+
+def strip_size_warning(content: str) -> str:
+    """Inverse of add_size_warning: drop a previously-prepended SIZE ALERT banner.
+
+    Idempotent; returns content unchanged when no banner is present. edit_file
+    uses this so the banner (a reasoning aid for the model) never round-trips
+    into a written file -- its non-ASCII header line (starts 'SIZE ALERT ')
+    would otherwise become line 1 of the source and trip the syntax guard
+    (invalid character U+2014 at line 1, col 12).
+    """
+    if content.startswith("SIZE ALERT "):
+        end = content.find(_BANNER_END)
+        if end != -1:
+            return content[end + len(_BANNER_END):]
+    return content

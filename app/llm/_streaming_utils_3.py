@@ -520,6 +520,16 @@ async def stream_llm(
             tools=tools, max_tokens=max_tokens, timeout_seconds=timeout_seconds,
         ):
             yield event
+    elif provider in ("vllm", "vllm_local"):
+        # Local vLLM OpenAI-compatible server — serves the agent worker "Nat"
+        # (and, later, the parallel 26B fleet). OpenAI-shaped, so tools +
+        # tool_use deltas flow through exactly like the openai branch.
+        from app.llm.streaming_vllm import stream_vllm
+        async for event in stream_vllm(
+            messages, system_prompt, model, enable_reasoning, route,
+            tools=tools, max_tokens=max_tokens, timeout_seconds=timeout_seconds,
+        ):
+            yield event
     else:
         print(f"[STREAM_LLM] ERROR: Unknown provider '{provider}'")
         yield {"type": "error", "message": f"Unknown provider '{provider}'"}

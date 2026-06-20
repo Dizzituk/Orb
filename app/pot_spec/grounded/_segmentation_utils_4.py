@@ -176,11 +176,14 @@ def generate_segments(
             grounding_data=grounding,
         )
 
-        # v1.2 (2026-04-12): Phase 1 Job 7b - attach contracts from group dict
+        # v1.2 (2026-04-12): Phase 1 Job 7b - attach contracts from group dict.
+        # Legacy layer-based path iterates `layer` (a name string), not concept
+        # group dicts, so this guard is a no-op here; concept contracts are
+        # attached in _build_manifest_from_concepts. (Was a NameError on `group`.)
         try:
-            if isinstance(group, dict):
-                _exp = _build_contract_from_dict(group.get("exposes"))
-                _con = _build_contract_from_dict(group.get("consumes"))
+            if isinstance(layer, dict):
+                _exp = _build_contract_from_dict(layer.get("exposes"))
+                _con = _build_contract_from_dict(layer.get("consumes"))
                 segment.exposes = _exp
                 segment.consumes = _con
         except Exception as _contract_err:

@@ -77,13 +77,19 @@ class MemoryContext:
     # links (e.g. "investments fund the Portugal move") that vectors can't
     # represent. Opt-in (include_graph), so the envelope path is unchanged.
     graph_text: str = ""
+    # Nat Job 1 (coverage) + Job 2 (enrichment), 2026-06-19. Coverage = the
+    # keyword-trail enumeration on recall questions; enrichment = real data
+    # fetched from queries Nat suggested (computed async by the caller and
+    # passed in). Both already carry their own [MARKER].
+    coverage_text: str = ""
+    enrichment_text: str = ""
 
     def is_empty(self) -> bool:
         """Check if there's anything to inject."""
         return not any((
             self.preferences_text, self.facts_text, self.repo_context,
             self.summary_text, self.recall_text, self.router_text,
-            self.graph_text,
+            self.graph_text, self.coverage_text, self.enrichment_text,
         ))
 
     def format_for_system_prompt(self) -> str:
@@ -102,6 +108,8 @@ class MemoryContext:
             graph_text=self.graph_text,
             summary_text=self.summary_text,
             recall_text=self.recall_text,
+            coverage_text=self.coverage_text,
+            enrichment_text=self.enrichment_text,
             repo_context=self.repo_context,
             router_text=self.router_text,
         )
@@ -204,6 +212,7 @@ def build_memory_context(
     include_conversation: bool = False,
     include_router: bool = False,
     include_graph: bool = False,
+    enrichment_text: str = "",
 ) -> MemoryContext:
     """
     Build memory context for injection.
@@ -403,6 +412,7 @@ def build_memory_context(
     # the envelope path (no project_id) leaves them empty by construction.
     summary_text = ""
     recall_text = ""
+    coverage_text = ""
     router_text = ""
     if project_id is not None and (include_conversation or include_router):
         from app.llm.routing import memory_injection_sources as _src
@@ -412,6 +422,8 @@ def build_memory_context(
         if include_conversation:
             summary_text = _src.collect_summary(db, project_id)
             recall_text = _src.collect_recall(db, project_id, user_message, win)
+            # Nat Job 1: topic enumeration on recall questions (cheap DB read).
+            coverage_text = _src.collect_coverage(db, project_id, user_message)
         if include_router:
             router_text = _src.collect_router(user_message, project_id)
 
@@ -435,6 +447,7 @@ def build_memory_context(
     total_text = (
         preferences_text + facts_text + repo_context
         + summary_text + recall_text + router_text + graph_text
+        + coverage_text + enrichment_text
     )
     token_estimate = len(total_text) // 4
 
@@ -450,6 +463,8 @@ def build_memory_context(
         recall_text=recall_text,
         router_text=router_text,
         graph_text=graph_text,
+        coverage_text=coverage_text,
+        enrichment_text=enrichment_text,
     )
 
 
@@ -494,6 +509,7 @@ def build_memory_block(
     job_type: Optional[str] = None,
     component: str = "llm_router",
     conversation_only: bool = False,
+    enrichment_text: str = "",
 ) -> str:
     """THE single memory front door (MEMORY_MAP.md §2).
 
@@ -529,8 +545,10 @@ def build_memory_block(
                 win = _src.recent_window_ids(db, project_id)
             summary_text = _src.collect_summary(db, project_id)
             recall_text = _src.collect_recall(db, project_id, user_message, win)
+            coverage_text = _src.collect_coverage(db, project_id, user_message)
             block = _src.assemble_block(
                 summary_text=summary_text, recall_text=recall_text,
+                coverage_text=coverage_text, enrichment_text=enrichment_text,
             )
             # Job 2 (task 3): make the voice-path lost-middle signature
             # observable — recall=n summary=n block=0 on a long session = the bug.
@@ -550,6 +568,7 @@ def build_memory_block(
             include_conversation=True,
             include_router=True,
             include_graph=True,
+            enrichment_text=enrichment_text,
         )
         block = ctx.format_for_system_prompt()
         from app.llm.routing import memory_injection_sources as _src

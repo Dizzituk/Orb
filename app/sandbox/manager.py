@@ -14,6 +14,7 @@ a test environment, run experiments, and validate changes.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -57,7 +58,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 # Start backend in separate window
 $env:ORB_MASTER_KEY = 'MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE='
-Start-Process powershell -ArgumentList '-NoExit', '-Command', "cd C:\Orb\Orb; `$env:ORB_MASTER_KEY='MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE='; Write-Host 'ZOMBIE BACKEND STARTING...' -ForegroundColor Yellow; python -m uvicorn main:app --host 0.0.0.0 --port 8000"
+Start-Process powershell -ArgumentList '-NoExit', '-Command', "cd __BACKEND_DIR__; `$env:ORB_MASTER_KEY='MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE='; Write-Host 'ZOMBIE BACKEND STARTING...' -ForegroundColor Yellow; python -m uvicorn main:app --host 0.0.0.0 --port 8000"
 
 Write-Host "Waiting for backend to initialize..." -ForegroundColor Yellow
 Start-Sleep -Seconds 4
@@ -66,7 +67,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  Starting Frontend..." -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Cyan
 
-Set-Location C:\Orb\orb-desktop
+Set-Location __FRONTEND_DIR__
 npm run electron:dev
 '''
 
@@ -76,7 +77,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  ZOMBIE ORB BACKEND STARTING" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Cyan
 
-cd C:\Orb\Orb
+cd __BACKEND_DIR__
 $env:ORB_MASTER_KEY = 'MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE='
 python -m uvicorn main:app --host 0.0.0.0 --port 8000
 '''
@@ -158,29 +159,49 @@ class SandboxManager:
         if not controller_ok:
             return False, "Cannot reach sandbox controller. Start Windows Sandbox first."
 
-        # Check if already running
+        # A prior clone (healthy OR half-dead and still holding :8000/:5173)
+        # must be cleared first, or the fresh boot conflicts on those ports.
+        # The stop is PORT-SCOPED -- it never touches the :8765 controller.
         backend_ok, _ = self.check_backend()
         if backend_ok:
-            return True, "🧟 Zombie Orb is already running!"
+            logger.info("Clone already running; stopping it for a fresh boot")
+        self._safe_stop()
+        time.sleep(2)
 
         try:
-            # Write startup script
-            script = FULL_ORB_STARTUP_SCRIPT if full else BACKEND_ONLY_STARTUP_SCRIPT
+            # Resolve the clone's real layout from the live controller -- never
+            # hardcode a drive root; the sandbox reports its REPO_ROOT (e.g. D:\Orb).
+            repo_root = self.client.health().repo_root.rstrip("\\/")
+            backend_dir = repo_root
+            frontend_dir = os.path.join(os.path.dirname(repo_root), "orb-desktop")
             script_name = "start_zombie_orb.ps1"
+            script_path = os.path.join(repo_root, script_name)
+            script = FULL_ORB_STARTUP_SCRIPT if full else BACKEND_ONLY_STARTUP_SCRIPT
+            script = script.replace("__BACKEND_DIR__", backend_dir).replace("__FRONTEND_DIR__", frontend_dir)
             self.client.write_file(
                 target="REPO",
                 filename=script_name,
                 content=script,
                 overwrite=True,
             )
-            logger.info(f"Wrote startup script: C:\\Orb\\{script_name}")
+            logger.info(f"Wrote startup script: {script_path}")
 
-            # Launch it
+            # Launch it. Start-Process returns immediately because the new
+            # window owns its own handles, so the controller's synchronous,
+            # output-capturing /shell/run does NOT block on the never-exiting
+            # -NoExit child the way 'cmd /c start ...' did -- that hang WAS the
+            # boot timeout. The readiness poll below waits for :8000.
             if visible:
-                cmd = f'cmd /c start powershell -NoExit -File C:\\Orb\\{script_name}'
+                cmd = (
+                    "Start-Process -FilePath powershell "
+                    f"-ArgumentList '-NoExit','-NoProfile','-File','{script_path}'"
+                )
             else:
-                cmd = f'powershell -File C:\\Orb\\{script_name}'
-            result = self.client.shell_run(command=cmd, timeout_seconds=10)
+                cmd = (
+                    "Start-Process -FilePath powershell -WindowStyle Hidden "
+                    f"-ArgumentList '-NoProfile','-File','{script_path}'"
+                )
+            result = self.client.shell_run(command=cmd, timeout_seconds=15)
             if not result.ok and result.stderr:
                 return False, f"Failed to launch: {result.stderr[:200]}"
 
@@ -201,6 +222,29 @@ class SandboxManager:
         except Exception as e:
             logger.error(f"Failed to start clone: {e}")
             return False, f"Error starting clone: {e}"
+
+    def _safe_stop(self) -> None:
+        """Best-effort teardown of a clone WITHOUT touching the :8765 controller.
+
+        Port-scoped: kills whatever owns the clone's backend (:8000) and frontend
+        (:5173), plus electron/node, all INSIDE the sandbox VM. Deliberately does
+        NOT filter python by CommandLine (that property is null on PowerShell 5.1,
+        which would match and kill the controller too). Mirrors the self-heal
+        path's safe stop.
+        """
+        ps = (
+            "$ErrorActionPreference='SilentlyContinue';"
+            "foreach ($port in 8000,5173) {"
+            " Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |"
+            " Select-Object -ExpandProperty OwningProcess -Unique |"
+            " ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } };"
+            "Get-Process electron,node -ErrorAction SilentlyContinue |"
+            " Stop-Process -Force -ErrorAction SilentlyContinue"
+        )
+        try:
+            self.client.shell_run(command=ps, timeout_seconds=12)
+        except Exception as e:
+            logger.warning(f"[sandbox] safe-stop best-effort failed: {e}")
 
     def stop_clone(self) -> tuple[bool, str]:
         """Stop the sandbox Orb clone."""

@@ -124,6 +124,8 @@ class SubagentReport(BaseModel):
     files_modified: List[str] = Field(default_factory=list, description="Only non-empty for executors")
     tool_call_count: int = 0
     tokens_used: int = 0
+    tokens_in: int = 0
+    tokens_out: int = 0
     elapsed_ms: int = 0
     error: Optional[str] = None
 
@@ -236,9 +238,11 @@ class OrchestrationEvent(BaseModel):
     event_type: Literal[
         "phase_change",
         "decomposition_complete",
+        "subagent_spawn",
         "subagent_start",
         "subagent_progress",
         "subagent_complete",
+        "subagent_spawn_complete",
         "plan_complete",
         "execution_start",
         "execution_complete",

@@ -18,8 +18,10 @@ HOST = {}
 CLONE = {}
 def fake_host(root): return HOST[root]
 async def fake_clone(root): return CLONE[root]
+async def fake_deps(root): return (0, "DEPS_OK stub", "")  # deps fresh: keep the gate's git assertions isolated
 cf._host_git = fake_host
 cf._clone_git = fake_clone
+cf._clone_deps = fake_deps
 
 def setup(h_head, h_dirty, c_head, c_dirty, c_err=""):
     for _, root in cf.REPO_PAIRS:

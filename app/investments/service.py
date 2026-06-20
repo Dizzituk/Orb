@@ -588,7 +588,7 @@ def fetch_performance(
                 performers.sort(key=lambda p: p.pnl_pct, reverse=True)
                 return PerformanceResponse(
                     best=performers[:5],
-                    worst=list(reversed(performers[-5:])),
+                    worst=list(reversed(performers[max(5, len(performers) - 5):])),
                     range=range_key,
                 )
 
@@ -620,7 +620,7 @@ def fetch_performance(
 
     return PerformanceResponse(
         best=performers[:5],
-        worst=list(reversed(performers[-5:])),
+        worst=list(reversed(performers[max(5, len(performers) - 5):])),
         range=range_key,
     )
 

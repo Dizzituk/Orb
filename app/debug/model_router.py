@@ -1,7 +1,7 @@
 # FILE: app/debug/model_router.py
 # Purpose: Model Router: Routes debug queries to the appropriate LLM based on complexity.
 # Called-by: app.debug.debug_chat
-# Depends-on: stdlib/third-party only
+# Depends-on: app.debug.debug_model_config (stdlib/third-party otherwise)
 # Last-renovated: 2026-06-11
 """
 Model Router: Routes debug queries to the appropriate LLM based on complexity.
@@ -21,6 +21,12 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional
+
+from app.debug.debug_model_config import (
+    default_model,
+    get_debug_agentic_model,
+    get_debug_analysis_model,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,18 +59,18 @@ class RoutingDecision:
 TIER_MODELS = {
     DebugTier.TRIAGE: {
         "provider": "openai",
-        "model": os.getenv("OPENAI_DEFAULT_MODEL", "gpt-5.4-mini"),
+        "model": default_model(),
     },
-    # v2 (2026-04-15): Analysis + Agentic moved from Claude Sonnet to GPT-5.4
-    # per user preference: GPT-5.4 with reasoning_effort=high is better AND
-    # cheaper than Sonnet extended thinking for debug workloads.
+    # v3 (2026-06-17): Analysis + Agentic models sourced from ENV (spec section 3) --
+    # DEBUG_ANALYSIS_MODEL / DEBUG_AGENTIC_MODEL -> DEBUG_CHAT_MODEL ->
+    # OPENAI_DEFAULT_MODEL. No hardcoded model IDs at this selection site.
     DebugTier.ANALYSIS: {
         "provider": "openai",
-        "model": "gpt-5.4",
+        "model": get_debug_analysis_model(),
     },
     DebugTier.AGENTIC: {
         "provider": "openai",
-        "model": "gpt-5.4",
+        "model": get_debug_agentic_model(),
     },
 }
 

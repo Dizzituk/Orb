@@ -528,6 +528,8 @@ async def run_subagent(
         files_modified=all_modified,
         tool_call_count=tool_call_count,
         tokens_used=total_in + total_out,
+        tokens_in=total_in,
+        tokens_out=total_out,
         elapsed_ms=int((time.time() - t_start) * 1000),
         error=err,
     )

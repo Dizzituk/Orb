@@ -116,16 +116,13 @@ class ProviderRegistry:
 
         tool_defs: List[dict] = []
         if enable_tools:
-            from app.tools.registry import get_tool_registry
+            from app.tools.registry import list_tool_definitions
 
-            reg = get_tool_registry()
-            for td in reg.list_tools(status=None):
-                if td.status.value != "enabled":
-                    continue
-                if tool_names and td.tool_name not in tool_names:
+            for td in list_tool_definitions():
+                if tool_names and td.name not in tool_names:
                     continue
                 tool_defs.append(
-                    {"name": td.tool_name, "description": td.description, "input_schema": td.input_schema}
+                    {"name": td.name, "description": td.description, "input_schema": td.input_schema}
                 )
 
         try:

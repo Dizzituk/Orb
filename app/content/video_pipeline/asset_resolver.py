@@ -111,7 +111,7 @@ async def resolve_assets(
                 f"falling back to normal cascade"
             )
 
-        asset = await _resolve_segment(segment, budget, used_clips)
+        asset = await _resolve_segment(segment, budget, used_clips, style_hint=style_hint)
         if asset and asset.file_path:
             used_clips.add(os.path.abspath(asset.file_path))
 
@@ -142,6 +142,7 @@ async def _resolve_segment(
     segment: SceneSegment,
     budget: BudgetTracker,
     used_clips: Optional[set] = None,
+    style_hint: str = "",
 ) -> Optional[ResolvedAsset]:
     """Resolve a single segment through the tier cascade."""
 
@@ -155,7 +156,7 @@ async def _resolve_segment(
         return result
 
     # Tier 1: Free stock — Pexels
-    result = await _try_pexels(segment, used_clips)
+    result = await _try_pexels(segment, used_clips, style_hint=style_hint)
     if result:
         return result
 
@@ -301,6 +302,7 @@ async def _try_local(
 async def _try_pexels(
     segment: SceneSegment,
     used_clips: Optional[set] = None,
+    style_hint: str = "",
 ) -> Optional[ResolvedAsset]:
     """Search Pexels for free stock footage."""
     try:

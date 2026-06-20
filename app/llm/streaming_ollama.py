@@ -131,7 +131,12 @@ async def stream_ollama(
 
                     if content:
                         collected_content += content
-                        yield {"type": "token", "content": content}
+                        # Emit BOTH keys: the provider-layer collector
+                        # (call_llm_text) reads `text` (like openai/gemini); SSE
+                        # consumers read `content`. Ollama only emitted `content`,
+                        # so call_llm_text(provider="ollama") returned "". Adding
+                        # `text` is purely additive — fixes that, breaks nothing.
+                        yield {"type": "token", "text": content, "content": content}
 
                     # Check if this is the final chunk
                     if chunk.get("done", False):

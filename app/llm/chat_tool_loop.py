@@ -16,6 +16,7 @@ only found files by keyword matching and couldn't do iterative exploration.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import AsyncGenerator, Dict, List, Optional
@@ -49,10 +50,18 @@ _TRUSTED_MODELS_GOOGLE = {
 }
 
 # v11.0: OpenAI models — now tool-eligible via _stream_with_tools_openai.
+# v12.0 (2026-06-17): the GPT-5 family is tool-eligible by PREFIX (see
+# is_tool_eligible), not just this set. The set stays for documentation; the
+# prefix guard means an ENV model swap to any new gpt-5* id (e.g. gpt-5.5) can
+# never silently strip tools on the phone/bridge or normal-chat paths (spec 3.2).
+# NOTE: the Debug /stream/chat path does not gate on this -- it loads write-tier
+# tools directly -- so this guard protects the OTHER OpenAI tool paths.
 _TRUSTED_MODELS_OPENAI = {
     "gpt-5.4",
     "gpt-5.4-mini",
     "gpt-5.4-turbo",
+    "gpt-5.5",
+    "gpt-5.5-mini",
 }
 
 
@@ -67,7 +76,9 @@ def is_tool_eligible(provider: str, model: str) -> bool:
     if provider in ("google", "gemini"):
         return model in _TRUSTED_MODELS_GOOGLE
     if provider == "openai":
-        return model in _TRUSTED_MODELS_OPENAI
+        # Prefix guard: any gpt-5* OpenAI model is tool-eligible, so an ENV model
+        # change can never silently disable tools (spec 3.2 offender #3).
+        return model in _TRUSTED_MODELS_OPENAI or str(model).lower().startswith("gpt-5")
     return False
 
 
@@ -132,11 +143,69 @@ def get_chat_tools(tier: str = TOOL_TIER_READ) -> List[Dict]:
         tools.extend(get_registry_chat_declarations(exclude_names=_existing))
     except Exception as exc:
         logger.warning("[chat_tool_loop] registry tools unavailable: %s", exc)
+    # Debug orchestrator: ONLY the write tier (the Debug-tab brain) gets the
+    # spawn_agents delegation tool, so ordinary chat / sub-agents never see it.
+    if tier == TOOL_TIER_WRITE:
+        try:
+            from app.debug.orchestrator.spawn_tool import SPAWN_AGENTS_TOOL
+            tools.append(_to_anthropic_tool_format(SPAWN_AGENTS_TOOL))
+        except Exception as exc:
+            logger.warning("[chat_tool_loop] spawn_agents tool unavailable: %s", exc)
+        # Sandbox boot/self-heal: start/stop/status the clone + read its boot log.
+        # These act on the SANDBOX CLONE only (never the host) -- the host-boot gate
+        # in filesystem.py refuses host boots, so this is the sanctioned boot path.
+        try:
+            from app.sandbox.tools import SANDBOX_TOOLS
+            from app.debug.sandbox_boot_tool import (
+                READ_SANDBOX_BOOT_TOOL, INSPECT_SANDBOX_BOOT_TOOL,
+            )
+            from app.debug.sandbox_selfheal import SELFHEAL_SANDBOX_BOOT_TOOL
+            for _sbx_tool in SANDBOX_TOOLS:
+                tools.append(_to_anthropic_tool_format(_sbx_tool))
+            tools.append(_to_anthropic_tool_format(READ_SANDBOX_BOOT_TOOL))
+            # inspect_sandbox_boot = the FULL visual loop (backend + screenshot/OCR).
+            tools.append(_to_anthropic_tool_format(INSPECT_SANDBOX_BOOT_TOOL))
+            # selfheal_sandbox_boot = autonomous fix->reboot->re-verify loop (Job 03).
+            tools.append(_to_anthropic_tool_format(SELFHEAL_SANDBOX_BOOT_TOOL))
+        except Exception as exc:
+            logger.warning("[chat_tool_loop] sandbox tools unavailable: %s", exc)
+    # Phase-level narration (debug-visibility spec): attach the required `narration`
+    # object to the phase-dispatch tools (spawn_agents + sandbox boot/inspect) so the
+    # brain must declare its intent (and reflect) at the move boundary. Leaf tools are
+    # untouched. Done here -- one place -- so the protected sandbox schemas stay intact.
+    try:
+        from app.debug.orchestrator.phase_narration import inject_narration_schema
+        tools = [inject_narration_schema(t) for t in tools]
+    except Exception as exc:
+        logger.warning("[chat_tool_loop] narration schema inject unavailable: %s", exc)
     return tools
 
 
 async def execute_chat_tool(name: str, params: Dict) -> str:
     """Execute a tool call and return the result string."""
+    # spawn_agents: non-streaming fallback (the Debug OpenAI loop special-cases it
+    # to stream live sub-agent activity; this path serves any other caller).
+    if name == "spawn_agents":
+        from app.debug.orchestrator.spawn_tool import run_spawn_agents_blocking
+        return await run_spawn_agents_blocking(params or {})
+    # Sandbox clone control (start/stop/status + read boot log). Sync + can block
+    # (start waits for boot; read_sandbox_boot can poll), so run off the event loop.
+    if name in ("start_sandbox_clone", "stop_sandbox_clone", "check_sandbox_status"):
+        from app.sandbox.tools import execute_sandbox_tool
+        return await asyncio.to_thread(execute_sandbox_tool, name, params or {})
+    if name == "read_sandbox_boot":
+        from app.debug.sandbox_boot_tool import read_sandbox_boot
+        return await asyncio.to_thread(read_sandbox_boot, params or {})
+    # inspect_sandbox_boot: full visual loop (backend readout + sandbox screenshot +
+    # vision/OCR). Sync + blocks (polls boot, runs a sandbox screenshot, calls vision),
+    # so run it off the event loop just like read_sandbox_boot.
+    if name == "inspect_sandbox_boot":
+        from app.debug.sandbox_boot_tool import inspect_sandbox_boot
+        return await asyncio.to_thread(inspect_sandbox_boot, params or {})
+    # selfheal_sandbox_boot: autonomous fix->reboot->re-verify loop; sync + long-blocking.
+    if name == "selfheal_sandbox_boot":
+        from app.debug.sandbox_selfheal import selfheal_sandbox_boot
+        return await asyncio.to_thread(selfheal_sandbox_boot, params or {})
     # Work-day ledger tools run via their own adapters (central-registry
     # handlers), not the debug action_executor - same path as the image loop.
     try:
@@ -174,9 +243,9 @@ async def execute_chat_tool(name: str, params: Dict) -> str:
     from app.debug.action_executor import execute_tool
     try:
         result = await execute_tool(name, params)
-        # Cap result size to avoid blowing context
-        if len(result) > 30000:
-            result = result[:30000] + f"\n\n... [TRUNCATED — {len(result)} chars total]"
+        cap = 128000 if name == "read_file" else 30000
+        if len(result) > cap:
+            result = result[:cap] + f"\n\n... [TRUNCATED — {len(result)} chars total]"
         return result
     except Exception as exc:
         logger.error("[chat_tool_loop] Tool %s failed: %s", name, exc)
@@ -498,6 +567,12 @@ async def _stream_with_tools_openai(
 
     current_messages = [{"role": "system", "content": system_prompt}] + list(messages)
     rounds = 0
+    # Reflection gate (phase-narration spec): once a phase has returned this turn, the
+    # next phase dispatch must carry narration.reflection. Tracked across rounds here.
+    any_phase_dispatched = False
+    from app.llm.loop_guard import LoopGuard, stream_loop_wrapup  # loop circuit-breaker
+    guard = LoopGuard()
+    loop_stop_reason = None
 
     while rounds < MAX_TOOL_ROUNDS:
         rounds += 1
@@ -589,25 +664,41 @@ async def _stream_with_tools_openai(
         ]
         current_messages.append(assistant_msg)
 
-        # Execute tools and append results as tool role messages
+        # Execute tools (phase-aware). run_openai_tool_call validates + narrates phase
+        # moves (spawn_agents / sandbox boot), streams sub-agent activity, runs leaf
+        # tools, and returns each result via a TOOL_MESSAGE sentinel. Reflection gate:
+        # a 2nd+ phase dispatch this turn must carry a reflection (require_reflection).
+        from app.debug.orchestrator.phase_narration import (
+            run_openai_tool_call, TOOL_MESSAGE,
+        )
+        require_reflection = any_phase_dispatched
         for tc in parsed_calls:
-            result_str = await execute_chat_tool(tc["name"], tc["input"])
-            current_messages.append({
-                "role": "tool",
-                "tool_call_id": tc["id"],
-                "content": result_str[:30000],
-            })
-            yield {
-                "type": "tool_result",
-                "name": tc["name"],
-                "result_preview": result_str[:200],
-            }
+            async for ev in run_openai_tool_call(tc, require_reflection=require_reflection):
+                if ev.get("type") == TOOL_MESSAGE:
+                    current_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": (ev.get("content") or "")[:30000],
+                    })
+                    guard.record(tc["name"], ev.get("signature") or tc["name"], bool(ev.get("failed")))
+                    if ev.get("dispatched_phase"):
+                        any_phase_dispatched = True
+                else:
+                    yield ev
 
         logger.info("[chat_tool_loop] Round %d complete, continuing...", rounds)
 
-    logger.warning("[chat_tool_loop_openai] Hit MAX_TOOL_ROUNDS (%d)", MAX_TOOL_ROUNDS)
-    yield {"type": "token", "text": "\n\n[Tool loop reached maximum rounds]"}
-    yield {"type": "done", "provider": provider, "model": model}
+        loop_stop_reason = guard.tripped()
+        if loop_stop_reason:
+            break
+
+    logger.warning("[chat_tool_loop_openai] stop: %s", loop_stop_reason or "MAX_TOOL_ROUNDS")
+    async for ev in stream_loop_wrapup(  # graceful tool-free summary; never dead-ends
+        current_messages, provider, model,
+        reason=loop_stop_reason, rounds=rounds,
+        enable_reasoning=enable_reasoning, max_tokens=max_tokens,
+    ):
+        yield ev
 async def stream_with_tools(
     messages: List[Dict],
     system_prompt: str,

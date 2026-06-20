@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 
 from app.lifestyle import metabolic
 from app.lifestyle.energy import estimate_day_energy, _profile_inputs
-from app.lifestyle.models import DailySummary, WeightEntry
+from app.lifestyle.models import DailySummary, WeightEntry, LifestyleGoal
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,17 @@ def _week_start(d: date) -> date:
 
 
 def _daily_deficit(db: Session) -> int:
+    # A live per-user deficit override (set by ASTRA/Taz via the set_deficit tool)
+    # wins over the 3-bucket pace default, so the cut is tunable by conversation
+    # with no code edit. Falls back to the pace-derived deficit when unset.
+    override = (
+        db.query(LifestyleGoal)
+        .filter(LifestyleGoal.goal_type == "deficit", LifestyleGoal.is_active == True)
+        .order_by(LifestyleGoal.id.desc())
+        .first()
+    )
+    if override and override.target_value and override.target_value > 0:
+        return int(round(override.target_value))
     pace = _profile_inputs(db).get("pace") or metabolic.DEFAULT_PACE
     return metabolic.PACE_DEFICITS.get(pace, metabolic.PACE_DEFICITS[metabolic.DEFAULT_PACE])
 

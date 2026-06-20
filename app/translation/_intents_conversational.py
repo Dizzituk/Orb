@@ -126,12 +126,14 @@ CONVERSATIONAL_INTENTS: Dict[CanonicalIntent, IntentDefinition] = {
             "Make me an image",
             "draw me",
             "Draw me",
+            "draw a",
             "create a picture",
             "Create a picture",
             "generate a picture",
             "Generate a picture",
             "make a picture",
             "Make a picture",
+            "make me a picture",
             "generate image",
             "create image",
             "make image",
@@ -155,6 +157,20 @@ CONVERSATIONAL_INTENTS: Dict[CanonicalIntent, IntentDefinition] = {
             "Visualise",
             "visualize",
             "Visualize",
+            "make a thumbnail",
+            "create a thumbnail",
+            "generate a thumbnail",
+            "make me a logo",
+            "create a logo",
+            "design a logo",
+            "make a banner",
+            "create a banner",
+            "make an icon",
+            "create an icon",
+            "AI image",
+            "generate artwork",
+            "make artwork",
+            "create artwork",
         ],
         trigger_patterns=[
             r"\b(generate|create|make|draw|design|produce)\s+(me\s+)?(an?\s+)?(image|picture|graphic|illustration|visual|thumbnail|banner|icon|logo|avatar|chart|graph|infographic)",
@@ -162,17 +178,24 @@ CONVERSATIONAL_INTENTS: Dict[CanonicalIntent, IntentDefinition] = {
             r"\bI\s+(want|need)\s+(an?\s+)?(image|picture|graphic|illustration|chart|graph|infographic)",
             r"\b(chart|graph|plot|visualise|visualize)\s+(the|my|this|some|latest|recent|current)",
             r"\b(compile|build|put together)\s+(an?\s+)?(image|chart|graph|infographic|visual)",
+            r"\b(?:make|create|generate|draw|design)\s+(?:me\s+)?(?:an?\s+)?(?:image|picture|photo|thumbnail|logo|banner|icon|artwork|illustration|graphic|visual)",
+            r"\b(?:image|picture|photo|thumbnail)\s+of\b",
+            r"\bgenerate\s+(?:a\s+)?(?:new\s+)?(?:image|picture|graphic|visual)",
         ],
         requires_context=[],
         requires_confirmation=False,
-        description="Generate an image from a text description using AI",
+        description="Generate an AI image from a text description",
         behavior=(
-            "Image generation pipeline:\n"
-            "1. Synthesise a rich prompt from conversation context (Gemini Flash)\n"
-            "2. Generate image using primary provider (GPT Image 1.5)\n"
-            "3. If primary fails, fallback to Nano Banana (Gemini)\n"
-            "4. Return image as data URI + save to output/images/\n"
-            "5. Stream progress updates via SSE"
+            "Image generation — creates an image from the user's description.\n"
+            "\n"
+            "Process:\n"
+            "1. Extract the image description from the message\n"
+            "2. Run through prompt synthesis (Stage 1 — enriches the prompt)\n"
+            "3. Send enriched prompt to image backend (Stage 2 — GPT Image / Nano Banana)\n"
+            "4. Return the generated image as a data URI + file info\n"
+            "\n"
+            "Provider config: IMAGE_GEN_PROVIDER / IMAGE_GEN_MODEL in .env\n"
+            "Fallback: IMAGE_GEN_FALLBACK_PROVIDER / IMAGE_GEN_FALLBACK_MODEL"
         ),
     ),
 
@@ -198,58 +221,5 @@ CONVERSATIONAL_INTENTS: Dict[CanonicalIntent, IntentDefinition] = {
         ),
     ),
 
-    # -------------------------------------------------------------------------
-    # IMAGE GENERATION (v3.1)
-    # -------------------------------------------------------------------------
 
-    CanonicalIntent.GENERATE_IMAGE: IntentDefinition(
-        intent=CanonicalIntent.GENERATE_IMAGE,
-        trigger_phrases=[
-            "make me an image",
-            "make an image",
-            "create an image",
-            "generate an image",
-            "generate image",
-            "draw me",
-            "draw a",
-            "create a picture",
-            "make a picture",
-            "generate a picture",
-            "make me a picture",
-            "make a thumbnail",
-            "create a thumbnail",
-            "generate a thumbnail",
-            "make me a logo",
-            "create a logo",
-            "design a logo",
-            "make a banner",
-            "create a banner",
-            "make an icon",
-            "create an icon",
-            "AI image",
-            "generate artwork",
-            "make artwork",
-            "create artwork",
-        ],
-        trigger_patterns=[
-            r"\b(?:make|create|generate|draw|design)\s+(?:me\s+)?(?:an?\s+)?(?:image|picture|photo|thumbnail|logo|banner|icon|artwork|illustration|graphic|visual)",
-            r"\b(?:image|picture|photo|thumbnail)\s+of\b",
-            r"\bgenerate\s+(?:a\s+)?(?:new\s+)?(?:image|picture|graphic|visual)",
-        ],
-        requires_context=[],
-        requires_confirmation=False,
-        description="Generate an AI image from a text description",
-        behavior=(
-            "Image generation — creates an image from the user's description.\n"
-            "\n"
-            "Process:\n"
-            "1. Extract the image description from the message\n"
-            "2. Run through prompt synthesis (Stage 1 — enriches the prompt)\n"
-            "3. Send enriched prompt to image backend (Stage 2 — GPT Image / Nano Banana)\n"
-            "4. Return the generated image as a data URI + file info\n"
-            "\n"
-            "Provider config: IMAGE_GEN_PROVIDER / IMAGE_GEN_MODEL in .env\n"
-            "Fallback: IMAGE_GEN_FALLBACK_PROVIDER / IMAGE_GEN_FALLBACK_MODEL"
-        ),
-    ),
 }

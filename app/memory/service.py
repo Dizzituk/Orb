@@ -464,6 +464,26 @@ def create_message(db: Session, data: schemas.MessageCreate) -> models.Message:
     except Exception as e:
         print(f"[memory.service] Spine index failed for message {msg.id}: {e}")
 
+    # Nat Job 1 (keyword recall trail): on a USER message, extract 3-8 topic
+    # keywords in the background so "summarise our chat" can recall the whole
+    # conversation (the rolling summary is lossy by design). Fully failure-proof
+    # — never blocks or breaks message creation.
+    try:
+        from app.memory.nat_jobs.keyword_trail import maybe_spawn_keyword_extraction
+        maybe_spawn_keyword_extraction(msg)
+    except Exception as e:
+        print(f"[memory.service] keyword trail spawn failed for message {msg.id}: {e}")
+
+    # Nat Job 3 (importance extraction): on an ASSISTANT message (reply sent),
+    # extract durable facts from the exchange and PROPOSE them into the existing
+    # arbiter/preference write path (Nat never commits). Background, post-reply,
+    # failure-proof — never blocks or breaks message creation.
+    try:
+        from app.memory.nat_jobs.importance import maybe_spawn_importance_extraction
+        maybe_spawn_importance_extraction(msg)
+    except Exception as e:
+        print(f"[memory.service] importance spawn failed for message {msg.id}: {e}")
+
     return msg
 
 

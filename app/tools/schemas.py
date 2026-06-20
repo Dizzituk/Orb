@@ -279,6 +279,32 @@ SET_GOAL_OUTPUT_V1 = {
     },
 }
 
+# Live calorie-deficit lever (set by ASTRA/Taz in conversation; overrides the
+# pace bucket and flows into today's dynamic target with no code edit).
+SET_DEFICIT_INPUT_V1 = {
+    "type": "object",
+    "required": ["deficit_kcal"],
+    "properties": {
+        "deficit_kcal": {
+            "type": ["integer", "null"], "minimum": 0, "maximum": 2000,
+            "description": "Daily calorie deficit in kcal. 0 or null clears the override and reverts to the pace default.",
+        },
+        "notes": {"type": ["string", "null"], "maxLength": 300},
+    },
+}
+
+SET_DEFICIT_OUTPUT_V1 = {
+    "type": "object",
+    "required": ["ok"],
+    "properties": {
+        "ok": {"type": "boolean"},
+        "deficit_kcal": {"type": ["integer", "null"]},
+        "today_target_calories": {"type": ["integer", "null"]},
+        "source": {"type": "string"},
+        "error": {"type": "string"},
+    },
+}
+
 # -------------------------
 # Strength tools v1 (per-exercise progressive overload) — added 2026-05-31
 # -------------------------
@@ -367,6 +393,10 @@ TOOL_SCHEMAS = {
     "set_goal": {
         "input": SET_GOAL_INPUT_V1,
         "output": SET_GOAL_OUTPUT_V1,
+    },
+    "set_deficit": {
+        "input": SET_DEFICIT_INPUT_V1,
+        "output": SET_DEFICIT_OUTPUT_V1,
     },
     "log_exercise_set": {
         "input": LOG_EXERCISE_SET_INPUT_V1,

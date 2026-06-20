@@ -41,7 +41,7 @@ from app.debug.executors.filesystem_guards import (
     looks_like_line_numbered_content,
     strip_line_number_prefixes,
 )
-from app.debug.size_warning import add_size_warning as _size_warn
+from app.debug.size_warning import add_size_warning as _size_warn, strip_size_warning
 
 logger = logging.getLogger(__name__)
 
@@ -390,6 +390,9 @@ async def execute_edit_file(params: Dict[str, Any]) -> str:
             return current
         if not current:
             return f"Cannot read {resolved} from sandbox for editing."
+        # execute_read_file prepends a SIZE ALERT banner for >30KB code files;
+        # strip it so the decoration never round-trips into the written file.
+        current = strip_size_warning(current)
         if old_text not in current:
             return f"Error: old_text not found in {resolved} (sandbox). The text must exist exactly."
         count = current.count(old_text)
@@ -419,6 +422,7 @@ async def execute_edit_file(params: Dict[str, Any]) -> str:
     current = await execute_read_file({"path": path})
     if current.startswith("Error") or current.startswith("Sandbox read failed"):
         return current
+    current = strip_size_warning(current)
 
     if old_text not in current:
         return f"Error: old_text not found in {path}. The text to replace must exist exactly."
@@ -493,6 +497,29 @@ _WRITE_API_PATTERNS = [
 ]
 
 
+# Boot/launch/mutate commands that must NEVER run on the HOST inside a protected
+# self-repo. Matched ONLY when cwd is host-write-blocked (see the cwd gate in
+# execute_run_command) -- launches spawn a 2nd live ASTRA on :8000, mutators touch
+# the running code base. Read-only diagnostics (rg, Get-ChildItem, py_compile,
+# Test-Path, npm ls, node -p) deliberately do NOT match, so they still run.
+_HOST_BOOT_MUTATE_PATTERN = re.compile(
+    r"npm\s+(?:run|start|ci|install|exec)\b"
+    r"|\bnpx\b"
+    r"|(?:yarn|pnpm)\s+(?:run|start|dev|install|add)\b"
+    r"|\belectron\b"
+    r"|\buvicorn\b|python\s+-m\s+uvicorn\b|\bgunicorn\b|\bflask\s+run\b"
+    r"|python\s+(?:-u\s+)?[\w./\\-]*(?:main|app|server|run)\.py\b"
+    r"|node\s+[\w./\\-]*(?:server|main|index|app)(?:\.js)?\b"
+    r"|dotnet\s+run\b|\bgradlew?\b"
+    r"|\bstart-process\b|\bstart\s+[\"']"
+    r"|&\s*[\"']?[\w:./\\ -]*\.(?:ps1|bat|cmd)\b|\.[/\\][\w./\\-]*\.(?:ps1|bat|cmd)\b"
+    r"|\bpip\s+install\b"
+    r"|\bset-content\b|\bout-file\b|\badd-content\b|\bnew-item\b"
+    r"|\bremove-item\b|\bcopy-item\b|\bmove-item\b|\brmdir\b|\bdel\s",
+    re.IGNORECASE,
+)
+
+
 async def execute_run_command(params: Dict[str, Any]) -> str:
     """Run a command on the host via PowerShell.
 
@@ -547,13 +574,35 @@ async def execute_run_command(params: Dict[str, Any]) -> str:
         return (
             "BLOCKED: Command references a protected project directory "
             "(D:/Orb, D:/Orb.architecture, D:/orb-desktop, D:/orb-electron-data). "
-            "Use cwd to run from there; the command body itself must not name these paths. "
-            "All file modifications must go through edit_file/write_file (sandbox-routed)."
+            "Do NOT try to run from there via cwd either -- booting or mutating ASTRA's own "
+            "code on the host is refused. Boot/run via the sandbox clone; change code via "
+            "edit_file/write_file (auto-routed to the sandbox). Read-only diagnostics are allowed."
         )
 
     if re.search(r'\bgit\b', cmd_lower):
         logger.warning("[executors.filesystem] BLOCKED git command: %s", command[:80])
         return "BLOCKED: Git commands are not allowed. Taz handles all version control."
+
+    # Host boot/mutation gate (2026-06-17): the blocklists above inspect only the
+    # command BODY; the model can dodge them by putting a protected repo in `cwd`
+    # (the incident: `npm run electron:dev` cwd=D:/orb-desktop launched a 2nd Electron
+    # + backend ON THE HOST). Block boots/launches/mutations whose cwd is a protected
+    # self-repo. Read-only diagnostics still run. NEVER falls back to host -- ASTRA's
+    # own code is booted/changed only in the sandbox clone.
+    _cwd_for_gate = str(cwd or "D:/Orb").replace("\\", "/")
+    if is_host_write_blocked(_cwd_for_gate) and _HOST_BOOT_MUTATE_PATTERN.search(cmd_lower):
+        logger.warning(
+            "[executors.filesystem] BLOCKED host boot/mutate in protected cwd=%s: %s",
+            _cwd_for_gate, command[:120],
+        )
+        return (
+            "BLOCKED: refusing to launch/boot or modify ASTRA's own code on the HOST. "
+            f"cwd '{_cwd_for_gate}' is a protected repo (D:/Orb, D:/orb-desktop), and launching "
+            "there would spawn a second live instance / corrupt the running system. To BOOT or "
+            "RUN ASTRA, boot the sandbox clone -- never the host. To CHANGE code, use "
+            "edit_file/write_file (auto-routed to the sandbox). Read-only diagnostics "
+            "(ripgrep, compile checks, listing) are fine here."
+        )
 
     try:
         encoded = base64.b64encode(command.encode("utf-16-le")).decode("ascii")
