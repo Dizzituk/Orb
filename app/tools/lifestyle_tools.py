@@ -300,89 +300,14 @@ async def delete_nutrition_handler(input_data: dict, context: Optional[dict]) ->
     return {"ok": True, "log_id": log_id, "deleted": True}
 
 
-async def add_food_preference_handler(input_data: dict, context: Optional[dict]) -> dict:
-    """Record/reinforce one thing about how the user eats. Soft + evolving, not absolute."""
-    category = input_data.get("category") or "note"
-    content = (input_data.get("content") or "").strip()
-    if not content:
-        return {"ok": False, "error": "content is required"}
-    stability = input_data.get("stability")
-    conf = input_data.get("confidence")
-    try:
-        conf = float(conf) if conf is not None else None
-    except (TypeError, ValueError):
-        conf = None
-    try:
-        from app.lifestyle.service import add_food_preference
-        with _db_session() as db:
-            d = _to_dict(add_food_preference(
-                db, category, content, source="chat",
-                stability=stability, confidence=conf,
-            ))
-    except Exception as exc:
-        logger.exception("[lifestyle_tools] add_food_preference failed")
-        return {"ok": False, "error": str(exc)}
-    return {"ok": True, "pref_id": d.get("id"), "category": d.get("category"),
-            "content": d.get("content"), "stability": d.get("stability"),
-            "confidence": d.get("confidence")}
-
-
-async def get_food_preferences_handler(input_data: dict, context: Optional[dict]) -> dict:
-    """Read everything Astra knows about how the user eats."""
-    try:
-        from app.lifestyle.service import get_food_preferences
-        with _db_session() as db:
-            prefs = [_to_dict(p) for p in get_food_preferences(db)]
-    except Exception as exc:
-        logger.exception("[lifestyle_tools] get_food_preferences failed")
-        return {"ok": False, "error": str(exc)}
-    return {"ok": True, "preferences": prefs, "count": len(prefs)}
-
-
-async def delete_food_preference_handler(input_data: dict, context: Optional[dict]) -> dict:
-    """Delete a food preference/habit by id."""
-    raw = input_data.get("pref_id")
-    try:
-        pref_id = int(raw)
-    except (TypeError, ValueError):
-        return {"ok": False, "error": "pref_id must be an integer"}
-    try:
-        from app.lifestyle.service import delete_food_preference
-        with _db_session() as db:
-            ok = delete_food_preference(db, pref_id)
-    except Exception as exc:
-        logger.exception("[lifestyle_tools] delete_food_preference failed")
-        return {"ok": False, "error": str(exc)}
-    if not ok:
-        return {"ok": False, "pref_id": pref_id, "error": f"no preference with id {pref_id}"}
-    return {"ok": True, "pref_id": pref_id, "deleted": True}
-
-
-async def update_food_preference_handler(input_data: dict, context: Optional[dict]) -> dict:
-    """Revise an existing preference in place (evolve it) by id."""
-    raw = input_data.get("pref_id")
-    try:
-        pref_id = int(raw)
-    except (TypeError, ValueError):
-        return {"ok": False, "error": "pref_id must be an integer"}
-    try:
-        from app.lifestyle.service import update_food_preference
-        with _db_session() as db:
-            out = update_food_preference(
-                db, pref_id,
-                content=input_data.get("content"),
-                category=input_data.get("category"),
-                stability=input_data.get("stability"),
-                confidence=input_data.get("confidence"),
-            )
-            d = _to_dict(out) if out else None
-    except Exception as exc:
-        logger.exception("[lifestyle_tools] update_food_preference failed")
-        return {"ok": False, "error": str(exc)}
-    if not d:
-        return {"ok": False, "pref_id": pref_id, "error": f"no preference with id {pref_id}"}
-    return {"ok": True, "pref_id": pref_id, "content": d.get("content"),
-            "category": d.get("category"), "stability": d.get("stability")}
+# Food-preference CRUD handlers live in lifestyle_preference_tools.py (kept under
+# the size ceiling); re-exported here so the Gemini executor adapters that import
+# them from this module keep working. Placed AFTER _db_session/_to_dict above so
+# the preference module can import them without a cycle.
+from app.tools.lifestyle_preference_tools import (  # noqa: E402,F401
+    add_food_preference_handler, get_food_preferences_handler,
+    delete_food_preference_handler, update_food_preference_handler,
+)
 
 
 async def set_meal_plan_handler(input_data: dict, context: Optional[dict]) -> dict:
@@ -733,132 +658,9 @@ async def get_metabolic_summary_handler(input_data: dict, context: Optional[dict
 # Registration
 # ────────────────────────────────────────────────────────────────────────
 
-def register_lifestyle_tools() -> None:
-    """
-    Register all lifestyle tools with the global tool registry.
-    Called once from registry._register_defaults at module load.
-    """
-    from app.tools.registry import ToolDefinition, register_tool
-    from app.tools.schemas import TOOL_SCHEMAS
-
-    register_tool(ToolDefinition(
-        name="get_recent_nutrition",
-        version="v1",
-        description=(
-            "Return per-day nutrition summaries for the last N days "
-            "(1-14, default 1 = today). Each day has totals, meal_count, "
-            "and the full list of logs. Use this to read what the user "
-            "has eaten before coaching on food, calories, or macros."
-        ),
-        input_schema=TOOL_SCHEMAS["get_recent_nutrition"]["input"],
-        output_schema=TOOL_SCHEMAS["get_recent_nutrition"]["output"],
-        handler=get_recent_nutrition_handler,
-    ))
-
-    register_tool(ToolDefinition(
-        name="get_weight_trend",
-        version="v1",
-        description=(
-            "Return the user's weight history over the last N days "
-            "(7-365, default 30) with current weight, 7-day change, "
-            "30-day change, and active weight target if set."
-        ),
-        input_schema=TOOL_SCHEMAS["get_weight_trend"]["input"],
-        output_schema=TOOL_SCHEMAS["get_weight_trend"]["output"],
-        handler=get_weight_trend_handler,
-    ))
-
-    register_tool(ToolDefinition(
-        name="get_recent_workouts",
-        version="v1",
-        description=(
-            "Return the most recent workout/activity sessions, newest "
-            "first (1-50, default 10). Sessions include activity_type "
-            "(gym, surf, stretch, walk, bodyboard, etc), duration, "
-            "title, notes, calories burned, and surf-specific fields."
-        ),
-        input_schema=TOOL_SCHEMAS["get_recent_workouts"]["input"],
-        output_schema=TOOL_SCHEMAS["get_recent_workouts"]["output"],
-        handler=get_recent_workouts_handler,
-    ))
-
-    register_tool(ToolDefinition(
-        name="log_nutrition",
-        version="v1",
-        description=(
-            "Log a meal or food item. description is required (free "
-            "text). meal_type defaults to 'meal'. Macro fields "
-            "(calories, protein_g, carbs_g, fat_g, sugar_g) are "
-            "optional — pass them when you know them, omit when you "
-            "don't and the entry is flagged as an estimate. Don't re-log "
-            "foods already in today's diary (check get_today_summary first) — "
-            "re-logging the same items creates duplicate rows."
-        ),
-        input_schema=TOOL_SCHEMAS["log_nutrition"]["input"],
-        output_schema=TOOL_SCHEMAS["log_nutrition"]["output"],
-        handler=log_nutrition_handler,
-    ))
-
-    register_tool(ToolDefinition(
-        name="log_workout",
-        version="v1",
-        description=(
-            "Log a workout / activity session. activity_type is "
-            "required and should be a short tag like 'gym', 'surf', "
-            "'stretch', 'walk', 'bodyboard'. duration_mins, title, "
-            "notes, calories_burned, surf_location, surf_conditions "
-            "are all optional. Use this when the user describes a "
-            "workout they did or are doing now."
-        ),
-        input_schema=TOOL_SCHEMAS["log_workout"]["input"],
-        output_schema=TOOL_SCHEMAS["log_workout"]["output"],
-        handler=log_workout_handler,
-    ))
-
-    register_tool(ToolDefinition(
-        name="log_weight",
-        version="v1",
-        description=(
-            "Log the user's body weight in kg when they tell you it "
-            "(e.g. 'I'm 112 today'). Returns the change since their previous "
-            "entry so you can coach on progress. weight_kg is required; notes "
-            "optional."
-        ),
-        input_schema=TOOL_SCHEMAS["log_weight"]["input"],
-        output_schema=TOOL_SCHEMAS["log_weight"]["output"],
-        handler=log_weight_handler,
-    ))
-
-    register_tool(ToolDefinition(
-        name="set_goal",
-        version="v1",
-        description=(
-            "Set or update a lifestyle goal/target. goal_type is one of "
-            "'weight', 'calories', 'protein', 'sugar_limit', 'activity'; "
-            "target_value and unit are required (e.g. calories/2800/kcal, "
-            "weight/95/kg). Replaces any existing active goal of that type."
-        ),
-        input_schema=TOOL_SCHEMAS["set_goal"]["input"],
-        output_schema=TOOL_SCHEMAS["set_goal"]["output"],
-        handler=set_goal_handler,
-    ))
-
-    register_tool(ToolDefinition(
-        name="set_deficit",
-        version="v1",
-        description=(
-            "Set the user's daily calorie DEFICIT in kcal -- the live lever that "
-            "decides how hard their cut is. Use this when they want to change how "
-            "aggressive the cut is (e.g. 'make my deficit 300 instead of 550'). It "
-            "overrides the gentle/moderate/aggressive pace default and flows straight "
-            "into today's intake target, live, with no code change. Discuss the number "
-            "with them first (~300 is a gentle, sustainable cut that's easy to hold; "
-            "~550 moderate). Pass deficit_kcal=0 (or null) to clear it and fall back to "
-            "the pace default. Returns today's recomputed target so you can confirm it."
-        ),
-        input_schema=TOOL_SCHEMAS["set_deficit"]["input"],
-        output_schema=TOOL_SCHEMAS["set_deficit"]["output"],
-        handler=set_deficit_handler,
-    ))
-
-    logger.info("[lifestyle_tools] registered 8 health coaching tools")
+# register_lifestyle_tools (the ToolDefinition registration block) lives in
+# lifestyle_tools_registration.py; re-exported here so registry.py keeps importing
+# it from this module. MUST stay the LAST statement of this module: the
+# registration module imports the 8 handlers it registers from here, so each must
+# already be defined above this line.
+from app.tools.lifestyle_tools_registration import register_lifestyle_tools  # noqa: E402,F401
