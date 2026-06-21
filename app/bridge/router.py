@@ -1,20 +1,12 @@
 # FILE: app/bridge/router.py
 """
-Astra Bridge API — endpoints for the Android companion app.
+Astra Bridge API - endpoints for the Android companion app.
 
-v15.0 (2026-04-06): MAJOR REFACTOR — modularised into:
-    - schemas.py:     Pydantic models + auth dependency
-    - llm_helpers.py: Model selection, system prompt, direct LLM call
-    - tts_proxy.py:   All TTS proxy endpoints (separate sub-router)
-    - router.py:      Chat endpoints, projects, health, crash report (this file)
-
-v7.1 (2026-04-06): Web search on chat-and-speak route
-v7.0 (2026-04-06): Capability honesty enforcement
-v5.0: Model selection + multi-provider LLM calls
-v4.0: Desktop navigation push from bridge
-v3.0: Translation layer + domain awareness
-v2.0: Project-integrated chat
-v1.0: Initial bridge API
+v16.0 (2026-06-21): batch-3 split - the 4 shared chat-pipeline helpers moved
+    to chat_helpers.py (pure leaf, re-exported below so lazy importers in
+    chat_speak_stream.py / missed_replies.py resolve unchanged); the /chat body
+    moved to chat_endpoints.run_bridge_chat (lazy-delegated, like /chat-and-speak).
+v15.0 (2026-04-06): modularised into schemas.py / llm_helpers.py / tts_proxy.py / router.py.
 """
 
 from __future__ import annotations
@@ -48,38 +40,15 @@ from .uploads_store import save_upload, is_duplicate
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/bridge", tags=["Bridge"])
 
-def _process_artifacts(content: str) -> tuple[str, list[BridgeArtifactRef]]:
-    """Extract artifact markers from message content.
-
-    Returns (stripped_content, refs). The stripped content has the markers
-    removed so the phone displays clean text in the chat bubble and TTS
-    speaks clean audio. The refs are enriched with size + mime via stat
-    on the actual file and given absolute /bridge/artifacts URLs so the
-    phone can fetch them via the auth-gated endpoint.
-
-    Empty refs list when the content has no markers, which is the
-    overwhelmingly common case. Both outputs are safe to pass to clients
-    even when no artifacts exist.
-    """
-    from app.bridge.artifacts import (
-        extract_artifacts, strip_artifacts, enrich_artifact_ref,
-    )
-    refs = extract_artifacts(content)
-    if not refs:
-        return content, []
-    stripped = strip_artifacts(content)
-    out: list[BridgeArtifactRef] = []
-    for r in refs:
-        enriched = enrich_artifact_ref(r)
-        out.append(BridgeArtifactRef(
-            kind=enriched.kind,
-            filename=enriched.filename,
-            size_bytes=enriched.size_bytes,
-            mime_type=enriched.mime_type,
-            url=f"/bridge/artifacts/{enriched.kind}/{enriched.filename}",
-        ))
-    return stripped, out
-
+# Shared chat-pipeline helpers were extracted to chat_helpers.py (batch 3,
+# 2026-06-21); re-export them so `from .router import <helper>` keeps resolving
+# for chat_speak_stream.py and missed_replies.py (lazy importers) with zero edits.
+from .chat_helpers import (
+    _process_artifacts,
+    _resolve_or_create_project,
+    _run_translation,
+    _run_web_search,
+)
 
 
 @router.post("/login", response_model=BridgeLoginResponse)
@@ -227,156 +196,11 @@ async def bridge_chat(
     db: Session = Depends(get_db),
     _auth: bool = Depends(require_bridge_auth),
 ):
-    from app.memory.service import create_message
-    from app.memory.schemas import MessageCreate
-    from app.memory._service_utils_2 import list_messages
-
-    project = _resolve_or_create_project(req, db)
-    # Phase 3: scan for identity facts (DOB, birthplace, location, etc.)
-    # Fire-and-forget — writes to Tier 1 identity store if matched.
-    from app.bridge.identity_hook import capture_from_bridge_message
-    capture_from_bridge_message(req.message, source_label=f"bridge:{project.id}")
-
-    # Phase 7: capture fragment for long-term associative memory.
-    # Every message embedded + clustered into themes; decays over time.
-    from app.bridge.identity_hook import capture_fragment_from_bridge
-    capture_fragment_from_bridge(req.message, project_id=project.id)
-
-    create_message(db, MessageCreate(
-        project_id=project.id, role="user",
-        content=req.message, provider="bridge", model="phone-input",
-    ))
-
-    history = list_messages(db, project.id, limit=20)
-    history_messages = [
-        {"role": m.role, "content": m.content}
-        for m in history if m.role in ("user", "assistant")
-    ]
-
-    # Build-command parity (Phase 1): "build the apk" and its "yes"/"no" voice
-    # confirmation are handled here, before translation, so the phone triggers
-    # the same host build flow the desktop uses. The build runs async; the
-    # completion is delivered (and spoken) via the /bridge/missed-replies poller.
-    from app.bridge.build_actions import maybe_handle_build_turn
-    build_turn = maybe_handle_build_turn(req.message, project.id, db)
-    if build_turn is not None:
-        bt_message = create_message(db, MessageCreate(
-            project_id=project.id, role="assistant",
-            content=build_turn.reply, provider="bridge", model=build_turn.model,
-        ))
-        return BridgeChatResponse(
-            reply=build_turn.reply, project_id=project.id,
-            project_name=project.name, domain="",
-            message_id=bt_message.id,
-        )
-
-    domain_context, translation_result, domain_info = _run_translation(req.message, db)
-
-    from app.bridge.capability_honesty import (
-        is_unsupported_on_bridge, get_unsupported_message,
-    )
-
-    resolved_intent = (
-        translation_result.resolved_intent.value
-        if translation_result and translation_result.resolved_intent
-        else None
-    )
-
-    if is_unsupported_on_bridge(resolved_intent):
-        reply = get_unsupported_message(resolved_intent)
-        logger.info("[bridge] Blocked unsupported intent: %s", resolved_intent)
-        gate_message = create_message(db, MessageCreate(
-            project_id=project.id, role="assistant",
-            content=reply, provider="bridge", model="capability-gate",
-        ))
-        return BridgeChatResponse(
-            reply=reply, project_id=project.id, project_name=project.name,
-            domain=domain_info.get("domain", "") if domain_info else "",
-            message_id=gate_message.id,
-        )
-
-    web_search_context, search_executed, search_succeeded, early_reply = (
-        await _run_web_search(resolved_intent, translation_result, req.message)
-    )
-
-    if early_reply:
-        from app.memory.service import create_message as _cm
-        early_message = _cm(db, MessageCreate(
-            project_id=project.id, role="assistant",
-            content=early_reply, provider="bridge", model="search-gate",
-        ))
-        return BridgeChatResponse(
-            reply=early_reply, project_id=project.id, project_name=project.name,
-            domain=domain_info.get("domain", "") if domain_info else "",
-            message_id=early_message.id,
-        )
-
-    from app.bridge.capability_layer import run_astra_chat
-    from app.bridge.attachment_describe import augment_user_message
-
-    # Same attachment handling as bridge_chat_and_speak: prepend vision /
-    # document text to the LLM-input message, keep req.message clean for
-    # the DB record and identity hook. No-op when attachment_ids is empty.
-    llm_input_message = augment_user_message(req, history_messages)
-
-    result = await run_astra_chat(
-        message=llm_input_message,
-        project_id=project.id,
-        history=history_messages,
-        db=db,
-        source="bridge",
-        domain_context=domain_context,
-        translation_result=translation_result,
-        web_search_context=web_search_context,
-        search_executed=search_executed,
-        search_succeeded=search_succeeded,
-        raw_message=req.message,
-    )
-
-    reply = result["reply"]
-    provider = result["provider"]
-    model = result["model"]
-
-    assistant_message = create_message(db, MessageCreate(
-        project_id=project.id, role="assistant",
-        content=reply, provider=provider, model=model,
-    ))
-
-    # v2026-06-10: session + summary tracking for bridge conversations.
-    # The hook previously only ran on the desktop stream path, so phone
-    # chats never got conversation_sessions rows or rolling summaries.
-    try:
-        from app.memory.integration import record_session_activity
-        record_session_activity(
-            project_id=project.id, provider=provider,
-            model=model, db_session=db,
-        )
-    except Exception as _sess_err:
-        logger.debug("[bridge] session tracking failed: %s", _sess_err)
-
-    _detected_domain = domain_info.get("domain") if domain_info else None
-    if _detected_domain:
-        push_desktop_navigation(_detected_domain)
-
-    # Process artifact markers: strip from reply for clean display, build
-    # BridgeArtifactRef list for the response. The DB still holds the raw
-    # reply (with markers) so history reload can re-emit the same chips.
-    display_reply, attachments = _process_artifacts(reply)
-
-    # Phone-action directives ([[astra:...]] markers — see directives.py):
-    # stripped from the visible reply, forwarded for the app to execute.
-    from .directives import extract_directives, strip_directives
-    directives = extract_directives(display_reply)
-    if directives:
-        display_reply = strip_directives(display_reply)
-
-    return BridgeChatResponse(
-        reply=display_reply, project_id=project.id,
-        project_name=project.name, domain=_detected_domain,
-        attachments=attachments,
-        directives=directives,
-        message_id=assistant_message.id,
-    )
+    # Body lives in chat_endpoints.run_bridge_chat (batch-3 split). The lazy
+    # import mirrors bridge_chat_and_speak's delegation to chat_speak_stream,
+    # so there is no router<->chat_endpoints module-load cycle.
+    from .chat_endpoints import run_bridge_chat
+    return await run_bridge_chat(req, db)
 
 
 @router.post("/chat-and-speak")
@@ -497,105 +321,3 @@ async def bridge_upload(
     )
 
     return {"id": record.id, "bytes": record.bytes, "path": record.path}
-
-
-def _resolve_or_create_project(req: BridgeChatRequest, db: Session):
-    from app.memory.service import get_project
-    from app.memory.schemas import ProjectCreate
-    from app.memory._service_utils_2 import create_project, get_project_by_name
-
-    project = None
-    if req.project_id:
-        project = get_project(db, req.project_id)
-        if not project:
-            raise HTTPException(404, f"Project {req.project_id} not found")
-
-    if not project:
-        name_preview = req.message[:50].strip()
-        if len(req.message) > 50:
-            name_preview += "..."
-        existing = get_project_by_name(db, name_preview)
-        if existing:
-            project = existing
-            logger.info("[bridge] Reusing existing project %d: %s", project.id, project.name)
-        else:
-            project = create_project(db, ProjectCreate(
-                name=name_preview,
-                description="Chat from Astra Bridge (phone)",
-                type="bridge",
-            ))
-            logger.info("[bridge] Created project %d: %s", project.id, project.name)
-    return project
-
-
-def _run_translation(message: str, db: Session) -> tuple:
-    domain_context = ""
-    translation_result = None
-    domain_info = None
-    try:
-        from app.translation import translate_message_sync
-        from app.translation.modes import UIContext
-        bridge_ctx = UIContext(in_job_config=True)
-        translation_result = translate_message_sync(message, ui_context=bridge_ctx)
-        if (translation_result
-                and translation_result.resolved_intent
-                and translation_result.resolved_intent.value.startswith("DOMAIN_")):
-            from app.llm.translation_routing import intent_to_routing_info
-            domain_info = intent_to_routing_info(translation_result.resolved_intent)
-            if domain_info and domain_info.get("type") == "domain_chat":
-                from app.llm.routing.domain_context import get_domain_context
-                domain_context = get_domain_context(domain_info["domain"], db)
-                logger.info("[bridge] Domain detected: %s (%d chars context)",
-                           domain_info["domain"], len(domain_context))
-    except Exception as e:
-        logger.info("[bridge] Translation layer error: %s", e)
-    return domain_context, translation_result, domain_info
-
-
-async def _run_web_search(
-    resolved_intent: str | None,
-    translation_result,
-    message: str,
-) -> tuple:
-    from app.bridge.capability_honesty import get_search_failed_message
-
-    web_search_context = ""
-    search_executed = False
-    search_succeeded = False
-    early_reply = None
-
-    if resolved_intent not in ("WEB_SEARCH", "DEEP_RESEARCH"):
-        return web_search_context, search_executed, search_succeeded, early_reply
-
-    search_executed = True
-    try:
-        from app.llm.web_search import search_and_answer, WebSearchRequest
-        search_query = (
-            (translation_result.extracted_context or {}).get("extracted_query", "")
-            or message
-        )
-        logger.info("[bridge] Web search triggered: %s", search_query[:80])
-        search_result = await search_and_answer(
-            WebSearchRequest(query=search_query, max_results=5)
-        )
-        if search_result and search_result.ok:
-            search_succeeded = True
-            sources_text = "\n".join(
-                f"- [{s.title}]({s.url}): {s.snippet}"
-                for s in search_result.sources[:5]
-            )
-            web_search_context = (
-                f"## Web Search Results for: {search_result.query}\n\n"
-                f"{search_result.answer}\n\n"
-                f"Sources:\n{sources_text}\n"
-            )
-            logger.info("[bridge] Web search: %d sources, %d chars",
-                       len(search_result.sources), len(web_search_context))
-        else:
-            logger.info("[bridge] Web search returned no results")
-            early_reply = get_search_failed_message()
-    except Exception as ws_err:
-        logger.info("[bridge] Web search failed: %s", ws_err)
-        early_reply = get_search_failed_message()
-
-    return web_search_context, search_executed, search_succeeded, early_reply

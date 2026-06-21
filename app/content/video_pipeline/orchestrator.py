@@ -1,8 +1,8 @@
 # FILE: app/content/video_pipeline/orchestrator.py
 # Purpose: Pipeline Orchestrator — chains all stages together.
 # Called-by: app.content.video_pipeline.router
-# Depends-on: app.content.production.edit_engine, app.content.production.thumbnail_gen, app.content.video_pipeline.asset_library, app.content.video_pipeline.asset_resolver (+10 more)
-# Last-renovated: 2026-06-11
+# Depends-on: app.content.video_pipeline.pipeline_job, app.content.video_pipeline.narration_bake, app.content.video_pipeline.models (+10 more)
+# Last-renovated: 2026-06-21
 """
 Pipeline Orchestrator — chains all stages together.
 
@@ -17,12 +17,13 @@ Entry point for script-to-video generation. Manages:
 8. QA gate
 
 Emits SSE progress events for the frontend.
+
+BATCH 4 split: the PipelineJob state container moved to pipeline_job.py and the
+audio-first bake helper moved to narration_bake.py; both are re-exported below so
+this module's public surface is unchanged.
 """
 import os
-import json
-import uuid
 import logging
-from datetime import datetime, timezone
 from typing import Optional, Callable, Awaitable, AsyncGenerator
 from pathlib import Path
 
@@ -32,69 +33,12 @@ from app.content.video_pipeline.models import (
     PipelineJobRequest, PipelineStageUpdate,
     ScenePlan, ResolvedPlan, StyleProfile,
 )
+from app.content.video_pipeline.pipeline_job import (
+    PipelineJob, JOBS_DIR, TTS_OUTPUT_DIR,
+)
+from app.content.video_pipeline.narration_bake import _bake_narration_into_clips
 
 logger = logging.getLogger(__name__)
-
-JOBS_DIR = Path("data/content/video_pipeline/jobs")
-TTS_OUTPUT_DIR = Path("data/content/video_pipeline/tts")
-
-
-class PipelineJob:
-    """Tracks state for a single pipeline execution."""
-
-    def __init__(self, request: PipelineJobRequest):
-        self.job_id = str(uuid.uuid4())[:12]
-        self.request = request
-        self.created_at = datetime.now(timezone.utc)
-        self.status = "pending"
-        self.current_stage = ""
-        self.scene_plan: Optional[ScenePlan] = None
-        self.resolved_plan: Optional[ResolvedPlan] = None
-        self.style_profile: Optional[StyleProfile] = None
-        self.output_path: Optional[str] = None
-        self.total_cost_usd: float = 0.0
-        self.error: Optional[str] = None
-        self._events: list = []
-
-    def record_event(self, stage: str, status: str, message: str = "", **data):
-        event = PipelineStageUpdate(
-            job_id=self.job_id,
-            stage=stage,
-            status=status,
-            message=message,
-            data=data,
-        )
-        self._events.append(event)
-        return event
-
-    @property
-    def job_dir(self) -> Path:
-        path = JOBS_DIR / self.job_id
-        path.mkdir(parents=True, exist_ok=True)
-        return path
-
-    def save_state(self):
-        """Persist job state to disk."""
-        state = {
-            "job_id": self.job_id,
-            "status": self.status,
-            "current_stage": self.current_stage,
-            "created_at": self.created_at.isoformat(),
-            "total_cost_usd": self.total_cost_usd,
-            "output_path": self.output_path,
-            "error": self.error,
-            "request": self.request.model_dump(),
-        }
-        if self.scene_plan:
-            state["scene_plan"] = self.scene_plan.model_dump()
-        if self.resolved_plan:
-            state["resolved_plan"] = self.resolved_plan.model_dump()
-
-        state_file = self.job_dir / "state.json"
-        state_file.write_text(
-            json.dumps(state, indent=2, default=str),
-            encoding="utf-8",
-        )
 
 
 async def run_pipeline(
@@ -746,143 +690,3 @@ async def run_pipeline(
 
     job.save_state()
     return job
-
-
-# ── Audio-First Bake (uses bake_segment module) ──
-
-async def _bake_narration_into_clips(
-    edl,
-    narration_map: dict,
-    scene_plan: ScenePlan,
-    job_dir: str,
-    emit: Callable,
-    resolved_plan: Optional["ResolvedPlan"] = None,
-) -> tuple:
-    """
-    Audio-first bake: produce one self-contained clip per segment.
-
-    Uses the bake_segment module for equal-part clip filling.
-    Modifies edl.segments[].source_path in-place.
-    Returns (baked_count, used_source_clips) — the count and the set
-    of all original source clip paths that were actually baked into
-    the final output. Only these should be marked for cooldown.
-    """
-    from app.content.video_pipeline.bake_segment import (
-        bake_broll_segment, pad_avatar_segment, _probe_duration,
-    )
-
-    job_path = Path(job_dir)
-    baked_dir = job_path / "baked_clips"
-    baked_dir.mkdir(exist_ok=True)
-
-    baked_count = 0
-    edl_idx = 0
-    used_video_paths: set = set()
-
-    for segment in scene_plan.segments:
-        if edl_idx >= len(edl.segments):
-            break
-
-        edl_seg = edl.segments[edl_idx]
-        audio_path = narration_map.get(segment.segment_id)
-        baked_path = str(baked_dir / f"baked_{edl_idx:03d}.mp4")
-
-        if segment.requires_avatar:
-            src = os.path.abspath(edl_seg.source_path)
-            success = pad_avatar_segment(src, baked_path)
-            if success:
-                edl_seg.source_path = baked_path
-                new_dur = _probe_duration(baked_path)
-                if new_dur > 0:
-                    edl_seg.start_seconds = 0.0
-                    edl_seg.end_seconds = new_dur
-                baked_count += 1
-            else:
-                logger.warning(
-                    f"[bake_audio] Avatar pad failed for "
-                    f"{segment.segment_id}, using original"
-                )
-
-        elif audio_path and os.path.exists(audio_path):
-            src = os.path.abspath(edl_seg.source_path)
-            used_video_paths.add(src)
-
-            clip_b_path = ""
-            if resolved_plan:
-                for asset in resolved_plan.assets:
-                    if asset.segment_id == segment.segment_id:
-                        clip_b_path = asset.metadata.get("clip_b_path", "")
-                        break
-
-            # ── Segment Builder: Gemini selects clips ──
-            # Gather candidates, let Gemini rank them,
-            # then pass the best to the bake step.
-            try:
-                from app.content.video_pipeline.segment_builder import (
-                    select_clips_for_segment, _probe_duration as _sb_probe,
-                )
-
-                candidates = [{"id": "primary", "path": src, "source": "pexels"}]
-                if clip_b_path and os.path.exists(clip_b_path):
-                    candidates.append({
-                        "id": "clip_b", "path": os.path.abspath(clip_b_path),
-                        "source": "pexels",
-                    })
-
-                audio_dur = _probe_duration(audio_path)
-                ranked = await select_clips_for_segment(
-                    segment_id=segment.segment_id,
-                    narration_text=segment.script_text,
-                    candidate_clips=candidates,
-                    target_duration=audio_dur + 0.75,
-                )
-
-                # Use top-ranked clip as primary, second as clip_b
-                if ranked and ranked[0].get("use"):
-                    src = ranked[0]["path"]
-                    used_video_paths.add(src)
-                if len(ranked) > 1 and ranked[1].get("use"):
-                    clip_b_path = ranked[1]["path"]
-                else:
-                    clip_b_path = ""
-
-            except Exception as sb_err:
-                logger.warning(
-                    f"[bake_audio] Segment builder failed for "
-                    f"{segment.segment_id}: {sb_err} — using defaults"
-                )
-
-            success = bake_broll_segment(
-                video_path=src,
-                audio_path=audio_path,
-                output_path=baked_path,
-                segment_index=edl_idx,
-                used_video_paths=used_video_paths,
-                clip_b_path=clip_b_path,
-            )
-            if success:
-                edl_seg.source_path = baked_path
-                new_dur = _probe_duration(baked_path)
-                if new_dur > 0:
-                    edl_seg.start_seconds = 0.0
-                    edl_seg.end_seconds = new_dur
-                baked_count += 1
-            else:
-                logger.warning(
-                    f"[bake_audio] B-roll bake failed for "
-                    f"{segment.segment_id}, using original"
-                )
-
-        else:
-            logger.info(
-                f"[bake_audio] No audio for "
-                f"{segment.segment_id}, keeping original"
-            )
-
-        edl_idx += 1
-
-    logger.info(
-        f"[bake_audio] Complete: {baked_count}/{edl_idx} clips baked, "
-        f"{len(used_video_paths)} source clips used"
-    )
-    return baked_count, used_video_paths
