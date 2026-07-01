@@ -3,7 +3,7 @@
 #          mirror with injection cooldown, dedupe so one anomaly never spams.
 # Called-by: app.sentinel.collector, app.sentinel.router, app.sentinel.tools, app.llm.routing.memory_injection
 # Depends-on: app.sentinel.models, app.db (nudges reference: app/lifestyle/nudges.py)
-# Last-renovated: 2026-06-12
+# Last-renovated: 2026-07-01
 from __future__ import annotations
 
 import json
@@ -145,6 +145,7 @@ def list_alerts(
     *,
     unacked_only: bool = False,
     include_suppressed: bool = False,
+    min_severity: Optional[str] = None,
     limit: int = 100,
 ) -> List[SentinelAlert]:
     q = db.query(SentinelAlert)
@@ -152,6 +153,10 @@ def list_alerts(
         q = q.filter(SentinelAlert.acknowledged.is_(False))
     if not include_suppressed:
         q = q.filter(SentinelAlert.suppressed.is_(False))
+    if min_severity in _SEVERITY_ORDER:
+        floor = _SEVERITY_ORDER[min_severity]
+        allowed = [sev for sev, order in _SEVERITY_ORDER.items() if order <= floor]
+        q = q.filter(SentinelAlert.severity.in_(allowed))
     return list(q.order_by(SentinelAlert.created_at.desc()).limit(max(1, min(limit, 500))))
 
 

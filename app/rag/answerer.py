@@ -1,8 +1,8 @@
 # FILE: app/rag/answerer.py
 # Purpose: Grounded Q&A engine for architecture queries.
-# Called-by: app.llm.rag_stream, app.rag.router
-# Depends-on: app.embeddings.service, app.providers._registry_utils_3, app.rag._answerer_memory_context, app.rag._answerer_model_selection (+4 more)
-# Last-renovated: 2026-06-11
+# Called-by: app.llm.rag_stream, app.rag.router, app.bridge.capability_layer
+# Depends-on: app.embeddings.service, app.providers._registry_utils_3, app.rag._answerer_context_block, app.rag._answerer_memory_context, app.rag._answerer_model_selection (+4 more)
+# Last-renovated: 2026-07-01
 """
 Grounded Q&A engine for architecture queries.
 
@@ -10,6 +10,9 @@ Takes a question, searches RAG index, builds context from both
 architecture chunks and memory stores, and answers with a
 complexity-appropriate LLM.
 
+v11.0 (2026-07-01): Lane C — build_codebase_context() non-terminal
+    context supplier added (grounded evidence for prompt injection
+    instead of a terminal user-facing answer).
 v10.0 (2026-02-23): Job 10B/10C/10D — complexity routing, memory
     grounding, upgraded prompts, provider-agnostic LLM call.
 v1.0 (2026-01): Initial implementation
@@ -336,6 +339,39 @@ async def ask_architecture_async(
         chunks_searched=len(chunks),
         model_used=model_used,
     )
+
+
+# =========================================================================
+# Non-terminal context supplier (Lane C contract, 2026-07-01)
+# =========================================================================
+
+async def build_codebase_context(question: str, db) -> str:
+    """
+    Build a grounded codebase CONTEXT BLOCK for prompt injection.
+
+    Non-terminal counterpart to ask_architecture_async(): instead of a
+    user-facing answer in the RAG model's voice, returns a ≤3000-char
+    [CODEBASE_CONTEXT]…[/CODEBASE_CONTEXT] block of relevant files,
+    key findings, and short evidence snippets for the conversational
+    layer to speak from.
+
+    Contract (callers wire against this sight unseen — do not change):
+        - returns "" when retrieval finds nothing relevant
+        - NEVER raises — any internal error is logged and returns ""
+        - output is ≤3000 characters, plain text, delimited
+
+    Args:
+        question: The user's message or distilled question.
+        db:       SQLAlchemy session for the architecture index.
+    """
+    try:
+        from app.rag._answerer_context_block import build_context_block
+
+        block = await build_context_block(question, db)
+        return block if isinstance(block, str) else ""
+    except Exception as e:
+        logger.warning("[rag:answerer] build_codebase_context failed: %s", e)
+        return ""
 
 
 # =========================================================================

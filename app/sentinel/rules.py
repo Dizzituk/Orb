@@ -3,9 +3,10 @@
 #          Thresholds are the constants below; tune them here and only here.
 # Called-by: app.sentinel.collector (+ pytest units)
 # Depends-on: stdlib only
-# Last-renovated: 2026-06-12
+# Last-renovated: 2026-07-01
 from __future__ import annotations
 
+import ipaddress
 from typing import Any, Dict, List, Optional
 
 SEVERE = "severe"
@@ -36,11 +37,21 @@ SPIKE_MULTIPLIER = 3.0   # current external count vs 7-day average…
 SPIKE_MIN_EXCESS = 20    # …and at least this many above it
 SPIKE_MIN_HISTORY_DAYS = 3
 LOW_LISTEN_PORT = 1024   # listeners below this are more interesting
+EPHEMERAL_LISTEN_PORT = 49152  # dynamic/private range (IANA) — transient local services
 
 
 def exe_in_user_writable(exe_path: str) -> bool:
     path = (exe_path or "").lower()
     return any(marker in path for marker in USER_WRITABLE_MARKERS)
+
+
+def _is_loopback_ip(ip: str) -> bool:
+    if not ip:
+        return False
+    try:
+        return ipaddress.ip_address(ip).is_loopback
+    except ValueError:
+        return False
 
 
 def _finding(rule_key: str, severity: str, title: str, detail: str,
@@ -89,11 +100,14 @@ def evaluate_new_pair(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
             process, remote,
         ))
 
-    # R2 — connection to a raw IP with no reverse DNS
-    if is_public and not rdns:
+    # R2 — connection to a raw IP with no reverse DNS. A known process hitting a
+    # bare IP on a common port (browser -> CDN/AWS on :443, forever) is normal and
+    # was the single biggest noise source — only flag it when the process is new
+    # OR the port is uncommon (both are better C2 signals than known+443).
+    if is_public and not rdns and not (known and port in COMMON_REMOTE_PORTS):
         findings.append(_finding(
             "raw_ip",
-            LOW if port in COMMON_REMOTE_PORTS else MEDIUM,
+            MEDIUM,
             f"{process} connected to a bare IP ({ip})",
             (f"{process} connected to {ip}:{port}"
              + (f" in {country}" if country else "")
@@ -135,14 +149,25 @@ def evaluate_new_pair(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
 def evaluate_listen(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     """R5 — a new LISTENING port appeared.
 
-    ctx keys: process_name, exe_path, laddr_port, listen_known (bool), trusted (bool).
+    ctx keys: process_name, exe_path, laddr_port, laddr_ip, listen_known (bool),
+    trusted (bool).
     """
     if ctx.get("trusted") or ctx.get("listen_known"):
         return []
     process = str(ctx.get("process_name") or "unknown")
     port = int(ctx.get("laddr_port") or 0)
+    laddr_ip = str(ctx.get("laddr_ip") or "")
     in_temp = exe_in_user_writable(str(ctx.get("exe_path") or ""))
-    severity = SEVERE if (in_temp or port < LOW_LISTEN_PORT) else MEDIUM
+    if in_temp or port < LOW_LISTEN_PORT:
+        severity = SEVERE
+    elif _is_loopback_ip(laddr_ip):
+        # Only reachable from this machine — iCUE/dev-server style local listeners.
+        severity = LOW
+    elif port >= EPHEMERAL_LISTEN_PORT:
+        # Dynamic/private range — transient, not a deliberately opened service.
+        severity = LOW
+    else:
+        severity = MEDIUM
     return [_finding(
         "new_listen",
         severity,

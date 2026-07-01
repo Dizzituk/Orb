@@ -27,7 +27,8 @@ TOOL_BACKED_INTENTS = {
     "DEEP_RESEARCH",
     "GENERATE_IMAGE",
     "BUILD_AND_DEPLOY",
-    "RUN_CRITICAL_PIPELINE_FOR_JOB",
+    "RUN_PIPELINE",  # v5.4: unified pipeline intent
+    "RUN_CRITICAL_PIPELINE_FOR_JOB",  # v5.4: deprecated alias (confirmed_intent path)
     "WEAVER_BUILD_SPEC",
     "SEND_TO_SPEC_GATE",
 }
@@ -35,7 +36,8 @@ TOOL_BACKED_INTENTS = {
 # Intents that are not yet wired through the bridge
 UNSUPPORTED_BRIDGE_INTENTS = {
     "BUILD_AND_DEPLOY",
-    "RUN_CRITICAL_PIPELINE_FOR_JOB",
+    "RUN_PIPELINE",  # v5.4: unified pipeline intent
+    "RUN_CRITICAL_PIPELINE_FOR_JOB",  # v5.4: deprecated alias (confirmed_intent path)
     "WEAVER_BUILD_SPEC",
     "SEND_TO_SPEC_GATE",
 }
@@ -44,6 +46,10 @@ UNSUPPORTED_BRIDGE_INTENTS = {
 _UNSUPPORTED_MESSAGES = {
     "BUILD_AND_DEPLOY": (
         "Build and deploy operations aren't available from the Bridge app yet. "
+        "Use the desktop builds tab for now."
+    ),
+    "RUN_PIPELINE": (
+        "Pipeline operations aren't available from the Bridge app yet. "
         "Use the desktop builds tab for now."
     ),
     "RUN_CRITICAL_PIPELINE_FOR_JOB": (

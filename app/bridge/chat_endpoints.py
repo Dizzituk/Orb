@@ -72,7 +72,7 @@ async def run_bridge_chat(req: BridgeChatRequest, db: Session) -> BridgeChatResp
             message_id=bt_message.id,
         )
 
-    domain_context, translation_result, domain_info = _run_translation(req.message, db)
+    domain_context, translation_result, domain_info = _run_translation(req.message, db, project_id=project.id)
 
     from app.bridge.capability_honesty import (
         is_unsupported_on_bridge, get_unsupported_message,

@@ -52,10 +52,12 @@ def _enabled() -> bool:
 
 
 def _get_link_model() -> Tuple[str, str]:
-    """The cheap batch tier — same flash-lite class the summariser uses."""
-    provider = os.getenv("SUMMARY_PROVIDER", "google")
-    model = os.getenv("SUMMARY_MODEL", "gemini-2.5-flash-lite")
-    return provider, model
+    """The cheap batch tier — same env-resolved class the summariser uses.
+
+    No hardcoded fallback (Lane B 2026-07-01): unresolved config returns ""s
+    and the guarded call site skips the LLM step."""
+    from app.memory.model_env import summary_model_from_env
+    return summary_model_from_env()
 
 
 _LINK_SYSTEM_PROMPT = """\
@@ -155,7 +157,13 @@ def _node_for(text: str) -> Tuple[str, str]:
     if domains:
         domain = domains[0]
         return (f"topic:{domain}", domain)
-    slug = re.sub(r"[^a-z0-9]+", "_", cleaned.lower()).strip("_")[:48]
+    # Strip leading articles / possessives so phrasing variants of the same
+    # free-text endpoint collapse onto one node ("the move to portugal" and
+    # "move to portugal"), giving recurrence a chance to strengthen the edge.
+    normalised = re.sub(
+        r"\b(?:the|a|an|my|our|your|his|her|their|its)\b", " ", cleaned.lower()
+    )
+    slug = re.sub(r"[^a-z0-9]+", "_", normalised).strip("_")[:48]
     if not slug:
         return ("", "")
     return (f"topic:{slug}", cleaned[:60])
@@ -189,9 +197,16 @@ def _write_link(graph, link: DomainLink, session_id: int) -> bool:
 
     relation_phrase = (link.relation or "related to").strip()[:60]
 
+    # Match an existing edge between this unordered pair in EITHER direction.
+    # Consolidation links are semantically symmetric (RELATED_TO) and the store is
+    # a DIRECTED graph keyed on (source, target) — so a link drawn the reverse way
+    # must STRENGTHEN the same edge, not spawn a duplicate (the bug where
+    # ai<->investments was stored as two separate occ=1 edges, so MIN_STRENGTH
+    # could never distinguish a load-bearing link from a one-off).
     existing = None
-    for rel in graph.get_relationships(src_id, direction="outgoing"):
-        if rel.target_id == tgt_id:
+    for rel in graph.get_relationships(src_id, direction="both"):
+        other = rel.target_id if rel.source_id == src_id else rel.source_id
+        if other == tgt_id:
             existing = rel
             break
 
@@ -204,9 +219,12 @@ def _write_link(graph, link: DomainLink, session_id: int) -> bool:
             sessions = (sessions + [session_id])[-10:]
         meta["sessions"] = sessions
         meta.setdefault("relation", relation_phrase)
+        # Re-add on the EXISTING edge's orientation so the directed graph updates
+        # that edge in place; the new link's orientation would create the reverse
+        # duplicate we are trying to merge.
         graph.add_relationship(Relationship(
-            source_id=src_id,
-            target_id=tgt_id,
+            source_id=existing.source_id,
+            target_id=existing.target_id,
             relation_type=RelationType.RELATED_TO,
             weight=new_weight,
             metadata=meta,
@@ -263,6 +281,9 @@ async def detect_and_write_links(summary_text: str, session_id: int) -> int:
 
     # LLM judgement (cheap batch tier).
     provider, model = _get_link_model()
+    if not provider or not model:
+        logger.warning("[consolidation_graph] link model unconfigured — skipping")
+        return 0
     try:
         from app.llm._streaming_utils_3 import call_llm_text
         raw = await call_llm_text(

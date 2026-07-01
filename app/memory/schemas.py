@@ -150,6 +150,7 @@ class MessageCreate(BaseModel):
     content: str
     provider: Optional[str] = None
     model: Optional[str] = None
+    model_source: Optional[str] = None  # v2026-06-24: routing provenance (pin vs auto)
     reasoning: Optional[str] = None
     session_id: Optional[int] = None
 

@@ -3,7 +3,7 @@
 #          active map, write connection events, feed baseline + rules, triage + alert.
 # Called-by: app.sentinel.scheduler (collect_once), app.sentinel.router/tools (status_payload)
 # Depends-on: app.sentinel.agent_client/enrich/baseline/rules/triage/alerts/models, app.db
-# Last-renovated: 2026-06-12
+# Last-renovated: 2026-07-01
 from __future__ import annotations
 
 import asyncio
@@ -111,9 +111,17 @@ def _process_db(
     new_listens: List[dict],
     external_count: int,
     enrich_map: Dict[str, dict],
+    priming: bool = False,
 ) -> List[Tuple[dict, dict]]:
     """Sync DB pass: events + baseline + rules. Stores suppressed/offline-grade
-    alerts directly; returns [(finding, context)] still needing LLM triage."""
+    alerts directly; returns [(finding, context)] still needing LLM triage.
+
+    priming=True (P2-1 boot dampener): baseline + connection events still persist,
+    but every finding is dropped like the first-seed cycle — used once per backend
+    boot so a restart's empty _active_pairs/_active_listens don't get diffed as a
+    burst of brand-new anomalies. Trade-off (accepted): a genuinely-new suspicious
+    connection already open at boot is absorbed silently and only alerts if it
+    recurs on a later, non-priming cycle."""
     from app.db import SessionLocal
 
     db = SessionLocal()
@@ -121,6 +129,23 @@ def _process_db(
     try:
         baseline.ensure_learn_mode_started(db)
         learn_active = baseline.learn_mode_active(db)
+        # Learn mode ending was previously a silent state change — Taz kept thinking
+        # Sentinel was still learning while it had already switched to full alerting.
+        # Fire exactly one alert the first cycle after it ends, never again.
+        if not learn_active and not baseline.learn_mode_complete_notified(db):
+            alerts.create_alert(
+                db,
+                severity=rules.MEDIUM,
+                rule_key="learn_complete",
+                title="Sentinel finished its 14-day learning period — now in active monitoring",
+                explanation=(
+                    "Sentinel spent the last 14 days quietly learning which processes, "
+                    "ports, and remote destinations are normal for this PC. It has now "
+                    "switched to active monitoring, so new findings will show up as real "
+                    "alerts instead of being recorded silently."
+                ),
+            )
+            baseline.mark_learn_mode_complete_notified(db)
         # First collection EVER: this snapshot defines "normal so far" — seed the
         # baseline silently and fire NO rules. Otherwise boot #1 would scream
         # severe for every standard Windows listener (svchost :135, System :445…)
@@ -128,8 +153,8 @@ def _process_db(
         first_seed = baseline.get_state(db, "first_seed_done") is None
 
         def _handle(finding: dict, context: dict) -> None:
-            if first_seed:
-                return  # seeding cycle records baseline + events, never alerts
+            if first_seed or priming:
+                return  # seeding/priming cycles record baseline + events, never alert
             if learn_active and finding["severity"] != rules.SEVERE:
                 alerts.create_alert(
                     db,
@@ -218,6 +243,7 @@ def _process_db(
                 "process_name": pname,
                 "exe_path": str(conn.get("exe_path") or ""),
                 "laddr_port": lport,
+                "laddr_ip": str(conn.get("laddr_ip") or ""),
                 "listen_known": not created,
                 "trusted": trusted,
             }):
@@ -280,6 +306,40 @@ def _store_agent_offline_alert() -> None:
         )
     finally:
         db.close()
+
+
+async def prime_once() -> None:
+    """P2-1 boot dampener — run exactly once per backend start, before the periodic
+    loop begins. _active_pairs/_active_listens are always empty right after a
+    restart, so the very first real diff would otherwise treat every currently-open
+    connection as brand new. This absorbs that snapshot into the in-memory maps
+    (via the ordinary _diff_snapshot path) and persists it to the DB with
+    priming=True, so alerting is skipped but nothing is lost for audit. Never
+    raises — an offline agent or any failure here just means the first ordinary
+    tick runs without a prime, which is safe."""
+    try:
+        conns = await agent_client.get_connections()
+    except AgentOfflineError:
+        return
+    except Exception:
+        logger.exception("[sentinel] boot prime failed to fetch connections")
+        return
+    try:
+        new_pairs, new_listens, external_count = _diff_snapshot(conns)
+        public_ips = [
+            str(c.get("raddr_ip") or "") for c in new_pairs
+            if enrich.is_public_ip(str(c.get("raddr_ip") or ""))
+        ]
+        enrich_map = await enrich.enrich_ips(public_ips) if public_ips else {}
+        await asyncio.to_thread(
+            _process_db, new_pairs, new_listens, external_count, enrich_map, True
+        )
+        logger.info(
+            "[sentinel] boot prime absorbed %d pairs + %d listeners silently",
+            len(new_pairs), len(new_listens),
+        )
+    except Exception:
+        logger.exception("[sentinel] boot prime processing failed")
 
 
 async def collect_once() -> None:

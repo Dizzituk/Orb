@@ -2,7 +2,7 @@
 # Purpose: Per-session in-memory action queue with asyncio Futures for result delivery.
 # Called-by: app.web_automation.bridge, app.web_automation.router
 # Depends-on: app.db, app.web_automation.models
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-07-01
 """
 Per-session in-memory action queue with asyncio Futures for result delivery.
 
@@ -121,27 +121,65 @@ def resolve_action(
     return action
 
 
+# Stable prefix other layers key on (composite helpers, tool descriptions,
+# tests). An error starting with this means "Electron never picked the
+# action up", as opposed to a page-level failure inside a live browser.
+DESKTOP_OFFLINE_PREFIX = "desktop browser is offline"
+
+
 async def await_result(action_id: str, timeout_seconds: float = 30.0) -> dict:
-    """Block until the action resolves (or the timeout elapses)."""
+    """Block until the action resolves (or the timeout elapses).
+
+    On timeout the error string distinguishes the two very different
+    failure modes so the LLM can tell the user the right thing:
+      • action still `pending`  → Electron never dequeued it: the desktop
+        app isn't running (or its poller is down). NOT a page problem.
+      • action was `in_flight`  → Electron took it but never answered:
+        the page/executor stalled. The desktop IS up.
+    """
     fut = _result_futures.get(action_id)
     if fut is None:
         return {"ok": False, "error": "no future registered for action"}
     try:
         return await asyncio.wait_for(fut, timeout=timeout_seconds)
     except asyncio.TimeoutError:
-        _mark_timed_out(action_id)
+        stalled_status = _mark_timed_out(action_id)
         _result_futures.pop(action_id, None)
-        return {"ok": False, "error": f"timed out after {timeout_seconds:.1f}s"}
+        if stalled_status == ActionStatus.pending:
+            return {
+                "ok": False,
+                "error": (
+                    f"{DESKTOP_OFFLINE_PREFIX} — the ASTRA desktop app never "
+                    f"picked this action up ({timeout_seconds:.0f}s). It is "
+                    "probably not running. Tell the user to start the ASTRA "
+                    "desktop app, then retry. This is not a page problem."
+                ),
+            }
+        return {
+            "ok": False,
+            "error": (
+                f"page did not respond — the desktop browser accepted the "
+                f"action but returned no result within {timeout_seconds:.0f}s. "
+                "The page may still be loading; retry once or check "
+                "web_current_state."
+            ),
+        }
 
 
-def _mark_timed_out(action_id: str) -> None:
+def _mark_timed_out(action_id: str) -> Optional[ActionStatus]:
+    """Mark a stalled action timed_out. Returns the status it stalled in
+    (pending / in_flight) so await_result can phrase the error, or None
+    if the action is unknown or already resolved."""
     db = SessionLocal()
     try:
         action = db.query(WebAction).filter(WebAction.id == action_id).one_or_none()
         if action and action.status in (ActionStatus.pending, ActionStatus.in_flight):
+            stalled_status = action.status
             action.status = ActionStatus.timed_out
             action.completed_at = _now()
             db.commit()
+            return stalled_status
+        return None
     finally:
         db.close()
 

@@ -287,10 +287,20 @@ class Translator:
                 return result
             
             # v11.0: Adjust confidence based on wake word detection
-            # Commands without wake word addressing get lower confidence
+            # Commands without wake word addressing get lower confidence.
+            # v11.1 (2026-07-01): honour the wake phrase found by mode
+            # classification. This method receives remaining_text with the
+            # wake phrase already stripped, so wake_word_classify can never
+            # see it — every "Astra, command: ..." message was marked
+            # unaddressed and reduced to 0.6, the exact messages the
+            # reduction was meant to exempt.
             if _wake_result and _WAKE_WORD_AVAILABLE:
-                if not _wake_result.addressed and tier0_result.intent not in (
-                    CanonicalIntent.CHAT_ONLY,
+                if (
+                    not _wake_result.addressed
+                    and result.wake_phrase_detected is None
+                    and tier0_result.intent not in (
+                        CanonicalIntent.CHAT_ONLY,
+                    )
                 ):
                     # User didn't address ASTRA — reduce confidence
                     result.intent_confidence *= 0.6
@@ -452,7 +462,22 @@ class Translator:
         extracted = extract_context_from_text(text, intent)
         if ui_context:
             extracted.update(ui_context.to_dict())
-        result.extracted_context = extracted
+        # v11.2 (2026-07-01): MERGE into the context stashed upstream instead
+        # of replacing it. Plain assignment here wiped _classifier_rule /
+        # _classifier_reason (recent_decisions.py needs them to explain
+        # routing decisions in chat), wake_word_type/wake_word_confidence and
+        # the tier0-parsed extracted_query for every command that reached the
+        # gates. Freshly extracted values win for real context keys (job_id,
+        # sandbox_id, change_set_id); underscore metadata keys and a stashed
+        # extracted_query (already parsed out of the natural language —
+        # better than gates.py's whole-message fallback) survive.
+        merged = dict(result.extracted_context)
+        for key, value in extracted.items():
+            if key in merged and (key.startswith("_") or key == "extracted_query"):
+                continue
+            merged[key] = value
+        result.extracted_context = merged
+        extracted = merged
         
         # Step 4: Context Gate
         context_result = check_context_gate(intent, extracted)

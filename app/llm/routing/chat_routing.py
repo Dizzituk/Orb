@@ -12,6 +12,14 @@ Split 2026-06-21 (BATCH 7): the cleanly-isolated helper bands were extracted:
     - chat_prompt_tools.py:  prompt/tool decoration (_inject_tab_data, _run_grounding_gate,
       _inject_tools + the _TOOL_ROLE_BLOCK / _WEB_SEARCH_PROMPT / _CHAT_TOOLS_* prompt blocks)
 The 3 handlers + _rag_llm_safety_net stay here. All public names re-exported -> importers unchanged.
+
+RAG-as-context (2026-07-01, Lane A<->C contract): at both divert points
+(deterministic is_architecture_query + LLM safety-net) we now try
+codebase_context_bridge.try_build_codebase_context() first — when it returns
+a grounded block, the message STAYS in chat and the normal chat model answers
+in Astra's voice with the block injected into its context. Raw RAG output is
+only streamed as the reply when the context build is unavailable (legacy
+fallback — e.g. Lane C not merged, kill-switched, or errored).
 """
 from __future__ import annotations
 
@@ -123,21 +131,27 @@ def _rag_llm_safety_net(req: Any, db: Session, trace: Any, persist_user: bool = 
     broaden the brittle regex (false positives like "book me a table"), this
     fires ONLY for natural-shape questions without a guard keyword
     (needs_llm_codebase_check) and asks a lightweight model whether the question
-    is about ASTRA's own code/features. If yes → RAG stream; else None (→ chat).
-    Fail-closed and non-fatal: any failure returns None and chat proceeds.
+    is about ASTRA's own code/features.
 
-    Returns a StreamingResponse to short-circuit into RAG, or None.
+    v2026-07-01 (RAG-as-context): when the LLM says "codebase question", we
+    first try to build a grounded context block and keep the turn IN chat —
+    the chat model answers in Astra's voice. Only when the block is
+    unavailable does the legacy RAG stream take over as the reply.
+    Fail-closed and non-fatal: any failure returns (None, "") and chat
+    proceeds.
+
+    Returns (streaming_response_or_none, codebase_context_str).
     """
     if not _RAG_STREAM_AVAILABLE:
-        return None
+        return None, ""
     # Never hijack an in-flight job continuation (e.g. a spec-clarification reply
     # that happens to look like a feature question).
     if getattr(req, "continue_job_id", None):
-        return None
+        return None, ""
     try:
         from app.llm.routing.rag_fallback import needs_llm_codebase_check
         if not needs_llm_codebase_check(req.message):
-            return None
+            return None, ""
         # Identity/capability questions ("tell me about yourself", "what are
         # your abilities") are answered in chat via the capability manifest
         # (build_full_context). They match the broad "tell me about X" shape, so
@@ -145,13 +159,19 @@ def _rag_llm_safety_net(req: Any, db: Session, trace: Any, persist_user: bool = 
         try:
             from app.astra_memory.topic_tagger import extract_tags
             if "identity_capability" in (extract_tags(req.message) or []):
-                return None
+                return None, ""
         except Exception:
             pass
         from app.llm.routing.codebase_intent_llm import is_codebase_question_llm
         if not is_codebase_question_llm(req.message):
-            return None
-        print("[RAG_SAFETY_NET] LLM classified message as a codebase question → RAG")
+            return None, ""
+        # RAG-as-context first: stay in chat with grounded context injected.
+        from .codebase_context_bridge import try_build_codebase_context
+        _cb_ctx = try_build_codebase_context(req.message, db)
+        if _cb_ctx:
+            print("[RAG_SAFETY_NET] codebase question → grounded context injected, staying in chat")
+            return None, _cb_ctx
+        print("[RAG_SAFETY_NET] LLM classified message as a codebase question → RAG (legacy divert)")
         return StreamingResponse(
             generate_rag_query_stream(
                 project_id=req.project_id, message=req.message, db=db, trace=trace,
@@ -159,10 +179,10 @@ def _rag_llm_safety_net(req: Any, db: Session, trace: Any, persist_user: bool = 
             ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
+        ), ""
     except Exception as e:
         print(f"[RAG_SAFETY_NET] failed (non-fatal): {e}")
-        return None
+        return None, ""
 
 
 def handle_chat_mode(
@@ -181,15 +201,19 @@ def handle_chat_mode(
     # ── 1. Persist user message ──
     _user_message_id = _persist_user_message(req, db)
 
-    # ── 1b. RAG safety-net: reroute codebase/feature questions that missed
-    # Tier-0 (e.g. "what data does the chat window have"). Placed AFTER
-    # persistence so the user turn is always saved, even when we divert to RAG.
-    _rag_net = _rag_llm_safety_net(req, db, trace)
+    # ── 1b. RAG safety-net: codebase/feature questions that missed Tier-0
+    # (e.g. "what data does the chat window have"). Placed AFTER persistence
+    # so the user turn is always saved. v2026-07-01: prefers returning a
+    # grounded context block (stay in chat) over diverting the reply to RAG.
+    _rag_net, _codebase_ctx_block = _rag_llm_safety_net(req, db, trace)
     if _rag_net is not None:
         return _rag_net
 
     # ── 2. Build base context ──
     full_context = build_full_context(db, req.project_id, req.message, req.use_semantic_search)
+    if _codebase_ctx_block:
+        full_context += f"\n\n{_codebase_ctx_block}"
+        print(f"[CHAT_MODE] RAG-as-context block injected: {len(_codebase_ctx_block)} chars")
 
     # ── 3. Handle file uploads ──
     synthetic_attachments, is_image_upload, is_video_upload, full_context = (
@@ -289,6 +313,8 @@ def handle_chat_mode(
         # v2026-06-14: hand over the already-persisted user row so the stream
         # doesn't write a duplicate, and reports its id in the done event.
         user_message_id=_user_message_id,
+        # v2026-06-24: routing provenance so an explicit desktop pin survives restart.
+        model_source=extras.get("model_source"),
     )
 
     # v16.0: Wrap stream with image dispatcher when image intent was detected.
@@ -319,28 +345,40 @@ def handle_normal_routing(
     db: Session,
     trace: Any,
 ) -> StreamingResponse:
-    """Handle normal job-type routing with RAG fallback."""
+    """Handle normal job-type routing with RAG fallback (as-context first)."""
 
-    # RAG fallback for architecture queries (deterministic regex + guard).
-    # persist_user=True: the normal-routing path doesn't persist the user turn
-    # itself, so the RAG stream must save both turns.
+    # Architecture queries (deterministic regex + guard). v2026-07-01: try
+    # RAG-as-context first — build a grounded block and let the NORMAL chat
+    # model answer in Astra's voice. Legacy divert (raw RAG reply) only when
+    # the block is unavailable (Lane C missing, kill-switched, or errored).
+    _codebase_ctx_block = ""
     if _RAG_STREAM_AVAILABLE and is_architecture_query(req.message):
-        print(f"[NORMAL_ROUTING] RAG fallback: detected architecture query")
-        return StreamingResponse(
-            generate_rag_query_stream(
-                project_id=req.project_id, message=req.message, db=db, trace=trace,
-                persist_user=True,
-            ),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
+        from .codebase_context_bridge import try_build_codebase_context
+        _codebase_ctx_block = try_build_codebase_context(req.message, db)
+        if not _codebase_ctx_block:
+            # persist_user=True: the normal-routing path doesn't persist the
+            # user turn itself, so the RAG stream must save both turns.
+            print(f"[NORMAL_ROUTING] RAG fallback: architecture query (legacy divert)")
+            return StreamingResponse(
+                generate_rag_query_stream(
+                    project_id=req.project_id, message=req.message, db=db, trace=trace,
+                    persist_user=True,
+                ),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+        print(f"[NORMAL_ROUTING] RAG-as-context: architecture query stays in chat")
 
     # LLM safety-net for natural-shape codebase questions without a guard keyword.
-    _rag_net = _rag_llm_safety_net(req, db, trace, persist_user=True)
-    if _rag_net is not None:
-        return _rag_net
+    if not _codebase_ctx_block:
+        _rag_net, _codebase_ctx_block = _rag_llm_safety_net(req, db, trace, persist_user=True)
+        if _rag_net is not None:
+            return _rag_net
 
     full_context = build_full_context(db, req.project_id, req.message, req.use_semantic_search)
+    if _codebase_ctx_block:
+        full_context += f"\n\n{_codebase_ctx_block}"
+        print(f"[NORMAL_ROUTING] RAG-as-context block injected: {len(_codebase_ctx_block)} chars")
 
     # Job continuation
     if req.continue_job_id and req.job_state == "needs_spec_clarification":

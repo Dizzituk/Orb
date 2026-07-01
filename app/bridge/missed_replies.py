@@ -61,5 +61,8 @@ async def get_missed_replies(
             ),
             attachments=refs,
         ))
-    logger.info("[bridge] missed replies since %s for project %s -> %s", since_id, project_id, len(replies))
+    if replies:
+        logger.info("[bridge] missed replies since %s for project %s -> %s", since_id, project_id, len(replies))
+    else:
+        logger.debug("[bridge] missed replies since %s for project %s -> 0", since_id, project_id)
     return replies

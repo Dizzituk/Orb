@@ -1,104 +1,230 @@
 # FILE: app/llm/frontier_models.py
-# Purpose: Frontier Model Aliases — single source of truth for "latest good model".
-# Called-by: app.llm.stage_models, app.pipeline_v2.config
+# Purpose: Frontier Model Resolution — THE single env-driven resolver: reads .env,
+#          resolves aliases/roles, returns concrete models. Zero hardcoded model IDs.
+# Called-by: app.llm.stage_models, app.pipeline_v2.config, app.llm.routing.*,
+#            app.scene_director, app.sentinel.triage, app.self_model.capability_manifest
 # Depends-on: stdlib/third-party only
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-07-01
 """
-Frontier Model Aliases — single source of truth for "latest good model".
+Frontier Model Resolution — single source of truth for "which model".
 
 Purpose
 -------
-When a new Anthropic Opus or OpenAI GPT drops, ASTRA should pick it up
-without hunting through scattered model strings. This module is the ONE
-place to change when the frontier moves.
+Lane A de-hardcode (2026-07-01): NO model string is hardcoded anywhere in
+this module (or the chat-routing modules that call it). Every model choice
+resolves from `.env` (loaded by main.py at startup, before anything reads
+os.getenv). Changing any model = editing only `.env`.
 
-Every pipeline stage references a capability alias like
-``openai:frontier-reasoning`` rather than a concrete model ID. The alias
-table below maps each alias to the current best model for that role.
+Two resolution surfaces:
+
+1. Capability aliases (pipeline stages) — ``"{provider}:frontier-<cap>"``
+   strings resolve through an env var per alias (see _ALIAS_ENV below).
+   `resolve_model_alias()` keeps its historical contract: concrete model
+   IDs pass through unchanged; unknown strings pass through unchanged.
+   A KNOWN alias whose env var is unset falls back to DEFAULT_MODEL; if
+   that is also unset the alias is returned unchanged with a loud error
+   log (consumers like stage_models will then surface the alias name in
+   their provider errors — visible, attributable, non-crashing).
+
+2. Chat-routing roles — `get_role_model("ARCHITECT")` reads
+   ``ARCHITECT_PROVIDER`` / ``ARCHITECT_MODEL``, then any fallback roles,
+   then ``DEFAULT_PROVIDER`` / ``DEFAULT_MODEL``, then fails LOUD with a
+   RuntimeError naming the exact vars to set. Never a literal.
 
 Hard constraint — NO Pro-tier GPT models
 -----------------------------------------
-Taz's explicit rule: never route any ASTRA stage to GPT-5 Pro
-(``gpt-5.2-pro``, future ``gpt-5.5-pro`` etc.). They are far more
-expensive than the standard frontier model for a marginal quality
-bump that isn't worth it at pipeline volumes. The aliases defined here
-are guaranteed non-Pro. When updating the table, preserve this rule.
+Taz's explicit rule: never route any ASTRA stage to a GPT Pro tier. That
+rule now lives in `.env` (the values assigned there) — when updating
+`.env`, preserve it.
 
 Reasoning / thinking — enabled by default on load-bearing stages
 ----------------------------------------------------------------
-Taz's stance: the pipeline is a high-stakes job, so the extra few quid
-for reasoning/thinking is worth it. Per-stage reasoning defaults live
-here too. Light classifier / summariser stages stay cheap (no
-reasoning) because their correctness doesn't move the dial.
+Per-stage reasoning defaults live here (STAGE_REASONING). Light
+classifier / summariser stages stay cheap (no reasoning).
 
-Resolution
-----------
-`resolve_model_alias(s)` turns either an alias or a concrete model ID
-into a concrete model ID. Concrete IDs pass through unchanged, so
-env-var overrides that use real model names keep working.
-
-v1.0 (2026-04-18): Initial implementation. Replaces scattered hard-coded
-    model strings in stage_models.py / pipeline_v2/config.py.
+v2.0 (2026-07-01): Lane A de-hardcode. FRONTIER_ALIASES became an
+    env-backed Mapping; added get_role_model()/get_provider_default_model()
+    as the one resolver for chat routing.
+v1.0 (2026-04-18): Initial implementation.
 """
 from __future__ import annotations
 
 import logging
 import os
-from typing import Dict, Optional
+from collections.abc import Mapping
+from typing import Dict, Iterator, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Frontier alias table — UPDATE THIS WHEN NEW MODELS DROP
+# Frontier alias table — alias -> .env var (EDIT MODELS IN .env, NOT HERE)
 # ─────────────────────────────────────────────────────────────────────────────
-# Format: "{provider}:{capability}" -> concrete model id
+# Format: "{provider}:{capability}" -> env var holding the concrete model id.
 #
 # Rules when updating:
-#   1. Keep aliases stable; only change the right-hand-side model ID.
-#   2. NEVER point a frontier alias at a Pro-tier OpenAI model.
-#   3. For Anthropic, prefer the latest Opus that supports adaptive
-#      thinking + output_config.effort (currently Opus 4.6 and 4.7).
-#   4. For OpenAI, use the latest non-Pro GPT that accepts the
-#      `reasoning={"effort": "..."}` parameter.
+#   1. Keep aliases stable; models change in .env only.
+#   2. NEVER point a frontier alias at a Pro-tier OpenAI model (in .env).
+#   3. Resolution order per alias: its env var -> DEFAULT_MODEL -> alias
+#      returned unchanged + error log.
 #
-# Current frontier (2026-04-18):
-#   - OpenAI latest non-Pro GPT = gpt-5.4 (reasoning param supported)
-#   - Anthropic latest Opus = claude-opus-4-8 (adaptive thinking only)
-#   - Anthropic latest Sonnet = claude-sonnet-4-6
-#   - Google frontier flash = gemini-2.5-flash
-#
-FRONTIER_ALIASES: Dict[str, str] = {
+_ALIAS_ENV: Dict[str, str] = {
     # ── OpenAI (non-Pro) ──────────────────────────────────────────────
-    # The primary agentic builder model. Reasoning is enabled via
-    # the `reasoning={"effort": "high"}` parameter at call time.
-    "openai:frontier-reasoning":      "gpt-5.4",
-    # Same underlying model, used when we want a cheaper/faster pass
-    # (e.g. simple classification, summarisation). Still non-Pro.
-    "openai:frontier-fast":           "gpt-5.4-mini",
+    # Primary agentic builder model (reasoning enabled at call time).
+    "openai:frontier-reasoning":        "FRONTIER_OPENAI_REASONING_MODEL",
+    # Cheaper/faster pass (simple classification, summarisation).
+    "openai:frontier-fast":             "FRONTIER_OPENAI_FAST_MODEL",
 
     # ── Anthropic ─────────────────────────────────────────────────────
     # Primary thinking model for SpecGate, Overwatcher, Verifier.
-    # Thinking is enabled via adaptive thinking + output_config.effort.
-    "anthropic:frontier-opus-thinking": "claude-opus-4-8",
-    # Same model without thinking routed in (for cheaper diagnostic
-    # calls that still benefit from Opus's reasoning).
-    "anthropic:frontier-opus":          "claude-opus-4-8",
-    # JOB 12 (2026-06-10): THE verifier-family slot. Agentic verifier,
-    # spec review and cross-model diagnosis all resolve through this one
-    # alias. Fable 5 is the tier above Opus (Taz's verifier decision,
-    # jobs list 2026-06-09); override the whole family with one .env line:
-    #   ASTRA_VERIFIER_FAMILY_MODEL=claude-opus-4-8
-    "anthropic:frontier-verifier":      "claude-fable-5",
-    # Mid-tier Claude for lighter work (e.g. job-checker, compaction).
-    "anthropic:frontier-sonnet":        "claude-sonnet-4-6",
+    "anthropic:frontier-opus-thinking": "FRONTIER_ANTHROPIC_OPUS_THINKING_MODEL",
+    # Same tier without thinking routed in.
+    "anthropic:frontier-opus":          "FRONTIER_ANTHROPIC_OPUS_MODEL",
+    # JOB 12 (2026-06-10): THE verifier-family slot — one .env line
+    # (ASTRA_VERIFIER_FAMILY_MODEL) overrides the whole family.
+    "anthropic:frontier-verifier":      "ASTRA_VERIFIER_FAMILY_MODEL",
+    # Mid-tier Claude for lighter work (job-checker, compaction).
+    "anthropic:frontier-sonnet":        "FRONTIER_ANTHROPIC_SONNET_MODEL",
 
     # ── Google ────────────────────────────────────────────────────────
     # Vision / fast classifier / summariser tier.
-    "google:frontier-flash":           "gemini-2.5-flash",
+    "google:frontier-flash":            "FRONTIER_GOOGLE_FLASH_MODEL",
     # Tiniest tier for high-volume classification.
-    "google:frontier-flash-lite":      "gemini-2.5-flash-lite",
+    "google:frontier-flash-lite":       "FRONTIER_GOOGLE_FLASH_LITE_MODEL",
 }
+
+
+def _env(name: str) -> str:
+    return os.getenv(name, "").strip()
+
+
+def _resolve_alias_value(alias: str) -> Optional[str]:
+    """Resolve a KNOWN alias via its env var, then DEFAULT_MODEL. None if unset."""
+    var = _ALIAS_ENV.get(alias)
+    if var is None:
+        return None
+    value = _env(var)
+    if value:
+        return value
+    default = _env("DEFAULT_MODEL")
+    if default:
+        logger.warning(
+            "[frontier_models] %s unset — alias %r falling back to DEFAULT_MODEL=%s",
+            var, alias, default,
+        )
+        return default
+    logger.error(
+        "[frontier_models] UNRESOLVED alias %r: set %s (or DEFAULT_MODEL) in .env",
+        alias, var,
+    )
+    return None
+
+
+class _EnvAliasMap(Mapping):
+    """Mapping-compatible view of the alias table, resolved from .env on access.
+
+    Keeps the historical FRONTIER_ALIASES contract for consumers that do
+    ``alias in FRONTIER_ALIASES`` / ``FRONTIER_ALIASES[alias]`` /
+    ``dict(FRONTIER_ALIASES)``. A known alias whose env vars are unset
+    resolves to itself (documented pass-through, error already logged).
+    """
+
+    def __getitem__(self, alias: str) -> str:
+        if alias not in _ALIAS_ENV:
+            raise KeyError(alias)
+        return _resolve_alias_value(alias) or alias
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(_ALIAS_ENV)
+
+    def __len__(self) -> int:
+        return len(_ALIAS_ENV)
+
+
+FRONTIER_ALIASES: Mapping = _EnvAliasMap()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Role resolver — THE entry point for chat routing (Lane A, 2026-07-01)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Provider inference from a model id's family prefix. These are provider
+# names (allowed), not model IDs — used only when a role has a model but
+# no provider var and no DEFAULT_PROVIDER.
+_PROVIDER_PREFIXES: Tuple[Tuple[str, str], ...] = (
+    ("gpt", "openai"),
+    ("o1", "openai"),
+    ("o3", "openai"),
+    ("claude", "anthropic"),
+    ("gemini", "google"),
+)
+
+
+def _infer_provider(model: str) -> Optional[str]:
+    lower = (model or "").strip().lower()
+    for prefix, provider in _PROVIDER_PREFIXES:
+        if lower.startswith(prefix):
+            return provider
+    return None
+
+
+def get_role_model(role: str, *fallback_roles: str) -> Tuple[str, str]:
+    """Resolve (provider, model) for a routing role, env-only, fail-loud.
+
+    Reads ``{ROLE}_PROVIDER`` / ``{ROLE}_MODEL`` for the role, then each
+    fallback role in order, then ``DEFAULT_PROVIDER`` / ``DEFAULT_MODEL``.
+    Model values may be frontier aliases — they resolve through
+    resolve_model_alias first. A model without a provider var resolves via
+    family-prefix inference (the model's own family is a stronger signal
+    than the global default), then DEFAULT_PROVIDER. If nothing resolves,
+    raises RuntimeError naming the exact .env vars to set — never a
+    hardcoded literal.
+    """
+    for r in (role, *fallback_roles):
+        key = r.upper()
+        model = _env(f"{key}_MODEL")
+        if not model:
+            continue
+        model = resolve_model_alias(model)
+        provider = (
+            _env(f"{key}_PROVIDER")
+            or _infer_provider(model)
+            or _env("DEFAULT_PROVIDER")
+        )
+        if provider:
+            return provider, model
+        raise RuntimeError(
+            f"[frontier_models] {key}_MODEL={model!r} is set but no provider "
+            f"resolves: set {key}_PROVIDER or DEFAULT_PROVIDER in .env"
+        )
+    default_model = _env("DEFAULT_MODEL")
+    if default_model:
+        default_model = resolve_model_alias(default_model)
+        provider = _infer_provider(default_model) or _env("DEFAULT_PROVIDER")
+        if provider:
+            return provider, default_model
+    tried = " -> ".join([role.upper(), *[r.upper() for r in fallback_roles]])
+    raise RuntimeError(
+        f"[frontier_models] No model configured for role {tried}: set "
+        f"{role.upper()}_PROVIDER/{role.upper()}_MODEL (or DEFAULT_PROVIDER/"
+        f"DEFAULT_MODEL) in .env — models are env-only, never hardcoded."
+    )
+
+
+def get_provider_default_model(provider: str) -> str:
+    """Default model for a provider, env-only (``{PROVIDER}_DEFAULT_MODEL``).
+
+    Falls back to DEFAULT_MODEL; raises RuntimeError if neither is set.
+    Used by availability fallback when swapping to a different provider.
+    """
+    key = (provider or "").strip().upper()
+    model = _env(f"{key}_DEFAULT_MODEL") or _env("DEFAULT_MODEL")
+    if model:
+        return model
+    raise RuntimeError(
+        f"[frontier_models] No default model for provider {provider!r}: set "
+        f"{key}_DEFAULT_MODEL or DEFAULT_MODEL in .env"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -161,32 +287,31 @@ _DEFAULT_REASONING: Optional[Dict[str, str]] = None
 # ─────────────────────────────────────────────────────────────────────────────
 
 def resolve_model_alias(model: str) -> str:
-    """Resolve a frontier alias to a concrete model ID.
+    """Resolve a frontier alias to a concrete model ID (from .env).
 
     Aliases look like ``"provider:frontier-<capability>"``. Anything
     that doesn't match a known alias is returned unchanged, so concrete
-    model IDs from env vars keep working without modification.
+    model IDs from env vars keep working without modification. A known
+    alias with no env value (and no DEFAULT_MODEL) is returned unchanged
+    after an error log — see module docstring.
 
     Args:
         model: Either an alias (e.g. ``"openai:frontier-reasoning"``)
-               or a concrete model ID (e.g. ``"gpt-5.4"``).
+               or a concrete model ID.
 
     Returns:
-        Concrete model ID. Never None, never empty unless input was.
+        Concrete model ID (or the input unchanged). Never None, never
+        empty unless input was.
     """
     if not model:
         return model
     stripped = model.strip()
-    # JOB 12 (2026-06-10): single .env knob for the whole verifier family.
-    if stripped == "anthropic:frontier-verifier":
-        _env_override = os.getenv("ASTRA_VERIFIER_FAMILY_MODEL", "").strip()
-        if _env_override:
-            logger.debug("[frontier_models] Verifier family overridden -> %s", _env_override)
-            return _env_override
-    if stripped in FRONTIER_ALIASES:
-        resolved = FRONTIER_ALIASES[stripped]
-        logger.debug("[frontier_models] Resolved alias %s -> %s", stripped, resolved)
-        return resolved
+    if stripped in _ALIAS_ENV:
+        resolved = _resolve_alias_value(stripped)
+        if resolved:
+            logger.debug("[frontier_models] Resolved alias %s -> %s", stripped, resolved)
+            return resolved
+        return stripped
     return stripped
 
 
@@ -223,11 +348,14 @@ def get_reasoning_for_stage(stage: str) -> Optional[Dict[str, str]]:
 
 def is_alias(model: str) -> bool:
     """True if ``model`` is a known frontier alias."""
-    return bool(model) and model.strip() in FRONTIER_ALIASES
+    return bool(model) and model.strip() in _ALIAS_ENV
 
 
 def all_aliases() -> Dict[str, str]:
-    """Return a copy of the full alias table (for audit/debug)."""
+    """Return the fully-resolved alias table (for audit/debug).
+
+    Unresolved aliases appear as themselves (error already logged).
+    """
     return dict(FRONTIER_ALIASES)
 
 
@@ -307,17 +435,17 @@ def audit_frontier() -> None:
     print("=" * 70)
     print("FRONTIER MODEL AUDIT")
     print("=" * 70)
-    print("\nCurrent aliases:")
-    for alias, model in sorted(FRONTIER_ALIASES.items()):
-        print(f"  {alias:<42} -> {model}")
+    print("\nCurrent aliases (resolved from .env):")
+    for alias in sorted(_ALIAS_ENV):
+        print(f"  {alias:<42} -> {FRONTIER_ALIASES[alias]}  [{_ALIAS_ENV[alias]}]")
     print("\n--- OpenAI available models ---")
     _audit_openai()
     print("\n--- Anthropic available models ---")
     _audit_anthropic()
     print("\n" + "=" * 70)
-    print("If a newer non-Pro GPT or newer Opus appears above, update")
-    print("FRONTIER_ALIASES in this file to point at it, then re-run to")
-    print("confirm the new mapping is picked up.")
+    print("If a newer non-Pro GPT or newer Opus appears above, update the")
+    print("corresponding env var in .env (shown in brackets), then re-run")
+    print("to confirm the new mapping is picked up. No code edits needed.")
     print("=" * 70)
 
 
@@ -333,6 +461,8 @@ __all__ = [
     "FRONTIER_ALIASES",
     "STAGE_REASONING",
     "resolve_model_alias",
+    "get_role_model",
+    "get_provider_default_model",
     "get_reasoning_for_stage",
     "is_alias",
     "all_aliases",

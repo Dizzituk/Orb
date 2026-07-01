@@ -1,7 +1,9 @@
 # Purpose: RAG system configuration.
-# Called-by: no static importers found (dynamic/registry use possible)
-# Depends-on: app.rag.config.scan_roots
-# Last-renovated: 2026-06-11
+# Called-by: no static importers found — NOTE: shadowed by the app/rag/config/
+#            package, so `import app.rag.config` resolves to the package, never
+#            this file. Kept for reference; de-hardcoded 2026-07-01 (Lane C).
+# Depends-on: stdlib only
+# Last-renovated: 2026-07-01
 """
 RAG system configuration.
 
@@ -83,8 +85,9 @@ AST_CHUNKABLE_LANGUAGES: Set[str] = {
 # EMBEDDINGS
 # ============================================================================
 
-# Gemini Embedding 2 (replaces OpenAI text-embedding-3-small)
-EMBEDDING_MODEL: str = "gemini-embedding-2-preview"
+# Gemini Embedding 2 (replaces the old OpenAI small embedding model).
+# Model ID lives in .env (ORB_EMBEDDING_MODEL) — no hardcoded model IDs.
+EMBEDDING_MODEL: str = os.getenv("ORB_EMBEDDING_MODEL", "")
 EMBEDDING_DIMENSIONS: int = 1536  # Matryoshka truncation for DB compat
 EMBEDDING_BATCH_SIZE: int = 100
 
@@ -114,10 +117,11 @@ MAX_CHUNKS_PER_FILE: int = 3  # Limit chunks from same file for diversity
 # LLM TIERS (from routing_policy.json)
 # ============================================================================
 
-# Tier selection for grounded Q&A
-LLM_TIER_SMALL: str = os.getenv("OPENAI_DEFAULT_MODEL", "gpt-5.4-mini")
-LLM_TIER_MEDIUM: str = os.getenv("CHAT_MODEL", "gpt-5.4-mini")
-LLM_TIER_LARGE: str = os.getenv("ANTHROPIC_DEFAULT_MODEL", "claude-sonnet-4-6")
+# Tier selection for grounded Q&A — all model IDs resolve from .env,
+# falling back only to DEFAULT_MODEL (never a hardcoded literal).
+LLM_TIER_SMALL: str = os.getenv("OPENAI_DEFAULT_MODEL") or os.getenv("DEFAULT_MODEL", "")
+LLM_TIER_MEDIUM: str = os.getenv("CHAT_MODEL") or os.getenv("DEFAULT_MODEL", "")
+LLM_TIER_LARGE: str = os.getenv("ANTHROPIC_DEFAULT_MODEL") or os.getenv("DEFAULT_MODEL", "")
 
 # Provider mapping
 TIER_TO_PROVIDER = {

@@ -99,6 +99,8 @@ from app.debug.executors import (  # noqa: F401
     execute_web_extract_text,
     execute_web_screenshot,
     execute_web_vision_check,
+    execute_web_coursera_health,
+    execute_web_coursera_progress,
     execute_web_upload_file,
     execute_system_keys,
     # social media APIs
@@ -196,6 +198,10 @@ TOOL_HANDLERS = {
     "web_extract_text":    execute_web_extract_text,
     "web_screenshot":      execute_web_screenshot,
     "web_vision_check":    execute_web_vision_check,
+    # Coursera composites: login health check + vision-first progress
+    # read (completion ticks are visual — text extraction can't see them)
+    "web_coursera_health":   execute_web_coursera_health,
+    "web_coursera_progress": execute_web_coursera_progress,
     "web_upload_file":     execute_web_upload_file,
     "system_keys":         execute_system_keys,
     # Social media APIs (first-party publish path; preferred over

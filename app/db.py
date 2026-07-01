@@ -170,6 +170,15 @@ def init_db():
     # v13.0: Import Vehicle models (OBD2 van health & mileage)
     from app.vehicle import models as vehicle_models  # noqa: F401
 
+    # v14.0: Import Reminders models (one-shot desktop+phone reminders)
+    from app.reminders import models as reminders_models  # noqa: F401
+
+    # v15.0 (2026-07-01): Idle-agents system — persistent task ledger +
+    # watcher observation ledgers + deep-research findings packs.
+    from app.idle import models as idle_models  # noqa: F401
+    from app.watchers import models as watcher_models  # noqa: F401
+    from app.llm import research_models  # noqa: F401
+
     # v4.0: create_all with checkfirst=True (default) handles tables.
     # SQLite may raise OperationalError for pre-existing indexes.
     # We catch and log these rather than crashing startup.
@@ -201,6 +210,12 @@ def init_db():
 
     # Food overhaul Phase 3: per-100g micronutrients on the product library
     _migrate_product_schema()
+
+    # Web automation (2026-07-01): media sessions share persist:media by
+    # design — rebuild web_sessions if the legacy inline UNIQUE(partition)
+    # is baked into the DDL (it made seed_sessions abort at 8 of 12 rows).
+    from app.web_automation.migrations import migrate_web_sessions_schema
+    migrate_web_sessions_schema(engine)
 
     # API keys -> os.environ, BEFORE anything that reads them. The codebase
     # self-knowledge seed in init_memory_system() (seed_all_tiers) embeds +
@@ -379,6 +394,22 @@ def _migrate_conversation_memory_schema():
                 log.warning("[db_migrate] Failed to add session_id: %s", e)
     else:
         log.debug("[db_migrate] messages.session_id already exists")
+
+    # v2026-06-24: routing provenance — distinguishes an explicit user/policy
+    # model pin (survives restart) from an automatic escalation (must decay).
+    if "model_source" not in existing:
+        with engine.connect() as conn:
+            try:
+                conn.execute(text(
+                    "ALTER TABLE messages ADD COLUMN model_source VARCHAR(40)"
+                ))
+                conn.commit()
+                log.info("[db_migrate] Added messages.model_source column")
+                print("[db_migrate] Added messages.model_source column")
+            except Exception as e:
+                log.warning("[db_migrate] Failed to add model_source: %s", e)
+    else:
+        log.debug("[db_migrate] messages.model_source already exists")
 
 
 # =============================================================================

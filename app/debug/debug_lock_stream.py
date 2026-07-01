@@ -411,6 +411,7 @@ async def stream_debug_locked(
         from app.llm.chat_tool_loop import stream_with_tools
 
         full_response = ""
+        narration_lines: list = []
         total_prompt_tokens = 0
         total_completion_tokens = 0
 
@@ -453,6 +454,8 @@ async def stream_debug_locked(
                 # spec) + sub-agent fan-out activity from spawn_agents (subagent_spawn /
                 # _start / _progress / _complete / _spawn_complete) -- forward verbatim
                 # so the frontend renders the plan lines + the live fan-out box.
+                if chunk_type == "narration" and chunk.get("text"):
+                    narration_lines.append(chunk["text"])
                 yield _sse(chunk)
 
             elif chunk_type == "done":
@@ -502,7 +505,11 @@ async def stream_debug_locked(
                 provider="user",
                 model="debug-input",
             ))
-            # Save assistant response
+            # Save assistant response (narration preamble first, chat-tool-loop
+            # path only -- see narration_transcript.py header)
+            if narration_lines:
+                from app.debug.narration_transcript import build_narration_preamble
+                full_response = build_narration_preamble(narration_lines) + full_response
             if full_response.strip():
                 mem_svc.create_message(db, mem_schemas.MessageCreate(
                     project_id=project_id,

@@ -102,6 +102,13 @@ def _get_image_dir() -> Path:
     return Path(get_image_output_dir()).resolve()
 
 
+def _get_documents_dir() -> Path:
+    # Documents = rendered reports (v1.1, 2026-07-01). Same lazy-import
+    # rationale as images: the cache dir env is read at call time.
+    from app.reports.cache import get_reports_cache_dir
+    return Path(get_reports_cache_dir()).resolve()
+
+
 def _get_base_dir(kind: str) -> Optional[Path]:
     """Return the on-disk root directory artifacts of this kind live in.
 
@@ -110,8 +117,12 @@ def _get_base_dir(kind: str) -> Optional[Path]:
     """
     if kind == KIND_IMAGE:
         return _get_image_dir()
-    # Future: documents and audio. Both already have output directories
-    # elsewhere in the codebase but aren't wired through bridge yet.
+    if kind == KIND_DOCUMENT:
+        # v1.1 (2026-07-01): documents wired to the reports cache
+        # (REPORTS_CACHE_DIR). Same traversal safety as images below.
+        return _get_documents_dir()
+    # Future: audio has an output directory elsewhere in the codebase but
+    # isn't wired through bridge yet.
     return None
 
 

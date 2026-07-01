@@ -312,6 +312,17 @@ def on_startup():
     except Exception as e:
         print(f"[startup] Lifestyle scheduler: [WARN] {e}")
 
+    # Reminders (2026-07-01): 30s poll for punctual desktop firing; the
+    # phone gets its punctuality from a local exact alarm, not this loop.
+    try:
+        from app.reminders.scheduler import start_reminder_scheduler_background
+        if start_reminder_scheduler_background(loop=_loop):
+            print("[startup] Reminder scheduler: [OK] 30s due-reminder polling")
+        else:
+            print("[startup] Reminder scheduler: [WARN] not started (disabled, running, or no loop)")
+    except Exception as e:
+        print(f"[startup] Reminder scheduler: [WARN] {e}")
+
     # ASTRA Sentinel Phase 1 (2026-06-12): network security monitor — collect
     # every 30s from the elevated agent (127.0.0.1:8771), daily retention prune
     # + baseline maintenance. Degrades to agent_offline if the agent is down.
@@ -323,6 +334,19 @@ def on_startup():
             print("[startup] Sentinel scheduler: [WARN] not started (disabled, running, or no loop)")
     except Exception as e:
         print(f"[startup] Sentinel scheduler: [WARN] {e}")
+
+    # Idle governor (2026-07-01): activity-based background work. Drains the
+    # persistent idle-task ledger (repo map, watchers, deep research) after
+    # IDLE_MINUTES of chat silence; boot catch-up re-queues anything due.
+    # All task LLM use is locked to the local lane (background_local).
+    try:
+        from app.idle.governor import start_idle_governor_background
+        if start_idle_governor_background(loop=_loop):
+            print("[startup] Idle governor: [OK] drains task ledger when idle")
+        else:
+            print("[startup] Idle governor: [WARN] not started (disabled, running, or no loop)")
+    except Exception as e:
+        print(f"[startup] Idle governor: [WARN] {e}")
 
     # v3.0: Take a fresh investments snapshot on startup if stale/missing
     try:
@@ -379,7 +403,10 @@ def on_startup():
         from app.db import SessionLocal
         _wdb = SessionLocal()
         _web_seed_result = _seed_web_sessions(_wdb)
-        if _web_seed_result.get("created", 0) > 0:
+        if _web_seed_result.get("failed", 0) > 0:
+            print(f"[startup] Web Automation: {_web_seed_result['failed']} session seed(s) FAILED, "
+                  f"{_web_seed_result.get('created', 0)} created — see log")
+        elif _web_seed_result.get("created", 0) > 0:
             print(f"[startup] Web Automation: seeded {_web_seed_result['created']} session(s)")
         else:
             print(f"[startup] Web Automation: [OK] {_web_seed_result.get('total', 0)} session definitions present")
@@ -438,6 +465,17 @@ _output_images_dir = str(get_image_output_dir())
 os.makedirs(_output_images_dir, exist_ok=True)
 app.mount("/output/images", StaticFiles(directory=_output_images_dir), name="output_images")
 print(f"[startup] Output images: [OK] serving {_output_images_dir} at /output/images")
+
+# Rendered reports cache (2026-07-01): the desktop reports window opens these
+# URLs fullscreen; the Bridge fetches the same files as document artifacts
+# via /bridge/artifacts/document/<filename>. REPORTS_CACHE_DIR overrides.
+try:
+    from app.reports.cache import get_reports_cache_dir
+    _reports_dir = str(get_reports_cache_dir())
+    app.mount("/output/reports", StaticFiles(directory=_reports_dir), name="output_reports")
+    print(f"[startup] Reports cache: [OK] serving {_reports_dir} at /output/reports")
+except Exception as e:
+    print(f"[startup] Reports cache: [WARN] {e}")
 
 
 @app.get("/")

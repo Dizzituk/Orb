@@ -46,6 +46,7 @@ from app.debug.orchestrator.schemas import (
     SubagentRole,
 )
 from app.debug.orchestrator.subagent_runner import run_subagent
+from app.debug.run_context import is_cancelled
 
 logger = logging.getLogger(__name__)
 
@@ -304,6 +305,25 @@ async def spawn_agents_streaming(
 
     async def _run_one(brief: SubagentBrief, model: str) -> None:
         async with sem:
+            if is_cancelled():
+                # Cooperative checkpoint (spec §2.6): don't start briefs still
+                # queued when a phone-initiated run is stopped. Briefs already
+                # mid-flight are interrupted by the registry's hard task.cancel()
+                # instead -- this only shortcuts ones that haven't started yet.
+                reports[brief.brief_id] = SubagentReport(
+                    brief_id=brief.brief_id, role=brief.role,
+                    status=StepStatus.SKIPPED, error="cancelled",
+                )
+                queue.put_nowait({
+                    "type": "subagent_complete",
+                    "data": {
+                        "brief_id": brief.brief_id, "role": brief.role.value,
+                        "status": StepStatus.SKIPPED.value, "findings_count": 0,
+                        "findings": [], "files_modified": [], "tool_call_count": 0,
+                        "error": "cancelled",
+                    },
+                })
+                return
             queue.put_nowait({
                 "type": "subagent_start",
                 "data": {

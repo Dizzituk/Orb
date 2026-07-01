@@ -240,19 +240,45 @@ async def set_personal_mileage_handler(input_data: dict, context: Optional[dict]
 
 
 async def get_work_day_handler(input_data: dict, context: Optional[dict]) -> dict:
-    """Read back a single day's figures (defaults to today)."""
+    """Read back a single day's figures (defaults to today).
+
+    Returns shift_state (none | open | complete) and a plain-language note so
+    the model never mistakes an open-but-started shift for an unlogged one. An
+    OPEN day with a start recorded is fully logged — it just isn't closed yet,
+    so its earnings/miles read zero until finish_work_day runs."""
     work_date = _parse_date(input_data.get("work_date")) or date.today()
     try:
         from app.finance.services import work_day_service as wds
         with _db_session() as db:
             day = wds.get_day(db, work_date)
             if day is None:
-                return {"found": False, "day": None}
-            out = {"found": True, "day": _day_to_dict(day)}
+                return {
+                    "found": False, "day": None, "shift_state": "none",
+                    "note": "No work day logged for this date yet.",
+                }
+            has_start = day.start_odometer is not None or day.start_time is not None
+            if day.status == "complete":
+                state = "complete"
+                note = "Shift is closed and fully logged. Report the figures as-is."
+            elif has_start:
+                state = "open"
+                note = (
+                    "Shift is OPEN with the start ALREADY recorded "
+                    f"(start_time={day.start_time}, start_odometer={day.start_odometer}). "
+                    "It is logged — just not closed yet, so earnings and miles stay "
+                    "zero until it is. Do NOT treat this as missing/unlogged and do "
+                    "NOT ask the user for the start. To close it, call finish_work_day "
+                    "with the end figures only."
+                )
+            else:
+                state = "open"
+                note = "Shift is OPEN but no start time/odometer recorded yet."
+            out = {"found": True, "day": _day_to_dict(day),
+                   "shift_state": state, "note": note}
         return out
     except Exception as exc:
         logger.exception("[finance_tools] get_work_day failed")
-        return {"found": False, "day": None, "error": str(exc)}
+        return {"found": False, "day": None, "shift_state": "error", "error": str(exc)}
 
 
 # Schemas live in a sibling module to keep this file small and modular.
@@ -294,11 +320,20 @@ def register_finance_tools() -> None:
         name="finish_work_day",
         version="v1",
         description=(
-            "Close out today's (or a given) delivery work day. Call this at end "
-            "of day. Pass end_time (HH:MM), end_odometer, and parcels — the "
-            "parcel count is read from the end-of-day screenshot the user sends. "
-            "Earnings are computed automatically at the per-parcel rate. Pass "
-            "fuel_cost or personal_miles if the user mentions them."
+            "Close out today's (or a given) delivery work day. Call this "
+            "IMMEDIATELY when the user says they have finished work or are "
+            "clocking off — do not deliberate or ask anything first. Pass "
+            "whatever end figures they give: end_time (HH:MM), end_odometer and "
+            "parcels (the parcel count comes from the end-of-day screenshot). "
+            "You do NOT need the start time or start odometer: they were stored "
+            "on today's row by start_work_day this morning, and this tool reads "
+            "them back automatically to compute miles and hours. NEVER ask the "
+            "user for the start mileage or start time at end of day. Earnings "
+            "are computed automatically at the per-parcel rate. Pass fuel_cost "
+            "or personal_miles only if the user mentions them. When it returns, "
+            "the row is complete — just report the summary it gives back "
+            "(parcels, gross, miles, hours); do not re-read or re-confirm the "
+            "start."
         ),
         input_schema=FINISH_WORK_DAY_INPUT,
         output_schema=FINISH_WORK_DAY_OUTPUT,
@@ -338,7 +373,10 @@ def register_finance_tools() -> None:
         description=(
             "Read back a single day's work figures (defaults to today): parcels, "
             "earnings, hours, mileage split and per-hour/per-parcel rates. Use "
-            "to answer 'how am I doing today' or to check what's already logged."
+            "to answer 'how am I doing today' or to check what's already logged. "
+            "Read shift_state and note in the result: an OPEN shift that already "
+            "has a start is logged and just needs closing — it is NOT unlogged, "
+            "and zero earnings on it only mean it isn't closed yet."
         ),
         input_schema=GET_WORK_DAY_INPUT,
         output_schema=GET_WORK_DAY_OUTPUT,

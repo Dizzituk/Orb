@@ -2,7 +2,7 @@
 # Purpose: Seed the default set of web-automation sessions.
 # Called-by: app.web_automation
 # Depends-on: app.web_automation, app.web_automation.session_registry
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-07-01
 """
 Seed the default set of web-automation sessions.
 
@@ -54,8 +54,16 @@ DEFAULT_SESSIONS: List[Tuple[str, str, str, str, str]] = [
         "coursera",
         "Coursera",
         "persist:coursera",
-        "https://www.coursera.org/",
-        "Continue enrolled courses, extract lesson content, mark modules complete, pull transcripts.",
+        # My Learning dashboard, NOT the public home. Logged out, Coursera
+        # 302s this to the public coursera.org home — that redirect is the
+        # logged-out signal the health check keys on. (2026-07-01)
+        "https://www.coursera.org/my-learning",
+        "Continue enrolled courses, read progress, extract lesson content, pull "
+        "transcripts. Landing is the logged-in My Learning dashboard; if it "
+        "redirects to the public coursera.org home the session is LOGGED OUT — "
+        "say Coursera needs a fresh login, never read the public page as course "
+        "state. Module completion ticks are VISUAL: read progress via "
+        "web_coursera_progress (vision), not extract_text/dom_snapshot.",
     ),
     (
         "wordpress_admin",
@@ -140,22 +148,35 @@ DEFAULT_SESSIONS: List[Tuple[str, str, str, str, str]] = [
 
 
 def seed_sessions(db: Session) -> dict:
-    """Create any missing default sessions. Returns a small summary."""
+    """Create any missing default sessions. Returns a small summary.
+
+    Per-row guarded: one bad row must never strand the rows after it.
+    (A legacy UNIQUE(partition) constraint did exactly that — the second
+    persist:media insert aborted the whole loop at 8 of 12 defaults.)
+    """
     created = 0
+    failed = 0
     for platform, label, partition, landing_url, purpose in DEFAULT_SESSIONS:
-        before = session_registry.get_session_by_platform(db, platform)
-        session_registry.create_session(
-            db,
-            platform=platform,
-            label=label,
-            partition=partition,
-            landing_url=landing_url,
-            purpose=purpose,
-        )
-        if before is None:
-            created += 1
+        try:
+            before = session_registry.get_session_by_platform(db, platform)
+            session_registry.create_session(
+                db,
+                platform=platform,
+                label=label,
+                partition=partition,
+                landing_url=landing_url,
+                purpose=purpose,
+            )
+            if before is None:
+                created += 1
+        except Exception as exc:
+            db.rollback()
+            failed += 1
+            logger.warning(
+                "[web_automation] seed failed for %r: %s", platform, exc
+            )
     logger.info(
-        "[web_automation] seeded %s new session(s) (total definitions: %s)",
-        created, len(DEFAULT_SESSIONS),
+        "[web_automation] seeded %s new session(s), %s failed (total definitions: %s)",
+        created, failed, len(DEFAULT_SESSIONS),
     )
-    return {"created": created, "total": len(DEFAULT_SESSIONS)}
+    return {"created": created, "failed": failed, "total": len(DEFAULT_SESSIONS)}

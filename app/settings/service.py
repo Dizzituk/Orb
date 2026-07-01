@@ -237,15 +237,15 @@ def sync_all_to_env(db: Session) -> int:
     for entry in entries:
         _sync_to_env(entry.key_name, entry.key_value)
         count += 1
-        # v3.2 diagnostic: confirm key was actually written
+        # confirm key was actually written; only shout when the sync FAILED
         reg = API_KEY_REGISTRY.get(entry.key_name)
         if reg:
             env_var = reg["env_var"]
             written = os.getenv(env_var, "")
-            logger.info(
-                f"[settings] Synced {entry.key_name} -> {env_var}: "
-                f"{len(written)} chars, bool={bool(written)}"
-            )
+            if not written:
+                logger.warning(
+                    f"[settings] sync MISSING: {entry.key_name} -> {env_var} wrote 0 chars"
+                )
 
     if count:
         logger.info(f"[settings] Synced {count} API keys from DB to env")

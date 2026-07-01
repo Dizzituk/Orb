@@ -1,8 +1,8 @@
 # FILE: app/debug/executors/web_automation.py
 # Purpose: Chat-callable executors for web browsing.
 # Called-by: app.debug.executors
-# Depends-on: app.web_automation.tool_handlers
-# Last-renovated: 2026-06-11
+# Depends-on: app.web_automation.coursera_reader, app.web_automation.tool_handlers
+# Last-renovated: 2026-07-01
 """
 Chat-callable executors for web browsing.
 
@@ -22,6 +22,10 @@ import json
 import logging
 from typing import Any, Dict
 
+from app.web_automation.coursera_reader import (
+    coursera_health_handler,
+    coursera_progress_handler,
+)
 from app.web_automation.tool_handlers import (
     list_sessions_handler,
     open_session_handler,
@@ -341,6 +345,38 @@ async def execute_web_vision_check(params: Dict[str, Any]) -> str:
     except Exception as e:
         logger.exception("[web_exec] vision_check failed")
         return _err("web_vision_check", str(e))
+
+
+# ─── 11b · Coursera composites (login health + vision progress) ────
+
+async def execute_web_coursera_health(params: Dict[str, Any]) -> str:
+    """Cheap logged-in/logged-out verdict for the Coursera session."""
+    try:
+        result = await coursera_health_handler(
+            {"session": params.get("session", "")}, None,
+        )
+        return _fmt(result)
+    except Exception as e:
+        logger.exception("[web_exec] coursera_health failed")
+        return _err("web_coursera_health", str(e))
+
+
+async def execute_web_coursera_progress(params: Dict[str, Any]) -> str:
+    """
+    'Where am I up to on Coursera?' composite: login health check, then
+    screenshot + vision read of the My Learning dashboard. Returns
+    state=ok/logged_out/desktop_offline/... plus a ready-to-relay
+    `message` — never reads the public (logged-out) page as progress.
+    """
+    try:
+        forwarded: Dict[str, Any] = {"session": params.get("session", "")}
+        if params.get("question"):
+            forwarded["question"] = params["question"]
+        result = await coursera_progress_handler(forwarded, None)
+        return _fmt(result)
+    except Exception as e:
+        logger.exception("[web_exec] coursera_progress failed")
+        return _err("web_coursera_progress", str(e))
 
 
 # ─── 12 · upload file ───────────────────────────────

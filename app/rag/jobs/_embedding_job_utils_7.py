@@ -18,7 +18,10 @@ _current_status = None
 
 EMBEDDING_AUTO_ENABLED = os.getenv("ORB_EMBEDDING_AUTO", "true").lower() == "true"
 
-EMBEDDING_MODEL = os.getenv("ORB_EMBEDDING_MODEL", "gemini-embedding-2-preview")
+# Env override first; otherwise the live provider's own constant — the label
+# and the API call must never drift apart (no hardcoded model IDs in app/rag).
+from app.embeddings.gemini_provider import GEMINI_EMBEDDING_MODEL
+EMBEDDING_MODEL = os.getenv("ORB_EMBEDDING_MODEL", "").strip() or GEMINI_EMBEDDING_MODEL
 
 STATUS_FILE = ARCHITECTURE_OUTPUT_DIR / "embedding_status.json"
 

@@ -2,7 +2,7 @@
 # Purpose: Cognitive escalation cue detection.
 # Called-by: app.llm.routing.chat_model_selection
 # Depends-on: stdlib/third-party only
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-07-01
 """
 Cognitive escalation cue detection.
 
@@ -12,13 +12,14 @@ capability model — e.g. "think about this", "take your time",
 
 This is separate from EXPLICIT_MODEL_PATTERNS in app/memory/complexity.py.
 Those patterns require a named provider ("use Claude", "switch to GPT").
-This module handles the provider-agnostic case that currently falls
-through to gpt-5.4-mini by mistake.
+This module handles the provider-agnostic case that would otherwise fall
+through to the cheap chat tier by mistake.
 
 Routing rule:
-    - Cognitive cue + no named provider + sticky is small → escalate to gpt-5.4
-    - Cognitive cue + no named provider + no sticky → escalate to gpt-5.4
-    - Cognitive cue + sticky already capable (gpt-5.4 / opus / sonnet) → keep sticky
+    - Cognitive cue + no named provider + sticky is small → escalate to the
+      frontier tier (COGNITIVE_ESCALATION_* / FRONTIER_* env vars)
+    - Cognitive cue + no named provider + no sticky → escalate likewise
+    - Cognitive cue + sticky already capable → keep sticky
     - Cognitive cue + named provider → defer to explicit pattern handling
       (do not short-circuit here)
 
@@ -29,6 +30,7 @@ so "use Claude to think about this" still routes correctly to Opus.
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Optional
 
@@ -83,29 +85,29 @@ _COMPILED_PATTERNS: list[re.Pattern[str]] = [
 
 
 # =============================================================================
-# Small-model classification
+# Small-model classification (env-driven — Lane A de-hardcode, 2026-07-01)
 # =============================================================================
 #
 # Models considered "small" — a cognitive cue should escalate off these.
-# Anything not in this set is treated as capable enough to satisfy a
+# Anything not classified small is treated as capable enough to satisfy a
 # cognitive cue (so we don't downgrade Opus sessions on a "think about
 # this" cue).
+#
+# Two signals, no hardcoded model IDs:
+#   1. ASTRA_SMALL_MODELS — comma-separated exact IDs from .env.
+#   2. Tier-marker heuristic — small tiers are consistently NAMED small
+#      (mini/nano/flash/lite/haiku). Markers are segment-anchored so
+#      "gemini-3.1-pro" does NOT match on the "mini" inside "gemini".
 
-SMALL_MODELS: set[str] = {
-    # OpenAI small tier
-    "gpt-5.4-mini",
-    "gpt-5-mini",
-    "gpt-5-nano",
-    "gpt-4.1-mini",
-    "gpt-4o-mini",
-    # Anthropic small tier
-    "claude-haiku-4-5",
-    "claude-haiku-3-5",
-    # Google small tier
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-flash-latest",
-}
+_SMALL_TIER_MARKER = re.compile(
+    r"(?:^|[-_.])(?:mini|nano|flash|lite|haiku)(?:$|[-_.\d])", re.IGNORECASE
+)
+
+
+def get_small_models() -> set[str]:
+    """Exact small-tier model IDs from ASTRA_SMALL_MODELS in .env."""
+    raw = os.getenv("ASTRA_SMALL_MODELS", "")
+    return {m.strip() for m in raw.split(",") if m.strip()}
 
 
 # =============================================================================
@@ -127,11 +129,14 @@ def detect_cognitive_escalation(text: str) -> Optional[str]:
 
 
 def is_small_model(model_id: str) -> bool:
-    """Return True if model_id is in the small-tier set.
+    """Return True if model_id is small-tier (env list or tier-marker).
 
-    Unknown model IDs are treated as NOT small — we'd rather keep a
-    current session on an unfamiliar model than escalate needlessly.
+    Unknown model IDs without a small tier-marker are treated as NOT
+    small — we'd rather keep a current session on an unfamiliar model
+    than escalate needlessly.
     """
     if not model_id:
         return False
-    return model_id in SMALL_MODELS
+    if model_id in get_small_models():
+        return True
+    return bool(_SMALL_TIER_MARKER.search(model_id))

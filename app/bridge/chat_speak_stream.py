@@ -288,7 +288,7 @@ async def run_chat_and_speak(req, request, db):
             is_unsupported_on_bridge, get_unsupported_message,
         )
 
-        domain_context, translation_result, domain_info = _run_translation(req.message, db)
+        domain_context, translation_result, domain_info = _run_translation(req.message, db, project_id=project.id)
 
         resolved_intent = (
             translation_result.resolved_intent.value
@@ -310,6 +310,7 @@ async def run_chat_and_speak(req, request, db):
 
         from app.bridge.capability_layer import run_astra_chat
 
+        model_source = None  # v2026-06-24: routing provenance for sticky restore
         if is_unsupported_on_bridge(resolved_intent):
             full_text = get_unsupported_message(resolved_intent)
             provider = "bridge"
@@ -342,6 +343,7 @@ async def run_chat_and_speak(req, request, db):
             full_text = result["reply"]
             provider = result["provider"]
             model = result["model"]
+            model_source = result.get("model_source")
 
         project_id = project.id
         project_name = project.name
@@ -349,6 +351,7 @@ async def run_chat_and_speak(req, request, db):
         assistant_message = create_message(db, MessageCreate(
             project_id=project_id, role="assistant",
             content=full_text, provider=provider, model=model,
+            model_source=model_source,
         ))
 
         # v2026-06-10: session + summary tracking (see bridge_chat above).

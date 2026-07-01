@@ -1,8 +1,8 @@
 # FILE: app/memory/spine_service.py
 # Purpose: Within-conversation memory spine — per-message topic index + live recall.
 # Called-by: app.memory.service (write), app.endpoints.chat (recall/injection)
-# Depends-on: app.astra_memory.topic_tagger, app.memory.conversation_models, app.memory.models, app.memory.summary_injection
-# Last-renovated: 2026-06-15 (Job 1: attach_spine_to_session keeps spine.session_id in lockstep with messages)
+# Depends-on: app.astra_memory.topic_tagger, app.memory.conversation_models, app.memory.models, app.memory.summary_injection, app.memory.conversation_overview
+# Last-renovated: 2026-07-01 (Lane B: recall composes the [CONVERSATION_TIMELINE] overview for topicless whole-conversation questions)
 """
 Within-conversation memory spine (Build Request B).
 
@@ -204,15 +204,68 @@ def build_conversation_recall(
     window_message_ids: Sequence[int] = (),
     max_msgs: int = _MAX_RECALL_MSGS,
 ) -> str:
-    """Build a [CONVERSATION_RECALL] block of scrolled-out messages on this topic.
+    """Within-conversation recall for the chat paths. Never raises.
 
-    Returns "" when the question carries no specific topic, or when nothing
-    older than the window matches. Never raises.
+    Two channels, either or both:
+      - [CONVERSATION_TIMELINE] (Lane B 2026-07-01): whole-conversation meta
+        questions ("summarise the whole day", "what were the very first
+        messages") are TOPICLESS by nature, so the tag-gated search below could
+        never serve them — it returned "" exactly when recall mattered most.
+        They are served from the durable chronological overview instead.
+      - [CONVERSATION_RECALL]: the existing topic recall of scrolled-out
+        messages, unchanged, when the question carries tags/entities.
+
+    Returns "" when neither channel produces anything.
+    """
+    # Topic recall FIRST, with its original window-only exclusion — its
+    # behaviour must stay byte-identical for topical questions (done-criterion).
+    topic_block, topic_ids = _build_topic_recall(
+        db, project_id, user_message, window_message_ids, max_msgs,
+    )
+
+    parts: List[str] = []
+    try:
+        from app.memory.conversation_overview import (
+            build_conversation_overview_detail,
+        )
+        # The timeline's waypoint/tail sections DEFER to topic recall: a message
+        # recall already renders must not re-appear there with a different
+        # truncation (the cross-source de-dup can't collapse the two renderings;
+        # review 2026-07-01). The pinned opener is exempt — anti-confabulation
+        # outranks the rare opener-overlap duplication.
+        overview, _ = build_conversation_overview_detail(
+            db, project_id, user_message, window_message_ids,
+            skip_ids=topic_ids,
+        )
+        if overview:
+            parts.append(overview)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("[spine] overview skipped: %s", exc)
+
+    if topic_block:
+        parts.append(topic_block)
+
+    return "\n\n".join(parts)
+
+
+def _build_topic_recall(
+    db: DbSession,
+    project_id: int,
+    user_message: str,
+    window_message_ids: Sequence[int] = (),
+    max_msgs: int = _MAX_RECALL_MSGS,
+) -> Tuple[str, frozenset]:
+    """([CONVERSATION_RECALL] block, rendered message ids) for this topic.
+
+    Query behaviour is IDENTICAL to the pre-2026-07-01 build_conversation_recall
+    body; the ids are returned so the timeline can avoid re-rendering the same
+    messages. ("", frozenset()) when the question carries no specific topic, or
+    when nothing older than the window matches. Never raises.
     """
     try:
         tags, entities = _tags_entities_for(user_message or "")
         if not tags and not entities:
-            return ""
+            return "", frozenset()
 
         rows = search_spine(
             db, project_id, tags, entities,
@@ -220,7 +273,7 @@ def build_conversation_recall(
             limit=max_msgs * 3,
         )
         if not rows:
-            return ""
+            return "", frozenset()
 
         msg_ids = [r.message_id for r in rows][:max_msgs]
 
@@ -232,7 +285,7 @@ def build_conversation_recall(
             .all()
         )
         if not msgs:
-            return ""
+            return "", frozenset()
 
         lines = [
             "[CONVERSATION_RECALL]",
@@ -242,6 +295,7 @@ def build_conversation_recall(
             "note that the topic came up before. Oldest first:",
         ]
         used = 0
+        rendered_ids = set()
         for m in msgs:
             content = (m.content or "").strip().replace("\r", " ")
             if len(content) > _PER_MSG_CHARS:
@@ -253,14 +307,15 @@ def build_conversation_recall(
                 break
             lines.append(block)
             used += len(block)
+            rendered_ids.add(m.id)
 
         if len(lines) <= 2:
-            return ""
+            return "", frozenset()
         lines.append("[/CONVERSATION_RECALL]")
-        return "\n".join(lines)
+        return "\n".join(lines), frozenset(rendered_ids)
     except Exception as exc:
         logger.debug("[spine] recall failed: %s", exc)
-        return ""
+        return "", frozenset()
 
 
 def build_within_conversation_context(

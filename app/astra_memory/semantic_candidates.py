@@ -38,6 +38,7 @@ import json
 import logging
 import os
 import time
+from collections import OrderedDict
 from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,38 @@ _RELOAD_GROWTH_THRESHOLD = 200
 # Circuit breaker state for the embedding API
 _consecutive_failures = 0
 _disabled_until = 0.0
+
+# Query-embedding cache (2026-06-22): normalised query text -> vector. A given
+# string always embeds to the same vector for a fixed model, so this NEVER goes
+# stale; it's an in-process LRU (cleared on restart - self-healing) that lets
+# enrichment batch a turn's queries once and reuse them, and makes repeated vague
+# asks ("worried about my calories today") cost ZERO network on the live reply
+# path. Keyed on Nat's suggested queries, which it tends to canonicalise, so
+# varied user phrasings converge onto the same cached lookups.
+_QUERY_EMBED_CACHE: "OrderedDict[str, List[float]]" = OrderedDict()
+_QUERY_CACHE_MAX = int(os.getenv("ASTRA_QUERY_EMBED_CACHE_MAX", "512"))
+
+
+def _normalize_query(text: str) -> str:
+    return " ".join((text or "").lower().split())
+
+
+def _cache_get(text: str) -> Optional[List[float]]:
+    key = _normalize_query(text)
+    vec = _QUERY_EMBED_CACHE.get(key)
+    if vec is not None:
+        _QUERY_EMBED_CACHE.move_to_end(key)  # LRU touch
+    return vec
+
+
+def _cache_put(text: str, vec: Optional[List[float]]) -> None:
+    if not vec:
+        return
+    key = _normalize_query(text)
+    _QUERY_EMBED_CACHE[key] = vec
+    _QUERY_EMBED_CACHE.move_to_end(key)
+    while len(_QUERY_EMBED_CACHE) > _QUERY_CACHE_MAX:
+        _QUERY_EMBED_CACHE.popitem(last=False)
 
 
 def _enabled() -> bool:
@@ -233,16 +266,63 @@ _index = _VectorIndex()
 
 
 def _embed_query(text: str) -> Optional[List[float]]:
-    """Embed the user query. Sync Gemini call with circuit breaker."""
+    """Embed the user query. Cache-first, then sync Gemini call with circuit
+    breaker. A cache hit (e.g. prewarmed by enrichment's batch, or a repeated
+    vague ask) makes zero network calls."""
+    cached = _cache_get(text)
+    if cached is not None:
+        return cached
     try:
         from app.llm.clients import generate_embedding
         vec = generate_embedding(text[:4000], task_type="RETRIEVAL_QUERY")
         _record_success()
+        _cache_put(text, vec)
         return vec
     except Exception as exc:
         logger.warning("[semantic] query embedding failed: %s", exc)
         _record_failure()
         return None
+
+
+def prewarm_query_embeddings(texts: List[str]) -> Dict[str, int]:
+    """Embed a whole turn's query strings in ONE batch call and cache them, so the
+    per-query retrievals that follow hit the cache instead of N serial Gemini
+    round-trips. Pure optimisation: failure-proof, returns stats, and is a no-op
+    when the channel is disabled or everything's already cached. On batch failure
+    the per-query lazy _embed_query path (also cached) remains as fallback.
+
+    Returns {"queries": unique, "cached": already-warm, "embedded": newly-embedded}.
+    """
+    stats = {"queries": 0, "cached": 0, "embedded": 0}
+    try:
+        if not _enabled():
+            return stats
+        uniq: List[str] = []
+        seen = set()
+        for t in texts or []:
+            if not isinstance(t, str) or not t.strip():
+                continue
+            key = _normalize_query(t)
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(t)
+        stats["queries"] = len(uniq)
+        misses = [t for t in uniq if _cache_get(t) is None]
+        stats["cached"] = len(uniq) - len(misses)
+        if not misses:
+            return stats
+        from app.llm.clients import get_embeddings
+        vecs = get_embeddings([m[:4000] for m in misses], task_type="RETRIEVAL_QUERY")
+        if isinstance(vecs, list):
+            for t, vec in zip(misses, vecs):
+                if vec:
+                    _cache_put(t, vec)
+                    stats["embedded"] += 1
+            _record_success()
+    except Exception as exc:  # noqa: BLE001 - lazy per-query embed is the fallback
+        logger.debug("[semantic] prewarm batch failed (lazy fallback): %s", exc)
+    return stats
 
 
 # =============================================================================

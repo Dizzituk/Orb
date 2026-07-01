@@ -1,8 +1,8 @@
 # FILE: app/llm/routing/rag_fallback.py
 # Purpose: RAG fallback detection for architecture/codebase queries.
 # Called-by: app.llm.routing, app.llm.routing.chat_routing
-# Depends-on: stdlib/third-party only
-# Last-renovated: 2026-06-11
+# Depends-on: app.llm.routing.conversational_gate
+# Last-renovated: 2026-07-01
 """
 RAG fallback detection for architecture/codebase queries.
 
@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import re
 from typing import List, Set
+
+from .conversational_gate import is_conversational_turn
 
 # =============================================================================
 # ARCHITECTURE QUERY PATTERNS (v4.12)
@@ -147,6 +149,9 @@ def is_architecture_query(message: str) -> bool:
     Returns:
         True if message matches an architecture query pattern
         False for explicit command prefixes (e.g. "Astra, command: ...")
+        False for conversational turns (talking ABOUT the codebase —
+        conversational_gate, 2026-07-01 — e.g. "I'm thinking about tidying
+        the memory" must stay in chat, not divert to the RAG answerer)
     """
     text = message.strip()
     
@@ -154,10 +159,20 @@ def is_architecture_query(message: str) -> bool:
     if _COMMAND_PREFIX_PATTERN.match(text):
         return False
     
-    # Stage 1: High-precision patterns (no guard needed)
+    # Stage 1: High-precision patterns (no guard needed). These shapes are
+    # already command-like lookups ("where is X implemented", "who calls Y"),
+    # so they deliberately BYPASS the conversational gate — a trailing musing
+    # clause must not strip a locate question of its grounding (2026-07-01).
     for pattern in _ARCHITECTURE_QUERY_PATTERNS:
         if pattern.match(text):
             return True
+    
+    # Conversational gate (2026-07-01): musings/discussion about the repo,
+    # memory, architecture etc. are chat, not RAG queries. Guards only the
+    # broad natural shapes below; a genuine imperative anywhere in the
+    # message ("map the repo", "refactor X") also passes through.
+    if is_conversational_turn(text):
+        return False
     
     # Stage 2: Natural patterns (guard keyword required)
     for pattern in _NATURAL_CODEBASE_PATTERNS:
@@ -227,6 +242,12 @@ def needs_llm_codebase_check(message: str) -> bool:
     """
     text = (message or "").strip()
     if not text or _COMMAND_PREFIX_PATTERN.match(text):
+        return False
+
+    # Conversational gate (2026-07-01): don't pay the LLM round-trip for a
+    # turn that is talk ABOUT a feature/topic rather than a question needing
+    # a grounded answer.
+    if is_conversational_turn(text):
         return False
 
     # High-precision patterns already route deterministically — no LLM needed.

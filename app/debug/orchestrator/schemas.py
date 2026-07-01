@@ -35,6 +35,7 @@ class OrchestrationPhase(str, Enum):
     RESOLVED = "resolved"
     FAILED = "failed"
     MAX_ITERATIONS = "max_iterations"
+    CANCELLED = "cancelled"
 
 
 class SubagentRole(str, Enum):
@@ -250,6 +251,7 @@ class OrchestrationEvent(BaseModel):
         "verification_complete",
         "iteration_complete",
         "resolution",
+        "cancelled",
         "error",
     ]
     iteration: int = 0

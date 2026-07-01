@@ -64,6 +64,10 @@ def build_html(
                 body_parts.append('<div class="spacer"></div>')
             elif btype == "code":
                 body_parts.append(f'<pre><code>{html.escape(block.get("text", ""))}</code></pre>')
+            elif btype == "image":
+                # v1.1 (2026-07-01): embedded image (data URI keeps the file
+                # self-contained — reports embed chart PNGs as base64).
+                body_parts.append(_render_image(block))
             else:
                 body_parts.append(f'<p>{html.escape(str(block))}</p>')
             blocks_rendered += 1
@@ -114,6 +118,18 @@ def _render_table(block: Dict[str, Any]) -> str:
         parts.append('</tbody>')
     parts.append('</table>')
     return "".join(parts)
+
+
+def _render_image(block: Dict[str, Any]) -> str:
+    src = str(block.get("src", ""))
+    if not (src.startswith("data:image/") or src.startswith("http")):
+        return ""  # only data URIs / URLs — never leak local paths into reports
+    alt = html.escape(str(block.get("alt", "")))
+    caption = block.get("caption")
+    img = f'<figure class="doc-image"><img src="{src}" alt="{alt}">'
+    if caption:
+        img += f'<figcaption>{html.escape(str(caption))}</figcaption>'
+    return img + '</figure>'
 
 
 def _hh(value: str) -> str:
@@ -216,6 +232,9 @@ def _build_css(theme: Dict[str, Any]) -> str:
       font-size: {body_size - 2}pt;
       margin: 12px 0;
     }}
+    .doc-image {{ margin: 18px 0 22px; }}
+    .doc-image img {{ max-width: 100%; height: auto; border-radius: 6px; }}
+    .doc-image figcaption {{ color: {muted}; font-size: {body_size - 2}pt; margin-top: 6px; }}
     code {{ font-family: {mono_font}; }}
     .doc-footer {{
       margin-top: 48px;

@@ -1,8 +1,8 @@
 # FILE: app/web_automation/register.py
 # Purpose: Register web-automation tools with the central tool registry.
 # Called-by: app.web_automation
-# Depends-on: app.tools.registry, app.web_automation.tool_handlers, app.web_automation.tool_schemas
-# Last-renovated: 2026-06-11
+# Depends-on: app.tools.registry, app.web_automation.coursera_reader, app.web_automation.tool_handlers, app.web_automation.tool_schemas
+# Last-renovated: 2026-07-01
 """
 Register web-automation tools with the central tool registry.
 
@@ -13,6 +13,11 @@ from __future__ import annotations
 import logging
 
 from app.tools.registry import ToolDefinition, register_tool
+from app.web_automation.coursera_reader import (
+    COURSERA_DESCRIPTIONS,
+    COURSERA_HANDLERS,
+    COURSERA_SCHEMAS,
+)
 from app.web_automation.tool_handlers import HANDLERS, TOOL_DESCRIPTIONS
 from app.web_automation.tool_schemas import TOOL_SCHEMAS
 
@@ -21,18 +26,22 @@ logger = logging.getLogger(__name__)
 
 def register_web_tools() -> int:
     """
-    Register every handler in HANDLERS with the tool registry.
-    Returns the number of tools registered.
+    Register every handler in HANDLERS (+ the Coursera composites, which
+    keep their definitions next to their logic in coursera_reader.py)
+    with the tool registry. Returns the number of tools registered.
     Idempotent: duplicate registrations overwrite the existing definition.
     """
+    handlers = {**HANDLERS, **COURSERA_HANDLERS}
+    schemas_by_name = {**TOOL_SCHEMAS, **COURSERA_SCHEMAS}
+    descriptions = {**TOOL_DESCRIPTIONS, **COURSERA_DESCRIPTIONS}
     count = 0
-    for name, handler in HANDLERS.items():
-        schemas = TOOL_SCHEMAS[name]
+    for name, handler in handlers.items():
+        schemas = schemas_by_name[name]
         register_tool(
             ToolDefinition(
                 name=name,
                 version="v1",
-                description=TOOL_DESCRIPTIONS[name],
+                description=descriptions[name],
                 input_schema=schemas["input"],
                 output_schema=schemas["output"],
                 handler=handler,

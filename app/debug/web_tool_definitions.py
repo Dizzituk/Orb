@@ -1,8 +1,8 @@
 # FILE: app/debug/web_tool_definitions.py
 # Purpose: Chat-facing tool definitions for web browsing.
 # Called-by: app.debug.tool_definitions
-# Depends-on: app.debug
-# Last-renovated: 2026-06-11
+# Depends-on: app.debug, app.web_automation.coursera_reader
+# Last-renovated: 2026-07-01
 """
 Chat-facing tool definitions for web browsing.
 
@@ -28,6 +28,12 @@ from app.debug.web_tool_playbooks import (
     RETRY_POLICY,
     TEXT_INPUT_TARGETING,
     WRONG_PAGE_RECOVERY,
+)
+# Coursera composites keep their full chat tool defs next to their logic
+# in coursera_reader.py; import rather than grow this file (near the cap).
+from app.web_automation.coursera_reader import (
+    WEB_COURSERA_HEALTH_TOOL,
+    WEB_COURSERA_PROGRESS_TOOL,
 )
 
 
@@ -60,7 +66,11 @@ WEB_OPEN_SESSION_TOOL = {
         "Make sure a session's browser view is live (Electron spawns it if "
         "not already). Call this before navigate/click/etc on a session "
         "that may not be open yet. The user will SEE the browser appear "
-        "in the Browser tab. Quick (1-2s)."
+        "in the Browser tab. Quick (1-2s). ERROR MEANINGS: any web tool "
+        "failing with 'desktop browser is offline' means the ASTRA desktop "
+        "app is NOT RUNNING — tell the user to start the desktop app; do "
+        "not retry or blame the page. 'page did not respond' means the "
+        "desktop IS up but the page stalled — that one is worth a retry."
     ),
     "parameters": {
         "type": "object",
@@ -113,9 +123,12 @@ WEB_DOM_SNAPSHOT_TOOL = {
         "href target, and pixel coordinates + size (x, y, w, h). This is "
         "the PRIMARY way to understand what's on a page when you don't "
         "already know the CSS selectors. Works reliably on React apps like "
-        "Coursera where class names are obfuscated. After reading the "
-        "snapshot, click by coordinates (web_click with x/y) or navigate "
-        "to any href you found. When multiple elements share the same "
+        "Coursera where class names are obfuscated — but it carries NO "
+        "visual done-state: Coursera completion ticks / progress bars look "
+        "identical for finished and unfinished modules in the tree, so for "
+        "course progress questions use web_coursera_progress instead. After "
+        "reading the snapshot, click by coordinates (web_click with x/y) or "
+        "navigate to any href you found. When multiple elements share the same "
         "text (common for 'Get started', 'Sign in', 'Post' etc.), prefer "
         "the one with the LARGEST w×h — CTA buttons are typically "
         "300-500px wide × 48-64px tall, while menu items are smaller. "
@@ -139,7 +152,11 @@ WEB_EXTRACT_TEXT_TOOL = {
         "web_dom_snapshot, or well-known markup like 'h1', 'article p'). "
         "For most cases prefer web_dom_snapshot which doesn't require guessing "
         "selectors. Useful for: reading a full article body once you know "
-        "its wrapper, dumping all list items of a known container."
+        "its wrapper, dumping all list items of a known container. "
+        "TEXT ONLY — visual state (Coursera completion ticks, progress bars, "
+        "toggle positions) does NOT come back: module titles read identically "
+        "whether done or not. For course progress/position questions use "
+        "web_coursera_progress (or web_vision_check), never this."
     ),
     "parameters": {
         "type": "object",
@@ -290,6 +307,12 @@ WEB_VISION_CHECK_TOOL = {
         "\n"
         "  • Layout/visual cross-check the DOM can't express: "
         "'which radio option in question 3 is currently selected?'"
+        "\n"
+        "  • READING VISUAL COMPLETION STATE: course progress ticks and "
+        "progress bars (Coursera module done-state) exist only as pixels — "
+        "extract_text/dom_snapshot cannot see them. For Coursera progress "
+        "specifically, prefer the web_coursera_progress composite, which "
+        "also verifies the session is actually logged in first."
         "\n"
         "  • FINDING THE FILE-UPLOAD BUTTON on a social-media composer "
         "(Meta / Instagram / TikTok / YouTube / WordPress). The DOM "
@@ -553,6 +576,8 @@ def get_web_tools() -> List[dict]:
         WEB_EXTRACT_TEXT_TOOL,
         WEB_SCREENSHOT_TOOL,
         WEB_VISION_CHECK_TOOL,
+        WEB_COURSERA_HEALTH_TOOL,
+        WEB_COURSERA_PROGRESS_TOOL,
         WEB_UPLOAD_FILE_TOOL,
         SYSTEM_KEYS_TOOL,
     ]

@@ -217,11 +217,10 @@ INFRASTRUCTURE_INTENTS: Dict[CanonicalIntent, IntentDefinition] = {
             r"^(?:[Hh]ow does that (?:look|come) (?:all together|along)\??$)",
         ],
         requires_context=[],
-        requires_confirmation=True,
-        confirmation_prompt=(
-            "I'll send our conversation to the Weaver to build a structured spec.\n"
-            "Confirm to proceed."
-        ),
+        # 2026-07-01: low-stakes flow stage — builds a draft spec, writes and
+        # executes nothing. Confirmation removed; safety lives in the
+        # wake-phrase mode gate and the explicit SEND_TO_SPEC_GATE step after.
+        requires_confirmation=False,
         description="Trigger Weaver to build a candidate spec from ramble/conversation",
         behavior=(
             "Weaver (GPT-5.2 latest) is triggered to:\n"
@@ -272,11 +271,11 @@ INFRASTRUCTURE_INTENTS: Dict[CanonicalIntent, IntentDefinition] = {
             r"^[Ss]pec ?[Gg]ate[,:]?\s*validate$",
         ],
         requires_context=[],
-        requires_confirmation=True,
-        confirmation_prompt=(
-            "I'll send the spec to Spec Gate for validation.\n"
-            "Confirm to proceed."
-        ),
+        # 2026-07-01: validation-only stage — no pipeline execution. Its old
+        # confirmation double-confirmed the flow ("yes" after Weaver IS the
+        # trigger, then it asked to confirm again). High-stakes stages
+        # (RUN_PIPELINE / OVERWATCHER_EXECUTE_CHANGES) keep confirmation.
+        requires_confirmation=False,
         description="Send refined candidate spec to Spec Gate for validation",
         behavior=(
             "Spec Gate (GPT-5.2 Pro) receives the refined candidate spec.\n"
@@ -301,19 +300,15 @@ INFRASTRUCTURE_INTENTS: Dict[CanonicalIntent, IntentDefinition] = {
 
     CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB: IntentDefinition(
         intent=CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB,
-        trigger_phrases=[
-            "Run critical pipeline",
-            "run critical pipeline",
-            "Execute critical pipeline",
-            "Start the pipeline",
-            "start the pipeline",
-        ],
-        trigger_patterns=[
-            r"^[Rr]un (?:the )?[Cc]ritical [Pp]ipeline$",
-            r"^[Rr]un (?:the )?[Cc]ritical [Pp]ipeline for job\s+",
-            r"^[Ee]xecute (?:the )?[Cc]ritical [Pp]ipeline$",
-            r"^[Ss]tart the pipeline$",
-        ],
+        # v5.4 (2026-07-01): deprecated alias of RUN_PIPELINE. All spoken/typed
+        # triggers live on RUN_PIPELINE (_intents_operations.py) — this dict is
+        # merged before operations, so any phrase here would shadow the
+        # canonical intent in tier0_classify. Definition kept (no triggers)
+        # because the desktop PipelineStageTab sends this intent directly via
+        # confirmed_intent, which bypasses translation but still needs the
+        # context/confirmation gates and translation_routing dispatch.
+        trigger_phrases=[],
+        trigger_patterns=[],
         requires_context=["job_id", "spec_id"],
         requires_confirmation=True,
         confirmation_prompt=(

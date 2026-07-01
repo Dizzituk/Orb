@@ -80,6 +80,35 @@ def _finance_context(db: Session) -> str:
         lines.append(f"Fixed weekly burn: £{d['fixed_costs']['weekly_burn']:.2f}")
     except Exception as e:
         lines.append(f"Work ledger data: {e}")
+
+    # Today's shift state — so the model never treats an open, already-started
+    # day as unlogged. The dashboard above only sums COMPLETE days, so on its
+    # own an in-progress day looks empty and the model goes fishing for a start
+    # that is in fact already on the row.
+    try:
+        from datetime import date as _date
+        from app.finance.services.work_day_service import get_day as _get_day
+        today = _get_day(db, _date.today())
+        if today is None:
+            lines.append("\nToday's shift: not started yet (no row for today).")
+        elif today.status == "complete":
+            lines.append(
+                f"\nToday's shift: CLOSED and fully logged — "
+                f"{today.parcels or 0} parcels, £{today.gross_earnings or 0:.2f}, "
+                f"{today.work_miles or 0:.0f} work miles, {today.total_hours or 0:.1f} h."
+            )
+        else:
+            _odo = today.start_odometer if today.start_odometer is not None else "?"
+            lines.append(
+                f"\nToday's shift: OPEN and already logged — start "
+                f"{today.start_time or '?'} / odometer {_odo}. It is NOT unlogged; it "
+                f"just isn't closed yet, so its earnings and miles read zero until it is. "
+                f"If the user says they've finished work, call finish_work_day with the "
+                f"end figures only — the start is already on the row, do not ask for it."
+            )
+    except Exception as e:
+        lines.append(f"\nToday's shift: unavailable ({e})")
+
     return "\n".join(lines)
 
 

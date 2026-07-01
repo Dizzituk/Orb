@@ -426,6 +426,7 @@ def create_message(db: Session, data: schemas.MessageCreate) -> models.Message:
         content=_sanitize_utf8(data.content),  # v0.12.5: Sanitize surrogates
         provider=data.provider,  # v0.12.4: Was missing
         model=data.model,  # v0.12.4: Was missing
+        model_source=getattr(data, "model_source", None),  # v2026-06-24: routing provenance
         reasoning=data.reasoning,  # v0.12.4: New field
         session_id=data.session_id,  # v10.0: ConversationSession link
     )
@@ -483,6 +484,17 @@ def create_message(db: Session, data: schemas.MessageCreate) -> models.Message:
         maybe_spawn_importance_extraction(msg)
     except Exception as e:
         print(f"[memory.service] importance spawn failed for message {msg.id}: {e}")
+
+    # Idle governor (2026-07-01): a USER message (any surface — desktop, voice,
+    # Bridge — they all land here) stamps activity, which both defers idle-time
+    # background work and checkpoints any task currently in flight. Failure-proof
+    # — never blocks or breaks message creation.
+    try:
+        if (data.role or "").lower() == "user":
+            from app.idle.governor import record_user_activity
+            record_user_activity()
+    except Exception as e:
+        print(f"[memory.service] idle activity stamp failed for message {msg.id}: {e}")
 
     return msg
 

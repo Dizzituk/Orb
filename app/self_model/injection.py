@@ -106,7 +106,7 @@ def build_self_model_block() -> Optional[str]:
     filtered = filter_facts(all_facts)
     total = len(all_facts)
     kept = len(filtered)
-    logger.info(
+    logger.debug(
         "[self_model.injection] %d/%d facts passed filter (dropped %d as low-signal)",
         kept, total, total - kept,
     )

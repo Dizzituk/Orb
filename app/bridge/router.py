@@ -25,6 +25,9 @@ from .schemas import (
     BridgeLoginResponse,
     BridgeChatRequest,
     BridgeChatResponse,
+    BridgeDebugRequest,
+    BridgeDebugCancelRequest,
+    BridgeDebugCancelResponse,
     BridgeProjectOut,
     BridgeArtifactRef,
     BridgePinRequest,
@@ -214,6 +217,51 @@ async def bridge_chat_and_speak(
     # idempotency claim releases in a finally without re-indenting this module.
     from .chat_speak_stream import run_chat_and_speak
     return await run_chat_and_speak(req, request, db)
+
+
+@router.post("/debug-and-speak")
+async def bridge_debug_and_speak(
+    req: BridgeDebugRequest,
+    db: Session = Depends(get_db),
+    _auth: bool = Depends(require_bridge_auth),
+):
+    """Live debug session from the phone (road-debug live-session plan §2.1).
+
+    Starts a registry-backed background run that drives the SAME debug brain
+    the desktop uses (stream_debug_locked) and speaks its narration back as a
+    growing MP3 stream. The run survives this HTTP connection dropping -- see
+    .debug_and_speak_stream / .debug_run_registry for the decoupling.
+    """
+    from .debug_and_speak_stream import run_debug_and_speak
+    return await run_debug_and_speak(req, db)
+
+
+@router.post("/debug/cancel", response_model=BridgeDebugCancelResponse)
+async def bridge_debug_cancel(
+    req: BridgeDebugCancelRequest,
+    _auth: bool = Depends(require_bridge_auth),
+):
+    """Stop button for a phone-initiated debug session (live-session plan §2.6).
+
+    Idempotent and safe to retry hard: the phone retries this until it gets an
+    ack rather than trusting a single flaky-link attempt. Sets the run's
+    cooperative cancel_event (checked at orchestrator phase boundaries and
+    before each queued spawn_agents brief) AND hard-cancels the asyncio task as
+    a backstop -- halting mid-step is fine, all debug-tool writes are already
+    sandboxed or host-only-scoped, there is nothing to unwind cleanly here.
+    """
+    from .debug_run_registry import cancel, cancel_for_project
+
+    run_id = req.run_id
+    if run_id is not None:
+        ok = cancel(run_id)
+        return BridgeDebugCancelResponse(cancelled=ok, run_id=run_id if ok else None)
+
+    if req.project_id is not None:
+        cancelled_id = cancel_for_project(req.project_id)
+        return BridgeDebugCancelResponse(cancelled=bool(cancelled_id), run_id=cancelled_id)
+
+    return BridgeDebugCancelResponse(cancelled=False, run_id=None)
 
 
 @router.get("/pending-navigation")

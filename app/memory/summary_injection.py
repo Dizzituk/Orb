@@ -67,6 +67,13 @@ def format_summary_block(summary_json: Dict[str, Any]) -> str:
     if topic:
         lines.append(f"Current topic: {topic}")
 
+    # Lane B (2026-07-01): the tiered whole-session arc — chronological, only
+    # ever compressed, never shed — so a whole-day recap can span the morning.
+    arc = summary_json.get("conversation_arc", [])
+    if arc:
+        lines.append("Conversation arc (chronological, whole session): "
+                     + "; ".join(str(a) for a in arc))
+
     decisions = summary_json.get("key_decisions", [])
     if decisions:
         lines.append("Key decisions: " + "; ".join(decisions))

@@ -2,7 +2,7 @@
 # Purpose: Source collectors + cross-source de-dup for the single memory front door.
 # Called-by: app.llm.routing.memory_injection
 # Depends-on: app.memory.summary_injection, app.memory.spine_service, app.memory.integration
-# Last-renovated: 2026-06-15 (Job 2: log_block_stats per-turn observability)
+# Last-renovated: 2026-06-25 (assemble_block: hard total-size budget on the injected block)
 """
 Source collectors and de-dup for the memory front door (MEMORY_MAP.md §2).
 
@@ -19,6 +19,7 @@ None of these run when the front door's D0-D4 gate decides D0 (inject nothing)
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import List, Sequence, Tuple
 
@@ -86,6 +87,22 @@ def collect_coverage(db: Session, project_id: int, user_message: str) -> str:
         return build_coverage_block(db, project_id, user_message) or ""
     except Exception as exc:
         logger.debug("[mem_sources] coverage skipped: %s", exc)
+        return ""
+
+
+def collect_recurring(db: Session, project_id: int, user_message: str) -> str:
+    """Recurring-theme block ([RECURRING THEMES] / [RECURRING THEME]).
+
+    Cross-CONVERSATION pattern recognition: the subjects the user returns to
+    across many separate sessions. Fires on a recall question (overview) or when
+    the current turn's own topic is itself a recurring theme. Complements coverage
+    (within-day) and the graph walk (cross-domain links) with the missing
+    cross-time recurrence channel."""
+    try:
+        from app.memory.nat_jobs.recurring_themes import build_recurring_themes_block
+        return build_recurring_themes_block(db, project_id, user_message) or ""
+    except Exception as exc:
+        logger.debug("[mem_sources] recurring themes skipped: %s", exc)
         return ""
 
 
@@ -173,11 +190,65 @@ def _has_content(text: str) -> bool:
     return any(not _is_structural(ln) for ln in text.split("\n") if ln.strip())
 
 
+# ── Hard total-size budget (2026-06-25) ────────────────────────────────
+# Per-source caps (memory_injection._format_preferences / _format_retrieved_records)
+# bound each segment; this bounds the assembled WHOLE so the injected block can
+# never blow past budget. Trims by priority: segments are added high-priority
+# first (preferences -> facts -> ... -> repo -> router), and when the budget is
+# hit the overflowing segment is clipped at a line boundary and the lower-priority
+# tail is dropped. Env-configurable; ASTRA_MEMORY_BLOCK_MAX_CHARS=0 disables it.
+_BUDGET_MARK = "\n[...memory trimmed to fit budget...]"
+_MIN_SEGMENT_KEEP = 200  # don't clip a segment down to a uselessly small stub
+
+
+def _block_max_chars() -> int:
+    try:
+        return max(0, int(os.getenv("ASTRA_MEMORY_BLOCK_MAX_CHARS", "16000")))
+    except Exception:
+        return 16000
+
+
+def _join_within_budget(parts: List[str]) -> str:
+    """Join priority-ordered segments under the hard total budget. No-op (and
+    byte-identical) when the assembled block already fits, so small blocks are
+    untouched; only oversized blocks are trimmed, tail-first."""
+    budget = _block_max_chars()
+    full = "\n\n".join(parts)
+    if not budget or len(full) <= budget:
+        return full
+
+    kept: List[str] = []
+    used = 0
+    for seg in parts:
+        sep = 2 if kept else 0
+        if used + sep + len(seg) <= budget:
+            kept.append(seg)
+            used += sep + len(seg)
+            continue
+        # Overflow: clip this segment at a line boundary if a useful piece fits,
+        # then stop (drop all lower-priority segments after it).
+        room = budget - used - sep - len(_BUDGET_MARK)
+        if room >= _MIN_SEGMENT_KEEP:
+            clipped = seg[:room].rsplit("\n", 1)[0].rstrip()
+            if clipped:
+                kept.append(clipped + _BUDGET_MARK)
+        break
+
+    result = "\n\n".join(kept)
+    logger.info(
+        "[memory_frontdoor] block over budget: %d -> %d chars "
+        "(budget=%d, kept %d/%d sources)",
+        len(full), len(result), budget, len(kept), len(parts),
+    )
+    return result
+
+
 def assemble_block(
     *,
     preferences_text: str = "",
     facts_text: str = "",
     graph_text: str = "",
+    recurring_text: str = "",
     summary_text: str = "",
     recall_text: str = "",
     coverage_text: str = "",
@@ -202,6 +273,9 @@ def assemble_block(
         (preferences_text, "<user_preferences>\n", "\n</user_preferences>"),
         (facts_text, "<memory_context>\n", "\n</memory_context>"),
         (graph_text, "", ""),
+        # Cross-conversation recurring themes sit beside the cross-domain graph
+        # links — both are synthesis channels above the raw conversation sources.
+        (recurring_text, "", ""),
         (summary_text, "", ""),
         (recall_text, "", ""),
         # Nat Job 1 (coverage) + Job 2 (enrichment) — already carry their own
@@ -219,9 +293,12 @@ def assemble_block(
         deduped = _dedup_block(raw, seen)
         if not _has_content(deduped):
             continue
-        parts.append(f"{open_tag}{deduped.strip()}{close_tag}" if open_tag else deduped.strip())
+        inner = deduped.strip()
+        parts.append(f"{open_tag}{inner}{close_tag}" if open_tag else inner)
 
-    return "\n\n".join(parts)
+    # Hard total-budget backstop: bounds the assembled whole (drops/clips the
+    # low-priority tail first). No-op when the block already fits.
+    return _join_within_budget(parts)
 
 
 # =============================================================================
@@ -272,6 +349,7 @@ __all__ = [
     "collect_summary",
     "collect_recall",
     "collect_coverage",
+    "collect_recurring",
     "collect_router",
     "assemble_block",
     "log_block_stats",

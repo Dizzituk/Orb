@@ -50,6 +50,7 @@ from app.debug.orchestrator.subagent_runner import (
     run_subagent,
     run_subagents_parallel,
 )
+from app.debug.run_context import is_cancelled
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +212,19 @@ async def run_orchestration(
     total_tokens = 0
     iteration_no = 0
 
+    def _cancel_now(record: IterationRecord, iter_start: float) -> bool:
+        """Cooperative cancel checkpoint, called at every phase boundary. False
+        (no-op) unless a run started via the phone registry has set cancel_event —
+        desktop-originated runs never trip this. On trip: close out the current
+        IterationRecord and signal the caller to break the outer loop."""
+        nonlocal final_phase
+        if not is_cancelled():
+            return False
+        final_phase = OrchestrationPhase.CANCELLED
+        record.elapsed_ms = int((time.time() - iter_start) * 1000)
+        iterations.append(record)
+        return True
+
     try:
         for iteration_no in range(1, request.max_iterations + 1):
             iter_start = time.time()
@@ -218,6 +232,8 @@ async def run_orchestration(
                 iteration=iteration_no,
                 phase_reached=OrchestrationPhase.DECOMPOSING,
             )
+            if _cancel_now(record, iter_start):
+                break
 
             # ---- 1. DECOMPOSE ------------------------------------------
             _emit(on_event, "phase_change", OrchestrationPhase.DECOMPOSING,
@@ -233,6 +249,8 @@ async def run_orchestration(
                   iteration_no,
                   f"{len(decomposition.briefs)} investigation brief(s)",
                   {"brief_ids": [b.brief_id for b in decomposition.briefs]})
+            if _cancel_now(record, iter_start):
+                break
 
             # ---- 2. INVESTIGATE (parallel) -----------------------------
             _emit(on_event, "phase_change", OrchestrationPhase.INVESTIGATING,
@@ -254,6 +272,8 @@ async def run_orchestration(
             _emit(on_event, "subagent_complete", OrchestrationPhase.INVESTIGATING,
                   iteration_no, f"{len(reports)} investigation report(s) in",
                   {"findings_total": sum(len(r.findings) for r in reports)})
+            if _cancel_now(record, iter_start):
+                break
 
             # ---- 3. PLAN -----------------------------------------------
             record.phase_reached = OrchestrationPhase.PLANNING
@@ -278,6 +298,8 @@ async def run_orchestration(
                 record.elapsed_ms = int((time.time() - iter_start) * 1000)
                 iterations.append(record)
                 break
+            if _cancel_now(record, iter_start):
+                break
 
             # ---- 4. EXECUTE (batched by dependency) --------------------
             record.phase_reached = OrchestrationPhase.EXECUTING
@@ -287,6 +309,8 @@ async def run_orchestration(
             batches = topological_batches(plan)
             exec_reports: List[SubagentReport] = []
             for batch_idx, batch in enumerate(batches):
+                if is_cancelled():
+                    break
                 briefs = [_executor_brief_for_step(s, plan.root_cause) for s in batch]
                 # Only parallelise within batch if the steps are marked parallelisable
                 can_parallel = (
@@ -317,6 +341,8 @@ async def run_orchestration(
             _emit(on_event, "execution_complete", OrchestrationPhase.EXECUTING,
                   iteration_no, f"{len(exec_reports)} executor report(s)",
                   {"files_modified": sorted({f for r in exec_reports for f in r.files_modified})})
+            if _cancel_now(record, iter_start):
+                break
 
             # ---- 5. VERIFY (code) --------------------------------------
             record.phase_reached = OrchestrationPhase.VERIFYING_CODE
@@ -337,6 +363,8 @@ async def run_orchestration(
             code_passed = all(
                 r.status == StepStatus.PASSED for r in record.code_verifications
             ) if record.code_verifications else True
+            if _cancel_now(record, iter_start):
+                break
 
             # ---- 6. VERIFY (behaviour) ---------------------------------
             behaviour_passed = True

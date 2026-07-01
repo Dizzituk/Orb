@@ -3,7 +3,7 @@
 #          and baseline maintenance. Mirrors app/lifestyle/scheduler.py (asyncio pattern).
 # Called-by: main (startup event)
 # Depends-on: app.sentinel.collector, app.sentinel.baseline, app.sentinel.models, app.db
-# Last-renovated: 2026-06-12
+# Last-renovated: 2026-07-01
 from __future__ import annotations
 
 import asyncio
@@ -26,6 +26,14 @@ _MAINTENANCE_AT_HOUR = 3 + 40 / 60.0  # 03:40 local
 
 def _enabled() -> bool:
     return os.getenv("ASTRA_SENTINEL_ENABLED", "true").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
+def _boot_prime_enabled() -> bool:
+    """P2-1 kill-switch — off falls back to the old behaviour (first tick fires
+    rules normally, so a restart's connection burst is diffed like anything else)."""
+    return os.getenv("ASTRA_SENTINEL_BOOT_PRIME_ENABLED", "true").strip().lower() not in (
         "0", "false", "no", "off",
     )
 
@@ -70,10 +78,11 @@ def _run_prune() -> None:
             .delete(synchronize_session=False)
         )
         db.commit()
-        logger.info(
-            "[sentinel_scheduler] prune: %s connection events, %s settled alerts",
-            removed_conns, removed_alerts,
-        )
+        if removed_conns or removed_alerts:
+            logger.info(
+                "[sentinel_scheduler] prune: %s connection events, %s settled alerts",
+                removed_conns, removed_alerts,
+            )
     except Exception:
         logger.exception("[sentinel_scheduler] prune failed")
     finally:
@@ -98,6 +107,7 @@ class SentinelScheduler:
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._state = _load_state()
+        self._primed = False
 
     def _due(self, task_key: str, at_hour: float, now: datetime) -> bool:
         """True if `now` is past today's slot and it hasn't run today."""
@@ -125,6 +135,14 @@ class SentinelScheduler:
             await asyncio.to_thread(_run_maintenance)
 
     async def _loop(self) -> None:
+        if not self._primed:
+            self._primed = True
+            if _boot_prime_enabled():
+                from app.sentinel import collector
+                try:
+                    await collector.prime_once()
+                except Exception:
+                    logger.exception("[sentinel_scheduler] boot prime failed")
         while self._running:
             try:
                 await self._tick()

@@ -350,6 +350,18 @@ def register_routers(app):
     except Exception as _sentinel_err:
         print(f"[startup] Sentinel: [WARN] {_sentinel_err}")
 
+    # Reminders (2026-07-01): one-shot reminders that fire on desktop + phone
+    # alike. Core API + phone-facing bridge feed registered together.
+    try:
+        from app.reminders import models as _reminders_models  # noqa: F401 — register Reminder table with Base
+        from app.reminders.router import router as reminders_router
+        app.include_router(reminders_router)
+        from app.bridge.reminders_feed import router as bridge_reminders_router
+        app.include_router(bridge_reminders_router)
+        print("[startup] Reminders: [OK] registered (+ bridge upcoming/due/ack feed)")
+    except Exception as _reminders_err:
+        print(f"[startup] Reminders: [WARN] {_reminders_err}")
+
     # ASTRA Room — scene director (2026-06-12): LLM-composed SceneDocs pushed to the
     # Unity renderer over /scene/ws; compose is Bearer-auth'd, renderer endpoints
     # are local-trusted (see app/scene_director/router.py header).

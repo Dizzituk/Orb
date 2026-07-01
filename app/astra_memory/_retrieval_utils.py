@@ -1,7 +1,7 @@
 # Purpose: retrieval utils
 # Called-by: app.astra_memory.retrieval
 # Depends-on: app.astra_memory.confidence_config, app.astra_memory.preference_models, app.memory.models
-# Last-renovated: 2026-06-12
+# Last-renovated: 2026-06-25 (get_applicable_preferences: ACTIVE-only, drop SUPERSEDED/EXPIRED)
 from __future__ import annotations
 import logging
 from app.astra_memory.confidence_config import get_config
@@ -13,28 +13,69 @@ logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 
 
+# 2026-06-25 gate retune. The previous lists triggered on ubiquitous
+# conversational words — D2 on bare "how/why/what", D3 on "all/full/
+# architecture", D4 on "history/evidence/debug" — so ordinary spoken turns
+# (incl. "watch this video") landed at D3/D4 and pulled 17–44 cold records,
+# producing a 20–24KB block that swamped the live message and caused topic
+# drift. The rule now: everyday talk falls through to D1 (still enriched —
+# hot layer, ~5 records); D2/D3/D4 require an explicit explanatory / deep /
+# forensic FRAME, not a single common word. Explicit /deep, /forensic etc.
+# tokens (EXPLICIT_DEPTH_TOKENS) remain the manual override.
 DEPTH_KEYWORDS = {
+    # D0 — pure pleasantries / acknowledgements (no memory at all).
     IntentDepth.D0: {
-        "triggers": ["hi", "hello", "hey", "thanks", "bye", "ok", "sure"],
-        "patterns": [r"^(hi|hello|hey|thanks|bye|ok|sure|yes|no)[\s!?.]*$"],
+        "triggers": ["thank you", "thanks", "cheers", "goodbye", "good night",
+                     "sounds good", "no worries"],
+        "patterns": [
+            r"^(hi|hii|hey|hello|yo|sup|morning|thanks|thank you|cheers|bye|"
+            r"goodbye|ok|okay|kk|sure|yep|yes|no|nope|nah|cool|nice|great|"
+            r"perfect|lol|haha|right|gotcha|good night)[\s!?.]*$",
+        ],
     },
+    # D1 — DEFAULT tier. Everyday conversation gets light, on-topic enrichment
+    # (hot layer, ~5 records). No triggers needed — this is the fall-through.
+    # A couple of "keep it tight" cues live here so they never escalate.
     IntentDepth.D1: {
-        "triggers": ["briefly", "quick", "simple", "short", "summary", "tldr", "recap"],
-        "patterns": [r"tell me (?:a )?(?:bit|little)", r"what(?:'s| is) .{1,30}\?$"],
+        "triggers": ["briefly", "quick question", "in short", "one-liner", "tldr"],
+        "patterns": [],
     },
+    # D2 — explicit request to EXPLAIN / WALK THROUGH something. Needs an
+    # explanatory frame; bare what/why/how (which appear in normal speech) do
+    # NOT escalate — only an explanatory verb structure does.
     IntentDepth.D2: {
-        "triggers": ["explain", "describe", "how", "why", "what", "current", "status"],
-        "patterns": [r"how (?:do|does|can|should)", r"what (?:is|are) the"],
+        "triggers": ["explain", "walk me through", "talk me through", "break it down",
+                     "break down", "how does", "how do i", "how do you", "step by step"],
+        "patterns": [
+            r"\bwhy (?:do|does|did|is|are|would|won't|can't) \w",
+            r"\bwhat(?:'s| is| are) the (?:difference|point|deal|trade-?off|"
+            r"reason|status|best way|catch)\b",
+        ],
     },
+    # D3 — explicit request for DEPTH / the full picture on a topic.
     IntentDepth.D3: {
-        "triggers": ["deep", "detailed", "full", "complete", "comprehensive", "in-depth",
-                    "spec", "specification", "architecture", "all"],
-        "patterns": [r"give me (?:the )?full", r"(?:deep|detailed) (?:dive|analysis)"],
+        "triggers": ["deep dive", "in detail", "in depth", "in-depth",
+                     "detailed breakdown", "full breakdown", "full picture",
+                     "comprehensive", "thorough", "everything about",
+                     "full spec", "full specification", "full rundown"],
+        "patterns": [
+            r"\b(?:deep|detailed|thorough) (?:dive|analysis|breakdown|look|review)\b",
+            r"\bgive me (?:the )?(?:full|whole|complete|entire) \w",
+            r"\bwalk me through (?:the )?(?:whole|entire|full|complete)\b",
+            r"\b(?:tell|explain|give) me everything\b",
+        ],
     },
+    # D4 — explicit FORENSIC / AUDIT intent: evidence, full history, every change.
     IntentDepth.D4: {
-        "triggers": ["forensic", "audit", "evidence", "history", "timeline", "ledger",
-                    "debug", "investigate", "all changes", "diff history"],
-        "patterns": [r"show me (?:all|every)", r"what (?:changed|happened)"],
+        "triggers": ["forensic", "full audit", "audit trail", "every change",
+                     "all changes", "diff history", "change history",
+                     "complete timeline", "full history", "full timeline",
+                     "line by line", "exhaustive"],
+        "patterns": [
+            r"\bshow me (?:all|every|each) \w",
+            r"\bwhat exactly (?:changed|happened|broke)\b",
+            r"\b(?:full|complete|entire) (?:audit|history|timeline|ledger|record)\b",
+        ],
     },
 }
 
@@ -160,8 +201,16 @@ def get_applicable_preferences(
         ),
     )
     
-    if not include_disputed:
-        query = query.filter(PreferenceRecord.status != RecordStatus.DISPUTED)
+    # Only currently-applicable records. ACTIVE by default; SUPERSEDED (a newer
+    # value already replaced this one — see document_knowledge_promoter) and
+    # EXPIRED (decayed below belief) must never be injected, yet the old
+    # `!= DISPUTED` filter let them through (777 stale SUPERSEDED rows live = the
+    # bulk of the per-turn memory-block bloat). include_disputed also surfaces
+    # DISPUTED records for callers that weigh contradictions.
+    allowed_statuses = [RecordStatus.ACTIVE]
+    if include_disputed:
+        allowed_statuses.append(RecordStatus.DISPUTED)
+    query = query.filter(PreferenceRecord.status.in_(allowed_statuses))
     
     # Only get preferences with sufficient confidence
     query = query.filter(PreferenceRecord.confidence >= cfg.suggestion_threshold)

@@ -2,7 +2,7 @@
 # Purpose: CRUD helpers for WebSession.
 # Called-by: app.content.distribution.browser_analytics.recon, app.content.distribution.browser_analytics.scrape, app.web_automation.bridge, app.web_automation.router (+2 more)
 # Depends-on: app.web_automation.models
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-07-01
 """
 CRUD helpers for WebSession.
 
@@ -42,7 +42,18 @@ def get_session_by_platform(db: Session, platform: str) -> Optional[WebSession]:
 
 
 def get_session_by_partition(db: Session, partition: str) -> Optional[WebSession]:
-    return db.query(WebSession).filter(WebSession.partition == partition).one_or_none()
+    """First session on this partition (ordered by platform for determinism).
+
+    Partitions are NOT unique — the media sessions share "persist:media"
+    by design, so one_or_none() would raise here. No current callers;
+    kept for API symmetry.
+    """
+    return (
+        db.query(WebSession)
+        .filter(WebSession.partition == partition)
+        .order_by(WebSession.platform.asc())
+        .first()
+    )
 
 
 def create_session(

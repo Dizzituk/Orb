@@ -71,9 +71,10 @@ class RetrievalDepthConfig:
     # Maximum items to expand at each depth
     d0_max_items: int = 0      # Chat: no memory
     d1_max_items: int = 5      # Brief: small, fast
-    d2_max_items: int = 15     # Normal: targeted
-    d3_max_items: int = 50     # Deep: heavy
-    d4_max_items: int = 200    # Forensic: everything
+    d2_max_items: int = 8      # Normal: targeted
+    d3_max_items: int = 12     # Deep: rich but bounded (was 50 — over-fetched
+                               # 50 cold records to render ~8 after the char cap)
+    d4_max_items: int = 25     # Forensic: deep (was 200 — same waste at scale)
     
     # Token caps per depth (approximate)
     d0_token_cap: int = 0

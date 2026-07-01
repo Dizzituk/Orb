@@ -137,6 +137,13 @@ class Message(Base):
     # For user messages: None
     # For assistant messages: "gpt-4o-mini", "claude-sonnet-4-20250514", "gemini-2.0-flash", etc.
     model = Column(String(100), nullable=True)
+
+    # v2026-06-24: WHY this model was chosen — lets routing tell a genuine user
+    # choice (PINNED, survives restart) from an automatic escalation (ELEVATED,
+    # must decay). PINNED: 'frontend_override','explicit_user','agentic_tab'.
+    # Auto: 'cognitive_auto','file_auto','image_auto','multimodal_auto',
+    # 'complexity_auto'. NULL = legacy/user rows = treated as non-pin (decays).
+    model_source = Column(String(40), nullable=True)
     
     # v0.12.4: Store chain-of-thought reasoning from <THINKING> tags
     # ENCRYPTED: Reasoning content is sensitive (internal model reasoning)

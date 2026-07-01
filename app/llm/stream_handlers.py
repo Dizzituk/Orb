@@ -50,6 +50,7 @@ async def generate_sse_stream(
     enable_reasoning: bool = False,
     tools: Optional[List[dict]] = None,
     user_message_id: Optional[int] = None,
+    model_source: Optional[str] = None,
 ):
     """Generate SSE stream for normal LLM chat.
 
@@ -175,7 +176,7 @@ async def generate_sse_stream(
             user_message_id = _user_msg.id
         _assistant_msg = memory_service.create_message(db, memory_schemas.MessageCreate(
             project_id=project_id, role="assistant", content=full_response,
-            provider=provider, model=model
+            provider=provider, model=model, model_source=model_source,
         ))
         
         if trace:

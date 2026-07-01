@@ -270,13 +270,13 @@ def augment_user_message(req, history_messages):
     callers can decide whether to use the augmented form.
     """
     ids = getattr(req, "attachment_ids", None) or []
-    logger.info(
+    if not ids:
+        return req.message
+    logger.debug(
         "[bridge_augment] entry: attachment_ids_count=%d ids=%s",
         len(ids),
         [i[:8] for i in ids][:5],
     )
-    if not ids:
-        return req.message
 
     desc = describe_attachments(ids, req.message)
     if not desc:

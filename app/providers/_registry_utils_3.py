@@ -106,9 +106,11 @@ async def llm_call(
     job_envelope: Optional[dict] = None,
     reasoning: Optional[dict] = None,  # GPT-5.x: {"effort": "none"|"low"|"medium"|"high"|"xhigh"}
     stage: Optional[str] = None,  # v2.2: Pipeline stage name for cost tracking
+    execution_context: Optional[str] = None,  # v2.5: "background_local" = local lane only
     **kwargs: Any,  # absorb future constraints, e.g. data_sensitivity_constraint
 ):
     from .registry import LlmCallResult, LlmCallStatus, get_provider_registry
+    from app.providers._registry_local import LOCALITY_BACKGROUND_LOCAL
 
     # v2.2: Auto-inject tiered system prompt when none provided
     if system_prompt is None and stage:
@@ -118,18 +120,22 @@ async def llm_call(
         except Exception:
             pass
 
-    # v2.2: Pre-call budget check
+    # v2.2: Pre-call budget check.
+    # v2.5: background_local calls are exempt — local compute is free, and an
+    # exhausted cloud budget must never stall idle-time background work.
+    _budget_exempt = execution_context == LOCALITY_BACKGROUND_LOCAL or provider_id == "local"
     try:
         from app.cost.cost_recorder import pre_call_budget_check
-        allowed, reason = pre_call_budget_check(stage=stage)
-        if not allowed:
-            return LlmCallResult(
-                status=LlmCallStatus.ERROR,
-                provider_id=provider_id or "unknown",
-                model_id=model_id,
-                content="",
-                error_message=f"Budget exceeded: {reason}",
-            )
+        if not _budget_exempt:
+            allowed, reason = pre_call_budget_check(stage=stage)
+            if not allowed:
+                return LlmCallResult(
+                    status=LlmCallStatus.ERROR,
+                    provider_id=provider_id or "unknown",
+                    model_id=model_id,
+                    content="",
+                    error_message=f"Budget exceeded: {reason}",
+                )
     except Exception:
         pass  # Budget check failure must never block calls
 
@@ -146,6 +152,7 @@ async def llm_call(
         tool_names=tool_names,
         job_envelope=job_envelope,
         reasoning=reasoning,
+        execution_context=execution_context,
         **kwargs,
     )
 

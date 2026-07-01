@@ -1,8 +1,8 @@
 # FILE: app/llm/routing/chat_model_selection.py
 # Purpose: Model selection logic for chat routing.
 # Called-by: app.bridge.capability_layer, app.llm.routing.chat_routing
-# Depends-on: app.llm.routing.chat_intent_detection, app.llm.routing.cognitive_escalation, app.llm.routing.confirmation_gate, app.llm.streaming (+3 more)
-# Last-renovated: 2026-06-12
+# Depends-on: app.llm.frontier_models, app.llm.routing.chat_intent_detection, app.llm.routing.cognitive_escalation, app.llm.routing.conversational_gate (+4 more)
+# Last-renovated: 2026-07-01
 """
 Model selection logic for chat routing.
 
@@ -13,6 +13,15 @@ This module provides:
 - Complexity-based four-tier model selection
 - Provider availability fallback
 - Explicit model request detection pass-through
+
+Lane A de-hardcode (2026-07-01): NO model string is hardcoded here. Every
+tier resolves through app.llm.frontier_models.get_role_model() — env-only
+({ROLE}_PROVIDER/{ROLE}_MODEL, DEFAULT_PROVIDER/DEFAULT_MODEL), fail-loud.
+A conversational turn (conversational_gate) never escalates on the
+keyword-counted complexity tiers (TIER 4 architecture / TIER 2 reasoning):
+talking ABOUT the repo/memory/architecture is not a request to DO work on
+it. Cognitive cues ("think hard", "no rush") deliberately still escalate —
+they are an explicit request for more compute, even mid-musing.
 
 All functions are synchronous.  The main entry point is
 `select_chat_model()` which returns (provider, model, extras_dict).
@@ -43,7 +52,9 @@ from .cognitive_escalation import (
     detect_cognitive_escalation,
     is_small_model,
 )
+from .conversational_gate import is_conversational_turn
 from ._capability_guard import is_capability_question
+from app.llm.frontier_models import get_role_model, get_provider_default_model
 
 logger = logging.getLogger(__name__)
 
@@ -54,34 +65,37 @@ logger = logging.getLogger(__name__)
 
 _session_model_cache: dict[int, tuple[str, str]] = {}
 
+# v2026-06-24: WHY each sticky was set, kept in a parallel dict so the 2-tuple
+# return shape of get_sticky_model stays unchanged (external readers unpack it).
+# Only PINNED sources short-circuit routing on later turns / survive a restart;
+# everything else is governed by tier_momentum and decays.
+_sticky_source: dict[int, str] = {}
+_PINNED_SOURCES = frozenset({"frontend_override", "explicit_user", "agentic_tab"})
+
 
 def get_sticky_model(project_id: int) -> tuple[str, str] | None:
     return _session_model_cache.get(project_id)
 
 
-def set_sticky_model(project_id: int, provider: str, model: str) -> None:
+def set_sticky_model(
+    project_id: int, provider: str, model: str, source: str = "auto",
+) -> None:
+    """Pin a model for the session.
+
+    `source` records WHY. The default "auto" is NON-pinned: automatic
+    escalations (and external callers that don't pass a source) no longer latch
+    the session — only an explicit user/policy choice (a value in
+    _PINNED_SOURCES) short-circuits routing on later turns and survives a
+    restart. This is what lets the tier de-escalate again.
+    """
     _session_model_cache[project_id] = (provider, model)
+    _sticky_source[project_id] = source
 
 
-# v10.2: Elevated models that should persist via history-based stickiness
-_ELEVATED_MODELS = {'gpt-5.4', 'gpt-5.4-turbo', 'claude-opus-4-6', 'claude-opus-4-5', 'claude-opus-4-7'}
-
-
-# =============================================================================
-# FRONTIER MODEL  (v14.1, 2026-04-26)
-# =============================================================================
-# Single source of truth for "the current best non-mini reasoning model".
-# All routes that want a smart model (agentic tabs, cognitive escalation,
-# file creation, reasoning tier) default to this. When gpt-5.5 (or whatever
-# is next) ships, set FRONTIER_MODEL to it and every smart route follows.
-# Per-route env vars (e.g. WEB_AUTOMATION_MODEL, REASONING_MODEL) still
-# override this on a route-by-route basis when needed, but in normal use
-# the user changes one variable.
-def _frontier() -> tuple[str, str]:
-    return (
-        os.getenv("FRONTIER_PROVIDER", "openai"),
-        os.getenv("FRONTIER_MODEL", "gpt-5.4"),
-    )
+def is_explicit_sticky(project_id: int) -> bool:
+    """True only when the session's sticky was an explicit user/policy choice
+    (frontend dropdown, "use opus", agentic tab) — not an automatic escalation."""
+    return _sticky_source.get(project_id) in _PINNED_SOURCES
 
 
 # =============================================================================
@@ -136,7 +150,7 @@ def _is_agentic_context(req: Any) -> bool:
 
 
 def infer_sticky_from_history(project_id: int, db) -> tuple[str, str] | None:
-    """Check last assistant message in history for an elevated model.
+    """Check last assistant message in history for an elevated explicit pin.
     Falls back when the in-memory cache is empty (e.g. after app restart)."""
     try:
         # v2026-06-10 FIX: memory_service.get_messages() never existed --
@@ -145,8 +159,21 @@ def infer_sticky_from_history(project_id: int, db) -> tuple[str, str] | None:
         # most recent N in chronological order.
         msgs = memory_service.list_messages(db, project_id, limit=10)
         for msg in reversed(msgs):
-            if msg.role == 'assistant' and msg.model and msg.model in _ELEVATED_MODELS:
-                prov = msg.provider or 'openai'
+            # v2026-06-24: only restore a model that was an EXPLICIT user/policy
+            # pin (model_source in _PINNED_SOURCES). An automatic escalation left
+            # in history (model_source NULL or '*_auto') must NOT re-latch — that
+            # was the bug that held the elevated model across a whole session.
+            if (msg.role == 'assistant' and msg.model
+                    and getattr(msg, 'model_source', None) in _PINNED_SOURCES):
+                # v2026-07-01: the NEWEST pinned row decides — full stop. If the
+                # user's latest explicit choice was a small model, restore
+                # NOTHING (normal tiering picks the cheap tier anyway). Scanning
+                # past it would resurrect an OLDER elevated pin over the user's
+                # most recent downgrade. "Elevated" = not small-tier
+                # (env-driven is_small_model, replaces _ELEVATED_MODELS).
+                if is_small_model(msg.model):
+                    return None
+                prov = msg.provider or os.getenv("DEFAULT_PROVIDER", "openai")
                 return (prov, msg.model)
     except Exception:
         pass
@@ -175,13 +202,14 @@ def ensure_provider_available(provider: str, model: str) -> tuple[str, str]:
         return provider, model  # caller will get an error downstream
 
     print(f"[MODEL_SELECT] Provider '{provider}' not available, falling back to {available} WITH its default model")
-    if available == "google":
-        return available, os.getenv("CHAT_MODEL", "gemini-2.5-flash")
-    elif available == "anthropic":
-        return available, os.getenv("ANTHROPIC_DEFAULT_MODEL", "claude-sonnet-4-6")
-    elif available == "openai":
-        return available, os.getenv("OPENAI_DEFAULT_MODEL", "gpt-5.4-mini")
-    return available, model
+    # v2026-07-01: swap model from {PROVIDER}_DEFAULT_MODEL / DEFAULT_MODEL in
+    # .env (was hardcoded per provider — and the google branch wrongly read
+    # CHAT_MODEL, which no longer has to be a Google model at all).
+    try:
+        return available, get_provider_default_model(available)
+    except RuntimeError as e:
+        print(f"[MODEL_SELECT] WARNING: {e} — keeping requested model on {available}")
+        return available, model
 
 
 # =============================================================================
@@ -209,13 +237,17 @@ def select_chat_model(
     """
     extras: dict = {}
     _all_attachments = synthetic_attachments or []
+    # tier_momentum imported here (not at module top) to avoid a routing-package
+    # import cycle; it is stdlib-only so the call-time import is cheap.
+    from app.llm.routing import tier_momentum
 
     # ── Frontend model override (from model switcher dropdown) ──
     if req.provider and req.model:
         provider = req.provider
         model = req.model
         print(f"[MODEL_SELECT] Using frontend override: {provider}/{model}")
-        set_sticky_model(req.project_id, provider, model)
+        set_sticky_model(req.project_id, provider, model, source="frontend_override")
+        extras["model_source"] = "frontend_override"
         return *ensure_provider_available(provider, model), extras
 
     # ── Cognitive escalation / explicit model request (highest priority after frontend) ──
@@ -233,41 +265,46 @@ def select_chat_model(
         provider = _explicit["provider"]
         model = _explicit["model"]
         print(f"[MODEL_SELECT] EXPLICIT model request (pre-intent): {provider}/{model}")
-        set_sticky_model(req.project_id, provider, model)
+        set_sticky_model(req.project_id, provider, model, source="explicit_user")
+        extras["model_source"] = "explicit_user"
         return *ensure_provider_available(provider, model), extras
 
     _cog_match = detect_cognitive_escalation(req.message)
     if _cog_match:
-        _current = (
-            get_sticky_model(req.project_id)
-            or infer_sticky_from_history(req.project_id, db)
-        )
-        if _current and not is_small_model(_current[1]):
+        # If the user is already on an EXPLICIT capable pin, keep it.
+        _current = get_sticky_model(req.project_id)
+        if (_current and not is_small_model(_current[1])
+                and is_explicit_sticky(req.project_id)):
             provider, model = _current
             print(
                 f"[MODEL_SELECT] COGNITIVE cue ({_cog_match!r}); "
-                f"keeping capable sticky: {provider}/{model}"
+                f"keeping explicit capable pin: {provider}/{model}"
             )
-            set_sticky_model(req.project_id, provider, model)
+            extras["model_source"] = "explicit_user"
             return *ensure_provider_available(provider, model), extras
-        # No capable sticky — escalate to frontier (or per-route override).
-        fp, fm = _frontier()
-        provider = os.getenv("COGNITIVE_ESCALATION_PROVIDER") or fp
-        model = os.getenv("COGNITIVE_ESCALATION_MODEL") or fm
+        # Otherwise escalate to frontier for THIS turn and record momentum so the
+        # boost holds briefly then decays — NO permanent pin (lets it drop back).
+        provider, model = get_role_model("COGNITIVE_ESCALATION", "FRONTIER")
         print(
             f"[MODEL_SELECT] COGNITIVE escalation ({_cog_match!r}) -> "
             f"{provider}/{model}"
         )
-        set_sticky_model(req.project_id, provider, model)
+        tier_momentum.record_turn(
+            req.project_id, "reasoning", provider, model,
+            reason=f"cognitive cue {_cog_match!r}",
+        )
+        extras["model_source"] = "cognitive_auto"
         return *ensure_provider_available(provider, model), extras
 
     # ── File creation → frontier model ──
     if detect_file_creation_intent(req.message):
-        fp, fm = _frontier()
-        provider = os.getenv("FILE_CREATION_PROVIDER") or fp
-        model = os.getenv("FILE_CREATION_MODEL") or fm
+        provider, model = get_role_model("FILE_CREATION", "FRONTIER")
         print(f"[MODEL_SELECT] File creation detected -> {provider}/{model}")
-        set_sticky_model(req.project_id, provider, model)
+        tier_momentum.record_turn(
+            req.project_id, "reasoning", provider, model,
+            reason="file_creation_intent",
+        )
+        extras["model_source"] = "file_auto"
         return *ensure_provider_available(provider, model), extras
 
     # ── Image generation / refinement → hint to chat layer (v16.0) ──
@@ -285,12 +322,16 @@ def select_chat_model(
             and last_assistant_was_image(req.project_id, db)
         )
     ) and not is_capability_question(req.message):
-        fp, fm = _frontier()
-        provider = os.getenv("IMAGE_CHAT_PROVIDER") or fp
-        model = os.getenv("IMAGE_CHAT_MODEL") or fm
+        provider, model = get_role_model("IMAGE_CHAT", "FRONTIER")
         print(f"[MODEL_SELECT] Image gen detected -> chat LLM writes prompt: {provider}/{model}")
         extras["image_route"] = True
-        set_sticky_model(req.project_id, provider, model)
+        # 'explore' (not 'reasoning') so the model drops back to mini on the
+        # very next turn — an image is a one-off; a follow-up caption is light.
+        tier_momentum.record_turn(
+            req.project_id, "explore", provider, model,
+            reason="image_gen_intent",
+        )
+        extras["model_source"] = "image_auto"
         return *ensure_provider_available(provider, model), extras
 
     # ── Agentic tab context → frontier model ──
@@ -300,24 +341,31 @@ def select_chat_model(
     # turns; if the user just opened the tab, this turn IS agentic
     # regardless of what the chat was about before.
     if _is_agentic_context(req):
-        fp, fm = _frontier()
-        provider = os.getenv("AGENTIC_CONTEXT_PROVIDER") or fp
-        model = os.getenv("AGENTIC_CONTEXT_MODEL") or fm
+        provider, model = get_role_model("AGENTIC_CONTEXT", "FRONTIER")
         print(f"[MODEL_SELECT] Agentic tab context detected -> {provider}/{model}")
-        set_sticky_model(req.project_id, provider, model)
+        set_sticky_model(req.project_id, provider, model, source="agentic_tab")
+        extras["model_source"] = "agentic_tab"
         return *ensure_provider_available(provider, model), extras
 
     # ── Session model stickiness (with explicit override check) ──
+    # v2026-06-24: only an EXPLICIT pin (dropdown / "use opus" / agentic tab)
+    # short-circuits here. An automatic escalation no longer latches, so the
+    # turn falls through to complexity + tier_momentum and can de-escalate.
     sticky = get_sticky_model(req.project_id)
-    if sticky:
+    if sticky and is_explicit_sticky(req.project_id):
         provider, model = _apply_sticky_with_override(req, sticky)
+        extras["model_source"] = "explicit_user"
         return *ensure_provider_available(provider, model), extras
 
     # ── History-based stickiness ──
+    # v2026-06-24: infer_sticky_from_history now returns ONLY a model that was an
+    # explicit user/policy pin (gated on model_source), so this restores a
+    # genuine choice after a restart without re-latching an auto escalation.
     history_sticky = infer_sticky_from_history(req.project_id, db)
     if history_sticky:
         provider, model = _apply_sticky_with_override(req, history_sticky, from_history=True)
-        set_sticky_model(req.project_id, provider, model)
+        set_sticky_model(req.project_id, provider, model, source="explicit_user")
+        extras["model_source"] = "explicit_user"
         return *ensure_provider_available(provider, model), extras
 
     # ── Complexity-based tier selection ──
@@ -340,7 +388,7 @@ def _apply_sticky_with_override(
     if _explicit:
         provider = _explicit["provider"]
         model = _explicit["model"]
-        set_sticky_model(req.project_id, provider, model)
+        set_sticky_model(req.project_id, provider, model, source="explicit_user")
         label = "history sticky" if from_history else "sticky"
         print(f"[MODEL_SELECT] EXPLICIT override of {label}: {provider}/{model}")
         return provider, model
@@ -370,8 +418,7 @@ def _select_by_complexity(
         f"confidence={complexity.confidence}, signals={complexity.signals}"
     )
 
-    _chat_provider = os.getenv("CHAT_PROVIDER", "openai")
-    _chat_model = os.getenv("CHAT_MODEL", "gpt-5.4-mini")
+    _chat_provider, _chat_model = get_role_model("CHAT")
     _skip_confirm = getattr(req, 'ui_context', None) is not None
 
     _signals = complexity.signals
@@ -379,16 +426,34 @@ def _select_by_complexity(
     _explore_hits = _signals.get("explore_hits", 0)
     _reasoning_hits = _signals.get("reasoning_hits", 0)
 
+    # ── Conversational gate (2026-07-01) ──
+    # Talking ABOUT a topic (repo, memory, architecture) is not a request to
+    # DO work on it: "can we talk about mapping out the repo" must stay on
+    # the chat model no matter how many architecture keywords it contains.
+    # Genuine imperatives ("map the repo", "refactor X") pass the gate.
+    _conversational = is_conversational_turn(req.message)
+    if _conversational and (_arch_hits or _reasoning_hits):
+        print(
+            f"[MODEL_SELECT] CONVERSATIONAL GATE: suppressing escalation "
+            f"(arch={_arch_hits}, reasoning={_reasoning_hits}) — talk, not work"
+        )
+
     # ── TIER 3: Multimodal — media attached, needs vision ──
     if complexity.tier == "multimodal":
-        provider = "google"
         if is_image_upload:
-            model = os.getenv("IMAGE_VISION_MODEL", "gemini-2.5-pro")
+            provider, model = get_role_model("IMAGE_VISION")
             print(f"[MODEL_SELECT] TIER 3 (image vision): {len(all_attachments)} attachments -> {provider}/{model}")
         else:
-            model = os.getenv("MULTIMODAL_MODEL", "gemini-3.1-pro-preview-customtools")
+            provider, model = get_role_model("MULTIMODAL")
             print(f"[MODEL_SELECT] TIER 3 (video/multimodal): {len(all_attachments)} attachments -> {provider}/{model}")
-        set_sticky_model(req.project_id, provider, model)
+        # v2026-06-24: route vision THIS turn but do not pin — recording as
+        # 'explore' keeps it out of the held-model slot so a follow-up text turn
+        # isn't stuck on the vision model.
+        from app.llm.routing import tier_momentum
+        tier_momentum.record_turn(
+            req.project_id, "explore", provider, model, reason="multimodal vision",
+        )
+        extras["model_source"] = "multimodal_auto"
         return *ensure_provider_available(provider, model), extras
 
     # Momentum (Job 6, 2026-06-12): complexity-driven escalations no longer
@@ -399,9 +464,10 @@ def _select_by_complexity(
     from app.llm.routing import tier_momentum
 
     # ── TIER 4: Architecture — large-scale design ──
-    if _arch_hits >= 2 or (_arch_hits >= 1 and _reasoning_hits >= 2):
-        provider = os.getenv("ARCHITECT_PROVIDER", "anthropic")
-        model = os.getenv("ARCHITECT_MODEL", "claude-opus-4-6")
+    # Gate first (2026-07-01): keyword presence alone is never sufficient —
+    # a conversational turn falls through to the cheap tiers below.
+    if (not _conversational) and (_arch_hits >= 2 or (_arch_hits >= 1 and _reasoning_hits >= 2)):
+        provider, model = get_role_model("ARCHITECT")
         print(f"[MODEL_SELECT] TIER 4 (architecture): arch={_arch_hits}, reasoning={_reasoning_hits} -> {provider}/{model}")
         tier_momentum.record_turn(
             req.project_id, "architect", provider, model,
@@ -419,10 +485,8 @@ def _select_by_complexity(
         return *ensure_provider_available(provider, model), extras
 
     # ── TIER 2: Reasoning + exploration ──
-    if complexity.tier == "deep" and _reasoning_hits >= 1:
-        fp, fm = _frontier()
-        provider = os.getenv("REASONING_PROVIDER") or fp
-        model = os.getenv("REASONING_MODEL") or fm
+    if (not _conversational) and complexity.tier == "deep" and _reasoning_hits >= 1:
+        provider, model = get_role_model("REASONING", "FRONTIER")
         print(f"[MODEL_SELECT] TIER 2 (reasoning+tools): explore={_explore_hits}, reasoning={_reasoning_hits} -> {provider}/{model}")
         tier_momentum.record_turn(
             req.project_id, "reasoning", provider, model,
@@ -432,8 +496,7 @@ def _select_by_complexity(
 
     # ── TIER 1: Exploration only ──
     if complexity.tier == "deep" and _explore_hits >= 1:
-        provider = os.getenv("CHAT_PROVIDER", "openai")
-        model = os.getenv("CHAT_MODEL", "gpt-5.4-mini")
+        provider, model = _chat_provider, _chat_model
         print(f"[MODEL_SELECT] TIER 1 (exploration): explore={_explore_hits}, arch={_arch_hits} -> {provider}/{model}")
         tier_momentum.record_turn(
             req.project_id, "explore", provider, model,
@@ -442,10 +505,8 @@ def _select_by_complexity(
         return *ensure_provider_available(provider, model), extras
 
     # ── TIER 2: Pure reasoning (no exploration keywords) ──
-    if complexity.tier == "reasoning":
-        fp, fm = _frontier()
-        provider = os.getenv("REASONING_PROVIDER") or fp
-        model = os.getenv("REASONING_MODEL") or fm
+    if (not _conversational) and complexity.tier == "reasoning":
+        provider, model = get_role_model("REASONING", "FRONTIER")
         print(f"[MODEL_SELECT] TIER 2 (reasoning): reasoning={_reasoning_hits} -> {provider}/{model}")
         tier_momentum.record_turn(
             req.project_id, "reasoning", provider, model,
@@ -465,7 +526,8 @@ def _select_by_complexity(
             provider = _chat_provider
             model = _chat_model
         print(f"[MODEL_SELECT] EXPLICIT model request: {provider}/{model}")
-        set_sticky_model(req.project_id, provider, model)
+        set_sticky_model(req.project_id, provider, model, source="explicit_user")
+        extras["model_source"] = "explicit_user"
         return *ensure_provider_available(provider, model), extras
 
     # ── TIER 1: Default — lightweight chat (with momentum hold) ──

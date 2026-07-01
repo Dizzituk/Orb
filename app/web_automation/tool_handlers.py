@@ -1,8 +1,8 @@
 # FILE: app/web_automation/tool_handlers.py
 # Purpose: Tool handlers for ASTRA's LLM to invoke web-automation primitives.
-# Called-by: app.debug.executors.web_automation, app.web_automation.register
+# Called-by: app.debug.executors.web_automation, app.web_automation.coursera_reader, app.web_automation.register
 # Depends-on: app.db, app.llm.gemini_vision, app.web_automation, app.web_automation.bridge (+2 more)
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-07-01
 """
 Tool handlers for ASTRA's LLM to invoke web-automation primitives.
 
@@ -387,7 +387,9 @@ TOOL_DESCRIPTIONS = {
         "Call this first if you don't know which session you need.",
     "web_open_session":
         "Ensure a web session is live (Electron spawns the browser view if not). "
-        "Pass either the platform key (e.g. 'facebook_page') or the session UUID as `session`.",
+        "Pass either the platform key (e.g. 'facebook_page') or the session UUID as `session`. "
+        "If this (or any web tool) errors with 'desktop browser is offline', the ASTRA "
+        "desktop app is not running — tell the user to start it; that is NOT a page problem.",
     "web_navigate":
         "Navigate the named session's browser view to a URL.",
     "web_click":
@@ -405,7 +407,10 @@ TOOL_DESCRIPTIONS = {
         "Capture a PNG screenshot of the session's current page. Returns base64 + a saved file path.",
     "web_extract_text":
         "Return text content of all elements matching a CSS `selector` (up to `limit`). "
-        "Useful for reading course lesson titles, comment threads, insights values, etc.",
+        "Useful for reading comment threads, insights values, article bodies, etc. "
+        "TEXT ONLY: completion/progress state (Coursera module ticks, progress bars) "
+        "is rendered visually and does NOT come back — use web_coursera_progress or "
+        "web_vision_check for progress questions, never this.",
     "web_current_state":
         "Report the current URL and page title for a session. Cheap — use before deciding next action.",
     "web_scroll":
@@ -414,7 +419,18 @@ TOOL_DESCRIPTIONS = {
         "Return the page's accessibility tree: every interactive element (links, buttons, "
         "headings) with role, text, href, and pixel coordinates. Preferred over web_extract_text "
         "when you need to understand page structure or find elements without knowing their CSS "
-        "class names. Works reliably on React SPAs with obfuscated class names.",
+        "class names. Works reliably on React SPAs with obfuscated class names. CAVEAT: the "
+        "tree carries no visual done-state — course completion ticks/progress bars (Coursera) "
+        "look identical for done and not-done items here; read progress via "
+        "web_coursera_progress or web_vision_check instead.",
+    "web_vision_check":
+        "Screenshot the session's live page and ask a vision model a natural-language "
+        "question about what's visible. Returns the model's text answer. Use for "
+        "high-stakes or visual-only checks: pre-submit read-back, post-submit "
+        "confirmation, error-banner detection, and reading VISUAL state that text "
+        "extraction can't see — e.g. Coursera module completion ticks and progress "
+        "bars (for those, prefer the web_coursera_progress composite). Costs a real "
+        "vision-model call; don't use it where the DOM verify already answers.",
     "web_upload_file":
         "Attach a local file to a web upload control. Two modes: pass `selector` for plain HTML "
         "<input type=file>, or pass (x, y) of the upload BUTTON for modern SPAs (Meta, IG, TikTok, "

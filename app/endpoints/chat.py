@@ -155,9 +155,9 @@ def chat(
     # still arrives via the envelope (build_memory_context) on the call_llm
     # path below, so this avoids double-injecting it. The D0-D4 gate is applied
     # inside the front door. Failure-proof — never break the reply.
+    window_ids = [msg.id for msg in history]
     try:
         from app.llm.routing.memory_injection import build_memory_block
-        window_ids = [msg.id for msg in history]
         within_conv = build_memory_block(
             db, user_message=req.message, project_id=req.project_id,
             window_message_ids=window_ids, conversation_only=True,
@@ -166,6 +166,25 @@ def chat(
             full_context = (full_context + "\n\n" if full_context else "") + within_conv
     except Exception as e:
         print(f"[chat] within-conversation context skipped: {e}")
+
+    # Lane B (2026-07-01): whole-conversation meta questions ("summarise the
+    # whole day", "what were the very first messages") are served by a durable
+    # chronological [CONVERSATION_TIMELINE]. The front door's recall source
+    # already carries it (spine_service -> conversation_overview), so this is a
+    # belt-and-braces fallback for turns where the door injected nothing; the
+    # marker guard makes double-injection impossible.
+    try:
+        from app.memory.conversation_overview import (
+            OVERVIEW_MARKER, build_conversation_overview,
+        )
+        if OVERVIEW_MARKER not in full_context:
+            overview = build_conversation_overview(
+                db, req.project_id, req.message, window_message_ids=window_ids,
+            )
+            if overview:
+                full_context = (full_context + "\n\n" if full_context else "") + overview
+    except Exception as e:
+        print(f"[chat] conversation overview skipped: {e}")
 
     jt = classify_job_type(req.message, req.job_type)
     print(f"[chat] Job type: {jt.value}")

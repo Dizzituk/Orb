@@ -16,6 +16,7 @@ class LlmCallStatus(str, Enum):
     INVALID_REQUEST = "invalid_request"
     TOOL_ERROR = "tool_error"
     TOOL_LOOP_EXCEEDED = "tool_loop_exceeded"
+    LOCALITY_REFUSED = "locality_refused"  # v2.5: cloud provider under background_local
 
 @dataclass
 class LlmCallResult:

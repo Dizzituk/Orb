@@ -52,7 +52,8 @@ logger = logging.getLogger(__name__)
 MAX_ROUNDS = int(os.getenv("DEEP_RESEARCH_MAX_ROUNDS", "3"))
 MAX_QUERIES_PER_ROUND = 5
 MAX_TOTAL_PAGES = 10
-EVIDENCE_BUDGET_PER_ROUND = 12000  # chars
+# v2.2 (2026-07-01): env-tunable evidence budget (was a bare constant).
+EVIDENCE_BUDGET_PER_ROUND = int(os.getenv("DEEP_RESEARCH_EVIDENCE_PER_ROUND", "12000"))  # chars
 SYNTHESIS_MAX_TOKENS = 1500
 PLANNER_MAX_TOKENS = 500
 GAP_ANALYSIS_MAX_TOKENS = 400
@@ -100,34 +101,53 @@ class DeepResearchResult:
 # LLM helper
 # =========================================================================
 
-async def _llm_call(prompt: str, system: str, max_tokens: int = 500) -> str:
-    """Make a quick LLM call for planning/gap analysis."""
+async def _llm_call(prompt: str, system: str, max_tokens: int = 500,
+                    local_only: bool = False) -> str:
+    """Make a quick LLM call for planning/gap analysis.
+
+    local_only=True (v2.2, 2026-07-01): route through the local lane with
+    execution_context="background_local" — the idle-ledger research task
+    grinds on the local model and the registry refuses any cloud provider.
+    """
     try:
         from app.providers.registry import llm_call as registry_llm_call, is_provider_available
-        import inspect
 
-        # Pick cheapest available provider
-        for pid, model_env, default_model in [
-            ("openai", "OPENAI_DEFAULT_MODEL", "gpt-5.4-mini"),
-            ("anthropic", "ANTHROPIC_DEFAULT_MODEL", "claude-sonnet-4-6"),
-            ("google", "GEMINI_FRONTIER_MODEL_ID", "gemini-3.0-pro-preview"),
+        if local_only:
+            result = await registry_llm_call(
+                provider_id=None,
+                model_id="",  # resolves from LOCAL_LLM_DEFAULT_MODEL / NAT_MODEL
+                messages=[{"role": "user", "content": prompt}],
+                system_prompt=system,
+                temperature=0.3,
+                max_tokens=max_tokens,
+                execution_context="background_local",
+                stage="deep_research",
+            )
+            return result.content if hasattr(result, "content") else str(result or "")
+
+        # Interactive path: cheapest available provider, model ids from env
+        # only (v2.2: literal fallbacks removed — DEFAULT_MODEL is the last
+        # resort; a provider with no configured model is skipped).
+        for pid, model_env in [
+            ("openai", "OPENAI_DEFAULT_MODEL"),
+            ("anthropic", "ANTHROPIC_DEFAULT_MODEL"),
+            ("google", "GEMINI_FRONTIER_MODEL_ID"),
         ]:
             try:
                 if is_provider_available(pid):
-                    model = os.getenv(model_env) or default_model
-                    sig = inspect.signature(registry_llm_call)
-                    kwargs = {
-                        "provider_id": pid,
-                        "model_id": model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "system_prompt": system,
-                        "temperature": 0.3,
-                        "max_tokens": max_tokens,
-                        "enable_web_search": False,
-                    }
-                    kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
-                    result = await registry_llm_call(**kwargs)
-
+                    model = os.getenv(model_env) or os.getenv("DEFAULT_MODEL") or ""
+                    if not model:
+                        logger.warning("[deep_research] no model configured for %s (%s/DEFAULT_MODEL); skipping", pid, model_env)
+                        continue
+                    result = await registry_llm_call(
+                        provider_id=pid,
+                        model_id=model,
+                        messages=[{"role": "user", "content": prompt}],
+                        system_prompt=system,
+                        temperature=0.3,
+                        max_tokens=max_tokens,
+                        enable_web_search=False,
+                    )
                     if isinstance(result, str):
                         return result
                     if hasattr(result, "content"):
@@ -160,7 +180,7 @@ Example: ["query one", "query two", "query three"]"""
 
 
 async def _plan_queries(question: str, context: str = "", round_num: int = 1,
-                        previous_gaps: str = "") -> list[str]:
+                        previous_gaps: str = "", local_only: bool = False) -> list[str]:
     """Generate search queries for a research round."""
     prompt_parts = [f"Research question: {question}"]
     if context:
@@ -169,7 +189,7 @@ async def _plan_queries(question: str, context: str = "", round_num: int = 1,
         prompt_parts.append(f"Round {round_num}. Previous research found gaps:\n{previous_gaps}")
         prompt_parts.append("Generate queries to fill ONLY the gaps above.")
 
-    raw = await _llm_call("\n".join(prompt_parts), PLANNER_SYSTEM, PLANNER_MAX_TOKENS)
+    raw = await _llm_call("\n".join(prompt_parts), PLANNER_SYSTEM, PLANNER_MAX_TOKENS, local_only=local_only)
     if not raw:
         return [question]  # Fallback: just use the original question
 
@@ -289,14 +309,14 @@ Rules:
 - If no gaps, return exactly: NO_GAPS"""
 
 
-async def _analyse_gaps(question: str, evidence: str) -> str:
+async def _analyse_gaps(question: str, evidence: str, local_only: bool = False) -> str:
     """Identify what's still missing from the research."""
     prompt = (
         f"Question: {question}\n\n"
         f"Evidence gathered so far:\n{evidence[:6000]}\n\n"
         "What information is still missing to answer this question thoroughly?"
     )
-    return await _llm_call(prompt, GAP_SYSTEM, GAP_ANALYSIS_MAX_TOKENS)
+    return await _llm_call(prompt, GAP_SYSTEM, GAP_ANALYSIS_MAX_TOKENS, local_only=local_only)
 
 
 # =========================================================================
@@ -315,7 +335,8 @@ Rules:
 - Structure with clear paragraphs, not bullet points"""
 
 
-async def _synthesise(question: str, all_evidence: str, source_count: int) -> str:
+async def _synthesise(question: str, all_evidence: str, source_count: int,
+                      local_only: bool = False) -> str:
     """Generate final synthesis from all gathered evidence."""
     prompt = (
         f"Question: {question}\n\n"
@@ -323,7 +344,7 @@ async def _synthesise(question: str, all_evidence: str, source_count: int) -> st
         f"{all_evidence}\n\n"
         "Provide a comprehensive, well-cited answer."
     )
-    return await _llm_call(prompt, SYNTHESIS_SYSTEM, SYNTHESIS_MAX_TOKENS)
+    return await _llm_call(prompt, SYNTHESIS_SYSTEM, SYNTHESIS_MAX_TOKENS, local_only=local_only)
 
 
 # =========================================================================

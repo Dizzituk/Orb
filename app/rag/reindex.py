@@ -29,6 +29,7 @@ from app.rag.descriptors.descriptor_gen import (
     estimate_tokens,
 )
 from app.embeddings.service import generate_embedding, store_embedding
+from app.embeddings.gemini_provider import GEMINI_EMBEDDING_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +111,9 @@ def reindex_unembedded(
             )
             
             chunk.embedded = True
-            chunk.embedding_model = "gemini-embedding-2-preview"
+            # generate_embedding() above uses the provider default — label with
+            # the same constant so the stamp can't drift from the actual model.
+            chunk.embedding_model = GEMINI_EMBEDDING_MODEL
             chunk.embedded_at = __import__("datetime").datetime.utcnow()
             chunk.embedded_content_hash = chunk.content_hash
             

@@ -39,10 +39,12 @@ logger = logging.getLogger(__name__)
 # =========================================================================
 
 def _get_model() -> tuple[str, str]:
-    """Return (provider, model) for classification + extraction."""
-    provider = os.getenv("SUMMARY_PROVIDER", "google")
-    model = os.getenv("SUMMARY_MODEL", "gemini-2.5-flash-lite")
-    return provider, model
+    """Return (provider, model) for classification + extraction — .env only.
+
+    No hardcoded fallback (Lane B 2026-07-01): unresolved config returns ""s
+    and the guarded call sites fall back to their non-LLM behaviour."""
+    from app.memory.model_env import summary_model_from_env
+    return summary_model_from_env()
 
 
 # =========================================================================
@@ -393,6 +395,10 @@ async def promote_document_knowledge(
 
     # ── Stage 2: Extract ─────────────────────────────────────────
     provider, model = _get_model()
+    if not provider or not model:
+        result["skipped_reason"] = "Summariser model unconfigured — extraction skipped"
+        logger.warning("[doc_promoter] model unconfigured — skipping extraction")
+        return result
 
     # Build content for extraction
     content_for_extraction = ""

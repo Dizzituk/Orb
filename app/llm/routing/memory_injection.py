@@ -2,7 +2,7 @@
 # Purpose: Memory Context Injection for LLM Routing
 # Called-by: app.llm.routing.envelope
 # Depends-on: app.astra_memory, app.astra_memory.confidence_config, app.astra_memory.topic_tagger, app.lifestyle.nudges (+1 more)
-# Last-renovated: 2026-06-15 (Job 2: per-turn front-door block observability)
+# Last-renovated: 2026-06-25 (per-source caps + hard total budget on the injected block)
 """
 Memory Context Injection for LLM Routing
 
@@ -18,12 +18,39 @@ context to the system prompt.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
+
+
+# ── Memory-block size budget (2026-06-25) ─────────────────────────────────
+# The block built here is prepended to the system prompt every turn. Live
+# measurement (2026-06-24) found it at ~127KB, dominated entirely by
+# preferences_text: get_applicable_preferences returns EVERY matching row
+# (1,100+ live, ~96% doc_extract fact-dumps) and _format_preferences rendered
+# them all uncapped. These per-source caps bound the worst offenders; the hard
+# TOTAL budget lives in memory_injection_sources.assemble_block. All caps are
+# env-configurable; 0 disables a given per-source cap (the total still applies).
+
+def _env_int(name: str, default: int) -> int:
+    """Non-negative int from env, falling back to default on anything odd."""
+    try:
+        return max(0, int(os.getenv(name, str(default))))
+    except Exception:
+        return default
+
+
+def _prefs_max_chars() -> int:
+    return _env_int("ASTRA_MEMORY_PREFS_MAX_CHARS", 4000)
+
+
+def _facts_max_chars() -> int:
+    return _env_int("ASTRA_MEMORY_FACTS_MAX_CHARS", 9000)
+
 
 # Lazy memory-system import (2026-06-12). app.astra_memory's own import
 # cascade reaches back into this module via app.llm.routing, so a module-
@@ -77,6 +104,10 @@ class MemoryContext:
     # links (e.g. "investments fund the Portugal move") that vectors can't
     # represent. Opt-in (include_graph), so the envelope path is unchanged.
     graph_text: str = ""
+    # Cross-conversation recurring themes (2026-06-24): subjects the user returns
+    # to across many separate sessions — the cross-time recurrence channel beside
+    # the graph's cross-domain links.
+    recurring_text: str = ""
     # Nat Job 1 (coverage) + Job 2 (enrichment), 2026-06-19. Coverage = the
     # keyword-trail enumeration on recall questions; enrichment = real data
     # fetched from queries Nat suggested (computed async by the caller and
@@ -89,7 +120,8 @@ class MemoryContext:
         return not any((
             self.preferences_text, self.facts_text, self.repo_context,
             self.summary_text, self.recall_text, self.router_text,
-            self.graph_text, self.coverage_text, self.enrichment_text,
+            self.graph_text, self.recurring_text, self.coverage_text,
+            self.enrichment_text,
         ))
 
     def format_for_system_prompt(self) -> str:
@@ -106,6 +138,7 @@ class MemoryContext:
             preferences_text=self.preferences_text,
             facts_text=self.facts_text,
             graph_text=self.graph_text,
+            recurring_text=self.recurring_text,
             summary_text=self.summary_text,
             recall_text=self.recall_text,
             coverage_text=self.coverage_text,
@@ -132,35 +165,110 @@ def _extract_user_message_text(messages: List[Dict[str, Any]]) -> str:
     return ""
 
 
-def _format_preferences(preferences: List[Any]) -> str:
-    """Format preferences as readable text."""
+def _strength_str(pref: Any) -> str:
+    s = getattr(pref, "strength", "")
+    s = s.value if hasattr(s, "value") else str(s)
+    return (s or "").lower()
+
+
+def _status_str(pref: Any) -> str:
+    s = getattr(pref, "status", "")
+    s = s.value if hasattr(s, "value") else str(s)
+    return (s or "").lower()
+
+
+# Auto-extracted bulk facts the document/conversation extractors dump into the
+# preference store. They dominate the row count and are far less load-bearing
+# than curated behavioural rules, so they are the first to be dropped at the cap.
+_EXTRACTED_PREFIXES = ("doc_extract:", "conv_extract:", "doc:", "conv:")
+
+
+def _inject_extracted_prefs() -> bool:
+    """Whether auto-extracted document/conversation facts are injected as
+    preferences. Default OFF (2026-06-25): these are data dumps (live: 2,994
+    doc_extract + 246 conv_extract rows, including bank sort code, account
+    number and insurance policy numbers filed under 'biographical') that
+    flooded the <user_preferences> block and, on a 'who am I' question, got
+    recited back as identity. Curated behavioural rules + nat_importance facts
+    + the clean self_model biographical store already cover identity; document
+    facts still surface through the SEMANTIC facts channel when a query is
+    actually about them. Set ASTRA_MEMORY_INJECT_EXTRACTED=1 to restore."""
+    return os.getenv("ASTRA_MEMORY_INJECT_EXTRACTED", "0").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _is_injectable_pref(pref: Any) -> bool:
+    """Keep curated rules + nat_importance; drop auto-extracted data dumps from
+    the INJECTION only (rows stay in the store for other code paths)."""
+    if _inject_extracted_prefs():
+        return True
+    key = getattr(pref, "preference_key", "") or ""
+    return not key.startswith(_EXTRACTED_PREFIXES)
+
+
+def _pref_priority(pref: Any) -> tuple:
+    """Sort key (smaller = kept first) so the genuine behavioural rules survive
+    the char cap: active before stale, hard rules before soft, curated before
+    auto-extracted. A stable sort preserves the incoming confidence-desc order
+    within each tier."""
+    key = getattr(pref, "preference_key", "") or ""
+    extracted = key.startswith(_EXTRACTED_PREFIXES)
+    return (
+        0 if _status_str(pref) == "active" else 1,
+        0 if _strength_str(pref) == "hard_rule" else 1,
+        0 if not extracted else 1,
+    )
+
+
+def _render_preference(pref: Any) -> str:
+    key = pref.preference_key
+    value = pref.preference_value
+    if isinstance(value, bool):
+        value_str = "enabled" if value else "disabled"
+    elif isinstance(value, dict):
+        value_str = ", ".join(f"{k}={v}" for k, v in value.items())
+    else:
+        value_str = str(value)
+    if _strength_str(pref) == "hard_rule":
+        return f"• {key}: {value_str} [REQUIRED]"
+    return f"• {key}: {value_str}"
+
+
+def _format_preferences(preferences: List[Any], max_chars: int = 0) -> str:
+    """Format preferences as readable text, highest-priority first and bounded
+    to `max_chars` (0 = unbounded).
+
+    The preference store accumulates auto-extracted facts without bound (live:
+    1,100+ qualifying rows ≈ 109KB), so uncapped this one source blew the whole
+    memory block past 100KB every turn. Priority ordering keeps the load-bearing
+    behavioural rules and sheds the extracted-fact tail when the cap bites."""
     if not preferences:
         return ""
-    
-    lines = []
-    for pref in preferences:
-        key = pref.preference_key
-        value = pref.preference_value
-        strength = pref.strength.value if hasattr(pref.strength, 'value') else str(pref.strength)
-        
-        # Format based on value type
-        if isinstance(value, bool):
-            value_str = "enabled" if value else "disabled"
-        elif isinstance(value, dict):
-            value_str = ", ".join(f"{k}={v}" for k, v in value.items())
-        else:
-            value_str = str(value)
-        
-        # Add strength indicator for hard rules
-        if strength == "hard_rule":
-            lines.append(f"• {key}: {value_str} [REQUIRED]")
-        else:
-            lines.append(f"• {key}: {value_str}")
-    
+
+    ordered = sorted(preferences, key=_pref_priority)
+    lines: List[str] = []
+    used = 0
+    dropped = 0
+    for i, pref in enumerate(ordered):
+        try:
+            line = _render_preference(pref)
+        except Exception:
+            continue
+        # Always keep at least one line; then respect the cap.
+        if max_chars and lines and used + len(line) + 1 > max_chars:
+            dropped = len(ordered) - i
+            break
+        lines.append(line)
+        used += len(line) + 1
+    if dropped:
+        lines.append(
+            f"• [...{dropped} lower-priority preference(s) omitted to fit memory budget...]"
+        )
     return "\n".join(lines)
 
 
-def _format_retrieved_records(result: Any, max_per_record: int = 2000) -> str:
+def _format_retrieved_records(result: Any, max_per_record: int = 1100) -> str:
     """
     Format retrieved records as readable text.
     
@@ -172,7 +280,7 @@ def _format_retrieved_records(result: Any, max_per_record: int = 2000) -> str:
     
     lines = []
     total_chars = 0
-    max_total = 16000  # Cap total context size
+    max_total = _facts_max_chars()  # Cap total facts context size (env-configurable)
     
     for record in result.records:
         if total_chars >= max_total:
@@ -284,6 +392,10 @@ def build_memory_context(
         # Deduplicate by key
         seen_keys = set()
         for pref in prefs:
+            # 2026-06-25: keep auto-extracted document/conversation data dumps
+            # (bank/insurance/etc.) out of the injected preferences block.
+            if not _is_injectable_pref(pref):
+                continue
             if pref.preference_key not in seen_keys:
                 preferences.append(pref)
                 preferences_applied.append(pref.preference_key)
@@ -292,7 +404,7 @@ def build_memory_context(
     except Exception as e:
         logger.warning(f"[memory_injection] Failed to get preferences: {e}")
     
-    preferences_text = _format_preferences(preferences)
+    preferences_text = _format_preferences(preferences, max_chars=_prefs_max_chars())
     
     # Retrieve facts based on depth
     facts_text = ""
@@ -384,6 +496,19 @@ def build_memory_context(
     except Exception as _sentinel_exc:
         logger.debug(f"[memory_injection] sentinel alert injection skipped: {_sentinel_exc}")
 
+    # ── Reminders (2026-07-01): a fired-but-unacked reminder — weave it into
+    # context once (cooldown handled inside get_due_reminder_for_injection,
+    # same nudges/sentinel pattern as above) so it surfaces even mid-chat.
+    try:
+        from app.reminders.feed import get_due_reminder_for_injection
+        _reminder = get_due_reminder_for_injection()
+        if _reminder:
+            facts_text = (facts_text + "\n\n" if facts_text else "") + (
+                "[REMINDER DUE — mention it now, plainly]: " + _reminder
+            )
+    except Exception as _reminder_exc:
+        logger.debug(f"[memory_injection] reminder injection skipped: {_reminder_exc}")
+
     # ── Job 1b (2026-06-10): pending identity confirmations — surface queued
     # arbiter proposals conversationally (max once per 6h per process) so
     # Tier 1 facts get confirmed instead of expiring unseen after 30 days.
@@ -413,6 +538,7 @@ def build_memory_context(
     summary_text = ""
     recall_text = ""
     coverage_text = ""
+    recurring_text = ""
     router_text = ""
     if project_id is not None and (include_conversation or include_router):
         from app.llm.routing import memory_injection_sources as _src
@@ -424,6 +550,9 @@ def build_memory_context(
             recall_text = _src.collect_recall(db, project_id, user_message, win)
             # Nat Job 1: topic enumeration on recall questions (cheap DB read).
             coverage_text = _src.collect_coverage(db, project_id, user_message)
+            # Cross-conversation recurring themes (2026-06-24): the cross-time
+            # recurrence channel — "subjects the user keeps coming back to".
+            recurring_text = _src.collect_recurring(db, project_id, user_message)
         if include_router:
             router_text = _src.collect_router(user_message, project_id)
 
@@ -447,7 +576,7 @@ def build_memory_context(
     total_text = (
         preferences_text + facts_text + repo_context
         + summary_text + recall_text + router_text + graph_text
-        + coverage_text + enrichment_text
+        + recurring_text + coverage_text + enrichment_text
     )
     token_estimate = len(total_text) // 4
 
@@ -463,6 +592,7 @@ def build_memory_context(
         recall_text=recall_text,
         router_text=router_text,
         graph_text=graph_text,
+        recurring_text=recurring_text,
         coverage_text=coverage_text,
         enrichment_text=enrichment_text,
     )
@@ -546,9 +676,11 @@ def build_memory_block(
             summary_text = _src.collect_summary(db, project_id)
             recall_text = _src.collect_recall(db, project_id, user_message, win)
             coverage_text = _src.collect_coverage(db, project_id, user_message)
+            recurring_text = _src.collect_recurring(db, project_id, user_message)
             block = _src.assemble_block(
                 summary_text=summary_text, recall_text=recall_text,
                 coverage_text=coverage_text, enrichment_text=enrichment_text,
+                recurring_text=recurring_text,
             )
             # Job 2 (task 3): make the voice-path lost-middle signature
             # observable — recall=n summary=n block=0 on a long session = the bug.

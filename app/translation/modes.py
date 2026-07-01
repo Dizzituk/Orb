@@ -21,6 +21,21 @@ v1.6 (2026-01): Added READ file patterns to IMPLICIT_COMMAND_PATTERNS
   - Routes "show contents of <path>" to COMMAND_CAPABLE mode
   - Routes "view/display/cat <path>" to COMMAND_CAPABLE mode
   - Without these, READ queries were falling through to CHAT mode
+
+v2.4 (2026-07-01): Removed two unconditional COMMAND-mode hoists:
+  - The "Spec Gate flow" block ("how does that look all together",
+    "send to spec gate", "run critical pipeline", "run overwatcher"):
+    flow commands now need a wake phrase, UI context, or confirmed_intent
+    to reach COMMAND mode — without one they stay CHAT (safe default).
+    The desktop pipeline tab is unaffected (it sends confirmed_intent,
+    which bypasses translation entirely).
+  - The broad where/how/what-question pattern keyed on component names
+    (spec gate/overwatcher/weaver/critical pipeline/...): it hoisted ANY
+    question mentioning a component ("How does Overwatcher work?",
+    "What if I send to overwatcher?"). Talk-about questions belong in
+    chat, where RAG-as-context grounds them; command-shaped codebase
+    lookups still hoist via the guarded natural-codebase patterns and
+    the precise where-is/show-me/find/who-calls patterns above.
 """
 from __future__ import annotations
 import re
@@ -125,11 +140,7 @@ IMPLICIT_COMMAND_PATTERNS = [
     # --- "Who calls X" patterns ---
     # Match: "Who calls streamChat?"
     r"^[Ww]ho\s+calls\s+.+",
-    
-    # --- Codebase-specific questions with known terms ---
-    # Match questions mentioning specific ASTRA components
-    r"^(?:[Ww]here|[Hh]ow|[Ww]hat)\s+.+(?:[Ss]pec\s*[Gg]ate|[Oo]verwatcher|[Ww]eaver|[Cc]ritical\s*[Pp]ipeline|[Ss]tream\s*[Rr]outer|[Tt]ranslation\s*[Ll]ayer|[Rr][Aa][Gg]|[Ee]mbedding)\s*.+[?.!]?$",
-    
+
     # --- Original specific patterns (kept for exact matches) ---
     r"^[Ww]hat\s+(?:are|is)\s+(?:the\s+)?(?:main\s+)?entry\s*points?[?.!]?$",
     r"^[Ww]here\s+(?:are|is)\s+(?:the\s+)?(?:main\s+)?entry\s*points?[?.!]?$",
@@ -146,12 +157,6 @@ IMPLICIT_COMMAND_PATTERNS = [
     r"^[Ss]how\s+(?:me\s+)?(?:the\s+)?(?:modules?|components?|services?|handlers?|routers?)[?.!]?$",
     r"^[Ll]ist\s+(?:all\s+)?(?:the\s+)?(?:modules?|components?|services?)[?.!]?$",
     r"^[Bb]ottlenecks?[?.!]?$",  # Single word
-    
-    # Spec Gate flow
-    r"^[Hh]ow does that look all together\??$",
-    r"^[Ss]end (?:that |this |it )?to [Ss]pec ?[Gg]ate$",
-    r"^[Rr]un (?:the )?[Cc]ritical [Pp]ipeline$",
-    r"^[Rr]un [Oo]verwatcher$",
     
     # Embedding commands (v1.3)
     r"^[Ee]mbedding[s]?\s+status$",

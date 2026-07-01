@@ -187,7 +187,7 @@ def build_graph_context(query_tags, records) -> str:
 
     top = sorted(links.values(), key=lambda wl: wl[0], reverse=True)[:max_links]
     lines = [wl[1] for wl in top]
-    logger.info(
+    logger.debug(
         "[graph_context] surfaced %d cross-domain link(s) from %d topic(s)",
         len(lines), len(domains),
     )

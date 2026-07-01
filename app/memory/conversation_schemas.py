@@ -86,6 +86,12 @@ class SummaryContent(BaseModel):
     the same schema.
     """
     current_topic: str = ""
+    # Lane B (2026-07-01): coarse chronological arc of the WHOLE session —
+    # "[~time/phase] topic — gist" entries, oldest first. Tiered, not shed:
+    # entries only ever merge/compress (never drop), and the first entry always
+    # describes how the session opened — so the morning survives evening
+    # summarisation and "how did this chat start" has a durable answer.
+    conversation_arc: List[str] = []
     key_decisions: List[str] = []
     open_items: List[str] = []
     technical_context: str = ""

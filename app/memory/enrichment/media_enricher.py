@@ -109,8 +109,10 @@ async def enrich_document_abstract(filename: str, raw_text: str) -> Optional[str
         return None
     try:
         from app.llm._streaming_utils_3 import call_llm_text
-        provider = "google"
-        model = os.getenv("SUMMARY_MODEL", "gemini-2.5-flash-lite")
+        from app.memory.model_env import summary_model_from_env
+        provider, model = summary_model_from_env()
+        if not provider or not model:
+            return None
         raw = await call_llm_text(
             provider=provider,
             model=model,

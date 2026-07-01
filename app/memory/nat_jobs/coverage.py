@@ -19,6 +19,11 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
+# Shared recall-intent predicate — the SAME one the web-search + grounding gates
+# use to SUPPRESS a search — re-exported so existing callers keep using
+# coverage.is_recall_question.
+from app.memory.recall_intent import is_recall_question
+
 logger = logging.getLogger(__name__)
 
 _MAX_TOPICS = int(os.getenv("NAT_COVERAGE_MAX_TOPICS", "60"))
@@ -26,40 +31,12 @@ _MAX_ROWS = 400
 _STANDOUT_MIN = int(os.getenv("NAT_COVERAGE_STANDOUT_MIN", "2"))  # appears in >=N msgs
 _MAX_STANDOUTS = int(os.getenv("NAT_COVERAGE_MAX_STANDOUTS", "8"))
 
-# Recall-intent: only inject coverage when the user is actually asking to
-# recall/recap the conversation (avoids token bloat on ordinary turns). Broad
-# enough to catch natural phrasings — "give me a rundown of everything we've
-# spoken about today", "catch me up", "recap" — not just "summarise our chat".
-_RECALL_PATTERNS = [
-    r"\bwhat (?:did|have|were|was) we (?:talk|chat|discuss|cover|go over|gone over|"
-    r"say|said|speak|spoke|spoken|been (?:talking|chatting|discussing|on about))",
-    r"\bwhat (?:was|were) (?:we|this|the) (?:talking|chat|conversation)",
-    r"\bsummar(?:y|ise|ize)\b.{0,40}\b(?:chat|conversation|convo|discussion|talk|"
-    r"call|session|today|day)\b",
-    r"\b(?:recap|run through|go over|rundown)\b.{0,40}\b(?:chat|conversation|convo|"
-    r"discussion|talk|session|everything|today|day|we)\b",
-    r"\b(?:give|gimme|get|getting) (?:me )?(?:a |the )?(?:rundown|recap|run[\s-]?down|"
-    r"summary|catch[\s-]?up)\b",
-    r"\bremind me what we\b",
-    r"\beverything (?:that )?we(?:'ve| have)? (?:talked|discussed|covered|gone over|"
-    r"spoke|spoken|said|been (?:over|on about))",
-    r"\bwhat have we (?:been )?(?:talking|discussing|covering|chatting|speaking)\b",
-    r"\bour (?:whole|entire) (?:chat|conversation|convo|discussion|day)\b",
-    r"\bwhat all (?:did|have) we\b",
-    r"\bcatch me up\b",
-]
-_RECALL_RE = re.compile("|".join(_RECALL_PATTERNS), re.IGNORECASE)
-
 # "Today" intent — scope the trail to the user's local calendar day rather than
 # the latest session, because an all-day conversation can span several sessions.
 _TODAY_RE = re.compile(
     r"\b(?:today|so far today|the day so far|this (?:morning|afternoon|evening))\b",
     re.IGNORECASE,
 )
-
-
-def is_recall_question(text: str) -> bool:
-    return bool(text) and bool(_RECALL_RE.search(text))
 
 
 def _mentions_today(text: str) -> bool:
@@ -151,11 +128,16 @@ def _select_rows(
     """
     base = db.query(MK).filter(MK.project_id == project_id)
 
-    # "Today" — read the trail's own created_at; survives NULL session_id.
+    # "Today" — every topic across ALL of today's conversations. Each phone chat is
+    # its OWN project, so scoping to the current project would miss the rest of
+    # today's chats (the exact "it pulled old/empty stuff in a new chat" bug). So
+    # "today" deliberately spans projects (single user), keyed on the trail's own
+    # created_at (survives NULL session_id).
     if want_today:
         try:
             rows = (
-                base.filter(MK.created_at >= _today_start_utc())
+                db.query(MK)
+                .filter(MK.created_at >= _today_start_utc())
                 .order_by(MK.message_id.asc())
                 .limit(_MAX_ROWS)
                 .all()

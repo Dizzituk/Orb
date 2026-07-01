@@ -2,7 +2,7 @@
 # Purpose: Web Automation ORM models.
 # Called-by: app.web_automation.action_queue, app.web_automation.bridge, app.web_automation.router, app.web_automation.session_registry (+2 more)
 # Depends-on: app.db
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-07-01
 """
 Web Automation ORM models.
 
@@ -54,7 +54,12 @@ class WebSession(Base):
     id = Column(String, primary_key=True, default=_uuid)
     platform = Column(String, nullable=False, index=True, unique=True)
     label = Column(String, nullable=False)
-    partition = Column(String, nullable=False, unique=True)   # Electron session partition
+    # Electron session partition. NOT unique: the media sessions (displays /
+    # soundcloud / mixcloud / youtube_watch / streaming) all share
+    # "persist:media" by design — one login per site survives restarts.
+    # Legacy DBs carry an inline UNIQUE(partition); app.web_automation
+    # .migrations rebuilds them at startup.
+    partition = Column(String, nullable=False)
     landing_url = Column(String, nullable=False)
     purpose = Column(Text, nullable=True)                     # What ASTRA should use it for
     status = Column(SAEnum(SessionStatus), nullable=False, default=SessionStatus.idle)

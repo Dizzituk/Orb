@@ -100,6 +100,14 @@ async def run_astra_chat(
     Returns:
         {"reply": str, "provider": str, "model": str, "tools_used": list}
     """
+    # Surface tag (2026-07-01): registry tools executed inside this turn's
+    # tool loop read the surface via app.llm.turn_surface (the chat tool loop
+    # itself passes no context down). Tools that produce a phone-deliverable
+    # file register it as a pending artifact; markers are appended after the
+    # stream finishes — the model never has to echo a marker itself.
+    from app.llm.turn_surface import begin_turn, drain_turn_artifacts, format_artifact_markers
+    begin_turn("bridge")
+
     prep = await _prepare_astra_chat(
         message, project_id, history, db, source,
         domain_context, translation_result,
@@ -222,12 +230,24 @@ async def run_astra_chat(
     if not full_response:
         full_response = "I wasn't able to generate a response. Please try again."
 
+    # Append markers for artifacts registered by tools during this turn
+    # (e.g. a rendered report document). Same send-side handling as image
+    # markers: stored in the DB, stripped for display/TTS, chips built from
+    # the refs. See app/llm/turn_surface.py.
+    try:
+        pending = drain_turn_artifacts()
+        if pending:
+            full_response = f"{full_response} {format_artifact_markers(pending)}"
+    except Exception as e:
+        logger.warning("[%s] artifact marker append failed: %s", source, e)
+
     print(f"[{source}] Response: {len(full_response)} chars, {len(tools_used)} tool calls")
 
     return {
         "reply": full_response,
         "provider": provider,
         "model": model,
+        "model_source": prep.get("model_source"),  # v2026-06-24: routing provenance
         "tools_used": tools_used,
     }
 
@@ -480,6 +500,7 @@ async def _prepare_astra_chat(
     return {
         "provider": provider,
         "model": model,
+        "model_source": extras.get("model_source"),  # v2026-06-24: routing provenance
         "system_prompt": system_prompt,
         "messages": messages,
         "chat_tools": chat_tools,

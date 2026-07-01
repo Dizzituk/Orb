@@ -1,29 +1,46 @@
 # FILE: app/memory/nat_jobs/enrichment.py
-# Purpose: Job 2 — pre-reply semantic enrichment. Nat SUGGESTS retrieval queries;
+# Purpose: Job 2 - pre-reply semantic enrichment. Nat SUGGESTS retrieval queries;
 #          the existing DETERMINISTIC retriever fetches the data (Nat never
 #          touches the data, so it can't fabricate memories). Result becomes an
 #          [ENRICHMENT] block. Strictly time-boxed + circuit-breakered so it can
-#          NEVER add felt latency or block a reply.
-# Called-by: app.llm.routing.prompt_builders.build_full_context, app.endpoints.chat
+#          NEVER add felt latency or block a reply. The turn's query embeddings
+#          are batched into ONE call + cached, and the block is built best-effort:
+#          whatever relevant hits are gathered by the deadline are injected
+#          (never all-or-nothing).
+# Called-by: app.llm.routing.prompt_builders.build_full_context
 # Depends-on: app.llm.workers.nat_worker.run_nat_job (suggest),
-#             app.astra_memory.retrieval.retrieve_for_query (fetch)
-# Last-renovated: 2026-06-19
+#             app.astra_memory.retrieval.retrieve_for_query (fetch),
+#             app.astra_memory.semantic_candidates.prewarm_query_embeddings (batch+cache)
+# Last-renovated: 2026-06-22
 """
 Enrichment (pre-reply, latency-critical).
 
 The deterministic depth classifier is keyword/regex and stays shallow unless it
 sees a trigger word, so "I'm a bit worried about my calories today" never
 surfaces "you hit your target on this day last month." Nat adds the semantic
-read the matcher misses — but ONLY by proposing queries; the deterministic
+read the matcher misses - but ONLY by proposing queries; the deterministic
 store does the actual fetch.
 
-Hard rules (spec §4):
+Hard rules (spec section 4):
   - non-blocking-with-timeout: NAT_ENRICHMENT_TIMEOUT_MS (default 400ms). If Nat
     isn't back by then we proceed with the deterministic block alone.
-  - observable: one log line per turn — `[NAT] enrichment: <ms>ms, queries=<n>,
-    timed_out=<bool>` — so added latency is visible, never hidden.
+  - observable: one log line per turn - `[NAT] enrichment: <ms>ms, queries=<n>,
+    cached=<n>, timed_out=<bool>` - so added latency is visible, never hidden.
   - circuit breaker: after a timeout/error we skip Nat for a short cooldown, so a
     slow/struggling Nat doesn't tax every turn.
+
+Latency design (2026-06-22): the fetch's real cost was N serial remote embedding
+round-trips (one per suggested query). Three changes keep it inside the budget
+WITHOUT extending the budget:
+  - BATCH: prewarm_query_embeddings() embeds the whole turn's queries in ONE call
+    and caches them, so the per-query retrievals below hit the cache.
+  - CAP: NAT_ENRICHMENT_MAX_QUERIES (default 3) bounds how many queries run -
+    fewer, sharper lookups rather than five mushy ones.
+  - BEST-EFFORT PARTIAL: lines are accumulated into a shared sink as each query
+    resolves (highest-relevance query first), so a deadline-bounded caller
+    injects whatever GOOD hits it has by the deadline instead of discarding the
+    lot. The existing relevance/confidence filtering still applies, so partial
+    means "fewer good lines," never "filler."
 """
 
 from __future__ import annotations
@@ -60,12 +77,28 @@ def _cooldown_s() -> float:
         return 30.0
 
 
-async def build_enrichment_block(db, project_id, user_message: str) -> str:
-    """Return an [ENRICHMENT] block, or "" (always, on any timeout/error)."""
+def _max_queries() -> int:
+    """How many suggested queries to actually look up. With embeddings batched
+    into one call, more queries no longer cost more round-trips, so this is a
+    precision/cost knob, not a latency one - keep it small and sharp."""
+    try:
+        return max(1, int(os.getenv("NAT_ENRICHMENT_MAX_QUERIES", "3")))
+    except Exception:
+        return 3
+
+
+async def build_enrichment_block(db, project_id, user_message: str, sink=None) -> str:
+    """Return an [ENRICHMENT] block, or "" (always, on any timeout/error).
+
+    If `sink` is provided - a {"lines": [...], "lock": threading.Lock()}
+    accumulator - each relevant line is appended to it the moment it is found, so
+    a caller enforcing a hard wall-clock deadline can read whatever was gathered
+    so far (best-effort partial) instead of all-or-nothing.
+    """
     if not enrichment_enabled() or not project_id or not (user_message or "").strip():
         return ""
 
-    # Circuit breaker — skip Nat entirely during the cooldown after a failure.
+    # Circuit breaker - skip Nat entirely during the cooldown after a failure.
     try:
         if _last_fail[0] and (time.monotonic() - _last_fail[0]) < _cooldown_s():
             return ""
@@ -85,15 +118,26 @@ async def build_enrichment_block(db, project_id, user_message: str) -> str:
         logger.debug("[enrichment] suggest failed: %s", exc)
 
     block = ""
+    cached = 0
     if queries:
+        # Batch-embed the whole turn's queries in ONE remote call (+cache) so the
+        # per-query fetches below reuse the vectors instead of N serial round-trips.
         try:
-            block = _fetch_and_format(db, queries)
+            from app.astra_memory.semantic_candidates import prewarm_query_embeddings
+            stats = prewarm_query_embeddings(queries)
+            cached = int(stats.get("cached", 0)) if isinstance(stats, dict) else 0
+        except Exception as exc:  # noqa: BLE001 - pure optimisation, never fatal
+            logger.debug("[enrichment] prewarm skipped: %s", exc)
+        try:
+            lines = _collect_lines(db, queries, sink=sink)
+            block = _format_block(lines)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[enrichment] fetch failed: %s", exc)
 
     ms = int((time.monotonic() - t0) * 1000)
-    # Required observability line — the user watches this to confirm zero added latency.
-    logger.info("[NAT] enrichment: %dms, queries=%d, timed_out=%s", ms, len(queries), timed_out)
+    # Required observability line - the user watches this to confirm zero added latency.
+    logger.info("[NAT] enrichment: %dms, queries=%d, cached=%d, timed_out=%s",
+                ms, len(queries), cached, timed_out)
     return block
 
 
@@ -101,23 +145,24 @@ def build_enrichment_block_sync(project_id, message: str) -> str:
     """Sync entry for SYNC context builders (build_full_context runs in a sync
     request path). Runs the async enrichment on a worker thread with its own
     event loop + a FRESH db session, joined with the budget + a small retrieval
-    margin. Returns "" on timeout/error — never raises, never over-waits.
+    margin. Returns "" on no-result - never raises, never over-waits.
 
-    The request thread waits at most the budget; matches the existing behaviour
-    where build_full_context already blocks on sync retrieval/embeddings.
+    Best-effort partial: the worker streams relevant lines into a shared sink as
+    it finds them, so at the deadline we return whatever GOOD lines were gathered
+    so far rather than throwing the whole turn's work away. The request thread
+    still waits at most the budget; matches the existing behaviour where
+    build_full_context already blocks on sync retrieval/embeddings.
     """
     if not enrichment_enabled() or not project_id or not (message or "").strip():
         return ""
-    holder = {"block": ""}
+    sink = {"lines": [], "lock": threading.Lock()}
 
     def _worker():
         try:
             from app.db import get_db_session
             db2 = get_db_session()
             try:
-                holder["block"] = asyncio.run(
-                    build_enrichment_block(db2, project_id, message)
-                ) or ""
+                asyncio.run(build_enrichment_block(db2, project_id, message, sink=sink))
             finally:
                 try:
                     db2.close()
@@ -130,17 +175,25 @@ def build_enrichment_block_sync(project_id, message: str) -> str:
     t.start()
     join_budget = _timeout_s() + float(os.getenv("NAT_ENRICHMENT_FETCH_MARGIN_S", "0.7"))
     t.join(timeout=join_budget)
-    return holder["block"]
+    # Read whatever relevant lines were gathered by the deadline (best-effort).
+    try:
+        with sink["lock"]:
+            lines = list(sink["lines"])
+    except Exception:
+        lines = []
+    return _format_block(lines)
 
 
 async def _suggest_queries(user_message: str) -> List[str]:
-    """Ask Nat ONLY for query strings (never data). Returns <=5 cleaned queries."""
+    """Ask Nat ONLY for query strings (never data). Returns <= _max_queries()
+    cleaned queries."""
     from app.llm.workers.nat_worker import run_nat_job, coerce_json
     system = (
         "Given this message, identify what STORED user information would enrich "
         "the reply (past logs, dates, metrics, preferences, facts). Output a JSON "
         "list of short search queries to look up, or [] if nothing stored would "
-        "help. Reply ONLY with the JSON list of strings."
+        "help. Put the single most useful query FIRST. Reply ONLY with the JSON "
+        "list of strings."
     )
     reply = await run_nat_job(
         system, (user_message or "")[:1500],
@@ -151,6 +204,7 @@ async def _suggest_queries(user_message: str) -> List[str]:
     qs = coerce_json(reply) if isinstance(reply, str) else None
     out: List[str] = []
     seen = set()
+    cap = _max_queries()
     if isinstance(qs, list):
         for q in qs:
             if not isinstance(q, str):
@@ -160,21 +214,26 @@ async def _suggest_queries(user_message: str) -> List[str]:
                 continue
             seen.add(s.lower())
             out.append(s)
-            if len(out) >= 5:
+            if len(out) >= cap:
                 break
     return out
 
 
-def _fetch_and_format(db, queries: List[str]) -> str:
-    """Run Nat's queries through the DETERMINISTIC retriever and format results.
+def _collect_lines(db, queries: List[str], sink=None) -> List[str]:
+    """Run Nat's queries through the DETERMINISTIC retriever, in the order Nat
+    suggested them (most useful first), appending each formatted line to `sink`
+    as it is produced so a deadline-bounded caller can read partial progress.
+    Returns all lines gathered.
 
-    Synchronous, like the existing deterministic retrieval in the front door —
-    Nat never sees or generates the data, only suggested what to look up.
+    Synchronous, like the existing deterministic retrieval in the front door -
+    Nat never sees or generates the data, only suggested what to look up. Because
+    the work runs highest-relevance-query-first, a deadline cut-off drops the
+    speculative tail, not the best hits.
     """
     from app.astra_memory.retrieval import retrieve_for_query
     lines: List[str] = []
     seen = set()
-    for q in queries[:5]:
+    for q in queries[:_max_queries()]:
         try:
             res = retrieve_for_query(db, q)
         except Exception:
@@ -190,8 +249,21 @@ def _fetch_and_format(db, queries: List[str]) -> str:
                 continue
             seen.add(key)
             lines.append(line)
+            # Stream into the shared sink so a deadline read sees partial progress.
+            if sink is not None:
+                try:
+                    with sink["lock"]:
+                        sink["lines"].append(line)
+                except Exception:
+                    pass
         if len(lines) >= 8:
             break
+    return lines
+
+
+def _format_block(lines: List[str]) -> str:
+    """Wrap gathered lines in the [ENRICHMENT] block, or "" if there are none.
+    Identical shape whether the lines are complete or a best-effort partial."""
     if not lines:
         return ""
     return (

@@ -358,6 +358,73 @@ GET_EXERCISE_HISTORY_OUTPUT_V1 = {
     },
 }
 
+CREATE_REMINDER_INPUT_V1 = {
+    "type": "object",
+    "required": ["text", "when"],
+    "properties": {
+        "text": {"type": "string", "minLength": 1, "maxLength": 500},
+        "when": {"type": "string", "minLength": 1, "maxLength": 120},
+        "due_at_iso": {"type": ["string", "null"]},
+    },
+}
+
+CREATE_REMINDER_OUTPUT_V1 = {
+    "type": "object",
+    "required": ["ok"],
+    "properties": {
+        "ok": {"type": "boolean"},
+        "reminder_id": {"type": ["integer", "null"]},
+        "due_at": {"type": ["string", "null"]},
+        "text": {"type": "string"},
+        "error": {"type": "string"},
+    },
+}
+
+LIST_REMINDERS_INPUT_V1 = {
+    "type": "object",
+    "properties": {
+        "within_hours": {"type": "number", "minimum": 1, "maximum": 8760},
+    },
+}
+
+LIST_REMINDERS_OUTPUT_V1 = {
+    "type": "object",
+    "required": ["ok", "reminders"],
+    "properties": {
+        "ok": {"type": "boolean"},
+        "reminders": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "text": {"type": "string"},
+                    "due_at": {"type": "string"},
+                    "fired": {"type": "boolean"},
+                },
+            },
+        },
+        "error": {"type": "string"},
+    },
+}
+
+CANCEL_REMINDER_INPUT_V1 = {
+    "type": "object",
+    "required": ["reminder_id"],
+    "properties": {
+        "reminder_id": {"type": "integer"},
+    },
+}
+
+CANCEL_REMINDER_OUTPUT_V1 = {
+    "type": "object",
+    "required": ["ok"],
+    "properties": {
+        "ok": {"type": "boolean"},
+        "error": {"type": "string"},
+    },
+}
+
 # -------------------------
 # Convenience registry
 # -------------------------
@@ -405,5 +472,17 @@ TOOL_SCHEMAS = {
     "get_exercise_history": {
         "input": GET_EXERCISE_HISTORY_INPUT_V1,
         "output": GET_EXERCISE_HISTORY_OUTPUT_V1,
+    },
+    "create_reminder": {
+        "input": CREATE_REMINDER_INPUT_V1,
+        "output": CREATE_REMINDER_OUTPUT_V1,
+    },
+    "list_reminders": {
+        "input": LIST_REMINDERS_INPUT_V1,
+        "output": LIST_REMINDERS_OUTPUT_V1,
+    },
+    "cancel_reminder": {
+        "input": CANCEL_REMINDER_INPUT_V1,
+        "output": CANCEL_REMINDER_OUTPUT_V1,
     },
 }

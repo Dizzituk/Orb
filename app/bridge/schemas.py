@@ -110,6 +110,33 @@ class BridgeTTSRequest(BaseModel):
     speed: Optional[float] = None
 
 
+class BridgeDebugRequest(BaseModel):
+    # Body for POST /bridge/debug-and-speak (live-session plan §2.1). A
+    # separate model from BridgeChatRequest rather than an extension of it --
+    # debug_project_id/reasoning_dial are debug-brain-specific and duck-typing
+    # against _resolve_or_create_project (which only reads .message/.project_id)
+    # means no shared base class is needed.
+    message: str
+    project_id: Optional[int] = None
+    debug_project_id: Optional[str] = None
+    reasoning_dial: Optional[str] = None
+
+
+class BridgeDebugCancelRequest(BaseModel):
+    # Either identifies the run directly, or names the project so the caller
+    # doesn't need to have captured a run_id (e.g. a stale/lost metadata header).
+    # At least one should be set; run_id wins if both are given. int, not str:
+    # run_id doubles as the tts_cache/tts_audio cache key (see
+    # debug_run_registry.new_run_id), which is int-typed throughout that stack.
+    run_id: Optional[int] = None
+    project_id: Optional[int] = None
+
+
+class BridgeDebugCancelResponse(BaseModel):
+    cancelled: bool
+    run_id: Optional[int] = None
+
+
 # ---------------------------------------------------------------------------
 # Auth dependency
 # ---------------------------------------------------------------------------

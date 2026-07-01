@@ -507,6 +507,15 @@ def _register_defaults() -> None:
         # registry from coming up — log and carry on.
         logger.exception("[registry] lifestyle tools registration failed: %s", exc)
 
+    # Reminders (2026-07-01): create_reminder/list_reminders/cancel_reminder —
+    # one-shot reminders that fire on desktop + phone alike. Handlers in
+    # app/tools/reminder_tools.py; schemas in app/tools/schemas.py.
+    try:
+        from app.tools.reminder_tools_registration import register_reminder_tools
+        register_reminder_tools()
+    except Exception as exc:
+        logger.exception("[registry] reminder tools registration failed: %s", exc)
+
     # Strength / gym set-logging tools - added 2026-05-31.
     # log_exercise_set + get_exercise_history for per-exercise progressive
     # overload. Handlers in app/tools/strength_tools.py; schemas in
@@ -594,6 +603,38 @@ def _register_defaults() -> None:
         register_document_tools()
     except Exception as exc:
         logger.exception("[registry] document tools registration failed: %s", exc)
+
+    # Idle-agents tools (2026-07-01): background task log ("what have you
+    # been working on"). app/idle owns the governor + ledger.
+    try:
+        from app.idle.tools_registration import register_idle_tools
+        register_idle_tools()
+    except Exception as exc:
+        logger.exception("[registry] idle tools registration failed: %s", exc)
+
+    # Watcher tools (2026-07-01): auto-registered per watcher instance
+    # (Portugal land prices, hardware prices). app/watchers owns the fleet.
+    try:
+        from app.watchers.framework import register_watcher_tools
+        register_watcher_tools()
+    except Exception as exc:
+        logger.exception("[registry] watcher tools registration failed: %s", exc)
+
+    # Report tools (2026-07-01): render watcher ledgers to styled HTML on
+    # the desktop reports window / as a Bridge document artifact.
+    try:
+        from app.reports.tools_registration import register_report_tools
+        register_report_tools()
+    except Exception as exc:
+        logger.exception("[registry] report tools registration failed: %s", exc)
+
+    # Deep-research tools (2026-07-01): queue a background dig on the idle
+    # ledger + fetch the findings pack. app/llm/research_task owns the grind.
+    try:
+        from app.llm.research_task import register_research_tools
+        register_research_tools()
+    except Exception as exc:
+        logger.exception("[registry] research tools registration failed: %s", exc)
 
 
 _register_defaults()

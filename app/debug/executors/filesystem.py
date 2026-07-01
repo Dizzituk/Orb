@@ -26,12 +26,14 @@ from typing import Any, Dict
 
 from app.debug.executors._paths import (
     SANDBOX_CONTROLLER_URL,
+    is_android_repo_path,
     is_host_only,
     is_host_write_blocked,
     read_host_file,
     resolve_sandbox_path,
     sandbox_health_status,
 )
+from app.debug.run_context import is_phone_initiated
 from app.debug.executors.filesystem_guards import (
     check_syntax,
     describe_line_numbered_corruption,
@@ -331,6 +333,21 @@ async def execute_write_file(params: Dict[str, Any]) -> str:
 
     # Host-only paths: write directly to host filesystem
     if is_host_only(path):
+        if is_android_repo_path(path) and is_phone_initiated():
+            # Confirmation gate (live-session plan §2.4/4.1): a phone-initiated
+            # driving session must not silently edit the Android app on the host
+            # (writes here bypass the sandbox entirely -- see is_host_only above).
+            # There is no interactive confirmation UI while driving, so the safe
+            # default is a hard block; the change must be made/confirmed on desktop.
+            logger.warning(
+                "[executors.filesystem] BLOCKED phone-initiated Android write: %s", path,
+            )
+            return (
+                f"BLOCKED: {path} is part of the Android app. Writes to the Android "
+                "app are disabled for phone-initiated debug sessions and need to be "
+                "confirmed from the desktop Debug tab. Skip this change for now and "
+                "say so in your reply; the user can pick it up on desktop."
+            )
         try:
             p = Path(path)
             p.parent.mkdir(parents=True, exist_ok=True)

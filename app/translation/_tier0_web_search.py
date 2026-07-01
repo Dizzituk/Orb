@@ -550,6 +550,15 @@ def check_deep_research_trigger(text: str) -> Tier0RuleResult:
     if not text_stripped or len(text_stripped) < 8:
         return Tier0RuleResult(matched=False)
 
+    # Recall guard (2026-06-24): a recall question ("investigate what we discussed")
+    # must never launch an expensive deep-research run — it's answered from memory.
+    try:
+        from app.memory.recall_intent import is_recall_question
+        if is_recall_question(text_stripped):
+            return Tier0RuleResult(matched=False)
+    except Exception:
+        pass
+
     cleaned = _strip_conversational_prefix(text_stripped)
 
     for candidate in [cleaned, text_stripped]:
@@ -639,6 +648,20 @@ def check_web_search_trigger(text: str) -> Tier0RuleResult:
                         reason=f"Web search detected: {name}",
                         extracted_query=query,
                     )
+
+    # Recall guard (2026-06-24): now that we know this is NOT an explicit search
+    # request, suppress every IMPLICIT trigger (contextual / keyword / staleness)
+    # for questions about OUR OWN conversation — "what did we talk about today",
+    # "what was I mentioning to you about anthropic". Those carry a temporal word
+    # ("today") or a tech entity ("anthropic") that would otherwise auto-search,
+    # but the answer lives in memory, not on the web. A genuine "what's the latest
+    # on anthropic" is not a recall question and still passes through below.
+    try:
+        from app.memory.recall_intent import is_recall_question
+        if is_recall_question(text_stripped):
+            return Tier0RuleResult(matched=False)
+    except Exception:
+        pass
 
     # 2) Contextual patterns - only if no codebase keywords
     if not _has_codebase_keywords(text_stripped) and not _has_lifestyle_diary_keywords(text_stripped):

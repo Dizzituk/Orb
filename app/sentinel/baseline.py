@@ -3,7 +3,7 @@
 #          (14 CALENDAR days from first boot, wall-clock dates, not runtime).
 # Called-by: app.sentinel.collector, app.sentinel.router, app.sentinel.tools, app.sentinel.scheduler
 # Depends-on: app.sentinel.models, app.db
-# Last-renovated: 2026-06-12
+# Last-renovated: 2026-07-01
 from __future__ import annotations
 
 import logging
@@ -20,6 +20,7 @@ LEARN_MODE_DAYS = 14
 STALE_BASELINE_DAYS = 90  # untrusted pairs unseen this long get pruned by maintenance
 
 _KEY_LEARN_STARTED = "learn_mode_started_at"
+_KEY_LEARN_COMPLETE_NOTIFIED = "learn_mode_complete_notified"
 
 
 # =============================================================================
@@ -84,6 +85,15 @@ def learn_mode_days_remaining(db: Session) -> int:
 
 def learn_mode_active(db: Session) -> bool:
     return learn_mode_days_remaining(db) > 0
+
+
+def learn_mode_complete_notified(db: Session) -> bool:
+    """True once the one-time 'learn mode complete' alert has been created."""
+    return get_state(db, _KEY_LEARN_COMPLETE_NOTIFIED) is not None
+
+
+def mark_learn_mode_complete_notified(db: Session) -> None:
+    set_state(db, _KEY_LEARN_COMPLETE_NOTIFIED, datetime.utcnow().isoformat())
 
 
 # =============================================================================

@@ -120,6 +120,8 @@ GET_WORK_DAY_OUTPUT = {
     "properties": {
         "found": {"type": "boolean"},
         "day": {"type": ["object", "null"]},
+        "shift_state": {"type": "string", "description": "none | open | complete | error"},
+        "note": {"type": "string", "description": "Plain-language state hint for the model"},
         "error": {"type": "string"},
     },
 }

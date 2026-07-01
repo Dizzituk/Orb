@@ -240,11 +240,27 @@ async def evaluate_grounding(
     # Check if grounding is enabled
     if not _is_grounding_enabled():
         return GroundingResult()
-    
+
+    # Recall guard (2026-06-24): a question about OUR OWN conversation
+    # ("what was I mentioning to you about anthropic", "what have we talked about
+    # today") must NOT trigger a grounding web search — the topic_classifier reads
+    # "anthropic"/"today" as a CLAIM to verify, but the answer lives in memory.
+    # Shares the one predicate the Tier-0 + coverage paths use. A genuine "what's
+    # the latest on anthropic" is not a recall question and still grounds normally.
+    try:
+        from app.memory.recall_intent import is_recall_question
+        if is_recall_question(message):
+            return GroundingResult(
+                category=TopicCategory.PERSONAL,
+                classification_signals=["recall_question"],
+            )
+    except Exception:
+        pass
+
     # Classify the topic
     classification = classify_topic(message)
     
-    logger.info(
+    logger.debug(
         "[grounding_gate] Classification: category=%s, confidence=%.2f, "
         "domain=%s, signals=%s",
         classification.category.value,

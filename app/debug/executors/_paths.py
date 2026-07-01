@@ -167,6 +167,16 @@ def is_host_only(path: str) -> bool:
     return False
 
 
+_ANDROID_REPO_PREFIXES = ["D:/Astra Android Folder", "D:\\Astra Android Folder"]
+
+
+def is_android_repo_path(path: str) -> bool:
+    """True for the Android repo specifically (a narrower check than is_host_only,
+    which also covers .architecture/logs/user-home -- paths a phone-initiated run
+    should still be able to touch). Used by the phone-run Android-write gate."""
+    return any(path.startswith(p) for p in _ANDROID_REPO_PREFIXES)
+
+
 def resolve_sandbox_path(path: str) -> str:
     """Resolve relative/aliased paths to absolute sandbox paths."""
     # Already absolute Windows path (D:\... or D:/...)

@@ -118,17 +118,34 @@ def _install_access_log_filter() -> None:
     )
 
 
-def setup_file_logging(level: int = logging.DEBUG) -> str:
+def _resolve_file_level() -> int:
+    """File-handler verbosity, env-controlled (added 2026-06-24).
+
+    Default INFO so the log file stays readable. The full DEBUG firehose
+    (all app.* + library debug) is one env var away:
+      ORB_VERBOSE=1         -> DEBUG
+      ORB_LOG_LEVEL=DEBUG   -> DEBUG (or any standard level name)
+    """
+    if os.getenv("ORB_VERBOSE", "").strip().lower() in ("1", "true", "yes"):
+        return logging.DEBUG
+    name = os.getenv("ORB_LOG_LEVEL", "INFO").strip().upper()
+    return getattr(logging, name, logging.INFO)
+
+
+def setup_file_logging(level: int | None = None) -> str:
     """Attach a RotatingFileHandler to the root logger.
 
     Args:
-        level: Minimum log level for the file handler.
-               Defaults to DEBUG so we capture everything.
-               Console level is left untouched.
+        level: Minimum log level for the file handler. When None (the
+               default) it is resolved from the environment via
+               _resolve_file_level() — INFO unless ORB_VERBOSE=1 /
+               ORB_LOG_LEVEL=DEBUG. Console level is left untouched.
 
     Returns:
         The absolute path to the log file (for startup banner).
     """
+    if level is None:
+        level = _resolve_file_level()
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     # Build the handler
@@ -173,6 +190,19 @@ def setup_file_logging(level: int = logging.DEBUG) -> str:
         "openai._base_client",
         "urllib3",
         "urllib3.connectionpool",
+        # ── v1.3 (2026-06-24) library debug-spam that flooded astra.log ──
+        "PIL",                       # ~1k+ lines/session of PNG chunk parsing
+        "PIL.PngImagePlugin",
+        "PIL.Image",
+        "PIL.TiffImagePlugin",
+        "asyncio",                   # "Using proactor: IocpProactor" repeated
+        "python_multipart",          # multipart form-parse callback traces
+        "python_multipart.multipart",
+        "faster_whisper",            # spikes on every voice transcription
+        "googleapiclient",           # floods on Drive/Gemini calls
+        "google_genai",
+        "google.auth",
+        "google_auth_httplib2",
     ):
         logging.getLogger(_noisy).setLevel(logging.WARNING)
 

@@ -72,7 +72,7 @@ def _resolve_or_create_project(req: BridgeChatRequest, db: Session):
         existing = get_project_by_name(db, name_preview)
         if existing:
             project = existing
-            logger.info("[bridge] Reusing existing project %d: %s", project.id, project.name)
+            logger.debug("[bridge] Reusing existing project %d: %s", project.id, project.name)
         else:
             project = create_project(db, ProjectCreate(
                 name=name_preview,
@@ -83,7 +83,7 @@ def _resolve_or_create_project(req: BridgeChatRequest, db: Session):
     return project
 
 
-def _run_translation(message: str, db: Session) -> tuple:
+def _run_translation(message: str, db: Session, project_id: int | None = None) -> tuple:
     domain_context = ""
     translation_result = None
     domain_info = None
@@ -104,6 +104,37 @@ def _run_translation(message: str, db: Session) -> tuple:
                            domain_info["domain"], len(domain_context))
     except Exception as e:
         logger.info("[bridge] Translation layer error: %s", e)
+
+    # Record the classifier decision so the chat LLM can accurately answer
+    # "why did you search the web?" on the PHONE path too (2026-06-24). The read
+    # side (build_decisions_block via build_full_context) was already shared; only
+    # this WRITE was desktop-only (stream_router). Mirrors that call, keyed on
+    # str(project_id) which is what the read looks up. Best-effort: a failure here
+    # never breaks a reply, and project_id=None (legacy callers) simply skips it.
+    if project_id is not None and translation_result is not None and translation_result.resolved_intent:
+        try:
+            from app.translation.recent_decisions import (
+                record_decision, STATUS_PENDING, STATUS_AUTO,
+            )
+            _ctx = translation_result.extracted_context or {}
+            _rd_gate = getattr(translation_result, "confirmation_gate", None)
+            _rd_pending = bool(
+                _rd_gate is not None
+                and getattr(_rd_gate, "requires_confirmation", False)
+                and not getattr(_rd_gate, "passed", False)
+            )
+            record_decision(
+                conversation_id=str(project_id),
+                intent=translation_result.resolved_intent.value,
+                rule_name=_ctx.get("_classifier_rule") or "unknown",
+                reason=_ctx.get("_classifier_reason") or "",
+                message_excerpt=message,
+                confidence=translation_result.intent_confidence,
+                status=STATUS_PENDING if _rd_pending else STATUS_AUTO,
+            )
+        except Exception as _rd_err:
+            logger.debug("[bridge] Failed to record classifier decision: %s", _rd_err)
+
     return domain_context, translation_result, domain_info
 
 

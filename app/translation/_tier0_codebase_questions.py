@@ -2,7 +2,7 @@
 # Purpose: Tier 0: RAG codebase question detection.
 # Called-by: app.translation.modes, app.translation.tier0_rules
 # Depends-on: app.translation.schemas, app.translation.tier0_rules
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-07-01
 """
 Tier 0: RAG codebase question detection.
 
@@ -19,6 +19,10 @@ Both route to RAG_CODEBASE_QUERY intent. The rigid patterns fire first
 in the tier0_classify() chain (confidence 0.95–1.0). Natural patterns
 fire second as a catch-all (confidence 0.92).
 
+v10.1 (2026-07-01): Narrowed natural patterns to command-shaped lookups only.
+    Talk-ABOUT shapes (tell me about / explain / how does X work / what does
+    X do / what happens when) stay CHAT_ONLY — the chat path grounds them via
+    rag_fallback + RAG-as-context (see _NATURAL_CODEBASE_PATTERNS comment).
 v10.0 (2026-02-23): Extracted from tier0_rules.py + added natural patterns (Job 10A)
 """
 from __future__ import annotations
@@ -181,8 +185,19 @@ def check_rag_codebase_query(text: str) -> Tier0RuleResult:
 
 
 # =============================================================================
-# NEW NATURAL LANGUAGE PATTERNS (Job 10A)
+# NATURAL LANGUAGE PATTERNS (Job 10A, narrowed 2026-07-01)
 # =============================================================================
+# v10.1 (2026-07-01): Talk-ABOUT shapes removed from Tier 0 — "tell me about X",
+# "explain X", "can you show/tell/explain X", "how does X work", "what does X
+# do", "what happens when X". Those are questions about the system, not
+# executable lookups; they must stay CHAT_ONLY (mode stays chat, no command
+# fires). The chat path still grounds them: rag_fallback.is_architecture_query /
+# needs_llm_codebase_check carry these same shapes (guarded + conversational
+# gate) and chat_routing injects RAG-as-context so Astra answers in her own
+# voice with real code context. Tier 0 keeps only command-shaped lookups whose
+# right handling is a codebase operation. This also keeps modes.py
+# _is_implicit_command (which reuses this list) from hoisting talk-about
+# questions into COMMAND_CAPABLE mode.
 
 _NATURAL_CODEBASE_PATTERNS: List[re.Pattern] = [
     # "How many X in the codebase/system/code" patterns
@@ -195,44 +210,6 @@ _NATURAL_CODEBASE_PATTERNS: List[re.Pattern] = [
     re.compile(
         r"^[Hh]ow\s+(?:hard|difficult|easy|complex)\s+would\s+it\s+be\s+to\s+"
         r"(?:refactor|rename|change|replace|update|migrate|remove|extract|split|merge|consolidate)\s+.+",
-        re.IGNORECASE,
-    ),
-
-    # "What does X do/handle/manage" about system components
-    re.compile(
-        r"^[Ww]hat\s+does?\s+(?:the\s+)?(?:\w+\s+){0,3}"
-        r"(?:do|handle|manage|control|process|route)\s*\??",
-        re.IGNORECASE,
-    ),
-
-    # "How does X work" about system
-    re.compile(
-        r"^[Hh]ow\s+does\s+(?:the\s+)?(?:\w+\s+){0,3}"
-        r"(?:work|function|operate|run)\s*\??",
-        re.IGNORECASE,
-    ),
-
-    # "Tell me about X" where X contains known ASTRA terms
-    re.compile(
-        r"^[Tt]ell\s+me\s+about\s+(?:the\s+)?.+",
-        re.IGNORECASE,
-    ),
-
-    # "Explain X" where X is a system concept
-    re.compile(
-        r"^[Ee]xplain\s+(?:the\s+)?(?:how\s+)?.+",
-        re.IGNORECASE,
-    ),
-
-    # "Can you show/tell me how X" patterns
-    re.compile(
-        r"^[Cc]an\s+you\s+(?:show|tell|explain)\s+.+",
-        re.IGNORECASE,
-    ),
-
-    # "What happens when X" about system behaviour
-    re.compile(
-        r"^[Ww]hat\s+happens\s+(?:when|if)\s+.+",
         re.IGNORECASE,
     ),
 
@@ -286,6 +263,10 @@ def check_natural_codebase_question(text: str) -> Tier0RuleResult:
     Confidence: 0.92 (below rigid architecture patterns at 0.95,
     above obvious chat at 0.95 which uses a different intent).
 
+    v10.1 (2026-07-01): Narrowed to command-shaped lookups — conversational
+        questions about the system ("tell me about the Overwatch subsystem",
+        "can you explain the architecture?") no longer match here; they stay
+        in chat where RAG-as-context grounds the answer.
     v10.0 (2026-02-23): Job 10A — broadened codebase question detection.
     """
     text_stripped = text.strip()

@@ -2,7 +2,7 @@
 # Purpose: Intent definitions: Operations domain.
 # Called-by: app.translation.intents
 # Depends-on: app.translation.schemas
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-07-01
 """
 Intent definitions: Operations domain.
 RAG, embeddings, filesystem, codebase reports, multi-file, segments,
@@ -45,7 +45,10 @@ OPERATIONS_INTENTS: Dict[CanonicalIntent, IntentDefinition] = {
             r"^[Ii]n (?:the|this) codebase,?\s+(.+)$",
             r"^[Ww]hat (?:functions?|classes?|methods?)\s+.+\?$",
             r"^[Ww]here is\s+.+\s+(?:implemented|defined|located)\?$",
-            r"^[Hh]ow does\s+(?:the\s+)?.+\s+(?:work|function)\?$",
+            # 2026-07-01: dropped r"^[Hh]ow does\s+(?:the\s+)?.+\s+(?:work|function)\?$"
+            # — unguarded, matched ANY "how does X work?" (photosynthesis included)
+            # at 0.98, bypassing the guard-keyword design. Talk-about questions
+            # stay in chat; rag_fallback + RAG-as-context ground them there.
             r"^[Ss]how me\s+(?:the\s+)?.+\s+(?:code|implementation|function)$",
             r"^[Ii]ndex (?:the )?(?:architecture|codebase|RAG)$",
             r"^[Rr]un RAG index$",

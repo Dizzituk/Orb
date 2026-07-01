@@ -39,6 +39,13 @@ from typing import Any, Optional, Dict, List, Tuple
 from app.providers._registry_utils_2 import ProviderConfig, _build_anthropic_tools, _build_openai_tools, _execute_tool_by_name, _is_reasoning_model, _messages_to_prompt, _now_ms, _safe_json
 from app.providers._registry_utils_3 import LlmUsage, _is_chat_model, _normalize_messages_for_anthropic, _normalize_messages_for_openai, _openai_token_param_name, _pick_default_provider, _supports_temperature, llm_call
 from app.providers._registry_utils_4 import LlmCallResult, LlmCallStatus, get_provider_registry, is_provider_available
+from app.providers._registry_local import (
+    LOCALITY_BACKGROUND_LOCAL,
+    call_local,
+    is_local_available,
+    local_default_model,
+    locality_refusal,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +55,10 @@ PROVIDERS: Dict[str, ProviderConfig] = {
     "anthropic": ProviderConfig("anthropic", "Anthropic", "ANTHROPIC_API_KEY"),
     "google": ProviderConfig("google", "Google (Gemini)", "GOOGLE_API_KEY"),
     "gemini": ProviderConfig("gemini", "Google (Gemini)", "GOOGLE_API_KEY"),
+    # v2.5 (2026-07-01): local OpenAI-compatible lane (vLLM/Nat today, Gemma
+    # 27B on the 3090 later). Key optional — availability keys off the base
+    # URL; see _registry_local.py.
+    "local": ProviderConfig("local", "Local (OpenAI-compatible)", "LOCAL_LLM_API_KEY"),
 }
 
 
@@ -59,6 +70,9 @@ class ProviderRegistry:
         cfg = PROVIDERS.get(provider_id)
         if not cfg:
             return False
+        if provider_id == "local":
+            # No API key required — needs a configured base URL + openai SDK.
+            return is_local_available()
         key = os.getenv(cfg.env_key_name, "").strip()
         if not key:
             return False
@@ -89,13 +103,40 @@ class ProviderRegistry:
         tool_names: Optional[List[str]] = None,
         job_envelope: Optional[dict] = None,
         reasoning: Optional[dict] = None,  # GPT-5.x: {"effort": "none"|"low"|"medium"|"high"|"xhigh"}
+        execution_context: Optional[str] = None,  # v2.5: "background_local" = local lane only
         **kwargs: Any,  # absorb future constraints, e.g. data_sensitivity_constraint
     ) -> LlmCallResult:
         # NOTE: kwargs intentionally ignored. This keeps Phase4 callers forward-compatible.
         if enable_web_search:
             logger.warning("[registry] enable_web_search requested but forbidden; ignoring.")
 
+        # v2.5 (2026-07-01): background-local locality guard — same mechanical
+        # stance as enable_web_search above: cloud chat providers are refused,
+        # never silently rerouted. See _registry_local.py for the whitelist.
+        if execution_context == LOCALITY_BACKGROUND_LOCAL and not provider_id:
+            provider_id = "local"
+
         chosen = provider_id or _pick_default_provider()
+
+        refusal = locality_refusal(execution_context, chosen)
+        if refusal:
+            logger.warning("[registry] %s", refusal)
+            return LlmCallResult(
+                status=LlmCallStatus.LOCALITY_REFUSED,
+                provider_id=str(chosen or "none"),
+                model_id=model_id,
+                error_message=refusal,
+            )
+
+        if chosen == "local" and not model_id:
+            model_id = local_default_model()
+            if not model_id:
+                return LlmCallResult(
+                    status=LlmCallStatus.INVALID_REQUEST,
+                    provider_id="local",
+                    model_id="",
+                    error_message="Local model not configured: set LOCAL_LLM_DEFAULT_MODEL (or NAT_MODEL) in .env.",
+                )
         if not chosen:
             return LlmCallResult(
                 status=LlmCallStatus.PROVIDER_UNAVAILABLE,
@@ -126,6 +167,16 @@ class ProviderRegistry:
                 )
 
         try:
+            if chosen == "local":
+                return await call_local(
+                    model_id=model_id,
+                    messages=messages,
+                    system_prompt=system_prompt,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    timeout_seconds=timeout_seconds,
+                    tool_defs=tool_defs,
+                )
             if chosen == "openai":
                 return await self._call_openai(
                     api_key=os.getenv(PROVIDERS["openai"].env_key_name),
@@ -646,4 +697,5 @@ __all__ = [
     "get_provider_registry",
     "llm_call",
     "is_provider_available",
+    "LOCALITY_BACKGROUND_LOCAL",
 ]
