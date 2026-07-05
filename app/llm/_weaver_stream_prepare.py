@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from app.llm._weaver_stream_utils_12 import _format_ramble
 from app.llm._weaver_stream_utils_13 import _hash_messages
 from app.llm._weaver_stream_utils_14 import _hash_message, _normalize_typos
-from app.llm._weaver_stream_utils_15 import _extract_meta_mode, _extract_vision_context, _gather_ramble_messages
+from app.llm._weaver_stream_utils_15 import _extract_meta_mode, _extract_vision_context, _gather_ramble_messages, _merge_panel_history
 from app.llm._weaver_stream_utils_16 import _is_vision_context
 from app.llm._weaver_substantive_filter import _is_substantive_assistant_content
 
@@ -51,8 +51,15 @@ def prepare_weaver_messages(
     project_id: int,
     pending_user_message: Optional[str],
     captured_answers: Optional[Dict[str, str]],
+    panel_history: Optional[List[Dict]] = None,
 ) -> WeaverPrepResult:
-    """Execute Steps 1-4: gather, filter, dedup, load state."""
+    """Execute Steps 1-4: gather, filter, dedup, load state.
+
+    panel_history (live7, 2026-07-04): the desktop's on-screen conversation
+    [{role, content}]. Merged with (never replacing) the DB project's rows so
+    the Weaver weaves what the user can SEE even when a panel-project rotation
+    (app restart) left the DB project holding only the weave command.
+    """
     result = WeaverPrepResult()
 
     # Import flow state functions
@@ -73,6 +80,10 @@ def prepare_weaver_messages(
 
     # STEP 1: Gather all messages
     all_messages = _gather_ramble_messages(db, project_id)
+
+    # STEP 1b (live7): merge the on-screen panel history — DB rows win
+    # (image_ref markers / inlined documents), panel-only turns prepend.
+    all_messages = _merge_panel_history(all_messages, panel_history)
 
     # v4.1.0: Inject pending user message
     if pending_user_message and pending_user_message.strip():

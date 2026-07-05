@@ -26,7 +26,7 @@ class AuthStatusResponse(BaseModel):
 
 
 class SetupPasswordRequest(BaseModel):
-    password: str = Field(..., min_length=4, description="Password (min 4 characters)")
+    password: str = Field(..., min_length=8, description="Password (min 8 characters)")
 
 
 class LoginRequest(BaseModel):
@@ -40,12 +40,12 @@ class LoginResponse(BaseModel):
 
 class ChangePasswordRequest(BaseModel):
     current_password: str
-    new_password: str = Field(..., min_length=4)
+    new_password: str = Field(..., min_length=8)
 
 
 class MigrateRequest(BaseModel):
     api_key: str
-    new_password: str = Field(..., min_length=4)
+    new_password: str = Field(..., min_length=8)
 
 
 # ============ Public Endpoints (no auth required) ============

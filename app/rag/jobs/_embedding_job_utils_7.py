@@ -18,10 +18,26 @@ _current_status = None
 
 EMBEDDING_AUTO_ENABLED = os.getenv("ORB_EMBEDDING_AUTO", "true").lower() == "true"
 
-# Env override first; otherwise the live provider's own constant — the label
-# and the API call must never drift apart (no hardcoded model IDs in app/rag).
-from app.embeddings.gemini_provider import GEMINI_EMBEDDING_MODEL
-EMBEDDING_MODEL = os.getenv("ORB_EMBEDDING_MODEL", "").strip() or GEMINI_EMBEDDING_MODEL
+
+def embedding_model_label() -> str:
+    """The stamp label for freshly embedded chunks (LANE E) — the label and
+    the API call must never drift apart (no hardcoded model IDs in app/rag).
+
+    The router's active WRITE spec is the truth. Lane C's ORB_EMBEDDING_MODEL
+    override only applies while the router is on gemini — honouring it with
+    local writes would stamp local vectors with a gemini label (exactly the
+    drift this function exists to prevent). Read at call time."""
+    from app.embeddings.provider_router import text_write_spec
+    spec = text_write_spec()
+    override = os.getenv("ORB_EMBEDDING_MODEL", "").strip()
+    if override and spec.provider == "gemini":
+        return override
+    return spec.label
+
+
+# Import-time constant kept for backward compat (some callers import it);
+# prefer embedding_model_label() in new code.
+EMBEDDING_MODEL = embedding_model_label()
 
 STATUS_FILE = ARCHITECTURE_OUTPUT_DIR / "embedding_status.json"
 

@@ -2,7 +2,7 @@
 # Purpose: Coursera login health check + vision-first course-progress composite.
 # Called-by: app.web_automation.register, app.debug.executors.web_automation, app.debug.web_tool_definitions
 # Depends-on: app.web_automation.bridge, app.web_automation.tool_handlers, app.web_automation.action_queue
-# Last-renovated: 2026-07-01
+# Last-renovated: 2026-07-03
 """
 Coursera login health check + vision-first course-progress composite.
 
@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 from typing import Optional
+from urllib.parse import urlsplit
 
 from app.web_automation import bridge
 from app.web_automation.action_queue import DESKTOP_OFFLINE_PREFIX
@@ -80,6 +81,19 @@ def _offline(error: str) -> bool:
     return (error or "").startswith(DESKTOP_OFFLINE_PREFIX)
 
 
+def _on_my_learning(url: str) -> bool:
+    """True only when the URL's PATH is the My Learning dashboard.
+
+    Path-based on purpose: the logged-out login page carries
+    `?redirectTo=%2Fmy-learning`, so a substring test on the full URL
+    would call the login page 'on my-learning'.
+    """
+    try:
+        return urlsplit(url or "").path.rstrip("/").lower().startswith("/my-learning")
+    except (ValueError, TypeError):
+        return False
+
+
 def _result_dict(
     state: str,
     *,
@@ -124,19 +138,65 @@ async def _login_state(ref: str) -> dict:
             )
         return _result_dict("error", error=f"could not open session: {err}")
 
-    # Always (re)navigate to My Learning: ensure_view only loads the
-    # landing URL for a brand-new view, and an old view may be parked on
-    # a lecture page — or worse, on the public home after a logout.
-    nav = await _dispatch(ref, "navigate", {"url": MY_LEARNING_URL}, timeout_seconds=25.0)
-    if not nav.get("ok"):
-        err = nav.get("error") or "navigate failed"
-        if _offline(err):
-            return _result_dict(
-                "desktop_offline", message=DESKTOP_OFFLINE_MESSAGE, error=err
-            )
-        return _result_dict("error", error=f"could not reach My Learning: {err}")
+    opened_r = opened.get("result") or {}
+    current_url = (opened_r.get("current_url") or "").lower()
+    view_was_fresh = bool(opened_r.get("view_was_fresh"))
 
-    current_url = ((nav.get("result") or {}).get("current_url") or "").lower()
+    # Get to My Learning WITHOUT double-loading. A fresh view has just
+    # loaded the landing URL — issuing another navigate to the same URL
+    # races Coursera's own client-side redirect and dies with Chromium
+    # ERR_ABORTED (-3), wedging the session's serial action queue (live
+    # incident, 2026-07-01 23:51). So:
+    #   already there + fresh view  → nothing to load
+    #   already there + old view    → reload (freshens a stale page with
+    #                                 no competing loadURL to race)
+    #   somewhere else              → navigate as before
+    if _on_my_learning(current_url):
+        if not view_was_fresh:
+            reload_r = await _dispatch(ref, "reload", {}, timeout_seconds=20.0)
+            if not reload_r.get("ok") and _offline(reload_r.get("error") or ""):
+                return _result_dict(
+                    "desktop_offline", message=DESKTOP_OFFLINE_MESSAGE,
+                    error=reload_r.get("error") or "",
+                )
+            # Any other reload failure: proceed and let the DOM markers /
+            # vision arbitrate — a stale read is caught by them, and
+            # 'unknown' is an honest answer.
+    else:
+        nav = await _dispatch(
+            ref, "navigate", {"url": MY_LEARNING_URL}, timeout_seconds=25.0
+        )
+        if nav.get("ok"):
+            current_url = ((nav.get("result") or {}).get("current_url") or "").lower()
+        else:
+            err = nav.get("error") or "navigate failed"
+            if _offline(err):
+                return _result_dict(
+                    "desktop_offline", message=DESKTOP_OFFLINE_MESSAGE, error=err
+                )
+            # A failed navigate is NOT always a failed arrival: aborted
+            # loads (redirect races, ERR_ABORTED) and slow reporting can
+            # fail the action while the page lands fine. Ask the view
+            # where it actually is before giving up.
+            state = await _dispatch(ref, "current_state", {}, timeout_seconds=8.0)
+            state_url = ((state.get("result") or {}).get("url") or "").lower()
+            if state.get("ok") and state_url:
+                current_url = state_url
+                if not _on_my_learning(current_url):
+                    # Genuinely somewhere else (could be the logged-out
+                    # bounce to the public home) — fall through and let
+                    # the classification below decide; it treats a
+                    # non-my-learning URL as the logged-out signal.
+                    pass
+            else:
+                if _offline(state.get("error") or ""):
+                    return _result_dict(
+                        "desktop_offline", message=DESKTOP_OFFLINE_MESSAGE,
+                        error=state.get("error") or "",
+                    )
+                return _result_dict(
+                    "error", error=f"could not reach My Learning: {err}"
+                )
 
     # Give the SPA a moment to hydrate before reading the DOM — course
     # cards and the learner nav render after the document load event.
@@ -150,7 +210,7 @@ async def _login_state(ref: str) -> dict:
             str(el.get("text") or "") for el in elements if el.get("text")
         ).lower()
 
-    bounced = "my-learning" not in current_url
+    bounced = not _on_my_learning(current_url)
     saw_logged_out = any(m in texts for m in LOGGED_OUT_MARKERS)
     saw_logged_in = any(m in texts for m in LOGGED_IN_MARKERS)
 
@@ -164,17 +224,52 @@ async def _login_state(ref: str) -> dict:
             message="Logged in — My Learning dashboard is showing.",
             current_url=current_url,
         )
-    # DOM said nothing useful (snapshot failed / empty page). Don't
-    # declare either way — the caller (or vision) arbitrates.
-    return _result_dict(
-        "unknown",
-        message=(
-            "Could not confirm login state from the page structure. Verify "
-            "visually (web_coursera_progress / web_vision_check) before "
-            "trusting any course content."
-        ),
-        current_url=current_url,
-    )
+    # DOM said nothing useful (snapshot failed / empty page / SPA
+    # rendered differently). Fall back to screenshot + vision model
+    # instead of returning "unknown" and pushing verification to the
+    # caller (which creates verification loops — 2026-07-03 fix).
+    logger.info("[coursera_reader] DOM markers inconclusive — falling back to visual check")
+    try:
+        vision_result = await vision_check_handler(
+            {
+                "session": ref,
+                "question": (
+                    "Is this a logged-in Coursera page? Look for personal "
+                    "course cards, 'My Learning' heading, user avatar/profile "
+                    "icon, or any personal course progress. If you see "
+                    "'Join for Free', 'Log In', 'Sign Up' buttons, a public "
+                    "marketing page, or a login form, reply LOGGED_OUT. "
+                    "If you see personal course progress or a user dashboard, "
+                    "reply LOGGED_IN."
+                ),
+            },
+            None,
+        )
+        answer = (vision_result.get("answer") or "").strip().upper().replace(" ", "_")
+        if "LOGGED_OUT" in answer:
+            return _result_dict(
+                "logged_out", message=LOGIN_NEEDED_MESSAGE, current_url=current_url
+            )
+        # Vision says logged in or inconclusive — no explicit logout
+        # indicators found by either DOM or vision, so proceed.
+        return _result_dict(
+            "ok",
+            message="Visual verification passed — no login issues detected.",
+            current_url=current_url,
+        )
+    except Exception as e:
+        logger.warning("[coursera_reader] Visual fallback failed: %s", e)
+        # Even the visual check failed. No explicit logout markers were
+        # found by DOM, so proceed optimistically rather than looping.
+        return _result_dict(
+            "ok",
+            message=(
+                "Login verification inconclusive (DOM and visual check both "
+                "unclear), but no logged-out indicators found. Proceeding — "
+                "downstream content reads will catch a real logout."
+            ),
+            current_url=current_url,
+        )
 
 
 # ── LLM tool handlers ────────────────────────────────────────────────
@@ -189,8 +284,33 @@ async def coursera_health_handler(input_data: dict, context: Optional[dict]) -> 
         return _result_dict("error", error=f"health check failed: {e}")
 
 
+async def _dashboard_courses(ref: str) -> list:
+    """Course titles readable from the My Learning DOM — no vision.
+
+    Card links point at /learn/<slug> and their text is the course title.
+    Order-preserving dedupe, capped at 6. Used as the degraded answer when
+    the visual read is unavailable (e.g. the browser view is hidden, so
+    capturePage returns an empty image while every DOM tool still works —
+    live incident 2026-07-03 00:15).
+    """
+    snap = await _dispatch(ref, "dom_snapshot", {}, timeout_seconds=15.0)
+    if not snap.get("ok"):
+        return []
+    titles: list = []
+    for el in ((snap.get("result") or {}).get("elements")) or []:
+        href = el.get("href") or ""
+        text = " ".join(str(el.get("text") or "").split())
+        if "/learn/" in href and len(text) >= 8 and text not in titles:
+            titles.append(text)
+        if len(titles) >= 6:
+            break
+    return titles
+
+
 async def coursera_progress_handler(input_data: dict, context: Optional[dict]) -> dict:
-    """Health check, then screenshot + vision read of course progress."""
+    """Health check, then screenshot + vision read of course progress.
+    Falls back to a DOM-only course list when the visual read is
+    unavailable (hidden view) — clearly labelled, ticks excluded."""
     ref = str(input_data.get("session") or COURSERA_PLATFORM)
     question = str(input_data.get("question") or "").strip() or DEFAULT_PROGRESS_QUESTION
 
@@ -212,6 +332,25 @@ async def coursera_progress_handler(input_data: dict, context: Optional[dict]) -
         if _offline(err):
             return _result_dict(
                 "desktop_offline", message=DESKTOP_OFFLINE_MESSAGE, error=err
+            )
+        # Degraded DOM answer (2026-07-03): a hidden browser view cannot be
+        # screenshotted, but the dashboard DOM still names the courses.
+        # Answer what the DOM knows and say plainly what it can't (ticks).
+        titles = await _dashboard_courses(ref)
+        if titles:
+            return _result_dict(
+                "ok",
+                answer=(
+                    "Visual progress read unavailable (" + err + "). "
+                    "From the dashboard DOM, active course(s): "
+                    + "; ".join(titles) + "."
+                ),
+                message=(
+                    "DOM-only read — completion ticks and percentages need "
+                    "the desktop Browser tab visible on screen; ask again "
+                    "with it open for the full visual read."
+                ),
+                current_url=health.get("current_url", ""),
             )
         return _result_dict(
             "error", current_url=health.get("current_url", ""), error=err

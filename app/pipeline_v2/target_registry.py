@@ -1,8 +1,8 @@
 # FILE: app/pipeline_v2/target_registry.py
 # Purpose: Build Target Registry.
 # Called-by: app.builds.pipeline_bridge, app.cloud.build_and_deploy, app.debug.debug_chat, app.debug.orchestrator.decomposer (+15 more)
-# Depends-on: app.pipeline_v2.build_targets
-# Last-renovated: 2026-06-11
+# Depends-on: app.pipeline_v2.build_targets, app.pipeline_v2.target_profiles, app.pipeline_v2.target_persistence
+# Last-renovated: 2026-07-04
 """
 Build Target Registry.
 
@@ -13,6 +13,9 @@ v1.0 (2026-03-10): Initial — 3 profiles.
 v1.1 (2026-03-10): Expanded signal keywords, JAVA_HOME for Gradle.
 v1.2 (2026-03-11): Added AstraBridge profile, "work on yourself" keywords,
     Astra Bridge signal keywords.
+v1.3 (2026-07-04): JOB 1 — dynamic profiles persist to data/build_targets.json
+    (target_persistence leaf) and reload at registry init. register_profile
+    saves non-built-ins; new unregister_profile removes registry + store.
 """
 from __future__ import annotations
 
@@ -57,6 +60,22 @@ from app.pipeline_v2.file_target_resolution import (  # noqa: F401
     _resolve_single_file,
 )
 
+# JOB 1 (2026-07-04): dynamic-profile persistence. Soft import so a broken
+# store module can never take down the registry (20 importers).
+try:
+    from app.pipeline_v2.target_persistence import (
+        BUILTIN_PROFILE_IDS,
+        load_dynamic_profiles,
+        remove_dynamic_profile,
+        save_dynamic_profile,
+    )
+    _PERSISTENCE_AVAILABLE = True
+except Exception as _persist_err:  # pragma: no cover — defensive only
+    _PERSISTENCE_AVAILABLE = False
+    BUILTIN_PROFILE_IDS = frozenset()
+    load_dynamic_profiles = remove_dynamic_profile = save_dynamic_profile = None
+    logger.warning("[registry] target_persistence unavailable: %s", _persist_err)
+
 
 # ── Registry accessors (read / mutate the shared _REGISTRY in place) ─────────
 def get_profile(project_id: str) -> Optional[BuildTargetProfile]:
@@ -76,9 +95,70 @@ def list_profiles() -> List[BuildTargetProfile]:
 
 
 def register_profile(profile: BuildTargetProfile) -> None:
-    """Register a new build target profile."""
+    """Register a new build target profile.
+
+    v1.3: non-built-in profiles are also persisted to the JSON store so they
+    survive backend restarts (persistence failure is logged, never raised —
+    the in-memory registration must always succeed).
+    v1.4 (2026-07-04): a DIFFERENT object may never overwrite a built-in ID —
+    a dynamic profile that slugs to e.g. 'driver-copilot' would silently
+    hijack every job routed at that built-in until restart.
+    """
+    if (
+        profile.project_id in BUILTIN_PROFILE_IDS
+        and _REGISTRY.get(profile.project_id) is not profile
+    ):
+        logger.warning(
+            "[registry] REFUSED overwrite of built-in profile '%s' by a "
+            "dynamic registration", profile.project_id,
+        )
+        return
     _REGISTRY[profile.project_id] = profile
     logger.info("[registry] Registered profile: %s (%s)", profile.project_id, profile.project_name)
+    if _PERSISTENCE_AVAILABLE:
+        save_dynamic_profile(profile)  # no-ops for built-in IDs, never raises
+
+
+def unregister_profile(project_id: str) -> bool:
+    """Remove a dynamic profile from the registry and the JSON store.
+
+    Built-in profiles are refused. Returns True if anything was removed.
+    """
+    if project_id in BUILTIN_PROFILE_IDS:
+        logger.warning("[registry] Refusing to unregister built-in profile: %s", project_id)
+        return False
+    removed = _REGISTRY.pop(project_id, None) is not None
+    if _PERSISTENCE_AVAILABLE:
+        removed = remove_dynamic_profile(project_id) or removed
+    if removed:
+        logger.info("[registry] Unregistered profile: %s", project_id)
+    return removed
+
+
+def _load_persisted_profiles() -> int:
+    """Load persisted dynamic profiles into _REGISTRY (built-ins win on collision).
+
+    Runs once at import so every accessor sees scoping-flow targets from
+    previous runs. Returns the number restored (also used by tests to
+    simulate a restart).
+    """
+    if not _PERSISTENCE_AVAILABLE:
+        return 0
+    restored = 0
+    for _profile in load_dynamic_profiles():
+        if _profile.project_id in _REGISTRY:
+            # Collision: built-ins (and anything already registered) win.
+            continue
+        _REGISTRY[_profile.project_id] = _profile
+        restored += 1
+        logger.info(
+            "[registry] Restored persisted profile: %s (%s) at %s",
+            _profile.project_id, _profile.project_name, _profile.project_root,
+        )
+    return restored
+
+
+_load_persisted_profiles()
 
 
 # ═══════════════════════════════════════════════════════════════════

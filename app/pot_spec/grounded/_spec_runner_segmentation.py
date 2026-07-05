@@ -47,9 +47,16 @@ async def run_segmentation_check(
     goal: str,
     round_n: int,
     is_create_job: bool = False,
+    greenfield_root: Optional[str] = None,
 ) -> Tuple[Any, Optional[Any], bool]:
     """
     Run Step 4b: Segmentation check.
+
+    greenfield_root (live10, 2026-07-05): the greenfield project's own root.
+    When set, ALL filesystem resolution stays inside that root — planned
+    files are CREATE targets that exist nowhere yet, and probing them
+    against the ASTRA repos went through the sandbox at a 15s timeout per
+    probe (16 files x 2 roots = an 8-minute wedge on the first live run).
 
     Returns:
         (segmentation_manifest_or_None, needle_estimate_or_None, early_return)
@@ -89,7 +96,11 @@ async def run_segmentation_check(
         # LLM-extracted paths may use wrong locations (e.g. src/types.ts
         # instead of src/types/index.ts, or src/Sidebar.tsx instead of
         # src/components/sidebar/Sidebar.tsx). Resolve before segmentation.
-        _file_scope = _resolve_file_scope_paths(_file_scope)
+        # live10: greenfield CREATE targets are never resolved — they exist
+        # nowhere yet, and the arch-index filename fallback could silently
+        # rewrite a planned file (src/audio.py) to an ASTRA repo path.
+        if not greenfield_root:
+            _file_scope = _resolve_file_scope_paths(_file_scope)
 
         logger.info("[spec_runner] v5.17 File scope: %d file(s)", len(_file_scope))
         print(f"[spec_runner] v5.17 FILE_SCOPE: {len(_file_scope)} file(s): {_file_scope[:5]}")
@@ -98,7 +109,7 @@ async def run_segmentation_check(
             return None, None, False
 
         # v5.6: Pre-segmentation size analysis
-        _size_metadata = _run_size_analysis(_file_scope, spot_markdown)
+        _size_metadata = _run_size_analysis(_file_scope, spot_markdown, greenfield_root=greenfield_root)
 
         # Needle classification
         _should_segment, _seg_reason, _needle_estimate = await _classify_needles(
@@ -158,6 +169,13 @@ async def run_segmentation_check(
             if _deferred_consumers:
                 segmentation_manifest.deferred_consumer_files = _deferred_consumers
 
+            # Derek p4: enforce capability-sized segments + a valid DAG.
+            # Oversize -> deterministic bounded re-split; cycles/unknown deps
+            # or residual oversize -> SegmentValidationError (re-raised below,
+            # never swallowed by the non-fatal catch — never silently oversized).
+            from .segment_validation import enforce_segment_budgets
+            segmentation_manifest = enforce_segment_budgets(segmentation_manifest, job_id)
+
             _write_segmentation_output(job_id, segmentation_manifest)
             logger.info("[spec_runner] v4.8 Segmentation complete: %s", segmentation_manifest.summary())
             print(f"[spec_runner] v4.8 SEGMENTED: {segmentation_manifest.summary()}")
@@ -169,6 +187,13 @@ async def run_segmentation_check(
     except ImportError:
         logger.debug("[spec_runner] v4.8 Segmentation module not available")
     except Exception as seg_err:
+        # Derek p4: validation failures are HARD failures — an oversized or
+        # cyclic manifest must never fall through to the single-pass path.
+        from .segment_validation import SegmentValidationError
+        if isinstance(seg_err, SegmentValidationError):
+            logger.error("[spec_runner] SEGMENT VALIDATION FAILED: %s", seg_err)
+            print(f"[spec_runner] SEGMENT VALIDATION FAILED: {seg_err}")
+            raise
         logger.warning("[spec_runner] v4.8 Segmentation failed (non-fatal): %s", seg_err)
         print(f"[spec_runner] v4.8 SEGMENTATION FAILED (non-fatal): {seg_err}")
 
@@ -323,11 +348,20 @@ def _try_resolve_single(
 def _run_size_analysis(
     file_scope: List[str],
     spot_markdown: Optional[str],
+    greenfield_root: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Run pre-segmentation size analysis, expanding scope if needed."""
+    """Run pre-segmentation size analysis, expanding scope if needed.
+
+    live10: greenfield jobs resolve ONLY against their own root — the
+    default ASTRA roots go through the sandbox at 15s/probe when it's down.
+    """
     try:
         from .size_analyzer import analyze_file_sizes
-        result = analyze_file_sizes(file_scope=file_scope, spec_markdown=spot_markdown)
+        result = analyze_file_sizes(
+            file_scope=file_scope,
+            spec_markdown=spot_markdown,
+            project_roots=[greenfield_root] if greenfield_root else None,
+        )
         if result.files_added:
             logger.info(
                 "[spec_runner] v5.6 Size analysis expanded scope: +%d files",

@@ -1,13 +1,17 @@
 # FILE: app/documents/router.py
 # Purpose: /documents API — open (file -> Univer snapshot), save (snapshot ->
 #          file, atomic + .bak-once), and the editor action channel.
-# Called-by: main.py (router include); orb-desktop documentsApi.ts + univerBridge.ts
-# Depends-on: app.documents converters, editor_actions, storage
-# Last-renovated: 2026-06-12
+# Called-by: router_registry (include, auth-gated); orb-desktop documentsApi.ts + univerBridge.ts
+# Depends-on: app.documents converters, editor_actions, storage; app.drive.file_utils (path guard)
+# Last-renovated: 2026-07-02
 """
 Documents router.
 
-Local-trusted like /drive (the renderer it serves runs on this machine).
+Auth-gated at include (router_registry) like /drive — the desktop renderer
+sends its session token (documentsApi.ts authHeaders). /open and /save also
+enforce the shared Drive allowed-roots policy BEFORE any converter touches
+the path, so this router cannot read or overwrite files outside those roots
+(security hardening 2026-07-02).
 Supported types: .xlsx/.csv -> sheet snapshots, .docx/.md -> doc snapshots.
 Conversion loss policies live in the converter headers.
 
@@ -28,6 +32,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.documents import csv_md_convert, docx_convert, editor_actions, storage, xlsx_convert
+from app.drive import file_utils as _file_utils
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +41,25 @@ router = APIRouter(prefix="/documents", tags=["Documents"])
 SHEET_EXTS = {".xlsx", ".csv"}
 DOC_EXTS = {".docx", ".md"}
 SUPPORTED_EXTS = SHEET_EXTS | DOC_EXTS
+
+
+def _require_allowed_path(raw_path: str) -> Path:
+    """Single choke point protecting every converter sink downstream.
+
+    Resolves the path and rejects anything outside the shared Drive
+    allowed-roots policy (app/drive/file_utils.get_allowed_roots). Runs
+    BEFORE existence checks so out-of-root probes learn nothing.
+    """
+    path = Path(raw_path)
+    try:
+        allowed = _file_utils.is_safe_path(path, _file_utils.get_allowed_roots())
+    except (OSError, ValueError):
+        allowed = False
+    if not allowed:
+        logger.warning("[documents] path outside allowed roots rejected: %s", raw_path)
+        raise HTTPException(status_code=403,
+                            detail="path outside allowed roots")
+    return path
 
 
 class OpenRequest(BaseModel):
@@ -74,7 +98,7 @@ def _kind_for(ext: str) -> str:
 @router.post("/open")
 def open_document(req: OpenRequest):
     """File -> {kind, snapshot}. Complex content degrades, never crashes."""
-    path = Path(req.path)
+    path = _require_allowed_path(req.path)
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail=f"no file at {req.path}")
     ext = path.suffix.lower()
@@ -107,7 +131,7 @@ def open_document(req: OpenRequest):
 @router.post("/save")
 def save_document(req: SaveRequest):
     """Snapshot -> file. Atomic temp+replace; .bak of the original on first save."""
-    path = Path(req.path)
+    path = _require_allowed_path(req.path)
     ext = path.suffix.lower()
     if ext not in SUPPORTED_EXTS:
         raise HTTPException(status_code=415, detail=f"unsupported type {ext}")

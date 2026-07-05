@@ -93,6 +93,7 @@ async def generate_weaver_stream(
     is_continuation: bool = False,
     captured_answers: Optional[Dict[str, str]] = None,
     pending_user_message: Optional[str] = None,
+    panel_history: Optional[List[Dict]] = None,
 ) -> AsyncIterator[bytes]:
     """Main Weaver stream generator v4.2.0 — converts ramble into structured job outline."""
     print(f"[WEAVER] Starting weaver v4.2.0 for project_id={project_id}")
@@ -129,7 +130,12 @@ async def generate_weaver_stream(
         # =====================================================================
         from app.llm._weaver_stream_prepare import prepare_weaver_messages
 
-        prep = prepare_weaver_messages(db, project_id, pending_user_message, captured_answers)
+        # live7 (2026-07-04): panel_history rides along so the weave covers
+        # the VISIBLE conversation even if project-id bookkeeping drifted.
+        prep = prepare_weaver_messages(
+            db, project_id, pending_user_message, captured_answers,
+            panel_history=panel_history,
+        )
 
         if prep.early_exit_message:
             yield _serialize_sse({"type": "token", "content": prep.early_exit_message})
@@ -154,6 +160,22 @@ async def generate_weaver_stream(
                 _compaction_result = await compact_conversation(relevant_messages)
                 if _compaction_result.was_compacted:
                     ramble_text = _compaction_result.format_for_weaver()
+                    # live19 (2026-07-05): pasted documents are REQUIREMENTS,
+                    # not chatter — the compactor summarized a 4,422-char brief
+                    # into oblivion and the weave itself flagged "document
+                    # referenced but its text is not present". Re-append large
+                    # user messages verbatim after compaction.
+                    _doc_msgs = [
+                        m for m in relevant_messages
+                        if m.get("role") == "user" and len(m.get("content", "")) >= 2500
+                    ]
+                    if _doc_msgs:
+                        ramble_text += (
+                            "\n\nPASTED USER DOCUMENTS (verbatim — exempt from "
+                            "compaction; every requirement in them is binding):\n"
+                            + "\n\n---\n\n".join(m["content"][:6000] for m in _doc_msgs[-2:])
+                        )
+                        print(f"[WEAVER] live19 Re-appended {len(_doc_msgs[-2:])} document message(s) verbatim after compaction")
             except (ImportError, Exception):
                 pass
         
@@ -281,6 +303,7 @@ async def generate_weaver_stream(
             {"role": "user", "content": user_prompt},
         ]
         response_chunks: List[str] = []
+        _usage: Optional[Dict] = None  # Derek p1: captured from the final done event
         
         async for chunk in stream_fn(messages=llm_messages, model=model):
             content = None
@@ -291,6 +314,8 @@ async def generate_weaver_stream(
                     print(f"[WEAVER] LLM ERROR from {provider}/{model}: {err_msg}")
                     yield _serialize_sse({"type": "token", "content": f"\n\n⚠️ Weaver LLM error: {err_msg}"})
                     continue
+                if chunk.get("type") == "done" and chunk.get("usage"):
+                    _usage = chunk["usage"]
                 content = chunk.get("text") or chunk.get("content")
                 if chunk.get("type") == "metadata":
                     continue
@@ -305,7 +330,30 @@ async def generate_weaver_stream(
         # =====================================================================
         # STEP 8: Post-process and save
         # =====================================================================
-        
+
+        # Derek p1: the weaver calls provider stream functions directly
+        # (bypassing both the provider registry and stream_llm), so it records
+        # its own cost here from the captured done-event usage.
+        if not _usage and response_chunks:
+            # p7 review fix: a completed stream with no usage event means this
+            # call goes UNRECORDED — say so loudly instead of silently.
+            logger.warning(
+                "[WEAVER] %s/%s stream yielded no usage — cost NOT recorded for this call",
+                provider, model,
+            )
+        if _usage:
+            try:
+                from app.cost.cost_recorder import record_llm_cost
+                record_llm_cost(
+                    provider=provider, model=model,
+                    prompt_tokens=int(_usage.get("prompt_tokens") or 0),
+                    completion_tokens=int(_usage.get("completion_tokens") or 0),
+                    stage="weaver",
+                    job_id=str(project_id) if project_id is not None else None,
+                )
+            except Exception as _cost_err:
+                logger.debug("[WEAVER] cost record skipped: %s", _cost_err)
+
         raw_output = "".join(response_chunks).strip()
         
         # Sanitize output to remove any prompt leakage
@@ -316,6 +364,21 @@ async def generate_weaver_stream(
         
         # Enforce deduplication (v3.5.0 - Bug 3 fix)
         dedup_output = _enforce_deduplication(hygiene_output)
+
+        # live8 (2026-07-04): the Target line is LOAD-BEARING and the model
+        # cannot be trusted alone with it — it downgraded Astra's stated
+        # C:\...\Tazza's Tetris to a verbal chain. If the conversation names
+        # an absolute path for the same folder, restate it deterministically.
+        _upgraded_target: Optional[str] = None
+        try:
+            from app.llm._weaver_target_line import upgrade_target_line
+            dedup_output, _upgraded_target = upgrade_target_line(
+                dedup_output, prep.filtered_messages,
+            )
+            if _upgraded_target:
+                print(f"[WEAVER] live8 Target line upgraded to stated absolute path: {_upgraded_target}")
+        except Exception as _tl_err:
+            logger.debug("[WEAVER] target-line upgrade skipped: %s", _tl_err)
         
         # v4.0.0: Slot detection/reconciliation REMOVED.
         # The LLM generates its own contextual questions and reads the user's
@@ -338,6 +401,19 @@ async def generate_weaver_stream(
         
         # Store in flow state for Spec Gate
         # v3.9.1: Now passing vision_context for intelligent UI classification
+        # 2026-07-04 vision upgrade: also carry the ORIGINAL image paths
+        # ([image_ref: ...] markers persisted with chat messages) so SpecGate
+        # can re-analyse the pixels at spec time, not just the chat prose.
+        _image_refs: list = []
+        try:
+            from app.llm.image_refs import extract_image_refs
+            _image_refs = extract_image_refs(prep.filtered_messages)
+            if _image_refs:
+                print(f"[WEAVER] {len(_image_refs)} image ref(s) carried to SpecGate: "
+                      + ", ".join(_image_refs[-3:]))
+        except Exception as _ir_err:
+            logger.debug("[WEAVER] image ref extraction skipped: %s", _ir_err)
+
         if _FLOW_STATE_AVAILABLE and start_weaver_flow:
             try:
                 start_weaver_flow(
@@ -345,6 +421,7 @@ async def generate_weaver_stream(
                     weaver_spec_id=weaver_output_id,
                     weaver_job_description=job_description,
                     vision_context=vision_context,  # v3.9.1: Pass vision context to flow state
+                    image_refs=_image_refs,
                 )
                 if vision_context:
                     print(f"[WEAVER] v3.9.1 Vision context stored in flow state ({len(vision_context)} chars)")
@@ -374,10 +451,16 @@ async def generate_weaver_stream(
         # =====================================================================
         
         mode_indicator = "updated" if is_update_mode else "ready"
+        # live8: the streamed tokens showed the model's original Target line,
+        # so surface the deterministic upgrade where the user can see it.
+        _target_note = (
+            f"\n📍 Target locked to the exact path named in the conversation: `{_upgraded_target}`\n"
+            if _upgraded_target else ""
+        )
         completion_message = f"""
 
 ---
-
+{_target_note}
 **Job description {mode_indicator}** (`{weaver_output_id}`)
 
 This is a structured outline of what you described. Review it above.

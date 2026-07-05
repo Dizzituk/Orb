@@ -605,6 +605,17 @@ def build_full_context(
     except Exception as _fs_err:
         print(f"[CONTEXT] Filesystem block injection failed: {_fs_err}")
 
+    # v18 (2026-07-03): mid-study flag — bare "continue / what's next" means
+    # the Coursera course while a study tool ran recently (study_state.py).
+    try:
+        from app.web_automation.study_state import build_study_session_block
+        _study_block = build_study_session_block()
+        if _study_block:
+            full_context += "\n\n" + _study_block
+            print(f"[CONTEXT] Study-session block injected ({len(_study_block)} chars)")
+    except Exception as _study_err:
+        print(f"[CONTEXT] Study-session block injection failed: {_study_err}")
+
     # v16 (Phase 7): Long-term behavioural / interest themes.
     # Only HOT themes (sustained evidence, diversified) appear here.
     # Cold themes surface via a separate surfacing path, not this block.

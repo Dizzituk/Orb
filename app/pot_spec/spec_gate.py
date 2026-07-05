@@ -369,6 +369,8 @@ async def run_spec_gate(
         user_prompt=prompt,
         repo_snapshot=repo_snapshot,
         constraints_hint=constraints_hint,
+        stage="spec_gate",  # Derek p1: cost attribution
+        job_id=job_id,
         **kwargs,
     )
 

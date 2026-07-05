@@ -29,6 +29,29 @@ CRITICAL RULES:
 9. "Intended outcome" must be DIFFERENT wording from "What is being built" (Bug 3 - no duplication)
 10. If the previous spec has a "SpecGate must resolve" section, KEEP it and add new directives if needed
 11. NEVER add code-answerable questions to "Questions for user" - those go in "SpecGate must resolve"
+12. KEEP the "**Job class**" line from the previous spec. If it is missing, add one:
+    greenfield_new_app (brand-new standalone app/project in its own new folder) |
+    modify_existing (changes to existing code) | unknown (genuinely unclear)
+12b. DESIGN VALUES ARE REQUIREMENTS: when the conversation names concrete
+    design specifics — colour names (e.g. "oxblood, cocoa, cream, muted
+    amber"), typography ("pixel-ish type"), effects ("CRT scanlines",
+    "embossed edges"), or exclusions ("avoid neon") — carry each one
+    VERBATIM as its own bullet under Design preferences. NEVER generalize
+    named values into vague phrases ("warm retro tones", "flourishes
+    welcome"): the builder can only build what the spec actually says.
+13. KEEP the "Target folder/location" line from the previous spec VERBATIM —
+    it is LOAD-BEARING (the pipeline hard-stops for greenfield jobs without
+    it). Only change it when the user explicitly named a DIFFERENT location,
+    OR to UPGRADE ITS FORM: if the conversation (any message, user or
+    assistant) states a full absolute path (drive letter, e.g. C:\\Users\\...)
+    for the SAME folder, replace the line with that absolute path verbatim —
+    a stated absolute path always outranks a relative form of the same place.
+    If the job class is greenfield_new_app and no such line exists, search
+    the conversation for any named location and add the line; if none exists
+    anywhere, add the one mandatory question "Where should the new app live?"
+    to "Questions for user". The line must be the LOCATION ONLY (a clean
+    folder chain like "Documents/Games/Tazza's Tetris"), never a sentence
+    describing where the folder is.
 
 OUTPUT FORMAT:
 - Output ONLY the complete updated job description
@@ -141,13 +164,53 @@ Produce a MINIMAL structured job outline with these sections:
 - **Intended outcome**: Different wording (e.g., "Local speech transcription integrated into desktop app")
 - **Execution mode**: Only if extracted (e.g., "Discussion only, no code yet")
 - **Key requirements**: Bullet list of what the user explicitly asked for
-- **Design preferences**: Only if specified (visual/UI preferences only)
+- **Design preferences**: Only if specified (visual/UI preferences only).
+  DESIGN VALUES ARE REQUIREMENTS: concrete named values from the conversation
+  — colour names ("oxblood, cocoa, cream, muted amber"), typography
+  ("pixel-ish type"), effects ("CRT scanlines", "embossed edges"), exclusions
+  ("avoid neon") — are carried VERBATIM, one bullet each. NEVER generalize
+  named values into vague phrases; the builder can only build what the spec says.
 - **Constraints**: Only if explicitly stated by the user
 - **Unresolved ambiguities**: Things genuinely unclear from the user's description
 - **SpecGate must resolve**: Directives for SpecGate to investigate by scanning the codebase
   (this section is EXPECTED to have items — most implementation gaps belong here)
 - **Questions for user**: ONLY subjective/preference gaps. Usually "none".
   (if you have items here, each MUST be something no code can answer)
+- **Job class**: exactly one line with one of: greenfield_new_app | modify_existing | unknown.
+  greenfield_new_app ONLY when the user is creating a brand-new standalone app/project
+  (its own new folder — NOT a change to the existing ASTRA backend/desktop/bridge code).
+  modify_existing for changes to existing code. If genuinely unsure, write unknown.
+- **Target folder/location** — LOAD-BEARING for greenfield_new_app jobs: the
+  pipeline HARD-STOPS without it. When Job class is greenfield_new_app:
+  1. Search the ENTIRE conversation — the user's messages AND the assistant's
+     own replies — for ANY location named for the project: a full path
+     (C:\\...), a user-folder phrasing ("Documents/Games/Tazza's Tetris",
+     "in my games folder", "Desktop"), or a reference to a previously named
+     folder ("same folder as before", "the existing folder").
+  2. If found, include exactly one line — "Target folder/location: <location>"
+     — where <location> is the LOCATION ONLY, never a sentence describing it.
+     PRECEDENCE: if a full absolute path (drive letter) for the target folder
+     is stated ANYWHERE in the conversation — even in an assistant reply —
+     the line MUST be that absolute path restated verbatim. NEVER downgrade a
+     stated absolute path to a relative chain. Only use a relative user-folder
+     form (Documents/Games/X — the system resolves them) when NO absolute
+     path was stated; never invent a drive letter that nobody stated.
+     BAD:  "Target folder/location: there's a folder in my documents called
+           Games and in there it's Tazza's Tetris"
+     BAD:  "Target folder/location: Documents/Games/Tazza's Tetris"
+           (when the conversation already stated
+           C:\\Users\\dizzi\\OneDrive\\Documents\\Games\\Tazza's Tetris)
+     GOOD: "Target folder/location: C:\\Users\\dizzi\\OneDrive\\Documents\\Games\\Tazza's Tetris"
+     GOOD: "Target folder/location: Documents/Games/Tazza's Tetris"
+           (only when no absolute path was ever stated)
+     Never let words like "location"/"folder" trail after the name, and do
+     not mention the location in "Unresolved ambiguities" once this line
+     exists — the line resolves the ambiguity.
+  3. If NO location exists anywhere in the conversation, this is the ONE
+     mandatory "Questions for user" entry: ask "Where should the new app
+     live? (e.g. Documents/Games/<name>)" — NEVER ship a greenfield job
+     description without either the line or that question.
+  For modify_existing jobs, omit the line.
 
 ## DEDUPLICATION RULE:
 "What is being built" and "Intended outcome" must use DIFFERENT words.

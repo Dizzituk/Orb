@@ -151,7 +151,7 @@ TARGET_REGISTRY: Dict[str, OptimizeTargetDefinition] = {
         _backend_target(
             "routing",
             "Routing and orchestration",
-            ["app/agentic_pipeline/**/*.py", "app/routing/**/*.py", "app/llm/**/*.py"],
+            ["app/pipeline_v2/**/*.py", "app/routing/**/*.py", "app/llm/**/*.py"],  # agentic_pipeline quarantined 2026-07-04 (Derek p7)
             "Improve task routing, orchestration, and decision consistency.",
         ),
         _backend_target(

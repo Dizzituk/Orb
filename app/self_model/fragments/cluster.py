@@ -87,7 +87,15 @@ def recompute_themes() -> Dict[str, int]:
     for tid in existing_theme_ids:
         store.delete_theme(tid)
 
-    embedded = [f for f in store.all() if f.embedding]
+    # LANE E: cluster only fragments in the ACTIVE write model-space — mixing
+    # spaces makes centroids meaningless. Legacy-model fragments stay orphans
+    # until reembed_batch restamps them.
+    from app.embeddings.provider_router import text_write_spec
+    active_label = text_write_spec().label
+    embedded = [
+        f for f in store.all()
+        if f.embedding and (f.embedding_model or "") == active_label
+    ]
     orphans = len(store.all()) - len(embedded)
 
     themes: Dict[str, Dict] = {}   # theme_id -> {"centroid": [...], "members": [frag]}
@@ -153,7 +161,9 @@ def assign_fragment_to_theme(fragment: Fragment) -> Optional[str]:
     best_sim = 0.0
     for tid, t in store.all_themes().items():
         c = t.get("centroid")
-        if not c:
+        # LANE E: never compare across model-spaces (dims guard; same-dims
+        # different-model themes are rebuilt by recompute_themes' partition)
+        if not c or len(c) != len(fragment.embedding):
             continue
         sim = cosine_similarity(fragment.embedding, c)
         if sim > best_sim:
@@ -163,7 +173,11 @@ def assign_fragment_to_theme(fragment: Fragment) -> Optional[str]:
     if best_theme is not None and best_sim >= CLUSTER_JOIN_THRESHOLD:
         existing_members = store.by_theme(best_theme)
         new_members = existing_members + [fragment]
-        embs = [m.embedding for m in new_members if m.embedding]
+        # LANE E: centroid only from same-model member vectors
+        embs = [
+            m.embedding for m in new_members
+            if m.embedding and (m.embedding_model or "") == (fragment.embedding_model or "")
+        ]
         new_centroid = centroid(embs) if embs else None
         t = store.get_theme(best_theme)
         if t and new_centroid:

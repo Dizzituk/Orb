@@ -2,7 +2,7 @@
 # Purpose: LLM Caller — unified interface for calling any model from pipeline stages.
 # Called-by: app.intelligent_memory.extraction, app.pipeline_v2.bvl.cross_model_diagnostic, app.pipeline_v2.bvl.tier2_test_generator, app.pipeline_v2.checkout (+4 more)
 # Depends-on: app.llm.streaming
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-07-04 (Derek p1: stage/job_id cost-attribution passthrough)
 """
 LLM Caller — unified interface for calling any model from pipeline stages.
 
@@ -27,6 +27,8 @@ async def call_llm(
     max_tokens: int = 16000,
     temperature: float = 0.0,
     timeout_seconds: int = 300,
+    stage: Optional[str] = None,
+    job_id: Optional[str] = None,
 ) -> str:
     """Call an LLM and return the text response.
 
@@ -38,6 +40,8 @@ async def call_llm(
         max_tokens: Maximum output tokens.
         temperature: Sampling temperature (0.0 = deterministic).
         timeout_seconds: Request timeout.
+        stage: Cost-attribution label for the cost ledger (Derek p1).
+        job_id: Optional job id for per-job cost attribution.
 
     Returns:
         Response text as string.
@@ -59,6 +63,8 @@ async def call_llm(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             max_tokens=max_tokens,
+            stage=stage,
+            job_id=job_id,
         )
         logger.info("[llm_caller] Response: %d chars from %s/%s", len(result), provider, model)
         return result
@@ -73,6 +79,8 @@ async def call_llm_with_messages(
     messages: List[Dict[str, str]],
     max_tokens: int = 16000,
     temperature: float = 0.0,
+    stage: Optional[str] = None,
+    job_id: Optional[str] = None,
 ) -> str:
     """Call an LLM with a full message list (for multi-turn conversations).
 
@@ -97,4 +105,6 @@ async def call_llm_with_messages(
         user_prompt=user_prompt,
         max_tokens=max_tokens,
         temperature=temperature,
+        stage=stage,
+        job_id=job_id,
     )

@@ -343,6 +343,17 @@ async def run_segmented_job(
             profile=profile,
         )
 
+        # live9 (2026-07-04): nothing built = nothing to verify. An empty
+        # manifest used to sail through as a vacuous 0/0 "PASS" + an
+        # "OVERALL: VERIFIED" merged verdict, then the eyes launched a
+        # nonexistent app and the judge blocked on the wreckage. Skip every
+        # advisory verification honestly instead.
+        _nothing_built = not any(
+            seg.get("file_scope") for seg in (_v2_manifest or {}).get("segments", [])
+        )
+        if _nothing_built:
+            emit("   ⛔ Manifest has 0 files — nothing was built, skipping verification and checkout")
+
         # v9.4 (2026-04-12): Phase 3 Job 10 — multi-target verification.
         # After the builder finishes writing segments, verify every target's
         # toolchain can build its code and run the contract verifier across
@@ -360,7 +371,7 @@ async def run_segmented_job(
                     _manifest_obj = _SM.from_dict(_v2_manifest)
                 except Exception:
                     _manifest_obj = None
-            if _manifest_obj is not None:
+            if _manifest_obj is not None and not _nothing_built:
                 _mt_report = await verify_manifest_build(_manifest_obj)
                 emit(f"   🎯 Job 10 verification: {_mt_report.summary()}")
                 if not _mt_report.is_passing():
@@ -376,18 +387,19 @@ async def run_segmented_job(
         # so the human signs off from a single table instead of refereeing
         # three contradicting reports.
         _verdict = None
-        try:
-            from app.pipeline_v2.final_verdict import build_final_verdict, push_verdict_narrative
-            _verdict = build_final_verdict(
-                pipeline_result=v2_result,
-                contract_report=_mt_report,
-                spec=_v2_spec or parent_spec,
-            )
-            for _vline in _verdict.render_lines():
-                emit(_vline)
-            push_verdict_narrative(_verdict)
-        except Exception as _fv_err:
-            logger.warning("[SEGMENT_LOOP] Final verdict assembly failed (non-fatal): %s", _fv_err)
+        if not _nothing_built:
+            try:
+                from app.pipeline_v2.final_verdict import build_final_verdict, push_verdict_narrative
+                _verdict = build_final_verdict(
+                    pipeline_result=v2_result,
+                    contract_report=_mt_report,
+                    spec=_v2_spec or parent_spec,
+                )
+                for _vline in _verdict.render_lines():
+                    emit(_vline)
+                push_verdict_narrative(_verdict)
+            except Exception as _fv_err:
+                logger.warning("[SEGMENT_LOOP] Final verdict assembly failed (non-fatal): %s", _fv_err)
 
         # JOB 11 (2026-06-10): agentic verifier final checkout — Claude with
         # hands, driving the real app per acceptance criterion. Gated behind
@@ -397,7 +409,7 @@ async def run_segmented_job(
         try:
             from app.pipeline_v2.config import VERIFIER_AGENT_ENABLED
             from app.pipeline_v2.clone_freshness import is_self_build as _vg_isb
-            if VERIFIER_AGENT_ENABLED and profile and (profile.language == "kotlin" or _vg_isb(profile)):
+            if (not _nothing_built) and VERIFIER_AGENT_ENABLED and profile and (profile.language == "kotlin" or _vg_isb(profile)):
                 from app.pipeline_v2.verifier_agent.agent import run_verifier_agent
                 _ev_text = "\n".join(_verdict.render_lines()) if _verdict else ""
                 await run_verifier_agent(
@@ -410,6 +422,54 @@ async def run_segmented_job(
                 )
         except Exception as _va_err:
             logger.warning("[SEGMENT_LOOP] Agentic verifier failed (non-fatal): %s", _va_err)
+
+        # DEREK p6 (2026-07-04): eyes+judge behavioural checkout for the
+        # GREENFIELD/host lane (which the Claude verifier above never covers
+        # — its gate is kotlin-or-self-build). Cheap SMALL-tier eyes + HEAVY
+        # judge, so it gets its own always-affordable gate:
+        # ASTRA_AGENTIC_VERIFIER_GREENFIELD (default ON — the Fable-cost
+        # reason the Claude verifier is off does not apply here). Advisory;
+        # verdict + failures land in the Decision Ledger, and a FAIL yields
+        # a Phase-5-shaped re-dispatch signal for the segmented builder.
+        try:
+            _gf_eyes_on = os.getenv("ASTRA_AGENTIC_VERIFIER_GREENFIELD", "1").strip().lower() in ("1", "true", "yes")
+            from app.pipeline_v2.android_sandbox import is_host_build as _hj_ihb
+            from app.pipeline_v2.clone_freshness import is_self_build as _hj_isb
+            if (
+                _gf_eyes_on and profile
+                and not _nothing_built
+                and profile.language != "kotlin"
+                and not _hj_isb(profile)
+                and _hj_ihb(profile)
+            ):
+                # live13: FAIL verdicts now trigger the verifier's own repair
+                # fleet (surgical fix worker -> re-run eyes+judge, bounded by
+                # ASTRA_CHECKOUT_REPAIR_ROUNDS), and the final verdict GATES
+                # the greenfield run's overall status — no 🎉 on a game that
+                # doesn't boot.
+                from app.pipeline_v2.verifier_agent.eyes_judge import run_checkout_with_repair
+                _spec_txt = ""
+                try:
+                    _spec_txt = json.dumps(_v2_spec or parent_spec or {}, default=str)[:8000]
+                except Exception:
+                    _spec_txt = str(_v2_spec or parent_spec or "")[:8000]
+                _judge = await run_checkout_with_repair(
+                    profile=profile,
+                    spec_text=_spec_txt,
+                    job_id=job_id,
+                    job_dir=_v2_job_dir,
+                    spec=_v2_spec or parent_spec,
+                    manifest=_v2_manifest,
+                    scaffold=getattr(v2_result, "scaffold_result", None),
+                    emit=emit,
+                )
+                if _judge.verdict != "PASS":
+                    _all_pass = False
+                    emit(f"   ⛔ Behavioural checkout {_judge.verdict} — run marked FAILED")
+                if _judge.redispatch_signal:
+                    emit("   ♻️ Checkout FAIL evidence recorded — re-dispatch signal in the ledger")
+        except Exception as _ej_err:
+            logger.warning("[SEGMENT_LOOP] Eyes+judge checkout failed (non-fatal): %s", _ej_err)
 
         # v2.3: Auto-install and launch APK for Android builds
         if v2_result.success and profile and profile.language == "kotlin":

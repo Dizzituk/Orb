@@ -14,9 +14,15 @@ def _serialize_sse(data: Dict[str, Any]) -> bytes:
     return f"data: {json.dumps(data)}\n\n".encode("utf-8")
 
 def _get_weaver_config() -> tuple[str, str]:
-    """Get provider and model for weaver from environment."""
+    """Get provider and model for weaver from environment (env-only, LANE D)."""
+    from app.llm.frontier_models import get_role_model
     provider = os.getenv("WEAVER_PROVIDER", "openai")
-    model = os.getenv("WEAVER_MODEL", "gpt-4.1-mini")
+    model = os.getenv("WEAVER_MODEL", "").strip()
+    if not model:
+        try:
+            provider, model = get_role_model("WEAVER", "DEFAULT")
+        except RuntimeError:
+            model = ""
     return provider, model
 
 def _is_control_message(role: str, content: str) -> bool:

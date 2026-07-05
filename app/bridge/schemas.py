@@ -71,6 +71,11 @@ class BridgeChatResponse(BaseModel):
     # Phone-action directives parsed from [[astra:...]] reply markers
     # (app/bridge/directives.py) — e.g. {"name": "sync_health", "arg": "48"}.
     directives: list[dict] = []
+    # Model badge parity (2026-07-03): which brain answered, mirroring the
+    # desktop's per-message chips (DB rows already store both). Optional and
+    # additive — phone builds without the chip UI ignore unknown JSON fields.
+    provider: Optional[str] = None
+    model: Optional[str] = None
 
 
 class BridgeProjectOut(BaseModel):

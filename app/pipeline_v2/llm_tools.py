@@ -2,7 +2,7 @@
 # Purpose: LLM Tool-Calling Loop for the Agentic Builder.
 # Called-by: app.pipeline_v2.agentic_builder, app.pipeline_v2.llm_compat, app.pipeline_v2.llm_tools_anthropic, app.pipeline_v2.segment_tracker (+1 more)
 # Depends-on: app.pipeline_v2, app.pipeline_v2.android_sandbox, app.pipeline_v2.llm_caller, app.pipeline_v2.llm_response_parsing (+6 more)
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-07-04 (Derek p1: per-call cost recording with stage/job_id)
 """
 LLM Tool-Calling Loop for the Agentic Builder.
 
@@ -78,6 +78,10 @@ async def run_tool_loop(
     on_text: Optional[Callable[[str], None]] = None,
     existing_messages: Optional[List[Dict]] = None,
     reasoning: Optional[Dict] = None,
+    stage: Optional[str] = None,
+    job_id: Optional[str] = None,
+    tool_executor: Optional[Callable] = None,
+    max_total_tokens: Optional[int] = None,
 ) -> Tuple[List[Dict], int, int]:
     """Run an agentic tool-calling loop.
 
@@ -97,6 +101,15 @@ async def run_tool_loop(
             instead of starting fresh. The initial_user_message is appended as
             a new user message to this history. This keeps the builder in the
             same context window so it knows what it already built.
+        stage: Cost-attribution label recorded per API call (Derek p1),
+            e.g. "builder_main" / "builder_worker" / "verifier".
+        job_id: Optional job id for per-job cost attribution.
+        tool_executor: Optional async (name, args) -> str override for tool
+            execution (Derek p5: segment workers wrap _execute_tool with a
+            file_scope guard). Defaults to the standard _execute_tool.
+        max_total_tokens: Optional per-loop token budget (in+out). When the
+            accumulated total crosses it, the loop stops with a WARN (Derek
+            p5: per-worker budgets).
 
     Returns:
         (messages_history, total_input_tokens, total_output_tokens)
@@ -117,6 +130,10 @@ async def run_tool_loop(
             on_text=on_text,
             existing_messages=existing_messages,
             thinking=(True if reasoning else None),
+            stage=stage,
+            job_id=job_id,
+            tool_executor=tool_executor,
+            max_total_tokens=max_total_tokens,
         )
 
     if existing_messages:
@@ -134,8 +151,15 @@ async def run_tool_loop(
 
     total_input_tokens = 0
     total_output_tokens = 0
+    _exec = tool_executor or _execute_tool
 
     for iteration in range(max_iterations):
+        if max_total_tokens and (total_input_tokens + total_output_tokens) >= max_total_tokens:
+            logger.warning(
+                "[llm_tools] Token budget exhausted (%d >= %d) at iteration %d — stopping loop",
+                total_input_tokens + total_output_tokens, max_total_tokens, iteration + 1,
+            )
+            break
         logger.info("[llm_tools] Iteration %d — calling %s/%s", iteration + 1, provider, model)
 
         response, in_tok, out_tok = await _call_api(
@@ -148,6 +172,16 @@ async def run_tool_loop(
         )
         total_input_tokens += in_tok
         total_output_tokens += out_tok
+
+        if in_tok or out_tok:
+            # Derek p1: the tool loop bypasses the provider registry, so it
+            # records its own cost per API call. record_llm_cost never raises.
+            from app.cost.cost_recorder import record_llm_cost
+            record_llm_cost(
+                provider=provider, model=model,
+                prompt_tokens=in_tok, completion_tokens=out_tok,
+                stage=stage, job_id=job_id,
+            )
 
         if response is None:
             logger.error("[llm_tools] API call returned None at iteration %d", iteration + 1)
@@ -173,7 +207,7 @@ async def run_tool_loop(
             if on_tool_call:
                 on_tool_call(tool_name, tool_args)
 
-            result = await _execute_tool(tool_name, tool_args)
+            result = await _exec(tool_name, tool_args)
 
             messages.append({
                 "role": "tool",

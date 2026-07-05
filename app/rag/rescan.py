@@ -426,5 +426,18 @@ def rescan_codebase(
         f"{len(report.modified)} modified, {len(report.deleted)} deleted, "
         f"{report.unchanged} unchanged, {len(report.errors)} errors"
     )
-    
+
+    # Enriched architecture cards (2026-07-02): host-read ingest, one chunk per
+    # card. Deliberately AFTER the sandbox-sourced code diff — cards are host
+    # artifacts (see the drift_note card) and .md, so the .py diff above can
+    # never quarantine them, and an empty sandbox walk doesn't block card
+    # freshness. ingest_enriched_cards never raises.
+    try:
+        from app.rag.enriched_cards import ingest_enriched_cards
+        card_stats = ingest_enriched_cards(db, scan_id=scan_id)
+        report.chunks_added += card_stats.get("added", 0) + card_stats.get("updated", 0)
+        report.chunks_removed += card_stats.get("removed", 0)
+    except Exception as exc:
+        report.errors.append(f"Enriched cards: {exc}")
+
     return report

@@ -2,7 +2,7 @@
 # Purpose: Memory system integration hooks.
 # Called-by: app.bridge.router, app.llm.routing.core, app.llm.routing.prompt_builders, app.llm.stream_router (+1 more)
 # Depends-on: app.db, app.memory.complexity_router, app.memory.conversation_service, app.memory.domains.confidence_learning (+9 more)
-# Last-renovated: 2026-06-15 (Job 1: orphan backfill now claims spine rows into the session too)
+# Last-renovated: 2026-07-03 (reminder/calendar turns skip semantic capture — the reminders ledger is truth)
 """
 Memory system integration hooks.
 
@@ -121,85 +121,103 @@ def after_user_message(
 
     Non-blocking — failures are logged and swallowed.
     """
-    # a) Preference capture (lightweight detection only)
-    # We detect preference-like language and log it.
-    # Full key/value extraction requires an LLM pass which we
-    # don't do inline — we just flag it so the inferred channel
-    # can accumulate evidence from repeated patterns.
+    # Reminder/calendar turns (2026-07-03): the reminders table is the ledger
+    # and single source of truth for these — promoting "remind me / put it on
+    # the calendar" into semantic memory (preferences, biographical facts,
+    # identity, fragments, context facts) is junk that recall can resurface
+    # later (the "I am amazing" ghost). Session bookkeeping below still runs:
+    # the chat transcript and rolling summaries are conversation structure,
+    # not semantic memory. capture_fragment() self-guards too (covers the
+    # Bridge path); this skips the remaining capture channels.
     try:
-        from app.memory.domains.preference_capture import (
-            detect_preference_intent,
-            capture_inferred,
-        )
-        detection = detect_preference_intent(message)
-        if detection.get("has_preference"):
-            # Store the raw preference statement for later extraction.
-            # The inferred channel accumulates these — when the same
-            # preference appears 2+ times, it gets promoted.
-            capture_inferred(
-                domain="general",
-                key="_raw_preference_statement",
-                observed_value=message[:200],
-                count=1,
-                context=f"auto_capture:{project_id}",
-            )
-            logger.info(
-                "[integration] Preference language detected: %s",
-                detection.get("triggers_found", []),
-            )
-    except Exception as e:
-        logger.debug("[integration] Preference capture skipped: %s", e)
+        from app.invocation.classifier import classify as _intent_classify
+        _reminder_turn = _intent_classify(message).matched_rule == "remind_or_schedule"
+    except Exception as _rt_exc:
+        _reminder_turn = False
+        logger.debug("[integration] reminder-turn check skipped: %s", _rt_exc)
+    if _reminder_turn:
+        logger.info("[integration] reminder/calendar turn — semantic capture skipped")
 
-    # b) Real-time biographical fact capture (v0.14.0)
-    # Detects explicit personal statements ("I live in X", "I work at Y")
-    # and writes them to permanent memory immediately — no LLM needed.
-    try:
-        from app.memory.realtime_fact_capture import capture_biographical_facts
-        _bio_count = capture_biographical_facts(message, db=db_session)
-        if _bio_count > 0:
-            logger.info("[integration] Captured %d biographical fact(s) from chat", _bio_count)
-    except Exception as e:
-        logger.debug("[integration] Biographical capture skipped: %s", e)
-
-    # b2) Phase 3: Tier 1 identity capture — independent of SQL preference path.
-    # Writes to data/self_model/identity.json (the always-injected block).
-    try:
-        from app.self_model.identity_capture import capture_and_persist as _id_cap
-        _id_result = _id_cap(message, source=f"chat:{project_id}")
-        if _id_result.get("written"):
-            logger.info(
-                "[integration] Identity facts captured: %s",
-                ", ".join(w.get("field", "?") for w in _id_result["written"]),
+    if not _reminder_turn:
+        # a) Preference capture (lightweight detection only)
+        # We detect preference-like language and log it.
+        # Full key/value extraction requires an LLM pass which we
+        # don't do inline — we just flag it so the inferred channel
+        # can accumulate evidence from repeated patterns.
+        try:
+            from app.memory.domains.preference_capture import (
+                detect_preference_intent,
+                capture_inferred,
             )
-    except Exception as e:
-        logger.debug("[integration] Identity capture skipped: %s", e)
+            detection = detect_preference_intent(message)
+            if detection.get("has_preference"):
+                # Store the raw preference statement for later extraction.
+                # The inferred channel accumulates these — when the same
+                # preference appears 2+ times, it gets promoted.
+                capture_inferred(
+                    domain="general",
+                    key="_raw_preference_statement",
+                    observed_value=message[:200],
+                    count=1,
+                    context=f"auto_capture:{project_id}",
+                )
+                logger.info(
+                    "[integration] Preference language detected: %s",
+                    detection.get("triggers_found", []),
+                )
+        except Exception as e:
+            logger.debug("[integration] Preference capture skipped: %s", e)
 
-    # b3) Phase 7: fragment capture — lifetime associative memory.
-    # Every user message → classified → embedded → clustered into themes.
-    # Never deleted, decays over time, hot themes inject, cold themes surface on match.
-    try:
-        from app.self_model.fragments.capture import capture_fragment
-        _frag_result = capture_fragment(
-            message,
-            source=f"chat:{project_id}",
-            project_id=int(project_id) if str(project_id).isdigit() else None,
-        )
-        if _frag_result.get("fragment_id"):
-            logger.info(
-                "[integration] fragment captured: signal=%s claim=%s theme=%s",
-                _frag_result.get("signal"),
-                _frag_result.get("claim"),
-                _frag_result.get("theme_id", "(none)"),
+        # b) Real-time biographical fact capture (v0.14.0)
+        # Detects explicit personal statements ("I live in X", "I work at Y")
+        # and writes them to permanent memory immediately — no LLM needed.
+        try:
+            from app.memory.realtime_fact_capture import capture_biographical_facts
+            _bio_count = capture_biographical_facts(message, db=db_session)
+            if _bio_count > 0:
+                logger.info("[integration] Captured %d biographical fact(s) from chat", _bio_count)
+        except Exception as e:
+            logger.debug("[integration] Biographical capture skipped: %s", e)
+
+        # b2) Phase 3: Tier 1 identity capture — independent of SQL preference path.
+        # Writes to data/self_model/identity.json (the always-injected block).
+        try:
+            from app.self_model.identity_capture import capture_and_persist as _id_cap
+            _id_result = _id_cap(message, source=f"chat:{project_id}")
+            if _id_result.get("written"):
+                logger.info(
+                    "[integration] Identity facts captured: %s",
+                    ", ".join(w.get("field", "?") for w in _id_result["written"]),
+                )
+        except Exception as e:
+            logger.debug("[integration] Identity capture skipped: %s", e)
+
+        # b3) Phase 7: fragment capture — lifetime associative memory.
+        # Every user message → classified → embedded → clustered into themes.
+        # Never deleted, decays over time, hot themes inject, cold themes surface on match.
+        try:
+            from app.self_model.fragments.capture import capture_fragment
+            _frag_result = capture_fragment(
+                message,
+                source=f"chat:{project_id}",
+                project_id=int(project_id) if str(project_id).isdigit() else None,
             )
-    except Exception as e:
-        logger.debug("[integration] fragment capture skipped: %s", e)
+            if _frag_result.get("fragment_id"):
+                logger.info(
+                    "[integration] fragment captured: signal=%s claim=%s theme=%s",
+                    _frag_result.get("signal"),
+                    _frag_result.get("claim"),
+                    _frag_result.get("theme_id", "(none)"),
+                )
+        except Exception as e:
+            logger.debug("[integration] fragment capture skipped: %s", e)
 
-    # c) Context extraction (facts and decisions)
-    try:
-        from app.memory.domains.context import ContextStore
-        _extract_context_facts(message, project_id)
-    except Exception as e:
-        logger.debug("[integration] Context extraction skipped: %s", e)
+        # c) Context extraction (facts and decisions)
+        try:
+            from app.memory.domains.context import ContextStore
+            _extract_context_facts(message, project_id)
+        except Exception as e:
+            logger.debug("[integration] Context extraction skipped: %s", e)
 
     # c) Conversation session management + summary triggering (v10.0)
     _handle_conversation_session(

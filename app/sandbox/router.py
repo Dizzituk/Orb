@@ -6,6 +6,11 @@ Endpoints:
 - POST /sandbox/stop - Stop the zombie clone
 - GET /sandbox/status - Get clone status
 - GET /sandbox/health - Detailed health check
+
+NOT currently registered by router_registry (chat drives the sandbox through
+app.sandbox.tools instead). Auth is declared ON THE ROUTER (2026-07-02) so
+any future include is gated whether or not the include site remembers to —
+starting/stopping the zombie must never be reachable unauthenticated.
 """
 
 from __future__ import annotations
@@ -13,9 +18,10 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.auth import require_auth
 from app.sandbox.manager import (
     get_sandbox_manager,
     SandboxStatus,
@@ -23,7 +29,8 @@ from app.sandbox.manager import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/sandbox", tags=["sandbox"])
+router = APIRouter(prefix="/sandbox", tags=["sandbox"],
+                   dependencies=[Depends(require_auth)])
 
 
 # =============================================================================

@@ -1,7 +1,7 @@
 # FILE: app/llm/gemini_vision.py
 # Purpose: Vision client for image and video analysis.
 # Called-by: app.bridge.attachment_describe, app.content.style_analyser, app.debug.executors.user_files, app.endpoints._chat_media_processors (+11 more)
-# Depends-on: app.llm._gemini_vision_utils_2, app.llm._gemini_vision_utils_3
+# Depends-on: app.llm._gemini_vision_utils_2, app.llm._gemini_vision_utils_3, app.llm.frontier_models
 # Last-renovated: 2026-06-11
 """
 Vision client for image and video analysis.
@@ -45,6 +45,7 @@ from typing import Optional, Union
 from dotenv import load_dotenv
 from app.llm._gemini_vision_utils_2 import VIDEO_SIZE_THRESHOLD, VIDEO_TRANSCRIPTION_PROMPT, _get_openai_client, analyze_with_gemini, get_vision_model_for_complexity, is_image_mime_type, select_vision_tier, transcribe_video_for_context_sync
 from app.llm._gemini_vision_utils_3 import _detect_mime_type, _get_openai_api_key, _openai_vision_analyze, _read_image_bytes, analyze_video, check_vision_available, transcribe_video_for_context
+from app.llm.frontier_models import get_provider_default_model
 
 load_dotenv()
 
@@ -84,16 +85,16 @@ def _get_model_name(tier: str = "default") -> str:
     - default: same as complex (was fast pre-v0.14.2)
     """
     if tier == "fast":
-        return os.getenv("GEMINI_VISION_MODEL_FAST", "gemini-2.0-flash")
+        return os.getenv("GEMINI_VISION_MODEL_FAST") or get_provider_default_model("google", strict=False)
     elif tier == "complex":
-        return os.getenv("GEMINI_VISION_MODEL_COMPLEX", "gemini-2.5-pro")
+        return os.getenv("GEMINI_VISION_MODEL_COMPLEX") or get_provider_default_model("google", strict=False)
     elif tier == "video_heavy":
-        return os.getenv("GEMINI_VIDEO_HEAVY_MODEL", "gemini-3.0-pro-preview")
+        return os.getenv("GEMINI_VIDEO_HEAVY_MODEL") or get_provider_default_model("google", strict=False)
     elif tier == "opus_critic":
-        return os.getenv("GEMINI_OPUS_CRITIC_MODEL", "gemini-3.0-pro-preview")
+        return os.getenv("GEMINI_OPUS_CRITIC_MODEL") or get_provider_default_model("google", strict=False)
     else:
         # v0.14.2: Default to 2.5 Pro (was Flash)
-        return os.getenv("GEMINI_VISION_MODEL_COMPLEX", "gemini-2.5-pro")
+        return os.getenv("GEMINI_VISION_MODEL_COMPLEX") or get_provider_default_model("google", strict=False)
 
 
 def _get_vision_model(tier: str = "default"):
@@ -214,7 +215,7 @@ Return as JSON: {"summary": "...", "tags": [...], "type": "..."}"""
             image_bytes=image_bytes,
             mime_type=mime_type,
             prompt=analysis_prompt,
-            model=os.getenv("OPENAI_VISION_MODEL", "gpt-5.4-mini"),
+            model=os.getenv("OPENAI_VISION_MODEL") or get_provider_default_model("openai", strict=False),
         )
         
         if "error" in openai_result:
@@ -233,7 +234,7 @@ Return as JSON: {"summary": "...", "tags": [...], "type": "..."}"""
                 "tags": result.get("tags", ["image"]),
                 "type": result.get("type", "image"),
                 "provider": "openai",
-                "model": os.getenv("OPENAI_VISION_MODEL", "gpt-5.4-mini"),
+                "model": os.getenv("OPENAI_VISION_MODEL") or get_provider_default_model("openai", strict=False),
             }
         except json.JSONDecodeError:
             return {
@@ -241,7 +242,7 @@ Return as JSON: {"summary": "...", "tags": [...], "type": "..."}"""
                 "tags": ["image"],
                 "type": "image",
                 "provider": "openai",
-                "model": os.getenv("OPENAI_VISION_MODEL", "gpt-5.4-mini"),
+                "model": os.getenv("OPENAI_VISION_MODEL") or get_provider_default_model("openai", strict=False),
             }
             
     except Exception as e:
@@ -318,7 +319,7 @@ def ask_about_image(
             image_bytes=image_bytes,
             mime_type=mime_type,
             prompt=full_prompt,
-            model=os.getenv("OPENAI_VISION_MODEL", "gpt-5.4-mini"),
+            model=os.getenv("OPENAI_VISION_MODEL") or get_provider_default_model("openai", strict=False),
         )
         return result
         

@@ -41,6 +41,21 @@ from app.pipeline_v2.orchestrator_report import _compile_and_send_to_debug, _est
 from app.pipeline_v2.orchestrator_spec_review import _run_spec_review_stage, _extract_build_output_from_bvl
 
 
+def _builder_model_label(mode: str) -> str:
+    """Honest builder-model label for narrative events (Derek p5) — reads the
+    resolved config, never env defaults that may lie."""
+    try:
+        if mode == "segmented":
+            from app.llm.stage_roles import resolve_stage_role
+            w = resolve_stage_role("BUILDER_WORKER")
+            m = resolve_stage_role("BUILDER_MAIN")
+            return f"workers {w.provider}/{w.model} + integrator {m.provider}/{m.model}"
+        from app.pipeline_v2.config import BUILDER_PROVIDER, BUILDER_MODEL
+        return f"{BUILDER_PROVIDER}/{BUILDER_MODEL}"
+    except Exception:
+        return "unresolved"
+
+
 async def run_v2_pipeline(
     job_id: str,
     manifest: Dict[str, Any],
@@ -102,11 +117,15 @@ async def run_v2_pipeline(
             from app.pipeline_v2.ledger import load_or_create_ledger
             from app.pipeline_v2.ledger_seed import seed_ledger_from_spec
             _ledger = load_or_create_ledger(job_id, job_dir)
-            if _ledger.entry_count == 0:
-                _seeded = seed_ledger_from_spec(_ledger, spec, job_dir, profile=profile)
-                emit(f"   📒 Decision ledger seeded with {_seeded} entries")
+            # Derek p4: SpecGate agent evidence may already be in the ledger,
+            # so "entry_count == 0" no longer implies "unseeded". Seeding is
+            # documented idempotent (same key+value restates) — always run it.
+            _pre = _ledger.entry_count
+            _seeded = seed_ledger_from_spec(_ledger, spec, job_dir, profile=profile)
+            if _pre:
+                emit(f"   📒 Decision ledger loaded ({_pre} entries, +{_seeded} seeded)")
             else:
-                emit(f"   📒 Decision ledger loaded ({_ledger.entry_count} entries)")
+                emit(f"   📒 Decision ledger seeded with {_seeded} entries")
     except Exception as _lerr:
         logger.warning("[orchestrator] Ledger seed failed: %s", _lerr)
 
@@ -200,23 +219,43 @@ async def run_v2_pipeline(
     emit("🤖 STAGE 4: AGENTIC BUILDER")
     emit(f"{'='*60}")
 
+    # Derek p5 (2026-07-04): ASTRA_BUILDER_MODE selects the builder shape.
+    #   segmented -> scheduler + scoped HANDS workers + HEAVY integrator
+    #   single    -> the classic one-model 150-tool-call loop (fallback)
+    # live11 (2026-07-05): import UNCONDITIONALLY — the checkout/verification
+    # fix loops below call run_agentic_builder in BOTH modes, and binding it
+    # only in the single-mode branch crashed the first segmented run with
+    # "cannot access local variable 'run_agentic_builder'".
     from app.pipeline_v2.agentic_builder import run_agentic_builder
-
-    build_result = await run_agentic_builder(
-        spec=spec,
-        manifest=manifest,
-        scaffold=scaffold,
-        job_dir=job_dir,
-        on_progress=emit,
-        profile=profile,
-    )
+    _builder_mode = os.getenv("ASTRA_BUILDER_MODE", "single").strip().lower()
+    if _builder_mode == "segmented":
+        emit("   Mode: SEGMENTED (ASTRA_BUILDER_MODE=segmented — flip to 'single' to fall back)")
+        from app.pipeline_v2.segmented import run_segmented_builder
+        build_result = await run_segmented_builder(
+            spec=spec,
+            manifest=manifest,
+            scaffold=scaffold,
+            job_dir=job_dir,
+            job_id=job_id,
+            on_progress=emit,
+            profile=profile,
+        )
+    else:
+        build_result = await run_agentic_builder(
+            spec=spec,
+            manifest=manifest,
+            scaffold=scaffold,
+            job_dir=job_dir,
+            on_progress=emit,
+            profile=profile,
+        )
     result.build_result = build_result
     result.total_llm_calls += build_result.total_llm_calls
 
     _push_narrative(
         stage="critical_pipeline",
         title=f"Agentic Builder {'Complete' if build_result.success else 'Finished with Issues'}",
-        model_used=f"{os.getenv('ASTRA_V2_BUILDER_PROVIDER', 'openai')}/{os.getenv('ASTRA_V2_BUILDER_MODEL', 'gpt-5.4')}",
+        model_used=_builder_model_label(_builder_mode),
         output_summary=f"{len(build_result.all_files_written)} files written, {build_result.total_tool_calls} tool calls",
         files_touched=build_result.all_files_written[:15],
         duration_ms=int(build_result.total_duration_seconds * 1000),
@@ -334,6 +373,59 @@ async def run_v2_pipeline(
         except Exception as _e:
             logger.warning("[orchestrator] Report compilation failed: %s", _e)
 
+        return result
+
+    # ------------------------------------------------------------------
+    # live11 (2026-07-05): EXTERNAL HOST APPS (greenfield lane) skip BOTH
+    # checkout paths below. Enhanced checkout is browser-based against
+    # ASTRA's own backend/frontend (:8000/:5173, D:\orb-desktop) and the
+    # legacy loop screenshots the ASTRA window — neither can say anything
+    # about a standalone game in the user's Games folder. The first live
+    # run proved it: "Backend boots OK" (ASTRA's backend, not the game),
+    # then a feedback loop into the crashed builder binding. The greenfield
+    # behavioural verdict belongs to the eyes+judge host checkout, which
+    # runs right after this pipeline returns (segment_loop, Derek p6).
+    # ------------------------------------------------------------------
+    try:
+        from app.pipeline_v2.clone_freshness import is_self_build as _cf_isb
+        from app.pipeline_v2.android_sandbox import is_host_build as _as_ihb
+        _external_host_app = bool(
+            profile
+            and profile.language != "kotlin"
+            and not _cf_isb(profile)
+            and _as_ihb(profile)
+        )
+    except Exception as _eh_err:
+        logger.warning("[orchestrator] external-host detection failed: %s", _eh_err)
+        _external_host_app = False
+
+    if _external_host_app:
+        emit(f"\n{'='*60}")
+        emit("🎮 EXTERNAL HOST APP — ASTRA-side checkouts skipped")
+        emit("   Behavioural verdict comes from the eyes+judge host checkout next")
+        emit(f"{'='*60}")
+        result.success = bool(build_result.success)
+        # live12 (2026-07-05, Taz's standing requirement): every build leaves
+        # a double-clickable launcher at the project root.
+        try:
+            from app.pipeline_v2.host_launcher import ensure_launcher
+            _launcher = ensure_launcher(profile.project_root, profile.project_name)
+            if _launcher:
+                emit(f"   🖱️ Launcher written: {os.path.basename(_launcher)} (double-click to run)")
+            else:
+                emit("   ⚠️ No entrypoint resolved — launcher not written")
+        except Exception as _ln_err:
+            logger.warning("[orchestrator] launcher step failed: %s", _ln_err)
+        _update_stage_status(
+            "final_checkout", "running",
+            "Builder+integrator green — behavioural checkout deferred to eyes+judge",
+        )
+        result.total_duration_seconds = time.time() - t_start
+        result.estimated_cost_usd = _estimate_cost(result)
+        emit(f"\n{'='*60}")
+        emit(f"{'✅ BUILD COMPLETE' if result.success else '❌ BUILD FINISHED WITH ISSUES'} — awaiting eyes+judge")
+        emit(f"Duration: {result.total_duration_seconds:.1f}s | LLM calls: {result.total_llm_calls} | Est. cost: ${result.estimated_cost_usd:.2f}")
+        emit(f"{'='*60}")
         return result
 
     # ------------------------------------------------------------------

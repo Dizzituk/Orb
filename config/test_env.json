@@ -1,0 +1,32 @@
+{
+  "_comment": "JOB 5: per-target TEST environments. TEST-ONLY credentials - never the real password. Set password here or via ASTRA_TESTENV_ASTRA_BRIDGE_PASSWORD in .env. avd_name: set to your Android Studio AVD name (run 'emulator -list-avds') to let preflight auto-start it headless.",
+  "astra-bridge": {
+    "username": "",
+    "password": "CHANGE_ME",
+    "backend_url_from_device": "http://10.0.2.2:8000",
+    "avd_name": "",
+    "main_activity": ".MainActivity",
+    "url_field_marker": "Tailscale IP or URL",
+    "password_field_marker": "ASTRA Password",
+    "login_button_text": "Login",
+    "save_button_text": "Save & Check",
+    "logged_in_marker": "Logged in to ASTRA"
+  },
+  "driver-copilot": {
+    "username": "",
+    "password": "CHANGE_ME",
+    "backend_url_from_device": "http://10.0.2.2:8000",
+    "avd_name": "",
+    "main_activity": ".MainActivity",
+    "logged_in_marker": ""
+  },
+  "astra-backend": {
+    "checkout_backend_url": "http://127.0.0.1:8000",
+    "checkout_frontend_url": "http://localhost:5173",
+    "_comment": "Self-build target. When checkout runs for a sandbox clone, run_shell routes INTO the VM, so these localhost URLs resolve to the clone's services - not the live host."
+  },
+  "astra-frontend": {
+    "checkout_backend_url": "http://127.0.0.1:8000",
+    "checkout_frontend_url": "http://localhost:5173"
+  }
+}

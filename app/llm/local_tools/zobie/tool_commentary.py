@@ -76,9 +76,10 @@ def get_commentary_config() -> Dict[str, Any]:
         }
     except ImportError:
         # Fallback defaults matching .env CHAT config
+        from app.llm.frontier_models import get_role_model
         return {
             "provider": os.getenv("CHAT_PROVIDER", "google"),
-            "model": os.getenv("CHAT_MODEL", "gemini-2.0-flash"),
+            "model": os.getenv("CHAT_MODEL") or get_role_model("CHAT", "DEFAULT")[1],
             "max_tokens": 1000,
             "timeout": 30,
         }

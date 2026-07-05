@@ -105,6 +105,11 @@ class _QuietAccessFilter(_logging.Filter):
 
 _logging.getLogger('uvicorn.access').addFilter(_QuietAccessFilter())
 
+# Tightened 2026-07-02 (was allow_methods=["*"] / allow_headers=["*"]):
+# methods = verbs the renderer actually issues (PUT: 2 call sites, PATCH: 3);
+# headers = what the app sends (X-Auth-Token: financeApi.ts; X-Idempotency-Key
+# + X-Original-Filename: Bridge uploads; X-Astra-Local: Electron local-trust).
+# "file://" stays: main.js production mode loads dist/index.html via loadFile.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -115,9 +120,26 @@ app.add_middleware(
         "file://",
     ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-Auth-Token",
+        "X-Idempotency-Key",
+        "X-Astra-Local",
+        "X-Original-Filename",
+    ],
 )
+
+# Firewall — one-way sandbox isolation (ACTIVATED 2026-07-02; was dead code).
+# Added AFTER CORS so it wraps outermost and rejects blocked sources before
+# anything else runs. Client-IP resolution is spoof-resistant: XFF/X-Real-IP
+# only count from trusted proxy peers (app/security/client_ip.py). The
+# on_startup hook logs "Firewall middleware: ACTIVE" and
+# tests/test_firewall_header_trust.py asserts this wiring exists, so it can
+# never silently regress to dead code again.
+from app.security.firewall import FirewallMiddleware
+app.add_middleware(FirewallMiddleware)
 
 
 # ============================================================================
@@ -128,6 +150,30 @@ app.add_middleware(
 def on_startup():
     os.makedirs("data", exist_ok=True)
     os.makedirs("data/files", exist_ok=True)
+
+    # DEREK phase 2 (2026-07-04): fail-loud stage-role check. An unresolvable
+    # role logs an unmissable ERROR naming the exact env key (it does not
+    # kill the backend — chat must boot; the pipeline errors at dispatch).
+    try:
+        from app.llm.stage_roles import validate_stage_roles_at_startup
+        _sr_failures = validate_stage_roles_at_startup()
+        print(
+            "[startup] Stage roles: "
+            + ("ALL RESOLVED" if _sr_failures == 0 else f"{_sr_failures} UNRESOLVED - see ERROR log")
+        )
+    except Exception as _sr_exc:
+        print(f"[startup] Stage-role validation unavailable: {_sr_exc}")
+
+    # Assert the sandbox-isolation firewall is wired (see add_middleware above).
+    # If this line ever stops printing ACTIVE, the one-way isolation is OFF.
+    _fw_active = any(
+        getattr(m, "cls", None) is not None and m.cls.__name__ == "FirewallMiddleware"
+        for m in app.user_middleware
+    )
+    if _fw_active:
+        print("[startup] Firewall middleware: ACTIVE (sandbox 192.168.250.0/24 blocked, XFF spoof-proof)")
+    else:
+        print("[startup] Firewall middleware: [X] NOT REGISTERED — one-way sandbox isolation is OFF")
 
     import asyncio
     _loop = asyncio.get_event_loop()
@@ -161,6 +207,11 @@ def on_startup():
     init_db()
 
     print("[startup] Checking authentication...")
+    # Fail closed if bcrypt is missing (2026-07-02) — never silently
+    # downgrade password hashing to SHA256 again.
+    from app.auth.config import assert_strong_hash_available
+    assert_strong_hash_available()
+    print("[startup] Password hashing: [OK] bcrypt available (fail-closed check)")
     if is_auth_configured():
         print("[startup] Password authentication: [OK] configured")
     else:
@@ -347,6 +398,21 @@ def on_startup():
             print("[startup] Idle governor: [WARN] not started (disabled, running, or no loop)")
     except Exception as e:
         print(f"[startup] Idle governor: [WARN] {e}")
+
+    # LANE E (2026-07-02): 4080 VRAM orchestrator — restores persisted state
+    # (GAMING survives restarts; interrupted INGEST recovers to INTERACTIVE)
+    # and converges residents in a background thread (never blocks startup).
+    try:
+        import threading as _gpu_threading
+        from app.gpu.orchestrator import get_orchestrator
+        _gpu_orch = get_orchestrator()
+        # boot_bringup (not plain converge): staggers + verifies the text
+        # embedder's cold-start behind Nat/Chatterbox so it can't lose the
+        # 4080 VRAM race and strand embeddings (2026-07-03 incident).
+        _gpu_threading.Thread(target=_gpu_orch.boot_bringup, daemon=True).start()
+        print(f"[startup] GPU orchestrator: [OK] state={_gpu_orch.current_state()}")
+    except Exception as e:
+        print(f"[startup] GPU orchestrator: [WARN] {e}")
 
     # v3.0: Take a fresh investments snapshot on startup if stale/missing
     try:

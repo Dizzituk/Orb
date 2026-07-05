@@ -74,9 +74,9 @@ async def generate_image_endpoint(
 
     # Resolve model name for memory log
     if used_provider == "openai":
-        model_name = os.getenv("IMAGE_GEN_MODEL", "gpt-image-1.5")
+        model_name = os.getenv("IMAGE_GEN_MODEL", "")
     else:
-        model_name = os.getenv("IMAGE_GEN_FALLBACK_MODEL", "gemini-2.5-flash-image")
+        model_name = os.getenv("IMAGE_GEN_FALLBACK_MODEL", "")
 
     # Save to memory
     memory_service.create_message(db, memory_schemas.MessageCreate(

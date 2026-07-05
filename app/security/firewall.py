@@ -1,8 +1,8 @@
 # FILE: app/security/firewall.py
 # Purpose: Firewall Middleware: Block requests from untrusted sources.
-# Called-by: app.security, tests.test_firewall
-# Depends-on: stdlib/third-party only
-# Last-renovated: 2026-06-11
+# Called-by: main (add_middleware, ACTIVE since 2026-07-02), app.security, tests.test_firewall
+# Depends-on: app.security.client_ip
+# Last-renovated: 2026-07-02
 """Firewall Middleware: Block requests from untrusted sources.
 
 CRITICAL SAFETY FEATURE: Prevents Zombie/Sandbox Orb from communicating
@@ -10,6 +10,11 @@ back to Main Orb. This ensures one-way control only.
 
 The sandbox uses Windows Sandbox NAT which assigns IPs in 192.168.250.x range.
 Any request from this range to Main Orb is blocked.
+
+Header-trust fix (2026-07-02): client IP resolution is delegated to
+app.security.client_ip.effective_client_ip — X-Forwarded-For / X-Real-IP are
+honoured ONLY when the raw socket peer is a trusted proxy (loopback Caddy),
+so a spoofed XFF from the LAN or the sandbox cannot impersonate localhost.
 """
 
 from __future__ import annotations
@@ -21,6 +26,8 @@ from ipaddress import ip_address, ip_network
 from fastapi import Request, HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
+
+from app.security.client_ip import effective_client_ip
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +49,14 @@ BLOCKED_RANGES = [
 # Combine all blocked ranges
 ALL_BLOCKED_RANGES = SANDBOX_IP_RANGES + BLOCKED_RANGES
 
-# Always allow these (localhost)
+# Always allow these (localhost). "testclient" is starlette TestClient's
+# synthetic peer name — impossible on a real TCP socket (peers are numeric),
+# required so in-process test harnesses pass the active firewall.
 ALLOWED_IPS = {
     "127.0.0.1",
     "::1",
     "localhost",
+    "testclient",
 }
 
 # =============================================================================
@@ -78,23 +88,16 @@ class FirewallMiddleware(BaseHTTPMiddleware):
         logger.info(f"Firewall initialized: blocking {len(self.blocked_networks)} ranges, allowing {len(self.allowed_ips)} IPs")
     
     def _get_client_ip(self, request: Request) -> str:
-        """Extract client IP from request."""
-        # Check X-Forwarded-For header first (if behind proxy)
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            # Take first IP in chain
-            return forwarded.split(",")[0].strip()
-        
-        # Check X-Real-IP header
-        real_ip = request.headers.get("X-Real-IP")
-        if real_ip:
-            return real_ip.strip()
-        
-        # Fall back to direct client
-        if request.client:
-            return request.client.host
-        
-        return "unknown"
+        """Extract client IP — proxy-aware, spoof-resistant.
+
+        Delegates to app.security.client_ip.effective_client_ip: forwarding
+        headers count ONLY when the raw socket peer is a trusted proxy;
+        every other peer is judged by its raw socket address. A LAN or
+        sandbox client sending "X-Forwarded-For: 127.0.0.1" straight at
+        :8000 therefore cannot bypass this firewall.
+        """
+        ip = effective_client_ip(request)
+        return ip or "unknown"
     
     def _is_blocked(self, ip_str: str) -> bool:
         """Check if IP is in a blocked range."""

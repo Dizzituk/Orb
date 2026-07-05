@@ -1,8 +1,9 @@
 # FILE: app/debug/orchestrator/decomposer.py
 # Purpose: Decomposer — converts a free-text bug list into a list of scoped SubagentBriefs.
 # Called-by: app.debug.orchestrator.loop_controller
-# Depends-on: app.debug.orchestrator.schemas, app.pipeline_v2.target_registry
-# Last-renovated: 2026-06-11
+# Depends-on: app.debug.orchestrator.schemas, app.debug.orchestrator.provider_calls,
+#             app.pipeline_v2.target_registry
+# Last-renovated: 2026-07-02 (provider param: anthropic path via provider_calls)
 """
 Decomposer — converts a free-text bug list into a list of scoped SubagentBriefs.
 
@@ -125,7 +126,10 @@ def _build_user_prompt(bug_list: str, target_project_hint: Optional[str]) -> str
 
 
 # ---------------------------------------------------------------------------
-# LLM call (OpenAI)
+# LLM call — openai path unchanged (legacy behaviour byte-for-byte while
+# DEBUG_PROVIDER=openai); anthropic path via the shared provider_calls layer
+# (no response_format on Anthropic: JSON-only system suffix + the tolerant
+# parser below stay the safety net).
 # ---------------------------------------------------------------------------
 
 async def _call_decomposer_llm(
@@ -133,7 +137,18 @@ async def _call_decomposer_llm(
     user_prompt: str,
     model: str,
     max_tokens: int = 12000,
+    provider: str = "openai",
 ) -> str:
+    if (provider or "openai").lower() == "anthropic":
+        from app.debug.orchestrator.provider_calls import call_anthropic_json
+        return await call_anthropic_json(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=model,
+            max_tokens=max_tokens,
+            effort="high",
+        )
+
     try:
         from openai import AsyncOpenAI
     except ImportError:
@@ -320,6 +335,7 @@ async def decompose(
     bug_list: str,
     target_project: Optional[str],
     model: str,
+    provider: str = "openai",
 ) -> DecompositionResult:
     """Decompose a free-text bug list into investigation briefs.
 
@@ -328,6 +344,7 @@ async def decompose(
         target_project: Optional hint; if valid, preferred unless LLM
             clearly identifies a different project in the bug text.
         model: Model name (e.g. "gpt-5.4").
+        provider: "openai" (legacy path, default) or "anthropic".
 
     Returns:
         DecompositionResult. If the LLM fails entirely, returns a
@@ -342,6 +359,7 @@ async def decompose(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             model=model,
+            provider=provider,
         )
     except Exception as e:
         logger.exception("[decomposer] LLM call failed: %s", e)

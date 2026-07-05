@@ -469,6 +469,21 @@ def build_memory_context(
         except Exception as _repo_exc:
             logger.debug(f"[memory_injection] repo context skipped: {_repo_exc}")
 
+    # ── Enriched architecture cards (2026-07-02): broad / self-referential
+    # system questions get the SYSTEM_OVERVIEW + CAPABILITY_LEDGER cards AHEAD
+    # of file-level chunks — the altitude fix: 9k+ function-level chunks compete
+    # equally, so broad "what exists / what would need building" questions used
+    # to surface one random snippet. Rides the <codebase_memory> segment and
+    # the existing total-budget backstop; collector is failure-proof.
+    if depth != IntentDepth.D0:
+        try:
+            from app.llm.routing.memory_injection_sources import collect_architecture_cards
+            _cards_text = collect_architecture_cards(db, user_message, query_tags)
+            if _cards_text:
+                repo_context = _cards_text + ("\n\n" + repo_context if repo_context else "")
+        except Exception as _cards_exc:
+            logger.debug(f"[memory_injection] architecture cards skipped: {_cards_exc}")
+
     # ── Job 5 (2026-06-10): daily coach nudge — if the lifestyle scheduler has
     # produced an active nudge, weave it into context once (cooldown handled
     # inside get_nudge_for_injection so it doesn't repeat every message).
@@ -496,16 +511,26 @@ def build_memory_context(
     except Exception as _sentinel_exc:
         logger.debug(f"[memory_injection] sentinel alert injection skipped: {_sentinel_exc}")
 
-    # ── Reminders (2026-07-01): a fired-but-unacked reminder — weave it into
-    # context once (cooldown handled inside get_due_reminder_for_injection,
-    # same nudges/sentinel pattern as above) so it surfaces even mid-chat.
+    # ── Reminders (2026-07-01; delivered-once 2026-07-03): a fired reminder
+    # that has never been announced on ANY surface — weave it into context
+    # once, then stamp delivered_at so it can never resurface in a later
+    # conversation as if new (the "I am amazing at 5pm" ghost). The feed only
+    # ever contains undelivered reminders; the stamp prunes it on the next
+    # scheduler tick.
     try:
         from app.reminders.feed import get_due_reminder_for_injection
         _reminder = get_due_reminder_for_injection()
         if _reminder:
             facts_text = (facts_text + "\n\n" if facts_text else "") + (
-                "[REMINDER DUE — mention it now, plainly]: " + _reminder
+                "[REMINDER DUE — deliver it now: one short, casual line in your own "
+                "voice, clearly flagged as the reminder he set]: "
+                f"\"{_reminder.get('text')}\" (was due {_reminder.get('due_at')})"
             )
+            try:
+                from app.reminders.service import mark_delivered
+                mark_delivered(db, int(_reminder["id"]))
+            except Exception as _stamp_exc:
+                logger.debug(f"[memory_injection] reminder delivered-stamp failed: {_stamp_exc}")
     except Exception as _reminder_exc:
         logger.debug(f"[memory_injection] reminder injection skipped: {_reminder_exc}")
 

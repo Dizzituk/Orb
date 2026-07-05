@@ -508,8 +508,17 @@ async def wrap_with_build_tracking(
             extraction = _extract_weaver_intent(full_output)
             if extraction:
                 from app.builds.pipeline_bridge import save_weaver_extraction
-                save_weaver_extraction(db, build_project_id, extraction)
-                print(f"[STAGE_HOOKS] Saved Weaver extraction: {list(extraction.keys())}")
+                # v3.3 (2026-07-04): parse the Weaver's Job class line from the
+                # RAW output (line-anchored, so it must happen here, not on the
+                # trimmed extraction) — greenfield jobs must not be
+                # keyword-stamped onto ASTRA repos.
+                try:
+                    from app.llm.weaver_job_class import parse_weaver_job_class
+                    _job_class = parse_weaver_job_class(full_output)
+                except Exception:
+                    _job_class = "unknown"
+                save_weaver_extraction(db, build_project_id, extraction, job_class=_job_class)
+                print(f"[STAGE_HOOKS] Saved Weaver extraction: {list(extraction.keys())} job_class={_job_class}")
         except Exception as we:
             logger.debug("[stage_hooks] Weaver extraction failed: %s", we)
 

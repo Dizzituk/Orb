@@ -416,4 +416,7 @@ async def select_voice(req: SelectVoiceRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    # 127.0.0.1, not 0.0.0.0 (2026-07-02): every caller is local (desktop
+    # ttsApi.ts, start_astra.bat which already defaults to loopback) — no
+    # reason to expose synthesis to the LAN.
+    uvicorn.run(app, host="127.0.0.1", port=8001)

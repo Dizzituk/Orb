@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from .schemas import BridgeChatRequest, BridgeChatResponse
 from .llm_helpers import push_desktop_navigation
+from .markdown_sanitize import for_display
 from .chat_helpers import (
     _process_artifacts,
     _resolve_or_create_project,
@@ -70,6 +71,7 @@ async def run_bridge_chat(req: BridgeChatRequest, db: Session) -> BridgeChatResp
             reply=build_turn.reply, project_id=project.id,
             project_name=project.name, domain="",
             message_id=bt_message.id,
+            provider="bridge", model=build_turn.model,
         )
 
     domain_context, translation_result, domain_info = _run_translation(req.message, db, project_id=project.id)
@@ -95,6 +97,7 @@ async def run_bridge_chat(req: BridgeChatRequest, db: Session) -> BridgeChatResp
             reply=reply, project_id=project.id, project_name=project.name,
             domain=domain_info.get("domain", "") if domain_info else "",
             message_id=gate_message.id,
+            provider="bridge", model="capability-gate",
         )
 
     web_search_context, search_executed, search_succeeded, early_reply = (
@@ -111,6 +114,7 @@ async def run_bridge_chat(req: BridgeChatRequest, db: Session) -> BridgeChatResp
             reply=early_reply, project_id=project.id, project_name=project.name,
             domain=domain_info.get("domain", "") if domain_info else "",
             message_id=early_message.id,
+            provider="bridge", model="search-gate",
         )
 
     from app.bridge.capability_layer import run_astra_chat
@@ -172,10 +176,13 @@ async def run_bridge_chat(req: BridgeChatRequest, db: Session) -> BridgeChatResp
     if directives:
         display_reply = strip_directives(display_reply)
 
+    # for_display: the phone renders this string raw (no markdown engine).
+    # The row stored above keeps the raw reply — sanitise on the way out only.
     return BridgeChatResponse(
-        reply=display_reply, project_id=project.id,
+        reply=for_display(display_reply), project_id=project.id,
         project_name=project.name, domain=_detected_domain,
         attachments=attachments,
         directives=directives,
         message_id=assistant_message.id,
+        provider=provider, model=model,
     )

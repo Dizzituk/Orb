@@ -10,6 +10,10 @@ tool description via f-string at definition time.
 v1.0 (2026-04-26): extracted from web_tool_definitions.py + new
 sections for portal-aware click interpretation, bounded retry, and
 wrong-page recovery.
+v1.1 (2026-07-02, Amendment A Job 9): re-orient-on-timeout rule in
+RETRY_POLICY; META_UPLOAD_PLAYBOOK now points standard posting at the
+posting tools (manual composer flow demoted to fallback); post-submit
+modal-dismiss prose moved here as POST_SUBMIT_MODAL_RECOVERY.
 """
 from __future__ import annotations
 
@@ -102,6 +106,31 @@ either one alone:
     When multiple elements share text, prefer LARGEST w×h.
 
   • changed is TRUE → click worked, page visibly updated. Proceed.
+
+  • resolved (role+name mode) names the element the click actually
+    hit — tag, role, text, match=exact|substring. If resolved.text
+    is your target, treat the click as landed and read `changed` /
+    a fresh dom_snapshot for the effect, exactly as with snapped.
+"""
+
+
+# ── Post-submit modal recovery ────────────────────────────────────
+# Moved from WEB_CLICK_TOOL's inline description (2026-07-02) so the
+# definitions file stays under its size cap. Social platforms throw a
+# follow-up modal after a successful publish; the task is not done
+# until the page is usable again.
+POST_SUBMIT_MODAL_RECOVERY = """\
+AFTER PUBLISHING / POSTING / SUBMITTING: most social platforms throw
+up a follow-up modal once the action succeeds — 'Schedule another
+post?', 'Boost this post?', 'Try Premium', etc. The post itself went
+through, but the modal blocks the next interaction with the page and
+the user is left staring at it. The task is NOT complete until the
+page is back to a usable state. After a successful submit, run
+web_dom_snapshot — if you see a modal with a close 'X', a 'Maybe
+later', 'Not now', 'Skip', 'No thanks', 'Dismiss', or similar dismiss
+button, click it to close the modal before declaring the task done.
+Do NOT pick the affirmative option ('Schedule another post', 'Boost',
+'Upgrade') unless the user explicitly asked for it.
 """
 
 
@@ -132,6 +161,13 @@ RETRY POLICY — when an action doesn't produce the expected effect:
     expected outcome (file dialog opening, thumbnail appearing,
     post showing on the wall) hasn't been verified, say so plainly
     and either retry or hand back to the user.
+
+  • A web_wait_for timeout or a failed verify is a RE-ORIENT signal,
+    not a retry signal: take a fresh web_dom_snapshot, re-locate the
+    target in the new tree (role+name preferred), and only then act
+    again. Never re-click blind on the same target or coordinates
+    after a timeout — the page has just told you it is not in the
+    state you assumed.
 """
 
 
@@ -176,7 +212,17 @@ feed):
 # documented at the bottom for the rare cases CDP misses (closed
 # shadow DOM, custom picker widgets, A/B test variants).
 META_UPLOAD_PLAYBOOK = """\
-WORKED EXAMPLE — Posting an image to Meta Business (PRIMARY FLOW)
+STANDARD POSTING — do NOT drive the composer by hand. For a normal
+"post this image / video / reel" request, call the posting tool
+instead: post_image_to_instagram (still image) or
+post_reel_to_instagram (video / reel). One call runs the wait-gated
+selector-map driver (self-heal + audit trail included) and publishes
+via the Meta Business Suite composer to both Facebook and Instagram.
+The manual flow below is the FALLBACK — for non-standard composer
+work (editing an existing post, unusual composer states) or when the
+posting tool reports an unrecoverable failed_step.
+
+WORKED EXAMPLE — manual composer flow (FALLBACK)
 
 User: "post that image to Facebook with this caption ..."
 

@@ -551,11 +551,17 @@ async def _handle_architecture(
         # v3.4-fix: Retry with fallback provider on empty result.
         # Empty results typically mean an API timeout or malformed response.
         # Try up to 2 fallback providers before giving up.
-        _FALLBACK_MODELS = [
-            ("anthropic", "claude-sonnet-4-6"),
-            ("openai", "gpt-5.2"),
-            ("google", "gemini-2.5-flash"),
-        ]
+        from app.llm.fallbacks import _parse_chain as _parse_fb_chain
+        from app.llm.frontier_models import get_provider_default_model as _pdm
+        _FALLBACK_MODELS = _parse_fb_chain(os.getenv("ASTRA_STREAM_FALLBACK_CHAIN", ""))
+        if not _FALLBACK_MODELS:
+            _FALLBACK_MODELS = [
+                (_p, _m) for _p, _m in (
+                    ("anthropic", _pdm("anthropic", strict=False)),
+                    ("openai", _pdm("openai", strict=False)),
+                    ("google", _pdm("google", strict=False)),
+                ) if _m
+            ]
         _fallback_attempted = False
         for _fb_provider, _fb_model in _FALLBACK_MODELS:
             # Skip the provider that just failed

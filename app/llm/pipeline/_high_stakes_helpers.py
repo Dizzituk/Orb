@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from app.llm.schemas import LLMResult
+from app.llm.frontier_models import get_provider_default_model
 from app.llm.pipeline._high_stakes_utils import (
     AUDIT_ENABLED, _compute_content_hash, _utc_iso,
 )
@@ -73,7 +74,7 @@ def _get_architecture_draft_config() -> tuple[str, str, int, int]:
     
     # Fallback to legacy env vars
     provider = os.getenv("ARCHITECTURE_PROVIDER", "anthropic")
-    model = os.getenv("ARCHITECTURE_MODEL") or os.getenv("ANTHROPIC_OPUS_MODEL", "claude-opus-4-5-20251101")
+    model = os.getenv("ARCHITECTURE_MODEL") or os.getenv("ANTHROPIC_OPUS_MODEL") or get_provider_default_model("anthropic", strict=False)
     max_tokens = int(os.getenv("ARCHITECTURE_MAX_OUTPUT_TOKENS") or os.getenv("OPUS_DRAFT_MAX_TOKENS", "60000"))
     timeout = int(os.getenv("ARCHITECTURE_TIMEOUT_SECONDS") or os.getenv("OPUS_TIMEOUT_SECONDS", "600"))
     return provider, model, max_tokens, timeout

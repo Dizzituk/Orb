@@ -58,13 +58,14 @@ async def plan_search_queries(user_message: str) -> list[str]:
     try:
         from google import genai
         from google.genai import types
+        from app.llm.frontier_models import get_provider_default_model
 
         api_key = os.getenv("GOOGLE_API_KEY")
         if not api_key:
             logger.warning("[chart_research] No API key, using raw message as query")
             return [_clean_query(user_message)]
 
-        model = os.getenv("IMAGE_PROMPT_SYNTH_MODEL", "gemini-2.5-flash")
+        model = os.getenv("IMAGE_PROMPT_SYNTH_MODEL") or get_provider_default_model("google", strict=False)
         client = genai.Client(api_key=api_key)
 
         prompt = _QUERY_PLANNER_PROMPT.format(user_message=user_message)

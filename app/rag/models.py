@@ -289,8 +289,12 @@ class ChunkType:
     CLASS = "class"
     METHOD = "method"
     ASYNC_METHOD = "async_method"
+    # Enriched architecture card (2026-07-02): one whole .md card from
+    # .architecture/enriched ingested as a single retrieval-sized chunk
+    # (see app/rag/enriched_cards.py).
+    ARCHITECTURE_CARD = "architecture_card"
     
-    EMBEDDABLE = {FUNCTION, ASYNC_FUNCTION, CLASS, METHOD, ASYNC_METHOD}
+    EMBEDDABLE = {FUNCTION, ASYNC_FUNCTION, CLASS, METHOD, ASYNC_METHOD, ARCHITECTURE_CARD}
 
 
 class ArchScanRun(Base):

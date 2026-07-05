@@ -2,7 +2,7 @@
 # Purpose: JOB 8 (2026-06-10) - Anthropic tool-use loop adapter.
 # Called-by: app.pipeline_v2.llm_tools, app.pipeline_v2.verifier_agent.agent, tests.test_j8_live_anthropic_loop, tests.test_phase3_tools_smoke
 # Depends-on: app.pipeline_v2.llm_tools
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-07-04 (Derek p1: per-call cost recording with stage/job_id)
 """
 JOB 8 (2026-06-10) - Anthropic tool-use loop adapter.
 
@@ -41,6 +41,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 HARD_CALL_TIMEOUT = int(os.getenv("ASTRA_V2_BUILDER_CALL_TIMEOUT", "300"))
+
+# live14: models that rejected our thinking config once — skip thinking for
+# them for the rest of the process instead of a 400 + retry per call.
+_THINKING_REJECTED_MODELS: set = set()
 MAX_TOOL_RESULT_CHARS = 30_000
 DEFAULT_THINKING_BUDGET = int(os.getenv("ASTRA_ANTHROPIC_THINKING_BUDGET", "4096"))
 
@@ -132,6 +136,9 @@ async def run_anthropic_tool_loop(
     thinking: Optional[Any] = None,
     tools: Optional[List[Dict]] = None,
     tool_executor: Optional[Callable[[str, Dict], Any]] = None,
+    stage: Optional[str] = None,
+    job_id: Optional[str] = None,
+    max_total_tokens: Optional[int] = None,
 ) -> Tuple[List[Dict], int, int]:
     """Run an agentic tool loop against an Anthropic model.
 
@@ -147,6 +154,10 @@ async def run_anthropic_tool_loop(
         tool_executor: async (name, args) -> str | dict. Defaults to
             llm_tools._execute_tool.
         existing_messages: Anthropic-native history to continue from.
+        stage: Cost-attribution label recorded per API call (Derek p1).
+        job_id: Optional job id for per-job cost attribution.
+        max_total_tokens: Optional per-loop token budget (in+out) — the loop
+            stops with a WARN when crossed (Derek p5: per-worker budgets).
     """
     try:
         from anthropic import AsyncAnthropic
@@ -189,6 +200,12 @@ async def run_anthropic_tool_loop(
     total_out = 0
 
     for iteration in range(max_iterations):
+        if max_total_tokens and (total_in + total_out) >= max_total_tokens:
+            logger.warning(
+                "[llm_anthropic] Token budget exhausted (%d >= %d) at iteration %d - stopping loop",
+                total_in + total_out, max_total_tokens, iteration + 1,
+            )
+            break
         logger.info("[llm_anthropic] Iteration %d - calling %s", iteration + 1, model)
 
         resp = await _call_anthropic(
@@ -205,8 +222,20 @@ async def run_anthropic_tool_loop(
             break
 
         usage = getattr(resp, "usage", None)
-        total_in += int(getattr(usage, "input_tokens", 0) or 0)
-        total_out += int(getattr(usage, "output_tokens", 0) or 0)
+        _in_tok = int(getattr(usage, "input_tokens", 0) or 0)
+        _out_tok = int(getattr(usage, "output_tokens", 0) or 0)
+        total_in += _in_tok
+        total_out += _out_tok
+
+        if _in_tok or _out_tok:
+            # Derek p1: this loop bypasses the provider registry, so it
+            # records its own cost per API call. record_llm_cost never raises.
+            from app.cost.cost_recorder import record_llm_cost
+            record_llm_cost(
+                provider="anthropic", model=model,
+                prompt_tokens=_in_tok, completion_tokens=_out_tok,
+                stage=stage, job_id=job_id,
+            )
 
         content_blocks = list(getattr(resp, "content", []) or [])
         tool_uses = [b for b in content_blocks if getattr(b, "type", "") == "tool_use"]
@@ -286,7 +315,11 @@ async def _call_anthropic(
         tools=tools,
         max_tokens=max_tokens,
     )
-    if thinking_cfg:
+    # live14: models that rejected the thinking shape once (sonnet-5 wants
+    # thinking.type=adaptive) stay on the no-thinking path for the rest of
+    # the process — the checkout-repair loop was paying a 400 + retry on
+    # EVERY tool iteration.
+    if thinking_cfg and model not in _THINKING_REJECTED_MODELS:
         kwargs["thinking"] = thinking_cfg
         budget = int(thinking_cfg.get("budget_tokens", 0) or 0)
         if budget and kwargs["max_tokens"] <= budget:
@@ -312,6 +345,7 @@ async def _call_anthropic(
                     msg[:200],
                 )
                 kwargs.pop("thinking", None)
+                _THINKING_REJECTED_MODELS.add(model)  # live14: don't re-learn per iteration
                 continue
             if attempt == 1 and any(s in msg.lower() for s in ("overloaded", "rate", "529", "429")):
                 logger.warning("[llm_anthropic] Transient API error (%s) - backing off 5s", msg[:150])

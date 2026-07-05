@@ -132,6 +132,15 @@ def ensure_builtin_tasks_registered() -> None:
         import app.llm.research_task  # noqa: F401  (deep research grind)
     except Exception as exc:
         logger.debug("[idle.router] research task not registered: %s", exc)
+    # LANE E (2026-07-02): local-embeddings migration + visual ingest
+    try:
+        import app.idle.tasks_reembed  # noqa: F401  (reembed_batch + parity gate)
+    except Exception as exc:
+        logger.warning("[idle.router] reembed tasks unavailable: %s", exc)
+    try:
+        import app.idle.tasks_visual  # noqa: F401  (visual-embed queue drain)
+    except Exception as exc:
+        logger.warning("[idle.router] visual drain task unavailable: %s", exc)
 
 
 def catch_up(db: Session) -> int:

@@ -380,10 +380,11 @@ def handle_normal_routing(
         full_context += f"\n\n{_codebase_ctx_block}"
         print(f"[NORMAL_ROUTING] RAG-as-context block injected: {len(_codebase_ctx_block)} chars")
 
-    # Job continuation
+    # Job continuation — LANE D: env-only role (JOB_CONTINUATION_* in .env,
+    # seeded to the old DEFAULT_MODELS["anthropic_opus"] resolution).
     if req.continue_job_id and req.job_state == "needs_spec_clarification":
-        provider = "anthropic"
-        model = DEFAULT_MODELS["anthropic_opus"]
+        from app.llm.frontier_models import get_role_model
+        provider, model = get_role_model("JOB_CONTINUATION", "ARCHITECT")
         messages = build_messages(req.message, req.project_id, db, req.include_history, req.history_limit)
         system_prompt = build_system_prompt(project, full_context)
         return StreamingResponse(

@@ -134,12 +134,19 @@ class TestSpecGateTriggers:
         assert result.matched
         assert result.intent == CanonicalIntent.SEND_TO_SPEC_GATE
     
-    def test_simple_yes_triggers_spec_gate(self):
-        """Simple affirmative after Weaver prompt."""
-        for affirmative in ["yes", "yep", "sure", "go ahead", "do it", "ok", "y"]:
+    def test_bare_affirmatives_do_not_trigger_spec_gate(self):
+        """Bare affirmatives fall through to normal chat (2026-07-03).
+
+        Live bridge incident: "Yes please" (accepting an unrelated offer)
+        resolved to SEND_TO_SPEC_GATE and hit the capability gate. A real
+        spec-gate confirmation is consumed by translator Step 0
+        (ConfirmationState.has_pending) BEFORE tier0 runs, so any bare
+        affirmative reaching tier0 has nothing pending by construction.
+        """
+        for affirmative in ["yes", "yes please", "yep", "sure", "go ahead",
+                            "do it", "ok", "okay", "y"]:
             result = check_spec_gate_trigger(affirmative)
-            assert result.matched, f"Should match affirmative: {affirmative}"
-            assert result.intent == CanonicalIntent.SEND_TO_SPEC_GATE
+            assert not result.matched, f"Bare affirmative must not match: {affirmative}"
     
     def test_spec_gate_not_triggered_by_questions(self):
         """Questions about Spec Gate should not trigger it."""
@@ -152,37 +159,44 @@ class TestSpecGateTriggers:
 # =============================================================================
 
 class TestCriticalPipelineTriggers:
-    """Tests for RUN_CRITICAL_PIPELINE_FOR_JOB intent detection."""
-    
+    """Tests for pipeline trigger detection.
+
+    v5.4 unified pipeline commands: check_critical_pipeline_trigger and
+    tier0_classify both return the canonical RUN_PIPELINE.
+    RUN_CRITICAL_PIPELINE_FOR_JOB is a deprecated alias with no trigger
+    phrases of its own — it stays routable only via the desktop's
+    confirmed_intent path (PipelineStageTab).
+    """
+
     def test_run_critical_pipeline(self):
         """Primary trigger."""
         result = check_critical_pipeline_trigger("run critical pipeline")
         assert result.matched
-        assert result.intent == CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB
-    
+        assert result.intent == CanonicalIntent.RUN_PIPELINE
+
     def test_run_the_critical_pipeline(self):
         """With 'the'."""
         result = check_critical_pipeline_trigger("run the critical pipeline")
         assert result.matched
-        assert result.intent == CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB
-    
+        assert result.intent == CanonicalIntent.RUN_PIPELINE
+
     def test_execute_critical_pipeline(self):
         """Execute variant."""
         result = check_critical_pipeline_trigger("execute critical pipeline")
         assert result.matched
-        assert result.intent == CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB
-    
+        assert result.intent == CanonicalIntent.RUN_PIPELINE
+
     def test_start_the_pipeline(self):
         """Start pipeline variant."""
         result = check_critical_pipeline_trigger("start the pipeline")
         assert result.matched
-        assert result.intent == CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB
-    
+        assert result.intent == CanonicalIntent.RUN_PIPELINE
+
     def test_critical_pipeline_standalone(self):
         """Just 'critical pipeline'."""
         result = check_critical_pipeline_trigger("critical pipeline")
         assert result.matched
-        assert result.intent == CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB
+        assert result.intent == CanonicalIntent.RUN_PIPELINE
     
     def test_critical_pipeline_case_insensitive(self):
         """Case insensitive matching."""
@@ -282,10 +296,14 @@ class TestTier0ClassifyIntegration:
         assert result.intent == CanonicalIntent.SEND_TO_SPEC_GATE
     
     def test_critical_pipeline_via_tier0(self):
-        """Critical Pipeline triggers should be detected by tier0_classify."""
+        """Critical Pipeline triggers should be detected by tier0_classify.
+
+        v5.4: resolves the canonical RUN_PIPELINE (alias no longer has
+        trigger phrases that shadow it).
+        """
         result = tier0_classify("run critical pipeline")
         assert result.matched
-        assert result.intent == CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB
+        assert result.intent == CanonicalIntent.RUN_PIPELINE
     
     def test_overwatcher_via_tier0(self):
         """Overwatcher triggers should be detected by tier0_classify."""
@@ -297,7 +315,7 @@ class TestTier0ClassifyIntegration:
         """Wake phrase prefix should be stripped before matching."""
         result = tier0_classify("Astra, command: run critical pipeline")
         assert result.matched
-        assert result.intent == CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB
+        assert result.intent == CanonicalIntent.RUN_PIPELINE
 
 
 # =============================================================================
@@ -325,7 +343,7 @@ class TestEndToEndCommandFlow:
         """Critical Pipeline command with wake phrase."""
         result = translate_message_sync("Astra, command: run critical pipeline")
         assert result.mode == TranslationMode.COMMAND_CAPABLE
-        assert result.resolved_intent == CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB
+        assert result.resolved_intent == CanonicalIntent.RUN_PIPELINE
         # Note: may require confirmation gate
     
     def test_overwatcher_with_wake_phrase(self):
@@ -401,7 +419,7 @@ class TestCommandSequence:
         commands = [
             ("how does that look all together", CanonicalIntent.WEAVER_BUILD_SPEC),
             ("critical architecture", CanonicalIntent.SEND_TO_SPEC_GATE),
-            ("run critical pipeline", CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB),
+            ("run critical pipeline", CanonicalIntent.RUN_PIPELINE),
             ("send to overwatcher", CanonicalIntent.OVERWATCHER_EXECUTE_CHANGES),
         ]
         
@@ -423,6 +441,45 @@ class TestCommandSequence:
             result = translate_message_sync(cmd)
             # Without wake phrase, should be chat mode (safe default)
             assert result.mode == TranslationMode.CHAT, f"Should be CHAT without wake: {cmd}"
+
+
+# =============================================================================
+# GATE CONTEXT MERGE REGRESSION (v11.2, 2026-07-01)
+# =============================================================================
+
+class TestGateContextMergePreservesStash:
+    """Regression: _apply_gates must MERGE extracted context, not replace it.
+
+    `result.extracted_context = extracted` in _apply_gates wiped the metadata
+    stashed by _resolve_command_intent — _classifier_rule/_classifier_reason
+    (consumed by recent_decisions.py to explain routing decisions in chat)
+    and the tier0-parsed extracted_query — for every command intent that
+    reached the gates.
+    """
+
+    def test_classifier_rule_survives_gates_for_tier0_command(self):
+        """Tier0-matched command keeps its classifier metadata post-gates."""
+        result = translate_message_sync("Astra, command: critical architecture")
+        assert result.resolved_intent == CanonicalIntent.SEND_TO_SPEC_GATE
+        assert result.latency_tier == LatencyTier.TIER_0_RULES
+        ctx = result.extracted_context
+        assert ctx.get("_classifier_rule") == "specgate_exact_phrase", (
+            f"_classifier_rule lost in _apply_gates: {ctx}"
+        )
+        assert ctx.get("_classifier_reason"), (
+            f"_classifier_reason lost in _apply_gates: {ctx}"
+        )
+
+    def test_tier0_extracted_query_beats_whole_message_fallback(self):
+        """Stashed tier0-parsed query survives gates.py's whole-text fallback."""
+        result = translate_message_sync(
+            "Astra, command: search the web for solar panel prices"
+        )
+        assert result.resolved_intent == CanonicalIntent.WEB_SEARCH
+        assert result.extracted_context.get("extracted_query") == "solar panel prices", (
+            "gates.py WEB_SEARCH fallback overwrote the tier0-parsed query: "
+            f"{result.extracted_context}"
+        )
 
 
 # =============================================================================
@@ -459,7 +516,7 @@ class TestEdgeCases:
         """Extra whitespace should be handled."""
         result = tier0_classify("  run critical pipeline  ")
         assert result.matched
-        assert result.intent == CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB
+        assert result.intent == CanonicalIntent.RUN_PIPELINE
 
 
 # =============================================================================

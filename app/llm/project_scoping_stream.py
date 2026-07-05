@@ -33,6 +33,18 @@ def _sse(data: dict) -> bytes:
     return f"data: {json.dumps(data)}\n\n".encode("utf-8")
 
 
+def _deep_chat_model() -> str:
+    """Resolve the deep-chat model: CHAT_DEEP_MODEL env override, else the REASONING role."""
+    env_model = os.getenv("CHAT_DEEP_MODEL")
+    if env_model:
+        return env_model
+    try:
+        from app.llm.frontier_models import get_role_model
+        return get_role_model("REASONING")[1]
+    except Exception:
+        return ""
+
+
 async def generate_project_scoping_stream(
     *,
     project_id: int,
@@ -50,7 +62,7 @@ async def generate_project_scoping_stream(
     from app.shared_context.project_session import get_project_session
 
     provider = os.getenv("CHAT_DEEP_PROVIDER", "openai")
-    model = os.getenv("CHAT_DEEP_MODEL", "gpt-5.4")
+    model = _deep_chat_model()
 
     # Always key by project_id for consistency
     scope_key = str(project_id)
@@ -171,7 +183,7 @@ async def handle_scoping_confirmation(
     from app.pipeline_v2.build_targets import BuildTargetProfile
 
     provider = os.getenv("CHAT_DEEP_PROVIDER", "openai")
-    model = os.getenv("CHAT_DEEP_MODEL", "gpt-5.4")
+    model = _deep_chat_model()
 
     scope_key = str(project_id)
     session = get_project_session(scope_key)
@@ -289,6 +301,28 @@ async def handle_scoping_confirmation(
         project_root=proj_root,
     )
     yield _sse({"type": "token", "content": f"🎯 Project session active — pipeline will target `{proj_root}`\n\n"})
+
+    # v1.1 (2026-07-04, JOB 4): durable target wiring. ProjectSession dies
+    # with the process, so also stamp the BuildProject row — SpecGate's
+    # Path-2 lookup (build_target_id -> get_profile) then survives backend
+    # restarts, paired with the JOB 1 registry persistence. Must run AFTER
+    # finish_scoping so get_or_create's stale-target check sees the new
+    # session and archives any old build project first.
+    try:
+        from app.builds.pipeline_bridge import get_or_create_build_project
+        _bp = get_or_create_build_project(db, project_id, brief=proj_desc or proj_name)
+        if _bp is not None:
+            if _bp.build_target_id != proj_id:
+                _bp.build_target_id = proj_id
+                _bp.target_path = proj_root
+                db.commit()
+            logger.info(
+                "[project_scoping] BuildProject %s bound to target %s (%s)",
+                _bp.id, proj_id, proj_root,
+            )
+            yield _sse({"type": "token", "content": f"🔗 Build project bound to target `{proj_id}` (survives restarts)\n"})
+    except Exception as e:
+        logger.warning("[project_scoping] BuildProject target stamp failed (non-fatal): %s", e)
 
     yield _sse({"type": "token", "content": (
         f"Project **{proj_name}** is ready.\n"

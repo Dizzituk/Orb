@@ -220,6 +220,18 @@ class WhisperKeywordSpotter:
         return SpotResult(detected=True, transcript=transcript,
                           matched_keyword=matched, confidence=0.8)
 
+    def transcribe_snippet(self, audio_float32: np.ndarray) -> str:
+        """One-off transcription of a caller-supplied buffer (no spotting state).
+
+        Used by the ambient session's live partial_transcript feed (2026-07-03):
+        the same tiny.en model that spots the wake word is fast enough to give
+        a rough as-you-speak preview of the recording buffer. Final transcripts
+        still come from the main faster-whisper service at utterance end.
+        """
+        if audio_float32 is None or audio_float32.size == 0:
+            return ""
+        return self._transcribe(audio_float32)
+
     def _transcribe(self, audio_float32: np.ndarray) -> str:
         model = self._ensure_model()
         try:

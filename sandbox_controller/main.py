@@ -6,6 +6,13 @@ Purpose:
 - Provide safe, sandbox-scoped filesystem and repo endpoints for ASTRA/Orb.
 - Enforce strict allow-list roots and deny/ignore rules so scans can't escape the sandbox.
 
+v0.6.0 (2026-07-02, security hardening): ALL endpoints now require a
+    per-run bearer secret (ASTRA_SANDBOX_SECRET — set by whatever launches
+    the sandbox; the host client sends it on every call). Without the env
+    the controller is LOCKED (503). /shell/run additionally enforces an
+    argv[0] allow-list. The 0.0.0.0 bind is acceptable ONLY because this
+    process lives inside the sandbox NAT (host reaches it via the NAT IP);
+    this port must never be reachable from the LAN/internet.
 v0.5.0 (2026-02): Fixed /shell/run encoding — uses UTF-8 instead of default cp1252
 v0.4.0 (2026-01): Added /fs/contents endpoint for reading file contents
 v0.3.1 (2026-01): Fixed zone detection for backend/frontend
@@ -18,14 +25,59 @@ import hashlib
 import logging
 import os
 import re
+import secrets as _secrets_mod
 import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Set
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel, Field
+
+
+# -----------------------------
+# Bearer secret (v0.6.0) — every request must carry it
+# -----------------------------
+
+def _expected_secret() -> str:
+    return os.environ.get("ASTRA_SANDBOX_SECRET", "")
+
+
+def require_sandbox_secret(authorization: Optional[str] = Header(None)) -> None:
+    """Reject any request that does not carry the exact per-run secret.
+
+    Fail-closed: with no ASTRA_SANDBOX_SECRET in the environment the
+    controller refuses ALL requests — a mis-provisioned launch is loudly
+    unusable instead of silently open.
+    """
+    expected = _expected_secret()
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="controller locked: ASTRA_SANDBOX_SECRET not provisioned "
+                   "at sandbox launch")
+    provided = ""
+    if authorization and authorization.lower().startswith("bearer "):
+        provided = authorization[7:].strip()
+    if not provided or not _secrets_mod.compare_digest(provided, expected):
+        raise HTTPException(status_code=401,
+                            detail="invalid or missing sandbox bearer secret")
+
+
+# /shell/run argv[0] allow-list (v0.6.0). PowerShell being listed still
+# allows arbitrary PS one-liners — the manager's start/stop plumbing needs
+# that — so the real gate remains the bearer secret; this blocks direct
+# execution of arbitrary binaries.
+_DEFAULT_SHELL_ALLOWLIST = (
+    "python,python.exe,powershell,powershell.exe,pwsh,pwsh.exe,"
+    "cmd,cmd.exe,pip,pip.exe,pytest,pytest.exe,npm,npm.cmd,node,node.exe"
+)
+
+
+def _shell_allowlist() -> Set[str]:
+    raw = os.environ.get("ASTRA_SANDBOX_SHELL_ALLOWLIST", _DEFAULT_SHELL_ALLOWLIST)
+    return {p.strip().lower() for p in raw.split(",") if p.strip()}
 
 
 # -----------------------------
@@ -133,7 +185,9 @@ FS_TREE_SKIP_EXTENSIONS = {
 # FastAPI app
 # -----------------------------
 
-app = FastAPI(title="sandbox_controller", version="0.5.0")
+# Secret gate applied app-wide (v0.6.0): every endpoint, /health included.
+app = FastAPI(title="sandbox_controller", version="0.6.0",
+              dependencies=[Depends(require_sandbox_secret)])
 logging.basicConfig(level=os.environ.get("SANDBOX_CONTROLLER_LOG_LEVEL", "INFO"))
 log = logging.getLogger("sandbox_controller")
 
@@ -144,6 +198,10 @@ def _startup_log() -> None:
     log.info("REPO_ROOT=%s", REPO_ROOT)
     log.info("CACHE_ROOT=%s", CACHE_ROOT)
     log.info("ALLOWED_FS_ROOTS=%s", sorted(ALLOWED_FS_ROOTS))
+    if _expected_secret():
+        log.info("bearer secret: PROVISIONED (all endpoints gated)")
+    else:
+        log.warning("bearer secret: MISSING — controller is LOCKED (503 on every request)")
 
 
 # -----------------------------
@@ -659,6 +717,13 @@ def shell_run(req: ShellRunRequest) -> dict:
     """
     if not req.cmd:
         raise HTTPException(status_code=400, detail="Missing cmd")
+
+    # v0.6.0: argv[0] allow-list — arbitrary binaries are refused.
+    argv0 = os.path.basename(str(req.cmd[0])).lower()
+    if argv0 not in _shell_allowlist():
+        raise HTTPException(
+            status_code=403,
+            detail=f"command '{argv0}' not in sandbox shell allow-list")
 
     cwd = Path(req.cwd).resolve() if req.cwd else None
     try:

@@ -67,6 +67,30 @@ def _ctx(db, session_factory, params, should_yield=lambda: False):
 # ── price extraction ────────────────────────────────────────────────────────
 
 
+@pytest.mark.asyncio
+async def test_snippet_observation_decodes_html_entities_and_tags(monkeypatch):
+    """Brave/DDG snippets carry &#163; entities and <strong> tags around
+    matched terms — the observer must decode before extracting (2026-07-02,
+    found on the first live hardware scrape)."""
+    import app.tools.registry as tools_registry
+    from app.watchers.snippet_source import observe_via_search
+
+    async def fake_search(input_data, context=None):
+        return {
+            "provider": "brave",
+            "results": [
+                {"title": "PSU deal", "url": "http://shop.example/psu",
+                 "description": "now &#163;1,999.99 was <strong>£180</strong> more"},
+            ],
+        }
+
+    monkeypatch.setattr(tools_registry, "web_search_handler", fake_search)
+    reading = await observe_via_search("psu", "psu price", "£", lo=1, hi=5000)
+    # median of [1999.99, 180.0]
+    assert reading.value == pytest.approx(1089.99, abs=0.01)
+    assert "2 prices" in reading.note
+
+
 def test_price_extraction_handles_real_world_formats():
     text = "Terreno à venda: €450.000 ou 1.250,50 € por m2. GPU deal £1,999.99, PSU £180, RAM 2 300 €"
     assert extract_prices(text, "€") == [450000.0, 1250.50, 2300.0]

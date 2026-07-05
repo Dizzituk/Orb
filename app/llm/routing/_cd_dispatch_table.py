@@ -25,6 +25,15 @@ def _get_scoping_handler():
         return None
 
 
+def _role_model(role: str, *fallback_roles: str) -> str:
+    """Env-resolved model for a routing role ("" if nothing resolves)."""
+    try:
+        from app.llm.frontier_models import get_role_model
+        return get_role_model(role, *fallback_roles)[1]
+    except Exception:
+        return ""
+
+
 def build_dispatch_table(registry: Any) -> List[Dict[str, Any]]:
     """Build the dispatch table from the handler registry.
 
@@ -90,6 +99,12 @@ def build_dispatch_table(registry: Any) -> List[Dict[str, Any]]:
             "handler": registry.generate_weaver_stream,
             "stage": "weaver",
             "needs_conversation_id": True,
+            # live7 (2026-07-04): the weave must cover the on-screen
+            # conversation even when the panel rotated onto a fresh chat
+            # project (restart) — DB-by-project-id alone orphaned the thread.
+            "handler_kwargs_fn": lambda req, tr: {
+                "panel_history": list(getattr(req, "panel_history", None) or []),
+            },
         },
         # --- Spec Gate ---
         {
@@ -146,7 +161,7 @@ def build_dispatch_table(registry: Any) -> List[Dict[str, Any]]:
             "needs_conversation_id": True,
             "provider_override": lambda: (
                 os.getenv("IMPLEMENTER_PROVIDER", "anthropic"),
-                os.getenv("IMPLEMENTER_MODEL", "claude-sonnet-4-6"),
+                os.getenv("IMPLEMENTER_MODEL") or _role_model("IMPLEMENTER", "DEFAULT"),
             ),
         },
         # --- RAG Codebase Query ---
@@ -295,7 +310,8 @@ def build_dispatch_table(registry: Any) -> List[Dict[str, Any]]:
             "stage": "image_generation",
             "provider_override": lambda: (
                 os.getenv("IMAGE_GEN_PROVIDER", "openai"),
-                os.getenv("IMAGE_GEN_MODEL", "gpt-image-1.5"),
+                # No chat-model fallback for image gen: empty string fails loudly downstream.
+                os.getenv("IMAGE_GEN_MODEL", ""),
             ),
             "error_name": "Image Generation Handler",
             "error_module": "app/llm/image_router.py",
@@ -308,7 +324,7 @@ def build_dispatch_table(registry: Any) -> List[Dict[str, Any]]:
             "stage": "project_scoping",
             "provider_override": lambda: (
                 os.getenv("CHAT_DEEP_PROVIDER", "openai"),
-                os.getenv("CHAT_DEEP_MODEL", "gpt-5.4"),
+                os.getenv("CHAT_DEEP_MODEL") or _role_model("REASONING"),
             ),
             "needs_conversation_id": True,
         },

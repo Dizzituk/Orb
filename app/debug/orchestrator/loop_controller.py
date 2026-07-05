@@ -1,8 +1,8 @@
 # FILE: app/debug/orchestrator/loop_controller.py
 # Purpose: Loop controller — the outer investigate -> plan -> execute -> verify loop.
 # Called-by: app.debug.orchestrator.chat_stream_bridge, app.debug.orchestrator.endpoint
-# Depends-on: app.debug.orchestrator.behaviour_verifier, app.debug.orchestrator.decomposer, app.debug.orchestrator.planner, app.debug.orchestrator.schemas (+1 more)
-# Last-renovated: 2026-06-11
+# Depends-on: app.debug.orchestrator.behaviour_verifier, app.debug.orchestrator.decomposer, app.debug.orchestrator.planner, app.debug.orchestrator.schemas (+2 more)
+# Last-renovated: 2026-07-02 (per-phase call-time (provider, model) via debug_model_config)
 """
 Loop controller — the outer investigate -> plan -> execute -> verify loop.
 
@@ -20,9 +20,13 @@ v1.0 (2026-04-13): Initial implementation.
 from __future__ import annotations
 
 import logging
-import os
 import time
 from typing import AsyncGenerator, Callable, Dict, List, Optional
+
+from app.debug.debug_model_config import (
+    provider_fallback_active,
+    resolve_debug_model,
+)
 
 from app.debug.orchestrator.behaviour_verifier import (
     code_verification_check,
@@ -55,20 +59,10 @@ from app.debug.run_context import is_cancelled
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Model routing (matches the existing {STAGE}_PROVIDER/{STAGE}_MODEL pattern)
-# ---------------------------------------------------------------------------
-
-def _env(name: str, default: str) -> str:
-    v = os.getenv(name)
-    return v if v else default
-
-
-DECOMPOSER_MODEL = _env("DEBUG_DECOMPOSER_MODEL", _env("OPENAI_DEFAULT_MODEL", "gpt-5.4"))
-PLANNER_MODEL = _env("DEBUG_PLANNER_MODEL", _env("OPENAI_DEFAULT_MODEL", "gpt-5.4"))
-SUBAGENT_MODEL = _env("DEBUG_SUBAGENT_MODEL", _env("OPENAI_DEFAULT_MODEL", "gpt-5.4-mini"))
-EXECUTOR_MODEL = _env("DEBUG_EXECUTOR_MODEL", SUBAGENT_MODEL)
-CODE_VERIFIER_MODEL = _env("DEBUG_CODE_VERIFIER_MODEL", SUBAGENT_MODEL)
+# Model routing: every phase resolves (provider, model) AT CALL TIME via
+# debug_model_config.resolve_debug_model — the DEBUG_PROVIDER toggle and .env
+# edits apply on the next run with no restart. (Until 2026-07-02 five models
+# were frozen here at import time, with stray literal fallbacks.)
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +220,13 @@ async def run_orchestration(
         return True
 
     try:
+        if provider_fallback_active():
+            # Missing-key soft-fail (visible in the SSE/narration stream): the
+            # toggle says anthropic but no key is available — the run proceeds
+            # on the openai column rather than bricking the debug tab.
+            _emit(on_event, "provider_fallback", OrchestrationPhase.DECOMPOSING, 0,
+                  "Anthropic key missing — debug falling back to OpenAI for this run")
+
         for iteration_no in range(1, request.max_iterations + 1):
             iter_start = time.time()
             record = IterationRecord(
@@ -238,10 +239,12 @@ async def run_orchestration(
             # ---- 1. DECOMPOSE ------------------------------------------
             _emit(on_event, "phase_change", OrchestrationPhase.DECOMPOSING,
                   iteration_no, "Decomposing bug list")
+            dec_provider, dec_model = resolve_debug_model("decomposer")
             decomposition = await decompose(
                 bug_list=request.bug_list,
                 target_project=request.target_project,
-                model=DECOMPOSER_MODEL,
+                model=dec_model,
+                provider=dec_provider,
             )
             record.decomposition = decomposition
             record.phase_reached = OrchestrationPhase.INVESTIGATING
@@ -260,9 +263,11 @@ async def run_orchestration(
                 _emit(on_event, "subagent_progress", OrchestrationPhase.INVESTIGATING,
                       iteration_no, f"tool: {name}", {"tool": name})
 
+            sub_provider, sub_model = resolve_debug_model("subagent")
             reports = await run_subagents_parallel(
                 briefs=decomposition.briefs,
-                model=SUBAGENT_MODEL,
+                model=sub_model,
+                provider=sub_provider,
                 max_parallel=request.max_subagents_parallel,
                 extra_context=prior_iteration_summary,
                 on_tool_call=_on_tool_call,
@@ -279,10 +284,12 @@ async def run_orchestration(
             record.phase_reached = OrchestrationPhase.PLANNING
             _emit(on_event, "phase_change", OrchestrationPhase.PLANNING,
                   iteration_no, "Synthesising fix plan")
+            plan_provider, plan_model = resolve_debug_model("planner")
             plan = await plan_fixes(
                 bug_list=request.bug_list,
                 reports=reports,
-                model=PLANNER_MODEL,
+                model=plan_model,
+                provider=plan_provider,
                 prior_iteration_summary=prior_iteration_summary,
             )
             record.plan = plan
@@ -307,6 +314,7 @@ async def run_orchestration(
                   iteration_no, "Applying fixes")
 
             batches = topological_batches(plan)
+            exec_provider, exec_model = resolve_debug_model("executor")
             exec_reports: List[SubagentReport] = []
             for batch_idx, batch in enumerate(batches):
                 if is_cancelled():
@@ -324,7 +332,8 @@ async def run_orchestration(
                       {"batch": [b.brief_id for b in briefs]})
                 batch_reports = await run_subagents_parallel(
                     briefs=briefs,
-                    model=EXECUTOR_MODEL,
+                    model=exec_model,
+                    provider=exec_provider,
                     max_parallel=max_par,
                     extra_context=None,
                     on_tool_call=_on_tool_call,

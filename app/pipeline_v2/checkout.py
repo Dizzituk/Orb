@@ -605,6 +605,7 @@ async def _step_visual_verify(
             ),
             user_prompt=prompt,
             max_tokens=VERIFIER_MAX_OUTPUT,
+            stage="checkout",  # Derek p1: cost attribution
         )
     except Exception as e:
         return CheckResult(

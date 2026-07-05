@@ -2,7 +2,7 @@
 # Purpose: ASTRA v2.2 Pipeline Configuration.
 # Called-by: app.orchestrator.segment_loop, app.pipeline_v2.agentic_builder, app.pipeline_v2.bvl.tier2_test_generator, app.pipeline_v2.checkout (+7 more)
 # Depends-on: app.llm.frontier_models
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-07-04 (Derek phase 2: builder/eyes resolve via stage_roles, stale defaults removed)
 """
 ASTRA v2.2 Pipeline Configuration.
 
@@ -36,18 +36,34 @@ DEFAULT_BUILD_TARGET = os.getenv("ASTRA_V2_BUILD_TARGET", "astra-backend")
 # Stage 2: SpecGate (existing — configured elsewhere)
 # Stage 3: Scaffold Engine — no LLM (deterministic)
 
-# Stage 4: Agentic Builder — one model, one loop, full tool access
-BUILDER_PROVIDER = os.getenv("ASTRA_V2_BUILDER_PROVIDER", "openai")
-BUILDER_MODEL = os.getenv("ASTRA_V2_BUILDER_MODEL", "gpt-5.4")
+# Stage 4: Agentic Builder — one model, one loop, full tool access.
+# DEREK phase 2 (2026-07-04): resolves through the stage-role registry
+# (ASTRA_STAGE_BUILDER_MAIN_*, with ASTRA_V2_BUILDER_* as deprecated
+# aliases). The old code defaults ("gpt-5.4" / "claude-opus-4-6") LIED —
+# they silently selected models .env never named. Now: resolve or fail
+# loudly at import with the exact env key to set.
+
+def _resolve_role_or_die(role: str) -> tuple:
+    from app.llm.stage_roles import resolve_stage_role
+    r = resolve_stage_role(role)  # raises StageRoleResolutionError naming the key
+    return r.provider, r.model
+
+
+BUILDER_PROVIDER, BUILDER_MODEL = _resolve_role_or_die("BUILDER_MAIN")
 BUILDER_MAX_OUTPUT = int(os.getenv("ASTRA_V2_BUILDER_MAX_OUTPUT", "128000"))
 
-# Fallback builder for hard problems
+# Fallback builder for hard problems (escalation target). Env-only: the
+# stale "claude-opus-4-6" default is gone — blank means "no fallback",
+# which the orchestrator already tolerates (single-attempt build).
 FALLBACK_BUILDER_PROVIDER = os.getenv("ASTRA_V2_FALLBACK_PROVIDER", "anthropic")
-FALLBACK_BUILDER_MODEL = os.getenv("ASTRA_V2_FALLBACK_MODEL", "claude-opus-4-6")
+FALLBACK_BUILDER_MODEL = (
+    os.getenv("ASTRA_V2_FALLBACK_MODEL", "").strip()
+    or os.getenv("FRONTIER_ANTHROPIC_OPUS_MODEL", "").strip()
+)
 
-# Verification Model — cheap, fast, vision-capable
-VERIFIER_PROVIDER = os.getenv("ASTRA_V2_VERIFIER_PROVIDER", "google")
-VERIFIER_MODEL = os.getenv("ASTRA_V2_VERIFIER_MODEL", "gemini-2.5-flash")
+# Verification Model — cheap, fast, vision-capable (the CHECKOUT_EYES role;
+# ASTRA_V2_VERIFIER_* remain as deprecated aliases via the registry).
+VERIFIER_PROVIDER, VERIFIER_MODEL = _resolve_role_or_die("CHECKOUT_EYES")
 VERIFIER_MAX_OUTPUT = int(os.getenv("ASTRA_V2_VERIFIER_MAX_OUTPUT", "4000"))
 
 # ---------------------------------------------------------------------------

@@ -46,6 +46,7 @@ from typing import Optional, Dict, Tuple, List, Any
 from app.llm.frontier_models import (
     resolve_model_alias,
     get_reasoning_for_stage,
+    get_provider_default_model,
 )
 
 logger = logging.getLogger(__name__)
@@ -221,9 +222,9 @@ def get_stage_config(stage: str) -> StageConfig:
     if defaults:
         default_provider, default_model, default_tokens, default_timeout = defaults
     else:
-        # Ultimate fallback (v3.2: google instead of openai)
+        # Ultimate fallback (v3.2: google instead of openai; env-resolved)
         default_provider = "google"
-        default_model = "gemini-2.5-flash"
+        default_model = get_provider_default_model("google", strict=False)
         default_tokens = 4000
         default_timeout = 60
     

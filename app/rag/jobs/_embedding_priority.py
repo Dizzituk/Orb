@@ -26,6 +26,9 @@ logger = logging.getLogger(__name__)
 PRIORITY_PATTERNS: Dict[EmbeddingPriority, List[re.Pattern]] = {
     # TIER 1: CRITICAL — Entry points, routing, dispatch
     EmbeddingPriority.TIER1_CRITICAL: [
+        # Enriched architecture cards (2026-07-02): system overview + capability
+        # ledger answer broad self-knowledge questions — highest tier.
+        re.compile(r"\.architecture[/\\]enriched[/\\](overview|capability_ledger)", re.IGNORECASE),
         re.compile(r"main\.py$", re.IGNORECASE),
         re.compile(r"stream_router", re.IGNORECASE),
         re.compile(r"translation_routing", re.IGNORECASE),
@@ -38,6 +41,9 @@ PRIORITY_PATTERNS: Dict[EmbeddingPriority, List[re.Pattern]] = {
     ],
     # TIER 2: HIGH — Pipeline core
     EmbeddingPriority.TIER2_HIGH: [
+        # Remaining enriched cards (subsystem / endpoint_map / data_flow /
+        # drift_note) — Tier1 patterns above already claimed overview + ledger.
+        re.compile(r"\.architecture[/\\]enriched[/\\]", re.IGNORECASE),
         re.compile(r"spec_gate", re.IGNORECASE),
         re.compile(r"overwatcher", re.IGNORECASE),
         re.compile(r"critical_pipeline", re.IGNORECASE),

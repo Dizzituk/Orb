@@ -129,7 +129,7 @@ def _aggregate_records(records: list) -> tuple:
     by_model: Dict[str, float] = {}
 
     for r in records:
-        cost = r.get("cost_usd", 0.0)
+        cost = r.get("cost_usd") or 0.0  # null = unpriced model (Derek p1)
         total_usd += cost
 
         stage = r.get("stage", "unknown")

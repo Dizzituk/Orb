@@ -29,7 +29,7 @@ from app.rag.descriptors.descriptor_gen import (
     estimate_tokens,
 )
 from app.embeddings.service import generate_embedding, store_embedding
-from app.embeddings.gemini_provider import GEMINI_EMBEDDING_MODEL
+from app.embeddings.provider_router import text_write_spec
 
 logger = logging.getLogger(__name__)
 
@@ -111,9 +111,10 @@ def reindex_unembedded(
             )
             
             chunk.embedded = True
-            # generate_embedding() above uses the provider default — label with
-            # the same constant so the stamp can't drift from the actual model.
-            chunk.embedding_model = GEMINI_EMBEDDING_MODEL
+            # generate_embedding() above rides the router's write path — label
+            # with the router's spec so the stamp can't drift from the actual
+            # model (LANE E).
+            chunk.embedding_model = text_write_spec().label
             chunk.embedded_at = __import__("datetime").datetime.utcnow()
             chunk.embedded_content_hash = chunk.content_hash
             

@@ -27,6 +27,22 @@ router = APIRouter(
     dependencies=[Depends(require_auth)],
 )
 
+# LANE D (2026-07-02): model settings + provider discovery sub-routers.
+# Included here so they inherit /settings prefix AND require_auth.
+from app.settings.model_settings import models_router  # noqa: E402
+from app.settings.model_discovery import discovery_router  # noqa: E402
+
+router.include_router(models_router)
+router.include_router(discovery_router)
+
+# DEREK phase 2 (2026-07-04): stage-role introspection + save for the
+# per-stage Settings cards. Inherits /settings prefix AND require_auth.
+try:
+    from app.settings.stage_roles_api import stage_roles_router  # noqa: E402
+    router.include_router(stage_roles_router)
+except ImportError as _sr_err:
+    logger.warning("[settings] stage-roles API not available: %s", _sr_err)
+
 
 # ─── REQUEST SCHEMAS ───
 

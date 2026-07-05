@@ -41,6 +41,55 @@ _SYSTEM_PROMPT = (
 )
 
 
+# WEB_ACTION (2026-07-03). System prompt for the voice-driven tool loop. The
+# agentic handler gives ambient voice the same tools the desktop chat has, so
+# the anti-confabulation directive is load-bearing: the 2026-07-03 Fable
+# incident had a tool-less turn inventing excuses instead of calling
+# coursera_resume. Keep the reply short — it is spoken aloud.
+_AGENTIC_SYSTEM_PROMPT = (
+    "You are Astra, driving the user's desktop browser through voice. The user "
+    "asked you to perform a web or study action (for example opening or resuming "
+    "their Coursera course, moving to the next lesson, or opening a site). You "
+    "have real browser and Coursera study tools. ACTUALLY CALL the tools to do "
+    "it — never claim you opened, navigated or checked something without calling "
+    "the tool that does it. Prefer the Coursera composite tools (coursera_resume, "
+    "coursera_next_item, coursera_read_lesson, web_coursera_progress) for study "
+    "requests. When you are done, give a one- or two-sentence spoken summary of "
+    "what you did or found. No lists, no markdown, no headings — natural spoken "
+    "prose only."
+)
+
+# Tool names whose invocation means "a visible browser session is now driving" —
+# the ambient counterpart of the frontend SURFACE_ON_TOOL allow-list in
+# usePanelChat.ts. When the tool loop calls one of these, the router records the
+# session so the frontend can pull the Web tab onscreen. Keep the two lists in
+# sync: any new session-driving tool must be added here AND there.
+_SURFACE_ON_TOOL = frozenset({
+    "web_open_session",
+    "web_navigate",
+    "coursera_resume",
+    "coursera_read_lesson",
+    "coursera_next_item",
+    "web_coursera_progress",
+    "web_coursera_health",
+})
+
+
+def _surface_key_for(name: str, tool_input: dict) -> Optional[str]:
+    """Session key to surface for a tool call, or None if it isn't a surfacing tool.
+
+    Mirrors the frontend logic: generic web tools carry an explicit `session`
+    arg; the coursera_* / web_coursera_* composites omit it and always mean the
+    'coursera' platform session.
+    """
+    if name not in _SURFACE_ON_TOOL:
+        return None
+    sess = (tool_input or {}).get("session")
+    if not sess and (name.startswith("coursera") or name.startswith("web_coursera")):
+        sess = "coursera"
+    return str(sess) if sess else None
+
+
 _LOOK_PROMPTS = {
     Intent.LOOK_READ: (
         "Extract the main readable content from this screenshot. Ignore "
@@ -110,9 +159,16 @@ async def route(req: InvocationRequest) -> InvocationResponse:
     provider = None
     model = None
     error = None
+    surface_session = None
 
     try:
-        if intent.needs_screenshot and req.screenshot_b64:
+        if intent.intent == Intent.WEB_ACTION:
+            # Actionable web/study intent — run the REAL tool loop so voice can
+            # open + drive the browser, and report which session to surface.
+            answer, provider, model, surface_session = await _handle_agentic(
+                req, intent, tier_decision, history
+            )
+        elif intent.needs_screenshot and req.screenshot_b64:
             answer, provider, model = await _handle_look(
                 req, intent, tier_decision, history
             )
@@ -149,6 +205,10 @@ async def route(req: InvocationRequest) -> InvocationResponse:
                     assistant_text=answer,
                     provider=provider,
                     model=model,
+                    # Chat-UI mirroring (2026-07-03): persist into the
+                    # conversation the desktop has open so the panel's live
+                    # poll renders the turn; falls back to "Voice" inside.
+                    chat_project_id=req.chat_project_id,
                 )
             finally:
                 _db.close()
@@ -165,6 +225,7 @@ async def route(req: InvocationRequest) -> InvocationResponse:
         model=model,
         error=error,
         elapsed_ms=elapsed_ms,
+        surface_session=surface_session,
     )
 
 
@@ -251,3 +312,121 @@ async def _handle_converse(req, intent, tier_decision, history):
     except Exception as e:
         logger.exception("[invocation] converse failed")
         return (f"(converse failed: {e})", None, None)
+
+
+def _resolve_agentic_provider_model() -> Tuple[str, str]:
+    """Pick a TOOL-ELIGIBLE (provider, model) for the voice tool loop.
+
+    A tool-less model here would confabulate instead of driving the browser
+    (the 2026-07-03 Fable incident), so eligibility is guaranteed: try an
+    explicit override (AMBIENT_AGENTIC_PROVIDER/MODEL), then the same frontier
+    role the chat tool loop rides, then fall back to the Anthropic default
+    (claude-* is always tool-eligible via the prefix guard in is_tool_eligible).
+    """
+    import os
+    from app.llm.chat_tool_loop import is_tool_eligible
+    from app.llm.frontier_models import get_role_model, get_provider_default_model
+
+    provider = (os.getenv("AMBIENT_AGENTIC_PROVIDER") or "").strip()
+    model = (os.getenv("AMBIENT_AGENTIC_MODEL") or "").strip()
+
+    if not (provider and model):
+        try:
+            provider, model = get_role_model("FRONTIER", "REASONING", "ARCHITECT")
+        except Exception as e:
+            logger.warning("[invocation] agentic role model unresolved: %s", e)
+            provider, model = "", ""
+
+    if not is_tool_eligible(provider, model):
+        fallback = get_provider_default_model("anthropic", strict=False)
+        if fallback:
+            logger.info(
+                "[invocation] agentic model %s/%s not tool-eligible — "
+                "falling back to anthropic/%s",
+                provider or "-", model or "-", fallback,
+            )
+            provider, model = "anthropic", fallback
+    return provider, model
+
+
+async def _handle_agentic(req, intent, tier_decision, history):
+    """WEB_ACTION: run the real chat tool loop so voice can drive the browser.
+
+    Returns (answer, provider, model, surface_session). Reuses the exact
+    machinery the desktop chat uses (stream_with_tools + get_chat_tools), so
+    the Coursera composites and generic web tools are all available and the
+    turn actually opens/drives the WebContentsView server-side. The first
+    session-driving tool call sets surface_session, which the frontend turns
+    into a Web-tab focus (surfaceBrowserSession).
+    """
+    from app.llm.chat_tool_loop import stream_with_tools, get_chat_tools
+
+    provider, model = _resolve_agentic_provider_model()
+
+    messages = list(history) if history else []
+    wrapped_user = (
+        "(Voice mode: perform the web/study action with your tools, then reply "
+        "in 1-2 short spoken sentences. No lists, no markdown.)\n\n"
+        f"{req.transcript}"
+    )
+    messages.append({"role": "user", "content": wrapped_user})
+
+    try:
+        tools = get_chat_tools()
+    except Exception as e:
+        logger.exception("[invocation] agentic tool assembly failed")
+        return (f"(couldn't load my web tools: {e})", provider, model, None)
+
+    surface_session: Optional[str] = None
+    final_text: List[str] = []   # text after the last tool round (the spoken answer)
+    all_text: List[str] = []     # every token, as a fallback
+    stream_error: Optional[str] = None
+
+    try:
+        async for chunk in stream_with_tools(
+            messages=messages,
+            system_prompt=_AGENTIC_SYSTEM_PROMPT,
+            provider=provider,
+            model=model,
+            tools=tools,
+            enable_reasoning=False,
+        ):
+            ctype = chunk.get("type")
+            if ctype == "token":
+                text = chunk.get("text", "")
+                if text:
+                    final_text.append(text)
+                    all_text.append(text)
+            elif ctype == "tool_call":
+                key = _surface_key_for(
+                    chunk.get("name", ""), chunk.get("input") or {}
+                )
+                if key and surface_session is None:
+                    surface_session = key
+            elif ctype == "tool_result":
+                # A tool round completed; the spoken answer is whatever the
+                # model says AFTER the last tool result, so discard the
+                # pre-tool "let me open that" chatter.
+                final_text = []
+            elif ctype == "error":
+                stream_error = (
+                    chunk.get("message") or chunk.get("error") or "tool loop error"
+                )
+    except Exception as e:
+        logger.exception("[invocation] agentic tool loop raised")
+        stream_error = str(e)
+
+    answer = "".join(final_text).strip() or "".join(all_text).strip()
+    if not answer:
+        if stream_error:
+            answer = f"I hit a problem doing that: {stream_error}"
+        elif surface_session:
+            answer = "Done — I've brought it up on screen for you."
+        else:
+            answer = "(no response)"
+
+    logger.info(
+        "[invocation] agentic done: provider=%s model=%s surface=%s err=%s",
+        provider, model, surface_session, bool(stream_error),
+    )
+    return (answer, provider, model, surface_session)

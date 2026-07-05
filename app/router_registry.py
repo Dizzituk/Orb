@@ -14,6 +14,7 @@ The static/output mounts stay in main.py (they resolve paths via main.py's __fil
 import os
 from fastapi import Depends
 from app.auth import require_auth
+from app.auth.local_trust import require_local_or_secret
 
 from app.auth.router import router as auth_router
 from app.memory.api_router import router as memory_router
@@ -94,9 +95,11 @@ def register_routers(app):
     app.include_router(memory_router)
     app.include_router(stream_router)
     app.include_router(telemetry_router)
-    app.include_router(web_search_router)
+    # Web search drives paid keys — auth-gated (2026-07-02).
+    app.include_router(web_search_router, dependencies=[Depends(require_auth)])
     if _BRIEFING_AVAILABLE:
-        app.include_router(briefing_router)
+        # Briefing serves the local briefing UI — local-trusted (2026-07-02).
+        app.include_router(briefing_router, dependencies=[Depends(require_local_or_secret)])
     app.include_router(embeddings_router)
     app.include_router(astra_memory_router)
     app.include_router(shared_context_router, dependencies=[Depends(require_auth)])
@@ -104,7 +107,8 @@ def register_routers(app):
     app.include_router(content_scout_router)
     app.include_router(content_production_router)
     from app.content.production.file_router import router as content_file_router
-    app.include_router(content_file_router)
+    # Keeps its startswith(base_dir) traversal guard; local-trusted (2026-07-02).
+    app.include_router(content_file_router, dependencies=[Depends(require_local_or_secret)])
     app.include_router(content_distribution_router)
     app.include_router(youtube_router)
     app.include_router(engagement_router)
@@ -127,6 +131,14 @@ def register_routers(app):
     app.include_router(settings_router)
     app.include_router(transparency_router)
 
+    # LANE E (2026-07-02): 4080 VRAM orchestrator — GAMING toggle + state +
+    # the Electron Chatterbox-reconcile poll. Local-trusted (loopback bind).
+    try:
+        from app.gpu.router import router as gpu_router
+        app.include_router(gpu_router, dependencies=[Depends(require_local_or_secret)])
+    except Exception as _gpu_err:
+        print(f"[main.py] GPU router not available: {_gpu_err}")
+
     from app.investments.router import router as investments_router
     app.include_router(investments_router)
     from app.investments.chat_router import router as investments_chat_router
@@ -143,25 +155,26 @@ def register_routers(app):
         print(f"[startup] Vehicle: [WARN] {_vehicle_err}")
     from app.lifestyle.router import router as lifestyle_router
     app.include_router(lifestyle_router)
-    # Personal food product library — Job 4 memory roadmap (2026-06-10)
+    # Personal food product library — Job 4 memory roadmap (2026-06-10).
+    # Personal health data — auth-gated like the main lifestyle router (2026-07-02).
     try:
         from app.lifestyle.product_router import router as lifestyle_products_router
-        app.include_router(lifestyle_products_router)
-        print("[startup] Lifestyle products: [OK] registered")
+        app.include_router(lifestyle_products_router, dependencies=[Depends(require_auth)])
+        print("[startup] Lifestyle products: [OK] registered (auth-gated)")
     except Exception as e:
         print(f"[startup] Lifestyle products: [WARN] {e}")
     # Nutrition day-copy — voice-first diary reuse (2026-06-11)
     try:
         from app.lifestyle.nutrition_copy import router as nutrition_copy_router
-        app.include_router(nutrition_copy_router)
-        print("[startup] Nutrition copy-day: [OK] registered")
+        app.include_router(nutrition_copy_router, dependencies=[Depends(require_auth)])
+        print("[startup] Nutrition copy-day: [OK] registered (auth-gated)")
     except Exception as e:
         print(f"[startup] Nutrition copy-day: [WARN] {e}")
     # Energy engine — context-aware burn + weekly ledger (2026-06-11)
     try:
         from app.lifestyle.energy_router import router as energy_router
-        app.include_router(energy_router)
-        print("[startup] Energy engine: [OK] registered")
+        app.include_router(energy_router, dependencies=[Depends(require_auth)])
+        print("[startup] Energy engine: [OK] registered (auth-gated)")
     except Exception as e:
         print(f"[startup] Energy engine: [WARN] {e}")
     # ASTRA Drive — local file system management
@@ -173,12 +186,17 @@ def register_routers(app):
         print(f"[startup] Drive not available: {e}")
     app.include_router(endpoints_router)
     app.include_router(ambient_router)
-    app.include_router(voice_ambient_router)
-    app.include_router(rag_router)
+    # Ambient voice WS — renderer-only, local-trusted (2026-07-02).
+    app.include_router(voice_ambient_router, dependencies=[Depends(require_local_or_secret)])
+    # RAG drives file scans + LLM pipelines — auth-gated (2026-07-02);
+    # /rag/index additionally validates scan_dir against an allow-list.
+    app.include_router(rag_router, dependencies=[Depends(require_auth)])
 
     try:
         from app.endpoints.cost_dashboard import router as cost_dashboard_router
-        app.include_router(cost_dashboard_router, tags=["Cost Dashboard"])
+        # Spend data — auth-gated (2026-07-02); CostTally.tsx sends the token.
+        app.include_router(cost_dashboard_router, tags=["Cost Dashboard"],
+                           dependencies=[Depends(require_auth)])
     except ImportError as e:
         print(f"[startup] Cost dashboard not available: {e}")
 
@@ -226,10 +244,11 @@ def register_routers(app):
         print(f"[startup] Debug Orchestrator not available: {e}")
     app.include_router(introspection_router, tags=["Introspection"], dependencies=[Depends(require_auth)])
 
+    # Voice capture surfaces — renderer/phone-audio only, local-trusted (2026-07-02).
     if _TRANSCRIBE_AVAILABLE:
-        app.include_router(transcribe_router)
+        app.include_router(transcribe_router, dependencies=[Depends(require_local_or_secret)])
     if _AUDIO_STREAM_AVAILABLE:
-        app.include_router(audio_stream_router)
+        app.include_router(audio_stream_router, dependencies=[Depends(require_local_or_secret)])
 
     if os.getenv("ORB_ENABLE_PHASE4", "false").lower() == "true":
         try:
@@ -375,10 +394,12 @@ def register_routers(app):
     # Documents — Univer editor pane seam (2026-06-12): file ⇄ snapshot conversion
     # (xlsx/docx/csv/md) + the editor action channel that lets chat tools read and
     # edit whatever is open in the desktop's command-centre Editor tab.
+    # Auth-gated at include (2026-07-02) like /drive — the renderer sends its
+    # session token; /open + /save additionally enforce Drive allowed roots.
     try:
         from app.documents import router as documents_router
-        app.include_router(documents_router)
-        print("[startup] Documents (editor pane): [OK] registered")
+        app.include_router(documents_router, dependencies=[Depends(require_auth)])
+        print("[startup] Documents (editor pane): [OK] registered (auth-gated)")
     except Exception as _documents_err:
         print(f"[startup] Documents: [WARN] {_documents_err}")
 
@@ -387,8 +408,9 @@ def register_routers(app):
     # /astra/state. Local-trusted like the Room's /scene/* endpoints.
     try:
         from app.astra_presence.router import router as astra_presence_router
-        app.include_router(astra_presence_router)
-        print("[startup] ASTRA Presence: [OK] registered")
+        # Local-trusted (2026-07-02): renderer + Unity hold no token.
+        app.include_router(astra_presence_router, dependencies=[Depends(require_local_or_secret)])
+        print("[startup] ASTRA Presence: [OK] registered (local-trusted)")
     except Exception as _presence_err:
         print(f"[startup] ASTRA Presence: [WARN] {_presence_err}")
 
@@ -397,8 +419,9 @@ def register_routers(app):
     # (run_astra_chat) + TTS helpers without bridge auth (see scene_director/voice.py).
     try:
         from app.scene_director.voice import router as scene_voice_router
-        app.include_router(scene_voice_router)
-        print("[startup] Scene Voice (Room /ask): [OK] registered")
+        # Local-trusted (2026-07-02): Unity Room is a tokenless local renderer.
+        app.include_router(scene_voice_router, dependencies=[Depends(require_local_or_secret)])
+        print("[startup] Scene Voice (Room /ask): [OK] registered (local-trusted)")
     except Exception as _scene_voice_err:
         print(f"[startup] Scene Voice: [WARN] {_scene_voice_err}")
 

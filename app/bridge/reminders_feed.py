@@ -40,7 +40,15 @@ class BridgeReminderOut(BaseModel):
 
 
 def _to_out(r) -> BridgeReminderOut:
-    return BridgeReminderOut(id=r.id, text=r.text, due_at=r.due_at.isoformat() if r.due_at else "")
+    # UTC offset stamped back on (columns read back naive): AstraBridge's
+    # ReminderSyncWorker parses due_at with OffsetDateTime.parse, which THROWS
+    # on a naive string — so the phone's exact alarms silently never armed and
+    # only the 15-min catch-up poll ever notified (2026-07-03 evening fix).
+    due = r.due_at
+    if due is not None and due.tzinfo is None:
+        from datetime import timezone as _tz
+        due = due.replace(tzinfo=_tz.utc)
+    return BridgeReminderOut(id=r.id, text=r.text, due_at=due.isoformat() if due else "")
 
 
 @router.get("/reminders/upcoming", response_model=List[BridgeReminderOut])

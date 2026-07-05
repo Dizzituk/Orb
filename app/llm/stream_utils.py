@@ -2,12 +2,15 @@
 # Purpose: Stream utilities - helper functions for stream_router.py
 # Called-by: app.jobs._engine_helpers, app.jobs.engine, app.llm.high_stakes_stream, app.llm.routing.chat_routing (+2 more)
 # Depends-on: app.auth.middleware, app.embeddings, app.embeddings.service, app.llm.schemas (+3 more)
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-07-02
 """
 Stream utilities - helper functions for stream_router.py
 
 v3.3 (2026-01): Fixed DEFAULT_MODELS to use runtime env lookup instead of import-time frozen values.
 v3.4 (2026-01): Prevent scan/map ASTRA commands from being misclassified as ARCHITECTURE_DESIGN in fallback routing.
+v3.5 (2026-07-02, LANE D): _HARDCODED_FALLBACKS deleted — every provider key
+    resolves env-only through app.llm.frontier_models; OPENAI_MODEL_CODE and
+    JOB_CONTINUATION_* seeded in .env preserve the old effective values.
 """
 
 import os
@@ -25,38 +28,42 @@ from app.llm.schemas import JobType, RoutingConfig
 # =============================================================================
 # Model Configuration - RUNTIME LOOKUP (not frozen at import)
 # =============================================================================
+# LANE D (2026-07-02): zero literal model IDs. Each provider key resolves from
+# .env on access — its dedicated env var first (historical precedence kept),
+# then the frontier_models {PROVIDER}_DEFAULT_MODEL -> DEFAULT_MODEL chain.
+# "anthropic_opus" additionally honours the JOB_CONTINUATION role vars so
+# chat_routing's job-continuation path keeps its own .env knob.
 
-# Hard-coded fallbacks ONLY used if env vars are completely unset
-# v2.3: Updated model tiers
-# Chat: GPT-5-mini (cheap, fast)
-# Code/text: GPT-5.4 (capable, good value)
-# Architecture: Claude Opus 4.6 (heavy thinking)
-_HARDCODED_FALLBACKS = {
-    "openai": "gpt-5.4-mini",  # v14.1: upgraded from gpt-5-mini
-    "openai_code": "gpt-5.4",
-    "anthropic": "claude-sonnet-4-6",
-    "anthropic_opus": "claude-opus-4-6",
-    "gemini": "gemini-2.0-flash",
+from app.llm.frontier_models import get_provider_default_model, get_role_model
+
+# provider key -> (dedicated env var, provider for the default-model chain)
+_PROVIDER_ENV = {
+    "openai": ("OPENAI_DEFAULT_MODEL", "openai"),
+    "openai_code": ("OPENAI_MODEL_CODE", "openai"),
+    "anthropic": ("ANTHROPIC_SONNET_MODEL", "anthropic"),
+    "anthropic_opus": ("ANTHROPIC_OPUS_MODEL", "anthropic"),
+    "gemini": ("GEMINI_DEFAULT_MODEL", "gemini"),
 }
 
 
 def get_default_model(provider_key: str) -> str:
-    """Get default model for a provider at RUNTIME (reads env on each call).
+    """Get default model for a provider key at RUNTIME (reads env on each call).
 
     This ensures env var changes take effect without restarting the server.
+    Env-only: a completely unconfigured .env yields "" (with an error log from
+    the resolver) and fails loudly downstream — never a rotted literal.
     """
-    env_map = {
-        "openai": "OPENAI_DEFAULT_MODEL",
-        "anthropic": "ANTHROPIC_SONNET_MODEL",
-        "anthropic_opus": "ANTHROPIC_OPUS_MODEL",
-        "gemini": "GEMINI_DEFAULT_MODEL",
-    }
-    env_var = env_map.get(provider_key)
+    env_var, provider = _PROVIDER_ENV.get(provider_key, (None, provider_key))
     if env_var:
-        val = os.getenv(env_var)
+        val = os.getenv(env_var, "").strip()
         if val:
             return val
-    return _HARDCODED_FALLBACKS.get(provider_key, _HARDCODED_FALLBACKS["openai"])
+    if provider_key == "anthropic_opus":
+        try:
+            return get_role_model("JOB_CONTINUATION", "ARCHITECT")[1]
+        except RuntimeError:
+            pass
+    return get_provider_default_model(provider, strict=False)
 
 
 def get_spec_gate_model() -> str:
@@ -64,16 +71,12 @@ def get_spec_gate_model() -> str:
 
     Precedence:
     1. OPENAI_SPEC_GATE_MODEL (if set)
-    2. OPENAI_DEFAULT_MODEL (if set)
-    3. Hard-coded fallback
+    2. OPENAI_DEFAULT_MODEL, then the provider default chain (env-only)
     """
     spec_gate_model = os.getenv("OPENAI_SPEC_GATE_MODEL")
     if spec_gate_model:
         return spec_gate_model
-    default_model = os.getenv("OPENAI_DEFAULT_MODEL")
-    if default_model:
-        return default_model
-    return _HARDCODED_FALLBACKS["openai"]
+    return get_default_model("openai")
 
 
 def get_spec_gate_provider() -> str:
@@ -91,8 +94,8 @@ class _DefaultModelsProxy:
 
     def get(self, key: str, default: Optional[str] = None) -> str:
         result = get_default_model(key)
-        # If we got the hardcoded fallback and a different default was requested, use that
-        if result == _HARDCODED_FALLBACKS.get(key) and default is not None:
+        # Nothing resolved from env and the caller offered a default: use it.
+        if not result and default is not None:
             return default
         return result
 
@@ -380,11 +383,11 @@ def select_provider_for_job_type(job_type: JobType) -> Tuple[str, str]:
     if job_type in RoutingConfig.GPT_ONLY_JOBS:
         return ("openai", get_default_model("openai"))
 
-    # v2.3: Code creation tasks -> GPT-5.4
+    # v2.3: Code creation tasks -> the OPENAI_MODEL_CODE slot (seeded in .env)
     if job_type in _CODE_CREATION_JOBS:
-        gpt54 = os.getenv("OPENAI_MODEL_CODE", "gpt-5.4")
-        print(f"[stream_utils] Code task '{job_type.value}' -> openai/{gpt54}")
-        return ("openai", gpt54)
+        code_model = get_default_model("openai_code")
+        print(f"[stream_utils] Code task '{job_type.value}' -> openai/{code_model}")
+        return ("openai", code_model)
 
     if job_type in RoutingConfig.HIGH_STAKES_JOBS:
         print(f"[stream_utils] High-stakes job '{job_type.value}' -> Opus")

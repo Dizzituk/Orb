@@ -266,13 +266,22 @@ def _get_pattern_embedding(
     db: Session,
     pattern_id: int,
 ) -> Optional[List[float]]:
-    """Get the stored embedding vector for a pattern."""
+    """Get the stored embedding vector for a pattern.
+
+    LANE E: only vectors in the ACTIVE query model-space are returned — the
+    context embedding above rides the router's query path, so scoring a
+    different-model row would be mixed-model cosine. Legacy rows become
+    visible again once reembed_batch restamps them.
+    """
     try:
         from app.embeddings.models import Embedding
+        from app.embeddings.provider_router import text_query_spec
+        from app.embeddings.service import _model_space_criterion
 
         emb = db.query(Embedding).filter(
             Embedding.source_type == "experience_pattern",
             Embedding.source_id == pattern_id,
+            _model_space_criterion(text_query_spec().label),
         ).first()
 
         if emb and emb.embedding:

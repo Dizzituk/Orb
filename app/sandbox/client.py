@@ -176,17 +176,27 @@ class SandboxClient:
             SandboxError: On connection or HTTP errors
         """
         url = f"{self.base_url.rstrip('/')}{path}"
-        
+
         if params:
             url += "?" + urlencode(params)
-        
+
         headers = {"Accept": "application/json"}
+
+        # Security hardening 2026-07-02: the controller requires a per-run
+        # bearer secret on EVERY request (sandbox_controller v0.6.0). The
+        # launcher provisions the same ASTRA_SANDBOX_SECRET on both sides;
+        # without it here the controller answers 401/503 — a loud, honest
+        # failure that points at provisioning, never a silent open port.
+        sandbox_secret = os.environ.get("ASTRA_SANDBOX_SECRET", "")
+        if sandbox_secret:
+            headers["Authorization"] = f"Bearer {sandbox_secret}"
+
         data = None
-        
+
         if json_body is not None:
             headers["Content-Type"] = "application/json"
             data = json.dumps(json_body).encode("utf-8")
-        
+
         req = Request(url, data=data, headers=headers, method=method)
         
         print(f"[SANDBOX_DEBUG] HTTP {method} {url}")  # Force print

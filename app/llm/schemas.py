@@ -213,29 +213,35 @@ class RoutingConfig:
     """Static routing configuration for the 8-route system."""
     
     # === JOB TYPE → PROVIDER/MODEL MAPPING ===
+    # LANE D (2026-07-02): third element is no longer a literal model ID — it
+    # is a FALLBACK SPEC consumed by get_routing() when the env var is unset:
+    # a provider name ("openai") resolves through the frontier_models
+    # {PROVIDER}_DEFAULT_MODEL -> DEFAULT_MODEL chain; "role:NAME" resolves
+    # get_role_model("NAME"). All the env vars are seeded in .env, so the
+    # spec only fires on a stripped environment.
     JOB_TYPE_ROUTING: Dict[JobType, tuple] = {
         # OpenAI routes
-        JobType.CHAT_LIGHT: (Provider.OPENAI, "OPENAI_MODEL_LIGHT_CHAT", "gpt-5.4-mini"),  # v14.1: upgraded
-        JobType.TEXT_HEAVY: (Provider.OPENAI, "OPENAI_MODEL_HEAVY_TEXT", "gpt-5.4"),  # v2.3: upgraded
-        
-        # Anthropic routes
-        JobType.CODE_MEDIUM: (Provider.OPENAI, "OPENAI_MODEL_CODE", "gpt-5.4"),  # v2.3: GPT-5.4 for all code creation
-        JobType.ORCHESTRATOR: (Provider.ANTHROPIC, "ANTHROPIC_OPUS_MODEL", "claude-opus-4-6"),  # v2.3: upgraded
-        
+        JobType.CHAT_LIGHT: (Provider.OPENAI, "OPENAI_MODEL_LIGHT_CHAT", "openai"),
+        JobType.TEXT_HEAVY: (Provider.OPENAI, "OPENAI_MODEL_HEAVY_TEXT", "openai"),
+
+        # Code routes (v2.3: GPT for all code creation)
+        JobType.CODE_MEDIUM: (Provider.OPENAI, "OPENAI_MODEL_CODE", "openai"),
+        JobType.ORCHESTRATOR: (Provider.ANTHROPIC, "ANTHROPIC_OPUS_MODEL", "anthropic"),
+
         # Google routes
-        JobType.IMAGE_SIMPLE: (Provider.GOOGLE, "GEMINI_VISION_MODEL_FAST", "gemini-2.0-flash"),
-        JobType.IMAGE_COMPLEX: (Provider.GOOGLE, "GEMINI_VISION_MODEL_PRO", "gemini-2.5-pro"),
-        JobType.VIDEO_HEAVY: (Provider.GOOGLE, "GEMINI_VIDEO_MODEL", "gemini-3-pro-preview"),
-        JobType.OPUS_CRITIC: (Provider.GOOGLE, "GEMINI_OPUS_CRITIC_MODEL", "gemini-3-pro-preview"),
-        
+        JobType.IMAGE_SIMPLE: (Provider.GOOGLE, "GEMINI_VISION_MODEL_FAST", "google"),
+        JobType.IMAGE_COMPLEX: (Provider.GOOGLE, "GEMINI_VISION_MODEL_PRO", "google"),
+        JobType.VIDEO_HEAVY: (Provider.GOOGLE, "GEMINI_VIDEO_MODEL", "google"),
+        JobType.OPUS_CRITIC: (Provider.GOOGLE, "GEMINI_OPUS_CRITIC_MODEL", "google"),
+
         # Document routes
-        JobType.DOCUMENT_PDF_TEXT: (Provider.OPENAI, "OPENAI_MODEL_HEAVY_TEXT", "gpt-5.4"),  # v2.3: upgraded
-        JobType.DOCUMENT_PDF_VISION: (Provider.GOOGLE, "GEMINI_VISION_MODEL_PRO", "gemini-2.5-pro"),
-        
+        JobType.DOCUMENT_PDF_TEXT: (Provider.OPENAI, "OPENAI_MODEL_HEAVY_TEXT", "openai"),
+        JobType.DOCUMENT_PDF_VISION: (Provider.GOOGLE, "GEMINI_VISION_MODEL_PRO", "google"),
+
         # Video+Code debug route
-        JobType.VIDEO_CODE_DEBUG: (Provider.GOOGLE, "GEMINI_VIDEO_MODEL", "gemini-3-pro-preview"),
+        JobType.VIDEO_CODE_DEBUG: (Provider.GOOGLE, "GEMINI_VIDEO_MODEL", "google"),
         # v9.0: Video+Code with tool access (single model)
-        JobType.VIDEO_CODE_TOOLS: (Provider.GOOGLE, "CHAT_DEEP_MODEL", "gemini-3.1-pro-preview-customtools"),
+        JobType.VIDEO_CODE_TOOLS: (Provider.GOOGLE, "CHAT_DEEP_MODEL", "role:MULTIMODAL"),
     }
     
     # === LEGACY → PRIMARY ROUTING MAP ===
@@ -422,13 +428,26 @@ class RoutingConfig:
     
     @classmethod
     def get_routing(cls, job_type: JobType) -> tuple:
-        """Get (provider, model) for a job type."""
+        """Get (provider, model) for a job type. Env-only (LANE D): the env
+        var wins; otherwise the tuple's fallback spec resolves through
+        frontier_models — never a literal."""
         primary = cls.normalize_job_type(job_type)
         config = cls.JOB_TYPE_ROUTING.get(primary)
         if not config:
             config = cls.JOB_TYPE_ROUTING[JobType.CHAT_LIGHT]
-        provider, env_var, default_model = config
-        model = os.getenv(env_var, default_model)
+        provider, env_var, fallback_spec = config
+        model = os.getenv(env_var, "").strip()
+        if not model:
+            from app.llm.frontier_models import (
+                get_provider_default_model, get_role_model,
+            )
+            if fallback_spec.startswith("role:"):
+                try:
+                    model = get_role_model(fallback_spec[5:])[1]
+                except RuntimeError:
+                    model = ""
+            else:
+                model = get_provider_default_model(fallback_spec, strict=False)
         return (provider, model)
 
 

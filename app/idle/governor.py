@@ -82,6 +82,14 @@ class IdleGovernor:
 
     def record_activity(self) -> None:
         self._last_activity = time.monotonic()
+        # LANE E: the GPU orchestrator rides the same signal — user is back
+        # → leave BACKGROUND_INGEST (Chatterbox restored via Electron poll).
+        # No-op unless the orchestrator is initialised AND mid-INGEST.
+        try:
+            from app.gpu.orchestrator import on_user_activity_signal
+            on_user_activity_signal()
+        except Exception:
+            pass
 
     def idle_seconds(self) -> float:
         return time.monotonic() - self._last_activity
@@ -118,6 +126,15 @@ class IdleGovernor:
     async def run_pending(self, max_tasks: Optional[int] = None) -> int:
         """Drain runnable tasks while idle. Returns the number processed
         (completed/paused/failed/skipped all count)."""
+        # LANE E carryover §3: GAMING suspends the idle scheduler ENTIRELY —
+        # idle-for-Astra and free-for-gaming are different states; nothing
+        # may load itself onto a card the user just cleared for a game.
+        try:
+            from app.gpu.orchestrator import drain_suspended
+            if drain_suspended():
+                return 0
+        except Exception:
+            pass
         processed = 0
         while self.is_idle() and not self._stop_requested:
             db = self._session_factory()
@@ -191,12 +208,23 @@ class IdleGovernor:
     # ── background loop ────────────────────────────────────────────────────
 
     async def _loop(self) -> None:
+        was_idle = False
         while self._running:
             try:
                 if not self._booted:
                     self._booted = True
                     self.boot_catchup()
-                if self.is_idle():
+                idle_now = self.is_idle()
+                # LANE E carryover §2: idle-window entry parks Chatterbox
+                # (10 min inactivity; its VRAM is what idle work inherits).
+                if idle_now and not was_idle:
+                    try:
+                        from app.gpu.orchestrator import on_idle_enter_signal
+                        on_idle_enter_signal()
+                    except Exception:
+                        pass
+                was_idle = idle_now
+                if idle_now:
                     await self.run_pending()
                 await asyncio.sleep(_poll_seconds())
             except asyncio.CancelledError:

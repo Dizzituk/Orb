@@ -2,9 +2,11 @@
 # Purpose: Start full Orb (backend + frontend) in Windows Sandbox with visible windows.
 # Called-by: no static importers found (dynamic/registry use possible)
 # Depends-on: app.sandbox.client
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-07-02 (per-run random ORB_MASTER_KEY — hardcoded constant removed)
 """Start full Orb (backend + frontend) in Windows Sandbox with visible windows."""
 
+import base64
+import secrets
 import sys
 from pathlib import Path
 
@@ -17,22 +19,27 @@ def main():
     print("=" * 60)
     print("Starting Full Orb in Sandbox (Backend + Frontend)")
     print("=" * 60)
-    
+
     client = get_sandbox_client()
-    
+
     # Check connection
     health = client.health()
     print(f"Sandbox connected: {health.status}")
-    
+
+    # Throwaway per-run master key (2026-07-02): the sandbox DB is disposable,
+    # so a fresh random key each boot costs nothing — the old constant was a
+    # publicly guessable value.
+    run_key = base64.b64encode(secrets.token_bytes(32)).decode("ascii")
+
     # Write full startup script
     script = r'''# Orb Full Startup Script
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Starting Orb Backend..." -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Cyan
 
-# Start backend in separate window
-$env:ORB_MASTER_KEY = 'MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE='
-Start-Process powershell -ArgumentList '-NoExit', '-Command', "cd C:\Orb\Orb; `$env:ORB_MASTER_KEY='MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE='; python -m uvicorn main:app --host 0.0.0.0 --port 8000"
+# Start backend in separate window (throwaway per-run master key)
+$env:ORB_MASTER_KEY = '__ORB_MASTER_KEY__'
+Start-Process powershell -ArgumentList '-NoExit', '-Command', "cd C:\Orb\Orb; `$env:ORB_MASTER_KEY='__ORB_MASTER_KEY__'; python -m uvicorn main:app --host 0.0.0.0 --port 8000"
 
 Write-Host "Waiting for backend to start..." -ForegroundColor Yellow
 Start-Sleep -Seconds 4
@@ -44,7 +51,8 @@ Write-Host "========================================" -ForegroundColor Cyan
 Set-Location C:\Orb\orb-desktop
 npm run electron:dev
 '''
-    
+    script = script.replace("__ORB_MASTER_KEY__", run_key)
+
     print("\n[1] Writing start_full_orb.ps1 to sandbox...")
     result = client.write_file(
         target="REPO",

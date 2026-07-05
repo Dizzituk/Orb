@@ -119,6 +119,7 @@ async def generate_test_flows(
             user_prompt=user_prompt,
             max_tokens=8000,
             temperature=0.0,
+            stage="bvl_test_generator",  # Derek p1: cost attribution
         )
     except RuntimeError as e:
         emit(f"   ❌ Test generation failed: {e}")

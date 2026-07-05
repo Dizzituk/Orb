@@ -69,8 +69,12 @@ _session_model_cache: dict[int, tuple[str, str]] = {}
 # return shape of get_sticky_model stays unchanged (external readers unpack it).
 # Only PINNED sources short-circuit routing on later turns / survive a restart;
 # everything else is governed by tier_momentum and decays.
+# v2026-07-03: 'agentic_tab' REMOVED from the pinned set — tab presence is not
+# an explicit user choice. One browser-tab turn was latching the frontier
+# model onto the whole project (and re-latching via history after restarts).
+# Existing history rows with model_source='agentic_tab' stop restoring too.
 _sticky_source: dict[int, str] = {}
-_PINNED_SOURCES = frozenset({"frontend_override", "explicit_user", "agentic_tab"})
+_PINNED_SOURCES = frozenset({"frontend_override", "explicit_user"})
 
 
 def get_sticky_model(project_id: int) -> tuple[str, str] | None:
@@ -93,20 +97,24 @@ def set_sticky_model(
 
 
 def is_explicit_sticky(project_id: int) -> bool:
-    """True only when the session's sticky was an explicit user/policy choice
-    (frontend dropdown, "use opus", agentic tab) — not an automatic escalation."""
+    """True only when the session's sticky was an explicit user choice
+    (frontend dropdown, "use opus") — not an automatic escalation."""
     return _sticky_source.get(project_id) in _PINNED_SOURCES
 
 
 # =============================================================================
-# AGENTIC TAB CONTEXT DETECTION  (v14.1, 2026-04-26)
+# AGENTIC TAB CONTEXT DETECTION  (v14.1, 2026-04-26; retiered 2026-07-03)
 # =============================================================================
-# Tabs whose work warrants a frontier model regardless of message intent.
-# Tab presence alone is enough — the user's explicit policy: as soon as I'm
-# in this tab, treat every command as agentic and route to the frontier
-# model. No intent-detection required, no "only if message looks like a
-# build request" gating. These flows often run unattended (driving), so
-# accuracy beats speed/cost.
+# Tabs whose work warrants a CAPABLE model regardless of message intent.
+# v14.1 routed these to FRONTIER and pinned it — right when browser flows
+# were improvised multi-step tool work. Amendment A (2026-07-02) made those
+# flows one-tool-call composites (posting driver, Coursera study loop)
+# built for small models, and the pin latched the frontier model onto a
+# whole project from a single browser-tab turn (live incident 2026-07-03
+# 00:17: "resume course" answered by claude-fable-5, toolless). Frontier
+# is now reachable only via explicit request / cognitive cues; this branch
+# resolves AGENTIC_CONTEXT with the REASONING tier as fallback and decays
+# via momentum instead of pinning.
 #
 # Covered:
 #   - Browser-driven flows (website, courses, social composer)
@@ -334,16 +342,20 @@ def select_chat_model(
         extras["model_source"] = "image_auto"
         return *ensure_provider_available(provider, model), extras
 
-    # ── Agentic tab context → frontier model ──
+    # ── Agentic tab context → capable model, momentum only ──
     # Tab-only check (website / builds / debug / etc.) — no message intent
-    # gating. Subsumes the old separate builds-context and web-automation
-    # paths into one. Overrides any prior sticky-mini choice from earlier
-    # turns; if the user just opened the tab, this turn IS agentic
-    # regardless of what the chat was about before.
+    # gating. Resolves AGENTIC_CONTEXT (env/Models-tab tunable) falling back
+    # to the REASONING tier — NOT frontier, and NOT pinned: the boost decays
+    # like every other automatic escalation, so a browser-tab turn can never
+    # latch a big model onto the project (2026-07-03 fix; frontier stays
+    # reachable via explicit request / cognitive cues only).
     if _is_agentic_context(req):
-        provider, model = get_role_model("AGENTIC_CONTEXT", "FRONTIER")
-        print(f"[MODEL_SELECT] Agentic tab context detected -> {provider}/{model}")
-        set_sticky_model(req.project_id, provider, model, source="agentic_tab")
+        provider, model = get_role_model("AGENTIC_CONTEXT", "REASONING")
+        print(f"[MODEL_SELECT] Agentic tab context -> {provider}/{model} (momentum, no pin)")
+        tier_momentum.record_turn(
+            req.project_id, "reasoning", provider, model,
+            reason="agentic tab context",
+        )
         extras["model_source"] = "agentic_tab"
         return *ensure_provider_available(provider, model), extras
 

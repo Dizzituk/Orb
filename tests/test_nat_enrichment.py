@@ -10,7 +10,17 @@ import types
 
 import app.llm.workers.nat_worker as nw
 import app.astra_memory.retrieval as retr
+import app.astra_memory.semantic_candidates as sc
+import app.llm.clients as clients
 from app.memory.nat_jobs import enrichment as enr
+
+
+def _stub_prewarm(monkeypatch):
+    """Stop the real batch embed (network) from firing in fetch tests."""
+    monkeypatch.setattr(
+        sc, "prewarm_query_embeddings",
+        lambda qs: {"queries": len(qs), "cached": 0, "embedded": 0},
+    )
 
 
 def _reset():
@@ -37,6 +47,7 @@ def test_enrichment_suggest_then_deterministic_fetch(monkeypatch):
     recs = [types.SimpleNamespace(title="2026-05-19 nutrition", content="hit target: 2100 kcal")]
     monkeypatch.setattr(nw, "run_nat_job", fake_nat)
     monkeypatch.setattr(retr, "retrieve_for_query", _fake_retrieve(recs))
+    _stub_prewarm(monkeypatch)
 
     block = asyncio.run(enr.build_enrichment_block(db=object(), project_id=1,
                                                    user_message="worried about my calories today"))
@@ -102,6 +113,7 @@ def test_enrichment_sync_wrapper(monkeypatch):
     recs = [types.SimpleNamespace(title="T", content="stored fact value")]
     monkeypatch.setattr(nw, "run_nat_job", fake_nat)
     monkeypatch.setattr(retr, "retrieve_for_query", _fake_retrieve(recs))
+    _stub_prewarm(monkeypatch)
     # The sync wrapper opens a fresh db via app.db.get_db_session — stub it so the
     # test doesn't touch the real database (retrieve is mocked anyway).
     import app.db as appdb
@@ -110,6 +122,74 @@ def test_enrichment_sync_wrapper(monkeypatch):
     block = enr.build_enrichment_block_sync(project_id=1, message="worried about calories")
     assert block.startswith("[ENRICHMENT]"), block
     assert "stored fact value" in block
+
+
+def test_enrichment_query_cap(monkeypatch):
+    # The cap bounds how many suggested queries actually get looked up.
+    _reset()
+    os.environ["NAT_ENRICHMENT_MAX_QUERIES"] = "2"
+    try:
+        async def fake_nat(system, user, **kw):
+            return '["a","b","c","d","e","f"]'
+
+        calls = {"retrieve": 0}
+
+        def counting_retrieve(db, q, **kw):
+            calls["retrieve"] += 1
+            return types.SimpleNamespace(
+                records=[types.SimpleNamespace(title="T", content=f"hit {calls['retrieve']}")]
+            )
+
+        monkeypatch.setattr(nw, "run_nat_job", fake_nat)
+        monkeypatch.setattr(retr, "retrieve_for_query", counting_retrieve)
+        _stub_prewarm(monkeypatch)
+
+        asyncio.run(enr.build_enrichment_block(db=object(), project_id=1, user_message="x"))
+        assert calls["retrieve"] == 2  # capped at 2, not 6
+    finally:
+        os.environ.pop("NAT_ENRICHMENT_MAX_QUERIES", None)
+
+
+def test_enrichment_partial_accumulates_into_sink(monkeypatch):
+    # Best-effort partial: lines stream into the sink as they're found, so a
+    # deadline-bounded caller reads exactly what was gathered (no all-or-nothing).
+    _reset()
+    import threading
+    recs = [types.SimpleNamespace(title="T1", content="first hit"),
+            types.SimpleNamespace(title="T2", content="second hit")]
+    monkeypatch.setattr(retr, "retrieve_for_query", _fake_retrieve(recs))
+    sink = {"lines": [], "lock": threading.Lock()}
+    lines = enr._collect_lines(object(), ["q1"], sink=sink)
+    assert lines == sink["lines"]                       # deadline reads == collected
+    assert any("first hit" in ln for ln in sink["lines"])
+    assert enr._format_block(sink["lines"]).startswith("[ENRICHMENT]")
+
+
+def test_prewarm_batches_and_caches(monkeypatch):
+    # One batch call for N queries; a repeat is served from cache (zero network).
+    sc._QUERY_EMBED_CACHE.clear()
+    os.environ["ASTRA_SEMANTIC_RETRIEVAL"] = "true"
+    sc._disabled_until = 0.0
+    calls = {"n": 0}
+
+    def fake_get_embeddings(texts, task_type="RETRIEVAL_QUERY"):
+        calls["n"] += 1
+        return [[0.1, 0.2, 0.3] for _ in texts]
+
+    monkeypatch.setattr(clients, "get_embeddings", fake_get_embeddings)
+
+    s1 = sc.prewarm_query_embeddings(["calorie log today", "weight trend"])
+    assert s1["embedded"] == 2 and s1["cached"] == 0
+    assert calls["n"] == 1                              # ONE call for two queries
+
+    s2 = sc.prewarm_query_embeddings(["calorie log today", "weight trend"])
+    assert s2["cached"] == 2                            # both from cache
+    assert calls["n"] == 1                              # no second network call
+
+    # And the cached vector is what _embed_query returns - no network either.
+    assert sc._embed_query("calorie log today") == [0.1, 0.2, 0.3]
+    assert calls["n"] == 1
+    sc._QUERY_EMBED_CACHE.clear()
 
 
 if __name__ == "__main__":

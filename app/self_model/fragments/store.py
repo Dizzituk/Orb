@@ -119,6 +119,17 @@ class FragmentStore:
             self._persist_fragments()
             return True
 
+    def update_embedding(self, fragment_id: str, embedding, embedding_model: str) -> bool:
+        """LANE E: restamp a fragment's vector (reembed_batch migration)."""
+        with _lock:
+            f = self._fragments.get(fragment_id)
+            if not f:
+                return False
+            f.embedding = list(embedding) if embedding else None
+            f.embedding_model = embedding_model if embedding else ""
+            self._persist_fragments()
+            return True
+
     # ─── read path ────────────────────────────────────────────
 
     def get(self, fragment_id: str) -> Optional[Fragment]:

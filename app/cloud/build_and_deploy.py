@@ -1,18 +1,22 @@
 # FILE: app/cloud/build_and_deploy.py
-# Purpose: Build Android APKs and deploy to Proton Drive.
+# Purpose: Build Android APKs and deploy to Google Drive.
 # Called-by: app.cloud.router, app.llm.stream_router
 # Depends-on: app.cloud.rclone_service, app.pipeline_v2.target_registry
 # Last-renovated: 2026-06-11
 """
-Build Android APKs and deploy to Proton Drive.
+Build Android APKs and deploy to Google Drive.
 
-Full flow: Gradle build → APK → Proton Drive cloud.
+Full flow: Gradle build → APK → Google Drive (rclone).
 
 Used by chat routing when user says things like:
   "Build the Bridge APK and put it in the cloud"
   "Create the APK for Driver CoPilot and upload it"
 
 v1.0 (2026-03-14): Initial — build + cloud deploy for Android targets.
+v1.1 (2026-07-02): Proton removed entirely. The rclone remote was gdrive all
+    along (ASTRA_CLOUD_REMOTE unset) — the "Proton" labels were stale v1.0
+    copy, and the "fallback" just re-uploaded the same file when a big APK
+    outran the old 300s timeout. Google Drive is the one and only target.
 """
 from __future__ import annotations
 
@@ -113,10 +117,14 @@ async def deploy_to_cloud(
     cloud_filename: str,
     cloud_folder: str = "APKs",
 ) -> Dict[str, Any]:
-    """Upload a file to Proton Drive via rclone."""
+    """Upload a file to Google Drive via rclone.
+
+    Timeout is sized for 100MB+ APKs on a slow upstream — the 2026-07-02
+    deploy "failed" purely because a 107MB upload needed more than 300s.
+    """
     from app.cloud.rclone_service import upload_file
     cloud_dest = f"{cloud_folder}/{cloud_filename}"
-    result = await upload_file(local_path, cloud_dest)
+    result = await upload_file(local_path, cloud_dest, timeout=900)
     return result
 
 
@@ -160,7 +168,7 @@ async def build_and_deploy(
         result["error"] = build_result["error"]
         return result
 
-    # Step 3: Upload to cloud — try Proton first, fall back to Google Drive
+    # Step 3: Upload straight to Google Drive — one target, one attempt.
     apk_name = config["name"].replace(" ", "-") + ".apk"
     cloud_result = await deploy_to_cloud(
         build_result["apk_path"],
@@ -171,48 +179,17 @@ async def build_and_deploy(
     if cloud_result.get("success"):
         result["success"] = True
         result["message"] = (
-            f"Built {config['name']} APK and uploaded to Proton Drive: APKs/{apk_name}. "
-            f"Open Proton Drive on your phone to install."
+            f"Built {config['name']} APK and uploaded to Google Drive: APKs/{apk_name}. "
+            f"Open the Google Drive app on your phone to install."
         )
     else:
-        # Proton failed — try Google Drive via rclone (reliable writes)
-        logger.info("[build_deploy] Proton upload failed, trying Google Drive via rclone...")
-        gdrive_result = None
-        try:
-            from app.cloud.rclone_service import _run_rclone
-            _gd_r = await _run_rclone(
-                ["copyto", build_result["apk_path"], f"gdrive:ASTRA APKs/{apk_name}"],
-                timeout=120,
-            )
-            if _gd_r["exit_code"] == 0:
-                gdrive_result = {
-                    "success": True,
-                    "provider": "google_drive",
-                    "cloud_path": f"ASTRA APKs/{apk_name}",
-                }
-                logger.info("[build_deploy] Uploaded to Google Drive: ASTRA APKs/%s", apk_name)
-            else:
-                gdrive_result = {"success": False, "error": _gd_r["stderr"][:200]}
-        except Exception as e:
-            logger.debug("[build_deploy] Google Drive fallback failed: %s", e)
-
-        if gdrive_result and gdrive_result.get("success"):
-            result["success"] = True
-            result["cloud"] = gdrive_result
-            _link = gdrive_result.get('web_link', 'Google Drive')
-            result["message"] = (
-                f"Built {config['name']} APK and uploaded to Google Drive: ASTRA APKs/{apk_name}. "
-                f"Download from your Google Drive app or: {_link}"
-            )
-        else:
-            # Both failed
-            result["success"] = True
-            result["upload_failed"] = True
-            _gdrive_err = gdrive_result.get('error', 'not configured') if gdrive_result else 'not available'
-            result["message"] = (
-                f"Built {config['name']} APK successfully ({build_result['apk_size'] // 1024}KB). "
-                f"Cloud upload failed (Proton: rclone beta limitation, Google Drive: {_gdrive_err}). "
-                f"APK ready at: {build_result['apk_path']}"
-            )
+        result["success"] = True
+        result["upload_failed"] = True
+        result["message"] = (
+            f"Built {config['name']} APK successfully "
+            f"({build_result['apk_size'] // (1024 * 1024)}MB) but the Google Drive "
+            f"upload failed: {cloud_result.get('error', 'unknown error')}. "
+            f"APK ready at: {build_result['apk_path']}"
+        )
 
     return result

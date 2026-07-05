@@ -117,6 +117,27 @@ def shape_anthropic_create_kwargs(
         )
 
 
+_SAMPLING_PARAM_MARKERS = ("temperature", "top_p", "top_k")
+
+
+def is_sampling_param_error(error_message: str) -> bool:
+    """True when a 400 complains about a sampling param the model no longer
+    accepts (live9, 2026-07-04: opus-4-8 started rejecting `temperature` as
+    deprecated OUTSIDE thinking mode too, which the static family rules above
+    don't cover — the eyes+judge checkout lost all three rounds to it)."""
+    msg = (error_message or "").lower()
+    if "invalid_request_error" not in msg and "400" not in msg:
+        return False
+    return any(f"`{p}`" in msg or f"'{p}'" in msg or f'"{p}"' in msg or f" {p} " in msg
+               for p in _SAMPLING_PARAM_MARKERS)
+
+
+def strip_sampling_params(create_kwargs: dict) -> None:
+    """Remove all sampling params in place (retry shape after a rejection)."""
+    for k in _SAMPLING_PARAM_MARKERS:
+        create_kwargs.pop(k, None)
+
+
 def is_refusal(resp) -> bool:
     """True when the response was blocked by a safety classifier."""
     return getattr(resp, "stop_reason", None) == "refusal"
@@ -147,6 +168,8 @@ def get_refusal_fallback_model(current_model_id: str) -> Optional[str]:
 __all__ = [
     "is_always_thinking_family",
     "shape_anthropic_create_kwargs",
+    "is_sampling_param_error",
+    "strip_sampling_params",
     "is_refusal",
     "extract_refusal_detail",
     "get_refusal_fallback_model",

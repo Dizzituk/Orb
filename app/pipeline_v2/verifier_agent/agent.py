@@ -337,6 +337,8 @@ async def _run(spec, profile, intent_text, evidence_summary, job_id, emit, repor
             tools=tools,
             tool_executor=executor,
             thinking=True,
+            stage="verifier",
+            job_id=job_id,
         )
 
     model_used = VERIFIER_AGENT_MODEL

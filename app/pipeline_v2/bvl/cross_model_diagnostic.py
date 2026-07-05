@@ -199,6 +199,7 @@ async def diagnose_failure(
             system_prompt=_DIAGNOSIS_SYSTEM,
             user_prompt=user_prompt,
             max_tokens=max_tokens,
+            stage="bvl_diagnostic",  # Derek p1: cost attribution
         )
 
         if not response:

@@ -9,7 +9,8 @@ Tests for ASTRA Spec Gate flow intents.
 Tests the Ramble → Weaver → Spec Gate → Pipeline flow:
 1. WEAVER_BUILD_SPEC - "How does that look all together?"
 2. SEND_TO_SPEC_GATE - "Send to Spec Gate"
-3. RUN_CRITICAL_PIPELINE_FOR_JOB - "Run critical pipeline" (requires confirmation)
+3. RUN_PIPELINE - "Run critical pipeline" (requires confirmation;
+   RUN_CRITICAL_PIPELINE_FOR_JOB is a deprecated alias, confirmed_intent-only)
 """
 from __future__ import annotations
 import pytest
@@ -195,25 +196,31 @@ class TestSpecGateTriggers:
 # =============================================================================
 
 class TestCriticalPipelineTriggers:
-    """Tests for critical pipeline triggers."""
-    
+    """Tests for critical pipeline triggers.
+
+    v5.4 unified pipeline commands: check_critical_pipeline_trigger and
+    tier0_classify both return the canonical RUN_PIPELINE
+    (RUN_CRITICAL_PIPELINE_FOR_JOB is a deprecated alias with no trigger
+    phrases — routable only via the desktop's confirmed_intent path).
+    """
+
     def test_run_critical_pipeline(self):
         """Primary trigger."""
         result = check_critical_pipeline_trigger("Run critical pipeline")
         assert result.matched
-        assert result.intent == CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB
-    
+        assert result.intent == CanonicalIntent.RUN_PIPELINE
+
     def test_execute_critical_pipeline(self):
         """Execute variant."""
         result = check_critical_pipeline_trigger("Execute critical pipeline")
         assert result.matched
-        assert result.intent == CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB
-    
+        assert result.intent == CanonicalIntent.RUN_PIPELINE
+
     def test_start_the_pipeline(self):
         """Start variant."""
         result = check_critical_pipeline_trigger("Start the pipeline")
         assert result.matched
-        assert result.intent == CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB
+        assert result.intent == CanonicalIntent.RUN_PIPELINE
     
     def test_does_not_trigger_on_questions(self):
         """Questions about pipeline should NOT trigger."""
@@ -310,10 +317,14 @@ class TestTier0SpecGateIntegration:
         assert result.intent == CanonicalIntent.SEND_TO_SPEC_GATE
     
     def test_tier0_catches_critical_pipeline_trigger(self):
-        """Tier 0 should catch critical pipeline triggers."""
+        """Tier 0 should catch critical pipeline triggers.
+
+        v5.4: resolves the canonical RUN_PIPELINE (alias no longer has
+        trigger phrases that shadow it).
+        """
         result = tier0_classify("Run critical pipeline")
         assert result.matched
-        assert result.intent == CanonicalIntent.RUN_CRITICAL_PIPELINE_FOR_JOB
+        assert result.intent == CanonicalIntent.RUN_PIPELINE
     
     def test_tier0_blocks_spec_gate_questions(self):
         """Tier 0 should block questions about Spec Gate."""

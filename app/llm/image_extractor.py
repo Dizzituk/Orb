@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from typing import AsyncIterator, Optional
 
@@ -141,7 +142,7 @@ async def wrap_stream_with_image_dispatch(
         yield held_done
     else:
         # Inner stream forgot to send 'done' — emit one so the frontend ends.
-        yield _sse({"type": "done", "provider": "openai", "model": "gpt-image-2", "total_length": 0})
+        yield _sse({"type": "done", "provider": "openai", "model": os.getenv("IMAGE_GEN_MODEL", ""), "total_length": 0})
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +159,8 @@ async def _dispatch_image(
     Bypasses image_router.generate_image_stream entirely — no classifier,
     no synth, no fallback to Gemini. Just: prompt in, image out.
     """
-    yield _sse({"type": "token", "content": "\n*Rendering image with gpt-image-2...*\n"})
+    model_label = os.getenv("IMAGE_GEN_MODEL", "") or "the image model"
+    yield _sse({"type": "token", "content": f"\n*Rendering image with {model_label}...*\n"})
 
     aspect_ratio = _detect_aspect_ratio(prompt)
 
@@ -180,7 +182,7 @@ async def _dispatch_image(
     file_link = f"[{file_path}](file://{file_path.replace(chr(92), '/')})"
     yield _sse({
         "type": "token",
-        "content": f"Generated with openai/gpt-image-2: **{result['filename']}**\n{file_link}\n",
+        "content": f"Generated with openai/{model_label}: **{result['filename']}**\n{file_link}\n",
     })
 
     # Persist the prompt for refinement loops ("make it darker", "recreate it")

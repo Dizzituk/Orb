@@ -49,16 +49,35 @@ def seed_ledger_from_spec(
 ) -> int:
     """Seed the ledger with decisions implied by the finalised spec.
 
-    Safe to re-run — uses idempotent append semantics (same key + value is
-    accepted without error; the ledger just records the restatement).
+    Idempotent by a marker decision (Derek p7 review fix): decisions restate
+    cleanly on a same-key+value append, but STEP/ACCEPTANCE constraints carry
+    no key and would DUPLICATE on every call. Since Derek p4 the orchestrator
+    calls this on every run (agent evidence may pre-populate the ledger, so
+    entry_count==0 no longer means 'unseeded'). The marker makes repeat calls
+    a no-op regardless of caller.
 
-    Returns number of entries added.
+    Returns number of entries added (0 when already seeded).
     """
     if not isinstance(spec, dict):
         logger.debug("[ledger_seed] spec not a dict; skipping seed")
         return 0
 
+    _SEED_MARKER_KEY = "_ledger.seeded"
+    if any(
+        getattr(e, "type", "") == "decision" and getattr(e, "key", "") == _SEED_MARKER_KEY
+        for e in ledger.entries
+    ):
+        logger.debug("[ledger_seed] already seeded (marker present) — skipping")
+        return 0
+
     added = 0
+    try:
+        ledger_append(
+            ledger, entry_type="decision", stage="spec_gate", relevant_to=["all"],
+            summary="Ledger seeded from finalised spec", key=_SEED_MARKER_KEY, value="1",
+        )
+    except LedgerConflictError:
+        return 0
 
     # ---- Profile-level decisions (binding for everything)
     if profile is not None:

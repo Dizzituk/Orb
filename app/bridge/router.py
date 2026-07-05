@@ -39,6 +39,7 @@ from .llm_helpers import (
     pop_pending_navigation,
 )
 from .uploads_store import save_upload, is_duplicate
+from .markdown_sanitize import for_display
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/bridge", tags=["Bridge"])
@@ -147,6 +148,11 @@ async def bridge_get_messages(
         # (early-exits inside extract_artifacts). On marker-bearing messages
         # we strip the marker so the phone shows clean text plus the chip.
         stripped, refs = _process_artifacts(m.content)
+        if m.role == "assistant":
+            # History-reload parity with the live path (2026-07-03): the
+            # phone renders content raw, so assistant markdown is sanitised
+            # on the way out. User rows stay verbatim; DB rows untouched.
+            stripped = for_display(stripped)
         out.append(BridgeMessageOut(
             id=m.id,
             role=m.role,
@@ -278,10 +284,22 @@ async def bridge_health():
 
 
 @router.post("/crash-report")
-async def receive_crash_report(request: Request):
+async def receive_crash_report(
+    request: Request,
+    _auth: bool = Depends(require_bridge_auth),
+):
+    """Phone crash uplink -> Proton email + disk. Hardened 2026-07-02:
+    bridge auth (CrashReporter.kt already sends the Bearer token), 256KB
+    body cap, 5/hour per-source rate limit (crash_guard.py). Guards run
+    BEFORE the try block — their 401/413/429 must not be swallowed into
+    the 200 error envelope below."""
     import os
+    import json as _json
+    from .crash_guard import enforce_crash_report_guard
+
+    raw_body = await enforce_crash_report_guard(request)
     try:
-        body = await request.json()
+        body = _json.loads(raw_body)
         report = body.get("report", "No report content")
         app_name = body.get("app", "Unknown")
         timestamp = body.get("timestamp", 0)

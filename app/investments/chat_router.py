@@ -53,6 +53,10 @@ async def _stream_investment_chat(
     """
     from app.providers._registry_utils_3 import llm_call
     from app.providers._registry_utils_4 import LlmCallStatus
+    # v1.1 (2026-07-02): Prepend Astra's voice block so the investments tab
+    # speaks with the same laid-back register as the main chat. Before this,
+    # the system prompt here was raw portfolio data with no persona at all.
+    from app.llm.routing._prompt_blocks_voice import VOICE_AND_REGISTER
 
     used_provider = provider or None
     used_model = model or os.getenv("OPENAI_DEFAULT_MODEL", "gpt-5.4-mini")
@@ -68,7 +72,7 @@ async def _stream_investment_chat(
             provider_id=provider,
             model_id=used_model,
             messages=messages,
-            system_prompt=context,
+            system_prompt=VOICE_AND_REGISTER + "\n\n" + context,
             temperature=0.3,
             max_tokens=1000,
         )

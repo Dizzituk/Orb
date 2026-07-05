@@ -464,6 +464,10 @@ async def _prepare_astra_chat(
         "They may be driving or on the move. Keep responses concise but complete. "
         "You have the same capabilities as the desktop — use tools when needed.\n"
     )
+    # STUDY FLOW (2026-07-03): hands-free study turns must act-then-answer,
+    # never announce. Bridge sources only — desktop/room prompts untouched.
+    from app.bridge.study_flow_prompt import study_flow_block
+    system_prompt += study_flow_block(source)
 
     # ── 6. Grounding gate ──
     try:

@@ -52,6 +52,13 @@ class RAGEntry(Base):
     # Embedding vector (nullable until embedded)
     embedding = Column(LargeBinary, nullable=True)
 
+    # LANE E (2026-07-02): model/dims stamp for rows that carry a vector
+    # (video assets are the only writers). Search filters to the active
+    # multimodal model before scoring; legacy rows backfilled by
+    # app/embeddings/migrations.py.
+    embedding_model = Column(String(100), nullable=True)
+    embedding_dims = Column(Integer, nullable=True)
+
     # Lifecycle status
     # Values: 'ACTIVE', 'QUARANTINED', 'PURGED'
     status = Column(String(20), nullable=False, default="ACTIVE", index=True)

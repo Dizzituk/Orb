@@ -15,6 +15,10 @@ Flow:
 4. Segmentation check
 5. Return result
 
+v12.0 (2026-07-04): No-build-target greenfield gate (_greenfield_gate.py).
+                 New-app jobs with NO build profile hard-stop with a scoping
+                 prompt instead of falling into the ASTRA/sandbox lane; the
+                 v2.4 greenfield check moved to the same leaf.
 v5.0 (2026-02): Extracted segmentation to _spec_runner_segmentation.py
                  Extracted result assembly to _spec_runner_result.py
                  Extracted deterministic refactor to _spec_runner_deterministic_refactor.py
@@ -41,6 +45,12 @@ from app.pot_spec.grounded._spec_runner_utils_12 import _extract_project_paths
 from app.pot_spec.grounded._spec_runner_utils_13 import _extract_file_scope_from_spec
 from app.pot_spec.grounded._spec_runner_segmentation import run_segmentation_check
 from app.pot_spec.grounded._spec_runner_result import build_spec_result
+from app.pot_spec.grounded._greenfield_gate import (
+    NO_BUILD_TARGET_STOP_REASON,
+    is_external_root,
+    is_unrouted_greenfield_job,
+    profile_is_greenfield,
+)
 
 logger = logging.getLogger(__name__)
 print(f"[SPEC_RUNNER_LOADED] BUILD_ID={SPEC_RUNNER_BUILD_ID}")
@@ -164,37 +174,71 @@ async def run_spec_gate_grounded(
         goal = _extract_goal(intent, weaver_job_text, user_intent)
         logger.info("[spec_runner] v4.0 Weaver goal: %s", goal[:100])
 
+        # 2026-07-04 vision upgrade: re-analyse the user's ORIGINAL uploaded
+        # images (paths carried via flow state -> constraints_hint) with the
+        # CHECKOUT_EYES vision tier, and finally CONSUME the chat-time
+        # vision_context (which previously dead-ended in constraints_hint).
+        # The evidence block rides weaver_job_text so EVERY spec-building
+        # path (greenfield, grounded CREATE, simple fallback) sees it.
+        try:
+            from app.llm.image_refs import build_image_evidence
+            _img_evidence = await build_image_evidence(
+                image_refs=list((constraints_hint or {}).get("image_refs") or []),
+                goal=goal,
+                job_id=job_id,
+                chat_vision_context=str((constraints_hint or {}).get("vision_context") or ""),
+            )
+            if _img_evidence:
+                # NOTE: deliberately NOT folded into combined_text — that feeds
+                # the deterministic file-scope scraper, and screenshots often
+                # contain path-like text that must not become file_scope.
+                weaver_job_text = (weaver_job_text or "") + _img_evidence
+                print(f"[spec_runner] IMAGE EVIDENCE attached ({len(_img_evidence)} chars)")
+        except Exception as _img_err:
+            logger.warning("[spec_runner] image evidence skipped (non-fatal): %s", _img_err)
+
         # =============================================================
         # STEP 2: Detect if this needs a scan
         # =============================================================
 
         # v2.4 (2026-04-08): Check for greenfield external project.
         # v2.3 assumed external = greenfield. Wrong — AstraBridge has 46 .kt
-        # files. Now we check whether source files actually exist at the root.
+        # files. Now we check whether source files actually exist at the root
+        # (the check itself lives in _greenfield_gate.py since v12.0).
         _build_profile = (constraints_hint or {}).get("build_target_profile")
-        _is_greenfield = False
-        if _build_profile:
-            _profile_root = _build_profile.get("project_root", "")
-            _known_self_roots = {"D:/Orb", "D:\\Orb", "D:/orb-desktop", "D:\\orb-desktop"}
-            _norm_root = _profile_root.replace("\\", "/").rstrip("/")
-            if _norm_root and _norm_root not in _known_self_roots:
-                _src_root = _build_profile.get("source_root", "")
-                _check_dir = os.path.join(_profile_root, _src_root) if _src_root else _profile_root
-                _has_source = False
-                try:
-                    for _root, _dirs, _files in os.walk(_check_dir):
-                        if any(f.endswith(('.kt', '.java', '.py', '.ts', '.tsx', '.js', '.jsx')) for f in _files):
-                            _has_source = True
-                            break
-                except Exception:
-                    _has_source = False
-                if _has_source:
-                    logger.info("[spec_runner] v2.4 EXISTING external project: %s at %s", _build_profile.get("project_id"), _profile_root)
-                    print(f"[spec_runner] v2.4 EXISTING PROJECT (not greenfield): {_build_profile.get('project_id')} at {_profile_root}")
-                else:
-                    _is_greenfield = True
-                    logger.info("[spec_runner] v2.4 GREENFIELD: %s (%s) at %s", _build_profile.get("project_id"), _build_profile.get("language"), _profile_root)
-                    print(f"[spec_runner] v2.4 GREENFIELD MODE: {_build_profile.get('project_id')} ({_build_profile.get('language')}) at {_profile_root}")
+
+        # v12.0 (2026-07-04): NO-build-target greenfield gate. A new-app job
+        # with no profile must never degrade into "modify ASTRA" — the old
+        # fallback path-scraped the chat, matched ASTRA repos and died on the
+        # v11.0 sandbox stop. Detect it (Weaver job_class flag OR
+        # greenfield/game domains) BEFORE any path extraction and stop with a
+        # scoping prompt instead. Genuine ASTRA jobs fall through untouched.
+        if not _build_profile:
+            _gf_stop, _gf_why = is_unrouted_greenfield_job(
+                constraints_hint, weaver_job_text, user_intent,
+            )
+            if _gf_stop:
+                logger.warning(
+                    "[spec_runner] v12.0 NO BUILD TARGET — greenfield stop (%s)", _gf_why,
+                )
+                print(f"[spec_runner] v12.0 NO BUILD TARGET — greenfield job detected ({_gf_why}); prompting for project scoping")
+                return SpecGateResult(
+                    ready_for_pipeline=False,
+                    hard_stopped=True,
+                    hard_stop_reason=NO_BUILD_TARGET_STOP_REASON,
+                    spec_version=round_n,
+                    validation_status="blocked",
+                    notes="v12.0: greenfield job with no build target — scoping required",
+                )
+
+        _profile_root = (_build_profile or {}).get("project_root", "")
+        _is_greenfield = profile_is_greenfield(_build_profile)
+        if _is_greenfield:
+            logger.info("[spec_runner] v2.4 GREENFIELD: %s (%s) at %s", _build_profile.get("project_id"), _build_profile.get("language"), _profile_root)
+            print(f"[spec_runner] v2.4 GREENFIELD MODE: {_build_profile.get('project_id')} ({_build_profile.get('language')}) at {_profile_root}")
+        elif _build_profile and is_external_root(_profile_root):
+            logger.info("[spec_runner] v2.4 EXISTING external project: %s at %s", _build_profile.get("project_id"), _profile_root)
+            print(f"[spec_runner] v2.4 EXISTING PROJECT (not greenfield): {_build_profile.get('project_id')} at {_profile_root}")
 
         if _is_greenfield:
             # Greenfield: skip discovery, use profile root directly
@@ -272,6 +316,9 @@ async def run_spec_gate_grounded(
         seg_manifest, needle_est, early_return = await run_segmentation_check(
             spot_markdown, combined_text, multi_file_op, job_id, goal, round_n,
             is_create_job=_is_create_job,
+            # live10: greenfield files resolve against the NEW project's root
+            # only — never the ASTRA repos (sandbox-routed, 15s/probe wedge).
+            greenfield_root=_profile_root if _is_greenfield else None,
         )
 
         if early_return and seg_manifest:
@@ -365,6 +412,35 @@ async def _handle_create_path(
                 goal=goal,
                 what_to_do=weaver_job_text or user_intent,
             )
+
+        # live9 (2026-07-04): the generic greenfield template embeds NO file
+        # paths, so segmentation shipped a 0-file manifest and the scaffold
+        # had nothing to build (first live Tetris run). If the spec names no
+        # files, SPECGATE_MAIN plans the modular layout NOW — the file plan
+        # belongs to the spec. Fail-soft: no plan = spec unchanged, and the
+        # pipeline's 0-file hard-stop still protects the run.
+        try:
+            from app.pot_spec.grounded._spec_runner_utils_13 import (
+                _extract_file_scope_from_spec as _live9_extract,
+            )
+            if not _live9_extract(spot_markdown):
+                from app.pot_spec.grounded._greenfield_file_planner import plan_greenfield_files
+                _plan_section = await plan_greenfield_files(
+                    goal=goal,
+                    what_to_do=weaver_job_text or user_intent,
+                    build_profile=build_profile,
+                )
+                if _plan_section:
+                    spot_markdown = spot_markdown.rstrip() + "\n\n" + _plan_section
+                else:
+                    logger.warning(
+                        "[spec_runner] live9 Greenfield file planner produced no "
+                        "usable plan — manifest will be empty and the pipeline "
+                        "will hard-stop at scaffold",
+                    )
+        except Exception as _plan_err:
+            logger.warning("[spec_runner] live9 Greenfield file planner failed: %s", _plan_err)
+
         return spot_markdown, project_paths
 
     # v11.0: Sandbox availability check for ASTRA repo paths
@@ -396,6 +472,7 @@ async def _handle_create_path(
                 sandbox_client=None,
                 provider_id=provider_id,
                 model_id=model_id,
+                job_id=job_id,  # Derek p4: agent-dispatch ledger evidence
             )
         except Exception as err:
             logger.warning("[spec_runner] v4.3 Grounded CREATE failed: %s", err)

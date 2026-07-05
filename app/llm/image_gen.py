@@ -28,7 +28,11 @@ logger = logging.getLogger(__name__)
 
 
 def _get_model() -> str:
-    return os.getenv("IMAGE_GEN_MODEL", "gpt-image-1.5")
+    model = os.getenv("IMAGE_GEN_MODEL", "")
+    if not model:
+        # No chat-model fallback here — a chat model cannot generate images.
+        logger.error("[image_gen] IMAGE_GEN_MODEL not set in .env — cannot pick an image model")
+    return model
 
 
 def _get_quality() -> str:

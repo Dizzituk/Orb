@@ -1,17 +1,18 @@
 # FILE: app/embeddings/service.py
 # Purpose: Core embedding service: generation, storage, and search.
 # Called-by: app.content.video_pipeline.asset_library, app.drive.content_indexer, app.embeddings, app.embeddings.router (+13 more)
-# Depends-on: app.embeddings.gemini_provider, app.embeddings.models, app.embeddings.schemas, app.memory (+1 more)
-# Last-renovated: 2026-06-11
+# Depends-on: app.embeddings.provider_router, app.embeddings.models, app.embeddings.schemas, app.memory (+1 more)
+# Last-renovated: 2026-07-02 (LANE E: provider router + model-stamped rows + model-filtered dual-read search)
 """
 Core embedding service: generation, storage, and search.
 """
 
 import json
 import math
+import time
 from typing import List, Dict, Optional, Tuple
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
+from sqlalchemy import and_, func
 
 from .models import Embedding
 from .schemas import SearchResult
@@ -19,13 +20,14 @@ from .schemas import SearchResult
 
 # ============ CONFIGURATION ============
 
-# Gemini Embedding 2 (replaces OpenAI text-embedding-3-small)
-# Model & dimensions configured in app.embeddings.gemini_provider
+# Model & dimensions constants stay importable for legacy callers; actual
+# provider selection is env-driven via provider_router (LANE E, 2026-07-02).
 from app.embeddings.gemini_provider import (
     EMBEDDING_DIMENSIONS,
     GEMINI_EMBEDDING_MODEL as EMBEDDING_MODEL,
     TaskType,
 )
+from app.embeddings import provider_router
 
 CHUNK_SIZE = 400  # tokens (approximate)
 CHUNK_OVERLAP = 50  # tokens overlap between chunks
@@ -38,23 +40,22 @@ def generate_embedding(
     task_type: str = "RETRIEVAL_DOCUMENT",
 ) -> Optional[List[float]]:
     """
-    Generate embedding vector for text using Gemini Embedding 2.
+    Generate an embedding vector for text.
 
-    Delegates to gemini_provider.generate_embedding which handles
-    the google-genai SDK calls, truncation, and error handling.
+    LANE E: routes via provider_router — document-side tasks embed with the
+    role's WRITE provider (gemini or local per env, effective immediately,
+    rows stamped); query-side tasks respect the parity-gated cutover flag
+    (EMBEDDINGS_TEXT_QUERY_CUTOVER).
 
     Args:
         text: Content to embed.
-        task_type: Gemini task hint. Use "RETRIEVAL_DOCUMENT" when
-                   indexing, "RETRIEVAL_QUERY" when searching.
+        task_type: Task hint. Use "RETRIEVAL_DOCUMENT" when indexing,
+                   "RETRIEVAL_QUERY" when searching.
 
     Returns:
-        List of 1536 floats, or None on failure.
+        List of floats (dims per active model), or None on failure.
     """
-    from app.embeddings.gemini_provider import (
-        generate_embedding as _gemini_embed,
-    )
-    return _gemini_embed(text, task_type=task_type)
+    return provider_router.embed_text(text, task_type=task_type)
 
 
 def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> List[str]:
@@ -104,8 +105,18 @@ def store_embedding(
     content: str,
     embedding: List[float],
     chunk_index: int = 0,
+    embedding_model: Optional[str] = None,
+    dims: Optional[int] = None,
 ) -> Embedding:
-    """Store an embedding in the database."""
+    """Store an embedding in the database.
+
+    LANE E: every row is stamped with its producing model + dims. Default
+    stamp is the active text WRITE spec (all current writers embed via the
+    router in the same process, so spec and vector cannot drift); dims is
+    always the actual vector length.
+    """
+    if embedding_model is None:
+        embedding_model = provider_router.text_write_spec().label
     record = Embedding(
         project_id=project_id,
         source_type=source_type,
@@ -113,6 +124,8 @@ def store_embedding(
         chunk_index=chunk_index,
         content=content,
         embedding=json.dumps(embedding),
+        embedding_model=embedding_model,
+        dims=dims if dims is not None else len(embedding),
     )
     db.add(record)
     db.commit()
@@ -138,15 +151,38 @@ def delete_embeddings_for_source(
     return count
 
 
+def _model_space_criterion(embedding_model: str):
+    """SQLAlchemy criterion for 'row belongs to this model-space'.
+
+    NULL-stamped rows count as LEGACY gemini rows: the boot backfill skips
+    id-windows that sit on the embeddings table's damaged btree pages (see
+    app/embeddings/migrations.py), and those rows must stay searchable
+    exactly as they were pre-LANE-E. reembed_batch restamps them per-row."""
+    from sqlalchemy import or_
+    from app.embeddings.provider_router import LEGACY_TEXT_LABEL
+
+    if embedding_model == LEGACY_TEXT_LABEL:
+        return or_(
+            Embedding.embedding_model == embedding_model,
+            Embedding.embedding_model.is_(None),
+        )
+    return Embedding.embedding_model == embedding_model
+
+
 def get_embeddings_for_project(
     db: Session,
     project_id: int,
     source_types: Optional[List[str]] = None,
+    embedding_model: Optional[str] = None,
 ) -> List[Embedding]:
-    """Get all embeddings for a project, optionally filtered by source type."""
+    """Get all embeddings for a project, optionally filtered by source type
+    and (LANE E) by producing model — search paths ALWAYS pass the model so
+    scoring never mixes model spaces."""
     query = db.query(Embedding).filter(Embedding.project_id == project_id)
     if source_types:
         query = query.filter(Embedding.source_type.in_(source_types))
+    if embedding_model is not None:
+        query = query.filter(_model_space_criterion(embedding_model))
     return query.all()
 
 
@@ -183,6 +219,34 @@ def cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
     return dot_product / (norm_a * norm_b)
 
 
+# LANE E: cached per-model row counts drive the dual-read drop-out — once the
+# legacy space is empty its query-embedding provider is never called again.
+_MODEL_COUNT_TTL_SECONDS = 60.0
+_model_count_cache: Dict[str, Tuple[int, float]] = {}
+
+
+def _model_row_count(db: Session, embedding_model: str) -> int:
+    """COUNT of rows in `embedding_model`'s space (cached ~60s). NULL rows
+    count toward the legacy space — see _model_space_criterion."""
+    now = time.monotonic()
+    hit = _model_count_cache.get(embedding_model)
+    if hit is not None and (now - hit[1]) < _MODEL_COUNT_TTL_SECONDS:
+        return hit[0]
+    count = (
+        db.query(func.count(Embedding.id))
+        .filter(_model_space_criterion(embedding_model))
+        .scalar()
+        or 0
+    )
+    _model_count_cache[embedding_model] = (int(count), now)
+    return int(count)
+
+
+def reset_model_count_cache() -> None:
+    """Testing/migration hook: forget cached per-model row counts."""
+    _model_count_cache.clear()
+
+
 def search_embeddings(
     db: Session,
     project_id: int,
@@ -193,34 +257,63 @@ def search_embeddings(
     """
     Search embeddings by semantic similarity.
     Returns (results, total_searched).
+
+    LANE E hard rule: each stored model-space is scored ONLY with a query
+    vector from its own model — rows are filtered by embedding_model BEFORE
+    scoring, so mixed-model cosine is structurally impossible. With a single
+    active space, scores are raw cosine (bit-identical to the pre-LANE-E
+    behaviour). During migration (dual-read) each space is max-normalised
+    before merging; the legacy space drops out at zero rows.
     """
-    # Generate query embedding
-    query_embedding = generate_embedding(query, task_type="RETRIEVAL_QUERY")
-    if not query_embedding:
-        return [], 0
-    
-    # Get all embeddings for project
-    embeddings = get_embeddings_for_project(db, project_id, source_types)
-    
-    if not embeddings:
-        return [], 0
-    
-    # Compute similarities
-    scored_results = []
-    for emb in embeddings:
-        try:
-            stored_embedding = json.loads(emb.embedding)
-            similarity = cosine_similarity(query_embedding, stored_embedding)
-            scored_results.append((emb, similarity))
-        except (json.JSONDecodeError, TypeError):
+    spaces = provider_router.text_query_spaces()
+    per_space: List[List[Tuple[Embedding, float]]] = []
+    total_searched = 0
+
+    for i, spec in enumerate(spaces):
+        # Secondary (legacy) space: skip once emptied by reembed_batch.
+        if i > 0 and _model_row_count(db, spec.label) == 0:
             continue
-    
-    # Sort by similarity (descending)
-    scored_results.sort(key=lambda x: x[1], reverse=True)
-    
-    # Take top_k
-    top_results = scored_results[:top_k]
-    
+
+        rows = get_embeddings_for_project(
+            db, project_id, source_types, embedding_model=spec.label
+        )
+        if not rows:
+            continue
+
+        query_embedding = provider_router.embed_text(
+            query, task_type="RETRIEVAL_QUERY", spec=spec
+        )
+        if not query_embedding:
+            continue
+
+        scored: List[Tuple[Embedding, float]] = []
+        for emb in rows:
+            try:
+                stored_embedding = json.loads(emb.embedding)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            similarity = cosine_similarity(query_embedding, stored_embedding)
+            scored.append((emb, similarity))
+        total_searched += len(rows)
+        if scored:
+            per_space.append(scored)
+
+    if not per_space:
+        return [], total_searched
+
+    if len(per_space) == 1:
+        merged = per_space[0]
+    else:
+        # Dual-read merge: normalise per space so neither model's score
+        # scale dominates, then interleave by normalised score.
+        merged = []
+        for scored in per_space:
+            max_abs = max(abs(s) for _, s in scored) or 1.0
+            merged.extend((emb, s / max_abs) for emb, s in scored)
+
+    merged.sort(key=lambda x: x[1], reverse=True)
+    top_results = merged[:top_k]
+
     results = [
         SearchResult(
             source_type=emb.source_type,
@@ -231,8 +324,8 @@ def search_embeddings(
         )
         for emb, sim in top_results
     ]
-    
-    return results, len(embeddings)
+
+    return results, total_searched
 
 
 # ============ INDEXING ============

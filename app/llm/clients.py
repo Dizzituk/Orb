@@ -358,7 +358,8 @@ async def async_call_openai(
     Returns:
         (content, usage_dict)
     """
-    model_id = model or os.getenv("OPENAI_DEFAULT_MODEL", "gpt-4.1-mini")
+    from app.llm.frontier_models import get_provider_default_model
+    model_id = model or os.getenv("OPENAI_DEFAULT_MODEL") or get_provider_default_model("openai", strict=False)
     return await _llm_call_and_unpack_async(
         provider_id="openai",
         model_id=model_id,
@@ -383,9 +384,8 @@ async def async_call_anthropic(
     Returns:
         (content, usage_dict)
     """
-    model_id = model or os.getenv(
-        "ANTHROPIC_DEFAULT_MODEL", "claude-3-5-sonnet-latest"
-    )
+    from app.llm.frontier_models import get_provider_default_model
+    model_id = model or os.getenv("ANTHROPIC_DEFAULT_MODEL") or get_provider_default_model("anthropic", strict=False)
     return await _llm_call_and_unpack_async(
         provider_id="anthropic",
         model_id=model_id,
@@ -410,8 +410,12 @@ async def async_call_google(
     Returns:
         (content, usage_dict)
     """
-    model_id = model or os.getenv(
-        "GOOGLE_DEFAULT_MODEL", os.getenv("GEMINI_VISION_MODEL", "gemini-2.0-flash")
+    from app.llm.frontier_models import get_provider_default_model
+    model_id = (
+        model
+        or os.getenv("GOOGLE_DEFAULT_MODEL")
+        or os.getenv("GEMINI_VISION_MODEL")
+        or get_provider_default_model("google", strict=False)
     )
     return await _llm_call_and_unpack_async(
         provider_id="google",
@@ -515,24 +519,25 @@ def get_embeddings(
     task_type: str = "RETRIEVAL_DOCUMENT",
 ) -> Union[List[float], List[List[float]]]:
     """
-    Generate embedding vectors using Gemini Embedding 2.
+    Generate embedding vectors via the provider router (LANE E).
 
     Backward-compatible helper expected by some parts of the codebase.
-    The `model` parameter is accepted for API compatibility but ignored
-    (always uses gemini-embedding-2-preview).
+    The `model` parameter is accepted for API compatibility but ignored —
+    the active provider/model comes from EMBEDDINGS_TEXT_* env (gemini or
+    local; query-side tasks respect the parity-gated cutover flag).
 
     Args:
         texts: Single string or list of strings.
         model: Ignored (kept for backward compat).
-        task_type: Gemini task hint for vector optimisation.
+        task_type: Task hint for vector optimisation.
 
     Returns:
         - If input is a single string: List[float]
         - If input is a list of strings: List[List[float]]
     """
-    from app.embeddings.gemini_provider import (
-        generate_embedding as _single_embed,
-        generate_embeddings_batch as _batch_embed,
+    from app.embeddings.provider_router import (
+        embed_text as _single_embed,
+        embed_text_batch as _batch_embed,
     )
 
     is_single = isinstance(texts, str)
@@ -540,7 +545,7 @@ def get_embeddings(
     if is_single:
         vec = _single_embed(texts, task_type=task_type)
         if vec is None:
-            raise RuntimeError("Gemini embedding generation failed")
+            raise RuntimeError("Embedding generation failed")
         return vec
 
     results = _batch_embed(list(texts), task_type=task_type)
@@ -548,7 +553,7 @@ def get_embeddings(
     for i, r in enumerate(results):
         if r is None:
             raise RuntimeError(
-                f"Gemini embedding failed for text index {i}"
+                f"Embedding failed for text index {i}"
             )
     return results  # type: ignore[return-value]
 

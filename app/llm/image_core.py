@@ -53,7 +53,7 @@ async def generate_image_core(
     primary = _get_provider()
     fallback = _get_fallback_provider()
     used_provider = primary
-    model_name = os.getenv("IMAGE_GEN_MODEL", "gpt-image-1.5")
+    model_name = os.getenv("IMAGE_GEN_MODEL", "")
     result: Optional[dict] = None
     synth_prompt: Optional[str] = None
     aspect_ratio: Optional[str] = None
@@ -158,7 +158,7 @@ async def generate_image_core(
             logger.info("[image_core] Primary %s failed, trying %s", primary, fallback)
             result = await _generate_with_provider(fallback, prompt=synth_prompt, aspect_ratio=aspect_ratio)
             used_provider = fallback
-            model_name = os.getenv("IMAGE_GEN_FALLBACK_MODEL", "gemini-2.5-flash-image")
+            model_name = os.getenv("IMAGE_GEN_FALLBACK_MODEL", "")
 
     if not result:
         logger.error("[image_core] All generation methods exhausted")

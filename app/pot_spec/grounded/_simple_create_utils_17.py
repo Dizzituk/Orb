@@ -325,6 +325,7 @@ async def build_grounded_create_spec(
     provider_id: Optional[str] = None,
     model_id: Optional[str] = None,
     llm_call_func: Optional[Callable] = None,
+    job_id: Optional[str] = None,
 ) -> Tuple[str, CreateEvidence]:
     """
     v2.0: Build a grounded spec for CREATE tasks with LLM analysis.
@@ -419,9 +420,12 @@ async def build_grounded_create_spec(
         # Import llm_call if not provided
         if llm_call_func is None:
             try:
+                import functools
                 from app.providers.registry import llm_call as registry_llm_call
-                llm_call_func = registry_llm_call
-                print(f"[simple_create] v2.0 Loaded llm_call from registry")
+                # Derek p1: label every SpecGate CREATE-path call (draft,
+                # evidence fulfilment, self-review) for cost attribution.
+                llm_call_func = functools.partial(registry_llm_call, stage="spec_gate")
+                print(f"[simple_create] v2.0 Loaded llm_call from registry (stage=spec_gate)")
             except ImportError:
                 print(f"[simple_create] v2.0 WARNING: Could not import llm_call from registry")
         
@@ -455,6 +459,7 @@ async def build_grounded_create_spec(
                     project_paths=project_paths,
                     goal=goal,
                     what_to_do=what_to_do,
+                    job_id=job_id,
                 )
                 print(f"[SPEC_GATE_EVIDENCE] Fulfilment complete: {len(llm_analysis)} chars")
             elif llm_analysis:

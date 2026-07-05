@@ -14,10 +14,11 @@ briefs in parallel, each a scoped task run by run_subagent with role-scoped tool
 (investigators/pattern-matchers read-only; executors read+write+run_command;
 verifiers run tests/builds).
 
-Per-brief model resolution (debug_model_config): a brief's optional `model` wins,
-else the per-role ENV default -- investigators/pattern-matchers on
-DEBUG_SUBAGENT_MODEL (gpt-5.5), executors on DEBUG_EXECUTOR_MODEL (gpt-5.4-mini),
-verifiers on DEBUG_CODE_VERIFIER_MODEL.
+Per-brief model resolution (debug_model_config): a brief's optional `model` wins
+(riding the ACTIVE provider), else the per-role (provider, model) from
+get_model_for_role -- investigators/pattern-matchers on the subagent tier,
+executors on the executor tier, verifiers on the verifier tier; DEBUG_PROVIDER
+selects the openai/anthropic column at call time.
 
 Streaming (spec section 2.2): spawn_agents_streaming() yields per-agent progress
 events (subagent_spawn / subagent_start / subagent_progress / subagent_complete /
@@ -150,14 +151,15 @@ SPAWN_AGENTS_TOOL: Dict[str, Any] = {
 # Brief parsing + per-role model resolution
 # ---------------------------------------------------------------------------
 
-def _parse_briefs(input_dict: Dict[str, Any]) -> Tuple[List[Tuple[SubagentBrief, str]], List[str]]:
-    """Build [(brief, resolved_model)] from the tool input. Collects warnings for
-    skipped/capped briefs. Raises ValueError only if NO valid brief survives."""
+def _parse_briefs(input_dict: Dict[str, Any]) -> Tuple[List[Tuple[SubagentBrief, str, str]], List[str]]:
+    """Build [(brief, provider, resolved_model)] from the tool input. Collects
+    warnings for skipped/capped briefs. Raises ValueError only if NO valid
+    brief survives."""
     raw = input_dict.get("briefs") if isinstance(input_dict, dict) else None
     if not isinstance(raw, list) or not raw:
         raise ValueError("spawn_agents requires a non-empty 'briefs' array")
 
-    out: List[Tuple[SubagentBrief, str]] = []
+    out: List[Tuple[SubagentBrief, str, str]] = []
     warnings: List[str] = []
     cap = max_spawn_per_call()
 
@@ -194,8 +196,9 @@ def _parse_briefs(input_dict: Dict[str, Any]) -> Tuple[List[Tuple[SubagentBrief,
             depends_on=[],
             max_tool_calls=max_tool_calls,
         )
-        model = str(b.get("model", "")).strip() or get_model_for_role(role)
-        out.append((brief, model))
+        provider, default_model = get_model_for_role(role)
+        model = str(b.get("model", "")).strip() or default_model
+        out.append((brief, provider, model))
 
     if not out:
         raise ValueError("spawn_agents: no valid briefs after validation: " + "; ".join(warnings))
@@ -293,8 +296,9 @@ async def spawn_agents_streaming(
                     "target_project": b.target_project,
                     "task": b.task[:160],
                     "model": m,
+                    "provider": p,
                 }
-                for b, m in briefs
+                for b, p, m in briefs
             ],
         },
     }
@@ -303,7 +307,7 @@ async def spawn_agents_streaming(
     sem = asyncio.Semaphore(max_parallel)
     reports: Dict[str, SubagentReport] = {}
 
-    async def _run_one(brief: SubagentBrief, model: str) -> None:
+    async def _run_one(brief: SubagentBrief, provider: str, model: str) -> None:
         async with sem:
             if is_cancelled():
                 # Cooperative checkpoint (spec §2.6): don't start briefs still
@@ -361,7 +365,7 @@ async def spawn_agents_streaming(
 
             try:
                 report = await run_subagent(
-                    brief=brief, model=model,
+                    brief=brief, model=model, provider=provider,
                     extra_context=brief_context, on_tool_call=_on_tool,
                 )
             except Exception as e:  # defensive: run_subagent is documented never-raise
@@ -392,7 +396,7 @@ async def spawn_agents_streaming(
             })
 
     async def _run_all() -> None:
-        await asyncio.gather(*(_run_one(b, m) for b, m in briefs))
+        await asyncio.gather(*(_run_one(b, p, m) for b, p, m in briefs))
 
     sentinel = object()
     gather_task = asyncio.create_task(_run_all())
@@ -409,17 +413,17 @@ async def spawn_agents_streaming(
     if gather_task.done() and gather_task.exception():
         logger.error("[spawn_tool] fan-out gather crashed: %s", gather_task.exception())
 
-    # Cost: record each sub-agent's token spend (per-agent model) on the ledger.
+    # Cost: record each sub-agent's token spend (per-agent provider+model) on the ledger.
     try:
         from app.cost.cost_recorder import record_llm_cost
-        for b, m in briefs:
+        for b, p, m in briefs:
             r = reports.get(b.brief_id)
             if r and (getattr(r, "tokens_in", 0) or getattr(r, "tokens_out", 0)):
-                record_llm_cost("openai", m, r.tokens_in, r.tokens_out, stage="debug_subagent")
+                record_llm_cost(p, m, r.tokens_in, r.tokens_out, stage="debug_subagent")
     except Exception as e:
         logger.debug("[spawn_tool] cost record failed: %s", e)
 
-    ordered = [reports[b.brief_id] for b, _ in briefs if b.brief_id in reports]
+    ordered = [reports[b.brief_id] for b, _p, _m in briefs if b.brief_id in reports]
     yield {
         "type": "subagent_spawn_complete",
         "data": {

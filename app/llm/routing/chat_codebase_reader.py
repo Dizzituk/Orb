@@ -33,14 +33,13 @@ logger = logging.getLogger(__name__)
 # Configuration
 # =========================================================================
 
-# Models allowed to use codebase read access
-TRUSTED_MODELS: Set[str] = {
-    "claude-opus-4-6",
-    "claude-opus-4-5-20250929",
-    "gemini-3.1-pro-preview",
-    "gemini-3.1-pro-preview-customtools",
-    "gemini-2.5-pro",
-}
+# Models allowed to use codebase read access.
+# LANE D (2026-07-02): hardcoded set moved to .env (ASTRA_CODEBASE_READER_MODELS,
+# comma list; seeded with the pre-change set + claude-opus-4-8/claude-sonnet-5).
+# EnvModelSet resolves membership per call — UI model changes apply instantly.
+from app.llm.frontier_models import EnvModelSet
+
+TRUSTED_MODELS = EnvModelSet("ASTRA_CODEBASE_READER_MODELS")
 
 # Maximum files to read per chat turn
 MAX_FILES_PER_TURN = 8

@@ -17,7 +17,7 @@ from __future__ import annotations
 # LLM tool-call validators) and resolve at the handler layer.
 _SESSION_FIELD = {
     "type": "string",
-    "description": "Either the session UUID or a platform key like 'facebook_page', 'coursera', 'instagram_astraukai'.",
+    "description": "Either the session UUID or a platform key like 'meta_business', 'coursera', 'tiktok_astraukai'.",
     "minLength": 1,
     "maxLength": 128,
 }
@@ -107,9 +107,17 @@ WEB_CLICK = {
         "required": ["session"],
         "properties": {
             "session": _SESSION_FIELD,
+            "role": {
+                "type": "string",
+                "description": "ARIA role of the target (e.g. 'button', 'link', 'tab') — use with `name`. Resolved inside the page at click time.",
+            },
+            "name": {
+                "type": "string",
+                "description": "Accessible name of the target: its aria-label or visible text exactly as web_dom_snapshot reported it. Preferred targeting mode (with `role`).",
+            },
             "selector": {"type": "string", "description": "CSS selector of the element to click."},
-            "x": {"type": "integer", "description": "X coordinate (px) — use with `y` if no selector."},
-            "y": {"type": "integer", "description": "Y coordinate (px) — use with `x` if no selector."},
+            "x": {"type": "integer", "description": "X coordinate (px) — only from a snapshot taken immediately before, with nothing in between."},
+            "y": {"type": "integer", "description": "Y coordinate (px) — only from a snapshot taken immediately before, with nothing in between."},
         },
     },
     "output": {
@@ -233,6 +241,52 @@ WEB_SCROLL = {
         "required": ["ok"],
         "properties": {
             "ok": {"type": "boolean"},
+            "error": {"type": "string"},
+        },
+    },
+}
+
+
+# ── web_wait_for ─────────────────────────────────────────────────────
+
+# Condition wait — poll for an element / text / URL instead of sleeping
+# a fixed time. A timeout comes back ok=true + timeout=true (NOT an
+# error): the caller decides whether the miss is fatal.
+WEB_WAIT_FOR = {
+    "input": {
+        "type": "object",
+        "required": ["session"],
+        "properties": {
+            "session": _SESSION_FIELD,
+            "selector": {
+                "type": "string",
+                "description": "CSS selector to wait for.",
+            },
+            "text": {
+                "type": "string",
+                "description": "Wait for this text on the page (or inside `selector` matches if both given).",
+            },
+            "url_pattern": {
+                "type": "string",
+                "description": "Regex tested against the current URL.",
+            },
+            "state": {
+                "type": "string",
+                "enum": ["visible", "attached", "gone"],
+                "description": "visible (default) = exists with non-zero size; attached = present in DOM; gone = no longer present (spinners, modals).",
+            },
+            "timeout_ms": {"type": "integer", "minimum": 0, "maximum": 60000},
+            "poll_ms": {"type": "integer", "minimum": 50, "maximum": 2000},
+        },
+    },
+    "output": {
+        "type": "object",
+        "required": ["ok"],
+        "properties": {
+            "ok": {"type": "boolean"},
+            "matched": {"type": "boolean"},
+            "timeout": {"type": "boolean"},
+            "waited_ms": {"type": "integer"},
             "error": {"type": "string"},
         },
     },
@@ -388,6 +442,7 @@ TOOL_SCHEMAS = {
     "web_extract_text":   WEB_EXTRACT_TEXT,
     "web_current_state":  WEB_CURRENT_STATE,
     "web_scroll":         WEB_SCROLL,
+    "web_wait_for":       WEB_WAIT_FOR,
     "web_dom_snapshot":   WEB_DOM_SNAPSHOT,
     "web_vision_check":   WEB_VISION_CHECK,
     "web_upload_file":    WEB_UPLOAD_FILE,

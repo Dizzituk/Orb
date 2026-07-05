@@ -2,7 +2,7 @@
 # Purpose: Debug Chat Endpoint (JOB A) — /api/debug/chat SSE surface + history/status (split from debug_chat.py).
 # Called-by: app.debug.debug_chat
 # Depends-on: app.auth, app.auth.middleware, app.debug.context_assembler, app.debug.model_router, app.debug.system_prompt, app.debug.tool_definitions
-# Last-renovated: 2026-06-21
+# Last-renovated: 2026-07-02 (TIER_MODELS -> tier_model_config: call-time provider/model)
 from __future__ import annotations
 
 import json
@@ -202,9 +202,9 @@ async def debug_chat(
                 "analysis": DebugTier.ANALYSIS,
                 "agentic": DebugTier.AGENTIC,
             }
-            from app.debug.model_router import TIER_MODELS, RoutingDecision
+            from app.debug.model_router import tier_model_config, RoutingDecision
             tier = tier_map.get(req.force_tier, DebugTier.TRIAGE)
-            cfg = TIER_MODELS[tier]
+            cfg = tier_model_config(tier)
             routing = RoutingDecision(
                 tier=tier,
                 provider=cfg["provider"],
@@ -306,11 +306,11 @@ async def clear_debug_history(
 @router.get("/status")
 async def debug_status(auth: AuthResult = Depends(require_auth)):
     """Get debug assistant status and configuration."""
-    from app.debug.model_router import TIER_MODELS, get_tier_cost_estimate, DebugTier
+    from app.debug.model_router import tier_model_config, get_tier_cost_estimate, DebugTier
 
     tiers = {}
     for tier in DebugTier:
-        cfg = TIER_MODELS[tier]
+        cfg = tier_model_config(tier)
         costs = get_tier_cost_estimate(tier)
         tiers[tier.value] = {
             "provider": cfg["provider"],

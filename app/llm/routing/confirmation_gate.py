@@ -203,6 +203,15 @@ def log_decision(decision: ConfirmationDecision) -> None:
 # Core gate logic
 # =========================================================================
 
+def _role_model(role: str) -> str:
+    """Env-resolved model id for a routing role ("" if nothing resolves)."""
+    try:
+        from app.llm.frontier_models import get_role_model
+        return get_role_model(role)[1]
+    except Exception:
+        return ""
+
+
 def should_confirm_model_escalation(
     from_tier: str,
     to_tier: str,
@@ -244,23 +253,20 @@ def should_confirm_model_escalation(
         return None
 
     # Build the proposed action description
-    # v2.3: Deep tier now defaults to Gemini 3.1 Pro customtools
-    tier_model_names = {
-        "deep": "Gemini 3.1 Pro (customtools)",
-        "reasoning": "GPT-5.2",
-        "multimodal": "Gemini 3.1 Pro",
-    }
+    # LANE D (2026-07-02): display names derive from the RESOLVED ids — the
+    # old hardcoded label table drifted from what actually ran (said GPT-5.2
+    # while proposing gpt-5.4).
     tier_providers = {
         "deep": "google",
         "reasoning": "openai",
         "multimodal": "google",
     }
     tier_model_ids = {
-        "deep": "gemini-3.1-pro-preview-customtools",
-        "reasoning": "gpt-5.2",
-        "multimodal": "gemini-3.1-pro-preview",
+        "deep": os.getenv("CHAT_DEEP_MODEL") or _role_model("MULTIMODAL"),
+        "reasoning": _role_model("REASONING"),
+        "multimodal": os.getenv("GEMINI_VISION_MODEL_COMPLEX") or _role_model("MULTIMODAL"),
     }
-    model_name = tier_model_names.get(to_tier, to_tier)
+    model_name = tier_model_ids.get(to_tier) or to_tier
     action = f"{from_tier}_to_{to_tier}"
     pattern_key = _make_pattern_key("model_escalation", action, message)
 

@@ -103,13 +103,20 @@ async def click_handler(input_data: dict, context: Optional[dict]) -> dict:
     payload: dict = {}
     if "selector" in input_data and input_data["selector"]:
         payload["selector"] = input_data["selector"]
+    # role+name targeting: resolved INSIDE the page at click time (the
+    # executor matches role/aria-label/visible text, the same fields
+    # dom_snapshot reports) so it survives SPA re-renders.
+    if input_data.get("name"):
+        payload["name"] = str(input_data["name"])
+        if input_data.get("role"):
+            payload["role"] = str(input_data["role"])
     if "x" in input_data and "y" in input_data:
         payload["x"] = int(input_data["x"])
         payload["y"] = int(input_data["y"])
     if input_data.get("snap_to_button"):
         payload["snap_to_button"] = True
     if not payload:
-        return {"ok": False, "error": "click requires either selector or (x, y)"}
+        return {"ok": False, "error": "click requires a selector, a role+name pair, or (x, y)"}
     # Bigger timeout: click.js now captures state, waits 800ms to
     # settle, and captures again. Budget ~2s; give bridge 10s headroom.
     result = await _dispatch(ref, "click", payload, timeout_seconds=10.0)
@@ -117,6 +124,7 @@ async def click_handler(input_data: dict, context: Optional[dict]) -> dict:
     return {
         "ok": bool(result.get("ok")),
         "clicked_at": r.get("clicked_at"),
+        "resolved": r.get("resolved"),
         "snapped": r.get("snapped"),
         "before": r.get("before"),
         "after": r.get("after"),
@@ -188,6 +196,45 @@ async def scroll_handler(input_data: dict, context: Optional[dict]) -> dict:
     }
     result = await _dispatch(ref, "scroll", payload)
     return {"ok": bool(result.get("ok")), "error": result.get("error") or ""}
+
+
+async def wait_for_handler(input_data: dict, context: Optional[dict]) -> dict:
+    """Block until a page condition holds (element/text/URL) or timeout.
+
+    Timeout is NOT an error: the executor answers ok=true, matched=false,
+    timeout=true and the caller decides what that means for its step.
+    """
+    ref = str(input_data.get("session") or "")
+    payload: dict = {}
+    for key in ("selector", "text", "url_pattern"):
+        if input_data.get(key):
+            payload[key] = str(input_data[key])
+    if not payload:
+        return {"ok": False, "error": "wait_for requires at least one of selector, text, url_pattern"}
+    if input_data.get("state"):
+        payload["state"] = str(input_data["state"])
+    try:
+        timeout_ms = int(input_data.get("timeout_ms", 15000))
+        if "poll_ms" in input_data:
+            payload["poll_ms"] = int(input_data["poll_ms"])
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "timeout_ms and poll_ms must be integers"}
+    payload["timeout_ms"] = timeout_ms
+
+    # Bridge timeout must outlive the executor's own poll deadline
+    # (executor clamps to 60s), plus dispatch overhead.
+    result = await _dispatch(
+        ref, "wait_for", payload,
+        timeout_seconds=min(max(timeout_ms, 0) / 1000.0, 60.0) + 10.0,
+    )
+    r = result.get("result") or {}
+    return {
+        "ok": bool(result.get("ok")),
+        "matched": bool(r.get("matched", False)),
+        "timeout": bool(r.get("timeout", False)),
+        "waited_ms": int(r.get("waited_ms", 0)),
+        "error": result.get("error") or "",
+    }
 
 
 async def dom_snapshot_handler(input_data: dict, context: Optional[dict]) -> dict:
@@ -373,6 +420,7 @@ HANDLERS = {
     "web_extract_text":   extract_text_handler,
     "web_current_state":  current_state_handler,
     "web_scroll":         scroll_handler,
+    "web_wait_for":       wait_for_handler,
     "web_dom_snapshot":   dom_snapshot_handler,
     "web_vision_check":   vision_check_handler,
     "web_upload_file":    upload_file_handler,
@@ -387,20 +435,26 @@ TOOL_DESCRIPTIONS = {
         "Call this first if you don't know which session you need.",
     "web_open_session":
         "Ensure a web session is live (Electron spawns the browser view if not). "
-        "Pass either the platform key (e.g. 'facebook_page') or the session UUID as `session`. "
+        "Pass either the platform key (e.g. 'meta_business') or the session UUID as `session`. "
         "If this (or any web tool) errors with 'desktop browser is offline', the ASTRA "
-        "desktop app is not running — tell the user to start it; that is NOT a page problem.",
+        "desktop app is not running — tell the user to start it; that is NOT a page problem. "
+        "'browser is busy on a previous action' means the desktop IS up but mid-action: "
+        "wait a few seconds and retry instead.",
     "web_navigate":
-        "Navigate the named session's browser view to a URL.",
+        "Navigate the named session's browser view to a URL. Returns after the page's "
+        "load event; SPA content can still render late — follow with web_wait_for on a "
+        "known element before the next read or action.",
     "web_click":
-        "Click an element. Pass EITHER a CSS `selector` OR `(x, y)` pixel coordinates from "
-        "web_dom_snapshot \u2014 not both. Coordinates from dom_snapshot are more reliable "
-        "than selectors on React/Vue sites with obfuscated class names. The result includes "
-        "`before` and `after` states (url, title, heading) captured around the click, plus "
-        "a `changed` boolean. If `changed` is false, the click probably missed \u2014 do NOT "
-        "tell the user 'done'; instead re-run web_dom_snapshot and pick a different target. "
-        "When multiple elements share the same text (e.g. a menu item and a CTA button both "
-        "labelled 'Get started'), prefer the one with the larger `w`/`h` values.",
+        "Click an element. Targeting, in order of preference: (1) `role` + `name` from "
+        "the latest web_dom_snapshot — resolved INSIDE the live page at click time, so "
+        "it survives re-renders; (2) a stable CSS `selector` (aria-label attributes, "
+        "IDs — never obfuscated class names); (3) `(x, y)` ONLY from a snapshot taken "
+        "immediately before this click with nothing in between — SPA re-renders, "
+        "lazy-loading and scrolling all move elements, and a click at stale coordinates "
+        "hits whatever sits there NOW. The result includes `resolved` (what role/name "
+        "matched), `before`/`after` states and a `changed` boolean. If `changed` is "
+        "false, do NOT tell the user 'done'; re-run web_dom_snapshot and re-orient. "
+        "When multiple elements share the same text, prefer the larger `w`/`h`.",
     "web_type":
         "Type `text` into the element matching `selector`. Field is cleared first by default.",
     "web_screenshot":
@@ -415,14 +469,25 @@ TOOL_DESCRIPTIONS = {
         "Report the current URL and page title for a session. Cheap — use before deciding next action.",
     "web_scroll":
         "Scroll the page by `amount` pixels in `direction` (up/down) or jump to 'top'/'bottom'.",
+    "web_wait_for":
+        "Wait until the page is actually ready instead of sleeping: pass a CSS `selector` "
+        "(with `state` visible/attached/gone), a `text` snippet, and/or a `url_pattern` regex. "
+        "Polls until matched or `timeout_ms` (default 15000). A timeout comes back ok=true "
+        "with timeout=true — decide yourself whether that's fatal. Use this after EVERY "
+        "navigate, after any click that changes page state (opens a composer/dialog/route), "
+        "and after upload/attach steps, BEFORE the next read or action; use state='gone' to "
+        "wait for spinners/modals to clear. On timeout, do NOT blind-retry the last action — "
+        "take a fresh web_dom_snapshot and re-orient first.",
     "web_dom_snapshot":
         "Return the page's accessibility tree: every interactive element (links, buttons, "
-        "headings) with role, text, href, and pixel coordinates. Preferred over web_extract_text "
-        "when you need to understand page structure or find elements without knowing their CSS "
-        "class names. Works reliably on React SPAs with obfuscated class names. CAVEAT: the "
-        "tree carries no visual done-state — course completion ticks/progress bars (Coursera) "
-        "look identical for done and not-done items here; read progress via "
-        "web_coursera_progress or web_vision_check instead.",
+        "headings) with role, name, text, href, and pixel coordinates. The PRIMARY way to "
+        "understand a page. Act on what you find via web_click with role+name (copy them "
+        "from the element), or a stable CSS selector; use coordinates only immediately "
+        "after this snapshot with nothing in between — they go stale on re-render/"
+        "lazy-load/scroll. Works reliably on React SPAs with obfuscated class names. "
+        "CAVEAT: the tree carries no visual done-state — course completion ticks/progress "
+        "bars (Coursera) look identical for done and not-done items here; read progress "
+        "via web_coursera_progress or web_vision_check instead.",
     "web_vision_check":
         "Screenshot the session's live page and ask a vision model a natural-language "
         "question about what's visible. Returns the model's text answer. Use for "

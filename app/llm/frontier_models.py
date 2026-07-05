@@ -211,20 +211,60 @@ def get_role_model(role: str, *fallback_roles: str) -> Tuple[str, str]:
     )
 
 
-def get_provider_default_model(provider: str) -> str:
+def get_provider_default_model(provider: str, *, strict: bool = True) -> str:
     """Default model for a provider, env-only (``{PROVIDER}_DEFAULT_MODEL``).
 
-    Falls back to DEFAULT_MODEL; raises RuntimeError if neither is set.
-    Used by availability fallback when swapping to a different provider.
+    Falls back to DEFAULT_MODEL. If neither is set: raises RuntimeError when
+    ``strict`` (the historical contract, used by availability fallback), else
+    returns "" after an error log — Lane D mechanical call sites use
+    strict=False so a misconfigured .env fails loudly downstream instead of
+    crashing at import (Lane C precedent).
     """
     key = (provider or "").strip().upper()
     model = _env(f"{key}_DEFAULT_MODEL") or _env("DEFAULT_MODEL")
     if model:
         return model
-    raise RuntimeError(
-        f"[frontier_models] No default model for provider {provider!r}: set "
-        f"{key}_DEFAULT_MODEL or DEFAULT_MODEL in .env"
+    if strict:
+        raise RuntimeError(
+            f"[frontier_models] No default model for provider {provider!r}: set "
+            f"{key}_DEFAULT_MODEL or DEFAULT_MODEL in .env"
+        )
+    logger.error(
+        "[frontier_models] No default model for provider %r: set %s_DEFAULT_MODEL "
+        "or DEFAULT_MODEL in .env — returning '' (caller fails loudly downstream)",
+        provider, key,
     )
+    return ""
+
+
+class EnvModelSet:
+    """Set-like view over a comma-separated .env model list, resolved on ACCESS.
+
+    LANE D (2026-07-02): backs the tool-trust / codebase-reader allowlists.
+    from-imported bindings stay live because the OBJECT is shared; membership
+    (``in``), iteration and len() re-read the env var per call, so a model
+    added via the Models settings UI is trusted on the next request — no
+    restart, no rotted hardcoded set.
+    """
+
+    def __init__(self, env_var: str):
+        self._env_var = env_var
+
+    def _models(self) -> set:
+        raw = os.getenv(self._env_var, "")
+        return {m.strip() for m in raw.split(",") if m.strip()}
+
+    def __contains__(self, model) -> bool:
+        return model in self._models()
+
+    def __iter__(self):
+        return iter(sorted(self._models()))
+
+    def __len__(self) -> int:
+        return len(self._models())
+
+    def __repr__(self) -> str:
+        return f"EnvModelSet({self._env_var}={sorted(self._models())})"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -460,6 +500,7 @@ if __name__ == "__main__":
 __all__ = [
     "FRONTIER_ALIASES",
     "STAGE_REASONING",
+    "EnvModelSet",
     "resolve_model_alias",
     "get_role_model",
     "get_provider_default_model",

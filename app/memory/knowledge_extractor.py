@@ -49,10 +49,11 @@ def _get_extraction_model() -> tuple[str, str]:
     durability to classify facts correctly.
 
     Config: EXTRACTION_PROVIDER / EXTRACTION_MODEL env vars.
-    Defaults to OpenAI gpt-5.4-mini (strong linguistics, low cost).
+    Falls back to the provider-default model chain when unset.
     """
+    from app.llm.frontier_models import get_provider_default_model
     provider = os.getenv("EXTRACTION_PROVIDER", "openai")
-    model = os.getenv("EXTRACTION_MODEL", "gpt-5.4-mini")
+    model = os.getenv("EXTRACTION_MODEL") or get_provider_default_model("openai", strict=False)
     return provider, model
 
 # =========================================================================

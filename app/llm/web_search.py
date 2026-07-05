@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 
 from app.tools.registry import execute_tool_async
 from app.providers.registry import llm_call as registry_llm_call, is_provider_available
+from app.llm.frontier_models import get_provider_default_model
 
 logger = logging.getLogger(__name__)
 
@@ -86,9 +87,9 @@ def _pick_answer_provider() -> tuple[Optional[str], Optional[str]]:
         return forced_provider, forced_model
 
     for pid, default_model_env, default_model in [
-        ("openai", "OPENAI_DEFAULT_MODEL", "gpt-5.4-mini"),
-        ("anthropic", "ANTHROPIC_DEFAULT_MODEL", "claude-sonnet-4-6"),
-        ("google", "GEMINI_FRONTIER_MODEL_ID", "gemini-3.0-pro-preview"),
+        ("openai", "OPENAI_DEFAULT_MODEL", get_provider_default_model("openai", strict=False)),
+        ("anthropic", "ANTHROPIC_DEFAULT_MODEL", get_provider_default_model("anthropic", strict=False)),
+        ("google", "GEMINI_FRONTIER_MODEL_ID", get_provider_default_model("google", strict=False)),
     ]:
         try:
             if is_provider_available(pid):

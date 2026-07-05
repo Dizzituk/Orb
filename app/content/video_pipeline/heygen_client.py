@@ -295,15 +295,19 @@ async def generate_and_download(
     segment_id: str,
     avatar_id: Optional[str] = None,
     voice_id: Optional[str] = None,
+    aspect_ratio: str = "16:9",
 ) -> Dict[str, Any]:
     """
     Full flow: generate avatar video, poll until done, download.
     Returns dict with file_path, duration_s, cost estimate.
+    aspect_ratio: "16:9" (1920×1080, longform default) or "9:16"
+    (1080×1920, shorts/reels full-frame avatar).
     """
     result = await generate_avatar_video(
         text=text,
         avatar_id=avatar_id,
         voice_id=voice_id,
+        aspect_ratio=aspect_ratio,
     )
     video_id = result["video_id"]
 

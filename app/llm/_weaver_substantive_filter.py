@@ -23,8 +23,14 @@ import re
 
 logger = logging.getLogger(__name__)
 
-# Minimum length — short replies ("Sure!", "Got it.") are not substantive
-_SUBSTANTIVE_MIN_LENGTH = 400
+# Minimum length — short replies ("Sure!", "Got it.") are not substantive.
+# 2026-07-04 (live6, Taz): lowered from 400 — Astra's conversational replies
+# ('Yeah man, it's a self-contained retro Tetris game with... controls: A/D
+# to slide, features...') carry load-bearing spec content the Weaver MUST
+# read, but they are prose, not code, so the old code-heavy filter dropped
+# them. A long assistant reply is substantive by default now.
+_SUBSTANTIVE_MIN_LENGTH = 250
+_SUBSTANTIVE_LONG_LENGTH = 700  # any reply this long is substantive regardless of pattern hits
 
 _SUBSTANTIVE_PATTERNS = [
     # Code / file references
@@ -61,6 +67,14 @@ _SUBSTANTIVE_PATTERNS = [
     r"##\s+\w",                     # markdown H2+ headers
     r"\*\*.*?:\*\*",               # bold labels like **Title:**
     r"\d+\.\s+[A-Z]\w+",          # numbered lists starting with caps
+    # 2026-07-04 (live6): conversational build/spec vocabulary — Astra
+    # describing what it built or should build is load-bearing even in prose.
+    r"\b(?:app|application|game|feature|button|control|screen|window|menu)s?\b",
+    r"\b(?:build|built|create[ds]?|implement|standalone|self-contained)\b",
+    r"\b(?:arrow|keyboard|key|mouse|click|drag)\b",
+    r"\b(?:colou?r|theme|retro|layout|design|style)s?\b",
+    r"\b(?:file|folder|path|index\.html|\.exe|\.py|\.js)\b",
+    r"[-*•]\s+\w",            # bullet lists
 ]
 
 
@@ -81,15 +95,23 @@ def _is_substantive_assistant_content(content: str) -> bool:
     if not content or len(content) < _SUBSTANTIVE_MIN_LENGTH:
         return False
 
-    # Check for substantive technical patterns — require 3+ distinct matches
+    # A long reply is substantive by default (Astra rarely rambles 700+ chars
+    # of pure pleasantry — and if it does, the Weaver ignores the fluff).
+    if len(content) >= _SUBSTANTIVE_LONG_LENGTH:
+        logger.info(
+            "[WEAVER] live6 Substantive assistant content (long reply, %d chars)",
+            len(content),
+        )
+        return True
+
+    # Shorter replies need 2+ distinct pattern hits (was 3 + code-only).
     hit_count = 0
     for pattern in _SUBSTANTIVE_PATTERNS:
         if re.search(pattern, content, re.IGNORECASE):
             hit_count += 1
-            if hit_count >= 3:
+            if hit_count >= 2:
                 logger.info(
-                    "[WEAVER] v4.3 Substantive assistant content detected "
-                    "(%d pattern hits, %d chars)",
+                    "[WEAVER] live6 Substantive assistant content (%d pattern hits, %d chars)",
                     hit_count, len(content),
                 )
                 return True

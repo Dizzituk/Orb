@@ -15,9 +15,9 @@ you caught everything.
 
 The principle: every caller that wants "the current flagship OpenAI
 model" should ask `resolve('openai_flagship')` and get back whatever
-string is currently considered best. Updates happen in ONE place
-(the _DEFAULTS dict below), and environments that want to pin a
-specific version can override via ASTRA_MODEL_<FAMILY> env vars.
+string is currently considered best. Updates happen in ONE place —
+the ASTRA_MODEL_<FAMILY> vars in .env (LANE D 2026-07-02: the baked-in
+defaults are gone; .env is the single source, read on access).
 
 Families are identified by (provider_tier) pairs:
     <provider>_flagship    most capable, slowest, highest cost
@@ -41,44 +41,47 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-# ─── Current defaults ────────────────────────────────────────────────
+# ─── Current families ────────────────────────────────────────────────
 #
-# Update these when a new model lands. One-liner per family.
-# Everything else in the codebase that uses resolve() inherits
-# automatically.
+# LANE D (2026-07-02): the baked-in default model strings are GONE. Every
+# family's value lives in .env as ASTRA_MODEL_<FAMILY> (seeded with the old
+# defaults). resolve() reads that env var on access, then falls through to
+# the frontier_models provider-default chain keyed by the family's provider
+# below (embedding additionally honours Lane C's ORB_EMBEDDING_MODEL).
+# Update models in .env or the Models settings UI, never here.
 #
-_DEFAULTS: dict[str, str] = {
-    # OpenAI — GPT-5 family
-    "openai_flagship": "gpt-5.5",         # reasoning-capable, highest quality
-    "openai_balanced": "gpt-5.5",         # same as flagship for now
-    "openai_fast":     "gpt-5.4-mini",    # lower cost, still GPT-5 family
-    "openai_turbo":    "gpt-5.4-turbo",   # cost-optimised variant
+_FAMILY_FALLBACK_PROVIDER: dict[str, str] = {
+    # OpenAI — GPT family
+    "openai_flagship": "openai",     # reasoning-capable, highest quality
+    "openai_balanced": "openai",
+    "openai_fast":     "openai",     # lower cost
+    "openai_turbo":    "openai",     # cost-optimised variant
 
-    # Anthropic — Claude 4 family
-    "anthropic_flagship": "claude-opus-4-6",
-    "anthropic_balanced": "claude-sonnet-4-6",
-    "anthropic_fast":     "claude-haiku-4-5-20251001",
+    # Anthropic — Claude family
+    "anthropic_flagship": "anthropic",
+    "anthropic_balanced": "anthropic",
+    "anthropic_fast":     "anthropic",
 
-    # Google — Gemini 3 family
-    "google_flagship": "gemini-3.1-pro-preview",
-    "google_balanced": "gemini-3.5-flash",
-    "google_fast":     "gemini-3.1-flash-lite",
+    # Google — Gemini family
+    "google_flagship": "google",
+    "google_balanced": "google",
+    "google_fast":     "google",
 
     # Role-specific families — abstract "what's this FOR" from
     # "which model". Lets you change providers per role without
     # touching call sites.
-    "chat_flagship":    "gpt-5.5",          # voice / conversational chat
-    "chat_tools":       "claude-opus-4-6",  # tool-heavy agentic chat
-    "embedding":        "gemini-embedding-2-preview",
-    "vision_fast":      "gemini-3.5-flash",
+    "chat_flagship":    "openai",    # voice / conversational chat
+    "chat_tools":       "anthropic", # tool-heavy agentic chat
+    "embedding":        "google",
+    "vision_fast":      "google",
 
     # -- ASTRA role models: primary = cheaper everyday model;
     #    fallback = pricier model, used only if the primary fails. --
-    "role_chat":                  "gemini-3.5-flash",
-    "role_chat_fallback":         "gpt-5.5",
-    "role_vision_tools":          "gemini-3.5-flash",
-    "role_vision_tools_fallback": "gpt-5.5",
-    "role_cheap":                 "gemini-3.1-flash-lite",
+    "role_chat":                  "google",
+    "role_chat_fallback":         "openai",
+    "role_vision_tools":          "google",
+    "role_vision_tools_fallback": "openai",
+    "role_cheap":                 "google",
 }
 
 
@@ -96,12 +99,10 @@ def _env_key(family: str) -> str:
 
 def resolve(family: str) -> str:
     """
-    Return the current model string for a family. ENV override wins
-    over the baked-in default. Raises ValueError on unknown families.
-
-    Usage:
-        from app.llm.model_families import resolve
-        model = resolve("openai_flagship")   # "gpt-5.4"
+    Return the current model string for a family, env-only (LANE D).
+    ASTRA_MODEL_<FAMILY> wins (seeded in .env); otherwise the family's
+    provider-default chain. Raises ValueError on unknown families; an
+    entirely unconfigured .env yields "" and fails loudly downstream.
 
     Don't call this on every token, it's not THAT cheap — cache the
     result at module-load or function-entry where appropriate.
@@ -111,28 +112,43 @@ def resolve(family: str) -> str:
         logger.debug("[model_families] %s = %s (env override)", family, override)
         return override
 
-    default = _DEFAULTS.get(family)
-    if default is None:
+    provider = _FAMILY_FALLBACK_PROVIDER.get(family)
+    if provider is None:
         raise ValueError(
             f"Unknown model family: {family!r}. "
-            f"Known families: {sorted(_DEFAULTS.keys())}"
+            f"Known families: {sorted(_FAMILY_FALLBACK_PROVIDER.keys())}"
         )
-    return default
+    if family == "embedding":
+        # Lane C: the embedding-model truth is ORB_EMBEDDING_MODEL.
+        emb = (os.getenv("ORB_EMBEDDING_MODEL") or "").strip()
+        if emb:
+            return emb
+    from app.llm.frontier_models import get_provider_default_model
+    model = get_provider_default_model(provider, strict=False)
+    if not model:
+        logger.error(
+            "[model_families] %s unresolved — set %s in .env",
+            family, _env_key(family),
+        )
+    return model
 
 
 def known_families() -> list[str]:
     """List the known family identifiers. Useful for diagnostics."""
-    return sorted(_DEFAULTS.keys())
+    return sorted(_FAMILY_FALLBACK_PROVIDER.keys())
 
 
 def snapshot() -> dict[str, dict]:
     """
     Return {family: {default, override, effective}} for every known
     family. Handy for the settings UI / a diagnostic endpoint.
+    "default" is now the provider-chain fallback (env-only; LANE D).
     """
+    from app.llm.frontier_models import get_provider_default_model
     out: dict[str, dict] = {}
-    for fam, default in _DEFAULTS.items():
+    for fam, provider in _FAMILY_FALLBACK_PROVIDER.items():
         override = os.getenv(_env_key(fam))
+        default = get_provider_default_model(provider, strict=False)
         out[fam] = {
             "default":   default,
             "override":  override,
@@ -184,7 +200,9 @@ def chain(role: str) -> list:
     primary = resolve(role)
     out = [primary]
     fb_key = role + "_fallback"
-    fb = os.getenv(_env_key(fb_key)) or _DEFAULTS.get(fb_key)
+    fb = os.getenv(_env_key(fb_key)) or (
+        resolve(fb_key) if fb_key in _FAMILY_FALLBACK_PROVIDER else None
+    )
     if fb and fb != primary:
         out.append(fb)
     return out

@@ -3,7 +3,7 @@
 #          every surface (router.py, bridge feed, scheduler all go through here).
 # Called-by: app.reminders.router, app.bridge.reminders_feed, app.reminders.scheduler, app.tools.reminder_tools
 # Depends-on: app.db, app.reminders.models
-# Last-renovated: 2026-07-01
+# Last-renovated: 2026-07-03
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -65,6 +65,35 @@ def list_due_unacked(db: Session) -> List[Reminder]:
     )
 
 
+def list_due_unacked_undelivered(db: Session) -> List[Reminder]:
+    """Fired, unacked AND never announced anywhere — the chat-injection candidate
+    set. Once any surface announces a reminder (delivered_at set), it leaves
+    this set and can never be woven into a later conversation as if new."""
+    return (
+        db.query(Reminder)
+        .filter(Reminder.fired_at.isnot(None))
+        .filter(Reminder.acked_at.is_(None))
+        .filter(Reminder.delivered_at.is_(None))
+        .order_by(Reminder.due_at.asc())
+        .all()
+    )
+
+
+def list_in_range(db: Session, start: datetime, end: datetime) -> List[Reminder]:
+    """Every reminder (any state) due inside [start, end) — the calendar grid query."""
+    if start.tzinfo is None:
+        start = start.astimezone()
+    if end.tzinfo is None:
+        end = end.astimezone()
+    return (
+        db.query(Reminder)
+        .filter(Reminder.due_at >= start.astimezone(timezone.utc))
+        .filter(Reminder.due_at < end.astimezone(timezone.utc))
+        .order_by(Reminder.due_at.asc())
+        .all()
+    )
+
+
 def list_pending_due(db: Session) -> List[Reminder]:
     """Reminders whose due_at has passed but haven't fired yet — the scheduler's tick query."""
     return (
@@ -88,6 +117,16 @@ def ack(db: Session, reminder_id: int) -> Optional[Reminder]:
     reminder = get(db, reminder_id)
     if reminder and reminder.acked_at is None:
         reminder.acked_at = _now()
+        db.commit()
+        db.refresh(reminder)
+    return reminder
+
+
+def mark_delivered(db: Session, reminder_id: int) -> Optional[Reminder]:
+    """Stamp the first actual announce to the user (idempotent) — gates chat injection."""
+    reminder = get(db, reminder_id)
+    if reminder and reminder.delivered_at is None:
+        reminder.delivered_at = _now()
         db.commit()
         db.refresh(reminder)
     return reminder

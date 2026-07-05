@@ -40,13 +40,14 @@ logger = logging.getLogger(__name__)
 KIND_IMAGE = "image"
 KIND_DOCUMENT = "document"
 KIND_AUDIO = "audio"
+KIND_VIDEO = "video"  # 2026-07-02: shorts/reels delivered to chat like images
 
 # Marker: [ASTRA_ARTIFACT:<kind>:<filename>]. Filename charset is intentionally
 # narrow — alphanumerics, dot, dash, underscore. No spaces, slashes, or
 # anything that could be exploited for path traversal. Generators that
 # produce artifacts MUST emit filenames within this charset.
 ARTIFACT_MARKER_RE = re.compile(
-    r"\[ASTRA_ARTIFACT:(?P<kind>image|document|audio):(?P<filename>[A-Za-z0-9._-]+)\]"
+    r"\[ASTRA_ARTIFACT:(?P<kind>image|document|audio|video):(?P<filename>[A-Za-z0-9._-]+)\]"
 )
 
 
@@ -109,6 +110,18 @@ def _get_documents_dir() -> Path:
     return Path(get_reports_cache_dir()).resolve()
 
 
+def _get_video_dir() -> Path:
+    # Video = rendered shorts/reels (2026-07-02). Flat delivery dir so the
+    # per-job subfolder structure doesn't break the flat-filename artifact
+    # model; shorts_delivery copies the final mp4 here under a unique name.
+    explicit = os.getenv("SHORTS_DELIVERY_DIR")
+    base = Path(explicit) if explicit else Path(
+        os.getenv("ASTRA_OUTPUT_DIR", r"D:\Orb\data\content\output")
+    ) / "shorts_delivery"
+    base.mkdir(parents=True, exist_ok=True)
+    return base.resolve()
+
+
 def _get_base_dir(kind: str) -> Optional[Path]:
     """Return the on-disk root directory artifacts of this kind live in.
 
@@ -121,6 +134,9 @@ def _get_base_dir(kind: str) -> Optional[Path]:
         # v1.1 (2026-07-01): documents wired to the reports cache
         # (REPORTS_CACHE_DIR). Same traversal safety as images below.
         return _get_documents_dir()
+    if kind == KIND_VIDEO:
+        # v1.2 (2026-07-02): shorts/reels served from the flat delivery dir.
+        return _get_video_dir()
     # Future: audio has an output directory elsewhere in the codebase but
     # isn't wired through bridge yet.
     return None

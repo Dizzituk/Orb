@@ -65,6 +65,7 @@ async def _fulfil_evidence_requests(
     project_paths: List[str],
     goal: str = "",
     what_to_do: str = "",
+    job_id: Optional[str] = None,
 ) -> str:
     """Fulfil EVIDENCE_REQUEST blocks — delegates to _simple_create_evidence.py."""
     from app.pot_spec.grounded._simple_create_evidence import fulfil_evidence_requests
@@ -77,6 +78,7 @@ async def _fulfil_evidence_requests(
         goal=goal,
         what_to_do=what_to_do,
         system_prompt=CREATE_ANALYSIS_SYSTEM_PROMPT,
+        job_id=job_id,
     )
 
 

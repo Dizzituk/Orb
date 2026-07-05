@@ -488,6 +488,8 @@ class ProviderRegistry:
 
         from app.providers._registry_anthropic_shapes import (
             shape_anthropic_create_kwargs,
+            is_sampling_param_error,
+            strip_sampling_params,
             is_refusal,
             extract_refusal_detail,
             get_refusal_fallback_model,
@@ -497,6 +499,7 @@ class ProviderRegistry:
 
         tool_iters = 0
         refusal_retried = False
+        sampling_retry_used = False
         final_system, user_assistant_messages = _normalize_messages_for_anthropic(messages, system_prompt)
         tools_param = _build_anthropic_tools(tool_defs) if tool_defs else None  # leave as None unless real tools exist
 
@@ -522,7 +525,25 @@ class ProviderRegistry:
             if tools_param is not None and isinstance(tools_param, list) and len(tools_param) > 0:
                 create_kwargs["tools"] = tools_param
 
-            resp = await client.messages.create(**create_kwargs)
+            # live9 (2026-07-04): newer models reject sampling params outright
+            # ("`temperature` is deprecated for this model", opus-4-8) even in
+            # shapes the static family rules leave untouched. Mirror the
+            # OpenAI path: strip-and-retry once, then keep them stripped for
+            # every later tool iteration of this call.
+            if sampling_retry_used:
+                strip_sampling_params(create_kwargs)
+            try:
+                resp = await client.messages.create(**create_kwargs)
+            except anthropic.BadRequestError as _br_exc:
+                if (not sampling_retry_used) and is_sampling_param_error(str(_br_exc)):
+                    logger.warning(
+                        "[registry] Anthropic rejected sampling params for %s; "
+                        "retrying without them. err=%s", model_id, _br_exc,
+                    )
+                    sampling_retry_used = True
+                    tool_iters -= 1  # retry is not a tool iteration
+                    continue
+                raise
 
             # v2.4 (2026-06-11): Fable 5 blocking classifiers return
             # stop_reason "refusal" with HTTP 200 — a primary response path,

@@ -2,7 +2,7 @@
 # Purpose: Per-session in-memory action queue with asyncio Futures for result delivery.
 # Called-by: app.web_automation.bridge, app.web_automation.router
 # Depends-on: app.db, app.web_automation.models
-# Last-renovated: 2026-07-01
+# Last-renovated: 2026-07-02
 """
 Per-session in-memory action queue with asyncio Futures for result delivery.
 
@@ -23,8 +23,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict, deque
-from datetime import datetime, timezone
-from typing import Deque, Dict, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Deque, Dict, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -143,16 +143,28 @@ async def await_result(action_id: str, timeout_seconds: float = 30.0) -> dict:
     try:
         return await asyncio.wait_for(fut, timeout=timeout_seconds)
     except asyncio.TimeoutError:
-        stalled_status = _mark_timed_out(action_id)
+        stalled_status, desktop_alive = _mark_timed_out(action_id)
         _result_futures.pop(action_id, None)
-        if stalled_status == ActionStatus.pending:
+        if stalled_status == ActionStatus.pending and not desktop_alive:
             return {
                 "ok": False,
                 "error": (
                     f"{DESKTOP_OFFLINE_PREFIX} — the ASTRA desktop app never "
-                    f"picked this action up ({timeout_seconds:.0f}s). It is "
-                    "probably not running. Tell the user to start the ASTRA "
-                    "desktop app, then retry. This is not a page problem."
+                    f"picked this action up ({timeout_seconds:.0f}s) and shows "
+                    "no recent activity for this session. It is probably not "
+                    "running. Tell the user to start the ASTRA desktop app, "
+                    "then retry. This is not a page problem."
+                ),
+            }
+        if stalled_status == ActionStatus.pending and desktop_alive:
+            return {
+                "ok": False,
+                "error": (
+                    f"browser is busy on a previous action — the desktop app "
+                    f"IS running but is still executing earlier work for this "
+                    f"session, so this action was not picked up within "
+                    f"{timeout_seconds:.0f}s. Wait a few seconds and retry; "
+                    "do NOT tell the user the desktop is offline."
                 ),
             }
         return {
@@ -166,10 +178,52 @@ async def await_result(action_id: str, timeout_seconds: float = 30.0) -> dict:
         }
 
 
-def _mark_timed_out(action_id: str) -> Optional[ActionStatus]:
-    """Mark a stalled action timed_out. Returns the status it stalled in
-    (pending / in_flight) so await_result can phrase the error, or None
-    if the action is unknown or already resolved."""
+# How recently Electron must have taken work for a session to count as
+# alive. Electron long-polls every ~5s when idle, so anything inside this
+# window means the app is up (a stuck-but-delivered action holds the
+# session busy far longer — that case is covered by the in_flight check).
+_ALIVE_WINDOW_SECONDS = 45
+
+
+def _session_shows_life(db: Session, session_id: str, exclude_action_id: str) -> bool:
+    """Evidence Electron is alive for this session despite an undelivered
+    action: some OTHER action currently in_flight (taken, not yet
+    answered — e.g. a wedged navigate holding the serial queue), or any
+    delivery within the last _ALIVE_WINDOW_SECONDS."""
+    in_flight = (
+        db.query(WebAction.id)
+        .filter(
+            WebAction.session_id == session_id,
+            WebAction.id != exclude_action_id,
+            WebAction.status == ActionStatus.in_flight,
+        )
+        .first()
+    )
+    if in_flight:
+        return True
+    last_delivered = (
+        db.query(WebAction.delivered_at)
+        .filter(
+            WebAction.session_id == session_id,
+            WebAction.id != exclude_action_id,
+            WebAction.delivered_at.isnot(None),
+        )
+        .order_by(WebAction.delivered_at.desc())
+        .first()
+    )
+    if not last_delivered or not last_delivered[0]:
+        return False
+    ts = last_delivered[0]
+    if ts.tzinfo is None:  # SQLite hands naive UTC back
+        ts = ts.replace(tzinfo=timezone.utc)
+    return (_now() - ts) <= timedelta(seconds=_ALIVE_WINDOW_SECONDS)
+
+
+def _mark_timed_out(action_id: str) -> Tuple[Optional[ActionStatus], bool]:
+    """Mark a stalled action timed_out. Returns (status it stalled in,
+    desktop-alive evidence) so await_result can phrase the error:
+    pending+dead → offline, pending+alive → busy, in_flight → page stall.
+    (None, False) if the action is unknown or already resolved."""
     db = SessionLocal()
     try:
         action = db.query(WebAction).filter(WebAction.id == action_id).one_or_none()
@@ -178,8 +232,11 @@ def _mark_timed_out(action_id: str) -> Optional[ActionStatus]:
             action.status = ActionStatus.timed_out
             action.completed_at = _now()
             db.commit()
-            return stalled_status
-        return None
+            desktop_alive = False
+            if stalled_status == ActionStatus.pending:
+                desktop_alive = _session_shows_life(db, action.session_id, action_id)
+            return stalled_status, desktop_alive
+        return None, False
     finally:
         db.close()
 

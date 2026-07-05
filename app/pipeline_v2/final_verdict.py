@@ -109,8 +109,16 @@ def build_final_verdict(
         contract_status = "skipped"
     else:
         try:
-            contract_status = "pass" if contract_report.is_passing() else "fail"
-            detail = contract_report.summary()
+            # live18 (2026-07-05): 0-of-0 targets is a vacuous truth, not a
+            # pass — it painted a green "Verifier PASSED" card on a build the
+            # behavioural judge failed minutes later. Render it as skipped.
+            _n_targets = len(getattr(contract_report, "target_results", None) or [])
+            if _n_targets == 0:
+                contract_status = "skipped"
+                detail = "contract verifier checked 0 targets (none registered for this build) — vacuous, not a pass"
+            else:
+                contract_status = "pass" if contract_report.is_passing() else "fail"
+                detail = contract_report.summary()
         except Exception as exc:
             contract_status, detail = "skipped", f"unreadable contract report: {exc}"
         sources.append(SourceVerdict("contract", contract_status, detail))

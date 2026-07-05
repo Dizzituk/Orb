@@ -24,6 +24,12 @@ class Intent(str, Enum):
     LOOK_EXPLAIN  = "look_explain"
     LOOK_DIAGNOSE = "look_diagnose"
     TAKEOVER      = "takeover"
+    # WEB_ACTION (2026-07-03): an actionable web/study request from ambient voice
+    # ("open my Coursera course", "next lesson", "resume studying"). Unlike the
+    # tool-less CONVERSE/LOOK paths, the router runs the REAL chat tool loop for
+    # this intent so voice can actually open + drive the browser, and reports
+    # which session to surface via InvocationResponse.surface_session.
+    WEB_ACTION    = "web_action"
     NOTIFY        = "notify"
     UNKNOWN       = "unknown"
 
@@ -76,6 +82,11 @@ class InvocationRequest(BaseModel):
     source_count: int = 0
     explicit_tier: Optional[Tier] = None
     session_id: Optional[str] = None
+    # Chat-UI mirroring (2026-07-03): id of the conversation the desktop has
+    # OPEN when the wake-word turn fires. When set, the turn persists into
+    # that conversation (so the open panel's live poll renders it) instead of
+    # the fallback "Voice" project. None = old behaviour (phone, no chat open).
+    chat_project_id: Optional[int] = None
 
 
 class InvocationResponse(BaseModel):
@@ -87,3 +98,9 @@ class InvocationResponse(BaseModel):
     model: Optional[str] = None
     error: Optional[str] = None
     elapsed_ms: int = 0
+    # WEB_ACTION (2026-07-03): platform key or session id the frontend should
+    # pull onscreen (e.g. "coursera") after a voice-driven web action. None for
+    # the tool-less CONVERSE/LOOK paths. AmbientVoicePipeline calls
+    # surfaceBrowserSession() with this so the wake-word path can bring the Web
+    # tab forward — the ambient counterpart of the chat SURFACE_ON_TOOL list.
+    surface_session: Optional[str] = None

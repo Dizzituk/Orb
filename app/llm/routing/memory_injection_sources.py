@@ -106,6 +106,92 @@ def collect_recurring(db: Session, project_id: int, user_message: str) -> str:
         return ""
 
 
+_BROAD_ARCH_PATTERNS = [
+    # Capability-scoping questions ("what exists / what needs building for X")
+    re.compile(r"\bwhat(?:'s| is| are)? (?:already )?(?:exists?|built|in place|missing)\b", re.IGNORECASE),
+    re.compile(r"\b(?:what|which)\b.{0,50}\bneeds? (?:to be )?(?:built|building|added|created|done|happen)\b", re.IGNORECASE),
+    re.compile(r"\bwhat would (?:it take|need|have to happen)\b", re.IGNORECASE),
+    re.compile(r"\b(?:could|can|would|will) (?:you|astra)\b.{0,60}\b(?:do|run|track|watch|monitor|handle|build|research|manage)\b", re.IGNORECASE),
+    re.compile(r"\b(?:idle|background)\b.{0,40}\b(?:tasks?|work|jobs?|time)\b", re.IGNORECASE),
+    re.compile(r"\b(?:your|astra'?s?) (?:architecture|codebase|subsystems?|systems?|capabilit\w*|components?|memory system|pipeline|stack)\b", re.IGNORECASE),
+    re.compile(r"\bwhat (?:do|can) you (?:know about yourself|do|actually do)\b", re.IGNORECASE),
+    re.compile(r"\b(?:overview|map|picture) of (?:the |your )?(?:system|codebase|architecture)\b", re.IGNORECASE),
+    re.compile(r"\bhow does (?:a |the )?(?:message|request|chat|voice|speech|audio|build)\b.{0,60}\b(?:flow|reach|travel|get|come back|end to end)\b", re.IGNORECASE),
+    re.compile(r"\b(?:phone app|bridge app|the app|desktop)\b.{0,60}\b(?:reach|talk to|connect|flow|come back)\b.{0,40}\b(?:backend|astra|server)\b", re.IGNORECASE),
+]
+
+_ARCH_CARD_IDS = ("system-overview", "capability-ledger-core")
+
+
+def _arch_cards_max_chars() -> int:
+    try:
+        return max(0, int(os.getenv("ASTRA_ARCH_CARDS_MAX_CHARS", "8000")))
+    except Exception:
+        return 8000
+
+
+def is_broad_architecture_question(message: str) -> bool:
+    """Broad / self-referential system questions — "what could run during idle
+    time and what exists for that", "what would need building for X", "how does
+    a phone message become speech". These are ALTITUDE questions: file-level
+    code chunks answer them badly, the system-level cards answer them well.
+    Deterministic and cheap (regex), mirroring chat_injection's gate style."""
+    if not message:
+        return False
+    return any(p.search(message) for p in _BROAD_ARCH_PATTERNS)
+
+
+def collect_architecture_cards(db: Session, user_message: str, query_tags=None) -> str:
+    """Enriched-card block for broad architecture questions (2026-07-02).
+
+    When the question is broad/self-referential, inject the SYSTEM_OVERVIEW
+    card and the CAPABILITY_LEDGER card (generated from the HOST tree,
+    .architecture/enriched/) AHEAD of file-level chunks — the caller prepends
+    this to repo_context inside <codebase_memory>. Bounded by
+    ASTRA_ARCH_CARDS_MAX_CHARS (default 8000); trimmed at line boundaries.
+    Empty when the gate doesn't fire or the cards aren't ingested yet."""
+    try:
+        if not is_broad_architecture_question(user_message):
+            return ""
+        from app.rag.models import ArchCodeChunk, ChunkType
+        rows = (
+            db.query(ArchCodeChunk)
+            .filter(
+                ArchCodeChunk.chunk_type == ChunkType.ARCHITECTURE_CARD,
+                ArchCodeChunk.chunk_name.in_(_ARCH_CARD_IDS),
+                ArchCodeChunk.status == "active",
+            )
+            .all()
+        )
+        if not rows:
+            return ""
+        order = {name: i for i, name in enumerate(_ARCH_CARD_IDS)}
+        rows.sort(key=lambda c: order.get(c.chunk_name, 99))
+        budget = _arch_cards_max_chars()
+        # Equal share per card: the overview alone can fill the whole budget,
+        # and for "what exists / what needs building" the LEDGER is the
+        # answer-bearing card — both must survive trimming.
+        share = max(1500, budget // max(len(rows), 1))
+        parts: List[str] = []
+        used = 0
+        for card in rows:
+            body = (card.docstring or "").strip()
+            if not body:
+                continue
+            room = min(share, budget - used)
+            if room < 400:
+                break
+            if len(body) > room:
+                body = body[:room].rsplit("\n", 1)[0].rstrip() + "\n[...card trimmed to fit budget...]"
+            block = f"[ARCHITECTURE CARD: {card.chunk_name} — host-generated self-knowledge]\n{body}"
+            parts.append(block)
+            used += len(block)
+        return "\n\n".join(parts)
+    except Exception as exc:
+        logger.debug("[mem_sources] architecture cards skipped: %s", exc)
+        return ""
+
+
 def collect_router(user_message: str, project_id) -> str:
     """Legacy MemoryRouter keyword block ([MEMORY CONTEXT]).
 
@@ -351,6 +437,8 @@ __all__ = [
     "collect_coverage",
     "collect_recurring",
     "collect_router",
+    "collect_architecture_cards",
+    "is_broad_architecture_question",
     "assemble_block",
     "log_block_stats",
 ]

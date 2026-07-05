@@ -13,6 +13,12 @@ Strategy:
   message so distinct sessions are still readable when scrolling.
 - User + assistant turns get written via memory_service.create_message,
   exactly like a normal /chat call does.
+- Chat-UI mirroring (2026-07-03): when the desktop has a conversation OPEN,
+  it passes that project id with the invoke and the turn persists THERE
+  (the open panel's live poll then renders it within ~2.5s). The Voice
+  project stays the fallback for turns with no open chat. Session-start
+  separators are written only to the Voice project - inline voice turns in
+  a normal chat need no divider.
 """
 from __future__ import annotations
 
@@ -111,16 +117,38 @@ def record_turn(
     assistant_text: str,
     provider: Optional[str] = None,
     model: Optional[str] = None,
+    chat_project_id: Optional[int] = None,
 ) -> Optional[int]:
-    """Write a user+assistant turn pair to the Voice project. Returns project_id."""
+    """Write a user+assistant turn pair to the chat DB. Returns project_id.
+
+    Target: `chat_project_id` (the conversation the desktop has open) when it
+    is given AND still exists; otherwise the persistent Voice project.
+    """
     if not (user_text or assistant_text):
         return None
 
-    project_id = _get_or_create_voice_project(db)
+    project_id: Optional[int] = None
+    if chat_project_id is not None:
+        try:
+            if memory_service.get_project(db, chat_project_id):
+                project_id = chat_project_id
+            else:
+                logger.warning(
+                    "[voice_persistence] chat_project_id=%s not found - "
+                    "falling back to Voice project", chat_project_id,
+                )
+        except Exception:
+            logger.exception("[voice_persistence] chat project lookup failed")
+
+    to_voice_project = project_id is None
+    if to_voice_project:
+        project_id = _get_or_create_voice_project(db)
     if project_id is None:
         return None
 
-    if session_id:
+    # Separators only make sense in the append-only Voice log; a turn landing
+    # inline in an open conversation should read like any other message.
+    if session_id and to_voice_project:
         _ensure_session_marker(db, project_id, session_id)
 
     try:

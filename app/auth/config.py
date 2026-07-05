@@ -1,7 +1,7 @@
 # Purpose: Authentication configuration and password management.
 # Called-by: app.auth, app.auth.middleware, app.auth.router, app.bridge.router (+3 more)
 # Depends-on: stdlib/third-party only
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-07-02
 # app/auth/config.py
 """
 Authentication configuration and password management.
@@ -9,8 +9,18 @@ Supports password-based authentication with bcrypt hashing.
 
 Security Level 4: Password is used ONLY for authentication.
 Database encryption is handled separately via master key (ORB_MASTER_KEY).
+
+Hardening 2026-07-02:
+  * bcrypt is MANDATORY for new hashes — no silent SHA256 downgrade. Startup
+    fails closed via assert_strong_hash_available() (called from main.py).
+  * Sessions expire after ASTRA_SESSION_TTL_HOURS (default 720h = 30 days);
+    expired sessions are pruned from auth.json on access.
+  * Min password length 8 (setup/change/migrate; existing logins unaffected).
+  * Legacy SHA256 hashes still VERIFY, and are transparently re-hashed with
+    bcrypt on the next successful login — the fallback writer is gone.
 """
 
+import os
 import secrets
 import hashlib
 import json
@@ -18,15 +28,59 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
-# Try to import bcrypt, fall back to hashlib if not available
+# bcrypt is REQUIRED for writing new password hashes. Import is soft only so
+# this module can load for non-auth uses; every write path and the startup
+# check fail closed when it's missing (no SHA256 downgrade — that was the
+# pre-2026-07-02 behaviour and it silently weakened the store).
 try:
     import bcrypt
     HAS_BCRYPT = True
 except ImportError:
     HAS_BCRYPT = False
-    print("[auth] bcrypt not installed, using SHA256 (less secure). Install with: pip install bcrypt")
+    print("[auth] CRITICAL: bcrypt not installed — password setup/change will "
+          "FAIL CLOSED. Install with: pip install bcrypt")
 
 AUTH_CONFIG_PATH = Path("data/auth.json")
+
+MIN_PASSWORD_LENGTH = 8  # raised from 4 (2026-07-02); length confirmed-pending with Taz
+
+SESSION_TTL_HOURS_ENV = "ASTRA_SESSION_TTL_HOURS"
+DEFAULT_SESSION_TTL_HOURS = 720.0  # 30 days
+
+
+def assert_strong_hash_available() -> None:
+    """Fail closed at startup when bcrypt is unavailable.
+
+    Called from main.py on_startup. Verification of EXISTING bcrypt hashes
+    also needs the library, so a missing bcrypt means auth cannot operate
+    safely at all — refuse to serve rather than downgrade.
+    """
+    if not HAS_BCRYPT:
+        raise SystemExit(
+            "[auth] FATAL: bcrypt is not importable. Refusing to start with "
+            "a weakened password path. Fix: .venv\\Scripts\\pip install bcrypt"
+        )
+
+
+def _session_ttl_hours() -> float:
+    try:
+        return float(os.getenv(SESSION_TTL_HOURS_ENV, str(DEFAULT_SESSION_TTL_HOURS)))
+    except ValueError:
+        return DEFAULT_SESSION_TTL_HOURS
+
+
+def _session_expired(session: dict) -> bool:
+    """Age check against the TTL. Unparseable/missing created_at = expired
+    (fail closed — worst case is one forced re-login)."""
+    created_raw = session.get("created_at")
+    if not created_raw:
+        return True
+    try:
+        created = datetime.fromisoformat(created_raw)
+    except (ValueError, TypeError):
+        return True
+    age_hours = (datetime.now() - created).total_seconds() / 3600.0
+    return age_hours > _session_ttl_hours()
 
 
 def _ensure_data_dir():
@@ -51,18 +105,21 @@ def _save_config(config: dict):
 
 
 def _hash_password(password: str) -> str:
-    """Hash a password using bcrypt (preferred) or SHA256 (fallback)."""
-    if HAS_BCRYPT:
-        return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-    else:
-        # Fallback to SHA256 with salt
-        salt = secrets.token_hex(16)
-        hash_val = hashlib.sha256((salt + password).encode()).hexdigest()
-        return f"sha256:{salt}:{hash_val}"
+    """Hash a password with bcrypt. NO fallback — fail closed without it."""
+    if not HAS_BCRYPT:
+        raise RuntimeError(
+            "bcrypt unavailable — refusing to write a weak password hash. "
+            "Install bcrypt and retry.")
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
 def _verify_password(password: str, stored_hash: str) -> bool:
-    """Verify a password against stored hash."""
+    """Verify a password against stored hash.
+
+    The sha256: branch exists ONLY to verify hashes written before
+    2026-07-02 — login() re-hashes them with bcrypt on first success, after
+    which the branch is dead for that store. Nothing writes sha256 any more.
+    """
     if HAS_BCRYPT and stored_hash.startswith("$2"):
         # bcrypt hash
         try:
@@ -70,7 +127,7 @@ def _verify_password(password: str, stored_hash: str) -> bool:
         except Exception:
             return False
     elif stored_hash.startswith("sha256:"):
-        # SHA256 fallback
+        # legacy verify-only path (see docstring)
         parts = stored_hash.split(":")
         if len(parts) != 3:
             return False
@@ -120,8 +177,8 @@ def setup_password(password: str, enable_encryption: bool = True) -> dict:
     
     Returns session info on success.
     """
-    if len(password) < 4:
-        raise ValueError("Password must be at least 4 characters")
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise ValueError(f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
     
     config = _load_config()
     
@@ -176,7 +233,14 @@ def login(password: str) -> Optional[dict]:
     
     if not _verify_password(password, stored_hash):
         return None
-    
+
+    # Legacy-hash migration (2026-07-02): a pre-bcrypt sha256 hash that just
+    # verified gets re-hashed with bcrypt NOW — one-way, transparent.
+    if stored_hash.startswith("sha256:") and HAS_BCRYPT:
+        config["password_hash"] = _hash_password(password)
+        config["hash_migrated_at"] = datetime.now().isoformat()
+        print("[auth] Legacy SHA256 password hash migrated to bcrypt")
+
     # Generate new session token
     session_token = _generate_session_token()
     
@@ -220,29 +284,45 @@ def login(password: str) -> Optional[dict]:
 
 def validate_session(token: str) -> bool:
     """Validate a session token.
-    
+
     v2.0: Checks against all active sessions, not just the latest one.
     This allows desktop and phone to be logged in simultaneously.
+    v3.0 (2026-07-02): sessions expire after ASTRA_SESSION_TTL_HOURS
+    (default 720h). Expired entries are pruned from auth.json on access —
+    tokens no longer live forever.
     """
     if not token:
         return False
-    
+
     config = _load_config()
-    
-    # Check active_sessions list first (multi-session)
+
+    # Check active_sessions list first (multi-session), pruning expired rows.
     sessions = config.get("active_sessions", [])
-    if isinstance(sessions, list):
-        for session in sessions:
-            stored = session.get("token", "")
-            if stored and secrets.compare_digest(token, stored):
-                return True
-    
-    # Fallback: check current_session (backwards compat)
-    session = config.get("current_session", {})
-    stored_token = session.get("token")
-    if stored_token and secrets.compare_digest(token, stored_token):
-        return True
-    
+    if not isinstance(sessions, list):
+        sessions = []
+    live_sessions = [s for s in sessions if not _session_expired(s)]
+
+    # Fallback entry: current_session (backwards compat) joins the check with
+    # the same TTL rule.
+    current = config.get("current_session", {})
+    current_expired = _session_expired(current) if current.get("token") else True
+
+    if len(live_sessions) != len(sessions) or (current.get("token") and current_expired):
+        config["active_sessions"] = live_sessions
+        if current.get("token") and current_expired:
+            config.pop("current_session", None)
+        _save_config(config)
+
+    for session in live_sessions:
+        stored = session.get("token", "")
+        if stored and secrets.compare_digest(token, stored):
+            return True
+
+    if not current_expired:
+        stored_token = current.get("token")
+        if stored_token and secrets.compare_digest(token, stored_token):
+            return True
+
     return False
 
 
@@ -290,9 +370,9 @@ def change_password(current_password: str, new_password: str) -> bool:
     
     if not _verify_password(current_password, stored_hash):
         return False
-    
-    if len(new_password) < 4:
-        raise ValueError("Password must be at least 4 characters")
+
+    if len(new_password) < MIN_PASSWORD_LENGTH:
+        raise ValueError(f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
     
     config["password_hash"] = _hash_password(new_password)
     config["password_changed_at"] = datetime.now().isoformat()

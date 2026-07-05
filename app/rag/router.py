@@ -12,6 +12,7 @@ v1.0 (2026-01): Initial implementation
 """
 
 import os
+from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
@@ -26,6 +27,32 @@ router = APIRouter(prefix="/rag", tags=["rag"])
 
 # Default scan directory
 DEFAULT_SCAN_DIR = os.getenv("ZOBIE_OUTPUT_DIR", r"D:\Orb\.architecture")
+
+
+def _allowed_scan_roots() -> list[Path]:
+    """Roots /rag/index may scan: the default dir + ASTRA_RAG_SCAN_ROOTS extras.
+
+    scan_dir is a caller-supplied path that drives a file-scan + LLM pipeline —
+    without this check any authenticated caller could point it anywhere on disk
+    (security hardening 2026-07-02).
+    """
+    roots = [Path(DEFAULT_SCAN_DIR)]
+    extra = os.getenv("ASTRA_RAG_SCAN_ROOTS", "")
+    roots += [Path(p.strip()) for p in extra.split(";") if p.strip()]
+    return roots
+
+
+def _validate_scan_dir(scan_dir: str) -> str:
+    requested = Path(scan_dir).resolve()
+    for root in _allowed_scan_roots():
+        root_resolved = root.resolve()
+        if requested == root_resolved or \
+                str(requested).startswith(str(root_resolved) + os.sep):
+            return str(requested)
+    raise HTTPException(
+        status_code=403,
+        detail="scan_dir outside allowed roots (default scan dir or "
+               "ASTRA_RAG_SCAN_ROOTS)")
 
 
 class IndexRequest(BaseModel):
@@ -59,8 +86,8 @@ def trigger_rag_index(
     
     Reads SIGNATURES_*.json from scan_dir and creates embeddings.
     """
-    scan_dir = request.scan_dir or DEFAULT_SCAN_DIR
-    
+    scan_dir = _validate_scan_dir(request.scan_dir or DEFAULT_SCAN_DIR)
+
     if not os.path.isdir(scan_dir):
         raise HTTPException(status_code=400, detail=f"Directory not found: {scan_dir}")
     

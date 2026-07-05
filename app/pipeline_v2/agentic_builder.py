@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
@@ -98,6 +99,8 @@ async def run_agentic_builder(
     on_progress: Optional[Callable[[str], None]] = None,
     existing_messages: Optional[List[Dict]] = None,
     profile: Optional["BuildTargetProfile"] = None,
+    stage: str = "builder_main",
+    job_id: Optional[str] = None,
 ) -> BuildResult:
     """Run the Agentic Builder.
 
@@ -113,11 +116,17 @@ async def run_agentic_builder(
         on_progress: Progress callback.
         existing_messages: Conversation history for continuation.
         profile: Build target profile (determines prompts, paths).
+        stage: Cost-attribution label (Derek p1) — "builder_main" for the
+            classic single-context run; segmented mode passes worker labels.
+        job_id: Job id for per-job cost attribution. Derived from job_dir
+            basename when not given.
 
     Returns:
         BuildResult with all files written and session details.
     """
     t_start = time.time()
+    if not job_id and job_dir:
+        job_id = os.path.basename(os.path.normpath(job_dir))
     emit = on_progress or (lambda msg: None)
     result = BuildResult()
 
@@ -265,6 +274,8 @@ async def run_agentic_builder(
             on_text=on_text,
             existing_messages=existing_messages,
             reasoning=_builder_reasoning,
+            stage=stage,
+            job_id=job_id,
         )
 
         # v2.1: Guard against premature BUILDER_COMPLETE.
@@ -294,6 +305,8 @@ async def run_agentic_builder(
                 on_text=on_text,
                 existing_messages=messages,
                 reasoning=_builder_reasoning,
+                stage=stage,
+                job_id=job_id,
             )
             messages = messages_2
             in_tok += in_tok_2

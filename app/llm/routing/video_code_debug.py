@@ -16,6 +16,7 @@ import os
 from typing import Optional
 
 from app.llm.schemas import LLMTask, LLMResult
+from app.llm.frontier_models import get_provider_default_model
 from app.jobs.schemas import JobEnvelope
 from app.providers.registry import llm_call as registry_llm_call
 from app.llm.job_classifier import compute_modality_flags
@@ -117,7 +118,7 @@ Focus on:
     envelope.messages = enhanced_messages
 
     # Step 3: Call Sonnet
-    sonnet_model = os.getenv("ANTHROPIC_SONNET_MODEL", "claude-sonnet-4-5-20250929")
+    sonnet_model = os.getenv("ANTHROPIC_SONNET_MODEL") or get_provider_default_model("anthropic", strict=False)
     print(f"[video-code] Step 2: Calling Sonnet ({sonnet_model}) with code + transcripts")
 
     try:

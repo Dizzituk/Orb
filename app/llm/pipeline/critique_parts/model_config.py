@@ -8,6 +8,8 @@
 import logging
 import os
 
+from app.llm.frontier_models import get_provider_default_model
+
 logger = logging.getLogger(__name__)
 
 # Stage models (env-driven model resolution)
@@ -32,11 +34,11 @@ def _get_critique_model_config() -> tuple[str, str, int]:
     
     # Fallback to legacy env vars
     provider = os.getenv("CRITIQUE_PROVIDER", "google")
-    model = os.getenv("CRITIQUE_MODEL") or os.getenv("GEMINI_CRITIC_MODEL", "gemini-2.0-flash")
+    model = os.getenv("CRITIQUE_MODEL") or os.getenv("GEMINI_CRITIC_MODEL") or get_provider_default_model("google", strict=False)
     max_tokens = int(os.getenv("CRITIQUE_MAX_OUTPUT_TOKENS") or os.getenv("GEMINI_CRITIC_MAX_TOKENS", "60000"))
     return provider, model, max_tokens
 
 
 # Legacy exports (for backward compatibility)
-GEMINI_CRITIC_MODEL = os.getenv("CRITIQUE_MODEL") or os.getenv("GEMINI_CRITIC_MODEL", "gemini-2.0-flash")
+GEMINI_CRITIC_MODEL = os.getenv("CRITIQUE_MODEL") or os.getenv("GEMINI_CRITIC_MODEL") or get_provider_default_model("google", strict=False)
 GEMINI_CRITIC_MAX_TOKENS = int(os.getenv("CRITIQUE_MAX_OUTPUT_TOKENS") or os.getenv("GEMINI_CRITIC_MAX_TOKENS", "60000"))

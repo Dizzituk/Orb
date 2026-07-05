@@ -141,11 +141,12 @@ def _handle_flow_state_routing(req, db, trace, conversation_id, stage_trace, tra
                 # v2.2: Set sticky model to GPT-5.4 for the duration of scoping
                 try:
                     from app.llm.routing.chat_routing import _set_sticky_model
+                    from app.llm.frontier_models import get_role_model as _get_role_model
                     import os as _os
                     _set_sticky_model(
                         req.project_id,
                         _os.getenv('CHAT_DEEP_PROVIDER', 'openai'),
-                        _os.getenv('CHAT_DEEP_MODEL', 'gpt-5.4'),
+                        _os.getenv('CHAT_DEEP_MODEL') or _get_role_model('REASONING')[1],
                     )
                 except Exception:
                     pass

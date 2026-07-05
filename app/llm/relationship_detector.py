@@ -169,21 +169,24 @@ async def detect_relationships_llm(
     image_summary: str,
     video_preteaser: str,
     llm_call: Callable[[str], Awaitable[str]],
-    model: str = "gpt-4.1-mini",
+    model: str = "",
 ) -> RelationshipResult:
     """
     Detect relationships using LLM call.
-    
+
     Args:
         user_text: User's message
         file_map: File map string
         *_summary: Content summaries
         llm_call: Async callable for LLM call
-        model: Model used (for logging)
-    
+        model: Model used (for logging); empty resolves RELATIONSHIP_MODEL env
+
     Returns:
         RelationshipResult with LLM-based relationships
     """
+    import os
+    from app.llm.frontier_models import get_provider_default_model
+    model = model or os.getenv("RELATIONSHIP_MODEL") or get_provider_default_model("openai", strict=False)
     result = RelationshipResult(
         detection_method="llm",
         detection_model=model,

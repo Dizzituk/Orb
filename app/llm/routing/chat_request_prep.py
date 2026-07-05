@@ -37,6 +37,25 @@ def _resolve_message_with_documents(req: Any) -> str:
     return user_content
 
 
+def _image_ref_suffix(req: Any) -> str:
+    """Machine-readable marker for an uploaded image/video on this request.
+
+    Uploads live durably in data/debug_uploads/ — persisting the ref lets
+    the Weaver carry it and SpecGate re-analyse the original at spec time
+    (2026-07-04 vision upgrade).
+    """
+    try:
+        local_path = getattr(req, "file_upload_local_path", None)
+        mime = getattr(req, "file_upload_mime", None) or ""
+        if local_path and mime.startswith(("image/", "video/")):
+            from app.llm.image_refs import image_ref_marker
+            name = getattr(req, "file_upload_name", None) or ""
+            return "\n\n" + image_ref_marker(str(local_path), str(name))
+    except Exception:
+        pass
+    return ""
+
+
 def _persist_user_message(req: Any, db: Session) -> Optional[int]:
     """Persist the user's message before any routing decisions.
 
@@ -56,7 +75,10 @@ def _persist_user_message(req: Any, db: Session) -> Optional[int]:
                 # Large pastes arrive as req.documents but req.message is just
                 # '[Documents attached]'. Persisting the placeholder means the
                 # Weaver never sees the pasted content when it reads history.
-                content=_resolve_message_with_documents(req),
+                # 2026-07-04: + image_ref marker so uploaded images survive
+                # into history (Weaver extracts them; SpecGate re-analyses
+                # the ORIGINAL pixels at spec time).
+                content=_resolve_message_with_documents(req) + _image_ref_suffix(req),
                 provider="system",
             ),
         )

@@ -136,6 +136,8 @@ def handle_weaver_design_questions(
         is_continuation=True,
         captured_answers=None,
         pending_user_message=req.message,
+        # live7 (2026-07-04): reweaves also cover the on-screen conversation.
+        panel_history=list(getattr(req, "panel_history", None) or []),
     )
 
     # v9.0: Wrap re-weave in build tracking so the builds tab updates.

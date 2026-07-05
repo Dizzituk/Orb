@@ -140,9 +140,11 @@ class Message(Base):
 
     # v2026-06-24: WHY this model was chosen — lets routing tell a genuine user
     # choice (PINNED, survives restart) from an automatic escalation (ELEVATED,
-    # must decay). PINNED: 'frontend_override','explicit_user','agentic_tab'.
-    # Auto: 'cognitive_auto','file_auto','image_auto','multimodal_auto',
-    # 'complexity_auto'. NULL = legacy/user rows = treated as non-pin (decays).
+    # must decay). PINNED: 'frontend_override','explicit_user'. Auto:
+    # 'agentic_tab' (v2026-07-03: demoted from pinned — tab presence is not a
+    # user choice; old pinned rows stop restoring), 'cognitive_auto',
+    # 'file_auto','image_auto','multimodal_auto','complexity_auto'.
+    # NULL = legacy/user rows = treated as non-pin (decays).
     model_source = Column(String(40), nullable=True)
     
     # v0.12.4: Store chain-of-thought reasoning from <THINKING> tags

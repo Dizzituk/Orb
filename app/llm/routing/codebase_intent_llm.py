@@ -33,10 +33,12 @@ import concurrent.futures
 import logging
 import os
 
+from app.llm.frontier_models import get_provider_default_model
+
 logger = logging.getLogger(__name__)
 
 # Lightweight model only — intent routing must never need a frontier model.
-_CLASSIFIER_MODEL = os.getenv("ORB_CODEBASE_INTENT_MODEL", "gpt-5-mini")
+_CLASSIFIER_MODEL = os.getenv("ORB_CODEBASE_INTENT_MODEL") or get_provider_default_model("openai", strict=False)
 # Hard per-call cap (forwarded to the LLM call AND used as the wait bound).
 _LLM_CALL_TIMEOUT = float(os.getenv("ORB_CODEBASE_INTENT_TIMEOUT", "5"))
 

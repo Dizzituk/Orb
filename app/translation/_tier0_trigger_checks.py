@@ -273,20 +273,13 @@ def check_spec_gate_trigger(text: str) -> Tier0RuleResult:
     """Special handler for Spec Gate (validation) triggers."""
     text_lower = _strip_astra(text).lower()
 
-    simple_affirmatives = [
-        "yes", "yes please", "yes, please", "yep", "yeah",
-        "sure", "go ahead", "do it", "proceed", "send it",
-        "ok", "okay", "affirmative", "confirmed", "confirm", "y",
-    ]
-
-    if text_lower in simple_affirmatives:
-        return Tier0RuleResult(
-            matched=True,
-            intent=CanonicalIntent.SEND_TO_SPEC_GATE,
-            confidence=0.95,
-            rule_name="specgate_affirmative",
-            reason=f"Spec Gate affirmative confirmation: '{text_lower}'",
-        )
+    # Bare affirmatives ("yes", "okay", "do it", …) are deliberately NOT
+    # handled here. They are contextual: a real spec-gate confirmation is
+    # consumed by translator Step 0 (ConfirmationState.has_pending) BEFORE
+    # tier0 runs, so any bare affirmative reaching this function has nothing
+    # pending and must fall through to normal chat. Removed 2026-07-03 after
+    # a live bridge incident: "Yes please" (accepting an unrelated offer)
+    # resolved to SEND_TO_SPEC_GATE and hit the capability gate, twice.
 
     exact_phrases = [
         "critical architecture",

@@ -147,7 +147,13 @@ def _inject_tools(
             if _needs_tools:
                 import os as _os
                 _tool_provider = _os.getenv("TOOL_CHAT_PROVIDER", "google")
-                _tool_model = _os.getenv("TOOL_CHAT_MODEL", "gemini-3.1-pro-preview-customtools")
+                _tool_model = _os.getenv("TOOL_CHAT_MODEL")
+                if not _tool_model:
+                    try:
+                        from app.llm.frontier_models import get_role_model as _get_role_model
+                        _tool_model = _get_role_model("MULTIMODAL")[1]
+                    except Exception:
+                        _tool_model = ""
                 if is_tool_eligible(_tool_provider, _tool_model):
                     print(f"[TOOLS] Context needs tools but {provider}/{model} has none — "
                           f"swapping to {_tool_provider}/{_tool_model}")

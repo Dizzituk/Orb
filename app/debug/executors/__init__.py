@@ -74,6 +74,7 @@ from app.debug.executors.web_automation import (
     execute_web_current_state,
     execute_web_dom_snapshot,
     execute_web_navigate,
+    execute_web_wait_for,
     execute_web_click,
     execute_web_type,
     execute_web_scroll,
@@ -82,6 +83,9 @@ from app.debug.executors.web_automation import (
     execute_web_vision_check,
     execute_web_coursera_health,
     execute_web_coursera_progress,
+    execute_coursera_resume,
+    execute_coursera_read_lesson,
+    execute_coursera_next_item,
     execute_web_upload_file,
     execute_system_keys,
 )
@@ -122,10 +126,13 @@ __all__ = [
     # Web automation (logged-in browser sessions)
     "execute_web_list_sessions", "execute_web_open_session",
     "execute_web_current_state", "execute_web_dom_snapshot",
-    "execute_web_navigate", "execute_web_click", "execute_web_type",
+    "execute_web_navigate", "execute_web_wait_for",
+    "execute_web_click", "execute_web_type",
     "execute_web_scroll", "execute_web_extract_text",
     "execute_web_screenshot", "execute_web_vision_check",
     "execute_web_coursera_health", "execute_web_coursera_progress",
+    "execute_coursera_resume", "execute_coursera_read_lesson",
+    "execute_coursera_next_item",
     "execute_web_upload_file",
     "execute_system_keys",
     # Social media APIs (first-party HTTP integrations)

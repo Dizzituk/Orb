@@ -6,12 +6,14 @@
 # Last-renovated: 2026-06-12
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app.bridge import sentinel_alerts as bridge_sentinel_alerts
 from app.db import Base
 from app.sentinel import alerts
 from app.sentinel.models import (
@@ -94,6 +96,42 @@ def test_suppressed_hidden_from_default_views(db):
     assert active == {} or active.get("items") in ([], None)
     counts = alerts.alert_counts(db)
     assert counts["suppressed"] == 1 and counts["unacked"] == 0
+
+
+# ── severity floor (P0-1: phone feed noise fix) ──────────────────────────────
+
+def test_min_severity_none_returns_all(db):
+    _make(db, severity="low", rule_key="raw_ip")
+    _make(db, severity="severe", rule_key="new_process", remote="9.9.9.9:1")
+    rows = alerts.list_alerts(db)
+    assert {a.severity for a in rows} == {"low", "severe"}
+
+
+def test_min_severity_medium_excludes_low(db):
+    _make(db, severity="low", rule_key="raw_ip")
+    _make(db, severity="medium", rule_key="new_listen", remote="listen:9000")
+    _make(db, severity="severe", rule_key="new_process", remote="9.9.9.9:1")
+    rows = alerts.list_alerts(db, min_severity="medium")
+    assert {a.severity for a in rows} == {"medium", "severe"}
+
+
+def test_min_severity_severe_excludes_medium_and_low(db):
+    _make(db, severity="low", rule_key="raw_ip")
+    _make(db, severity="medium", rule_key="new_listen", remote="listen:9000")
+    _make(db, severity="severe", rule_key="new_process", remote="9.9.9.9:1")
+    rows = alerts.list_alerts(db, min_severity="severe")
+    assert {a.severity for a in rows} == {"severe"}
+
+
+def test_phone_feed_default_floor_drops_low(db, monkeypatch):
+    """GET /bridge/sentinel-alerts must never surface a `low` row (acceptance test)."""
+    monkeypatch.setattr(bridge_sentinel_alerts, "_PHONE_MIN_SEVERITY", "medium")
+    _make(db, severity="low", rule_key="raw_ip")
+    _make(db, severity="medium", rule_key="new_listen", remote="listen:9000")
+    rows = asyncio.run(bridge_sentinel_alerts.get_sentinel_alerts(db=db, _auth=True))
+    severities = {r.severity for r in rows}
+    assert "low" not in severities
+    assert "medium" in severities
 
 
 # ── ack / action lifecycle ───────────────────────────────────────────────────

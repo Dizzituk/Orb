@@ -348,8 +348,17 @@ def save_weaver_extraction(
     db: Session,
     build_project_id: str,
     extraction: dict,
+    job_class: str = "unknown",
 ) -> Optional[BuildProject]:
-    """Persist the trimmed Weaver extraction to the build project."""
+    """Persist the trimmed Weaver extraction to the build project.
+
+    v3.3 (2026-07-04): job_class param — the Weaver's semantic verdict, parsed
+    from the RAW weaver output by the stage hook. greenfield_new_app SKIPS the
+    keyword target re-resolve below and CLEARS any built-in target already
+    stamped on the row: "desktop app"/"PC" chatter in a new-game ramble scored
+    astra-frontend and sent the job into the sandbox lane. Scoped dynamic
+    (non-built-in) targets are kept — the user chose those.
+    """
     try:
         project = build_service.get_project(db, build_project_id)
         if not project:
@@ -361,6 +370,35 @@ def save_weaver_extraction(
             "[pipeline_bridge] Saved Weaver extraction for %s (%d keys)",
             build_project_id, len(extraction),
         )
+
+        # v3.3 (2026-07-04): greenfield guard — no keyword stamping for
+        # brand-new-app jobs, and undo any earlier keyword-scored stamp.
+        if job_class == "greenfield_new_app":
+            try:
+                from app.pipeline_v2.target_registry import BUILTIN_PROFILE_IDS
+                if project.build_target_id in BUILTIN_PROFILE_IDS:
+                    logger.info(
+                        "[pipeline_bridge] v3.3 GREENFIELD job — clearing "
+                        "keyword-scored target %s", project.build_target_id,
+                    )
+                    print(
+                        f"[PIPELINE_BRIDGE] v3.3 GREENFIELD job — cleared "
+                        f"keyword-scored target {project.build_target_id}"
+                    )
+                    project.build_target_id = None
+                    project.target_path = None
+                    project.target_ids = None
+                    project.target_group_id = None
+                    db.commit()
+                    db.refresh(project)
+                else:
+                    logger.info(
+                        "[pipeline_bridge] v3.3 GREENFIELD job — skipping keyword "
+                        "target re-resolve (target=%s)", project.build_target_id,
+                    )
+            except Exception as _gf_err:
+                logger.debug("[pipeline_bridge] v3.3 greenfield guard failed: %s", _gf_err)
+            return project
 
         # v3.0: Re-resolve build target from Weaver output.
         # The initial target was resolved from the trigger message (e.g. "send to weaver")

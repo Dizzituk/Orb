@@ -67,6 +67,9 @@ class SpecFlowState:
     weaver_spec_id: Optional[str] = None
     weaver_job_description: Optional[str] = None
     weaver_vision_context: Optional[str] = None
+    # 2026-07-04 vision upgrade: paths of the user's ORIGINAL uploaded images
+    # (extracted from [image_ref: ...] markers) — SpecGate re-analyses them.
+    weaver_image_refs: List[str] = field(default_factory=list)
     weaver_pending_questions: Dict[str, str] = field(default_factory=dict)
     weaver_answer_keywords: Dict[str, List[str]] = field(default_factory=dict)
     weaver_captured_answers: Dict[str, str] = field(default_factory=dict)
@@ -91,6 +94,7 @@ class SpecFlowState:
             "weaver_spec_id": self.weaver_spec_id,
             "weaver_job_description": self.weaver_job_description,
             "weaver_vision_context": self.weaver_vision_context,
+            "weaver_image_refs": self.weaver_image_refs,
             "weaver_pending_questions": self.weaver_pending_questions,
             "weaver_answer_keywords": self.weaver_answer_keywords,
             "weaver_captured_answers": self.weaver_captured_answers,
@@ -117,6 +121,7 @@ class SpecFlowState:
             weaver_spec_id=data.get("weaver_spec_id"),
             weaver_job_description=data.get("weaver_job_description"),
             weaver_vision_context=data.get("weaver_vision_context"),
+            weaver_image_refs=data.get("weaver_image_refs", []) or [],
             weaver_pending_questions=data.get("weaver_pending_questions", {}),
             weaver_answer_keywords=data.get("weaver_answer_keywords", {}),
             weaver_captured_answers=data.get("weaver_captured_answers", {}),
@@ -185,6 +190,7 @@ def start_weaver_flow(
     weaver_spec_id: str,
     weaver_job_description: Optional[str] = None,
     vision_context: Optional[str] = None,
+    image_refs: Optional[List[str]] = None,
 ) -> SpecFlowState:
     existing = get_active_flow(project_id)
     if existing:
@@ -192,10 +198,11 @@ def start_weaver_flow(
         existing.weaver_spec_id = weaver_spec_id
         existing.weaver_job_description = weaver_job_description
         existing.weaver_vision_context = vision_context
+        existing.weaver_image_refs = list(image_refs or [])
         set_flow_state(existing)
-        print(f"[FLOW_STATE] Updated flow for project {project_id}, preserving prefs: {list(existing.confirmed_design_prefs.keys())}, hashes: {len(existing.woven_user_hashes)}, vision_context: {len(vision_context or '')} chars")
+        print(f"[FLOW_STATE] Updated flow for project {project_id}, preserving prefs: {list(existing.confirmed_design_prefs.keys())}, hashes: {len(existing.woven_user_hashes)}, vision_context: {len(vision_context or '')} chars, image_refs: {len(image_refs or [])}")
         return existing
-    state = SpecFlowState(project_id=project_id, stage=SpecFlowStage.AWAITING_SPEC_GATE_CONFIRM, weaver_spec_id=weaver_spec_id, weaver_job_description=weaver_job_description, weaver_vision_context=vision_context)
+    state = SpecFlowState(project_id=project_id, stage=SpecFlowStage.AWAITING_SPEC_GATE_CONFIRM, weaver_spec_id=weaver_spec_id, weaver_job_description=weaver_job_description, weaver_vision_context=vision_context, weaver_image_refs=list(image_refs or []))
     set_flow_state(state)
     return state
 

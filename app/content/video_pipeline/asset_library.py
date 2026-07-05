@@ -1,8 +1,8 @@
 # FILE: app/content/video_pipeline/asset_library.py
 # Purpose: Video Asset Library — semantic search over previously downloaded clips.
 # Called-by: app.content.video_pipeline.asset_resolver, app.content.video_pipeline.bake_segment, app.content.video_pipeline.orchestrator
-# Depends-on: app.db, app.embeddings.service, app.memory.rag_entries_model
-# Last-renovated: 2026-06-11
+# Depends-on: app.db, app.embeddings.provider_router, app.embeddings.visual_queue, app.memory.rag_entries_model
+# Last-renovated: 2026-07-02 (LANE E: multimodal role + model stamps + ingest queue fallback)
 """
 Video Asset Library — semantic search over previously downloaded clips.
 
@@ -11,7 +11,13 @@ here with its visual description, keywords, and a Gemini embedding.
 Future pipeline runs search the library FIRST before calling any API.
 
 Uses the existing rag_entries table with domain='video_asset'.
-Embeddings are Gemini Embedding 2 (1536d), same as the rest of RAG.
+LANE E: this is the VISUAL collection — embeds ride the multimodal role
+(EMBEDDINGS_MULTIMODAL_PROVIDER: gemini today, local after the bench pick).
+Rows are stamped with embedding_model/embedding_dims; search only scores
+rows in the active model-space. When the local multimodal model is not
+resident (it loads only during BACKGROUND_INGEST), ingest queues the item
+(app/embeddings/visual_queue.py) and the vector lands at the next idle
+drain — by design.
 
 Enhanced with rich clip analysis: when clips are indexed, Gemini
 analyzes the actual visual content and stores a detailed description,
@@ -140,19 +146,15 @@ def index_asset(
     if not embed_text:
         embed_text = f"video clip from {source}"
 
-    # Generate embedding
+    # Generate embedding via the multimodal role (LANE E). None while the
+    # local model is unloaded — the entry is still stored and the item is
+    # queued for the next BACKGROUND_INGEST drain.
+    embedding = None
     try:
-        from app.embeddings.service import generate_embedding
-        embedding = generate_embedding(embed_text, task_type="RETRIEVAL_DOCUMENT")
-        if not embedding:
-            logger.warning(
-                f"[asset_library] Failed to generate embedding for "
-                f"{segment_id}"
-            )
-            return False
+        from app.embeddings.provider_router import embed_multimodal
+        embedding = embed_multimodal(text=embed_text)
     except Exception as e:
         logger.warning(f"[asset_library] Embedding generation failed: {e}")
-        return False
 
     # Build chunk text with all metadata for keyword fallback
     chunk_data = {
@@ -178,13 +180,18 @@ def index_asset(
 
     chunk_text = json.dumps(chunk_data)
 
-    # Store in rag_entries
+    # Store in rag_entries (vector may be pending — see queue below)
     try:
         from app.db import SessionLocal
         from app.memory.rag_entries_model import RAGEntry
+        from app.embeddings.provider_router import multimodal_write_spec
+        from app.embeddings.visual_queue import enqueue_visual_item
 
+        spec = multimodal_write_spec()
         # Pack embedding as binary (same format as other RAG entries)
-        embedding_bytes = struct.pack(f"{len(embedding)}f", *embedding)
+        embedding_bytes = (
+            struct.pack(f"{len(embedding)}f", *embedding) if embedding else None
+        )
 
         with SessionLocal() as db:
             # Check for duplicate (same file_path)
@@ -198,7 +205,15 @@ def index_asset(
                 # If we have new analysis data, update the existing entry
                 if clip_analysis:
                     existing.chunk_text = chunk_text
-                    existing.embedding = embedding_bytes
+                    if embedding_bytes:
+                        existing.embedding = embedding_bytes
+                        existing.embedding_model = spec.label
+                        existing.embedding_dims = len(embedding)
+                    else:
+                        enqueue_visual_item(
+                            db, "video_asset", ref_id=existing.id,
+                            text=embed_text, payload={"file_path": file_path},
+                        )
                     db.commit()
                     logger.info(
                         f"[asset_library] Updated with rich analysis: "
@@ -216,11 +231,20 @@ def index_asset(
                 file_path=file_path,
                 chunk_text=chunk_text,
                 embedding=embedding_bytes,
+                embedding_model=spec.label if embedding_bytes else None,
+                embedding_dims=len(embedding) if embedding_bytes else None,
                 status="ACTIVE",
                 ingest_source="video_pipeline",
             )
             db.add(entry)
             db.commit()
+
+            if not embedding_bytes:
+                # Local multimodal model not resident — queue for idle drain.
+                enqueue_visual_item(
+                    db, "video_asset", ref_id=entry.id,
+                    text=embed_text, payload={"file_path": file_path},
+                )
 
         quality = ""
         if clip_analysis:
@@ -258,16 +282,22 @@ def search_library(
     Returns:
         List of dicts with file_path, similarity, and metadata
     """
-    # Generate query embedding
+    # Generate query embedding in the multimodal space (LANE E). With the
+    # local provider this needs the worker resident — a cold query nudges the
+    # orchestrator toward BACKGROUND_INGEST and returns empty this attempt
+    # (cross-modal queries accept cold-load latency or queue — by design).
     try:
-        from app.embeddings.service import generate_embedding
-        query_embedding = generate_embedding(
-            query, task_type="RETRIEVAL_QUERY",
-        )
-        if not query_embedding:
-            return []
+        from app.embeddings.provider_router import embed_multimodal
+        query_embedding = embed_multimodal(text=query, task_type="RETRIEVAL_QUERY")
     except Exception as e:
         logger.warning(f"[asset_library] Query embedding failed: {e}")
+        return []
+    if not query_embedding:
+        try:
+            from app.gpu.orchestrator import request_background_ingest
+            request_background_ingest(reason="visual query with model unloaded")
+        except Exception:
+            pass
         return []
 
     # Search rag_entries
@@ -275,11 +305,15 @@ def search_library(
         from app.db import SessionLocal
         from app.memory.rag_entries_model import RAGEntry
 
+        from app.embeddings.provider_router import multimodal_write_spec
+
         with SessionLocal() as db:
+            # LANE E hard rule: only score rows in the active model-space.
             entries = db.query(RAGEntry).filter(
                 RAGEntry.domain == VIDEO_ASSET_DOMAIN,
                 RAGEntry.status == "ACTIVE",
                 RAGEntry.embedding.isnot(None),
+                RAGEntry.embedding_model == multimodal_write_spec().label,
             ).all()
 
             if not entries:

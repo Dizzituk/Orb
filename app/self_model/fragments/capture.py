@@ -2,7 +2,7 @@
 # Purpose: Capture pipeline — user message → fragment.
 # Called-by: app.bridge.identity_hook, app.memory.integration
 # Depends-on: app.embeddings.gemini_provider, app.self_model.fragments.classifier, app.self_model.fragments.cluster, app.self_model.fragments.models (+1 more)
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-07-03 (reminder/calendar turns never become fragments — the reminders table is their ledger)
 """
 Capture pipeline — user message → fragment.
 
@@ -38,6 +38,20 @@ _MIN_LEN = 8
 # to keep the store signal-dense.
 _NOISE_PASSIVE_MAX_LEN = 40
 _VOICE_SOURCES = {"bridge", "voice_ambient", "chat-and-speak", "bridge-tts"}
+
+
+def _is_reminder_turn(message: str) -> bool:
+    """True for reminder/calendar operations ("remind me…", "set a reminder…",
+    "put it on the calendar"). The reminders table is the ledger and single
+    source of truth for these — embedding them as fragments is junk that
+    recall can resurface later (2026-07-03, the "I am amazing" ghost).
+    Reuses the invocation classifier's rule so the phrasing definition lives
+    in one place. Never raises."""
+    try:
+        from app.invocation.classifier import classify as _intent_classify
+        return _intent_classify(message).matched_rule == "remind_or_schedule"
+    except Exception:
+        return False
 
 
 def _looks_like_voice_noise(
@@ -77,6 +91,16 @@ def capture_fragment(
     if not message or len(message.strip()) < _MIN_LEN:
         return {"skipped": "too_short"}
 
+    # 0. Reminder/calendar turns never become fragments — the reminders table
+    # is their ledger; this guard covers BOTH chat entry-points (desktop
+    # integration.py and the Bridge identity_hook path) in one place.
+    if _is_reminder_turn(message):
+        logger.info(
+            "[fragment_capture] skipped reminder/calendar turn: %r",
+            message.strip()[:60],
+        )
+        return {"skipped": "reminder_turn"}
+
     # 1. Classify
     signal, claim = classify(message)
 
@@ -91,13 +115,14 @@ def capture_fragment(
         )
         return {"skipped": "voice_noise"}
 
-    # 2. Embed
+    # 2. Embed (LANE E: router picks gemini/local per env; stamp the label
+    # actually used so clustering can partition by model-space)
     embedding = None
     embedding_model = ""
     try:
-        from app.embeddings.gemini_provider import generate_embedding, GEMINI_EMBEDDING_MODEL
-        embedding = generate_embedding(message)
-        embedding_model = GEMINI_EMBEDDING_MODEL if embedding else ""
+        from app.embeddings.provider_router import embed_text, text_write_spec
+        embedding = embed_text(message)
+        embedding_model = text_write_spec().label if embedding else ""
     except Exception as exc:
         logger.debug("[fragment_capture] embedding failed: %s", exc)
 

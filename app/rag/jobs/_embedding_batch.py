@@ -25,7 +25,7 @@ from app.rag.jobs._embedding_job_utils_6 import (
     SQLITE_LOCK_MAX_RETRIES,
     _is_sqlite_lock_error,
 )
-from app.rag.jobs._embedding_job_utils_7 import EMBEDDING_MODEL, compute_content_hash
+from app.rag.jobs._embedding_job_utils_7 import embedding_model_label, compute_content_hash
 
 if TYPE_CHECKING:
     from app.rag.jobs.embedding_job import EmbeddingJobStatus
@@ -100,7 +100,7 @@ def embed_batch(
     # Call embedding API
     logger.info("[embedding_job] Calling embeddings API for %d texts...", len(texts))
     try:
-        vectors = get_embeddings(texts, model=EMBEDDING_MODEL)
+        vectors = get_embeddings(texts, model=embedding_model_label())
         logger.info("[embedding_job] Got %d vectors", len(vectors))
     except Exception as e:
         logger.error("[embedding_job] API call failed: %s", e)
@@ -115,7 +115,7 @@ def embed_batch(
                 source_id=chunk.id, content=texts[i], embedding=vectors[i],
             )
             chunk.embedded = True
-            chunk.embedding_model = EMBEDDING_MODEL
+            chunk.embedding_model = embedding_model_label()
             chunk.embedded_at = now
             chunk.embedded_content_hash = chunk.content_hash
             status.embedded_chunks += 1

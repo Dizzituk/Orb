@@ -2,31 +2,31 @@
 # Purpose: Model Router: Routes debug queries to the appropriate LLM based on complexity.
 # Called-by: app.debug.debug_chat
 # Depends-on: app.debug.debug_model_config (stdlib/third-party otherwise)
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-07-02
 """
 Model Router: Routes debug queries to the appropriate LLM based on complexity.
 
-Tier 1 (Triage):  OPENAI_DEFAULT_MODEL (env) — log reading, status, simple diagnostics.
-Tier 2 (Analysis): Claude Sonnet — root cause analysis, multi-file reasoning.
-Tier 3 (Agentic):  Claude Sonnet — implementing fixes, running commands, iterating.
+Tier 1 (Triage):  cheap default tier — log reading, status, simple diagnostics.
+Tier 2 (Analysis): reasoning tier — root cause analysis, multi-file reasoning.
+Tier 3 (Agentic):  reasoning tier + tools — implementing fixes, running commands.
 
 Escalation is automatic based on query classification and conversation context.
+
+Provider + model resolve AT CALL TIME through debug_model_config (2026-07-02):
+DEBUG_PROVIDER selects the openai/anthropic column, and .env edits via the
+settings UI apply on the next message — no restart. (Previously TIER_MODELS was
+built at import, freezing models at boot and hardcoding provider="openai".)
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional
 
-from app.debug.debug_model_config import (
-    default_model,
-    get_debug_agentic_model,
-    get_debug_analysis_model,
-)
+from app.debug.debug_model_config import resolve_debug_model
 
 logger = logging.getLogger(__name__)
 
@@ -56,23 +56,24 @@ class RoutingDecision:
 # MODEL CONFIGURATION
 # =============================================================================
 
-TIER_MODELS = {
-    DebugTier.TRIAGE: {
-        "provider": "openai",
-        "model": default_model(),
-    },
-    # v3 (2026-06-17): Analysis + Agentic models sourced from ENV (spec section 3) --
-    # DEBUG_ANALYSIS_MODEL / DEBUG_AGENTIC_MODEL -> DEBUG_CHAT_MODEL ->
-    # OPENAI_DEFAULT_MODEL. No hardcoded model IDs at this selection site.
-    DebugTier.ANALYSIS: {
-        "provider": "openai",
-        "model": get_debug_analysis_model(),
-    },
-    DebugTier.AGENTIC: {
-        "provider": "openai",
-        "model": get_debug_agentic_model(),
-    },
+# Tier -> debug_model_config kind. Resolution happens per call in
+# tier_model_config(); nothing here freezes at import.
+_TIER_KINDS = {
+    DebugTier.TRIAGE: "default",
+    DebugTier.ANALYSIS: "analysis",
+    DebugTier.AGENTIC: "agentic",
 }
+
+
+def tier_model_config(tier: DebugTier) -> dict:
+    """Live {provider, model} for a tier, resolved from env at CALL time.
+
+    openai column: the exact legacy chains (DEBUG_ANALYSIS_MODEL /
+    DEBUG_AGENTIC_MODEL -> DEBUG_CHAT_MODEL -> OPENAI_DEFAULT_MODEL; triage on
+    OPENAI_DEFAULT_MODEL). anthropic column when DEBUG_PROVIDER=anthropic.
+    """
+    provider, model = resolve_debug_model(_TIER_KINDS.get(tier, "default"))
+    return {"provider": provider, "model": model}
 
 # Reasoning effort bound to tier. Passed through to providers via the
 # registry's `reasoning` parameter. Triage stays cheap; Analysis + Agentic
@@ -160,8 +161,9 @@ _ANALYSIS_RX = [re.compile(p, re.IGNORECASE) for p in ANALYSIS_PATTERNS]
 
 def _make_decision(tier: DebugTier, reason: str, enable_tools: bool = False) -> RoutingDecision:
     """Build a RoutingDecision from a tier — single source of truth for
-    model + reasoning binding. Adding a new tier means one place to update."""
-    cfg = TIER_MODELS[tier]
+    model + reasoning binding. Adding a new tier means one place to update.
+    Provider + model come from the call-time resolver, never a literal."""
+    cfg = tier_model_config(tier)
     return RoutingDecision(
         tier=tier,
         provider=cfg["provider"],

@@ -82,9 +82,22 @@ logger = logging.getLogger(__name__)
 # v0.15.1: FRONTIER MODEL CONFIGURATION
 # ============================================================================
 
-GEMINI_FRONTIER_MODEL_ID = os.getenv("GEMINI_FRONTIER_MODEL_ID", "gemini-3-pro-preview")
-ANTHROPIC_FRONTIER_MODEL_ID = os.getenv("ANTHROPIC_FRONTIER_MODEL_ID", "claude-opus-4-5-20250514")
-OPENAI_FRONTIER_MODEL_ID = os.getenv("OPENAI_FRONTIER_MODEL_ID", "gpt-4.1")
+# LANE D (2026-07-02): literal fallbacks removed — the three *_FRONTIER_MODEL_ID
+# vars are seeded in .env with the old effective values. Module-level constants
+# (from-imported by routing/core and others), so env changes here are
+# RESTART-GATED — flagged in the /settings/models audit.
+# Ensure .env is loaded even outside the app boot path (tests/scripts) — the
+# same pattern as seed_tiers/gemini_vision/model_env. override=False.
+try:  # pragma: no cover - environment plumbing
+    from dotenv import load_dotenv as _laned_load_dotenv
+    _laned_load_dotenv()
+except Exception:
+    pass
+from app.llm.frontier_models import get_provider_default_model as _provider_default
+
+GEMINI_FRONTIER_MODEL_ID = os.getenv("GEMINI_FRONTIER_MODEL_ID") or _provider_default("google", strict=False)
+ANTHROPIC_FRONTIER_MODEL_ID = os.getenv("ANTHROPIC_FRONTIER_MODEL_ID") or _provider_default("anthropic", strict=False)
+OPENAI_FRONTIER_MODEL_ID = os.getenv("OPENAI_FRONTIER_MODEL_ID") or _provider_default("openai", strict=False)
 
 
 # ============================================================================
@@ -270,16 +283,16 @@ def classify_and_route(
 
 
 def get_model_config() -> Dict[str, str]:
-    """Get current model configuration."""
+    """Get current model configuration (env-only; LANE D — no literal fallbacks)."""
     return {
-        "openai": os.getenv("OPENAI_MODEL_LIGHT_CHAT", "gpt-4.1-mini"),
-        "openai_heavy": os.getenv("OPENAI_MODEL_HEAVY_TEXT", "gpt-4.1"),
-        "anthropic_sonnet": os.getenv("ANTHROPIC_SONNET_MODEL", "claude-sonnet-4-5-20250929"),
-        "anthropic_opus": os.getenv("ANTHROPIC_OPUS_MODEL", "claude-opus-4-5-20250514"),
-        "gemini_fast": os.getenv("GEMINI_VISION_MODEL_FAST", "gemini-2.0-flash"),
-        "gemini_complex": os.getenv("GEMINI_VISION_MODEL_COMPLEX", "gemini-2.5-pro"),
-        "gemini_video": os.getenv("GEMINI_VIDEO_HEAVY_MODEL", "gemini-3.0-pro-preview"),
-        "gemini_critic": os.getenv("GEMINI_OPUS_CRITIC_MODEL", "gemini-3.0-pro-preview"),
+        "openai": os.getenv("OPENAI_MODEL_LIGHT_CHAT") or _provider_default("openai", strict=False),
+        "openai_heavy": os.getenv("OPENAI_MODEL_HEAVY_TEXT") or _provider_default("openai", strict=False),
+        "anthropic_sonnet": os.getenv("ANTHROPIC_SONNET_MODEL") or _provider_default("anthropic", strict=False),
+        "anthropic_opus": os.getenv("ANTHROPIC_OPUS_MODEL") or _provider_default("anthropic", strict=False),
+        "gemini_fast": os.getenv("GEMINI_VISION_MODEL_FAST") or _provider_default("google", strict=False),
+        "gemini_complex": os.getenv("GEMINI_VISION_MODEL_COMPLEX") or _provider_default("google", strict=False),
+        "gemini_video": os.getenv("GEMINI_VIDEO_HEAVY_MODEL") or _provider_default("google", strict=False),
+        "gemini_critic": os.getenv("GEMINI_OPUS_CRITIC_MODEL") or _provider_default("google", strict=False),
         "gemini_frontier": GEMINI_FRONTIER_MODEL_ID,
         "anthropic_frontier": ANTHROPIC_FRONTIER_MODEL_ID,
         "openai_frontier": OPENAI_FRONTIER_MODEL_ID,

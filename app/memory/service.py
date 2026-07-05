@@ -453,7 +453,15 @@ def create_message(db: Session, data: schemas.MessageCreate) -> models.Message:
 
     db.commit()
     db.refresh(msg)
-    
+
+    # Reminder announces (2026-07-03): provider="reminder" rows are ledger
+    # deliveries the scheduler writes at fire time — transcript lines, not
+    # conversation knowledge. Taz's rule: nothing reminder-shaped is promoted
+    # into memory, so skip RAG indexing, the spine, and the Nat jobs entirely
+    # (the recency touch above still applies — the chat should float).
+    if (data.provider or "") == "reminder":
+        return msg
+
     _index_message_if_enabled(db, msg)
 
     # CONV-MEMORY-002: index this message into the within-conversation spine

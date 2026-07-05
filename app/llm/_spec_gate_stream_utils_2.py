@@ -1,7 +1,7 @@
 # Purpose: spec gate stream utils 2
 # Called-by: app.llm.spec_gate_stream
-# Depends-on: app.llm.spec_flow_state, app.llm.stage_models, app.specs, app.specs.service
-# Last-renovated: 2026-06-11
+# Depends-on: app.llm.spec_flow_state, app.llm.stage_models, app.llm.weaver_job_class, app.specs, app.specs.service
+# Last-renovated: 2026-07-04
 from __future__ import annotations
 import json
 import logging
@@ -78,6 +78,25 @@ def _get_weaver_vision_context_from_flow(project_id: int) -> Optional[str]:
         logger.debug("[spec_gate_stream] get_active_flow failed for vision context: %s", e)
     return None
 
+
+def _get_weaver_image_refs_from_flow(project_id: int) -> list:
+    """Original uploaded-image paths carried by the Weaver (2026-07-04 vision
+    upgrade) — SpecGate re-analyses these at spec time."""
+    if not _FLOW_STATE_AVAILABLE or not get_active_flow:
+        return []
+    try:
+        flow = get_active_flow(project_id)
+        if flow:
+            refs = list(getattr(flow, "weaver_image_refs", None) or [])
+            if refs:
+                logger.info(
+                    "[spec_gate_stream] Found %d image ref(s) in flow state", len(refs),
+                )
+            return refs
+    except Exception as e:
+        logger.debug("[spec_gate_stream] get_active_flow failed for image refs: %s", e)
+    return []
+
 def _load_latest_weaver_spec_json(db: Session, project_id: int) -> tuple[Optional[dict], dict]:
     """Load Weaver output - checks flow state first (v3.0), then DB."""
     
@@ -85,11 +104,20 @@ def _load_latest_weaver_spec_json(db: Session, project_id: int) -> tuple[Optiona
     job_description = _get_weaver_job_description_from_flow(project_id)
     if job_description:
         logger.info("[spec_gate_stream] Found Weaver job description in flow state (%d chars)", len(job_description))
+        # JOB 3 (2026-07-04): strict-parse the Weaver "Job class" line so
+        # SpecGate can route greenfield jobs without keyword guessing.
+        # Missing/malformed line -> "unknown" (older Weaver outputs).
+        try:
+            from app.llm.weaver_job_class import parse_weaver_job_class
+            job_class = parse_weaver_job_class(job_description)
+        except Exception:
+            job_class = "unknown"
         # Return job description wrapped in a format Spec Gate can use
         return {
             "job_description": job_description,
             "source": "weaver_simple",
             "title": "Job Description from Weaver",
+            "job_class": job_class,
         }, {"weaver_source": "flow_state"}
     
     # Fallback: Load from DB (v2.x behaviour)

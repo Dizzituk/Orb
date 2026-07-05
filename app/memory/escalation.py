@@ -67,17 +67,30 @@ ESCALATION_CHAIN = {
 
 # Map model targets to provider/model combos
 # v2.0: Added gemini_deep tier, reads from env for easy model swaps
+# v2.1 (2026-07-02): de-hardcoded — gemini_deep falls back to the MULTIMODAL
+# role model and "specialist" resolves the IMAGE_VISION role (the old
+# hardcoded "gemini-pro" id no longer exists upstream). Env reads happen at
+# import time (restart-gated); try/except keeps import safe if env is bare.
 import os as _os
+try:
+    from app.llm.frontier_models import get_role_model as _get_role_model
+    _deep_model = _os.getenv("CHAT_DEEP_MODEL") or _get_role_model("MULTIMODAL")[1]
+    _specialist_provider, _specialist_model = _get_role_model("IMAGE_VISION")
+except Exception:  # env-only resolver unavailable/unconfigured — fail soft
+    logger.error("[escalation] role-model resolution failed at import", exc_info=True)
+    _deep_model = _os.getenv("CHAT_DEEP_MODEL") or _os.getenv("MULTIMODAL_MODEL", "")
+    _specialist_provider = _os.getenv("IMAGE_VISION_PROVIDER", "google")
+    _specialist_model = _os.getenv("IMAGE_VISION_MODEL", "")
 MODEL_TARGET_MAP = {
     "local": {"provider": "local", "model": "ollama"},
     "local_rag": {"provider": "local", "model": "ollama", "rag": True},
     "sonnet": {"provider": "anthropic", "model": "sonnet"},
     "gemini_deep": {
         "provider": _os.getenv("CHAT_DEEP_PROVIDER", "google"),
-        "model": _os.getenv("CHAT_DEEP_MODEL", "gemini-3.1-pro-preview-customtools"),
+        "model": _deep_model,
     },
     "opus": {"provider": "anthropic", "model": "opus"},
-    "specialist": {"provider": "google", "model": "gemini-pro"},
+    "specialist": {"provider": _specialist_provider, "model": _specialist_model},
 }
 
 

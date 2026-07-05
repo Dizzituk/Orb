@@ -5,15 +5,16 @@
 #          Cheap, .env-sourced model; ALWAYS falls back to the raw serialised reports.
 # Called-by: app.debug.orchestrator.spawn_tool (terminal result of a fan-out)
 # Depends-on: app.providers.registry (llm_call), app.debug.debug_model_config
-# Last-renovated: 2026-06-17
+# Last-renovated: 2026-07-02 (provider from resolve_debug_model — DEBUG_PROVIDER-aware)
 """report_compiler -- digest sub-agent reports into a short orchestrator brief.
 
 Phase-narration spec (debug-visibility), mechanism step 3: "Before results reach the
 brain, a compiler agent digests N agent/worker outputs into one short brief. The brain
 reflects on the digest, not the raw dumps." This is that compiler.
 
-Model: get_compiler_model() -- DEBUG_COMPILER_MODEL, falling back to the cheap executor
-tier (gpt-5.4-mini); no hardcoded id. The call is non-streaming and bounded. If it
+Model: resolve_debug_model("compiler") -- DEBUG_COMPILER_MODEL chaining to the cheap
+executor tier on the active provider column; no hardcoded id. The call is non-streaming
+and bounded. If it
 fails for ANY reason -- model down, timeout, empty, exception -- we return the original
 serialised reports unchanged, so the fan-out result still reaches the brain (never a
 broken loop, never a silent drop).
@@ -53,12 +54,12 @@ async def compile_reports(serialised_reports: str) -> str:
         return serialised_reports
 
     try:
-        from app.debug.debug_model_config import get_compiler_model
+        from app.debug.debug_model_config import resolve_debug_model
         from app.providers.registry import llm_call
 
-        model = get_compiler_model()
+        provider, model = resolve_debug_model("compiler")
         result = await llm_call(
-            provider_id="openai",
+            provider_id=provider,
             model_id=model,
             messages=[{"role": "user", "content": src[:_MAX_INPUT]}],
             system_prompt=_COMPILER_SYSTEM,
@@ -72,8 +73,8 @@ async def compile_reports(serialised_reports: str) -> str:
             brief = (getattr(result, "content", "") or "").strip()
             if brief:
                 logger.info(
-                    "[report_compiler] digested %d -> %d chars (model=%s)",
-                    len(src), len(brief), model,
+                    "[report_compiler] digested %d -> %d chars (model=%s/%s)",
+                    len(src), len(brief), provider, model,
                 )
                 return brief
         logger.warning(

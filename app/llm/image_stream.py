@@ -62,7 +62,7 @@ async def generate_image_stream(
     primary = _get_provider()
     fallback = _get_fallback_provider()
     used_provider = primary
-    model_name = os.getenv("IMAGE_GEN_MODEL", "gpt-image-1.5")
+    model_name = os.getenv("IMAGE_GEN_MODEL", "")
     result = None
     synth_prompt: Optional[str] = None  # set in creative branch; saved on success
 
@@ -234,7 +234,7 @@ async def generate_image_stream(
             yield _sse_status(f"Primary failed, trying {fallback}...")
             result = await _generate_with_provider(fallback, prompt=synth_prompt, aspect_ratio=aspect_ratio)
             used_provider = fallback
-            model_name = os.getenv("IMAGE_GEN_FALLBACK_MODEL", "gemini-2.5-flash-image")
+            model_name = os.getenv("IMAGE_GEN_FALLBACK_MODEL", "")
 
     # =========================================================================
     # Stage 3: Emit results

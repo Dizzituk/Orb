@@ -2,7 +2,7 @@
 # Purpose: Cost dashboard API endpoint.
 # Called-by: main
 # Depends-on: app.cost.cost_budget, app.cost.cost_ledger, app.orchestrator.architecture_cache, app.pot_spec.spec_cache
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-07-04 (Derek phase 1: /report rollup + /pricing, null-safe tally)
 """
 Cost dashboard API endpoint.
 
@@ -13,12 +13,16 @@ Routes:
     GET /api/cost/summary   — Full spend summary (daily, monthly, by stage, by model)
     GET /api/cost/today     — Today's spend only
     GET /api/cost/budget    — Budget status (daily + monthly)
+    GET /api/cost/report    — Rollup by stage|model|job|day|provider (Derek phase 1)
+    GET /api/cost/pricing   — Active pricing table + its source file
+    POST /api/cost/probe    — Localhost-only: fire one cheap labelled call per stage (Gate 1)
+    POST /api/cost/probe/segmented — Localhost-only: two-file toy through the segmented builder (Gate 5)
 """
 
 from __future__ import annotations
 
 import logging
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Request
 
 logger = logging.getLogger(__name__)
 
@@ -159,17 +163,17 @@ async def get_cost_tally() -> dict:
         # Daily: today
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         daily_records = read_records_since(today_start)
-        daily_usd = sum(r.get("cost_usd", 0) for r in daily_records)
+        daily_usd = sum(r.get("cost_usd") or 0 for r in daily_records)
 
         # Weekly: last 7 days
         week_start = now - timedelta(days=7)
         weekly_records = read_records_since(week_start)
-        weekly_usd = sum(r.get("cost_usd", 0) for r in weekly_records)
+        weekly_usd = sum(r.get("cost_usd") or 0 for r in weekly_records)
 
         # Monthly: this calendar month
         month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         monthly_records = read_records_since(month_start)
-        monthly_usd = sum(r.get("cost_usd", 0) for r in monthly_records)
+        monthly_usd = sum(r.get("cost_usd") or 0 for r in monthly_records)
 
         return {
             "daily_gbp": round(daily_usd * usd_to_gbp, 2),
@@ -183,3 +187,79 @@ async def get_cost_tally() -> dict:
     except Exception as e:
         logger.error("[cost_dashboard] Tally failed: %s", e)
         return {"daily_gbp": 0, "weekly_gbp": 0, "monthly_gbp": 0, "error": str(e)}
+
+
+@router.get("/report")
+async def get_cost_report(
+    by: str = "stage",
+    days: int = 7,
+    job_id: str = "",
+) -> dict:
+    """Rollup of ledger spend by stage, model, job, day or provider (Derek phase 1)."""
+    try:
+        from app.cost.cost_report import rollup
+
+        return rollup(
+            by=by,
+            days=days if days > 0 else None,
+            job_id=job_id or None,
+        )
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error("[cost_dashboard] Report failed: %s", e)
+        return {"error": str(e)}
+
+
+@router.post("/probe")
+async def run_cost_probe(request: Request) -> dict:
+    """Derek phase 1 gate probe — one cheap real call per stage label.
+
+    Localhost-only (it spends real money — well under a cent total) and runs
+    in-process, where the encrypted key store has been synced into the env.
+    """
+    client_host = request.client.host if request.client else ""
+    if client_host not in ("127.0.0.1", "::1", "localhost"):
+        raise HTTPException(403, "Probe is localhost-only")
+    try:
+        from app.cost.cost_probe import run_probe
+        return await run_probe()
+    except Exception as e:
+        logger.error("[cost_dashboard] Probe failed: %s", e)
+        return {"green": False, "error": str(e)}
+
+
+@router.post("/probe/segmented")
+async def run_segmented_probe(request: Request) -> dict:
+    """Derek phase 5 gate probe — a real two-file CLI toy built end-to-end
+    by the segmented builder on the configured stand-ins. Localhost-only
+    (spends real money — a few HANDS-tier worker calls, pennies)."""
+    client_host = request.client.host if request.client else ""
+    if client_host not in ("127.0.0.1", "::1", "localhost"):
+        raise HTTPException(403, "Probe is localhost-only")
+    try:
+        from app.pipeline_v2.segmented.probe import run_toy_probe
+        return await run_toy_probe()
+    except Exception as e:
+        logger.error("[cost_dashboard] Segmented probe failed: %s", e)
+        return {"green": False, "error": str(e)}
+
+
+@router.get("/pricing")
+async def get_pricing_table() -> dict:
+    """The active pricing table and where it was loaded from."""
+    try:
+        from app.cost.cost_pricing import get_all_pricing, get_pricing_source
+
+        table = {
+            model: {
+                "input_per_million": p.input_per_million,
+                "output_per_million": p.output_per_million,
+                "note": p.note,
+            }
+            for model, p in sorted(get_all_pricing().items())
+        }
+        return {"source": get_pricing_source(), "count": len(table), "models": table}
+    except Exception as e:
+        logger.error("[cost_dashboard] Pricing dump failed: %s", e)
+        return {"error": str(e)}

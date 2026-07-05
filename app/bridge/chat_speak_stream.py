@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 
 from . import tts_cache
 from .chat_and_speak import _split_into_sentences, _synthesise_sentence
+from .markdown_sanitize import for_display, for_speech
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +44,15 @@ def _speak_headers(
     attachments_payload: str,
     cached: bool = False,
     directives_json: str = "[]",
+    provider: str | None = None,
+    model: str | None = None,
 ) -> dict:
     headers = {
         "X-Project-Id": str(project_id),
         "X-Project-Name": url_quote(project_name or ""),
-        "X-Full-Text": url_quote(display_text[:8000]),
+        # The phone renders X-Full-Text raw (no markdown engine), so the
+        # bubble gets the sanitised form; the DB row keeps the raw text.
+        "X-Full-Text": url_quote(for_display(display_text)[:8000]),
         "X-Message-Id": str(message_id),
         "X-Artifacts": url_quote(attachments_payload),
         "Transfer-Encoding": "chunked",
@@ -56,6 +61,12 @@ def _speak_headers(
         headers["X-Directives"] = url_quote(directives_json)
     if cached:
         headers["X-Audio-Cached"] = "1"
+    # Model badge parity (2026-07-03): same provenance the desktop chips
+    # show. Additive — a phone build without the chip UI ignores them.
+    if provider:
+        headers["X-Provider"] = url_quote(str(provider))
+    if model:
+        headers["X-Model"] = url_quote(str(model))
     return headers
 
 
@@ -79,9 +90,17 @@ def build_audio_response(
     project_name: str,
     attachments_payload: str,
     directives_json: str = "[]",
+    provider: str | None = None,
+    model: str | None = None,
 ) -> StreamingResponse:
-    """Sentence-synthesise display_text, streaming to the phone + caching on disk."""
-    sentences = _split_into_sentences(display_text)
+    """Sentence-synthesise display_text, streaming to the phone + caching on disk.
+
+    display_text arrives with artifact markers + directives already stripped
+    but markdown intact: the TTS input is for_speech() (no spoken "asterisk"),
+    the X-Full-Text header is for_display() (no raw ** on the phone). Both are
+    surface-side only — the stored message row keeps the raw text.
+    """
+    sentences = _split_into_sentences(for_speech(display_text))
     writer = tts_cache.open_writer(message_id)
     state = {"idx": 0}
 
@@ -125,7 +144,8 @@ def build_audio_response(
         media_type="audio/mpeg",
         headers=_speak_headers(message_id, project_id, project_name,
                                display_text, attachments_payload,
-                               directives_json=directives_json),
+                               directives_json=directives_json,
+                               provider=provider, model=model),
     )
 
 
@@ -187,7 +207,9 @@ async def replay_cached_reply(message_id: int, db: Session, process_artifacts) -
             media_type="audio/mpeg",
             headers=_speak_headers(message_id, msg.project_id, project_name,
                                    display_text, attachments_payload, cached=True,
-                                   directives_json=directives_json),
+                                   directives_json=directives_json,
+                                   provider=getattr(msg, "provider", None),
+                                   model=getattr(msg, "model", None)),
         )
 
     logger.info("[chat_speak] idempotent replay of message %s (no cached audio — re-synthesising once)",
@@ -199,6 +221,8 @@ async def replay_cached_reply(message_id: int, db: Session, process_artifacts) -
         project_name=project_name,
         attachments_payload=attachments_payload,
         directives_json=directives_json,
+        provider=getattr(msg, "provider", None),
+        model=getattr(msg, "model", None),
     )
 
 
@@ -278,6 +302,8 @@ async def run_chat_and_speak(req, request, db):
                 project_id=project.id,
                 project_name=project.name,
                 attachments_payload="[]",
+                provider="bridge",
+                model=build_turn.model,
             )
             # idem map AFTER the .part writer is open; the finally wakes waiters.
             if idempotency_key:
@@ -296,14 +322,6 @@ async def run_chat_and_speak(req, request, db):
             else None
         )
 
-        if is_unsupported_on_bridge(resolved_intent):
-            honest_reply = get_unsupported_message(resolved_intent)
-            logger.info("[bridge] chat-and-speak: blocked unsupported %s", resolved_intent)
-            create_message(db, MessageCreate(
-                project_id=project.id, role="assistant",
-                content=honest_reply, provider="bridge", model="capability-gate",
-            ))
-
         web_search_context, search_executed, search_succeeded, honest_early_reply = (
             await _run_web_search(resolved_intent, translation_result, req.message)
         )
@@ -311,7 +329,12 @@ async def run_chat_and_speak(req, request, db):
         from app.bridge.capability_layer import run_astra_chat
 
         model_source = None  # v2026-06-24: routing provenance for sticky restore
+        # Single writer for the capability gate: full_text set here is
+        # persisted once by the generic create_message below. (An earlier,
+        # second create_message used to run too — two identical bubbles per
+        # gated request on the phone, seen live 2026-07-03. Removed.)
         if is_unsupported_on_bridge(resolved_intent):
+            logger.info("[bridge] chat-and-speak: blocked unsupported %s", resolved_intent)
             full_text = get_unsupported_message(resolved_intent)
             provider = "bridge"
             model = "capability-gate"
@@ -390,6 +413,8 @@ async def run_chat_and_speak(req, request, db):
             project_name=project_name,
             attachments_payload=attachments_payload,
             directives_json=directives_payload(directives),
+            provider=provider,
+            model=model,
         )
         # Map the key AFTER the .part writer is open; the finally wakes waiters,
         # so a woken waiter resumes the audio instead of racing a 2nd synthesis.

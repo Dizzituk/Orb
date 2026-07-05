@@ -61,8 +61,10 @@ except ImportError:
 try:
     from app.llm.local_tools.archmap_helpers import ARCHMAP_PROVIDER, ARCHMAP_MODEL
 except ImportError:
+    import os
+    from app.llm.frontier_models import get_provider_default_model as _gpdm
     ARCHMAP_PROVIDER = "openai"
-    ARCHMAP_MODEL = "gpt-4.1"
+    ARCHMAP_MODEL = os.getenv("ARCHMAP_TRIGGER_MODEL") or _gpdm("openai", strict=False)
 
 
 # =============================================================================

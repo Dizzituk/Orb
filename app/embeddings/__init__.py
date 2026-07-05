@@ -22,12 +22,14 @@ from .service import (
     index_document,
 )
 
-from .gemini_provider import (
+# LANE E (2026-07-02): multimodal + batch surfaces ride the provider router
+# (gemini or local per EMBEDDINGS_* env). TaskType stays the shared interface.
+from .provider_router import (
     generate_image_embedding,
     generate_multimodal_embedding,
     generate_embeddings_batch,
-    TaskType,
 )
+from .gemini_provider import TaskType
 
 from .models import Embedding
 

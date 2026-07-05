@@ -462,6 +462,36 @@ async def stream_gemini(
     except Exception as e:
         yield {"type": "error", "message": str(e)}
 
+def _record_stream_usage(
+    event: Dict,
+    provider: str,
+    model: Optional[str],
+    stage: Optional[str],
+    job_id: Optional[str],
+) -> None:
+    """Record cost from a provider 'done' event carrying usage (Derek p1).
+
+    This is the ONE recording point for the whole streaming axis — every
+    provider stream yields a final done event with usage when available.
+    Never raises; cost tracking must not break streaming.
+    """
+    try:
+        usage = event.get("usage") if isinstance(event, dict) else None
+        if not usage:
+            return
+        from app.cost.cost_recorder import record_llm_cost
+        record_llm_cost(
+            provider=str(event.get("provider") or provider or "unknown"),
+            model=str(event.get("model") or model or "unknown"),
+            prompt_tokens=int(usage.get("prompt_tokens") or 0),
+            completion_tokens=int(usage.get("completion_tokens") or 0),
+            stage=stage,
+            job_id=job_id,
+        )
+    except Exception as exc:
+        logger.debug("[stream_llm] cost record skipped: %s", exc)
+
+
 async def stream_llm(
     messages: List[Dict],
     system_prompt: str = "",
@@ -472,12 +502,17 @@ async def stream_llm(
     max_tokens: Optional[int] = None,
     timeout_seconds: Optional[int] = None,
     tools: Optional[List[Dict]] = None,
+    stage: Optional[str] = None,
+    job_id: Optional[str] = None,
 ) -> AsyncGenerator[Dict, None]:
     """Stream from specified LLM provider.
     
     Args:
         max_tokens: Override max output tokens (provider-specific defaults otherwise)
         timeout_seconds: Request timeout hint (implementation varies by provider)
+        stage: Cost-attribution label written to the cost ledger (Derek p1).
+            None records as "unknown" — pass your pipeline stage name.
+        job_id: Optional job id for per-job cost attribution.
     """
     from .streaming import stream_openai
     print(f"[STREAM_LLM] Called: provider={provider}, model={model}, messages={len(messages)}, max_tokens={max_tokens}")
@@ -495,44 +530,45 @@ async def stream_llm(
     print(f"[STREAM_LLM] Routing to provider: {provider}, model: {model}")
 
     if provider == "openai":
-        async for event in stream_openai(
+        gen = stream_openai(
             messages, system_prompt, model, enable_reasoning, route,
             tools=tools, max_tokens=max_tokens, timeout_seconds=timeout_seconds,
-        ):
-            yield event
+        )
     elif provider == "anthropic":
-        async for event in stream_anthropic(
+        gen = stream_anthropic(
             messages, system_prompt, model, enable_reasoning, route,
             max_tokens=max_tokens, timeout_seconds=timeout_seconds,
             tools=tools,
-        ):
-            yield event
+        )
     elif provider in ("gemini", "google"):
-        async for event in stream_gemini(
+        gen = stream_gemini(
             messages, system_prompt, model, enable_reasoning, route,
             tools=tools, max_tokens=max_tokens, timeout_seconds=timeout_seconds,
-        ):
-            yield event
+        )
     elif provider in ("ollama", "local"):
         from app.llm.streaming_ollama import stream_ollama
-        async for event in stream_ollama(
+        gen = stream_ollama(
             messages, system_prompt, model, enable_reasoning, route,
             tools=tools, max_tokens=max_tokens, timeout_seconds=timeout_seconds,
-        ):
-            yield event
+        )
     elif provider in ("vllm", "vllm_local"):
         # Local vLLM OpenAI-compatible server — serves the agent worker "Nat"
         # (and, later, the parallel 26B fleet). OpenAI-shaped, so tools +
         # tool_use deltas flow through exactly like the openai branch.
         from app.llm.streaming_vllm import stream_vllm
-        async for event in stream_vllm(
+        gen = stream_vllm(
             messages, system_prompt, model, enable_reasoning, route,
             tools=tools, max_tokens=max_tokens, timeout_seconds=timeout_seconds,
-        ):
-            yield event
+        )
     else:
         print(f"[STREAM_LLM] ERROR: Unknown provider '{provider}'")
         yield {"type": "error", "message": f"Unknown provider '{provider}'"}
+        return
+
+    async for event in gen:
+        if isinstance(event, dict) and event.get("type") == "done":
+            _record_stream_usage(event, provider, model, stage, job_id)
+        yield event
 
 async def call_llm_text(
     provider: str,
@@ -547,9 +583,13 @@ async def call_llm_text(
     route: Optional[str] = None,
     max_tokens: Optional[int] = None,
     timeout_seconds: Optional[int] = None,
+    stage: Optional[str] = None,
+    job_id: Optional[str] = None,
 ) -> str:
     """
     Convenience helper for callers that want a single final string.
+
+    stage/job_id: cost-attribution labels forwarded to stream_llm (Derek p1).
 
     - Uses stream_llm under the hood.
     - Collects {"type":"token"} chunks into one string.
@@ -594,6 +634,8 @@ async def call_llm_text(
             route=route,
             max_tokens=max_tokens,
             timeout_seconds=timeout_seconds,
+            stage=stage,
+            job_id=job_id,
         ):
             et = event.get("type")
             if et == "token":

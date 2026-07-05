@@ -130,18 +130,43 @@ class _VectorIndex:
         self.keys: List[Tuple[str, str]] = []  # (record_type, record_id) per row
         self.loaded_at: float = 0.0
         self.loaded_count: int = 0
+        self.loaded_label: str = ""     # LANE E: model-space the matrix was built from
+
+    @staticmethod
+    def _active_label() -> str:
+        # LANE E: the matrix must live in the SAME model-space as the query
+        # vector (_embed_query rides the router's query path). Single space
+        # only — dual-read here would need two matrices; during migration the
+        # hot rows (memory/note/message) are re-embedded first by design.
+        from app.embeddings.provider_router import text_query_spec
+        return text_query_spec().label
 
     def _needs_reload(self, db) -> bool:
         if self.matrix is None:
+            return True
+        if self.loaded_label != self._active_label():
             return True
         if time.time() - self.loaded_at > _RELOAD_AFTER_SECONDS:
             return True
         try:
             from sqlalchemy import text as _sql
-            current = db.execute(_sql("SELECT COUNT(*) FROM embeddings")).scalar() or 0
+            current = db.execute(_sql(
+                "SELECT COUNT(*) FROM embeddings "
+                "WHERE " + self._label_where(self.loaded_label)
+            ), {"label": self.loaded_label}).scalar() or 0
             return (current - self.loaded_count) > _RELOAD_GROWTH_THRESHOLD
         except Exception:
             return False
+
+    @staticmethod
+    def _label_where(label: str) -> str:
+        # NULL-stamped rows are legacy gemini rows (the boot backfill skips
+        # damaged id-windows — app/embeddings/migrations.py); keep them
+        # visible in the gemini space exactly as pre-LANE-E.
+        from app.embeddings.provider_router import LEGACY_TEXT_LABEL
+        if label == LEGACY_TEXT_LABEL:
+            return "(embedding_model = :label OR embedding_model IS NULL)"
+        return "embedding_model = :label"
 
     def ensure_loaded(self, db) -> bool:
         """Load/refresh the matrix. Returns True if usable."""
@@ -156,6 +181,7 @@ class _VectorIndex:
             # image is malformed"). Reading in id windows lets us skip the
             # corrupt range(s) and still serve the ~95% of vectors that are
             # intact, instead of losing the whole channel to one bad page.
+            active_label = self._active_label()
             max_id = db.execute(_sql("SELECT MAX(id) FROM embeddings")).scalar() or 0
             rows = []
             skipped_ranges = 0
@@ -165,8 +191,9 @@ class _VectorIndex:
                 try:
                     part = db.execute(_sql(
                         "SELECT source_type, source_id, embedding FROM embeddings "
-                        "WHERE id > :lo AND id <= :hi"
-                    ), {"lo": lo, "hi": lo + chunk}).fetchall()
+                        "WHERE id > :lo AND id <= :hi "
+                        "AND " + self._label_where(active_label)
+                    ), {"lo": lo, "hi": lo + chunk, "label": active_label}).fetchall()
                     rows.extend(part)
                 except Exception:
                     skipped_ranges += 1
@@ -219,9 +246,10 @@ class _VectorIndex:
             self.keys = keys
             self.loaded_at = time.time()
             self.loaded_count = len(rows)
+            self.loaded_label = active_label
             logger.info(
-                "[semantic] vector index loaded: %d vectors, dim=%d (%.1f MB)",
-                len(keys), dominant_dim, self.matrix.nbytes / 1e6,
+                "[semantic] vector index loaded: %d vectors, dim=%d, model=%s (%.1f MB)",
+                len(keys), dominant_dim, active_label, self.matrix.nbytes / 1e6,
             )
             return True
         except Exception as exc:

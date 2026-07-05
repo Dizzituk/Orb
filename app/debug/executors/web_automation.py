@@ -1,8 +1,8 @@
 # FILE: app/debug/executors/web_automation.py
 # Purpose: Chat-callable executors for web browsing.
 # Called-by: app.debug.executors
-# Depends-on: app.web_automation.coursera_reader, app.web_automation.tool_handlers
-# Last-renovated: 2026-07-01
+# Depends-on: app.web_automation.coursera_reader, app.web_automation.coursera_study_tools, app.web_automation.tool_handlers
+# Last-renovated: 2026-07-02
 """
 Chat-callable executors for web browsing.
 
@@ -26,6 +26,11 @@ from app.web_automation.coursera_reader import (
     coursera_health_handler,
     coursera_progress_handler,
 )
+from app.web_automation.coursera_study_tools import (
+    coursera_next_item_handler,
+    coursera_read_lesson_handler,
+    coursera_resume_handler,
+)
 from app.web_automation.tool_handlers import (
     list_sessions_handler,
     open_session_handler,
@@ -40,6 +45,7 @@ from app.web_automation.tool_handlers import (
     vision_check_handler,
     upload_file_handler,
     system_keys_handler,
+    wait_for_handler,
 )
 
 logger = logging.getLogger(__name__)
@@ -207,6 +213,11 @@ async def execute_web_click(params: Dict[str, Any]) -> str:
     try:
         payload: Dict[str, Any] = {"session": params.get("session", "")}
         # Pass through whichever targeting method the caller provided.
+        # Preferred: role+name (resolved in-page at click time).
+        if params.get("name"):
+            payload["name"] = params["name"]
+            if params.get("role"):
+                payload["role"] = params["role"]
         if "selector" in params and params["selector"]:
             payload["selector"] = params["selector"]
         if "x" in params and "y" in params:
@@ -347,6 +358,30 @@ async def execute_web_vision_check(params: Dict[str, Any]) -> str:
         return _err("web_vision_check", str(e))
 
 
+# ─── 6b · wait_for (condition wait — gate reads/actions on readiness) ─
+
+async def execute_web_wait_for(params: Dict[str, Any]) -> str:
+    """
+    Poll for a selector/text/url_pattern condition instead of sleeping.
+    Timeout is NOT an error (ok=true, matched=false, timeout=true) — the
+    LLM decides whether the miss is fatal, re-orients via dom_snapshot.
+    """
+    try:
+        forwarded: Dict[str, Any] = {"session": params.get("session", "")}
+        for key in ("selector", "text", "url_pattern", "state"):
+            if params.get(key):
+                forwarded[key] = params[key]
+        if "timeout_ms" in params:
+            forwarded["timeout_ms"] = params["timeout_ms"]
+        if "poll_ms" in params:
+            forwarded["poll_ms"] = params["poll_ms"]
+        result = await wait_for_handler(forwarded, None)
+        return _fmt(result)
+    except Exception as e:
+        logger.exception("[web_exec] wait_for failed")
+        return _err("web_wait_for", str(e))
+
+
 # ─── 11b · Coursera composites (login health + vision progress) ────
 
 async def execute_web_coursera_health(params: Dict[str, Any]) -> str:
@@ -377,6 +412,45 @@ async def execute_web_coursera_progress(params: Dict[str, Any]) -> str:
     except Exception as e:
         logger.exception("[web_exec] coursera_progress failed")
         return _err("web_coursera_progress", str(e))
+
+
+# ─── 11c · Coursera study loop (resume / read lesson / next item) ──
+# Hands-free course study from the phone: each executor is one user
+# intent, driving the selector-map coursera_driver (no vision
+# targeting; quizzes announced, never attempted).
+
+async def execute_coursera_resume(params: Dict[str, Any]) -> str:
+    try:
+        forwarded: Dict[str, Any] = {"session": params.get("session", "")}
+        if params.get("course"):
+            forwarded["course"] = params["course"]
+        result = await coursera_resume_handler(forwarded, None)
+        return _fmt(result)
+    except Exception as e:
+        logger.exception("[web_exec] coursera_resume failed")
+        return _err("coursera_resume", str(e))
+
+
+async def execute_coursera_read_lesson(params: Dict[str, Any]) -> str:
+    try:
+        result = await coursera_read_lesson_handler(
+            {"session": params.get("session", "")}, None,
+        )
+        return _fmt(result)
+    except Exception as e:
+        logger.exception("[web_exec] coursera_read_lesson failed")
+        return _err("coursera_read_lesson", str(e))
+
+
+async def execute_coursera_next_item(params: Dict[str, Any]) -> str:
+    try:
+        result = await coursera_next_item_handler(
+            {"session": params.get("session", "")}, None,
+        )
+        return _fmt(result)
+    except Exception as e:
+        logger.exception("[web_exec] coursera_next_item failed")
+        return _err("coursera_next_item", str(e))
 
 
 # ─── 12 · upload file ───────────────────────────────

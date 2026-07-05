@@ -62,6 +62,36 @@ class FasterWhisperService(TranscriptionService):
         vad_parameters: Optional[dict] = None,
     ) -> TranscriptionResult:
         """Transcribe audio bytes (WAV file, raw PCM16, or raw float32) to text."""
+        # Decode audio bytes to float32 numpy array, then share the model path
+        # with transcribe_array (2026-07-03 split).
+        audio = self._decode_audio(audio_bytes)
+        return self.transcribe_array(
+            audio,
+            language=language,
+            vad_filter=vad_filter,
+            vad_parameters=vad_parameters,
+        )
+
+    def transcribe_array(
+        self,
+        audio: np.ndarray,
+        language: Optional[str] = None,
+        vad_filter: bool = True,
+        vad_parameters: Optional[dict] = None,
+        beam_size: int = 5,
+        best_of: int = 5,
+    ) -> TranscriptionResult:
+        """Transcribe an in-memory float32 mono 16kHz array directly.
+
+        Fast path (2026-07-03) for callers that already hold decoded PCM —
+        the ambient voice session streams float32 from its own buffer, and
+        the bytes path would wrap it in a WAV then round-trip it through a
+        temp file + ffmpeg subprocess just to decode it back: hundreds of ms
+        of pure overhead per utterance on the silence->transcript leg.
+        beam_size/best_of default to the service-wide 5/5; latency-critical
+        short-command callers pass 1/1 (greedy) — near-lossless on clean
+        short speech and ~2-3x faster.
+        """
         mm = get_model_manager()
 
         # Auto-load if not loaded
@@ -75,9 +105,7 @@ class FasterWhisperService(TranscriptionService):
 
         t0 = time.time()
 
-        # Decode audio bytes to float32 numpy array
-        audio = self._decode_audio(audio_bytes)
-
+        audio = np.asarray(audio, dtype=np.float32)
         if len(audio) == 0:
             return TranscriptionResult(text="", language=language or "en")
 
@@ -92,15 +120,15 @@ class FasterWhisperService(TranscriptionService):
             }
 
         logger.info(
-            "[faster_whisper] Transcribing %d samples (%.1fs), lang=%s, vad=%s",
-            len(audio), len(audio) / 16000, language, vad_filter,
+            "[faster_whisper] Transcribing %d samples (%.1fs), lang=%s, vad=%s, beam=%d",
+            len(audio), len(audio) / 16000, language, vad_filter, beam_size,
         )
 
         segments_iter, info = model.transcribe(
             audio,
             language=language or "en",
-            beam_size=5,
-            best_of=5,
+            beam_size=beam_size,
+            best_of=best_of,
             temperature=0.0,
             vad_filter=vad_filter,
             vad_parameters=vad_parameters if vad_filter else None,

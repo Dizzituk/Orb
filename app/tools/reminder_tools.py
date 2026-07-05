@@ -2,7 +2,7 @@
 # Purpose: Handlers for the reminder chat tools (create/list/cancel) — desktop+phone parity.
 # Called-by: app.tools.reminder_tools_registration
 # Depends-on: app.db, app.reminders.service, app.reminders.time_parse
-# Last-renovated: 2026-07-01
+# Last-renovated: 2026-07-03
 from __future__ import annotations
 
 import logging
@@ -35,9 +35,17 @@ async def create_reminder_handler(input_data: dict, context: Optional[dict]) -> 
     from app.reminders.time_parse import parse_when
     due_at = parse_when(when, model_due_at_iso=input_data.get("due_at_iso"))
     if due_at is None:
+        # Self-heal path (2026-07-03): the model must NOT bounce this back to
+        # the user ("say it as a clock time") — it can compute the timestamp
+        # itself from the datetime in its prompt context and retry once.
         return {
             "ok": False, "reminder_id": None, "due_at": None,
-            "error": f"Could not work out a time from {when!r} — ask for a clearer time.",
+            "error": (
+                f"Could not work out a time from {when!r}. Retry create_reminder NOW "
+                "with the same text and when, plus due_at_iso set to the exact "
+                "ISO-8601 local datetime you compute from the current date/time in "
+                "your context — do not ask the user to rephrase."
+            ),
         }
 
     try:

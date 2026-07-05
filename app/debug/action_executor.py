@@ -93,6 +93,7 @@ from app.debug.executors import (  # noqa: F401
     execute_web_current_state,
     execute_web_dom_snapshot,
     execute_web_navigate,
+    execute_web_wait_for,
     execute_web_click,
     execute_web_type,
     execute_web_scroll,
@@ -101,6 +102,9 @@ from app.debug.executors import (  # noqa: F401
     execute_web_vision_check,
     execute_web_coursera_health,
     execute_web_coursera_progress,
+    execute_coursera_resume,
+    execute_coursera_read_lesson,
+    execute_coursera_next_item,
     execute_web_upload_file,
     execute_system_keys,
     # social media APIs
@@ -192,6 +196,7 @@ TOOL_HANDLERS = {
     "web_current_state":   execute_web_current_state,
     "web_dom_snapshot":    execute_web_dom_snapshot,
     "web_navigate":        execute_web_navigate,
+    "web_wait_for":        execute_web_wait_for,
     "web_click":           execute_web_click,
     "web_type":            execute_web_type,
     "web_scroll":          execute_web_scroll,
@@ -202,6 +207,11 @@ TOOL_HANDLERS = {
     # read (completion ticks are visual — text extraction can't see them)
     "web_coursera_health":   execute_web_coursera_health,
     "web_coursera_progress": execute_web_coursera_progress,
+    # Coursera study loop (hands-free: resume / read lesson / next item;
+    # selector-map driver, quizzes announced and never attempted)
+    "coursera_resume":       execute_coursera_resume,
+    "coursera_read_lesson":  execute_coursera_read_lesson,
+    "coursera_next_item":    execute_coursera_next_item,
     "web_upload_file":     execute_web_upload_file,
     "system_keys":         execute_system_keys,
     # Social media APIs (first-party publish path; preferred over

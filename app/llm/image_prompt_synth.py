@@ -34,7 +34,8 @@ logger = logging.getLogger(__name__)
 
 
 def _get_synth_model() -> str:
-    return os.getenv("IMAGE_PROMPT_SYNTH_MODEL", "gemini-2.5-flash")
+    from app.llm.frontier_models import get_provider_default_model
+    return os.getenv("IMAGE_PROMPT_SYNTH_MODEL") or get_provider_default_model("google", strict=False)
 
 
 # ============================================================================

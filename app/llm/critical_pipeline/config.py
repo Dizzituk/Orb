@@ -249,7 +249,8 @@ def get_pipeline_model_config() -> dict:
             return {"provider": cfg.provider, "model": cfg.model}
         except Exception:
             pass
+    from app.llm.frontier_models import get_provider_default_model
     return {
         "provider": os.getenv("CRITICAL_PIPELINE_PROVIDER", "anthropic"),
-        "model": os.getenv("ANTHROPIC_OPUS_MODEL", "claude-opus-4-5-20251101"),
+        "model": os.getenv("ANTHROPIC_OPUS_MODEL") or get_provider_default_model("anthropic", strict=False),
     }

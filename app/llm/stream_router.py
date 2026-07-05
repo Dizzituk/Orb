@@ -448,16 +448,27 @@ async def stream_chat(
             # Route as chat with the escalated model
             # v3.2: Read from env instead of hardcoding OpenAI
             import os as _os
+
+            def _role_model(role: str) -> str:
+                try:
+                    from app.llm.frontier_models import get_role_model
+                    return get_role_model(role)[1]
+                except Exception:
+                    return ""
+
             tier_map = {
                 "lookup_to_deep": (
                     _os.getenv("CHAT_DEEP_PROVIDER", "anthropic"),
-                    _os.getenv("CHAT_DEEP_MODEL", "claude-opus-4-6"),
+                    _os.getenv("CHAT_DEEP_MODEL") or _role_model("ARCHITECT"),
                 ),
                 "lookup_to_reasoning": (
                     _os.getenv("CHAT_PROVIDER", "google"),
-                    _os.getenv("CHAT_MODEL", "gemini-2.5-flash"),
+                    _os.getenv("CHAT_MODEL") or _role_model("CHAT"),
                 ),
-                "lookup_to_multimodal": ("google", "gemini-3.1-pro-preview"),
+                "lookup_to_multimodal": (
+                    "google",
+                    _os.getenv("GEMINI_VISION_MODEL_COMPLEX") or _role_model("MULTIMODAL"),
+                ),
             }
             provider, model = tier_map.get(action, (None, None))
             if provider and model:

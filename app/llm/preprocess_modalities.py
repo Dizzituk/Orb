@@ -76,7 +76,10 @@ async def preprocess_video(
             transcript = await transcribe_fn(file_path)
             result.transcript = transcript
             result.transcript_tokens = len(transcript) // 4  # Rough estimate
-            result.model_used = "gemini-3.0-pro-preview"  # Assumed
+            # Label from the env-configured tier the wired transcriber uses
+            # (transcribe_video_for_context -> _get_vision_model("video_heavy")).
+            from app.llm.gemini_vision import _get_model_name
+            result.model_used = _get_model_name("video_heavy")
             
             # Generate summary if transcript is long
             if result.transcript_tokens > 2000:
@@ -142,7 +145,10 @@ async def preprocess_image(
         if describe_fn:
             description = await describe_fn(file_path)
             result.description = description[:IMAGE_SUMMARY_MAX_CHARS]
-            result.model_used = "gemini-2.5-pro"  # Assumed
+            # Label from the env-configured tier vision uses for images
+            # (v0.14.2: all images route to the "complex" tier).
+            from app.llm.gemini_vision import _get_model_name
+            result.model_used = _get_model_name("complex")
             logger.debug(f"[preprocess] Image {filename}: {len(result.description)} chars description")
         else:
             result.description = f"[Image: {filename}]"

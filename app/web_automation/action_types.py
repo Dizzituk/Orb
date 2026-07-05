@@ -25,6 +25,7 @@ TYPE_TEXT     = "type"
 PRESS_KEY     = "press_key"
 SCROLL        = "scroll"
 WAIT          = "wait"
+WAIT_FOR      = "wait_for"          # Condition wait (element/text/URL), not a sleep
 SCREENSHOT    = "screenshot"
 DOM_SNAPSHOT  = "dom_snapshot"      # Accessibility tree
 EXTRACT_TEXT  = "extract_text"      # CSS-selector-based text extraction
@@ -34,12 +35,15 @@ RELOAD        = "reload"
 GO_BACK       = "go_back"
 CLOSE         = "close"             # Close the session's view
 SYSTEM_KEYS   = "system_keys"       # Send keystrokes to focused OS window
+SHOW_VIEW     = "show_view"         # Bring the session view on screen (2026-07-03)
+HIDE_VIEW     = "hide_view"         # Park the session view off-screen again
 
 
 ALL_ACTIONS = {
-    NAVIGATE, CLICK, TYPE_TEXT, PRESS_KEY, SCROLL, WAIT,
+    NAVIGATE, CLICK, TYPE_TEXT, PRESS_KEY, SCROLL, WAIT, WAIT_FOR,
     SCREENSHOT, DOM_SNAPSHOT, EXTRACT_TEXT, UPLOAD_FILE,
     CURRENT_STATE, RELOAD, GO_BACK, CLOSE, SYSTEM_KEYS,
+    SHOW_VIEW, HIDE_VIEW,
 }
 
 
@@ -50,12 +54,23 @@ def navigate(url: Optional[str] = None) -> tuple[str, dict]:
 
 def click(selector: Optional[str] = None,
           x: Optional[int] = None,
-          y: Optional[int] = None) -> tuple[str, dict]:
+          y: Optional[int] = None,
+          *,
+          role: Optional[str] = None,
+          name: Optional[str] = None) -> tuple[str, dict]:
+    """Click target precedence: selector, then role+name (resolved in-page
+    at click time by ARIA role + accessible name — survives SPA re-renders),
+    then raw (x, y) coordinates."""
     if selector:
         return CLICK, {"selector": selector}
+    if name:
+        payload: dict = {"name": name}
+        if role:
+            payload["role"] = role
+        return CLICK, payload
     if x is not None and y is not None:
         return CLICK, {"x": x, "y": y}
-    raise ValueError("click requires either selector or (x, y)")
+    raise ValueError("click requires a selector, a name (+ optional role), or (x, y)")
 
 
 def type_text(selector: str, text: str, clear_first: bool = True) -> tuple[str, dict]:
@@ -74,6 +89,46 @@ def scroll(direction: Literal["up", "down", "top", "bottom"] = "down",
 
 def wait(ms: int) -> tuple[str, dict]:
     return WAIT, {"ms": ms}
+
+
+def wait_for(
+    selector: Optional[str] = None,
+    *,
+    text: Optional[str] = None,
+    url_pattern: Optional[str] = None,
+    state: Literal["visible", "attached", "gone"] = "visible",
+    timeout_ms: int = 15000,
+    poll_ms: int = 250,
+) -> tuple[str, dict]:
+    """Wait for a page condition instead of a fixed sleep.
+
+    Conditions (at least one; all supplied must hold simultaneously):
+      * selector — CSS selector. `state` says what to wait for:
+        'visible' (default) = exists with a non-zero bounding rect,
+        'attached' = present in the DOM, 'gone' = no longer present
+        (spinners, modals). With `text`, only selector matches whose
+        innerText contains `text` count.
+      * text — with no selector: page body text contains this string.
+      * url_pattern — regex tested against the current URL.
+
+    Reaching timeout_ms is NOT an executor error: the result comes back
+    ok=True with matched=False, timeout=True — the caller decides
+    whether the miss is fatal for its step.
+    """
+    if not (selector or text or url_pattern):
+        raise ValueError("wait_for requires at least one of selector, text, url_pattern")
+    payload: dict = {
+        "state": state,
+        "timeout_ms": int(timeout_ms),
+        "poll_ms": int(poll_ms),
+    }
+    if selector:
+        payload["selector"] = selector
+    if text:
+        payload["text"] = text
+    if url_pattern:
+        payload["url_pattern"] = url_pattern
+    return WAIT_FOR, payload
 
 
 def screenshot(full_page: bool = False) -> tuple[str, dict]:

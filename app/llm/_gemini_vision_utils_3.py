@@ -1,12 +1,13 @@
 # Purpose: gemini vision utils 3
 # Called-by: app.llm.gemini_vision
-# Depends-on: app.llm._gemini_vision_utils_2, app.llm.gemini_vision
+# Depends-on: app.llm._gemini_vision_utils_2, app.llm.gemini_vision, app.llm.frontier_models
 # Last-renovated: 2026-06-11
 from __future__ import annotations
 import base64
 import os
 import time
 from app.llm._gemini_vision_utils_2 import VIDEO_TRANSCRIPTION_PROMPT, _get_openai_client, select_vision_tier
+from app.llm.frontier_models import get_provider_default_model
 from pathlib import Path
 from typing import Optional, Union
 
@@ -25,7 +26,7 @@ def _openai_vision_analyze(
     model: str = None,
 ) -> dict:
     """Analyze image using OpenAI Vision."""
-    model = model or os.getenv("OPENAI_VISION_MODEL", "gpt-5.4-mini")
+    model = model or os.getenv("OPENAI_VISION_MODEL") or get_provider_default_model("openai", strict=False)
     try:
         client = _get_openai_client()
         
@@ -358,7 +359,7 @@ def check_vision_available() -> dict:
         return {
             "available": True,
             "provider": "openai",
-            "model": os.getenv("OPENAI_VISION_MODEL", "gpt-5.4-mini"),
+            "model": os.getenv("OPENAI_VISION_MODEL") or get_provider_default_model("openai", strict=False),
             "fallback": False,
             "video_support": False,
         }

@@ -52,10 +52,12 @@ def find_surface_candidates(message: str) -> List[Dict[str, Any]]:
     if not message or len(message.strip()) < 4:
         return []
 
-    # Embed the incoming message
+    # Embed the incoming message. LANE E: pinned to the WRITE spec (not the
+    # query-cutover path) because theme centroids are built from fragment
+    # vectors, which are write-side — the comparison must stay same-space.
     try:
-        from app.embeddings.gemini_provider import generate_embedding
-        query_emb = generate_embedding(message)
+        from app.embeddings.provider_router import embed_text, text_write_spec
+        query_emb = embed_text(message, spec=text_write_spec())
     except Exception as exc:
         logger.debug("[surfacing] embed query failed: %s", exc)
         return []

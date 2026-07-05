@@ -74,6 +74,46 @@ _RULES: List[_Rule] = [
         confidence=0.85,
         needs_screenshot=True,
     ),
+    # ── WEB_ACTION (2026-07-03) ───────────────────────────────────────────
+    # Actionable web/study requests. These route to the REAL tool loop
+    # (router._handle_agentic), not the tool-less LOOK/CONVERSE paths, so the
+    # wake-word ambient path can actually open + drive Coursera/the browser.
+    # Kept SPECIFIC on purpose: each rule needs the study surface named
+    # (coursera / my course / my learning / lesson) or an explicit
+    # open-the-browser verb + web object, so ordinary voice Q&A never gets
+    # dropped into a multi-round tool loop. needs_screenshot=False — the
+    # agentic handler drives tools, it doesn't read the current screen.
+    _Rule(
+        name="study_surface",
+        patterns=_compile(
+            r"\bcoursera\b"
+            r"|\bmy\s+(course|courses|lesson|lessons|learning|study|studies)\b"
+        ),
+        intent=Intent.WEB_ACTION,
+        confidence=0.9,
+        needs_screenshot=False,
+    ),
+    _Rule(
+        name="study_resume_next",
+        patterns=_compile(
+            r"\b(resume|continue|carry\s+on|get\s+back|back)\b.*\b(course|lesson|module|study|studying|learning|coursera)\b"
+            r"|\bnext\s+(lesson|video|item|module|unit|chapter)\b"
+            r"|\b(open|start|play|pull\s+up|bring\s+up)\b.*\b(lesson|module|course|coursera)\b"
+        ),
+        intent=Intent.WEB_ACTION,
+        confidence=0.9,
+        needs_screenshot=False,
+    ),
+    _Rule(
+        name="open_web_target",
+        patterns=_compile(
+            r"\b(open|go\s+to|pull\s+up|bring\s+up|navigate\s+to|log\s+in\s+to|log\s+into)\b"
+            r".*\b(website|web\s*page|web\s*site|the\s+browser|coursera|youtube|quickbooks|hmrc)\b"
+        ),
+        intent=Intent.WEB_ACTION,
+        confidence=0.85,
+        needs_screenshot=False,
+    ),
     _Rule(
         name="weather",
         patterns=_compile(r"\bweather\b|\btemperature\b|\bforecast\b"),
@@ -90,7 +130,7 @@ _RULES: List[_Rule] = [
     ),
     _Rule(
         name="remind_or_schedule",
-        patterns=_compile(r"\bremind\s+me\b|\bset\s+(a\s+)?reminder\b|\bschedule\b"),
+        patterns=_compile(r"\bremind\s+me\b|\bset\s+(a\s+)?reminder\b|\bschedule\b|\bcalendar\b"),
         intent=Intent.CONVERSE,
         confidence=0.9,
         needs_screenshot=False,
@@ -131,6 +171,10 @@ def intent_to_default_tier(intent: Intent):
         Intent.LOOK_EXPLAIN:  Tier.T2_STD,
         Intent.LOOK_DIAGNOSE: Tier.T2_STD,
         Intent.TAKEOVER:      Tier.T2_STD,
+        # WEB_ACTION drives the tool loop with its own trusted, tool-eligible
+        # model (see router._resolve_agentic_provider_model); this tier is the
+        # nominal starting point for the gate/cost preview only.
+        Intent.WEB_ACTION:    Tier.T2_STD,
         Intent.NOTIFY:        Tier.T1_MINI,
         Intent.UNKNOWN:       Tier.T1_MINI,
     }[intent]

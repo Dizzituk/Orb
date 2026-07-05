@@ -1,8 +1,8 @@
-# FILE: app/overwatcher/cost_recorder.py
-# Purpose: Cost recording hook for the provider registry.
-# Called-by: app.debug.debug_chat, app.providers._registry_utils_3
+# FILE: app/cost/cost_recorder.py
+# Purpose: Cost recording hook for the provider registry and instrumented call paths.
+# Called-by: app.debug.debug_chat, app.providers._registry_utils_3, app.llm.streaming, app.pipeline_v2.llm_tools, app.llm.weaver_stream
 # Depends-on: app.cost.cost_budget, app.cost.cost_guard, app.cost.cost_ledger, app.cost.cost_pricing
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-07-04 (Derek phase 1: null cost for unpriced models, stage map extended)
 """
 Cost recording hook for the provider registry.
 
@@ -44,9 +44,11 @@ def record_llm_cost(
     Record the cost of an LLM call.
 
     Calculates cost from the pricing table, writes to the persistent
-    ledger, and updates the in-memory CostGuard.
+    ledger, and updates the in-memory CostGuard. An unpriced model records
+    cost_usd=null in the ledger (cost_pricing WARNs) — never a silent 0.00.
 
-    Returns the calculated cost in USD.
+    Returns the calculated cost in USD (0.0 when unpriced — the ledger row
+    keeps the honest null; the float return is for legacy callers only).
     Never raises — cost tracking must not break the pipeline.
     """
     try:
@@ -54,7 +56,7 @@ def record_llm_cost(
         from app.cost.cost_ledger import append_record
         from app.cost.cost_guard import record_usage, ModelRole
 
-        cost_usd = calculate_cost(model, prompt_tokens, completion_tokens)
+        cost_usd = calculate_cost(model, prompt_tokens, completion_tokens)  # None = unpriced
 
         # Write to persistent ledger
         record = {
@@ -80,20 +82,20 @@ def record_llm_cost(
                 model=model,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
-                cost_estimate=cost_usd,
+                cost_estimate=cost_usd or 0.0,
                 stage=stage,
             )
         except Exception as e:
             logger.debug("[cost_recorder] CostGuard update skipped: %s", e)
 
-        if cost_usd > 0.01:
+        if cost_usd is not None and cost_usd > 0.01:
             logger.info(
                 "[cost_recorder] %s/%s stage=%s tokens=%d+%d cost=$%.4f",
                 provider, model, stage or "?",
                 prompt_tokens, completion_tokens, cost_usd,
             )
 
-        return cost_usd
+        return cost_usd if cost_usd is not None else 0.0
 
     except Exception as e:
         logger.error("[cost_recorder] Failed to record cost: %s", e)
@@ -136,6 +138,21 @@ def _stage_to_role(stage: Optional[str]) -> "ModelRole":
         "weaver": ModelRole.SPEC_GATE,
         "coherence_guardian": ModelRole.CRITIQUE,
         "segment_enrichment": ModelRole.IMPLEMENTER,
+        # Derek tier map (phase 1, 2026-07-04)
+        "specgate_agent": ModelRole.SPEC_GATE,
+        "specgate_vision": ModelRole.SPEC_GATE,
+        "builder_main": ModelRole.IMPLEMENTER,
+        "builder_worker": ModelRole.IMPLEMENTER,
+        "builder_integrator": ModelRole.IMPLEMENTER,
+        "builder_escalation": ModelRole.IMPLEMENTER,
+        "checkout_eyes": ModelRole.OVERWATCHER,
+        "checkout_judge": ModelRole.OVERWATCHER,
+        "verifier": ModelRole.OVERWATCHER,
+        "bvl_diagnostic": ModelRole.OVERWATCHER,
+        "bvl_test_generator": ModelRole.IMPLEMENTER,
+        "spec_review": ModelRole.OVERWATCHER,
+        "SPEC_REVIEW": ModelRole.OVERWATCHER,
+        "chat": ModelRole.IMPLEMENTER,
     }
     return stage_role_map.get(stage or "", ModelRole.IMPLEMENTER)
 

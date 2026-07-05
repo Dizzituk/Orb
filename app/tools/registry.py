@@ -636,5 +636,15 @@ def _register_defaults() -> None:
     except Exception as exc:
         logger.exception("[registry] research tools registration failed: %s", exc)
 
+    # Social posting + shorts tools (2026-07-02): post_image/post_reel to the
+    # Meta Business Suite composer (FB+IG one login) + create_short (async
+    # captioned 9:16 render). Driver in app/content/distribution/posting_drivers;
+    # shorts pipeline in app/content/video_pipeline/shorts_*.
+    try:
+        from app.tools.social_posting_tools import register_social_posting_tools
+        register_social_posting_tools()
+    except Exception as exc:
+        logger.exception("[registry] social posting tools registration failed: %s", exc)
+
 
 _register_defaults()

@@ -24,9 +24,29 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# The rclone remote name for Proton Drive
+# The rclone remote name (default: Google Drive; override with ASTRA_CLOUD_REMOTE)
 REMOTE_NAME = os.getenv("ASTRA_CLOUD_REMOTE", "gdrive")
 RCLONE_BIN = os.getenv("RCLONE_PATH", "rclone")
+
+
+def _transfer_flags() -> List[str]:
+    """Reliability flags for large transfers (LANE E fix, 2026-07-03).
+
+    A 107MB APK upload to gdrive stalled for 27 min at near-zero CPU: the bare
+    `copyto` had no connection/idle timeouts, so a half-open connection just
+    hung until the caller's outer timeout (and one such stall even escaped the
+    kill as an orphan). These make rclone fail-fast on a stall and retry
+    cleanly, so the caller's timeout is a backstop, not the primary path.
+    --drive-chunk-size is a gdrive backend flag (registered globally; ignored
+    by other remotes), fewer chunks = fewer stall points for a 100MB+ file.
+    """
+    return [
+        "--contimeout", os.getenv("RCLONE_CONTIMEOUT", "30s"),
+        "--timeout", os.getenv("RCLONE_IO_TIMEOUT", "120s"),
+        "--retries", os.getenv("RCLONE_RETRIES", "3"),
+        "--low-level-retries", os.getenv("RCLONE_LOW_LEVEL_RETRIES", "10"),
+        "--drive-chunk-size", os.getenv("RCLONE_DRIVE_CHUNK_SIZE", "16M"),
+    ]
 
 # Local cache directory for downloaded files
 CACHE_DIR = Path(os.getenv("ASTRA_CLOUD_CACHE", "D:/Orb/data/cloud_cache"))
@@ -49,7 +69,17 @@ async def _run_rclone(args: List[str], timeout: int = 60) -> Dict[str, Any]:
             "exit_code": proc.returncode,
         }
     except asyncio.TimeoutError:
-        return {"stdout": "", "stderr": "Command timed out", "exit_code": -1}
+        # Kill the child on timeout — otherwise rclone keeps running (and
+        # uploading) in the background after we've reported failure. That's
+        # exactly what happened on 2026-07-02: a 107MB APK upload was declared
+        # failed at 300s, completed anyway as an orphan, and the caller's
+        # fallback re-uploaded the same file in parallel.
+        try:
+            proc.kill()
+            await proc.communicate()
+        except Exception:
+            pass
+        return {"stdout": "", "stderr": f"Command timed out after {timeout}s", "exit_code": -1}
     except FileNotFoundError:
         return {"stdout": "", "stderr": "rclone not found. Install with: winget install Rclone.Rclone", "exit_code": -1}
     except Exception as e:
@@ -130,7 +160,7 @@ async def download_file(cloud_path: str, local_dest: Optional[str] = None) -> Di
     Path(local_dest).parent.mkdir(parents=True, exist_ok=True)
 
     result = await _run_rclone(
-        ["copyto", _remote_path(cloud_path), local_dest],
+        ["copyto", _remote_path(cloud_path), local_dest] + _transfer_flags(),
         timeout=120,
     )
 
@@ -143,8 +173,8 @@ async def download_file(cloud_path: str, local_dest: Optional[str] = None) -> Di
         return {"success": False, "error": result["stderr"]}
 
 
-async def upload_file(local_path: str, cloud_dest: str) -> Dict[str, Any]:
-    """Upload a local file to Proton Drive.
+async def upload_file(local_path: str, cloud_dest: str, timeout: int = 300) -> Dict[str, Any]:
+    """Upload a local file to the cloud remote.
     
     cloud_dest should be the full cloud path including filename.
     """
@@ -152,8 +182,8 @@ async def upload_file(local_path: str, cloud_dest: str) -> Dict[str, Any]:
         return {"success": False, "error": f"Local file not found: {local_path}"}
 
     result = await _run_rclone(
-        ["copyto", local_path, _remote_path(cloud_dest)],
-        timeout=300,  # large files may take a while
+        ["copyto", local_path, _remote_path(cloud_dest)] + _transfer_flags(),
+        timeout=timeout,  # callers moving big files (APKs) pass a bigger value
     )
 
     if result["exit_code"] == 0:

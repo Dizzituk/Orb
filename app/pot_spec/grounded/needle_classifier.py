@@ -357,6 +357,7 @@ Return ONLY the JSON object with blast_radius_count, concept_count, interface_co
             system_prompt=NEEDLE_CLASSIFIER_SYSTEM_PROMPT,
             max_tokens=500,     # Response is tiny JSON
             timeout_seconds=30,  # Fast call
+            stage="needle_classifier",  # Derek p1: cost attribution
         )
 
         if not result.is_success():

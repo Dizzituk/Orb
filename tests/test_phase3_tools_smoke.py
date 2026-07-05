@@ -20,6 +20,12 @@ async def fake_write(path, content, profile=None):
 async def fake_exists(path, profile=None):
     return path in FAKE_FS
 
+# Derek p5 (2026-07-04): capture originals so this module can RESTORE them.
+# These patches used to leak for the rest of the pytest process, silently
+# redirecting every later test's file IO into FAKE_FS.
+_orig_read, _orig_write, _orig_exists = (
+    sandbox_tools.read_file, sandbox_tools.write_file, sandbox_tools.file_exists,
+)
 sandbox_tools.read_file = fake_read
 sandbox_tools.write_file = fake_write
 sandbox_tools.file_exists = fake_exists
@@ -87,3 +93,8 @@ rc3 = _tool_result_content({})
 assert rc3[0]["text"] == "(empty result)"
 print("anthropic adapter conversion OK")
 print("PHASE 3 (J8-J9) SMOKE: ALL PASS")
+
+# Derek p5: restore the real IO functions for the rest of the test session.
+sandbox_tools.read_file = _orig_read
+sandbox_tools.write_file = _orig_write
+sandbox_tools.file_exists = _orig_exists

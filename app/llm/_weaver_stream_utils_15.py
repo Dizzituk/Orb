@@ -52,6 +52,73 @@ def _gather_ramble_messages(db: Session, project_id: int, max_messages: int = 50
         logger.error("[WEAVER] Failed to gather messages: %s", e)
         return []
 
+def _merge_panel_history(
+    db_messages: List[Dict[str, Any]],
+    panel_history: Any,
+) -> List[Dict[str, Any]]:
+    """
+    Union of the DB project's messages and the desktop's on-screen history.
+
+    live7 (2026-07-04): the Weaver must weave the VISIBLE conversation, not
+    just DB rows for a possibly-fresh project id — a stack restart used to
+    rotate the panel onto a new chat project, orphaning the whole thread
+    (the 22:41 "Analyzing 1 messages" empty-brief incident).
+
+    DB rows win on conflict: they carry [image_ref: ...] markers and inlined
+    document content that the panel copy lacks. A panel message counts as
+    already-present when its hash matches a DB row OR its normalized text is
+    contained in a same-role DB row (covers marker-appended / doc-inlined
+    rows). Panel-only messages are prepended in on-screen order — they
+    predate whatever the fresh DB project holds (usually just the command).
+    """
+    if not panel_history or not isinstance(panel_history, list):
+        return db_messages
+
+    cleaned: List[Dict[str, Any]] = []
+    for m in panel_history:
+        if not isinstance(m, dict):
+            continue
+        role = str(m.get("role") or "").strip().lower()
+        content = str(m.get("content") or "")
+        if role not in ("user", "assistant"):
+            continue
+        if _is_control_message(role, content):
+            continue
+        cleaned.append({"role": role, "content": content})
+
+    if not cleaned:
+        return db_messages
+
+    from app.llm._weaver_stream_utils_13 import _hash_messages
+    from app.llm._weaver_stream_utils_14 import _hash_message
+
+    db_hashes = _hash_messages(db_messages)
+    db_norm_by_role: Dict[str, List[str]] = {}
+    for m in db_messages:
+        norm = " ".join(str(m.get("content") or "").split())
+        db_norm_by_role.setdefault(str(m.get("role") or "").strip().lower(), []).append(norm)
+
+    panel_only: List[Dict[str, Any]] = []
+    for m in cleaned:
+        if _hash_message(m) in db_hashes:
+            continue
+        norm = " ".join(m["content"].split())
+        # Containment guard needs enough text to be a meaningful match —
+        # short affirmatives ("yes", "ok") must not vanish into unrelated rows.
+        if len(norm) >= 20 and any(norm in db_norm for db_norm in db_norm_by_role.get(m["role"], [])):
+            continue
+        panel_only.append(m)
+
+    if not panel_only:
+        return db_messages
+
+    logger.info(
+        "[WEAVER] Panel-history merge: +%d on-screen message(s) missing from DB project (db=%d)",
+        len(panel_only), len(db_messages),
+    )
+    print(f"[WEAVER] Panel-history merge: +{len(panel_only)} on-screen message(s) missing from DB project")
+    return panel_only + db_messages
+
 def _extract_vision_context(messages: List[Dict[str, Any]]) -> str:
     """
     Extract vision context from assistant messages for refactor tasks.
@@ -62,12 +129,17 @@ def _extract_vision_context(messages: List[Dict[str, Any]]) -> str:
     from ._weaver_stream_utils_10 import _is_vision_context
     vision_parts = []
     
+    # 2026-07-04 (Taz): cap raised from a hardcoded 1000 — screenshots often
+    # hold dense build-relevant data that a 1000-char squeeze destroyed.
+    try:
+        _cap = max(500, int(__import__("os").getenv("ASTRA_WEAVER_VISION_CONTEXT_CHARS", "4000")))
+    except ValueError:
+        _cap = 4000
     for msg in messages:
         if msg.get("role") == "assistant":
             content = msg.get("content", "")
             if _is_vision_context(content):
-                # Extract relevant portions (first 1000 chars to avoid bloat)
-                vision_parts.append(content[:1000])
+                vision_parts.append(content[:_cap])
     
     if vision_parts:
         return "\n\n".join(vision_parts)

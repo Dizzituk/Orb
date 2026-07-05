@@ -1,8 +1,8 @@
 # FILE: app/llm/spec_gate_stream.py
 # Purpose: Spec Gate streaming handler for ASTRA command flow.
 # Called-by: app.llm.routing.handler_registry, tests.test_spec_gate_grounded
-# Depends-on: app, app.builds.pipeline_bridge, app.llm._sg_stream_persist, app.llm._spec_gate_stream_utils_2 (+9 more)
-# Last-renovated: 2026-06-11
+# Depends-on: app, app.builds.pipeline_bridge, app.llm._sg_stream_persist, app.llm._sg_target_injection, app.llm._spec_gate_stream_utils_2 (+9 more)
+# Last-renovated: 2026-07-04
 """
 Spec Gate streaming handler for ASTRA command flow.
 
@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from app.llm._spec_gate_stream_utils_2 import (
     _USE_GROUNDED_SPEC_GATE,
     _get_weaver_vision_context_from_flow,
+    _get_weaver_image_refs_from_flow,
     _load_latest_weaver_spec_json,
     _resolve_spec_gate_model,
     _safe_json_event,
@@ -155,75 +156,35 @@ async def generate_spec_gate_stream(
         weaver_spec_json, weaver_prov = _load_latest_weaver_spec_json(db, project_id)
         constraints_hint: dict = {"project_id": project_id}
 
-        # v2.5 (2026-04-08): Inject build target profile.
-        # Two lookup paths — ProjectSession (keyed by conversation_id) and
-        # BuildProject (keyed by chat project_id). The v2.4 code only tried
-        # ProjectSession, which uses a different key space than SpecGate's
-        # project_id, so the lookup always returned an empty session and the
-        # build target was never injected. This caused SpecGate to fall back
-        # to alias-based path extraction which misrouted "astra" jobs to
-        # D:\Orb instead of external projects like Astra-Bridge.
+        # v2.8 (2026-07-04): build-target hint resolution lives in
+        # _sg_target_injection.py (30KB cap) — session/BuildProject/signal
+        # lookup, the v2.7 greenfield override, and v2.8 greenfield
+        # AUTO-SCOPE: a greenfield_new_app weave with an explicit location
+        # gets its folder + build target created on the spot instead of a
+        # "go run manual scoping" hard stop. Chain docs in the leaf.
         try:
-            from app.pipeline_v2.target_registry import get_profile
-
-            _profile = None
-
-            # Path 1: ProjectSession (conversation-keyed)
-            try:
-                from app.shared_context.project_session import get_project_session
-                _session = get_project_session(str(project_id))
-                if _session.is_set and _session.project_id:
-                    _profile = get_profile(_session.project_id)
-            except Exception:
-                pass
-
-            # Path 2: BuildProject in database (most reliable — has build_target_id)
-            if not _profile:
-                try:
-                    from app.builds.pipeline_bridge import get_or_create_build_project
-                    _bp = get_or_create_build_project(db, project_id)
-                    if _bp and _bp.build_target_id:
-                        _profile = get_profile(_bp.build_target_id)
-                except Exception:
-                    pass
-
-            # Path 3: Auto-detect from Weaver text via target_registry signals
-            if not _profile:
-                try:
-                    from app.pipeline_v2.target_registry import resolve_project_from_message
-                    _detected = resolve_project_from_message(message)
-                    if _detected:
-                        _profile = _detected
-                except Exception:
-                    pass
-
-            if _profile:
-                constraints_hint["build_target_profile"] = {
-                    "project_id": _profile.project_id,
-                    "project_name": _profile.project_name,
-                    "project_root": _profile.project_root,
-                    "language": _profile.language,
-                    "framework": _profile.framework,
-                    "build_system": _profile.build_system,
-                    "source_root": _profile.source_root,
-                    "package_name": _profile.package_name,
-                    "architecture_pattern": _profile.architecture_pattern,
-                }
-                logger.info(
-                    "[spec_gate_stream] v2.5 Injected build target: %s (%s) at %s",
-                    _profile.project_id, _profile.project_name, _profile.project_root,
-                )
-                print(
-                    f"[spec_gate_stream] v2.5 BUILD TARGET: {_profile.project_id} "
-                    f"({_profile.project_name}) at {_profile.project_root}"
-                )
+            from app.llm._sg_target_injection import resolve_build_target_hint
+            _bt_profile, _bt_note = resolve_build_target_hint(
+                db=db, project_id=project_id, message=message,
+                weaver_spec_json=weaver_spec_json,
+            )
+            if _bt_profile:
+                constraints_hint["build_target_profile"] = _bt_profile
+            if _bt_note:
+                yield _safe_json_event({"type": "token", "content": _bt_note})
+                response_parts.append(_bt_note)
         except Exception as e:
-            logger.debug("[spec_gate_stream] v2.5 Profile injection failed: %s", e)
+            logger.debug("[spec_gate_stream] v2.8 target hint resolution failed: %s", e)
 
         # v2.3: Vision context
         vision_context = _get_weaver_vision_context_from_flow(project_id)
         if vision_context:
             constraints_hint["vision_context"] = vision_context
+        # 2026-07-04 vision upgrade: original image paths ride along so the
+        # spec runner can re-analyse the pixels (not just the chat prose).
+        _img_refs = _get_weaver_image_refs_from_flow(project_id)
+        if _img_refs:
+            constraints_hint["image_refs"] = _img_refs
 
         if weaver_spec_json:
             constraints_hint["weaver_spec_json"] = weaver_spec_json
@@ -233,7 +194,13 @@ async def generate_spec_gate_stream(
                 job_desc = weaver_spec_json.get("job_description", "")
                 constraints_hint["weaver_job_description_text"] = job_desc
                 constraints_hint["weaver_source"] = "weaver_simple"
-                found_msg = f"✓ Found Weaver job description ({len(job_desc)} chars)\n  Source: Simple Weaver (v3.0)\n\n"
+                # JOB 3 (2026-07-04): forward the Weaver's semantic job_class
+                # flag — spec_runner's greenfield gate treats
+                # greenfield_new_app as "stop for scoping" when no build
+                # target profile is attached.
+                _job_class = weaver_spec_json.get("job_class") or "unknown"
+                constraints_hint["weaver_job_class"] = _job_class
+                found_msg = f"✓ Found Weaver job description ({len(job_desc)} chars)\n  Source: Simple Weaver (v3.0)\n  Job class: {_job_class}\n\n"
             else:
                 content_verbatim = weaver_spec_json.get("content_verbatim") or weaver_spec_json.get("metadata", {}).get("content_verbatim")
                 location = weaver_spec_json.get("location") or weaver_spec_json.get("metadata", {}).get("location")

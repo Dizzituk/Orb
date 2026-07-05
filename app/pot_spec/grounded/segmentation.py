@@ -165,7 +165,11 @@ def validate_manifest(manifest: SegmentManifest) -> Tuple[bool, List[str]]:
             else:
                 file_owners[path] = seg.segment_id
 
-    # Check 4: Interface contracts (warning only)
+    # Check 4: Interface contracts — HARD requirement since live16
+    # (2026-07-05). Ten workers with no declared vocabulary each invented
+    # their own ("move_left" vs "left", inverted return meanings) and the
+    # integrator's name-grep passed it all. A depended-upon segment without
+    # contracts is a manifest defect, not a style warning.
     segments_with_dependents: Set[str] = set()
     for seg in manifest.segments:
         for dep in seg.dependencies:
@@ -174,9 +178,10 @@ def validate_manifest(manifest: SegmentManifest) -> Tuple[bool, List[str]]:
     for seg in manifest.segments:
         if seg.segment_id in segments_with_dependents:
             if seg.exposes is None or seg.exposes.is_empty():
-                logger.warning(
-                    "[segmentation] Segment %s has dependents but no interface contracts declared",
-                    seg.segment_id,
+                errors.append(
+                    f"Segment {seg.segment_id} has dependents but declares no "
+                    "interface contracts (exposes) — dependent workers would "
+                    "have to invent the interface"
                 )
 
     is_valid = len(errors) == 0

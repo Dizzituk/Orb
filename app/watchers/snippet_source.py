@@ -14,12 +14,22 @@ instance without touching the framework.
 
 from __future__ import annotations
 
+import html as _html
 import logging
+import re
 
 from app.watchers.framework import Reading
 from app.watchers.price_extract import extract_prices, median
 
 logger = logging.getLogger(__name__)
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _clean_snippet(text: str) -> str:
+    """Search-result snippets carry HTML tags and entities (&#163; for £,
+    <strong> around matched terms) — decode before price extraction."""
+    return _html.unescape(_TAG_RE.sub(" ", text or ""))
 
 
 async def observe_via_search(
@@ -40,7 +50,7 @@ async def observe_via_search(
     prices: list[float] = []
     domains: list[str] = []
     for r in results:
-        text = f"{r.get('title') or ''} {r.get('description') or ''}"
+        text = _clean_snippet(f"{r.get('title') or ''} {r.get('description') or ''}")
         found = extract_prices(text, currency=currency, lo=lo, hi=hi)
         if found:
             prices.extend(found)

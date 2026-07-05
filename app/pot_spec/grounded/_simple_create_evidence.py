@@ -45,8 +45,17 @@ async def fulfil_evidence_requests(
     goal: str = "",
     what_to_do: str = "",
     system_prompt: str = "",
+    job_id: Optional[str] = None,
 ) -> str:
-    """Fulfil EVIDENCE_REQUEST blocks by reading actual files and re-prompting."""
+    """Fulfil EVIDENCE_REQUEST blocks by reading actual files and re-prompting.
+
+    Derek p4: when ASTRA_SPECGATE_AGENT_DISPATCH=1, large fetched files are
+    distilled by SPECGATE_AGENT (HANDS tier) before re-prompting the APEX
+    main, and the distilled evidence lands in the job's Decision Ledger.
+    """
+    # Derek p4: one bounded agent budget per SpecGate run
+    from app.pot_spec.grounded.agent_dispatch import AgentBudget, distill_evidence_results
+    _agent_budget = AgentBudget()
     try:
         from app.llm.pipeline.evidence_loop import (
             parse_evidence_requests,
@@ -76,6 +85,15 @@ async def fulfil_evidence_requests(
             tool_calls = req.get("tool_calls", [])
             need = req.get("need", "")
             er_results = _dispatch_tool_calls(tool_calls, req_id, project_paths)
+
+            # Derek p4: HANDS-tier distillation (no-op when dispatch is off)
+            try:
+                er_results = await distill_evidence_results(
+                    er_results, need=need, goal=goal,
+                    job_id=job_id, budget=_agent_budget,
+                )
+            except Exception as _ad_err:
+                logger.warning("[SPEC_GATE_EVIDENCE] agent dispatch skipped: %s", _ad_err)
 
             any_success = any(r.get("success") for r in er_results)
             if any_success:

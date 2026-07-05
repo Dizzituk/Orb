@@ -29,12 +29,16 @@ logger = logging.getLogger(__name__)
 
 
 def _get_model() -> str:
-    """Read model from env. Checks fallback vars then primary."""
-    return (
-        os.getenv("IMAGE_GEN_FALLBACK_MODEL")
-        or os.getenv("IMAGE_GEN_MODEL")
-        or "gemini-2.5-flash-image"
-    )
+    """Read model from env (IMAGE_GEN_FALLBACK_MODEL only — env-driven).
+
+    No IMAGE_GEN_MODEL leg: that var holds the OpenAI primary image model,
+    which this Gemini backend can't run. No chat-model fallback either — a
+    chat model cannot generate images.
+    """
+    model = os.getenv("IMAGE_GEN_FALLBACK_MODEL", "")
+    if not model:
+        logger.error("[nano_banana] IMAGE_GEN_FALLBACK_MODEL not set in .env — cannot pick an image model")
+    return model
 
 
 async def generate_image(

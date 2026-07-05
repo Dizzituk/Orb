@@ -91,3 +91,24 @@ def validate_android_write_path(
 def is_android_build(profile: "BuildTargetProfile") -> bool:
     """Check if the current profile targets an Android build."""
     return profile.language == "kotlin"
+
+
+def is_host_build(profile: "BuildTargetProfile") -> bool:
+    """DEREK p5 (2026-07-04): should file/shell ops run on the HOST?
+
+    The sandbox exists so ASTRA's implementer can modify ASTRA without
+    corrupting its running self — it is for SELF-builds ONLY. Everything
+    else (Android, greenfield dynamic targets, external projects) builds
+    on the host. Before this fix, non-kotlin non-self targets (e.g. a
+    python greenfield game) silently routed to the sandbox — which the
+    greenfield lane guarantees is never required to be running.
+    """
+    if profile is None:
+        return False
+    if is_android_build(profile):
+        return True
+    try:
+        from app.pipeline_v2.clone_freshness import is_self_build
+        return not is_self_build(profile)
+    except Exception:
+        return False

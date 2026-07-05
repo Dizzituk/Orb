@@ -182,11 +182,33 @@ def recover_stale_running(db: Session) -> int:
     return len(stale)
 
 
+def _retry_cooldown_minutes() -> float:
+    import os
+
+    try:
+        return float(os.getenv("ASTRA_IDLE_RETRY_COOLDOWN_MINUTES", "60"))
+    except Exception:
+        return 60.0
+
+
 def is_due(db: Session, key: str, cadence_hours: float) -> bool:
     last = last_terminal_run(db, key)
-    if last is None or last.completed_at is None:
-        return True
-    return datetime.utcnow() - last.completed_at >= timedelta(hours=cadence_hours)
+    if last is not None and last.completed_at is not None:
+        if datetime.utcnow() - last.completed_at < timedelta(hours=cadence_hours):
+            return False
+    # Failed runs don't satisfy the cadence, but they do impose a cooldown —
+    # otherwise a task whose dependency is down (e.g. sandbox offline all
+    # night) gets re-queued and re-failed every idle window.
+    last_fail = (
+        db.query(IdleTaskRecord)
+        .filter(IdleTaskRecord.task_key == key, IdleTaskRecord.status == STATUS_FAILED)
+        .order_by(IdleTaskRecord.completed_at.desc())
+        .first()
+    )
+    if last_fail is not None and last_fail.completed_at is not None:
+        if datetime.utcnow() - last_fail.completed_at < timedelta(minutes=_retry_cooldown_minutes()):
+            return False
+    return True
 
 
 def recent_terminal(db: Session, limit: int = 10) -> List[IdleTaskRecord]:

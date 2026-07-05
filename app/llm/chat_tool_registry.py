@@ -17,42 +17,34 @@ from __future__ import annotations
 import logging
 from typing import Dict, List
 
+from app.llm.frontier_models import EnvModelSet
+
 logger = logging.getLogger(__name__)
 
-# Models that get tool access in chat mode
-# v1.2: Gemini models listed for future tool loop support.
-# Currently only Anthropic models run the full tool loop (stream_anthropic
-# accepts tools). Gemini models get codebase context via chat_codebase_reader
-# pre-loading instead. When stream_gemini gains tool support, flip the
-# provider gate below.
-_TRUSTED_MODELS_ANTHROPIC = {
-    "claude-opus-4-6",
-    "claude-opus-4-5",
-    "claude-sonnet-4-6",
-    "claude-sonnet-4-5",
-}
+# Models that get tool access in chat mode.
+# LANE D (2026-07-02): the hardcoded sets moved to .env —
+#   ASTRA_TOOL_TRUSTED_MODELS_{ANTHROPIC,GOOGLE,OPENAI} (comma lists), seeded
+# with the pre-change sets PLUS claude-opus-4-8/claude-sonnet-5 (the rotted
+# sets were silently stripping tools from the models .env actually routes).
+# EnvModelSet resolves membership per call, so a model added via the Models
+# settings UI gets tools on the next request.
+#
+# v1.2: Gemini models listed for future tool loop support. Currently only
+# Anthropic models run the full tool loop (stream_anthropic accepts tools).
+# Gemini models get codebase context via chat_codebase_reader pre-loading
+# instead. When stream_gemini gains tool support, flip the provider gate below.
+_TRUSTED_MODELS_ANTHROPIC = EnvModelSet("ASTRA_TOOL_TRUSTED_MODELS_ANTHROPIC")
 
-# Gemini models that WOULD get tool access once stream_gemini supports it.
-# For now these use pre-loaded codebase context (chat_codebase_reader).
-_TRUSTED_MODELS_GOOGLE = {
-    "gemini-3.1-pro-preview",
-    "gemini-3.1-pro-preview-customtools",
-}
+_TRUSTED_MODELS_GOOGLE = EnvModelSet("ASTRA_TOOL_TRUSTED_MODELS_GOOGLE")
 
 # v11.0: OpenAI models — now tool-eligible via _stream_with_tools_openai.
 # v12.0 (2026-06-17): the GPT-5 family is tool-eligible by PREFIX (see
-# is_tool_eligible), not just this set. The set stays for documentation; the
-# prefix guard means an ENV model swap to any new gpt-5* id (e.g. gpt-5.5) can
-# never silently strip tools on the phone/bridge or normal-chat paths (spec 3.2).
-# NOTE: the Debug /stream/chat path does not gate on this -- it loads write-tier
-# tools directly -- so this guard protects the OTHER OpenAI tool paths.
-_TRUSTED_MODELS_OPENAI = {
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gpt-5.4-turbo",
-    "gpt-5.5",
-    "gpt-5.5-mini",
-}
+# is_tool_eligible), not just this set — an ENV model swap to any new gpt-5*
+# id can never silently strip tools on the phone/bridge or normal-chat paths
+# (spec 3.2). NOTE: the Debug /stream/chat path does not gate on this -- it
+# loads write-tier tools directly -- so this guard protects the OTHER OpenAI
+# tool paths.
+_TRUSTED_MODELS_OPENAI = EnvModelSet("ASTRA_TOOL_TRUSTED_MODELS_OPENAI")
 
 
 def is_tool_eligible(provider: str, model: str) -> bool:
@@ -62,7 +54,13 @@ def is_tool_eligible(provider: str, model: str) -> bool:
     v11.0: OpenAI models now tool-eligible (tool loop + streaming delta accumulation).
     """
     if provider == "anthropic":
-        return model in _TRUSTED_MODELS_ANTHROPIC
+        # Prefix guard (2026-07-03, mirrors the gpt-5 rule below): any claude-*
+        # model is tool-eligible, so a FRONTIER/role model swap in .env or the
+        # Models tab can never silently strip tools. Live incident 2026-07-03
+        # 00:17: claude-fable-5 (the frontier role model) was missing from
+        # ASTRA_TOOL_TRUSTED_MODELS_ANTHROPIC, so the turn ran TOOLLESS and
+        # the model confabulated excuses instead of calling coursera_resume.
+        return model in _TRUSTED_MODELS_ANTHROPIC or str(model).lower().startswith("claude-")
     if provider in ("google", "gemini"):
         return model in _TRUSTED_MODELS_GOOGLE
     if provider == "openai":

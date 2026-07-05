@@ -59,6 +59,7 @@ Usage:
 
 import os
 import logging
+from collections.abc import Mapping
 from enum import Enum
 from typing import Optional, List, Dict, Any, Callable, Awaitable, Tuple
 from dataclasses import dataclass, field
@@ -122,47 +123,64 @@ class FallbackAction(str, Enum):
 # FALLBACK CHAINS
 # =============================================================================
 
-# Model fallback chains by role
-FALLBACK_CHAINS = {
-    # Code tasks: Claude Sonnet → Opus → GPT
-    "code": [
-        ("anthropic", "claude-sonnet-4-20250514"),
-        ("anthropic", "claude-opus-4-20250514"),
-        ("openai", "gpt-4.1"),
-    ],
-    
-    # Vision tasks: Gemini 2.5 Pro → Gemini 2.0 Flash → GPT-4.1-Vision
-    "vision": [
-        ("google", "gemini-2.5-pro-preview-05-06"),
-        ("google", "gemini-2.0-flash"),
-        ("openai", "gpt-4.1"),
-    ],
-    
-    # Video tasks: Gemini 3 Pro → Gemini 2.5 Pro
-    "video": [
-        ("google", "gemini-3.0-pro-preview"),
-        ("google", "gemini-2.5-pro-preview-05-06"),
-    ],
-    
-    # Critical tasks: Opus → Sonnet → GPT
-    "critical": [
-        ("anthropic", "claude-opus-4-20250514"),
-        ("anthropic", "claude-sonnet-4-20250514"),
-        ("openai", "gpt-4.1"),
-    ],
-    
-    # Text/research tasks: GPT → Sonnet
-    "text": [
-        ("openai", "gpt-4.1"),
-        ("anthropic", "claude-sonnet-4-20250514"),
-    ],
-    
-    # Critique: Gemini 3 → Sonnet
-    "critique": [
-        ("google", "gemini-3.0-pro-preview"),
-        ("anthropic", "claude-sonnet-4-20250514"),
-    ],
-}
+# Model fallback chains by role.
+# LANE D (2026-07-02): the chains live in .env as
+#   ASTRA_FALLBACK_CHAIN_<ROLE>=provider:model,provider:model,...
+# seeded with the pre-change values. FALLBACK_CHAINS keeps its historical
+# mapping contract (``FALLBACK_CHAINS["code"]``, ``.get``, iteration) but
+# resolves from .env ON ACCESS, so chain edits hot-apply without restart.
+
+_CHAIN_ROLES = ("code", "vision", "video", "critical", "text", "critique")
+
+
+def _parse_chain(raw: str) -> List[Tuple[str, str]]:
+    chain: List[Tuple[str, str]] = []
+    for item in (raw or "").split(","):
+        item = item.strip()
+        if not item or ":" not in item:
+            continue
+        provider, model = item.split(":", 1)
+        if provider.strip() and model.strip():
+            chain.append((provider.strip(), model.strip()))
+    return chain
+
+
+def _chain_from_env(role: str) -> List[Tuple[str, str]]:
+    chain = _parse_chain(os.getenv(f"ASTRA_FALLBACK_CHAIN_{role.upper()}", ""))
+    if chain:
+        return chain
+    # Unconfigured .env: degrade to the provider-default chain rather than a
+    # baked-in model list (fails loudly downstream if those are unset too).
+    from app.llm.frontier_models import get_provider_default_model
+    out: List[Tuple[str, str]] = []
+    for provider in ("anthropic", "openai", "google"):
+        model = get_provider_default_model(provider, strict=False)
+        if model:
+            out.append((provider, model))
+    if not out:
+        logger.error(
+            "[fallbacks] No fallback chain for role %r — set "
+            "ASTRA_FALLBACK_CHAIN_%s in .env", role, role.upper(),
+        )
+    return out
+
+
+class _EnvChainMap(Mapping):
+    """Mapping view of the fallback chains, resolved from .env on access."""
+
+    def __getitem__(self, role: str) -> List[Tuple[str, str]]:
+        if role not in _CHAIN_ROLES:
+            raise KeyError(role)
+        return _chain_from_env(role)
+
+    def __iter__(self):
+        return iter(_CHAIN_ROLES)
+
+    def __len__(self) -> int:
+        return len(_CHAIN_ROLES)
+
+
+FALLBACK_CHAINS: Mapping = _EnvChainMap()
 
 
 def get_fallback_chain(role: str) -> List[Tuple[str, str]]:

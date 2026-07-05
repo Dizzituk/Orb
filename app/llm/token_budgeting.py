@@ -39,6 +39,11 @@ NEVER DROP:
 - Task id/description
 - At least a minimal summary per modality
 
+MODEL-FAMILY CAPABILITY KEYS (DEFAULT_MAX_CONTEXT / get_model_max_context):
+Model-family substrings in this file are capability-table KEYS (context-window
+lookup), not routing selections — exempt from the no-hardcoded-models rule;
+unknown/new families fall through to a safe default window.
+
 Usage:
     from app.llm.token_budgeting import (
         TokenBudget,

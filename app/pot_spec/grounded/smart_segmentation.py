@@ -96,14 +96,25 @@ This is a one-way dependency: modules → facade, never facade → modules.
 - CYCLE PREVENTION: If segment A depends on segment B, then segment B MUST NOT \
 depend on segment A (directly or transitively). Before outputting, verify your \
 dependency graph has no cycles. If in doubt, remove the dependency.
-- CONTRACTS (v1.2, 2026-04-12): For every segment that has dependents OR is \
-depended on, declare the interface boundary explicitly in "exposes" and \
-"consumes" arrays using four categories. This is what lets the pipeline verify \
-producer/consumer coherence across segments — especially across different \
-repositories (e.g. a FastAPI backend publishing a route that an Android client \
-consumes). Populate these fields whenever the segment creates or uses a named \
-interface. Leaving them empty is acceptable for leaf segments with no public \
-surface, but REQUIRED when other segments depend on this one.
+- CONTRACTS (v1.3, 2026-07-05 — MANDATORY): For every segment that has \
+dependents OR is depended on, declare the interface boundary explicitly in \
+"exposes" and "consumes" arrays using four categories. This is what lets the \
+pipeline verify producer/consumer coherence across segments. A segment that \
+other segments depend on with EMPTY "exposes" is an INVALID output — the \
+manifest validator REJECTS it and your whole segmentation is discarded. \
+Leaving contracts empty is acceptable ONLY for leaf segments nothing depends on.
+- SHARED VOCABULARIES ARE CONTRACTS (v1.3): when segments communicate through \
+string values — action names, event types, state keys, message kinds — those \
+EXACT strings are the interface. The producer declares each one verbatim in \
+exposes.export_names and EVERY consumer declares the same strings in \
+consumes.export_names. (A real failure this rule exists to prevent: an input \
+segment emitted "move_left" while the game-state segment matched "left" — \
+both compiled, nothing worked.)
+- RETURN SEMANTICS (v1.3): when a declared method returns a bool/status whose \
+MEANING matters across the boundary, append the meaning as a trailing comment \
+in the signature, e.g. "def update_gravity(piece, board, dt) -> bool  \
+# returns True when the piece LOCKED (not when it moved)". Workers implement \
+to the declared meaning; ambiguity here inverted a whole game loop once.
 
 CONTRACT CATEGORIES:
 - class_names: ["AudioCache", "SessionCheck"] — named classes/sealed types \
@@ -430,6 +441,7 @@ async def generate_concept_segments(
             system_prompt=GROUPING_SYSTEM_PROMPT,
             max_tokens=2000,
             timeout_seconds=45,
+            stage="smart_segmentation",  # Derek p1: cost attribution
         )
 
         if not result.is_success():

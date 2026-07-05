@@ -189,7 +189,11 @@ def _format_chunk(chunk) -> str:
     if chunk.signature:
         parts.append(f"  {chunk.signature.strip()[:200]}")
     if chunk.docstring:
-        doc = " ".join(chunk.docstring.split())[:240]
+        # Enriched architecture cards (2026-07-02) hold a whole system-level
+        # card in docstring — a 240-char slice defeats their purpose. Give
+        # them a real slice; code chunks keep the compact one-liner.
+        limit = 1200 if chunk.chunk_type == "architecture_card" else 240
+        doc = " ".join(chunk.docstring.split())[:limit]
         parts.append(f"  {doc}")
     return "\n".join(parts)
 

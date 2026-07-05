@@ -178,14 +178,14 @@ async def read_file(
     path: str,
     profile: Optional["BuildTargetProfile"] = None,
 ) -> Optional[str]:
-    """Read a file. For Android builds, reads directly from host.
-    For ASTRA builds, reads from the sandbox."""
+    """Read a file. Host-mode for Android/greenfield/external builds,
+    sandbox for ASTRA self-builds (Derek p5: is_host_build)."""
     import urllib.parse
 
-    # v2.3: Host-mode read for Android builds
+    # v2.3: Host-mode read; Derek p5: any non-self-build routes host
     if profile is not None:
-        from app.pipeline_v2.android_sandbox import is_android_build
-        if is_android_build(profile):
+        from app.pipeline_v2.android_sandbox import is_host_build
+        if is_host_build(profile):
             return await _host_read_file(path, profile)
 
     norm = path.replace("\\", "/")
@@ -223,18 +223,21 @@ async def write_file(
     content: str,
     profile: Optional["BuildTargetProfile"] = None,
 ) -> bool:
-    """Write a file. For Android builds, writes directly to host filesystem.
-    For ASTRA builds, writes through the sandbox.
+    """Write a file. Host-mode for Android/greenfield/external builds,
+    sandbox for ASTRA self-builds (Derek p5: is_host_build).
 
     Android writes are path-validated to stay within the project root.
     """
     abs_path = _resolve_path(path, profile)
 
-    # v2.3: Host-mode write for Android builds
+    # v2.3: Host-mode write; Derek p5: any non-self-build routes host
     if profile is not None:
-        from app.pipeline_v2.android_sandbox import is_android_build, validate_android_write_path
-        if is_android_build(profile):
-            abs_path = validate_android_write_path(abs_path, profile)
+        from app.pipeline_v2.android_sandbox import (
+            is_android_build, is_host_build, validate_android_write_path,
+        )
+        if is_host_build(profile):
+            if is_android_build(profile):
+                abs_path = validate_android_write_path(abs_path, profile)
             return await _host_write_file(abs_path, content)
 
     data = await _sandbox_post("/fs/write", {"path": abs_path, "content": content})
@@ -310,10 +313,11 @@ async def file_exists(
     path: str,
     profile: Optional["BuildTargetProfile"] = None,
 ) -> bool:
-    """Check if a file exists. Host-mode for Android, sandbox for ASTRA."""
+    """Check if a file exists. Host-mode for Android/greenfield/external,
+    sandbox for ASTRA self-builds."""
     if profile is not None:
-        from app.pipeline_v2.android_sandbox import is_android_build
-        if is_android_build(profile):
+        from app.pipeline_v2.android_sandbox import is_host_build
+        if is_host_build(profile):
             return await _host_file_exists(path, profile)
 
     abs_path = _resolve_path(path, profile)
@@ -328,10 +332,11 @@ async def list_dir(
     path: str,
     profile: Optional["BuildTargetProfile"] = None,
 ) -> Optional[list]:
-    """List directory contents. Host-mode for Android, sandbox for ASTRA."""
+    """List directory contents. Host-mode for Android/greenfield/external,
+    sandbox for ASTRA self-builds."""
     if profile is not None:
-        from app.pipeline_v2.android_sandbox import is_android_build
-        if is_android_build(profile):
+        from app.pipeline_v2.android_sandbox import is_host_build
+        if is_host_build(profile):
             return await _host_list_dir(path, profile)
 
     abs_path = _resolve_path(path, profile)
@@ -359,10 +364,10 @@ async def run_shell(
 
     Returns dict with: stdout, stderr, returncode.
     """
-    # v2.3: Host-mode shell for Android builds
+    # v2.3: Host-mode shell; Derek p5: any non-self-build routes host
     if profile is not None:
-        from app.pipeline_v2.android_sandbox import is_android_build
-        if is_android_build(profile):
+        from app.pipeline_v2.android_sandbox import is_host_build
+        if is_host_build(profile):
             return await _host_run_shell(cmd, timeout_sec)
 
     data = await _sandbox_post(
@@ -379,6 +384,37 @@ async def run_shell(
     return {"stdout": "", "stderr": "sandbox unreachable", "returncode": -1}
 
 
+# live14 (2026-07-05): MODEL-ISSUED shell commands must never manage host
+# process/system lifecycle. A checkout-repair worker "cleaned up" its own
+# game test by killing every python process — taking the ASTRA backend and
+# Chatterbox down with it (both exited -1 at 11:04, mid-repair-round).
+# System code (emulator bridge, backend_tools, eyes) composes its own
+# trusted commands and does NOT go through this check — it applies only at
+# the LLM tool boundary (llm_tool_exec.run_shell).
+_FORBIDDEN_HOST_CMD_RE = __import__("re").compile(
+    r"(?ix)"
+    r"(\b(stop-process|taskkill|tskill|stop-computer|restart-computer|"
+    r"shutdown|logoff|stop-service|restart-service|start-process)\b"
+    r"|\.kill\(\)"
+    r"|\bwmic\s+process\b.*\bdelete\b)"
+)
+
+
+def is_forbidden_host_command(cmd: str) -> str:
+    """Reason string when a model-issued command is lifecycle-forbidden,
+    else ''. Pure and unit-tested — this is the whole policy surface."""
+    m = _FORBIDDEN_HOST_CMD_RE.search(cmd or "")
+    if not m:
+        return ""
+    return (
+        f"BLOCKED ({m.group(0).strip()}): process/system lifecycle commands are "
+        "forbidden in build/repair shells — a repair worker once killed the "
+        "ASTRA backend itself this way. Fix code and run quick checks "
+        "(py_compile, pytest, python -c) only. The checkout eyes own "
+        "launching and stopping the app; it re-runs automatically after you finish."
+    )
+
+
 async def _host_run_shell(cmd: str, timeout_sec: int = 30) -> dict:
     """Run a shell command directly on the host via subprocess.
 
@@ -386,6 +422,7 @@ async def _host_run_shell(cmd: str, timeout_sec: int = 30) -> dict:
     must execute on the host PC, not in the Windows Sandbox.
     """
     import asyncio
+    proc = None
     try:
         proc = await asyncio.wait_for(
             asyncio.create_subprocess_exec(
@@ -405,6 +442,13 @@ async def _host_run_shell(cmd: str, timeout_sec: int = 30) -> dict:
             "returncode": proc.returncode or 0,
         }
     except asyncio.TimeoutError:
+        # live14: never leak the child — the leaked game process from a
+        # timed-out launch was what the repair worker then tried to kill.
+        try:
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+        except Exception:
+            pass
         logger.warning("[host_shell] Command timed out after %ds: %s", timeout_sec, cmd[:100])
         return {"stdout": "", "stderr": f"Timed out after {timeout_sec}s", "returncode": -1}
     except Exception as e:

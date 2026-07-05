@@ -332,6 +332,16 @@ def _build_generic_spec(
                 lines.append(line.strip())
     lines.extend([
         "",
+        "## Runtime Constraints",
+        "",
+        "- MUST boot and run with ZERO asset files present: the build creates no",
+        "  assets/ directory, so the code must never load one. Fonts: use the",
+        "  toolkit's built-in/system default (e.g. pygame.font.SysFont). Audio:",
+        "  synthesize procedurally in code, or degrade to SILENCE behind a",
+        "  try/except — a missing sound must never crash or block startup.",
+        "- The entry point must open its window even when optional subsystems",
+        "  (audio, fonts, save data) fail to initialise.",
+        "",
         "## Acceptance Criteria",
         "",
         "- [ ] Project compiles/runs successfully",

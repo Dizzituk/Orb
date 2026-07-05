@@ -2,7 +2,7 @@
 # Purpose: Bridge that runs the Debug Orchestrator and emits its events as SSE bytes in
 # Called-by: app.debug.debug_chat
 # Depends-on: app.debug.orchestrator.activity_store, app.debug.orchestrator.loop_controller, app.debug.orchestrator.schemas
-# Last-renovated: 2026-06-11
+# Last-renovated: 2026-07-02 (metadata provider honest + missing-key fallback notice)
 """
 Bridge that runs the Debug Orchestrator and emits its events as SSE bytes in
 the same shape that `stream_debug_locked` already uses, so the existing Chat
@@ -122,11 +122,19 @@ async def stream_orchestration_as_chat(
     Consumers receive the same `{"type": "token" | "tool_call" | "done" | "error"}`
     events as the normal chat tool loop, so no frontend changes are required.
     """
+    from app.debug.debug_model_config import get_active_provider, provider_fallback_active
+
     yield _sse({
         "type": "token",
         "content": f"🚀 **Auto-routing to Debug Orchestrator** — parallel pipeline starting.\n\n",
     })
-    yield _sse({"type": "metadata", "provider": "openai", "model": "orchestrator"})
+    if provider_fallback_active():
+        # Missing-key soft-fail, surfaced in the visible stream (jobspec design).
+        yield _sse({
+            "type": "token",
+            "content": "⚠ Anthropic key missing — debug falling back to OpenAI for this run.\n\n",
+        })
+    yield _sse({"type": "metadata", "provider": get_active_provider(), "model": "orchestrator"})
 
     request = OrchestrationRequest(
         project_id=project_id,
@@ -213,4 +221,4 @@ async def stream_orchestration_as_chat(
         lines.append(resolution.summary)
 
     yield _sse({"type": "token", "content": "\n".join(lines) + "\n"})
-    yield _sse({"type": "done", "provider": "openai", "model": "orchestrator"})
+    yield _sse({"type": "done", "provider": get_active_provider(), "model": "orchestrator"})

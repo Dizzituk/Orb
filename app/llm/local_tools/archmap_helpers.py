@@ -23,6 +23,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 from app.memory import service as memory_service, schemas as memory_schemas
 from app.llm.local_tools._archmap_helpers_utils_2 import ARCHMAP_MAX_CONTINUATION_ROUNDS, ARCHMAP_PROVIDER, _ARCHMAP_TRIGGER_SET, _DENY_FILE_PATTERNS, _UPDATE_ARCH_TRIGGER_SET, _read_controller_addr_txt, _safe_read_text, default_zobie_mapper_out_dir
+from app.llm.frontier_models import get_provider_default_model
 
 logger = logging.getLogger(__name__)
 
@@ -134,12 +135,12 @@ ARCHMAP_OUTPUT_FILE = "ARCHITECTURE_MAP.md"  # Single file, always overwritten
 
 # UPDATE ARCHITECTURE: No LLM needed (just scan)
 
-# CREATE ARCHITECTURE MAP: Use Claude Opus 4.5
-ARCHMAP_MODEL = os.getenv("ORB_ARCHMAP_MODEL", "claude-opus-4-5-20251101")
+# CREATE ARCHITECTURE MAP: env-driven (ORB_ARCHMAP_MODEL, resolved at import)
+ARCHMAP_MODEL = os.getenv("ORB_ARCHMAP_MODEL") or get_provider_default_model("anthropic", strict=False)
 
-# Fallback if Opus unavailable
+# Fallback if primary unavailable
 ARCHMAP_FALLBACK_PROVIDER = os.getenv("ORB_ARCHMAP_FALLBACK_PROVIDER", "openai")
-ARCHMAP_FALLBACK_MODEL = os.getenv("ORB_ARCHMAP_FALLBACK_MODEL", "gpt-5-mini")
+ARCHMAP_FALLBACK_MODEL = os.getenv("ORB_ARCHMAP_FALLBACK_MODEL") or get_provider_default_model("openai", strict=False)
 
 # =============================================================================
 # SCAN CONFIGURATION

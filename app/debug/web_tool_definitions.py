@@ -1,8 +1,8 @@
 # FILE: app/debug/web_tool_definitions.py
 # Purpose: Chat-facing tool definitions for web browsing.
 # Called-by: app.debug.tool_definitions
-# Depends-on: app.debug, app.web_automation.coursera_reader
-# Last-renovated: 2026-07-01
+# Depends-on: app.debug.web_tool_playbooks, app.debug.web_upload_tool_definitions, app.web_automation.coursera_reader, app.web_automation.coursera_study_tools
+# Last-renovated: 2026-07-02
 """
 Chat-facing tool definitions for web browsing.
 
@@ -17,6 +17,13 @@ from app/debug/tool_definitions.py in a specific "parameters" shape,
 while app/web_automation/tool_schemas.py uses "input_schema" for its
 API consumers. Keeping the two shapes separate and translating at the
 boundary is simpler than trying to unify them.
+
+Reliability policy (2026-07-02, Amendment A Job 9): DOM-first with
+resolve-at-click-time targeting. Preferred action order is role+name
+from the snapshot, then stable CSS, then fresh-snapshot coordinates,
+then vision+snap as last resort; web_wait_for gates every navigation
+and state-changing click. Upload + native-dialog defs live in
+web_upload_tool_definitions.py (size cap).
 """
 from __future__ import annotations
 
@@ -24,16 +31,25 @@ from typing import List
 
 from app.debug.web_tool_playbooks import (
     CLICK_RESULT_INTERPRETATION,
-    META_UPLOAD_PLAYBOOK,
-    RETRY_POLICY,
+    POST_SUBMIT_MODAL_RECOVERY,
     TEXT_INPUT_TARGETING,
-    WRONG_PAGE_RECOVERY,
+)
+# Long-prose upload defs live in their own module (file-size cap).
+from app.debug.web_upload_tool_definitions import (
+    SYSTEM_KEYS_TOOL,
+    WEB_UPLOAD_FILE_TOOL,
 )
 # Coursera composites keep their full chat tool defs next to their logic
-# in coursera_reader.py; import rather than grow this file (near the cap).
+# in coursera_reader.py / coursera_study_tools.py; import rather than
+# grow this file (near the cap).
 from app.web_automation.coursera_reader import (
     WEB_COURSERA_HEALTH_TOOL,
     WEB_COURSERA_PROGRESS_TOOL,
+)
+from app.web_automation.coursera_study_tools import (
+    COURSERA_NEXT_ITEM_TOOL,
+    COURSERA_READ_LESSON_TOOL,
+    COURSERA_RESUME_TOOL,
 )
 
 
@@ -70,7 +86,10 @@ WEB_OPEN_SESSION_TOOL = {
         "failing with 'desktop browser is offline' means the ASTRA desktop "
         "app is NOT RUNNING — tell the user to start the desktop app; do "
         "not retry or blame the page. 'page did not respond' means the "
-        "desktop IS up but the page stalled — that one is worth a retry."
+        "desktop IS up but the page stalled — that one is worth a retry. "
+        "'browser is busy on a previous action' means the desktop is up and "
+        "mid-action — wait a few seconds and retry; never report it as "
+        "offline."
     ),
     "parameters": {
         "type": "object",
@@ -86,8 +105,10 @@ WEB_NAVIGATE_TOOL = {
     "description": (
         "Navigate a browser session to a specific URL. Use when you know "
         "exactly where to go, e.g. 'https://www.coursera.org/learn/<course>'. "
-        "Page load typically takes 3-8 seconds. After navigating, call "
-        "web_dom_snapshot or web_current_state to see where you landed."
+        "Returns after the page's load event fires; SPA content often "
+        "renders AFTER that — follow with web_wait_for on a known element "
+        "(or url_pattern) before the next read or action, then "
+        "web_dom_snapshot to see where you landed."
     ),
     "parameters": {
         "type": "object",
@@ -119,18 +140,22 @@ WEB_DOM_SNAPSHOT_TOOL = {
     "name": "web_dom_snapshot",
     "description": (
         "Return the page's accessibility tree: every interactive element "
-        "(links, buttons, headings, form fields) with role, text content, "
-        "href target, and pixel coordinates + size (x, y, w, h). This is "
-        "the PRIMARY way to understand what's on a page when you don't "
-        "already know the CSS selectors. Works reliably on React apps like "
-        "Coursera where class names are obfuscated — but it carries NO "
-        "visual done-state: Coursera completion ticks / progress bars look "
-        "identical for finished and unfinished modules in the tree, so for "
-        "course progress questions use web_coursera_progress instead. After "
-        "reading the snapshot, click by coordinates (web_click with x/y) or "
-        "navigate to any href you found. When multiple elements share the same "
-        "text (common for 'Get started', 'Sign in', 'Post' etc.), prefer "
-        "the one with the LARGEST w×h — CTA buttons are typically "
+        "(links, buttons, headings, form fields) with role, name, text "
+        "content, href target, and pixel coordinates + size (x, y, w, h). "
+        "This is the PRIMARY way to understand what's on a page. Act on "
+        "what you find with web_click: pass role + name copied straight "
+        "from the element (BEST — re-resolved inside the live page at "
+        "click time), or a stable CSS selector when one exists. "
+        "Coordinates are valid only immediately after this snapshot with "
+        "NOTHING in between — SPA re-renders, lazy-loads and scrolls move "
+        "elements, and stale coords click whatever sits there now. Works "
+        "reliably on React apps like Coursera where class names are "
+        "obfuscated — but it carries NO visual done-state: Coursera "
+        "completion ticks / progress bars look identical for finished and "
+        "unfinished modules in the tree, so for course progress questions "
+        "use web_coursera_progress instead. When multiple elements share "
+        "the same text (common for 'Get started', 'Sign in', 'Post' etc.), "
+        "prefer the one with the LARGEST w×h — CTA buttons are typically "
         "300-500px wide × 48-64px tall, while menu items are smaller. "
         "Large pages return 50-200+ elements; filter mentally for what "
         "you need rather than dumping everything to the user."
@@ -172,58 +197,100 @@ WEB_EXTRACT_TEXT_TOOL = {
 WEB_CLICK_TOOL = {
     "name": "web_click",
     "description": (
-        "Click an element. Pass EITHER a CSS selector OR (x, y) pixel "
-        "coordinates from web_dom_snapshot — not both. Coordinates are "
-        "more reliable than selectors on React apps. "
+        "Click an element. TARGETING — in order of preference:"
         "\n\n"
-        "SNAP-TO-BUTTON for vision-driven clicks: when the (x, y) coords "
-        "come from web_vision_check rather than web_dom_snapshot, ALSO "
-        "pass `snap_to_button: true`. Vision is approximate (±50 px "
-        "wobble); snap mode walks up the DOM from the vision pixel to "
-        "the nearest interactive element (button, link, role=button) "
-        "and clicks ITS centre instead of the raw vision coord. If the "
-        "vision pixel falls in margin / padding (no element there), "
-        "snap then searches outward in expanding rings up to 150 px and "
-        "snaps to the nearest button-sized interactive element. The "
-        "result includes a `snapped` field showing what element you "
-        "actually hit (tag, text, w, h, search_distance)."
+        "1. role + name (BEST): copy `role` and `name` (aria-label or "
+        "visible text) straight from an element in the latest "
+        "web_dom_snapshot. The click re-resolves the element INSIDE the "
+        "live page at click time — by role, aria-label and visible text, "
+        "the same fields the snapshot reports — so it still lands after "
+        "SPA re-renders, lazy-loads and scrolls. Matching is "
+        "case-insensitive; exact names beat substrings; on ties the "
+        "larger element wins. The result's `resolved` field shows exactly "
+        "which element was hit."
         "\n\n"
-        "Do NOT pass snap_to_button when coords come from dom_snapshot "
-        "— those coords are already centre-of-element."
+        "2. CSS `selector` — when a stable selector exists (aria-label "
+        "attributes, IDs, input[type=file]). Never guess obfuscated / "
+        "hashed class names."
+        "\n\n"
+        "3. (x, y) coordinates — ONLY from a web_dom_snapshot taken "
+        "immediately before this click with NOTHING in between. "
+        "Coordinates go stale fast: SPA re-renders, lazy-loading and "
+        "scrolling all move elements, and a click at old coordinates hits "
+        "whatever sits there NOW. If anything happened since the snapshot "
+        "(a click, a wait, a scroll, late rendering), snapshot again "
+        "first."
+        "\n\n"
+        "4. Vision-derived coords + snap_to_button=true — LAST resort, for "
+        "targets the DOM tree cannot disambiguate. Vision is approximate "
+        "(±50 px); snap walks from the vision pixel to the nearest "
+        "interactive element (expanding rings up to 150 px) and clicks ITS "
+        "centre. The `snapped` result field shows what was actually hit "
+        "(tag, text, w, h, search_distance). Do NOT pass snap_to_button "
+        "for role/name, selector, or dom_snapshot-coordinate clicks."
         "\n\n"
         + TEXT_INPUT_TARGETING
         + "\n\n"
         + CLICK_RESULT_INTERPRETATION
         + "\n\n"
-        "AFTER PUBLISHING / POSTING / SUBMITTING: most social platforms "
-        "throw up a follow-up modal once the action succeeds — 'Schedule "
-        "another post?', 'Boost this post?', 'Try Premium', etc. The post "
-        "itself went through, but the modal blocks the next interaction "
-        "with the page and the user is left staring at it. The task is "
-        "NOT complete until the page is back to a usable state. After a "
-        "successful submit, run web_dom_snapshot — if you see a modal "
-        "with a close 'X', a 'Maybe later', 'Not now', 'Skip', 'No thanks', "
-        "'Dismiss', or similar dismiss button, click it to close the modal "
-        "before declaring the task done. Do NOT pick the affirmative option "
-        "('Schedule another post', 'Boost', 'Upgrade') unless the user "
-        "explicitly asked for it."
+        + POST_SUBMIT_MODAL_RECOVERY
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "session":  {"type": "string", "description": _SESSION_DESC},
+            "role":     {"type": "string", "description": "ARIA role from the snapshot ('button', 'link', 'tab', 'menuitem', ...). Use with `name`."},
+            "name":     {"type": "string", "description": "Accessible name: the element's aria-label or visible text as shown in the snapshot. Preferred targeting (with `role`)."},
             "selector": {"type": "string", "description": "CSS selector of element to click."},
-            "x":        {"type": "integer", "description": "X coordinate in pixels (from web_dom_snapshot or web_vision_check)."},
-            "y":        {"type": "integer", "description": "Y coordinate in pixels (from web_dom_snapshot or web_vision_check)."},
+            "x":        {"type": "integer", "description": "X coordinate in pixels — only from a snapshot taken immediately before this click, nothing in between."},
+            "y":        {"type": "integer", "description": "Y coordinate in pixels — only from a snapshot taken immediately before this click, nothing in between."},
             "snap_to_button": {
                 "type": "boolean",
                 "description": (
                     "Snap (x, y) to the nearest interactive element's centre "
-                    "before clicking. Set TRUE when coords came from "
+                    "before clicking. Set TRUE only when coords came from "
                     "web_vision_check (vision is ~50px imprecise). Leave "
-                    "FALSE / unset when coords came from web_dom_snapshot."
+                    "FALSE / unset for every other targeting mode."
                 ),
             },
+        },
+        "required": ["session"],
+    },
+}
+
+WEB_WAIT_FOR_TOOL = {
+    "name": "web_wait_for",
+    "description": (
+        "Wait until the page is actually ready instead of guessing. Polls "
+        "for a CSS `selector` (with `state`: visible / attached / gone), a "
+        "`text` snippet, and/or a `url_pattern` regex; returns as soon as "
+        "the condition holds. A timeout is NOT an error: you get ok=true, "
+        "matched=false, timeout=true — decide yourself whether that's "
+        "fatal. WHEN TO USE (mandatory habit): after EVERY web_navigate; "
+        "after any click that changes page state (opens a composer, modal, "
+        "menu or new route); and after upload/attach steps — always BEFORE "
+        "the next read or action. Use state='gone' to wait for spinners / "
+        "overlays to clear. ON TIMEOUT: do NOT blindly retry the previous "
+        "click — take a fresh web_dom_snapshot, re-orient, then act. Cheap "
+        "(a DOM poll every 250ms), so prefer it over any fixed pause."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "session":     {"type": "string", "description": _SESSION_DESC},
+            "selector":    {"type": "string", "description": "CSS selector to wait for."},
+            "text":        {"type": "string", "description": "Wait for this text on the page (or inside selector matches if both given)."},
+            "url_pattern": {"type": "string", "description": "Regex tested against the current URL."},
+            "state": {
+                "type": "string",
+                "enum": ["visible", "attached", "gone"],
+                "description": (
+                    "visible (default) = exists with non-zero size; attached "
+                    "= present in DOM; gone = no longer present (spinners, "
+                    "modals)."
+                ),
+            },
+            "timeout_ms": {"type": "integer", "description": "Max wait in ms (default 15000, cap 60000)."},
         },
         "required": ["session"],
     },
@@ -255,7 +322,10 @@ WEB_SCROLL_TOOL = {
         "Scroll the page. Directions: 'up' / 'down' scroll by `amount` "
         "pixels (default 500); 'top' / 'bottom' jump to that edge. Useful "
         "when the content you need is below the fold, or to trigger "
-        "lazy-loaded elements (infinite-scroll feeds, chart dashboards)."
+        "lazy-loaded elements (infinite-scroll feeds, chart dashboards). "
+        "Scrolling moves elements: any coordinates from an earlier "
+        "snapshot are stale afterwards — snapshot again, or click by "
+        "role+name which re-resolves at click time."
     ),
     "parameters": {
         "type": "object",
@@ -357,211 +427,6 @@ WEB_VISION_CHECK_TOOL = {
 }
 
 
-WEB_UPLOAD_FILE_TOOL = {
-    "name": "web_upload_file",
-    "description": (
-        "Attach a local file (image, video, document) to a web upload control. "
-        "Do NOT use read_file or any other filesystem tool to attach images to "
-        "a web form — reading the file just dumps bytes into the chat, it does "
-        "not attach anything."
-        "\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "WHEN TO USE THIS TOOL vs system_keys\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        "\n\n"
-        "PRIMARY (recommended for Meta / Instagram / TikTok / YouTube / "
-        "WordPress and other modern SPAs): use web_click to click the upload "
-        "button, let the native OS file dialog open, then use system_keys to "
-        "type the absolute path and press Enter. Production-tested. Works "
-        "reliably because it bypasses the in-page chooser-intercept layer "
-        "entirely — the OS dialog auto-focuses and SendKeys lands on it. "
-        "See the worked example below."
-        "\n\n"
-        "FALLBACK (use this tool, web_upload_file): pass `(x, y)` of the "
-        "upload button. Electron enables Chrome DevTools file-chooser "
-        "interception, which suppresses the OS dialog and injects the file "
-        "directly. Cleaner when it works — no focus dependency, no SendKeys "
-        "— BUT Meta and several other platforms wrap their upload control "
-        "in a way that the intercept misses, in which case this tool times "
-        "out after 5 seconds with a 'no file chooser opened' error. If you "
-        "hit that error, switch to the system_keys flow on the next attempt."
-        "\n\n"
-        "SELECTOR MODE: pass `selector` (CSS selector for an actual "
-        "<input type=file>) for plain HTML forms. Modern social platforms "
-        "hide their inputs, so this rarely applies to them."
-        "\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        + META_UPLOAD_PLAYBOOK
-        + "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        + RETRY_POLICY
-        + "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        + WRONG_PAGE_RECOVERY
-        + "\n"
-        "DO NOT pick coordinates from web_dom_snapshot alone for the upload "
-        "trigger inside a modal-style picker. The accessibility tree returns "
-        "dozens of generic 'button' elements that look identical — Recents "
-        "thumbnails, tab switchers, close buttons, the actual upload "
-        "trigger. Vision can disambiguate; the DOM tree alone cannot. "
-        "For dropdown-style menus the DOM IS enough — the sub-options have "
-        "distinctive text labels."
-        "\n\n"
-        "FILE PATH: Always absolute. ASTRA's generated images live in the "
-        "directory listed in the [ASTRA FILESYSTEM] block of your context; "
-        "join that directory with the filename you saw in chat history. "
-        "No filesystem search needed."
-        "\n\n"
-        "AFTER UPLOAD: the file is attached but the post is NOT yet "
-        "submitted. Still need to click the platform's Post / Publish / "
-        "Schedule button."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "session":   {"type": "string", "description": _SESSION_DESC},
-            "file_path": {
-                "type": "string",
-                "description": (
-                    "Absolute filesystem path to the file. For ASTRA-generated "
-                    "images, build it from the [ASTRA FILESYSTEM] directory + "
-                    "filename in chat history. Forward or back slashes both fine."
-                ),
-            },
-            "x": {
-                "type": "integer",
-                "description": (
-                    "X pixel coordinate of the upload BUTTON (click mode). "
-                    "From web_dom_snapshot. Pair with y."
-                ),
-            },
-            "y": {
-                "type": "integer",
-                "description": (
-                    "Y pixel coordinate of the upload BUTTON (click mode). "
-                    "From web_dom_snapshot. Pair with x."
-                ),
-            },
-            "selector": {
-                "type": "string",
-                "description": (
-                    "CSS selector for an <input type='file'> element "
-                    "(selector mode). Plain HTML forms only — modern SPAs "
-                    "hide this input, so use (x, y) instead."
-                ),
-            },
-        },
-        "required": ["session", "file_path"],
-    },
-}
-
-
-SYSTEM_KEYS_TOOL = {
-    "name": "system_keys",
-    "description": (
-        "Send keystrokes to whatever native OS window currently has focus."
-        "\n\n"
-        "PRIMARY USE CASE: driving the native Windows file Open dialog that "
-        "appears when you click 'Upload from desktop' on Meta / Instagram / "
-        "TikTok / YouTube / WordPress. The dialog auto-focuses the moment "
-        "it appears, so SendKeys lands on it. Pass an absolute file path as "
-        "`text` and `press_enter_after=true` — Windows accepts paths "
-        "directly in the filename field, so no folder navigation is needed. "
-        "The dialog typing finishes in ~1 second."
-        "\n\n"
-        "FLOW (combined with web_click and web_vision_check) — use the"
-        " verify-before-commit pattern, NOT atomic type+Enter:"
-        "\n\n"
-        "  1. web_vision_check returns the upload button's (x, y)."
-        "\n"
-        "  2. web_click(x, y) — native file dialog opens."
-        "\n"
-        "  3. web_vision_check: 'Is a Windows file Open dialog visible "
-        "with a File name field?' — confirm dialog is up before typing."
-        "\n"
-        "  4. system_keys(text='C:\\\\path\\\\to\\\\file.png', "
-        "press_enter_after=FALSE, pre_delay_ms=1500) — path typed, "
-        "NOT yet committed. Empty / partial result here is recoverable; "
-        "a committed wrong path isn't."
-        "\n"
-        "  5. web_vision_check: 'What text is in the File name input?' — "
-        "verify the typed path appears correctly. If empty or partial, "
-        "focus was stolen — re-click the filename field and retry step 4 "
-        "with pre_delay_ms=2000."
-        "\n"
-        "  6. system_keys(text='', press_enter_after=true, pre_delay_ms=300) "
-        "— commits the verified path with Enter alone, no retyping. "
-        "(Empty-text + Enter is supported specifically for this commit "
-        "step; ALL OTHER calls require non-empty text.)"
-        "\n"
-        "  7. web_dom_snapshot — confirm the thumbnail appeared in the "
-        "composer."
-        "\n\n"
-        "WHY SPLIT TYPE FROM COMMIT: atomic press_enter_after=true with a "
-        "long path is a focus-failure trap. If the dialog isn't actually "
-        "focused (window-stack race, app stole focus mid-keypress, etc.), "
-        "the path leaks into the browser view and Enter is consumed by "
-        "the page. The composer ends up empty and you only notice when "
-        "the dom_snapshot at step 7 shows no thumbnail. Verifying at "
-        "step 5 catches focus failures BEFORE commit, when they're still "
-        "recoverable."
-        "\n\n"
-        "WHY THIS EXISTS: this is the FALLBACK for the rare cases "
-        "where web_upload_file's CDP intercept misses the file-chooser "
-        "request (closed Shadow DOM, custom picker widgets, A/B test "
-        "variants). The PRIMARY upload path is web_upload_file with "
-        "(x, y) of the upload button — that path uses Chrome DevTools "
-        "Protocol to intercept the chooser BEFORE the native dialog "
-        "opens, so no system_keys typing is needed and there is no "
-        "focus-race risk. Only fall through to system_keys when "
-        "web_upload_file returns mode='os_dialog' or explicitly reports "
-        "it didn't catch the chooser. Do not use system_keys as your "
-        "first attempt for an upload — even though it works, going "
-        "straight to it skips the deterministic CDP path and forces "
-        "every upload through the brittle native-dialog flow."
-        "\n\n"
-        "FOCUS CAVEAT: SendKeys goes to whatever window has focus. Native "
-        "file dialogs auto-focus when they open, so this is normally "
-        "reliable. If you suspect the dialog isn't focused (rare), bump "
-        "`pre_delay_ms` from the default 600 to 1500 to give Windows more "
-        "time to settle."
-        "\n\n"
-        "PATH ESCAPING: handled internally. Backslashes, colons, spaces "
-        "and parentheses in paths are all fine."
-        "\n\n"
-        "PLATFORM: currently Windows-only (PowerShell + WScript.Shell). On "
-        "non-Windows hosts the call returns an error."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "session": {"type": "string", "description": _SESSION_DESC},
-            "text": {
-                "type": "string",
-                "description": (
-                    "Literal text to type into the focused window. For file "
-                    "dialogs, this is the absolute path of the file to upload."
-                ),
-            },
-            "press_enter_after": {
-                "type": "boolean",
-                "description": (
-                    "Append a press of the Enter key after typing the text. "
-                    "Set to true to submit a file dialog. Default false."
-                ),
-            },
-            "pre_delay_ms": {
-                "type": "integer",
-                "description": (
-                    "Wait this many ms before sending the first keystroke. "
-                    "Default 600 — enough for native dialogs to appear and "
-                    "focus. Bump to 1500 if you suspect timing issues."
-                ),
-            },
-        },
-        "required": ["session", "text"],
-    },
-}
-
-
 def get_web_tools() -> List[dict]:
     """All chat-facing browser tools. Included in get_phase1_tools()."""
     return [
@@ -570,6 +435,7 @@ def get_web_tools() -> List[dict]:
         WEB_CURRENT_STATE_TOOL,
         WEB_DOM_SNAPSHOT_TOOL,
         WEB_NAVIGATE_TOOL,
+        WEB_WAIT_FOR_TOOL,
         WEB_CLICK_TOOL,
         WEB_TYPE_TOOL,
         WEB_SCROLL_TOOL,
@@ -578,6 +444,9 @@ def get_web_tools() -> List[dict]:
         WEB_VISION_CHECK_TOOL,
         WEB_COURSERA_HEALTH_TOOL,
         WEB_COURSERA_PROGRESS_TOOL,
+        COURSERA_RESUME_TOOL,
+        COURSERA_READ_LESSON_TOOL,
+        COURSERA_NEXT_ITEM_TOOL,
         WEB_UPLOAD_FILE_TOOL,
         SYSTEM_KEYS_TOOL,
     ]

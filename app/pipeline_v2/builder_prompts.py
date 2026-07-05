@@ -65,6 +65,39 @@ CRITICAL:
 - Test compilation after every file write
 """
 
+# live20 (2026-07-05): greenfield host apps (games/desktop tools) are NOT the
+# ASTRA FastAPI backend. The `from main import app` boot check is a uvicorn
+# convention — handing it to a GUI builder makes it construct the whole app
+# (open a window, start audio) at IMPORT time to "pass", which then
+# double-inits and blocks the window's message pump on the real run.
+_PYTHON_APP_SECTION = """LANGUAGE: Python (standalone desktop app / game)
+PROJECT ROOT: {project_root}
+
+WORKFLOW:
+1. Read the spec and scaffold files.
+2. For each file, read it, write the complete logic, verify it compiles:
+   run_shell("cd \\"{project_root}\\"; & \\"D:/Orb/.venv/Scripts/python.exe\\" -m py_compile src/<file>.py")
+3. Wire cross-file dependencies with FLAT sibling imports (run as
+   `python src/main.py`, so `from board import Board`, never `from src.board`).
+4. Boot check — RUN the entry as a real process, never import it:
+   run_shell("cd \\"{project_root}\\"; & \\"D:/Orb/.venv/Scripts/python.exe\\" -c \\"import subprocess,sys; p=subprocess.Popen([sys.executable,'src/main.py']); import time; time.sleep(6); alive=p.poll() is None; p.kill(); print('BOOT_OK' if alive else 'BOOT_FAIL rc='+str(p.returncode))\\"")
+   A GUI app that is still ALIVE after a few seconds (no traceback) has booted.
+
+CRITICAL — GUI ENTRY POINT RULES:
+- NEVER construct the app, open a window, start a loop, or synthesize audio at
+  MODULE IMPORT TIME. No module-level `app = build_app()`. ALL runtime
+  construction goes inside `main()`, guarded by `if __name__ == "__main__": main()`.
+  Importing the entry module must do NOTHING but define functions/classes.
+- Open the window FIRST (pygame.display.set_mode), THEN do slower init
+  (audio synthesis, asset generation). Heavy work before the first frame
+  freezes the window so it never becomes responsive.
+- If audio/music synthesis is slow, generate it lazily or after the first
+  frame is drawn — never block the window from appearing.
+- Every import must reference a symbol that actually exists in the named
+  module. Read the module you import from and confirm the export.
+"""
+
+
 _TYPESCRIPT_SECTION = """LANGUAGE: TypeScript / React / Electron
 PROJECT ROOT: D:/orb-desktop
 
@@ -138,7 +171,17 @@ def build_system_prompt(profile: "BuildTargetProfile") -> str:
     elif profile.language == "typescript":
         section = _TYPESCRIPT_SECTION
     else:
-        section = _PYTHON_SECTION
+        # live20: the ASTRA FastAPI backend keeps the uvicorn `from main
+        # import app` boot check; a greenfield host app (its own external
+        # root, framework != fastapi) gets the GUI-safe section that forbids
+        # import-time construction.
+        _framework = str(getattr(profile, "framework", "") or "").lower()
+        _root = str(getattr(profile, "project_root", "") or "").replace("\\", "/")
+        _is_backend_app = _framework == "fastapi" or _root.rstrip("/").endswith("/Orb")
+        if _is_backend_app:
+            section = _PYTHON_SECTION
+        else:
+            section = _PYTHON_APP_SECTION.format(project_root=profile.project_root)
 
     return _BASE_SYSTEM.format(language_section=section)
 

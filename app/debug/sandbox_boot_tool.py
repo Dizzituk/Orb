@@ -171,13 +171,18 @@ def read_sandbox_boot(params: Optional[Dict[str, Any]] = None) -> str:
         tail_lines = all_lines[-tail:]
         errors = [ln for ln in tail_lines if any(m in ln for m in _ERROR_MARKERS)]
         out.append(f"--- scanned last {len(tail_lines)} lines of {log_path} (via {log_source}): {len(errors)} error line(s) ---")
+        # Raw clone text is UNTRUSTED (Task 10, 2026-07-02): fence it so an
+        # injected "instruction" in a sandbox log reads as data, not a turn.
+        from app.security.untrusted_wrap import wrap_untrusted
+        excerpt = []
         if errors:
-            out.append("BOOT ERRORS:")
-            out.extend(errors[-40:])
+            excerpt.append("BOOT ERRORS:")
+            excerpt.extend(errors[-40:])
         else:
-            out.append("No ERROR/CRITICAL/Traceback in the recent boot log -- boot looks clean.")
-        out.append("--- last lines ---")
-        out.extend(tail_lines[-15:])
+            excerpt.append("No ERROR/CRITICAL/Traceback in the recent boot log -- boot looks clean.")
+        excerpt.append("--- last lines ---")
+        excerpt.extend(tail_lines[-15:])
+        out.append(wrap_untrusted("\n".join(excerpt), source=f"clone {log_path}"))
     else:
         out.append(f"(could not read clone {log_path}: {log_source})")
 
@@ -274,14 +279,18 @@ def inspect_sandbox_boot(params: Optional[Dict[str, Any]] = None) -> str:
     except Exception as e:
         visual = f"VISUAL: inspection failed: {e}"
 
+    # frontend_text and visual are raw clone output (Vite console, OCR of the
+    # clone's screen) — fence them as untrusted data (Task 10, 2026-07-02).
+    # `backend` already fences its log excerpt inside read_sandbox_boot.
+    from app.security.untrusted_wrap import wrap_untrusted
     return (
         "=== SANDBOX BOOT INSPECTION (backend + frontend) ===\n\n"
         "--- BACKEND (clone backend on internal :8000 + clone astra.log) ---\n"
         + backend
         + "\n\n--- FRONTEND (text probe: deps installed? + Vite dev server :5173) ---\n"
-        + frontend_text
+        + wrap_untrusted(frontend_text, source="clone frontend probe")
         + "\n\n--- FRONTEND (screenshot + vision of the clone's Electron window -- backup) ---\n"
-        + visual
+        + wrap_untrusted(visual, source="clone screen OCR")
     )[:14000]
 
 

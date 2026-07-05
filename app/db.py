@@ -179,6 +179,9 @@ def init_db():
     from app.watchers import models as watcher_models  # noqa: F401
     from app.llm import research_models  # noqa: F401
 
+    # LANE E (2026-07-02): visual-embed ingest queue (multimodal collection)
+    from app.embeddings import visual_queue as visual_queue_models  # noqa: F401
+
     # v4.0: create_all with checkfirst=True (default) handles tables.
     # SQLite may raise OperationalError for pre-existing indexes.
     # We catch and log these rather than crashing startup.
@@ -211,11 +214,31 @@ def init_db():
     # Food overhaul Phase 3: per-100g micronutrients on the product library
     _migrate_product_schema()
 
+    # Reminders (2026-07-03): delivered-once semantics — delivered_at gates the
+    # chat-injection channel; backfill stops pre-migration fired reminders from
+    # ghosting into the first post-migration conversation.
+    _migrate_reminders_schema()
+
     # Web automation (2026-07-01): media sessions share persist:media by
     # design — rebuild web_sessions if the legacy inline UNIQUE(partition)
     # is baked into the DDL (it made seed_sessions abort at 8 of 12 rows).
     from app.web_automation.migrations import migrate_web_sessions_schema
     migrate_web_sessions_schema(engine)
+
+    # LANE E (2026-07-02): model/dims stamp columns on stored vectors
+    # (embeddings + rag_entries) so search filters by model before scoring.
+    # Double-guarded after the 19:24 boot-kill incident: the embeddings
+    # table's known btree damage made the first (unchunked) backfill raise
+    # "database disk image is malformed" out of init_db — a stamp backfill
+    # must never cost a boot.
+    try:
+        from app.embeddings.migrations import migrate_embeddings_schema
+        migrate_embeddings_schema(engine)
+    except Exception as _emb_mig_err:
+        _db_logging.getLogger(__name__).critical(
+            "[init_db] embeddings stamp migration failed (boot continues): %s",
+            _emb_mig_err,
+        )
 
     # API keys -> os.environ, BEFORE anything that reads them. The codebase
     # self-knowledge seed in init_memory_system() (seed_all_tiers) embeds +
@@ -415,6 +438,51 @@ def _migrate_conversation_memory_schema():
 # =============================================================================
 # SCHEMA MIGRATIONS (v11.0 — Pipeline Logging Overhaul)
 # =============================================================================
+
+def _migrate_reminders_schema():
+    """
+    Ensure the reminders table has the delivered_at column (2026-07-03).
+
+    delivered_at = first moment any surface actually announced the fired
+    reminder to the user (desktop TTS announce / chat-turn injection). It
+    gates chat injection so an announced reminder never resurfaces in a later
+    conversation as if new.
+
+    Backfill: historical fired rows get delivered_at = fired_at — they were
+    announced by the phone's local alarm at fire time, and without the
+    backfill every old fired-but-unacked reminder would re-inject once on the
+    first post-migration boot (the exact ghost this column exists to kill).
+
+    Safe to call multiple times (idempotent).
+    """
+    import logging
+    from sqlalchemy import inspect, text
+
+    log = logging.getLogger(__name__)
+
+    inspector = inspect(engine)
+    if "reminders" not in inspector.get_table_names():
+        log.debug("[db_migrate] reminders table doesn't exist yet, skipping")
+        return
+
+    existing = {col["name"] for col in inspector.get_columns("reminders")}
+    if "delivered_at" in existing:
+        log.debug("[db_migrate] reminders.delivered_at already exists")
+        return
+
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("ALTER TABLE reminders ADD COLUMN delivered_at DATETIME"))
+            conn.execute(text(
+                "UPDATE reminders SET delivered_at = fired_at "
+                "WHERE fired_at IS NOT NULL AND delivered_at IS NULL"
+            ))
+            conn.commit()
+            log.info("[db_migrate] Added reminders.delivered_at (backfilled from fired_at)")
+            print("[db_migrate] Added reminders.delivered_at column")
+        except Exception as e:
+            log.warning("[db_migrate] Failed to add reminders.delivered_at: %s", e)
+
 
 def _migrate_pipeline_logging_schema():
     """Add final_checkout_status and weaver_extraction columns to build_projects.

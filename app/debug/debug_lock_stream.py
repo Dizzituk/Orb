@@ -1,8 +1,8 @@
 # FILE: app/debug/debug_lock_stream.py
-# Purpose: Debug Lock stream (JOB B) — Gemini vision + Claude Opus tool loop + RAG/build context (split from debug_chat.py).
+# Purpose: Debug Lock stream (JOB B) — Gemini vision + provider-toggled brain tool loop + RAG/build context (split from debug_chat.py).
 # Called-by: app.debug.debug_chat, app.llm.stream_router
 # Depends-on: app.debug.context_assembler, app.debug.gemini_vision, app.debug.system_prompt, app.llm.chat_tool_loop (+ lazy more)
-# Last-renovated: 2026-06-21
+# Last-renovated: 2026-07-02 (brain provider from resolve_debug_model — DEBUG_PROVIDER toggle)
 from __future__ import annotations
 import json
 import logging
@@ -398,10 +398,20 @@ async def stream_debug_locked(
         except Exception as corr_err:
             logger.debug("[debug_locked] Corrections load failed: %s", corr_err)
 
-        # 5. Emit metadata - Debug brain model from ENV (DEBUG_CHAT_MODEL -> OPENAI_DEFAULT_MODEL); no hardcode (spec section 3)
-        from app.debug.debug_model_config import get_debug_chat_model
-        actual_provider = "openai"
-        actual_model = (model or "").strip() or get_debug_chat_model()
+        # 5. Emit metadata - Debug brain (provider, model) from ENV via the
+        # DEBUG_PROVIDER-aware resolver (DEBUG_CHAT_MODEL[_ANTHROPIC] -> provider
+        # default); no hardcode (spec section 3). An explicit `model` argument
+        # overrides the model and rides the active provider. stream_with_tools
+        # dispatches per provider (anthropic runs the existing Anthropic loop).
+        from app.debug.debug_model_config import provider_fallback_active, resolve_debug_model
+        if provider_fallback_active():
+            # Missing-key soft-fail, visible in the debug stream (jobspec design).
+            yield _sse({
+                "type": "token",
+                "content": "⚠ Anthropic key missing — debug falling back to OpenAI for this run.\n\n",
+            })
+        actual_provider, resolved_model = resolve_debug_model("chat")
+        actual_model = (model or "").strip() or resolved_model
         yield _sse({"type": "metadata", "provider": actual_provider, "model": actual_model})
 
         # 6. Get write-tier tools in Anthropic format

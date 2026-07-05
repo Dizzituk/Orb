@@ -34,10 +34,11 @@ try:
         ARCHMAP_MODEL,
     )
 except ImportError:
+    from app.llm.frontier_models import get_provider_default_model as _gpdm
     _ARCHMAP_TRIGGER_SET = {"create architecture map", "architecture map"}
     _UPDATE_ARCH_TRIGGER_SET = {"update architecture", "refresh architecture"}
     ARCHMAP_PROVIDER = "openai"
-    ARCHMAP_MODEL = "gpt-4.1"
+    ARCHMAP_MODEL = os.getenv("ARCHMAP_TRIGGER_MODEL") or _gpdm("openai", strict=False)
 
 # =============================================================================
 # ENVIRONMENT CONFIG

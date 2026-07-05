@@ -199,40 +199,66 @@ INTENT_TIER_OVERRIDES = {
 # When the user explicitly asks for a specific model, skip all other
 # classification and route directly. These are intentional requests,
 # not complexity-based upgrades.
+#
+# LANE D (2026-07-02): the concrete provider/model literals are gone. Each
+# pattern group carries a routing ROLE instead; the "provider"/"model" keys
+# resolve live from .env (frontier_models.get_role_model) at ACCESS time, so
+# a spoken "use claude" always lands on the CURRENT architect model, never a
+# rotted pin. Consumers (this module + chat_model_selection) all subscript
+# config["provider"]/config["model"], so no call-site changes.
+
+
+class _ExplicitModelConfig(dict):
+    """Pattern-group dict whose "provider"/"model" keys resolve from .env on
+    every access. dict.get() on those two keys is deliberately not
+    intercepted — all known consumers use subscript access."""
+
+    def __getitem__(self, key):
+        if key in ("provider", "model"):
+            role, fallbacks = dict.__getitem__(self, "role")
+            try:
+                from app.llm.frontier_models import get_role_model
+                provider, model = get_role_model(role, *fallbacks)
+            except Exception as exc:  # unconfigured .env: fail loud downstream
+                logger.error(
+                    "[complexity] explicit-model role %s unresolved: %s", role, exc
+                )
+                provider, model = "", ""
+            return provider if key == "provider" else model
+        return dict.__getitem__(self, key)
+
+
 EXPLICIT_MODEL_PATTERNS = {
-    "gpt_54": {
+    "gpt_54": _ExplicitModelConfig({
         "patterns": [
             r"(?:use|switch (?:that |it |this )?to|escalate (?:that |it |this )?to|send (?:it |that )?to|route (?:it |that |this )?to|put (?:it |that )?through)\s*(?:gpt[\s\-]?5[\.\s]?4|gpt5\.4|gpt 5\.4|openai)",
             r"(?:use|switch (?:that |it |this )?to|escalate (?:that |it |this )?to)\s*(?:the\s+)?(?:reasoning|creative|openai)\s+model",
             r"can you (?:escalate|send|route|switch)\s+(?:it |that |this )?to\s+(?:gpt[\s\-]?5[\.\s]?4|openai)",
         ],
         "tier": "explicit_gpt54",
-        "provider": "openai",
-        "model": "gpt-5.4",
+        "role": ("REASONING", ("FRONTIER",)),      # .env REASONING_MODEL
         "target": "gpt54",
-    },
-    "claude": {
+    }),
+    "claude": _ExplicitModelConfig({
         "patterns": [
             r"(?:use|switch (?:that |it |this )?to|escalate (?:that |it |this )?to|send (?:it |that )?to|route (?:it |that |this )?to|put (?:it |that )?through)\s*(?:claude|anthropic|opus)",
             r"(?:use|switch (?:that |it |this )?to|escalate (?:that |it |this )?to)\s*(?:the\s+)?(?:deep|architecture)\s+model",
             r"can you (?:escalate|send|route|switch)\s+(?:it |that |this )?to\s+(?:claude|anthropic|opus)",
         ],
         "tier": "explicit_claude",
-        "provider": "anthropic",
-        "model": "claude-opus-4-7",
+        "role": ("ARCHITECT", ("FRONTIER",)),      # .env ARCHITECT_MODEL
         "target": "claude",
-    },
-    "gemini": {
+    }),
+    "gemini": _ExplicitModelConfig({
         "patterns": [
             r"(?:use|switch (?:that |it |this )?to|escalate (?:that |it |this )?to|send (?:it |that )?to|route (?:it |that |this )?to|put (?:it |that )?through)\s*(?:gemini|google)",
             r"(?:use|switch (?:that |it |this )?to|escalate (?:that |it |this )?to)\s*(?:the\s+)?(?:vision|multimodal|google)\s+model",
             r"can you (?:escalate|send|route|switch)\s+(?:it |that |this )?to\s+(?:gemini|google)",
         ],
         "tier": "explicit_gemini",
-        "provider": "google",
-        "model": "gemini-3.1-pro-preview",
+        "role": ("MULTIMODAL", ("IMAGE_VISION",)),  # .env MULTIMODAL_MODEL
         "target": "gemini",
-    },
+    }),
 }
 
 

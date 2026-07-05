@@ -1,8 +1,8 @@
 # FILE: app/debug/orchestrator/planner.py
 # Purpose: Planner — converts investigation reports into an ordered DebugPlan.
 # Called-by: app.debug.orchestrator.loop_controller
-# Depends-on: app.debug.orchestrator.schemas
-# Last-renovated: 2026-06-11
+# Depends-on: app.debug.orchestrator.schemas, app.debug.orchestrator.provider_calls
+# Last-renovated: 2026-07-02 (provider param: anthropic path via provider_calls)
 """
 Planner — converts investigation reports into an ordered DebugPlan.
 
@@ -143,7 +143,10 @@ def _build_user_prompt(
 
 
 # ---------------------------------------------------------------------------
-# LLM call
+# LLM call — openai path unchanged (legacy behaviour byte-for-byte while
+# DEBUG_PROVIDER=openai); anthropic path via the shared provider_calls layer
+# (JSON-only system suffix replaces response_format; tolerant parser below
+# stays the safety net).
 # ---------------------------------------------------------------------------
 
 async def _call_planner_llm(
@@ -151,7 +154,18 @@ async def _call_planner_llm(
     user_prompt: str,
     model: str,
     max_tokens: int = 20000,
+    provider: str = "openai",
 ) -> str:
+    if (provider or "openai").lower() == "anthropic":
+        from app.debug.orchestrator.provider_calls import call_anthropic_json
+        return await call_anthropic_json(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=model,
+            max_tokens=max_tokens,
+            effort="high",
+        )
+
     try:
         from openai import AsyncOpenAI
     except ImportError:
@@ -349,6 +363,7 @@ async def plan_fixes(
     bug_list: str,
     reports: List[SubagentReport],
     model: str,
+    provider: str = "openai",
     prior_iteration_summary: Optional[str] = None,
 ) -> DebugPlan:
     """Synthesise investigation reports into an ordered fix plan."""
@@ -371,6 +386,7 @@ async def plan_fixes(
             system_prompt=_PLANNER_SYSTEM,
             user_prompt=user_prompt,
             model=model,
+            provider=provider,
         )
     except Exception as e:
         logger.exception("[planner] LLM call failed: %s", e)

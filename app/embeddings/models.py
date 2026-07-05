@@ -44,6 +44,13 @@ class Embedding(Base):
     # JSON-encoded embedding vector (not encrypted - meaningless without key)
     embedding = Column(Text, nullable=False)
     
+    # LANE E (2026-07-02): every vector carries its producing model + dims so
+    # search can filter to the active model-space BEFORE scoring (mixed-model
+    # cosine structurally impossible). Legacy rows backfilled by
+    # app/embeddings/migrations.py as gemini-embedding-2-preview/1536.
+    embedding_model = Column(String(100), nullable=True, index=True)
+    dims = Column(Integer, nullable=True)
+    
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     # Composite index for efficient lookups

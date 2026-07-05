@@ -123,6 +123,19 @@ def _resolve_active_profile(path: Optional[str] = None) -> Optional["BuildTarget
                 )
         else:
             sid = getattr(_current_segment, 'segment_id', '?')
+            # live15 (2026-07-05): refusal is for AMBIGUITY — a segment
+            # without target_id in a multi-target job. Single-target jobs
+            # (greenfield manifests don't stamp per-segment target ids) have
+            # exactly one answer: the job profile. The hard refusal here
+            # bounced every checkout-repair edit after the segment tracker
+            # re-activated seg-05 on the repair worker's first write.
+            if _tool_profile is not None:
+                logger.debug(
+                    "[llm_tools] Segment %s has no target_id — single-target "
+                    "fallback to job profile %s",
+                    sid, getattr(_tool_profile, 'project_id', '?'),
+                )
+                return _tool_profile
             logger.error(
                 "[llm_tools] Segment %s has no target_id — refusing to route.",
                 sid,
@@ -220,11 +233,14 @@ async def _execute_tool(name: str, args: Dict) -> str:
             # Host writes use direct open() — no transport corruption possible.
             # The integrity checker causes false positives from \r\n vs \n diffs.
             _skip_verify = False
-            _android_profile = _resolve_active_profile() or _tool_profile
+            # Derek p7 review fix: resolve WITH the path — the profile that
+            # actually received the write (multi-target: a host write verified
+            # against the sandbox profile produced spurious integrity errors).
+            _android_profile = _active or _resolve_active_profile(path=path) or _tool_profile
             if _android_profile is not None:
                 try:
-                    from app.pipeline_v2.android_sandbox import is_android_build
-                    _skip_verify = is_android_build(_android_profile)
+                    from app.pipeline_v2.android_sandbox import is_host_build
+                    _skip_verify = is_host_build(_android_profile)  # Derek p5: all host-mode writes
                 except Exception:
                     pass
 
@@ -305,6 +321,12 @@ async def _execute_tool(name: str, args: Dict) -> str:
 
         elif name == "run_shell":
             cmd = args.get("cmd", "")
+            # live14: model-issued commands never manage process/system
+            # lifecycle (a repair worker killed the backend "cleaning up").
+            _blocked = sandbox_tools.is_forbidden_host_command(cmd)
+            if _blocked:
+                logger.warning("[llm_tool_exec] run_shell DENIED: %s | cmd=%s", _blocked[:80], cmd[:160])
+                return _blocked
             # v2.4 (2026-04-18): Bumped Gradle timeout from 600s to 1500s.
             # Cold-start Gradle compiles (dependency downloads, first-time
             # Kotlin compilation of new modules) can exceed 10 minutes on

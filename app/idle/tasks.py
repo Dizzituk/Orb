@@ -19,6 +19,15 @@ Repo-map task ("repo_map"): keeps ASTRA's code self-knowledge fresh.
   embeddings ride the whitelisted Gemini embedding path.
 
 Units (checkpointed between each): rescan -> reindex -> cleanup.
+
+Safety (added 2026-07-02 after the first live run): rescan reads through the
+sandbox controller — if the sandbox is down its walk comes back EMPTY and the
+incremental diff reads that as "every file was deleted", quarantining the
+whole index; the cleanup unit would then hard-delete the embedding vectors.
+Two guards prevent that: a sandbox pre-flight before rescan, and a
+mass-deletion tripwire that FAILS the task (no fingerprint recorded, cleanup
+never runs) whenever a rescan report looks like a walk failure rather than
+real deletions.
 """
 
 from __future__ import annotations
@@ -34,6 +43,35 @@ from app.idle.router import RecurringSpec, TaskContext, TaskOutcome, register_ta
 logger = logging.getLogger(__name__)
 
 REPO_MAP_TASK = "repo_map"
+
+
+def _sandbox_reachable() -> bool:
+    """True when the sandbox walk would see a real tree. Cheap single listdir."""
+    try:
+        from app.rag.rescan import SCAN_ROOTS
+        from app.sandbox_fs import sandbox_listdir
+
+        root = next((r for r in SCAN_ROOTS if not os.path.splitext(r)[1]), None)
+        if root is None:
+            return True
+        return bool(sandbox_listdir(root))
+    except Exception as exc:
+        logger.warning("[idle.repo_map] sandbox probe failed: %s", exc)
+        return False
+
+
+def _assert_rescan_sane(stats: dict) -> None:
+    """Refuse to continue past a rescan that smells like a failed walk.
+    Raising here fails the whole task: no fingerprint is recorded (so the
+    next run retries) and the vector-deleting cleanup unit never runs."""
+    r = stats.get("rescan") or {}
+    total = sum(int(r.get(k, 0)) for k in ("added", "modified", "deleted", "unchanged"))
+    deleted = int(r.get("deleted", 0))
+    if deleted > 50 and total > 0 and deleted / total >= 0.3:
+        raise RuntimeError(
+            f"rescan reported {deleted}/{total} files deleted — that is a walk "
+            f"failure (sandbox down?), not a real state; refusing to reindex/cleanup"
+        )
 
 
 def _iter_host_files():
@@ -71,6 +109,12 @@ def repo_map_fingerprint(params: dict) -> Optional[str]:
 
 def _unit_rescan(session_factory) -> dict:
     from app.rag.rescan import rescan_codebase
+
+    if not _sandbox_reachable():
+        raise RuntimeError(
+            "sandbox unreachable — refusing to rescan (a blind rescan reads an "
+            "empty walk as mass deletion and quarantines the whole index)"
+        )
 
     db = session_factory()
     try:
@@ -119,6 +163,10 @@ async def repo_map_handler(ctx: TaskContext) -> TaskOutcome:
     done = list(progress.get("units_done") or [])
     stats = dict(progress.get("stats") or {})
 
+    # Resume path: progress may already hold a poisoned rescan report.
+    if "rescan" in done:
+        _assert_rescan_sane(stats)
+
     for name, fn in _UNITS:
         if name in done:
             continue
@@ -129,6 +177,8 @@ async def repo_map_handler(ctx: TaskContext) -> TaskOutcome:
         stats[name] = await asyncio.to_thread(fn, ctx.session_factory)
         done.append(name)
         ctx.save_progress({"units_done": done, "stats": stats})
+        if name == "rescan":
+            _assert_rescan_sane(stats)
 
     r = stats.get("rescan") or {}
     ri = stats.get("reindex") or {}

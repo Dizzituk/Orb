@@ -41,6 +41,7 @@ from typing import Any, Dict, Optional, Tuple
 from uuid import uuid4
 
 from app.llm.schemas import JobType, LLMResult, LLMTask
+from app.llm.frontier_models import get_provider_default_model
 from app.jobs.schemas import (
     JobEnvelope,
     JobType as Phase4JobType,
@@ -104,7 +105,7 @@ def _get_revision_model_config() -> tuple[str, str, int, int]:
     
     # Fallback to legacy env vars
     provider = os.getenv("REVISION_PROVIDER", "anthropic")
-    model = os.getenv("REVISION_MODEL") or os.getenv("ANTHROPIC_OPUS_MODEL", "claude-opus-4-5-20251101")
+    model = os.getenv("REVISION_MODEL") or os.getenv("ANTHROPIC_OPUS_MODEL") or get_provider_default_model("anthropic", strict=False)
     max_tokens = int(os.getenv("REVISION_MAX_OUTPUT_TOKENS") or os.getenv("OPUS_REVISION_MAX_TOKENS", "60000"))
     timeout = int(os.getenv("REVISION_TIMEOUT_SECONDS") or os.getenv("OPUS_REVISION_TIMEOUT", "300"))
     return provider, model, max_tokens, timeout
@@ -124,7 +125,7 @@ def _get_architecture_model_config() -> tuple[str, str, int, int]:
     
     # Fallback to legacy env vars
     provider = os.getenv("ARCHITECTURE_PROVIDER", "anthropic")
-    model = os.getenv("ARCHITECTURE_MODEL") or os.getenv("ANTHROPIC_OPUS_MODEL", "claude-opus-4-5-20251101")
+    model = os.getenv("ARCHITECTURE_MODEL") or os.getenv("ANTHROPIC_OPUS_MODEL") or get_provider_default_model("anthropic", strict=False)
     max_tokens = int(os.getenv("ARCHITECTURE_MAX_OUTPUT_TOKENS") or os.getenv("OPUS_DRAFT_MAX_TOKENS", "60000"))
     timeout = int(os.getenv("ARCHITECTURE_TIMEOUT_SECONDS") or os.getenv("OPUS_TIMEOUT_SECONDS", "300"))
     return provider, model, max_tokens, timeout

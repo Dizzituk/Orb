@@ -1,8 +1,9 @@
 # FILE: app/debug/orchestrator/subagent_runner.py
 # Purpose: Subagent runner — executes a single SubagentBrief against an LLM tool loop.
-# Called-by: app.debug.orchestrator.loop_controller
-# Depends-on: app.debug.action_executor, app.debug.orchestrator.schemas, app.debug.tool_definitions
-# Last-renovated: 2026-06-11
+# Called-by: app.debug.orchestrator.loop_controller, app.debug.orchestrator.spawn_tool
+# Depends-on: app.debug.action_executor, app.debug.orchestrator.schemas,
+#             app.debug.orchestrator.provider_calls, app.debug.tool_definitions
+# Last-renovated: 2026-07-02
 """
 Subagent runner — executes a single SubagentBrief against an LLM tool loop.
 
@@ -10,8 +11,11 @@ Reuses:
   - app.debug.tool_definitions for tool schemas (role-scoped here)
   - app.debug.action_executor for tool execution (host/sandbox routing is
     already handled transparently inside action_executor)
-  - app.llm.openai_client for the OpenAI call (same client the rest of
-    ASTRA uses)
+  - app.debug.orchestrator.provider_calls for the LLM call: the loop keeps its
+    history in the OpenAI chat shape; provider_calls owns the OpenAI/Anthropic
+    callers, message adapters, and uniform extraction (DEBUG_PROVIDER toggle,
+    2026-07-02). run_subagent/run_subagents_parallel take a `provider` arg
+    (default "openai" — byte-identical legacy behaviour).
 
 This is deliberately separate from app.pipeline_v2.llm_tools.run_tool_loop,
 which is scoped to the build pipeline (3 tools: read/write/run_shell routed
@@ -25,11 +29,16 @@ import asyncio
 import hashlib
 import json
 import logging
-import os
 import time
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from app.debug.action_executor import execute_tool as _execute_tool
+from app.debug.orchestrator.provider_calls import (
+    call_llm_with_tools,
+    extract_assistant_message,
+    extract_final_text,
+    extract_tool_calls,
+)
 from app.debug.orchestrator.schemas import (
     Finding,
     StepStatus,
@@ -85,10 +94,6 @@ _ROLE_REASONING_EFFORT = {
     "behaviour_verifier": None, # mini: run scripted steps
 }
 
-# OpenAI client timeout (seconds). Thinking models on high effort on a large
-# investigation can run 60-120s per turn; give generous headroom.
-_LLM_TIMEOUT_SECONDS = 300.0
-
 
 # ---------------------------------------------------------------------------
 # Role -> tool scope (single source of truth)
@@ -127,23 +132,6 @@ ROLE_TOOL_MAP: Dict[SubagentRole, List[dict]] = {
 
 def _tools_for_role(role: SubagentRole) -> List[dict]:
     return [dict(t) for t in ROLE_TOOL_MAP.get(role, _READ_ONLY_TOOLS)]
-
-
-# ---------------------------------------------------------------------------
-# OpenAI function-calling format (our tool_definitions use flat schema;
-# OpenAI expects {"type":"function","function":{...}})
-# ---------------------------------------------------------------------------
-
-def _to_openai_tool(tool_def: dict) -> dict:
-    """Wrap a flat tool definition as an OpenAI function tool."""
-    return {
-        "type": "function",
-        "function": {
-            "name": tool_def["name"],
-            "description": tool_def.get("description", ""),
-            "parameters": tool_def.get("parameters", {"type": "object", "properties": {}}),
-        },
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -299,111 +287,23 @@ def _parse_findings(raw: Optional[dict]) -> Tuple[List[Finding], List[str], List
 
 
 # ---------------------------------------------------------------------------
-# OpenAI call (reuses app.llm if present, else direct openai client)
-# ---------------------------------------------------------------------------
-
-async def _call_openai_with_tools(
-    model: str,
-    messages: List[Dict],
-    tools: List[dict],
-    max_tokens: int = 8000,
-    reasoning_effort: Optional[str] = None,
-) -> Tuple[Any, int, int]:
-    """Single OpenAI chat.completions call with tool support.
-
-    If reasoning_effort is provided, passes it through to the API. If the
-    model does not support it, we retry without (silent degradation).
-    """
-    try:
-        from openai import AsyncOpenAI
-    except ImportError:
-        raise RuntimeError("openai package not installed")
-
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY not set")
-
-    client = AsyncOpenAI(api_key=api_key, timeout=_LLM_TIMEOUT_SECONDS)
-    openai_tools = [_to_openai_tool(t) for t in tools]
-
-    call_kwargs = dict(
-        model=model,
-        messages=messages,
-        tools=openai_tools,
-        tool_choice="auto",
-        max_completion_tokens=max_tokens,
-    )
-    # Apply reasoning effort if a role was specified; retry without if unsupported.
-    if reasoning_effort:
-        call_kwargs["reasoning_effort"] = reasoning_effort
-    try:
-        resp = await client.chat.completions.create(**call_kwargs)
-    except Exception as e:
-        err_str = str(e).lower()
-        if reasoning_effort and (
-            "reasoning_effort" in err_str or "unrecognized" in err_str or "unsupported" in err_str
-        ):
-            logger.info("[subagent_runner] model=%s does not support reasoning_effort, retrying without", model)
-            call_kwargs.pop("reasoning_effort", None)
-            resp = await client.chat.completions.create(**call_kwargs)
-        else:
-            raise
-
-    usage = getattr(resp, "usage", None)
-    in_tok = getattr(usage, "prompt_tokens", 0) if usage else 0
-    out_tok = getattr(usage, "completion_tokens", 0) if usage else 0
-    return resp, in_tok, out_tok
-
-
-def _extract_assistant_message(resp: Any) -> Dict:
-    msg = resp.choices[0].message
-    out: Dict[str, Any] = {"role": "assistant", "content": msg.content or ""}
-    if getattr(msg, "tool_calls", None):
-        out["tool_calls"] = [
-            {
-                "id": tc.id,
-                "type": "function",
-                "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-            }
-            for tc in msg.tool_calls
-        ]
-    return out
-
-
-def _extract_tool_calls(resp: Any) -> List[Dict]:
-    msg = resp.choices[0].message
-    if not getattr(msg, "tool_calls", None):
-        return []
-    out = []
-    for tc in msg.tool_calls:
-        try:
-            args = json.loads(tc.function.arguments) if tc.function.arguments else {}
-        except Exception:
-            args = {}
-        out.append({"id": tc.id, "name": tc.function.name, "args": args})
-    return out
-
-
-def _extract_final_text(resp: Any) -> str:
-    msg = resp.choices[0].message
-    return msg.content or ""
-
-
-# ---------------------------------------------------------------------------
 # Main entry point: run_subagent
 # ---------------------------------------------------------------------------
 
 async def run_subagent(
     brief: SubagentBrief,
     model: str,
+    provider: str = "openai",
     extra_context: Optional[str] = None,
     on_tool_call: Optional[Callable[[str, Dict], None]] = None,
     on_text: Optional[Callable[[str], None]] = None,
 ) -> SubagentReport:
     """Execute a single subagent tool loop for the given brief.
 
-    Returns a SubagentReport with findings, files touched, and cost/time stats.
-    Never raises — errors are captured in the report.error field.
+    The loop's history stays in the OpenAI chat shape regardless of provider;
+    provider_calls adapts per call. Returns a SubagentReport with findings,
+    files touched, and cost/time stats. Never raises — errors are captured in
+    the report.error field.
     """
     t_start = time.time()
     max_calls = min(brief.max_tool_calls, _ABS_MAX_TOOL_CALLS)
@@ -432,18 +332,18 @@ async def run_subagent(
 
     try:
         for iteration in range(_ABS_MAX_ITERATIONS):
-            resp, in_tok, out_tok = await _call_openai_with_tools(
-                model=model, messages=messages, tools=tools,
+            resp, in_tok, out_tok = await call_llm_with_tools(
+                provider=provider, model=model, messages=messages, tools=tools,
                 reasoning_effort=effort,
             )
             total_in += in_tok
             total_out += out_tok
 
-            tcs = _extract_tool_calls(resp)
-            messages.append(_extract_assistant_message(resp))
+            tcs = extract_tool_calls(resp, provider)
+            messages.append(extract_assistant_message(resp, provider))
 
             if not tcs:
-                final_text = _extract_final_text(resp)
+                final_text = extract_final_text(resp, provider)
                 if on_text and final_text:
                     try:
                         on_text(final_text)
@@ -542,6 +442,7 @@ async def run_subagent(
 async def run_subagents_parallel(
     briefs: List[SubagentBrief],
     model: str,
+    provider: str = "openai",
     max_parallel: int = 5,
     extra_context: Optional[str] = None,
     on_tool_call: Optional[Callable[[str, Dict], None]] = None,
@@ -557,7 +458,7 @@ async def run_subagents_parallel(
         async with sem:
             logger.info("[subagent_runner] Starting brief=%s role=%s", b.brief_id, b.role.value)
             r = await run_subagent(
-                brief=b, model=model,
+                brief=b, model=model, provider=provider,
                 extra_context=extra_context,
                 on_tool_call=on_tool_call,
             )
